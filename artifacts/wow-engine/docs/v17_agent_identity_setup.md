@@ -94,8 +94,19 @@ separation comes from pinning each required check to its App's `integration_id` 
    webhook inactive. Install each on WOW-Dashboard only. Keep each private key **only** in that role's runtime.
 3. **Bind roles:** *Settings → Secrets and variables → Actions → Variables*: `WOW_ENGINEERING_APP_ID`,
    `WOW_QA_APP_ID`, `WOW_RELEASE_APP_ID` (numeric App IDs; identifiers, not secrets).
-4. **Phase C (Engineering, governed PRs):** QA and Release workers publish `WOW Independent QA exact-head` / `WOW Release Authority exact-head` bound to
-   the exact head SHA and failing closed on stale SHA, forged or missing evidence, PR-author self-review and provider outage.
+4. **Phase C (built; activates when the Apps exist):** `wow-v17-independent-qa-check` and
+   `wow-v17-release-authority-check` run from protected `main`, never execute PR code, read evidence with the
+   read-only workflow token, and publish their check with their own App token downscoped to `checks: write`.
+   Store each private key as a repository secret, `WOW_QA_APP_PRIVATE_KEY` and `WOW_RELEASE_APP_PRIVATE_KEY`; each
+   workflow references only its own. Until then they fail with `QA_APP_CREDENTIAL_MISSING` /
+   `RELEASE_APP_CREDENTIAL_MISSING` and publish nothing.
+   - **QA passes only if**, at the exact head and from `github-actions` only: the 3 regression checks and the change
+     impact gate pass, and the trusted governance gate passes. For `.github/` changes, the owner's latest review must
+     instead be APPROVED on this exact head, and an owner-authored trust-root PR can never pass.
+   - **Release passes only if** it independently re-derives every QA condition and finds a successful QA check from
+     the QA App, with QA and Release bound to different Apps.
+   - Triggers: upstream workflow completion, an hourly sweep (bounded to 20 open PRs) and manual dispatch per PR.
+     Each role runs as one serialized queue, and a decision is always published at the SHA it evaluated.
 5. **Phase D — protection (owner):** install `artifacts/wow-engine/v17/agent_identity/CODEOWNERS.proposed` as
    `.github/CODEOWNERS`; *Settings → Rules → Rulesets → New branch ruleset → Import* `ruleset-main.proposed.json`,
    replacing `__WOW_QA_APP_ID__` / `__WOW_RELEASE_APP_ID__`. Add the two App checks only after Phase C publishes them,
