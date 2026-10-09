@@ -59,6 +59,23 @@ NFL_TEAM_NAME_TO_ABBREVIATION = {
     "washington commanders": "WAS",
 }
 NFL_CANONICAL_TEAM_CODES = frozenset(NFL_TEAM_NAME_TO_ABBREVIATION.values())
+# One-to-one inverse (32 teams). Word-wise capitalisation keeps "49ers" intact.
+NFL_ABBREVIATION_TO_TEAM_NAME = {
+    code: " ".join(word[:1].upper() + word[1:] for word in name.split())
+    for name, code in NFL_TEAM_NAME_TO_ABBREVIATION.items()
+}
+
+
+def _display_team(value: Any) -> str:
+    """Full team name for persistence/selection, whatever form the request used.
+
+    Requests resolved by exact canonical event id arrive with abbreviations
+    ("PIT"); provider-matched requests arrive with full names. Persisting both
+    forms broke name-based joins (forward grades, closing-line matching).
+    Unknown values pass through unchanged (identity is validated elsewhere).
+    """
+    raw = " ".join(str(value or "").strip().split())
+    return NFL_ABBREVIATION_TO_TEAM_NAME.get(raw.upper(), raw)
 
 
 def _paginate(query: Any, page_size: int = 500) -> list[dict[str, Any]]:
@@ -533,12 +550,12 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
 
     home_probability = float(model_result["calibrated_home_probability"])
     if home_probability >= 0.5:
-        selected, opponent = str(req.home_team), str(req.away_team)
+        selected, opponent = _display_team(req.home_team), _display_team(req.away_team)
         selection_probability = home_probability
         selection_lower = float(model_result["calibrated_home_lower_bound"])
         selection_upper = float(model_result["calibrated_home_upper_bound"])
     else:
-        selected, opponent = str(req.away_team), str(req.home_team)
+        selected, opponent = _display_team(req.away_team), _display_team(req.home_team)
         selection_probability = float(model_result["calibrated_away_probability"])
         selection_lower = float(model_result["calibrated_away_lower_bound"])
         selection_upper = float(model_result["calibrated_away_upper_bound"])
@@ -564,8 +581,8 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         "requested_slate_date": req.requested_slate_date,
         "requested_timezone": req.requested_timezone,
         "event_start_time_utc": req.event_start_time_utc,
-        "home_team": req.home_team,
-        "away_team": req.away_team,
+        "home_team": _display_team(req.home_team),
+        "away_team": _display_team(req.away_team),
         "selected_participant": selected,
         "opponent": opponent,
         "source_snapshot_id": req.source_snapshot_id,
