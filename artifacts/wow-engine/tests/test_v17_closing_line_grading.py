@@ -315,7 +315,7 @@ def test_clv_fails_closed_on_backdated_quote_observed_after_pick():
         selected="Team A", provider_event_id="e1", rows=valid_early + backdated, at=at
     )
     assert result is not None
-    assert result["quote_at"] == "2026-10-05T14:00:00+00:00"
+    assert result["quote_at"] == "2026-10-05T14:00:00Z"
 
 
 def test_clv_requires_fetched_at_provenance_even_if_provider_timestamp_old():
