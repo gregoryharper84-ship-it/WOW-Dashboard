@@ -25,6 +25,11 @@ alter table public.wow_rundown_budget_days enable row level security;
 alter table public.wow_rundown_budget_requests enable row level security;
 revoke all on public.wow_rundown_budget_days from public, anon, authenticated;
 revoke all on public.wow_rundown_budget_requests from public, anon, authenticated;
+-- RPCs run as the verified service_role, which has BYPASSRLS on Supabase.
+-- Explicit grants are needed when using SECURITY INVOKER, and do not
+-- expose these budget records to anon/authenticated clients.
+grant select, insert, update on public.wow_rundown_budget_days to service_role;
+grant select, insert, update on public.wow_rundown_budget_requests to service_role;
 
 -- Rows are locked in a single transaction, not by a process-local mutex.
 -- Exactly one unresolved provider request is permitted globally at any instant:
@@ -33,7 +38,7 @@ revoke all on public.wow_rundown_budget_requests from public, anon, authenticate
 create or replace function public.wow_rundown_reserve_call(
   p_request_id text, p_utc_day date, p_call_limit integer, p_point_limit bigint
 ) returns jsonb
-language plpgsql security definer set search_path = public, pg_temp as $$
+language plpgsql security invoker set search_path = public, pg_temp as $$
 declare
   rec public.wow_rundown_budget_days%rowtype;
 begin
@@ -72,7 +77,7 @@ $$;
 create or replace function public.wow_rundown_finish_call(
   p_request_id text, p_datapoints integer default null
 ) returns jsonb
-language plpgsql security definer set search_path = public, pg_temp as $$
+language plpgsql security invoker set search_path = public, pg_temp as $$
 declare
   req public.wow_rundown_budget_requests%rowtype;
 begin
