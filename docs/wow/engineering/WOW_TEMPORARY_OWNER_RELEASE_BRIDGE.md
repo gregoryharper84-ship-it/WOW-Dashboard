@@ -13,7 +13,8 @@ requires all of:
 2. all required exact-head deterministic CI green;
 3. independent read-only Claude QA PASS from protected-main code;
 4. QA class A or B (Class C is always denied);
-5. for any `.github/**` change, explicit `allow_trust_root=true`;
+5. candidate changes under `.github/**` or `.agents/**` are denied and stay on
+   the explicit owner-bootstrap path;
 6. owner-held environment secret `WOW_OWNER_RELEASE_APPROVAL` exactly equal to
    `<PR_NUMBER>:<HEAD_SHA>`;
 7. an unchanged PR head immediately before merge.
@@ -29,8 +30,8 @@ For each temporary authorization, set the `wow-release` environment secret:
 `WOW_OWNER_RELEASE_APPROVAL=<PR_NUMBER>:<EXACT_HEAD_SHA>`
 
 Then manually run **wow-v17-temporary-owner-release-bridge** from protected
-`main` with the matching PR, SHA and incident. Set `allow_trust_root=true`
-only for a deliberately reviewed trust-root/bootstrap change.
+`main` with the matching PR, SHA and incident. Trust-root changes are never
+eligible for this bridge; they remain explicit owner-bootstrap candidates.
 
 After a merge, leave the prior value in place or replace it for the next exact
 candidate; it cannot authorize a different SHA.
@@ -39,6 +40,7 @@ candidate; it cannot authorize a different SHA.
 
 - merge only; never deploys;
 - never authorizes Class C;
+- never authorizes `.github/**` or `.agents/**` trust-root changes;
 - never changes sporting probability, calibration, thresholds or model ownership;
 - never grants wagering/order execution;
 - production acceptance and independent SIRT verification remain separate;
