@@ -164,6 +164,7 @@ def _collect(sport_key: str, *, opener: Any = None, primary_failure: str | None 
     for date in snapshot_dates():
         result = live.rundown_market_evidence(
             sport_key, date, capability="events", opener=opener, primary_failure=primary_failure,
+            affiliate_ids=sources.rundown_evidence_affiliate_ids(), main_line=True,
         )
         if result.ok:
             events.extend(result.data)

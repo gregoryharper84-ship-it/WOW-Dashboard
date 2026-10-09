@@ -301,6 +301,10 @@ def compose_active_runtime() -> bool:
             auth_dependency = getattr(prod, "_require_action_api_key", None)
             db_client_fn = getattr(prod, "get_client", None)
             event_api = getattr(prod, "event_api", None)
+            # Durable daily Rundown data-point/call budget (cost control only).
+            from v17 import rundown_datapoint_budget as _dp_budget
+
+            _dp_budget.register_client(db_client_fn)
             rundown_market_bootstrap_ok = install_rundown_market_startup_bootstrap(
                 app,
                 db_client_fn=db_client_fn,

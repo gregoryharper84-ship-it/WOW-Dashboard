@@ -61,3 +61,18 @@ def _discovery_source_env_isolation():
             os.environ.pop(name, None)
         else:
             os.environ[name] = value
+
+
+@pytest.fixture(autouse=True)
+def _rundown_datapoint_budget_isolation():
+    """Reset the process-global daily Rundown budget per test.
+
+    Limits stay active (tests exercise the real guard); only accumulated usage
+    and the registered DB client are cleared so suites cannot couple through
+    shared counters.
+    """
+    from v17 import rundown_datapoint_budget
+
+    rundown_datapoint_budget._reset_for_tests()
+    yield
+    rundown_datapoint_budget._reset_for_tests()
