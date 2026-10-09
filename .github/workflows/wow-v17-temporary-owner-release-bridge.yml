@@ -94,12 +94,6 @@ jobs:
             EXPECTED_HEAD_SHA="$INPUT_HEAD_SHA"
             INCIDENT_ID="$INPUT_INCIDENT_ID"
             authorization_mode="OWNER_ENVIRONMENT_SECRET"
-            [ -n "$OWNER_APPROVAL" ] || { echo "OWNER_BRIDGE_APPROVAL_SECRET_MISSING" >&2; exit 1; }
-            expected_approval="${PR_NUMBER}:${EXPECTED_HEAD_SHA}"
-            [ "$OWNER_APPROVAL" = "$expected_approval" ] || {
-              echo "OWNER_BRIDGE_EXACT_SHA_NOT_AUTHORIZED" >&2
-              exit 1
-            }
           else
             echo "OWNER_BRIDGE_TRIGGER_NOT_ALLOWED:$EVENT_NAME" >&2
             exit 1
@@ -108,6 +102,16 @@ jobs:
           [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "OWNER_BRIDGE_PR_NUMBER_INVALID" >&2; exit 1; }
           [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "OWNER_BRIDGE_HEAD_SHA_INVALID" >&2; exit 1; }
           [[ "$INCIDENT_ID" =~ ^[0-9]+$ ]] || { echo "OWNER_BRIDGE_INCIDENT_INVALID" >&2; exit 1; }
+
+          # An agent using the owner's GitHub token can appear as the same
+          # github.actor. Require the separately held environment approval
+          # for BOTH issue_comment and workflow_dispatch, never actor alone.
+          [ -n "$OWNER_APPROVAL" ] || { echo "OWNER_BRIDGE_APPROVAL_SECRET_MISSING" >&2; exit 1; }
+          expected_approval="${PR_NUMBER}:${EXPECTED_HEAD_SHA}"
+          [ "$OWNER_APPROVAL" = "$expected_approval" ] || {
+            echo "OWNER_BRIDGE_EXACT_SHA_NOT_AUTHORIZED" >&2
+            exit 1
+          }
 
           {
             echo "PR_NUMBER=$PR_NUMBER"
