@@ -11,6 +11,7 @@
       "priority_rank": 1,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "RUNTIME_WRITE_SCOPE",
         "PRODUCTION_RUNTIME",
         "MEMORY_STABILITY",
         "LLP_USER_PATH"
@@ -24,6 +25,7 @@
       "priority_rank": 2,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "RUNTIME_WRITE_SCOPE",
         "INTERACTIVE_RUNTIME",
         "LATENCY_PROFILE",
         "MEMORY_STABILITY"
@@ -37,6 +39,7 @@
       "priority_rank": 3,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "RUNTIME_WRITE_SCOPE",
         "WOW_HOST_ORCHESTRATION",
         "INTERACTIVE_RUNTIME",
         "LLP_USER_PATH"
@@ -50,6 +53,7 @@
       "priority_rank": 4,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "ACQUISITION_WRITE_SCOPE",
         "SPORT_DISCOVERY",
         "PROVIDER_ACQUISITION",
         "CANONICAL_EVENT_IDENTITY"
@@ -63,6 +67,7 @@
       "priority_rank": 5,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "FITTED_SCORING_WRITE_SCOPE",
         "MLB_SCORER_INPUTS",
         "NUMERIC_EVIDENCE_CONTRACT",
         "SPORT_SPECIFIC_SCORING"
@@ -76,6 +81,7 @@
       "priority_rank": 10,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "ACQUISITION_WRITE_SCOPE",
         "CANONICAL_EVENT_IDENTITY",
         "INPLAY_MONEYLINE_ACTION",
         "ACTION_TRANSPORT"
@@ -89,6 +95,7 @@
       "priority_rank": 7,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "RUNTIME_WRITE_SCOPE",
         "ACTION_TRANSPORT",
         "FULL_SLATE_ACCEPTANCE",
         "LLP_USER_PATH"
@@ -113,6 +120,7 @@
       "priority_rank": 6,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "FITTED_SCORING_WRITE_SCOPE",
         "PROP_FITTED_ROUTE_IDENTITY",
         "PROP_SCORING_HYDRATION",
         "PROP_CALIBRATION_CERTIFICATION",
@@ -127,6 +135,7 @@
       "priority_rank": 9,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "FITTED_SCORING_WRITE_SCOPE",
         "PROP_FORWARD_EVIDENCE",
         "PROP_SETTLEMENT",
         "PROP_FITTED_ROUTE_IDENTITY"
@@ -172,6 +181,7 @@
       "priority_rank": 5,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "ACQUISITION_WRITE_SCOPE",
         "NCAAF_POINT_IN_TIME_MATERIALIZATION",
         "NCAAF_MODEL_INPUTS",
         "PREGAME_SOURCE_PROVENANCE"
@@ -185,6 +195,7 @@
       "priority_rank": 7,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "FITTED_SCORING_WRITE_SCOPE",
         "NBA_WNBA_FITTED_ADAPTER",
         "BASKETBALL_CALIBRATION_CERTIFICATION",
         "TEAM_EVENT_MODEL_REVIEW"
@@ -198,6 +209,7 @@
       "priority_rank": 8,
       "execution_lane": "RAPID",
       "conflict_keys": [
+        "FITTED_SCORING_WRITE_SCOPE",
         "NCAAF_MODEL_INPUTS",
         "NCAAF_FITTED_ADAPTER",
         "NCAAF_CALIBRATION_CERTIFICATION"
