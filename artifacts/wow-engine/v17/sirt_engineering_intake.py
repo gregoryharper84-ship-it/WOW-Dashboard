@@ -180,6 +180,23 @@ class Transport:
             raise RuntimeError("SIRT_DUPLICATE_ISSUES_REQUIRE_RECONCILIATION")
         return matches[0] if matches else None
 
+    def route_issue(self, number, item):
+        """Assign verified GitHub priority and lane labels, not worker admission."""
+        names = (item["priority"], "wow-sirt-engineering-" + item["lane"].lower())
+        for name in names:
+            try:
+                self.gh("labels/" + quote(name, safe=""))
+            except HTTPError as exc:
+                if exc.code != 404:
+                    raise
+                self.gh("labels", "POST", {"name": name, "color": "687980",
+                                          "description": "Controlled SIRT Engineering intake"})
+        self.gh(f"issues/{number}/labels", "POST", {"labels": list(names)})
+        observed = self.issue(number)
+        labels = {x.get("name") for x in observed.get("labels") or [] if isinstance(x, dict)}
+        if not set(names).issubset(labels):
+            raise RuntimeError("SIRT_ENGINEERING_LANE_ROUTING_UNVERIFIED")
+
     def post_comment(self, number, body):
         result = self.gh(f"issues/{number}/comments", "POST", {"body": body})
         comment_id = result.get("id") if isinstance(result, dict) else None
@@ -232,6 +249,7 @@ def act(transport, finding, now):
         if issue.get("state") != "open":
             raise RuntimeError("SIRT_ENGINEERING_ISSUE_CLOSED_UNVERIFIED")
         outcome = "DELIVERED_EXISTING_ENGINEERING_ISSUE"
+    transport.route_issue(number, item)
     comments = transport.comments(number)
     marker = INTAKE_PREFIX + item["fingerprint"]
     if origin and not any(marker in str(c.get("body") or "") for c in comments):
