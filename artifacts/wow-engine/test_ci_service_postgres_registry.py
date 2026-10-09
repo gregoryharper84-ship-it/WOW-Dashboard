@@ -21,6 +21,15 @@ def test_verification_workflows_use_official_postgres_registry_mirror():
         assert "image: postgres:16" not in text, relative_path
 
 
+def test_engine_workflow_uses_official_redis_registry_mirror():
+    path = ROOT / ".github/workflows/wow-engine-verify.yml"
+    text = path.read_text(encoding="utf-8")
+    assert text.count("image: public.ecr.aws/docker/library/redis:7-alpine") == 2
+    assert "image: redis:7-alpine" not in text
+    assert 'redis-cli ping' in text
+    assert "6379:6379" in text
+
+
 def test_service_postgres_identity_and_port_remain_unchanged():
     for relative_path in (
         ".github/workflows/wow-verify.yml",
