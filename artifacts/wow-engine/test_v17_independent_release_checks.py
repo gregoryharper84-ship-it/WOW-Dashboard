@@ -493,3 +493,54 @@ def test_each_app_secret_is_isolated_by_main_only_environment():
 def test_unactivated_role_is_skipped_not_red(wf, var):
     job_if = re.search(r"^    if: (.+)$", wf.read_text(), re.M).group(1)
     assert f"vars.{var} != ''" in job_if and "github.repository ==" in job_if
+
+
+# Adversarial governance: the *source* path of a rename is also a changed path.
+# A rename out of a trust root cannot turn a protected mutation into an
+# ordinary (autonomously approvable) PR.
+@pytest.mark.parametrize("source", [
+    ".github/workflows/wow-v17-independent-qa-check.yml",
+    ".agents/skills/wow-engineering-independent-review-agent/SKILL.md",
+    "artifacts/wow-engine/v17/independent_release_checks.py",
+    "artifacts/wow-engine/v17/agent_identity_policy.py",
+])
+def test_rename_out_of_trust_root_holds_both_qa_and_release(source):
+    renamed = [{"filename": "docs/relocated-unprotected-file.md",
+                "status": "renamed", "previous_filename": source}]
+    ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(files=renamed, changed=1)))
+    assert ev["evidence_errors"] == []
+    assert ev["files"] == ["docs/relocated-unprotected-file.md", source]
+    ev["check_runs"] = evidence()["check_runs"]
+    assert m.qa_findings(evidence(files=("docs/relocated-unprotected-file.md",))) == []
+    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+    with_qa(ev)
+    findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    assert "RELEASE_QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in findings
+
+
+def test_rename_origin_missing_or_invalid_fails_closed():
+    for origin in (None, "", 24):
+        files = [{"filename": "docs/unprotected.md", "status": "renamed",
+                  "previous_filename": origin}]
+        ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(files=files)))
+        assert "FILES_RENAME_ORIGIN_MISSING" in ev["evidence_errors"]
+        ev["check_runs"] = evidence()["check_runs"]
+        assert "QA_EVIDENCE_INCOMPLETE:FILES_RENAME_ORIGIN_MISSING" in m.qa_findings(ev)
+        with_qa(ev)
+        assert "RELEASE_QA_EVIDENCE_INCOMPLETE:FILES_RENAME_ORIGIN_MISSING" in m.release_findings(
+            ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+
+
+def test_rename_origin_does_not_hide_truncated_file_listing():
+    files = [{"filename": "docs/outside.md", "status": "renamed",
+              "previous_filename": ".github/workflows/secure.yml"}]
+    ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(files=files, changed=2)))
+    assert len(ev["files"]) == 2
+    assert "FILES_TRUNCATED" in ev["evidence_errors"]
+    assert "QA_EVIDENCE_INCOMPLETE:FILES_TRUNCATED" in m.qa_findings(ev)
+
+
+def test_malformed_file_record_fails_closed():
+    ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(files=[{"status": "modified"}])))
+    assert "FILES_PATH_INVALID" in ev["evidence_errors"]
+    assert "QA_EVIDENCE_INCOMPLETE:FILES_PATH_INVALID" in m.qa_findings(ev)
