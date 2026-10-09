@@ -1,0 +1,21 @@
+# PROPOSED — owner installs at .github/CODEOWNERS (#1550 phase D). Not active until merged by the owner.
+# Trust roots mirror the protected list in .github/workflows/wow-v17-existing-pr-governance-review.yml.
+# The sole human owner must approve any change to these paths, including this file.
+# /.github/ covers NEW workflows/actions/scripts; the named lines keep the protected list explicit.
+/.github/ @gregoryharper84-ship-it
+/.github/workflows/wow-verify.yml @gregoryharper84-ship-it
+/.github/workflows/wow-engine-verify.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-rapid-repair.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-change-impact-gate.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-trusted-governance-gate.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-existing-pr-governance-review.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-morning-green-continuation.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-release-production-verification-agent.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-chatgpt-engineering-worker.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-claude-engineering-worker.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-engineering-provider-dispatcher.yml @gregoryharper84-ship-it
+/.github/scripts/verify_engineering_governance_receipt.py @gregoryharper84-ship-it
+/.github/scripts/verify_existing_pr_governance_receipt.py @gregoryharper84-ship-it
+/.github/actions/wow-chatgpt-agent/* @gregoryharper84-ship-it
+/.github/actions/wow-claude-agent/* @gregoryharper84-ship-it
+/.github/CODEOWNERS @gregoryharper84-ship-it

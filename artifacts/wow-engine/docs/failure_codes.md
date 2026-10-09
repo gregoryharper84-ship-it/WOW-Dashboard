@@ -78,6 +78,37 @@ The following proof-validation details remain underneath `TEAM_EVENT_SPECIALIST_
 
 The following existing statuses remain authoritative in their owning modules and are intentionally not collapsed into the generic codes above: `NO_CONFIGURED_DISCOVERY_FEED`, `PROVIDER_REQUEST_FAILED`, `PROVIDER_RATE_LIMITED`, `PROVIDER_SCHEMA_FAILURE`, `DISCOVERY_BUDGET_EXHAUSTED`, `EVENT_WRONG_DATE`, `EVENT_STARTED_OR_FINAL`, `EVENT_CANCELLED_OR_POSTPONED`, and `EVENT_IDENTITY_UNRESOLVED`.
 
+## Agent identity and protection policy codes (incident #1550, parent #1540)
+
+Emitted by `artifacts/wow-engine/v17/agent_identity_policy.py evaluate` against a read-only snapshot of repository settings. Any finding makes the verdict `HOLD` / `BLOCKED_WITH_EXACT_REASON`. `PASS` is a configuration verdict only: never merge, release or probability authority. None affects sporting probability, rank or `can_execute=false`.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `IDENTITY_SNAPSHOT_INCOMPLETE` | engineering governance | The collecting credential could not read a required input (e.g. Actions variables, App installations); suffixed `:<input>:<http status>`. Re-collect with the owner's credential; never treated as absent. | N/A |
+| `IDENTITY_APP_UNBOUND` | engineering governance | No App ID bound to the role (`WOW_<ROLE>_APP_ID` variable unset); suffixed `:<role>`. | N/A |
+| `IDENTITY_APP_NOT_INSTALLED` | engineering governance | Bound App ID has no installation on the repository; suffixed `:<role>`. | N/A |
+| `IDENTITY_APPS_NOT_DISTINCT` | engineering governance | Two roles are bound to the same App; QA/Release independence is impossible. | N/A |
+| `IDENTITY_PERMISSION_FORBIDDEN` | engineering governance | An agent App holds a never-grantable permission (administration, secrets, environments, …); suffixed `:<role>:<perm>:<level>`. | N/A |
+| `IDENTITY_PERMISSION_EXCESS` | engineering governance | An agent App holds a permission or level beyond its exact policy set; suffixed `:<role>:<perm>:<level>`. | N/A |
+| `IDENTITY_PERMISSION_MISSING` | engineering governance | An agent App lacks a permission its role requires; suffixed `:<role>:<perm>:<level>`. | N/A |
+| `IDENTITY_INSTALLATION_NOT_REPO_SCOPED` | engineering governance | App installed on all repositories instead of only this one; suffixed `:<role>`. | N/A |
+| `IDENTITY_AI_CREDENTIAL_CAN_MERGE` | engineering governance | The AI runtime credential can merge PRs (non-mutating all-zero-SHA merge probe was authorized). | N/A |
+| `IDENTITY_AI_CREDENTIAL_UNMEASURED` | engineering governance | AI runtime merge capability was not measured; never assumed safe. | N/A |
+| `IDENTITY_AI_CREDENTIAL_IS_OWNER_USER` | engineering governance | The AI runtime acts as the owner's user account, so its actions are indistinguishable from the owner's. | N/A |
+| `PROTECTION_CODEOWNERS_MISSING` | engineering governance | No `.github/CODEOWNERS` on the default branch. | N/A |
+| `PROTECTION_CODEOWNERS_UNCOVERED` | engineering governance | A trust-root path, or a NEW workflow/action/script probe, is not owned by the owner under last-match-wins semantics; suffixed `:<path>`. | N/A |
+| `PROTECTION_RULESET_MISSING` | engineering governance | No active branch ruleset targets the default branch. | N/A |
+| `PROTECTION_PULL_REQUEST_RULE_MISSING` | engineering governance | Active ruleset lacks a pull-request rule. | N/A |
+| `PROTECTION_CODE_OWNER_REVIEW_NOT_REQUIRED` | engineering governance | Code-owner review not required, so trust-root changes need no owner approval. | N/A |
+| `PROTECTION_LAST_PUSH_APPROVAL_NOT_REQUIRED` | engineering governance | Approval of the most recent push not required; a post-approval push could slip through. | N/A |
+| `PROTECTION_STALE_REVIEWS_NOT_DISMISSED` | engineering governance | Approvals survive new pushes. | N/A |
+| `PROTECTION_FORCE_PUSH_ALLOWED` | engineering governance | No non-fast-forward rule on the default branch. | N/A |
+| `PROTECTION_DELETION_ALLOWED` | engineering governance | No deletion rule on the default branch. | N/A |
+| `PROTECTION_CHECKS_NOT_STRICT` | engineering governance | Required checks are not strict (head need not be up to date with base). | N/A |
+| `PROTECTION_CHECK_MISSING` | engineering governance | A required regression, QA or Release check is absent; suffixed `:<check>`. | N/A |
+| `PROTECTION_CHECK_NOT_SOURCE_PINNED` | engineering governance | QA/Release check is not pinned to its own App's integration_id, so another principal could satisfy it; suffixed `:<check>`. | N/A |
+| `PROTECTION_BYPASS_PRESENT` | engineering governance | Ruleset has any bypass actor; while AI acts as the owner user, a bypass is an AI bypass; suffixed `:<type>:<id>`. | N/A |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
