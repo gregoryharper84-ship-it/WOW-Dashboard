@@ -77,8 +77,23 @@ def gather(repo: str, pr_number: int, expected_head: str, *, fetch: Fetch = gh_f
         "changed_files": pr.get("changed_files"),
     }
     files = _paged(fetch, f"repos/{repo}/pulls/{pr_number}/files", None, errors, "FILES")
-    ev["files"] = [f.get("filename") for f in files]
-    if isinstance(ev["pr"]["changed_files"], int) and len(ev["files"]) < ev["pr"]["changed_files"]:
+    # Both ends of a rename are security-relevant. A protected source path
+    # renamed outside its protected prefix must still require owner approval.
+    # Track the number of PR file records separately: including rename origins
+    # must not disguise an incomplete paginated file inventory.
+    ev["files"] = []
+    for entry in files:
+        if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
+            errors.append("FILES_PATH_INVALID")
+            continue
+        ev["files"].append(entry["filename"])
+        if entry.get("status") == "renamed" or "previous_filename" in entry:
+            origin = entry.get("previous_filename")
+            if isinstance(origin, str) and origin:
+                ev["files"].append(origin)
+            else:
+                errors.append("FILES_RENAME_ORIGIN_MISSING")
+    if isinstance(ev["pr"]["changed_files"], int) and len(files) < ev["pr"]["changed_files"]:
         errors.append("FILES_TRUNCATED")
     head = ev["pr"]["head_sha"] or expected_head
     runs = _paged(fetch, f"repos/{repo}/commits/{head}/check-runs", "check_runs", errors, "CHECK_RUNS")
