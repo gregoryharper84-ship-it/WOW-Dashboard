@@ -470,3 +470,19 @@ def test_every_phase_c_code_is_registered():
     section = registry.split("## Independent QA and Release Authority check codes", 1)[1].split("\n## ", 1)[0]
     registered = set(re.findall(r"^\| `([A-Z_]+)` \|", section, re.M))
     assert emitted == registered, (emitted - registered, registered - emitted)
+
+
+# Credential isolation regression: GitHub Environments must be owner-configured
+# to allow only main. The workflow binds the job to that environment; the
+# environment's actual branch restriction is verified separately in GitHub.
+def test_each_app_secret_is_isolated_by_main_only_environment():
+    for workflow, environment, app_id, secret in (
+        (QA_WF, "wow-qa", "WOW_QA_APP_ID", "WOW_QA_APP_PRIVATE_KEY"),
+        (REL_WF, "wow-release", "WOW_RELEASE_APP_ID", "WOW_RELEASE_APP_PRIVATE_KEY"),
+    ):
+        source = workflow.read_text()
+        assert "    environment: " + environment + "\\n" in source
+        assert "ref: main" in source
+        assert "vars." + app_id in source
+        assert "secrets." + secret in source
+        assert "secrets.WOW_QA_APP_PRIVATE_KEY" not in source if environment == "wow-release" else "secrets.WOW_RELEASE_APP_PRIVATE_KEY" not in source
