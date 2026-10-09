@@ -71,3 +71,10 @@ def test_temporary_owner_bridge_fences_current_main_and_review_drift():
     assert "BASE_MAIN_SHA=$MAIN_SHA" in text
     assert "OWNER_BRIDGE_MAIN_MOVED_DURING_REVIEW" in text
     assert "/compare/${MAIN_SHA}...${EXPECTED_HEAD_SHA}" in text
+
+
+def test_temporary_owner_bridge_binds_to_open_referenced_incident():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "OWNER_BRIDGE_INCIDENT_NOT_OPEN" in text
+    assert "OWNER_BRIDGE_PR_INCIDENT_LINK_MISSING" in text
+    assert "grep -Eq" in text
