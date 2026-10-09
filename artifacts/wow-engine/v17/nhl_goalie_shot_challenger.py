@@ -184,8 +184,8 @@ def augment_rows(
 ) -> tuple[list[BinaryTrainingRow], list[BinaryTrainingRow]]:
     """Build prior-only features. Hold updates until every same-start game is scored."""
     universe = {g.game_id for g in games}
-    if len(universe) != len(games) or set(boxes) != universe:
-        raise NHLCandidateError("NHL_BOX_GAME_RECONCILIATION_FAILED", "missing, duplicated or extra game")
+    if len(universe) != len(games) or not set(boxes).issubset(universe):
+        raise NHLCandidateError("NHL_BOX_GAME_RECONCILIATION_FAILED", "duplicated or unknown game")
     v1 = {r.event_id: r for r in v1_rows}
     if len(v1) != len(v1_rows):
         raise NHLCandidateError("NHL_V1_IDENTITY_DUPLICATE", "duplicate reconstructed event")
@@ -198,7 +198,9 @@ def augment_rows(
     for start_key in sorted({g.event_start_time for g in ordered}):
         batch = [g for g in ordered if g.event_start_time == start_key]
         for game in batch:
-            b = boxes[game.game_id]
+            b = boxes.get(game.game_id)
+            if b is None:
+                continue  # explicit coverage gap; neither candidate trains on this event
             if (b.season, b.home, b.away) != (game.season_id, game.home_team, game.away_team):
                 raise NHLCandidateError("NHL_BOX_IDENTITY_MISMATCH", game.game_id)
             prior = v1.get(game.game_id)
@@ -230,7 +232,9 @@ def augment_rows(
                 features={**prior.features, **extra}, source_manifest_sha256=manifest)
         # Same-time batch never observes any other game's result.
         for game in batch:
-            b = boxes[game.game_id]
+            b = boxes.get(game.game_id)
+            if b is None:
+                continue  # do not invent past boxscore-derived history
             home, away = (game.season_id, game.home_team), (game.season_id, game.away_team)
             if home == away or home in last_start and last_start[home] >= _aware(game.event_start_time):
                 raise NHLCandidateError("NHL_GAME_TIME_CONFLICT", game.game_id)
@@ -247,7 +251,7 @@ def augment_rows(
                 last_start[key] = _aware(game.event_start_time)
     common = [r for r in v1_rows if r.event_id in created]
     enriched = [created[r.event_id] for r in common]
-    if len(common) < 300 or len(common) != len(v1_rows):
+    if len(common) < 300 or len(common) != len(enriched):
         raise NHLCandidateError("NHL_COMPARISON_INTERSECTION_INCOMPLETE", str(len(common)))
     return common, enriched
 
@@ -292,6 +296,8 @@ def replay(games: Sequence[NHLGame], boxes: Mapping[str, Box], *, bootstrap: int
     return {
         "status": "ADVISORY_RESEARCH_ONLY", "spec_version": SPEC_VERSION,
         "source": "NHL_PUBLIC_WEB_API", "goalie_status": "PROJECTED", "boxscores": len(boxes),
+        "eligible_v1_rows": len(v1_rows), "covered_intersection_rows": len(common),
+        "excluded_v1_rows_missing_box": len(v1_rows) - len(common),
         "common_rows": len(common), "test_n": len(y),
         "v1_dataset_hash": v1.dataset_hash, "v2_dataset_hash": v2.dataset_hash,
         "v1": s1, "v2": s2,
