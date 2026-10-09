@@ -1,0 +1,8 @@
+# WOW owner release signer (trust root). Fail closed until bootstrapped.
+#
+# Exactly one line, added by the repository owner from their own computer:
+#   wow-owner namespaces="wow-release" ssh-ed25519 AAAA... owner@device
+# Generate once (keep the private key off every agent-reachable machine/folder):
+#   ssh-keygen -t ed25519 -f ~/.ssh/wow_owner_release -C wow-owner-release
+#   (or -t ed25519-sk for a hardware key; always set a passphrase)
+# Changing this file is an owner-only trust-root change.
