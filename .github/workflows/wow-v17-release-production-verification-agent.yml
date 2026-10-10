@@ -153,6 +153,59 @@ jobs:
             exit 1
           }
 
+      - name: Record exact-head governance denial without approval
+        # Publish a typed diagnostic even when the deterministic gate denies.
+        # This NEVER turns a non-green governance check into an approval.
+        if: ${{ failure() && steps.pr.outputs.number != '' && steps.merged.outputs.head_sha != '' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
+          MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '.check_runs')
+          gate=$(jq -cr '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first // {}' <<<"$checks")
+          gate_status=$(jq -r '.status // "MISSING"' <<<"$gate")
+          gate_conclusion=$(jq -r '.conclusion // "NONE"' <<<"$gate")
+          gate_url=$(jq -r '.details_url // ""' <<<"$gate")
+          # The only ACCEPTABLE completed gate is success. Record every
+          # other state as a hold and preserve the original failing job.
+          [ "$gate_status" != "completed" ] || [ "$gate_conclusion" != "success" ] || {
+            echo "RELEASE_GOVERNANCE_DIAGNOSTIC_NO_DENIAL" >&2
+            exit 1
+          }
+          diagnostic=$(jq -nc \
+            --arg head "$HEAD_SHA" \
+            --arg merge "$MERGE_SHA" \
+            --arg status "$gate_status" \
+            --arg conclusion "$gate_conclusion" \
+            --arg url "$gate_url" \
+            '{
+              status: "BLOCKED_WITH_EXACT_REASON",
+              blocker: "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN",
+              governance_check_status: $status,
+              governance_check_conclusion: $conclusion,
+              governance_check_url: $url,
+              governed_pr_head_sha: $head,
+              protected_main_merge_sha: $merge,
+              acceptance: "NOT_VERIFIED",
+              probability_publishable: false,
+              can_execute: false,
+              next_action: "Inspect the exact-head trusted governance producer and independently resolve any QA/Release denial. Do not override or self-approve the gate."
+            }')
+          {
+            echo "## WOW V17 Post-Merge Governance Hold"
+            echo
+            echo '~~~json'
+            echo "$diagnostic"
+            echo '~~~'
+          } > "$RUNNER_TEMP/governance-hold.md"
+          cat "$RUNNER_TEMP/governance-hold.md" >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/governance-hold.md"
+
       - name: Resolve trusted exact-head governance artifact
         if: steps.pr.outputs.number != ''
         id: artifact
