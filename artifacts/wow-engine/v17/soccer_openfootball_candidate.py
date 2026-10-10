@@ -173,7 +173,12 @@ def build_training_rows(matches: list[dict[str, Any]], *, competition: str) -> t
         histories[away].append({"event_id": event_id, "start": start, "points": ap, "goal_diff": away_goals - home_goals})
     if len(rows) < 500:
         raise SoccerCandidateUnavailable("SOCCER_CANDIDATE_SAMPLE_INSUFFICIENT", f"competition={competition};rows={len(rows)}")
-    return rows, metadata
+    # Same-kickoff matches were walked in team-name order, but the multiclass
+    # lifecycle requires (event_start_time, event_id) order. Features use only
+    # strictly earlier matches and simultaneous matches never share a team, so
+    # reordering ties leaves every row's features unchanged.
+    order = sorted(range(len(rows)), key=lambda i: (rows[i].event_start_time, rows[i].event_id))
+    return [rows[i] for i in order], [metadata[i] for i in order]
 
 
 def _persist_rows(client: Any, competition: str, rows: list[MulticlassTrainingRow], metadata: list[dict[str, Any]]) -> None:
