@@ -92,3 +92,44 @@ def test_prefix_school_history_is_not_used_for_absent_school():
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         build_forward_matchup_features(events, target_event=target)
     assert exc.value.code == "SPREAD_FORWARD_HISTORY_INSUFFICIENT"
+
+
+@pytest.mark.parametrize("incoming,forbidden", [
+    ("Kansas St Wildcats", "Kansas"),
+    ("Michigan St Spartans", "Michigan"),
+    ("Oklahoma St Cowboys", "Oklahoma"),
+    ("Washington St Cougars", "Washington"),
+    ("Ohio St Buckeyes", "Ohio"),
+    ("Miami OH RedHawks", "Miami"),
+    ("Miami RedHawks", "Miami"),
+    ("Kansas St", "Kansas"),
+    ("Michigan St", "Michigan"),
+])
+def test_abbreviated_or_ambiguous_school_never_uses_wrong_history(incoming, forbidden):
+    known = ("Kansas", "Kansas State", "Michigan", "Michigan State",
+             "Oklahoma", "Oklahoma State", "Washington", "Washington State",
+             "Ohio", "Ohio State", "Miami", "Miami (OH)")
+    assert _resolve_history_team(incoming, known) != forbidden
+
+
+def test_verified_short_school_mascots_resolve_without_prefix_guessing():
+    known = ("UCLA", "Utah", "Iowa", "Iowa State", "Duke", "Ohio", "Ohio State")
+    for incoming, expected in (
+        ("UCLA Bruins", "UCLA"),
+        ("Utah Utes", "Utah"),
+        ("Iowa Hawkeyes", "Iowa"),
+        ("Duke Blue Devils", "Duke"),
+        ("Ohio Bobcats", "Ohio"),
+    ):
+        assert _resolve_history_team(incoming, known) == expected
+    assert _resolve_history_team("Iowa State Cyclones", known) != "Iowa"
+
+
+def test_unverified_team_name_does_not_borrow_prefix_history_end_to_end():
+    events = _events("Kansas", "Oklahoma")
+    target = {"event_id": "t", "event_start_time": "2026-10-10T17:00:00+00:00",
+              "home_team": "Kansas St Wildcats", "away_team": "Oklahoma Sooners",
+              "season": 2026}
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        build_forward_matchup_features(events, target_event=target)
+    assert exc.value.code == "SPREAD_FORWARD_HISTORY_INSUFFICIENT"
