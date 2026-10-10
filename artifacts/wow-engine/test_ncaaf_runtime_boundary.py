@@ -10,6 +10,20 @@ from fastapi import HTTPException
 import api_ncaaf_acceptance as api
 
 
+class _WarmPermit:
+    def __init__(self):
+        self.releases = 0
+
+    def release(self):
+        self.releases += 1
+
+
+def _stub_warm_admission(monkeypatch):
+    permit = _WarmPermit()
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", lambda _: permit)
+    return permit
+
+
 def test_readiness_reports_external_and_model_blockers(monkeypatch):
     monkeypatch.delenv("CFBD_API_KEY", raising=False)
     monkeypatch.setattr(api, "_safe_count", lambda table: 0)
@@ -142,6 +156,7 @@ def test_background_readiness_preserves_responsive_payload_semantics(monkeypatch
 
 
 def test_spread_warm_staggers_then_recovers_from_transient_failures(monkeypatch):
+    _stub_warm_admission(monkeypatch)
     sleeps = []
     attempts = []
     monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "1")
@@ -182,6 +197,7 @@ def test_spread_warm_staggers_then_recovers_from_transient_failures(monkeypatch)
 
 
 def test_spread_warm_stops_after_first_success(monkeypatch):
+    _stub_warm_admission(monkeypatch)
     sleeps = []
     monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
 
@@ -212,6 +228,7 @@ def test_spread_warm_stops_after_first_success(monkeypatch):
 
 
 def test_spread_warm_does_not_retry_deterministic_failure(monkeypatch):
+    _stub_warm_admission(monkeypatch)
     attempts = []
     monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
 
@@ -235,6 +252,7 @@ def test_spread_warm_does_not_retry_deterministic_failure(monkeypatch):
 
 
 def test_spread_warm_retries_exact_postgrest_schema_cache_failure(monkeypatch):
+    _stub_warm_admission(monkeypatch)
     attempts = []
     sleeps = []
     monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
@@ -299,3 +317,91 @@ def test_spread_warm_status_read_is_process_local_and_db_free(monkeypatch):
         "attempt": 1,
         "max_attempts": 3,
     }
+
+
+def test_spread_warm_busy_never_opens_db(monkeypatch):
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", lambda _: None)
+    monkeypatch.setattr(api, "_db_client", lambda: (_ for _ in ()).throw(AssertionError("DB not permitted")))
+    with pytest.raises(api.memory_admission.HeavyJobDeferred) as exc:
+        api._warm_ncaaf_spread_under_heavy_slot()
+    assert exc.value.code == "HEAVY_JOB_BUSY"
+    assert exc.value.receipt()["can_execute"] is False
+
+
+def test_spread_warm_pressure_is_typed_and_never_builds(monkeypatch):
+    monkeypatch.setenv("WOW_NCAAF_SPREAD_WARM_STARTUP_DELAY_SECONDS", "0")
+    intervals = []
+    attempts = []
+
+    async def fake_sleep(seconds):
+        intervals.append(float(seconds))
+
+    def defer(operation):
+        attempts.append(operation)
+        raise api.memory_admission.HeavyJobDeferred(
+            code="MEMORY_PRESSURE",
+            operation=operation,
+            detail={"retry_after_seconds": 15.0},
+        )
+
+    monkeypatch.setattr(api.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", defer)
+    monkeypatch.setattr(api, "_db_client", lambda: (_ for _ in ()).throw(AssertionError("DB never accessed")))
+    asyncio.run(api._warm_ncaaf_spread_forward_context_after_startup())
+    assert attempts == ["NCAAF_SPREAD_FORWARD_WARM"] * 3
+    assert intervals == [15.0, 30.0]
+    receipt = api.get_ncaaf_spread_forward_warm_status()
+    assert receipt["status"] == "DEFERRED"
+    assert receipt["error_code"] == "MEMORY_PRESSURE"
+    assert receipt["attempt"] == 3
+    assert receipt["probability_publishable"] is False
+    assert receipt["can_execute"] is False
+
+
+def test_spread_warm_slot_spans_db_and_research_then_releases(monkeypatch):
+    permit = _WarmPermit()
+    events = []
+    monkeypatch.setattr(
+        api.memory_admission,
+        "try_acquire_heavy_job",
+        lambda op: (events.append(("admitted", op)), permit)[1],
+    )
+    monkeypatch.setattr(api, "_db_client", lambda: (events.append(("db", None)), "client")[1])
+    monkeypatch.setattr(
+        api, "warm_ncaaf_forward_context",
+        lambda client: (events.append(("warm", client)), {"status": "READY"})[1],
+    )
+    assert api._warm_ncaaf_spread_under_heavy_slot()["status"] == "READY"
+    assert events == [
+        ("admitted", "NCAAF_SPREAD_FORWARD_WARM"),
+        ("db", None),
+        ("warm", "client"),
+    ]
+    assert permit.releases == 1
+
+
+def test_spread_warm_exception_releases_heavy_slot(monkeypatch):
+    permit = _stub_warm_admission(monkeypatch)
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(
+        api, "warm_ncaaf_forward_context",
+        lambda _: (_ for _ in ()).throw(ValueError("corpus stale")),
+    )
+    with pytest.raises(ValueError, match="corpus stale"):
+        api._warm_ncaaf_spread_under_heavy_slot()
+    assert permit.releases == 1
+
+
+def test_spread_warm_cannot_overlap_scout_heavy_slot(monkeypatch):
+    mutex = api.memory_admission._HEAVY_JOB_LOCK
+    assert mutex.acquire(blocking=False)
+    try:
+        monkeypatch.setattr(
+            api, "_db_client",
+            lambda: (_ for _ in ()).throw(AssertionError("corpus must not load")),
+        )
+        with pytest.raises(api.memory_admission.HeavyJobDeferred) as exc:
+            api._warm_ncaaf_spread_under_heavy_slot()
+        assert exc.value.code == "HEAVY_JOB_BUSY"
+    finally:
+        mutex.release()
