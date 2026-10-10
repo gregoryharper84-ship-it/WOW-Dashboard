@@ -26,6 +26,9 @@ ACTIVE_WORKFLOWS = frozenset({
     "wow-v17-claude-engineering-worker",
     "wow-v17-engineering-provider-dispatcher",
 })
+TRUSTED_WORKFLOW_PATHS = frozenset(
+    f".github/workflows/{name}.yml" for name in ACTIVE_WORKFLOWS
+)
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
@@ -87,14 +90,87 @@ class GitHubTransport:
         )
 
 
-def active_engineering_workflow(client: GitHubTransport) -> bool:
-    """Fail closed when GitHub could not enumerate the complete active run set."""
+
+def _canonical_active_workflow_path(path: str) -> str:
+    """Accept only GitHub's documented optional @refs/... workflow suffix."""
+    if "@" not in path:
+        return path
+    workflow, marker, ref = path.partition("@")
+    if (not workflow or not marker or not ref.startswith("refs/")
+            or len(ref) <= len("refs/") or "@" in ref
+            or any(char.isspace() for char in ref)):
+        raise RuntimeError("ACTIVE_WORKFLOW_REF_INVALID")
+    return workflow
+
+
+def active_engineering_workflow(
+    client: GitHubTransport,
+    candidate: dict[str, Any] | None = None,
+    manifest: dict[str, Any] | None = None,
+) -> bool:
+    """Admit only nonoverlapping known writers; malformed provenance blocks."""
+    import re
+
+    active: list[dict[str, Any]] = []
     for state in ("queued", "in_progress", "waiting", "requested"):
         result = client.get(f"actions/runs?status={state}&per_page=100")
-        runs = result.get("workflow_runs")
-        if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
+        if not isinstance(result, dict):
+            raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+        runs, total = result.get("workflow_runs"), result.get("total_count")
+        if (not isinstance(runs, list) or isinstance(total, bool)
+                or not isinstance(total, int) or total != len(runs)):
             raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(run.get("name") in ACTIVE_WORKFLOWS for run in runs):
+        for run in runs:
+            if not isinstance(run, dict) or not isinstance(run.get("path"), str):
+                raise RuntimeError("ACTIVE_WORKFLOW_IDENTITY_INCOMPLETE")
+            run_path = _canonical_active_workflow_path(run["path"])
+            title = str(run.get("display_title") or run.get("name") or "")
+            # Real provider titles start "WOW V17 provider source=..." and
+            # may contain a nested source lease/incident pair. A forged
+            # lookalike name on a different path must never be admitted as
+            # an unrelated job: it is an unresolved writer, not an idle lane.
+            claimed_worker = (
+                any(title.startswith(name) for name in ACTIVE_WORKFLOWS)
+                or title.startswith("WOW V17 provider source=")
+            )
+            if run_path in TRUSTED_WORKFLOW_PATHS or claimed_worker:
+                active.append(run)
+    if candidate is None:
+        return bool(active)
+    if not active:
+        return False
+    if manifest is None:
+        raise ValueError("ACTIVE_RUN_MANIFEST_REQUIRED")
+    entries = {int(e["issue_number"]): e for e in manifest["restoration"] + manifest["acceleration"]}
+    candidate_keys = set(candidate["conflict_keys"])
+    candidate_lease = str(candidate.get("lease_group") or "GLOBAL")
+    for run in active:
+        path = _canonical_active_workflow_path(run["path"])
+        if path not in TRUSTED_WORKFLOW_PATHS or run.get("head_branch") != "main":
+            return True  # Untrusted lookalike or wrong-branch provenance.
+        title = str(run.get("display_title") or run.get("name") or "")
+        # Provider workflow_run names can carry TWO identity pairs: the
+        # source worker and the target dispatch. Treat disagreement, AUTO,
+        # a partial pair or a third writer as unknown GLOBAL ownership;
+        # never infer disjoint admission from only the first substring.
+        identities = re.findall(
+            r"(?:^|\s)lease=([A-Za-z0-9_-]+)\s+incident=([0-9]+|AUTO)(?=\s|$)",
+            title,
+        )
+        if (not identities or len(identities) > 2
+                or len(set(identities)) != 1 or identities[0][1] == "AUTO"
+                or title.count("lease=") != len(identities)
+                or title.count("incident=") != len(identities)):
+            return True
+        lease, incident = identities[0][0], int(identities[0][1])
+        if incident not in entries:
+            return True
+        occupied = entries[incident]
+        if lease != str(occupied.get("lease_group") or "GLOBAL"):
+            return True
+        if incident == int(candidate["issue_number"]) or lease == candidate_lease:
+            return True
+        if candidate_keys & set(occupied["conflict_keys"]):
             return True
     return False
 
@@ -125,35 +201,48 @@ def next_approved_issue(
 
 def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
     result = client.get("pulls?state=open&per_page=100")
-    # GitHub returns a list for this endpoint; our transport also supports lists.
     if not isinstance(result, list):
         raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
-    if len(result) == 100:
+    if len(result) >= 100:
         raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
     import re
-    pattern = re.compile(r"(?im)^Incident:\s*(?:\x60)?#?" + re.escape(str(issue_number)) + r"(?:\x60)?\s*$")
-    return any(pattern.search(str(pr.get("body") or "")) for pr in result)
+    number = re.escape(str(issue_number))
+    # Exact ownership only. Generic analysis mentioning #123 is not a claim.
+    incident = re.compile(
+        rf"(?im)^\s*Incident\s*:\s*(?:`#?{number}`|#?{number})\s*$"
+    )
+    references = re.compile(
+        rf"(?im)^\s*(?:Refs?|Fixes|Closes|Resolves)\b[^\n]*?(?<!\w)"
+        rf"(?:{re.escape(REPO)})?#{number}(?!\d)"
+    )
+    return any(
+        bool(incident.search(str(pr.get("body") or ""))
+             or references.search(str(pr.get("body") or "")))
+        for pr in result
+    )
 
 
 def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str, Any]) -> str:
     """Atomic admission across resident replicas; GitHub worker remains the writer."""
     if not redis_client.set(LOCK_KEY, socket.gethostname(), nx=True, ex=180):
         return "ANOTHER_RESIDENT_SUPERVISOR_OWNS_LEASE"
-    if redis_client.exists(COOLDOWN_KEY):
-        return "RECENT_DISPATCH_COOLDOWN"
-    if active_engineering_workflow(client):
-        return "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
     # An incident already at PR/review or retry cap must not starve every
     # other approved incident. Keep one shared writer and do not duplicate PRs.
     skipped: set[int] = set()
     has_pending_pr = False
     has_attempt_cap = False
     needs_p1_bootstrap = False
+    has_active_conflict = False
+    has_cooldown = False
     while True:
         issue = next_approved_issue(
             client, manifest, exclude_issue_numbers=frozenset(skipped),
         )
         if issue is None:
+            if has_active_conflict:
+                return "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+            if has_cooldown:
+                return "RECENT_DISPATCH_COOLDOWN"
             if has_attempt_cap:
                 return "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
             if has_pending_pr:
@@ -171,6 +260,14 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
             needs_p1_bootstrap = True
             skipped.add(issue_number)
             continue
+        if redis_client.exists(COOLDOWN_KEY + ":" + str(issue_number)):
+            has_cooldown = True
+            skipped.add(issue_number)
+            continue
+        if active_engineering_workflow(client, issue, manifest):
+            has_active_conflict = True
+            skipped.add(issue_number)
+            continue
         if pending_pr_for_issue(client, issue_number):
             has_pending_pr = True
             skipped.add(issue_number)
@@ -185,7 +282,7 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
         client.dispatch(issue)
         redis_client.incr(attempts_key)
         redis_client.expire(attempts_key, 86400)
-        redis_client.set(COOLDOWN_KEY, str(issue_number), ex=900)
+        redis_client.set(COOLDOWN_KEY + ":" + str(issue_number), str(issue_number), ex=900)
         return "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
 
 
