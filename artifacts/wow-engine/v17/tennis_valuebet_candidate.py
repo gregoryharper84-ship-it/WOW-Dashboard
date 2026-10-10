@@ -208,7 +208,8 @@ def _persist_rows(client: Any, tour: str, family: str, rows: list[BinaryTraining
                 "market_features_used": False, "can_execute": False,
             })
         client.table("wow_d1_training_rows").upsert(
-            payloads, on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256"
+            payloads, on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
 
 
@@ -246,7 +247,7 @@ def train_all(client: Any, *, training_code_sha: str) -> dict[str, Any]:
             "source_review_status": "CC_BY_4_0_PROVENANCE_READY", "lifecycle_state": "CANDIDATE",
             "promoted": False, "active": False, "automatic_certification": False,
             "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
-        }, on_conflict="model_artifact_version").execute()
+        }, on_conflict="model_artifact_version", ignore_duplicates=True).execute()
         output.append({
             "tour": tour, "model_artifact_version": version, "eligible_rows": len(rows),
             "metrics": metrics, "research_screen_pass": candidate.research_screen_pass,
