@@ -6,6 +6,7 @@ fake GitHub API. This does not approve/merge/deploy or publish a probability.
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -123,3 +124,84 @@ def test_release_observer_still_rejects_any_failed_required_workflow(tmp_path):
     assert result.returncode != 0
     assert "RELEASE_REQUIRED_WORKFLOW_NOT_GREEN" in result.stderr
     assert polls == 0
+
+
+
+def _publish_step():
+    wf = yaml.safe_load(WORKFLOW.read_text())
+    steps = wf["jobs"]["release-verification"]["steps"]
+    match = [s for s in steps if s.get("name") == "Publish release verification receipt"]
+    assert len(match) == 1
+    return match[0]["run"]
+
+
+def _publish_receipt(tmp_path, *, outcome, result):
+    tool = tmp_path / "comment-tools"
+    tool.mkdir()
+    gh = tool / "gh"
+    gh.write_text("#!/bin/sh\nset -eu\n[ \"$1\" = pr ] && [ \"$2\" = comment ] && [ \"$6\" = --body-file ]\ncp \"$7\" \"$GH_CAPTURE\"\n")
+    gh.chmod(0o755)
+    capture = tmp_path / "comment.md"
+    summary = tmp_path / "summary.md"
+    env = dict(
+        os.environ,
+        AGENT_OUTCOME=outcome,
+        RESULT=result,
+        GH_CAPTURE=str(capture),
+        GH_TOKEN="test-token-no-network",
+        GITHUB_REPOSITORY="gregoryharper84-ship-it/WOW-Dashboard",
+        GITHUB_STEP_SUMMARY=str(summary),
+        RUNNER_TEMP=str(tmp_path),
+        PR_NUMBER="1555",
+        HEAD_SHA="a"*40,
+        MERGE_SHA="b"*40,
+        PATH=str(tool)+os.pathsep+os.environ["PATH"],
+    )
+    process = subprocess.run(
+        ["bash", "-c", _publish_step()],
+        env=env, capture_output=True, text=True, timeout=15,
+    )
+    return process, capture.read_text() if capture.exists() else ""
+
+
+def test_failed_independent_agent_gets_typed_nonapproval_receipt(tmp_path):
+    result, receipt = _publish_receipt(tmp_path, outcome="failure", result="")
+    assert result.returncode == 0, result.stderr
+    data = json.loads(receipt.split("~~~json\n", 1)[1].split("\n~~~", 1)[0])
+    assert data["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert data["blocker"] == "RELEASE_OBSERVABILITY_AGENT_FAILED"
+    assert data["acceptance"] == "NOT_VERIFIED"
+    assert data["production_sha"] == ""
+    assert data["can_execute"] is False
+    assert "governed_pr_head_sha: `" + "a"*40 + "`" in receipt
+    # continue-on-error is solely for posting the receipt, not for green CI.
+    wf = yaml.safe_load(WORKFLOW.read_text())
+    steps = wf["jobs"]["release-verification"]["steps"]
+    agent = next(s for s in steps if s.get("id") == "release_agent")
+    gate = next(s for s in steps if s.get("name") == "Fail closed if release-observability agent failed")
+    assert agent["continue-on-error"] is True
+    assert "steps.release_agent.outcome == 'failure'" in gate["if"]
+    assert "exit 1" in gate["run"]
+    assert "always()" in next(s for s in steps if s.get("name") == "Publish release verification receipt")["if"]
+
+
+def test_pending_agent_receipt_is_persisted_without_promotion(tmp_path):
+    payload = {
+        "status": "PENDING", "main_sha": "b"*40,
+        "production_sha": "", "acceptance": "NOT_VERIFIED",
+        "reconciliation": "LIVE_REVISION_UNKNOWN",
+        "blocker": "DEPLOYED_SHA_UNAVAILABLE",
+        "next_action": "Collect independent exact-deployment evidence.",
+    }
+    result, receipt = _publish_receipt(tmp_path, outcome="success", result=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    assert '"status": "PENDING"' in receipt
+    assert "can_execute=false" in receipt
+
+
+@pytest.mark.parametrize("bad_result", ["{}", "not-json", '{"status":"PRODUCTION_VERIFIED"}'])
+def test_malformed_model_output_must_not_publish_success_receipt(tmp_path, bad_result):
+    result, receipt = _publish_receipt(tmp_path, outcome="success", result=bad_result)
+    assert result.returncode != 0
+    assert "RELEASE_OBSERVABILITY_RESULT_SCHEMA_INVALID" in result.stderr
+    assert receipt == ""
