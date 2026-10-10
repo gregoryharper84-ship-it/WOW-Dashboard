@@ -86,6 +86,8 @@ def test_forward_features_are_exact_candidate_schema_and_not_probabilities():
     assert len(result["source_manifest"]["away_prior_event_ids"]) == 4
     assert result["source_manifest"]["archived_pregame_snapshot"] is False
     assert result["source_manifest"]["market_features_used"] is False
+    assert result["features_sha256"] == result["source_manifest"]["features_sha256"]
+    assert result["features_sha256"] == _package()["features_sha256"]
     assert result["source_manifest_sha256"] == _package()["source_manifest_sha256"]
     assert result["calibrated_probability"] is None
     assert result["calibrated_lower_bound"] is None
