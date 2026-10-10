@@ -158,11 +158,12 @@ def test_all_previously_unresolved_saturday_provider_school_names(incoming, scho
 
 
 @pytest.mark.parametrize("canon_home,canon_away,provider_home,provider_away", [
+    ("Texas", "Oklahoma", "Texas Longhorns", "Oklahoma Sooners"),
     ("Oregon", "UCLA", "Oregon Ducks", "UCLA Bruins"),
     ("Kansas State", "Houston", "Kansas State Wildcats", "Houston Cougars"),
     ("Michigan State", "Illinois", "Michigan State Spartans", "Illinois Fighting Illini"),
 ])
-def test_three_remaining_incident_spread_matchups_find_real_history(
+def test_all_four_incident_spread_matchups_find_real_history(
     canon_home, canon_away, provider_home, provider_away
 ):
     events = _events(canon_home, canon_away)
