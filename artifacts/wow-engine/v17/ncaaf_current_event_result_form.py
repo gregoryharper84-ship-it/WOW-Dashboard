@@ -250,12 +250,16 @@ def current_event_feature_package_from_cfbd(
     except NCAAFEventIdentityError as exc:
         raise NCAAFForwardFeatureUnavailable(exc.code, str(exc)) from exc
 
+    # History is materialized under CFBD school names, NOT display aliases
+    # from ESPN. The official CFBD kickoff is also the point-in-time cut,
+    # avoiding a caller's tolerated 60-minute start discrepancy leaking
+    # observations from after the true start.
     return current_event_feature_package(
         games,
         official_event_id=str(resolved["event_id"]),
-        event_start_time=event_start_time,
-        home_team=home_team,
-        away_team=away_team,
+        event_start_time=str(resolved["event_start_time"]),
+        home_team=str(resolved["home_team"]),
+        away_team=str(resolved["away_team"]),
         neutral_site=neutral_site,
         canonical_identity_verified=True,
         canonical_resolution=resolved,
