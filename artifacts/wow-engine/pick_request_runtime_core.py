@@ -697,6 +697,7 @@ def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
     auto_attempted = 0
     auto_succeeded = 0
     route_blocked = 0
+    registry_infrastructure_failures = 0
     acquisition_failures = 0
     model_completed = 0
     for outcome in outcomes:
@@ -709,8 +710,11 @@ def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
             "SPECIALIST_ROUTING_UNAVAILABLE",
             "MODEL_UNAVAILABLE",
             "PROP_PROBABILITY_UNAVAILABLE",
+            *PROP_ROUTE_REGISTRY_INFRA_CODES,
         } and acquisition.get("mode") == "NOT_ATTEMPTED_ROUTE_BLOCKED":
             route_blocked += 1
+        if outcome.get("code") in PROP_ROUTE_REGISTRY_INFRA_CODES:
+            registry_infrastructure_failures += 1
         if outcome.get("code") in {
             "RUN_INVALID_ACQUISITION_INCOMPLETE",
             "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
@@ -729,6 +733,7 @@ def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
         "auto_hydration_attempted": auto_attempted,
         "auto_hydration_succeeded": auto_succeeded,
         "route_preflight_blocked": route_blocked,
+        "registry_infrastructure_failures": registry_infrastructure_failures,
         "acquisition_failures": acquisition_failures,
         "model_completed": model_completed,
         "false_global_failure_count": 0,
@@ -980,7 +985,7 @@ def install_pick_request_routes(
                         "HELD",
                         route_code,
                         detail={
-                            "terminal_label": "RESEARCH_INTEREST",
+                            "terminal_label": "REGISTRY_INFRASTRUCTURE_BLOCKED",
                             "sport": sport,
                             "stat_type": canonical_stat,
                             "specialist_invoked": False,
