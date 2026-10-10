@@ -66,6 +66,19 @@ def _bucket(count: Any) -> str:
     return "gt128"
 
 
+def _validated_count(value: Any) -> int | None:
+    """Only finite, bounded nonnegative integer counts become durable facts."""
+    if isinstance(value, bool):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if count < 0 or count > 10_000 or str(value).strip() not in {str(count), repr(count)}:
+        return None
+    return count
+
+
 def annotate_request(
     *, sport: Any = None, row_count: Any = None, batch_size: Any = None
 ) -> None:
@@ -77,6 +90,12 @@ def annotate_request(
         ctx["sport"] = _label(sport)
     if row_count is not None:
         ctx["row_count"] = _bucket(row_count)
+        ctx["row_count_annotated"] = True
+        # Authoritative validated handler metadata; never trust client-supplied
+        # X-WOW-Rows-In as actual row count when this fact is present.
+        count = _validated_count(row_count)
+        if count is not None:
+            ctx["row_count_exact"] = count
     if batch_size is not None:
         ctx["batch_size"] = _bucket(batch_size)
 
@@ -170,6 +189,10 @@ def install_interactive_latency_middleware(app: Any) -> None:
             "row_count": "unknown",
             "batch_size": "unknown",
         }
+        # ASGI request.state is shared across middleware scopes. Keep a pointer
+        # to safe, request-local labels for independently installed invocation
+        # telemetry, regardless of middleware registration order.
+        request.state.wow_interactive_latency_context = ctx
         token = _CTX.set(ctx)
         started = perf_counter()
         status_code = 500

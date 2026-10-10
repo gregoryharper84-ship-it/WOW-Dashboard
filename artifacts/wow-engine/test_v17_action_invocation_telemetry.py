@@ -378,3 +378,64 @@ def test_atomic_receipt_migration_preserves_security_and_immutability():
     assert "to service_role" in sql
     assert "from public, anon, authenticated" in sql
     assert "can_execute', false" in sql
+
+
+def test_action_invocation_uses_actual_handler_row_count_in_both_middleware_orders():
+    """Actual validated scoring metadata wins over absent/spoofed Action headers."""
+    from v17.interactive_latency_telemetry import (
+        annotate_request, install_interactive_latency_middleware,
+    )
+
+    for invocation_first in (False, True):
+        receipts = []
+        app = FastAPI()
+        if invocation_first:
+            install_action_invocation_middleware(app, db_client_fn=lambda: _DB(receipts))
+            install_interactive_latency_middleware(app)
+        else:
+            install_interactive_latency_middleware(app)
+            install_action_invocation_middleware(app, db_client_fn=lambda: _DB(receipts))
+
+        @app.post("/score-pick-request")
+        def score_pick_request():
+            annotate_request(sport="NFL", row_count=3, batch_size=3)
+            return {"rows": [], "can_execute": False}
+
+        with TestClient(app) as client:
+            assert client.post("/score-pick-request", json={"ignored": True}).status_code == 200
+            assert client.post(
+                "/score-pick-request",
+                headers={"X-WOW-Rows-In": "999"},
+                json={"ignored": True},
+            ).status_code == 200
+            deadline = time.monotonic() + 3
+            while len(receipts) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+        assert len(receipts) == 2
+        assert [row["rows_in"] for row in receipts] == [3, 3]
+        assert all(row["can_execute"] is False for row in receipts)
+        assert "ignored" not in repr(receipts)
+
+
+def test_invalid_handler_row_count_cannot_be_overridden_by_caller_header():
+    from v17.interactive_latency_telemetry import (
+        annotate_request, install_interactive_latency_middleware,
+    )
+    receipts = []
+    app = FastAPI()
+    install_action_invocation_middleware(app, db_client_fn=lambda: _DB(receipts))
+    install_interactive_latency_middleware(app)
+
+    @app.post("/score-pick-request")
+    def score_pick_request():
+        annotate_request(sport="NFL", row_count=-5, batch_size=1)
+        return {"can_execute": False}
+
+    with TestClient(app) as client:
+        response = client.post("/score-pick-request", headers={"X-WOW-Rows-In": "900"})
+        assert response.status_code == 200
+        deadline = time.monotonic() + 3
+        while not receipts and time.monotonic() < deadline:
+            time.sleep(0.01)
+    assert len(receipts) == 1
+    assert receipts[0]["rows_in"] is None

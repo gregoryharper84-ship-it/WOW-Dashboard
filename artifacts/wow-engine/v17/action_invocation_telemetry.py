@@ -151,6 +151,20 @@ def _rows_in(headers: Any) -> int | None:
     return value if value >= 0 else None
 
 
+def _actual_rows_in(request: Any, headers: Any) -> int | None:
+    """Read only request-local metadata set by the validated scoring handler."""
+    state = getattr(request, "state", None)
+    ctx = getattr(state, "wow_interactive_latency_context", None)
+    if isinstance(ctx, dict) and ctx.get("row_count_annotated") is True:
+        actual = ctx.get("row_count_exact")
+        if isinstance(actual, int) and not isinstance(actual, bool) and 0 <= actual <= 10_000:
+            return actual
+        # Malformed handler metadata is unknown, not caller-header truth.
+        return None
+    # Legacy calls without handler annotations may carry this optional count.
+    return _rows_in(headers)
+
+
 def _request_id(headers: Any) -> str | None:
     value = str(
         headers.get("x-wow-request-id") or headers.get("x-request-id") or ""
@@ -391,7 +405,10 @@ def install_action_invocation_middleware(
                 "caller_class": _caller_class(headers, status_code),
                 "caller_user_agent": str(headers.get("user-agent") or "")[:256] or None,
                 "request_id": _request_id(headers) or path_request_id,
-                "rows_in": _rows_in(headers),
+                # Prefer the actual validated handler count over an optional,
+                # caller-controlled header. Keep null when neither is known;
+                # never infer a batch count from HTTP success.
+                "rows_in": _actual_rows_in(request, headers),
                 "duration_ms": round(duration_ms, 3),
                 "can_execute": False,
             }
