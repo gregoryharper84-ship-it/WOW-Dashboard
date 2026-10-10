@@ -205,3 +205,96 @@ def test_malformed_model_output_must_not_publish_success_receipt(tmp_path, bad_r
     assert result.returncode != 0
     assert "RELEASE_OBSERVABILITY_RESULT_SCHEMA_INVALID" in result.stderr
     assert receipt == ""
+
+
+
+def _governance_denial_step():
+    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["release-verification"]["steps"]
+    step = next(s for s in steps if s.get("name") == "Record exact-head governance denial without approval")
+    assert "failure()" in step["if"]
+    assert step["continue-on-error"] is True  # original gate failure persists
+    return step["run"]
+
+
+def _run_denial_receipt(tmp_path, *, gate_status, conclusion):
+    """Exercise the workflow shell itself with deterministic GitHub API results."""
+    tools_dir = tmp_path / "mockbin"
+    tools_dir.mkdir()
+    gh = tools_dir / "gh"
+    gh.write_text(textwrap.dedent("""\
+        #!/usr/bin/env python3
+        import json
+        import os
+        import pathlib
+        import sys
+        args = sys.argv[1:]
+        if args[0] == "api":
+            state = os.environ["CHECK_STATUS"]
+            if state == "MISSING":
+                print("[]")
+            else:
+                verdict = os.environ["CHECK_CONCLUSION"]
+                print(json.dumps([{"name": "Trusted exact-head engineering governance",
+                                   "status": state,
+                                   "conclusion": None if verdict == "NONE" else verdict,
+                                   "details_url": "https://github.com/example/governance",
+                                   "started_at": "2026-10-10T12:00:00Z"}]))
+        elif args[:2] == ["pr", "comment"]:
+            pathlib.Path(os.environ["COMMENT_CAPTURE"]).write_text(
+                pathlib.Path(args[args.index("--body-file") + 1]).read_text()
+            )
+        else:
+            sys.exit(5)
+    """))
+    gh.chmod(0o755)
+    capture = tmp_path / "comment.txt"
+    summary = tmp_path / "summary.txt"
+    env = dict(
+        os.environ,
+        CHECK_STATUS=gate_status,
+        CHECK_CONCLUSION=conclusion,
+        COMMENT_CAPTURE=str(capture),
+        GITHUB_REPOSITORY="gregoryharper84-ship-it/WOW-Dashboard",
+        PR_NUMBER="1596",
+        HEAD_SHA="a"*40,
+        MERGE_SHA="b"*40,
+        GH_TOKEN="test-only",
+        RUNNER_TEMP=str(tmp_path),
+        GITHUB_STEP_SUMMARY=str(summary),
+        PATH=str(tools_dir)+os.pathsep+os.environ["PATH"],
+    )
+    result = subprocess.run(
+        ["bash", "-c", _governance_denial_step()],
+        env=env, text=True, capture_output=True, timeout=15,
+    )
+    return result, capture.read_text() if capture.exists() else ""
+
+
+@pytest.mark.parametrize("status,conclusion", [
+    ("completed", "failure"),
+    ("completed", "cancelled"),
+    ("in_progress", "NONE"),
+    ("MISSING", "NONE"),
+])
+def test_governance_denial_is_typed_not_approved(tmp_path, status, conclusion):
+    result, comment = _run_denial_receipt(
+        tmp_path, gate_status=status, conclusion=conclusion
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(comment.split("~~~json\n", 1)[1].split("\n~~~", 1)[0])
+    assert payload["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert payload["blocker"] == "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN"
+    assert payload["acceptance"] == "NOT_VERIFIED"
+    assert payload["probability_publishable"] is False
+    assert payload["can_execute"] is False
+    assert payload["governance_check_status"] == status
+    assert payload["governance_check_conclusion"] == conclusion
+
+
+def test_governance_diagnostic_refuses_to_mislabel_success_as_hold(tmp_path):
+    result, comment = _run_denial_receipt(
+        tmp_path, gate_status="completed", conclusion="success"
+    )
+    assert result.returncode != 0
+    assert "RELEASE_GOVERNANCE_DIAGNOSTIC_NO_DENIAL" in result.stderr
+    assert comment == ""
