@@ -30,9 +30,104 @@ concurrency:
 
 jobs:
 
+  owner-authorization:
+    name: Owner-held exact-head authorization (read-only, before QA)
+    if: >-
+      github.actor == 'gregoryharper84-ship-it' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          startsWith(github.event.comment.body, '/wow-owner-bridge ')
+        )
+      )
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: wow-release
+    outputs:
+      pr_number: ${{ steps.authorize.outputs.pr_number }}
+      head_sha: ${{ steps.authorize.outputs.head_sha }}
+      incident: ${{ steps.authorize.outputs.incident }}
+    steps:
+      - name: Prove owner-held factor before any model review
+        id: authorize
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTOR: ${{ github.actor }}
+          EVENT_PR_NUMBER: ${{ github.event.issue.number || '' }}
+          COMMENT_BODY: ${{ github.event.comment.body || '' }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number || '' }}
+          INPUT_HEAD_SHA: ${{ inputs.expected_head_sha || '' }}
+          INPUT_INCIDENT_ID: ${{ inputs.incident_id || '' }}
+          OWNER_APPROVAL: ${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}
+        run: |
+          set -euo pipefail
+          [ "$EVENT_ACTOR" = "gregoryharper84-ship-it" ] || {
+            echo "OWNER_BRIDGE_ACTOR_NOT_OWNER" >&2
+            exit 1
+          }
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            read -r command sha incident extra <<<"$COMMENT_BODY"
+            [ "$command" = "/wow-owner-bridge" ] && [ -z "${extra:-}" ] || {
+              echo "OWNER_BRIDGE_COMMENT_FORMAT_INVALID" >&2
+              exit 1
+            }
+            case "$incident" in
+              incident=*) ;;
+              *) echo "OWNER_BRIDGE_COMMENT_INCIDENT_INVALID" >&2; exit 1 ;;
+            esac
+            pr="$EVENT_PR_NUMBER"
+            head="$sha"
+            incident_id="${incident#incident=}"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            pr="$INPUT_PR_NUMBER"
+            head="$INPUT_HEAD_SHA"
+            incident_id="$INPUT_INCIDENT_ID"
+          else
+            echo "OWNER_BRIDGE_TRIGGER_NOT_ALLOWED" >&2
+            exit 1
+          fi
+          [[ "$pr" =~ ^[0-9]+$ ]] || { echo "OWNER_BRIDGE_PR_NUMBER_INVALID" >&2; exit 1; }
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "OWNER_BRIDGE_HEAD_SHA_INVALID" >&2; exit 1; }
+          [[ "$incident_id" =~ ^[0-9]+$ ]] || { echo "OWNER_BRIDGE_INCIDENT_INVALID" >&2; exit 1; }
+          # Shared GitHub actor alone is not a human authorization.
+          # Fail BEFORE starting any Claude model or merge-capable job.
+          [ -n "$OWNER_APPROVAL" ] || {
+            echo "OWNER_BRIDGE_APPROVAL_SECRET_MISSING" >&2
+            exit 1
+          }
+          [ "$OWNER_APPROVAL" = "${pr}:${head}" ] || {
+            echo "OWNER_BRIDGE_EXACT_SHA_NOT_AUTHORIZED" >&2
+            exit 1
+          }
+          {
+            echo "pr_number=$pr"
+            echo "head_sha=$head"
+            echo "incident=$incident_id"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Record rejected authorization without paying for QA
+        if: always()
+        shell: bash
+        run: |
+          echo "## Owner preauthorization receipt" >> "$GITHUB_STEP_SUMMARY"
+          echo "- result: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- workflow_run: ${{ github.run_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- approved_head: ${{ steps.authorize.outputs.head_sha || 'unresolved' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- model_review_started: false" >> "$GITHUB_STEP_SUMMARY"
+          echo "- can_execute: false" >> "$GITHUB_STEP_SUMMARY"
+
   owner-readonly-qa:
     name: Isolated read-only QA (no merge token or owner factor)
+    needs: owner-authorization
     if: >-
+      needs.owner-authorization.result == 'success' &&
       github.actor == 'gregoryharper84-ship-it' &&
       (
         github.event_name == 'workflow_dispatch' ||
@@ -60,6 +155,9 @@ jobs:
       INPUT_PR_NUMBER: ${{ inputs.pr_number || '' }}
       INPUT_HEAD_SHA: ${{ inputs.expected_head_sha || '' }}
       INPUT_INCIDENT_ID: ${{ inputs.incident_id || '' }}
+      AUTH_PR: ${{ needs.owner-authorization.outputs.pr_number }}
+      AUTH_SHA: ${{ needs.owner-authorization.outputs.head_sha }}
+      AUTH_INCIDENT: ${{ needs.owner-authorization.outputs.incident }}
     steps:
       - name: Checkout trusted main for separate QA
         uses: actions/checkout@v6
@@ -91,6 +189,10 @@ jobs:
           [[ "$pr" =~ ^[0-9]+$ ]] || exit 1
           [[ "$head" =~ ^[0-9a-f]{40}$ ]] || exit 1
           [[ "$incident_id" =~ ^[0-9]+$ ]] || exit 1
+          [ "$pr" = "$AUTH_PR" ] && [ "$head" = "$AUTH_SHA" ] && [ "$incident_id" = "$AUTH_INCIDENT" ] || {
+            echo "OWNER_BRIDGE_QA_REQUEST_AUTHORIZATION_MISMATCH" >&2
+            exit 1
+          }
           mkdir -p .owner-bridge-evidence
           gh api "/repos/$GITHUB_REPOSITORY/pulls/$pr" > .owner-bridge-evidence/pr.json
           jq -e --arg h "$head" --arg repo "$GITHUB_REPOSITORY"             '.state == "open" and .draft == false and .head.sha == $h and .base.ref == "main" and .head.repo.full_name == $repo'             .owner-bridge-evidence/pr.json >/dev/null
@@ -157,8 +259,9 @@ jobs:
 
   owner-bridge:
     name: Temporary owner exact-SHA release bridge
-    needs: owner-readonly-qa
+    needs: [owner-authorization, owner-readonly-qa]
     if: >-
+      needs.owner-authorization.result == 'success' &&
       needs.owner-readonly-qa.result == 'success' &&
       github.actor == 'gregoryharper84-ship-it' &&
       (
@@ -171,7 +274,6 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: wow-release
     env:
       EVENT_NAME: ${{ github.event_name }}
       EVENT_ACTOR: ${{ github.actor }}
@@ -180,6 +282,9 @@ jobs:
       INPUT_PR_NUMBER: ${{ inputs.pr_number || '' }}
       INPUT_HEAD_SHA: ${{ inputs.expected_head_sha || '' }}
       INPUT_INCIDENT_ID: ${{ inputs.incident_id || '' }}
+      AUTH_PR: ${{ needs.owner-authorization.outputs.pr_number }}
+      AUTH_SHA: ${{ needs.owner-authorization.outputs.head_sha }}
+      AUTH_INCIDENT: ${{ needs.owner-authorization.outputs.incident }}
 
     steps:
       - name: Checkout protected main only
@@ -194,9 +299,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          # Never expose this owner-held factor to checkout, agent QA,
-          # merge, or receipt steps. Only this local preflight may read it.
-          OWNER_APPROVAL: ${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}
         run: |
           set -euo pipefail
           [ "$EVENT_ACTOR" = "gregoryharper84-ship-it" ] || {
@@ -233,12 +335,11 @@ jobs:
           [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "OWNER_BRIDGE_HEAD_SHA_INVALID" >&2; exit 1; }
           [[ "$INCIDENT_ID" =~ ^[0-9]+$ ]] || { echo "OWNER_BRIDGE_INCIDENT_INVALID" >&2; exit 1; }
 
-          # An agent using the owner's GitHub token can appear as the same
-          # github.actor. Require the separately held environment approval
-          # for BOTH issue_comment and workflow_dispatch, never actor alone.
-          [ -n "$OWNER_APPROVAL" ] || { echo "OWNER_BRIDGE_APPROVAL_SECRET_MISSING" >&2; exit 1; }
-          expected_approval="${PR_NUMBER}:${EXPECTED_HEAD_SHA}"
-          [ "$OWNER_APPROVAL" = "$expected_approval" ] || {
+          # Authorization has already completed in the separate protected
+          # read-only job. No owner secret enters this merge-capable job.
+          [ "$PR_NUMBER" = "$AUTH_PR" ] &&
+          [ "$EXPECTED_HEAD_SHA" = "$AUTH_SHA" ] &&
+          [ "$INCIDENT_ID" = "$AUTH_INCIDENT" ] || {
             echo "OWNER_BRIDGE_EXACT_SHA_NOT_AUTHORIZED" >&2
             exit 1
           }
