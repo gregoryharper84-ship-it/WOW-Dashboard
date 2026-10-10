@@ -297,11 +297,22 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: python -m v17.ncaab_moneyline_replay <candidate_id> <verifier_sha>", file=sys.stderr)
         return 2
     from supabase import create_client
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+    # This lane accepts a dedicated SELECT-only credential, never the broad service-role key.
+    # The provider role must enforce SELECT-only access to the two frozen evidence tables.
+    key = os.getenv("NCAAB_REPLAY_READ_ONLY_KEY")
     if not os.getenv("SUPABASE_URL") or not key:
         print(json.dumps({"status": "BLOCKED_WITH_EXACT_REASON", "code": "NCAAB_REPLAY_READ_CREDENTIAL_UNAVAILABLE"}))
         return 3
-    candidate, rows, query = load_frozen_inputs(create_client(os.environ["SUPABASE_URL"], key), args[0])
+    try:
+        candidate, rows, query = load_frozen_inputs(create_client(os.environ["SUPABASE_URL"], key), args[0])
+    except NCAABReplayInputError as exc:
+        print(json.dumps({"status": "BLOCKED_WITH_EXACT_REASON", "code": exc.code}))
+        return 3
+    except Exception as exc:
+        # No exception message is emitted: provider errors can contain request metadata.
+        print(json.dumps({"status": "BLOCKED_WITH_EXACT_REASON", "code": "NCAAB_REPLAY_SOURCE_READ_FAILED",
+                          "error_type": type(exc).__name__}))
+        return 3
     receipt = verify_frozen_replay(candidate, rows, expected_candidate_id=args[0], verifier_sha=args[1], source_query=query)
     print(json.dumps(receipt, default=lambda o: dict(o) if isinstance(o, Mapping) else list(o), sort_keys=True))
     return 0 if receipt["status"] == "REPLAY_REPRODUCED" else 1
