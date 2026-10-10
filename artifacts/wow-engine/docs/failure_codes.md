@@ -163,3 +163,10 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## D1 fitted candidate partition integrity (P0 NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `D1_PARTITION_METRICS_INVALID` | D1 candidate ingestion preflight | One or more of the three fitted split metrics is supplied, but the train/calibration/test metrics or persisted partition counts are incomplete, noninteger, boolean, or nonpositive. Reject candidate before source/feature writes. | No |
+| `D1_PARTITION_COUNT_MISMATCH` | D1 candidate ingestion preflight | Candidate `training_rows`, `calibration_rows` or `test_rows` differs from the matching `validation_metrics.train_n`, `calibration_n`, or `test_n`. Reject candidate before source/feature writes. Historical records are not edited. | No |
