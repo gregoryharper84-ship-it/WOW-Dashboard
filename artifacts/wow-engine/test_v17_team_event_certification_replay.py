@@ -266,3 +266,26 @@ def test_replay_rejects_boolean_fractional_and_string_partition_counts():
         result = assess_candidate("NHL", candidate, replay_evidence_pass=True).as_dict()
         assert "CANDIDATE_PARTITIONS_INVALID" in result["blockers"]
         assert result["status"] == "CERTIFICATION_REPLAY_BLOCKED"
+
+
+def test_nhl_fitted_family_cannot_omit_all_partition_metrics():
+    for metrics in (None, {}, {"brier": 0.22}):
+        row = _candidate(
+            "NHL", model_family="NHL_REGULAR_SEASON_LOGISTIC_V1",
+            validation_metrics=metrics, source_review_status="PASS",
+        )
+        verdict = assess_candidate("NHL", row, replay_evidence_pass=True).as_dict()
+        assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in verdict["blockers"]
+        assert verdict["status"] == "CERTIFICATION_REPLAY_BLOCKED"
+        assert verdict["probability_publishable"] is False
+
+
+def test_other_legacy_family_still_requires_review_but_no_fabricated_metrics():
+    row = _candidate(
+        "NBA", model_family="NBA_LEGACY_RESEARCH_V0",
+        validation_metrics=None, source_review_status="REQUIRED",
+    )
+    verdict = assess_candidate("NBA", row).as_dict()
+    assert "CANDIDATE_PARTITION_METRICS_MISMATCH" not in verdict["blockers"]
+    assert "SOURCE_REVIEW_REQUIRED" in verdict["blockers"]
+    assert verdict["can_execute"] is False
