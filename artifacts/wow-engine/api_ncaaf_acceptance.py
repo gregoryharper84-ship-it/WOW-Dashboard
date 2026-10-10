@@ -403,12 +403,42 @@ def _emit_ncaaf_readiness_state(state: dict) -> None:
     )
 
 
+def _ncaaf_readiness_under_heavy_slot() -> dict:
+    """Startup readiness scan (~4k games) only while owning the heavyweight slot.
+
+    Production 2026-10-09 18:35:27Z: this ungated scan coincided with an
+    interactive request in the final climb to the 512Mi OOM kill. Admission and
+    release happen in the same worker thread; memory is reclaimed afterwards.
+    """
+    operation = "NCAAF_STARTUP_READINESS"
+    permit = memory_admission.try_acquire_heavy_job(operation)
+    if permit is None:
+        raise memory_admission.HeavyJobDeferred(
+            code="HEAVY_JOB_BUSY",
+            operation=operation,
+            detail={"reason": "SERIALIZATION_BUSY", "retry_after_seconds": 15.0},
+        )
+    try:
+        return ncaaf_readiness()
+    finally:
+        permit.release()
+        memory_admission.release_process_memory()
+
+
 async def _run_ncaaf_startup_readiness_audit() -> None:
     """Run read-only readiness outside the startup critical path with a bound."""
     try:
         state = await asyncio.wait_for(
-            asyncio.to_thread(ncaaf_readiness),
+            asyncio.to_thread(_ncaaf_readiness_under_heavy_slot),
             timeout=_NCAAF_STARTUP_READINESS_TIMEOUT_SECONDS,
+        )
+    except memory_admission.HeavyJobDeferred as exc:
+        # Informational startup audit: defer rather than compete with fitted
+        # user-facing scoring or a real cgroup hold. On-demand readiness
+        # routes are unaffected.
+        _logger.warning(
+            "WOW_NCAAF_READINESS assessment=DEFERRED code=%s probability_publishable=false can_execute=false",
+            exc.code,
         )
     except asyncio.TimeoutError:
         _logger.error(
@@ -466,6 +496,9 @@ def _warm_ncaaf_spread_under_heavy_slot() -> dict:
         return warm_ncaaf_forward_context(_db_client())
     finally:
         permit.release()
+        # Production 2026-10-09 18:33-18:34Z: a failed warm left ~90 MB
+        # resident until the next pressured admission. Reclaim immediately.
+        memory_admission.release_process_memory()
 
 
 async def _warm_ncaaf_spread_forward_context_after_startup() -> None:

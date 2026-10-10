@@ -405,3 +405,66 @@ def test_spread_warm_cannot_overlap_scout_heavy_slot(monkeypatch):
         assert exc.value.code == "HEAVY_JOB_BUSY"
     finally:
         mutex.release()
+
+
+# --- follow-up to #1575: readiness scan gating + reclaim after heavy work ------
+
+class _Permit:
+    def __init__(self, events):
+        self.events = events
+
+    def release(self):
+        self.events.append("release")
+
+
+def test_startup_readiness_runs_under_heavy_slot_and_reclaims(monkeypatch):
+    events = []
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", lambda op: events.append(op) or _Permit(events))
+    monkeypatch.setattr(api.memory_admission, "release_process_memory", lambda: events.append("reclaim"))
+    monkeypatch.setattr(api, "ncaaf_readiness", lambda: events.append("scan") or {"status": "OK"})
+    assert api._ncaaf_readiness_under_heavy_slot() == {"status": "OK"}
+    assert events == ["NCAAF_STARTUP_READINESS", "scan", "release", "reclaim"]
+
+
+def test_startup_readiness_busy_slot_never_scans(monkeypatch):
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", lambda op: None)
+    monkeypatch.setattr(api, "ncaaf_readiness", lambda: pytest.fail("scan must not run"))
+    with pytest.raises(api.memory_admission.HeavyJobDeferred) as exc:
+        api._ncaaf_readiness_under_heavy_slot()
+    assert exc.value.code == "HEAVY_JOB_BUSY"
+
+
+def test_startup_readiness_failure_still_releases_and_reclaims(monkeypatch):
+    events = []
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", lambda op: _Permit(events))
+    monkeypatch.setattr(api.memory_admission, "release_process_memory", lambda: events.append("reclaim"))
+
+    def boom():
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(api, "ncaaf_readiness", boom)
+    with pytest.raises(RuntimeError):
+        api._ncaaf_readiness_under_heavy_slot()
+    assert events == ["release", "reclaim"]
+
+
+def test_startup_readiness_pressure_defers_with_typed_log(monkeypatch, caplog):
+    def defer(op):
+        raise api.memory_admission.HeavyJobDeferred(code="MEMORY_PRESSURE", operation=op, detail={})
+
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", defer)
+    monkeypatch.setattr(api, "_emit_ncaaf_readiness_state", lambda s: pytest.fail("no state on deferral"))
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(api._run_ncaaf_startup_readiness_audit())
+    assert "WOW_NCAAF_READINESS assessment=DEFERRED code=MEMORY_PRESSURE" in caplog.text
+
+
+def test_spread_warm_reclaims_memory_after_release(monkeypatch):
+    events = []
+    monkeypatch.setattr(api.memory_admission, "try_acquire_heavy_job", lambda op: _Permit(events))
+    monkeypatch.setattr(api.memory_admission, "release_process_memory", lambda: events.append("reclaim"))
+    monkeypatch.setattr(api, "_db_client", lambda: object())
+    monkeypatch.setattr(api, "warm_ncaaf_forward_context", lambda db: (_ for _ in ()).throw(RuntimeError("stale")))
+    with pytest.raises(RuntimeError):
+        api._warm_ncaaf_spread_under_heavy_slot()
+    assert events == ["release", "reclaim"]
