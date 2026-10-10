@@ -60,6 +60,7 @@ def _features():
     }
     features = dict.fromkeys(FEATURE_NAMES, 0.0)
     features[FEATURE_NAMES[0]] = 0.5
+    manifest["features_sha256"] = _digest(features)
     return {
         "status": "RESEARCH_FORWARD_FEATURES_ONLY",
         "candidate_model_family": MODEL_FAMILY,
@@ -69,6 +70,7 @@ def _features():
         "source_manifest": manifest,
         "source_manifest_sha256": _digest(manifest),
         "features": features,
+        "features_sha256": _digest(features),
         "probability_publishable": False,
         "can_execute": False,
     }
@@ -191,3 +193,31 @@ def test_research_shadow_cannot_override_cfbd_source_kickoff():
     with pytest.raises(NCAAFShadowScoreBlocked) as error:
         score_ncaaf_research_shadow(candidate, forward)
     assert error.value.code == "NCAAF_SHADOW_CANONICAL_START_MISMATCH"
+
+
+
+def test_unchanged_source_manifest_does_not_authorize_changed_numeric_features():
+    candidate, forward = _candidate(), _features()
+    forward["features"][FEATURE_NAMES[0]] = 0.9
+    # Before the new bound hash this silently changed fitted raw output while
+    # retaining exactly the same source_manifest_sha256.
+    with pytest.raises(NCAAFShadowScoreBlocked) as error:
+        score_ncaaf_research_shadow(candidate, forward)
+    assert error.value.code == "NCAAF_SHADOW_FEATURE_HASH_MISMATCH"
+
+
+def test_shadow_fails_if_feature_digest_is_removed_from_attested_manifest():
+    candidate, forward = _candidate(), _features()
+    forward["source_manifest"].pop("features_sha256")
+    forward["source_manifest_sha256"] = _digest(forward["source_manifest"])
+    with pytest.raises(NCAAFShadowScoreBlocked) as error:
+        score_ncaaf_research_shadow(candidate, forward)
+    assert error.value.code == "NCAAF_SHADOW_FEATURE_HASH_MISMATCH"
+
+
+def test_shadow_fails_if_returned_feature_hash_disagrees_with_manifest():
+    candidate, forward = _candidate(), _features()
+    forward["features_sha256"] = "f" * 64
+    with pytest.raises(NCAAFShadowScoreBlocked) as error:
+        score_ncaaf_research_shadow(candidate, forward)
+    assert error.value.code == "NCAAF_SHADOW_FEATURE_HASH_MISMATCH"
