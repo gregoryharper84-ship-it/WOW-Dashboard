@@ -13,10 +13,14 @@ def test_p0_parallel_rapid_dispatch_contract() -> None:
     assert "p0_parallel_dispatch.py" in text
     assert "max_parallel_writers: 3" in text
     assert "implementation_lease_scope: domain-scoped" in text
-    assert "stream_A: Scout/Data Plane (#1237 -> #1250)" in text
-    assert "stream_B: State/Scoring (#1189 -> #960)" in text
-    assert "stream_C: Runtime/Ingest (#502 -> #1127)" in text
+    assert "stream_A: canonical acquisition / official event identity (#823 -> #1407)" in text
+    assert "stream_B: MLB scorer numeric input integrity (#1496 / #1507)" in text
+    assert "stream_C: production memory and interactive latency (#1388 -> #1501 -> #502)" in text
     assert "status,displayTitle" in text
+    assert '--open-prs "$RUNNER_TEMP/wow-open-prs.json"' in text
+    assert '--active-runs "$RUNNER_TEMP/wow-active-runs.json"' in text
+    assert "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE" in text
+    assert "--json number,title,body" in text
     assert 'contains(\\\"lease=${lease_group}\\\")' in text
     assert "wow-v17-engineering-provider-dispatcher.yml" in text
     assert "-f force_provider=auto" in text
@@ -33,3 +37,26 @@ def test_p0_parallel_rapid_dispatch_yaml_parses() -> None:
     assert data["permissions"]["actions"] == "write"
     assert data["permissions"]["contents"] == "read"
     assert data["permissions"]["issues"] == "read"
+
+
+def test_p0_parallel_dispatch_never_cancels_partially_dispatched_work() -> None:
+    """An overlapping trigger must not interrupt the active dispatch owner."""
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert data["concurrency"]["group"] == "wow-v17-p0-rapid-dispatch"
+    assert data["concurrency"]["cancel-in-progress"] is False
+    assert data["permissions"]["actions"] == "write"
+    assert data["jobs"]["dispatch"]["timeout-minutes"] <= 10
+
+
+def test_rapid_dispatch_does_not_truncate_issue_or_pr_ownership_universe() -> None:
+    """A bounded discovery page must never permit duplicate writers."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "P0_RAPID_OPEN_ISSUE_INVENTORY_INCOMPLETE" in text
+    assert "P0_RAPID_OPEN_PR_INVENTORY_INCOMPLETE" in text
+    assert "P0_RAPID_OPEN_ITEM_INVENTORY_INVALID" in text
+    assert "is:issue is:open" in text
+    assert "is:pr is:open" in text
+    assert 'issue_loaded=$(jq \'length\'' in text
+    assert 'pr_loaded=$(jq \'length\'' in text
+    assert "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE" in text
+    assert text.index("P0_RAPID_OPEN_PR_INVENTORY_INCOMPLETE") < text.index("python artifacts/wow-engine/v17/p0_parallel_dispatch.py")

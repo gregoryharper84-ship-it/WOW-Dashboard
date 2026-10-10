@@ -10,9 +10,11 @@ permissions:
   contents: read
   issues: read
 
+# A dispatch cycle may start workers before it writes its final receipt.
+# Never cancel an active writer on an overlapping schedule/manual trigger.
 concurrency:
   group: wow-v17-p0-rapid-dispatch
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   dispatch:
@@ -45,6 +47,64 @@ jobs:
             --json number,title,body,state,updatedAt \
             > "$RUNNER_TEMP/wow-open-issues.json"
 
+          # A repair already represented by an open PR needs review/release,
+          # not a second implementation worker on a competing branch.
+          gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 200 \
+            --json number,title,body \
+            > "$RUNNER_TEMP/wow-open-prs.json"
+
+          # The list command is bounded. Verify against full open counts;
+          # an omitted PR can hide the existing repair owner, while an omitted
+          # issue silently removes it from the dispatch candidate universe.
+          issue_total=$(gh api -X GET /search/issues \
+            -f "q=repo:$GITHUB_REPOSITORY is:issue is:open" \
+            -f per_page=1 --jq '.total_count')
+          pr_total=$(gh api -X GET /search/issues \
+            -f "q=repo:$GITHUB_REPOSITORY is:pr is:open" \
+            -f per_page=1 --jq '.total_count')
+          [[ "$issue_total" =~ ^[0-9]+$ && "$pr_total" =~ ^[0-9]+$ ]] || {
+            echo "P0_RAPID_OPEN_ITEM_INVENTORY_INVALID" >&2
+            exit 1
+          }
+          issue_loaded=$(jq 'length' "$RUNNER_TEMP/wow-open-issues.json")
+          pr_loaded=$(jq 'length' "$RUNNER_TEMP/wow-open-prs.json")
+          if [ "$issue_loaded" -ne "$issue_total" ]; then
+            echo "P0_RAPID_OPEN_ISSUE_INVENTORY_INCOMPLETE:$issue_loaded:$issue_total" >&2
+            exit 1
+          fi
+          if [ "$pr_loaded" -ne "$pr_total" ]; then
+            echo "P0_RAPID_OPEN_PR_INVENTORY_INCOMPLETE:$pr_loaded:$pr_total" >&2
+            exit 1
+          fi
+
+          # Snapshot all active runs; fail closed if a page is incomplete.
+          # Distinct, verified domain leases may run concurrently.
+          for state in queued in_progress waiting requested; do
+            gh api "/repos/$GITHUB_REPOSITORY/actions/runs?status=$state&per_page=100" \
+              > "$RUNNER_TEMP/wow-active-$state.json"
+          done
+          python - "$RUNNER_TEMP" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          runs = {}
+          for state in ("queued", "in_progress", "waiting", "requested"):
+              payload = json.loads((root / f"wow-active-{state}.json").read_text())
+              page = payload.get("workflow_runs")
+              total = payload.get("total_count")
+              if not isinstance(page, list) or not isinstance(total, int) or total > len(page):
+                  raise SystemExit("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
+              for run in page:
+                  if not isinstance(run, dict) or "id" not in run:
+                      raise SystemExit("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+                  runs[str(run["id"])] = run
+          (root / "wow-active-runs.json").write_text(json.dumps(list(runs.values())))
+          PY
+
           python artifacts/wow-engine/v17/engineering_dispatch_queue.py build \
             --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
             --issues "$RUNNER_TEMP/wow-open-issues.json" \
@@ -53,6 +113,8 @@ jobs:
 
           python artifacts/wow-engine/v17/p0_parallel_dispatch.py \
             --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+            --open-prs "$RUNNER_TEMP/wow-open-prs.json" \
+            --active-runs "$RUNNER_TEMP/wow-active-runs.json" \
             --output "$RUNNER_TEMP/wow-p0-parallel.json" \
             > /dev/null
 
@@ -116,10 +178,10 @@ jobs:
             echo "- busy_streams: ${{ steps.dispatch_streams.outputs.busy_count || '0' }}"
             echo "- max_parallel_writers: 3"
             echo "- implementation_lease_scope: domain-scoped"
-            echo "- stream_A: Scout/Data Plane (#1237 -> #1250)"
-            echo "- stream_B: State/Scoring (#1189 -> #960)"
-            echo "- stream_C: Runtime/Ingest (#502 -> #1127)"
-            echo "- conflict_arbiter: explicit conflict_keys"
+            echo "- stream_A: canonical acquisition / official event identity (#823 -> #1407)"
+            echo "- stream_B: MLB scorer numeric input integrity (#1496 / #1507)"
+            echo "- stream_C: production memory and interactive latency (#1388 -> #1501 -> #502)"
+            echo "- conflict_arbiter: explicit conflict_keys + verified active run identities + open-PR guard"
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
             echo
