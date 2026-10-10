@@ -7,7 +7,6 @@ on:
       - ".github/workflows/wow-v17-ncaab-ml-frozen-replay.yml"
       - "artifacts/wow-engine/v17/ncaab_moneyline_replay.py"
       - "artifacts/wow-engine/test_v17_ncaab_moneyline_replay.py"
-  workflow_dispatch:
 
 permissions:
   contents: read
