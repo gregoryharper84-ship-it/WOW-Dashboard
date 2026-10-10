@@ -214,3 +214,31 @@ def test_resident_existing_pr_claim_exactness(body, expected):
             return [{"body": body}]
 
     assert pending_pr_for_issue(PRClient(), 823) is expected
+
+@pytest.mark.parametrize("source_pair,target_pair", [
+    ("lease=P0_RUNTIME incident=1388", "lease=P0_ACQUISITION incident=823"),
+    ("lease=GLOBAL incident=AUTO", "lease=P0_ACQUISITION incident=823"),
+    ("lease=P0_RUNTIME incident=1388", "lease=P0_RUNTIME incident=999"),
+])
+def test_provider_conflicting_source_and_target_never_admit_disjoint_writer(
+    source_pair, target_pair,
+):
+    active = _run(
+        ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+        f"WOW V17 provider source=wow-v17-chatgpt-engineering-worker "
+        f"{source_pair} {target_pair}",
+    )
+    # Without validating BOTH identity pairs, first-pair routing would
+    # incorrectly permit the unrelated acquisition/scoring lane.
+    assert active_engineering_workflow(_Client([active]), ROWS[0], MANIFEST) is True
+    assert active_engineering_workflow(_Client([active]), ROWS[1], MANIFEST) is True
+
+
+def test_provider_consistent_duplicate_identity_preserves_disjoint_lane():
+    active = _run(
+        ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+        "WOW V17 provider source=wow-v17-chatgpt-engineering-worker "
+        "lease=P0_RUNTIME incident=1388 lease=P0_RUNTIME incident=1388",
+    )
+    assert active_engineering_workflow(_Client([active]), ROWS[0], MANIFEST) is False
+    assert active_engineering_workflow(_Client([active]), ROWS[2], MANIFEST) is True

@@ -149,10 +149,20 @@ def active_engineering_workflow(
         if path not in TRUSTED_WORKFLOW_PATHS or run.get("head_branch") != "main":
             return True  # Untrusted lookalike or wrong-branch provenance.
         title = str(run.get("display_title") or run.get("name") or "")
-        identity = re.search(r"(?:^|\s)lease=([A-Za-z0-9_-]+)\s+incident=([0-9]+)(?:\s|$)", title)
-        if not identity:
+        # Provider workflow_run names can carry TWO identity pairs: the
+        # source worker and the target dispatch. Treat disagreement, AUTO,
+        # a partial pair or a third writer as unknown GLOBAL ownership;
+        # never infer disjoint admission from only the first substring.
+        identities = re.findall(
+            r"(?:^|\s)lease=([A-Za-z0-9_-]+)\s+incident=([0-9]+|AUTO)(?=\s|$)",
+            title,
+        )
+        if (not identities or len(identities) > 2
+                or len(set(identities)) != 1 or identities[0][1] == "AUTO"
+                or title.count("lease=") != len(identities)
+                or title.count("incident=") != len(identities)):
             return True
-        lease, incident = identity.group(1), int(identity.group(2))
+        lease, incident = identities[0][0], int(identities[0][1])
         if incident not in entries:
             return True
         occupied = entries[incident]
