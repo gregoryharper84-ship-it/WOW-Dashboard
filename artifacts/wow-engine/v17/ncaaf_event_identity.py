@@ -38,17 +38,61 @@ def _norm(value: Any) -> str:
     return "".join(ch for ch in text if ch.isalnum() and not unicodedata.combining(ch))
 
 
+# Provider school aliases; an identity still needs exact participants and time.
+_SCHOOL_ALIASES = {
+    "byu": "brighamyoung",
+    "brighamyounguniversity": "brighamyoung",
+    "iowast": "iowastate",
+    "iastate": "iowastate",
+    "iowahawkeyes": "iowa",
+}
+
+
+_ALIAS_MASCOTS = {
+    "byu": "cougars",
+    "brighamyounguniversity": "cougars",
+    "iowast": "cyclones",
+    "iastate": "cyclones",
+    "iowahawkeyes": "",
+}
+
+
+def _canonical_school_name(value: Any) -> str:
+    normalized = _norm(value)
+    # Never treat an arbitrary string beginning with an alias as the same
+    # school (for example "Iowa Starlings" is not "Iowa State").
+    for alias, canonical in _SCHOOL_ALIASES.items():
+        if normalized == alias:
+            return canonical
+        mascot = _ALIAS_MASCOTS[alias]
+        if normalized == alias + mascot:
+            return canonical + mascot
+    return normalized
+
+
 def _name_match(provider_name: Any, canonical_name: Any) -> bool:
-    left = _norm(provider_name)
-    right = _norm(canonical_name)
+    left = _canonical_school_name(provider_name)
+    right = _canonical_school_name(canonical_name)
     if not left or not right:
         return False
     if left == right:
         return True
     shorter, longer = sorted((left, right), key=len)
-    # ESPN often appends mascots while CFBD stores the school name. Require a
-    # meaningful prefix; never use fuzzy edit-distance matching.
-    return len(shorter) >= 5 and longer.startswith(shorter)
+    # ESPN often appends mascots while CFBD stores a school name. But a
+    # school-name prefix may describe a DIFFERENT university: Florida State
+    # is not Florida, Georgia Southern is not Georgia, and Texas A&M is not
+    # Texas. Reject known university-form qualifiers even if opponents and
+    # kickoff otherwise happen to match; do not silently pick a wrong game.
+    if len(shorter) < 5 or not longer.startswith(shorter):
+        return False
+    school_qualifiers = (
+        "state", "southern", "northern", "eastern", "western",
+        "central", "tech", "am", "international", "atlantic",
+    )
+    remainder = longer[len(shorter):]
+    if any(remainder.startswith(qualifier) for qualifier in school_qualifiers):
+        return False
+    return True
 
 
 def _aware(value: Any) -> datetime:
@@ -153,7 +197,12 @@ def resolve_ncaaf_current_event_identity(
         for row in matches
         if str(row.get("id") or row.get("event_id") or "").strip() == selected_id
     )
+    neutral_raw = selected.get("neutralSite", selected.get("neutral_site"))
+    # Do not coerce a missing/non-boolean venue value to False: it is an
+    # observed sporting feature and must remain unknown until source-verified.
+    neutral_site = neutral_raw if type(neutral_raw) is bool else None
     return {
+        "neutral_site": neutral_site,
         "event_id": selected_id,
         "event_start_time": _aware(_start_value(selected)).isoformat(),
         "home_team": str(_home_name(selected) or ""),
