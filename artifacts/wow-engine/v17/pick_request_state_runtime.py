@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections import Counter
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -673,22 +674,57 @@ def _current_full_outcomes(
     ctx: RunContext,
     inner: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    inner_rows = {
-        str(item.get("row_key")): item
-        for item in ((inner or {}).get("rows") or [])
+    # An exact-row scorer may not silently collapse duplicate or unexpected
+    # results into a dict: that would hide a second prediction receipt before
+    # the downstream exact-once validator ever sees it. Treat corrupted
+    # scorer output as a typed transport/contract failure, never a model hold.
+    returned = (inner or {}).get("rows") or []
+    expected_keys = {_row_key(row, i) for i, row in enumerate(ctx.batch.rows)}
+    keys = [
+        str(item.get("row_key") or "")
+        for item in returned
         if isinstance(item, dict)
-    }
+    ]
+    duplicate_keys = sorted(key for key, count in Counter(keys).items() if count > 1)
+    unknown_keys = sorted({key for key in keys if key not in expected_keys})
+    # Only explicitly receipt-backed resumed rows may omit a fresh result.
+    # Otherwise an empty/partial scorer response must not be disguised by an
+    # old HELD result that happened to survive in the durable state store.
+    missing_keys = sorted(expected_keys - ctx.resumed_rows - set(keys))
+    unexpected_resumed_keys = sorted(ctx.resumed_rows & set(keys))
+    malformed_count = len(returned) - len(keys)
+    if duplicate_keys or unknown_keys or missing_keys or unexpected_resumed_keys or malformed_count:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "PICK_REQUEST_SCORER_ROW_RECONCILIATION_FAILED",
+                "duplicate_row_keys": duplicate_keys,
+                "unknown_row_keys": unknown_keys,
+                "missing_row_keys": missing_keys,
+                "unexpected_resumed_row_keys": unexpected_resumed_keys,
+                "malformed_outcomes": malformed_count,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            },
+        )
+    inner_rows = {key: item for key, item in zip(keys, returned)}
     outcomes: list[dict[str, Any]] = []
     for index, row in enumerate(ctx.batch.rows):
         key = _row_key(row, index)
         durable = (ctx.rows.get(key) or {}).get("outcome")
-        if isinstance(durable, dict):
+        fresh = inner_rows.get(key)
+        # Only a receipt-backed row explicitly marked as resumed may take
+        # precedence from a prior durable run. Held/rejected rows without a
+        # resumable receipt are rescored: their current terminal result must
+        # replace the old blocker even if scoring skipped durable-state hooks.
+        if key in ctx.resumed_rows and isinstance(durable, dict):
             item = deepcopy(durable)
-            if key in ctx.resumed_rows:
-                item["resumed_from_durable_receipt"] = True
+            item["resumed_from_durable_receipt"] = True
             outcomes.append(item)
-        elif isinstance(inner_rows.get(key), dict):
-            outcomes.append(deepcopy(inner_rows[key]))
+        elif isinstance(fresh, dict):
+            outcomes.append(deepcopy(fresh))
+
     return outcomes
 
 
