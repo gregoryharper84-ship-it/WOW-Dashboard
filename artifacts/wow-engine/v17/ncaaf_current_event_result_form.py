@@ -96,8 +96,15 @@ def current_event_feature_package(
         if source_value in (None, ""):
             continue
         source_time = _aware(source_value)
+        if source_time <= row_start:
+            raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_PRIOR_EVIDENCE_TIME_CONTRADICTION")
         if source_time >= start:
             continue
+        for score in (raw["home_points"], raw["away_points"]):
+            if isinstance(score, bool) or (isinstance(score, float) and not score.is_integer()):
+                raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_PRIOR_RESULT_INVALID")
+            if isinstance(score, str) and not score.isdigit():
+                raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_PRIOR_RESULT_INVALID")
         try:
             hp, ap = int(raw["home_points"]), int(raw["away_points"])
         except (ValueError, TypeError, OverflowError) as exc:
