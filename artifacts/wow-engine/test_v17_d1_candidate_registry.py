@@ -200,3 +200,28 @@ def test_bulk_registry_rejects_bad_partition_metadata_before_upsert():
         persist_candidate_package_bulk(db, bad)
     assert caught.value.code == "D1_PARTITION_COUNT_MISMATCH"
     assert not db.rows
+
+
+@pytest.mark.parametrize("bad_metrics", [None, {}, {"raw_brier": 0.24}])
+def test_nhl_fitted_candidate_requires_all_three_partition_metrics_before_writes(bad_metrics):
+    db = FakeDB()
+    payload = package()
+    payload["candidate"]["model_family"] = "NHL_REGULAR_SEASON_LOGISTIC_V1"
+    payload["candidate"]["validation_metrics"] = bad_metrics
+    with pytest.raises(D1RegistryError) as error:
+        persist_candidate_package(db, payload)
+    assert error.value.code == "D1_PARTITION_METRICS_INVALID"
+    assert not db.rows
+
+
+def test_nhl_fitted_candidate_succeeds_only_with_consistent_split_metrics():
+    db = FakeDB()
+    payload = package()
+    payload["candidate"]["model_family"] = "NHL_REGULAR_SEASON_LOGISTIC_V1"
+    payload["candidate"]["validation_metrics"] = {
+        "train_n": 400, "calibration_n": 80, "test_n": 80,
+        "research_screen_pass": True,
+    }
+    outcome = persist_candidate_package(db, payload)
+    assert outcome["candidate"]["status"] == "CANDIDATE_REGISTERED"
+    assert outcome["can_execute"] is False
