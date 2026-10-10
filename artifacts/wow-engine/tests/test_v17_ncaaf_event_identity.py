@@ -140,3 +140,21 @@ def test_school_alias_does_not_conflate_iowa_and_iowa_state():
             client=client,
         )
     assert exc.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+@pytest.mark.parametrize("false_alias", ["Iowa Starlings", "BYU County"])
+def test_alias_prefix_without_school_boundary_does_not_match(false_alias):
+    rows = [{
+        "id": 401999998,
+        "startDate": "2026-10-10T02:15:00Z",
+        "homeTeam": "Iowa State" if false_alias.startswith("Iowa") else "Brigham Young",
+        "awayTeam": "Washington",
+    }]
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T02:15:00Z",
+            home_team=false_alias,
+            away_team="Washington Huskies",
+            client=_Client(rows),
+        )
+    assert exc.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
