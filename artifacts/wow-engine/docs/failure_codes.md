@@ -179,6 +179,7 @@ These are **research feature preparation** failures, not certified model inferen
 | `NCAAF_FORWARD_PRIOR_EVENT_DUPLICATE` | NCAAF research forward feature builder | A relevant settled prior event identity occurs more than once in accepted evidence. | No |
 | `NCAAF_FORWARD_PRIOR_RESULT_INVALID` | NCAAF research forward feature builder | Relevant prior-game score/status cannot be reconciled to a valid settled winner. | No |
 | `NCAAF_FORWARD_PRIOR_RESULT_CONTRADICTION` | NCAAF research forward feature builder | Source home_won disagrees with settled score. | No |
+| `NCAAF_FORWARD_PRIOR_EVIDENCE_TIME_CONTRADICTION` | NCAAF research forward feature builder | Settled-result acquisition timestamp is at or before its game's scheduled start, so outcome evidence could not yet exist. | No |
 | `NCAAF_FORWARD_PRIOR_FORM_INSUFFICIENT` | NCAAF research forward feature builder | One or both teams lack the model's minimum three source-eligible settled prior games; no baseline imputation. | No |
 | `NCAAF_FORWARD_FEATURE_SCHEMA_INVALID` | NCAAF research forward feature builder | Computed numeric features do not exactly match the candidate model schema or finite-number contract. | No |
 | `NCAAF_FORWARD_FEATURE_NOT_PREGAME` | NCAAF research forward feature builder | Latest evidence acquisition timestamp is not strictly before the target event start. | No |
