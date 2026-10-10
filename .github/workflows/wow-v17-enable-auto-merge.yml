@@ -1,0 +1,64 @@
+name: wow-v17-enable-auto-merge
+
+# Arms GitHub auto-merge on ordinary same-repo PRs so they merge themselves
+# once every REQUIRED check on main passes (3 regression checks +
+# WOW Independent QA exact-head + WOW Release Authority exact-head).
+#
+# Safety:
+# - pull_request_target, but PR code is NEVER checked out or executed.
+# - Fork PRs and drafts are ignored.
+# - PRs touching trust roots (.github/**, .agents/**), including rename
+#   origins, are NOT armed; they stay on the owner-signed release path.
+# - Arming auto-merge grants nothing by itself: branch protection still
+#   requires QA + Release Authority from their own GitHub Apps.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: wow-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  arm:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Refuse trust-root changes (fail closed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
+            --jq '.[] | .filename, (.previous_filename // empty)')"
+          if [ -z "$files" ]; then
+            echo "AUTO_MERGE_SKIPPED: empty or missing file evidence"
+            echo "SKIP=1" >> "$GITHUB_ENV"; exit 0
+          fi
+          if printf '%s\n' "$files" | grep -Eq '^(\.github|\.agents)/'; then
+            echo "AUTO_MERGE_SKIPPED: trust-root change requires owner-signed release"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Enable auto-merge
+        if: env.SKIP != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR" --repo "$REPO" --auto --merge
+          echo "AUTO_MERGE_ARMED pr=$PR (merges only when all required checks pass)"
