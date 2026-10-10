@@ -129,10 +129,27 @@ jobs:
               exit 1
             }
           done
-          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '.check_runs')
-          gate=$(jq -r '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$checks")
-          [ "$gate" = "completed|success" ] || {
-            echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN: ${gate:-MISSING}" >&2
+          # A merged-PR release observer can start before the independent
+          # trusted governance check finishes. Wait a *bounded* interval for
+          # exact-head evidence rather than permanently failing on in_progress.
+          # A final non-success verdict still fails closed immediately.
+          gate=""
+          ready=false
+          for attempt in $(seq 1 24); do
+            checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '.check_runs')
+            gate=$(jq -r '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$checks")
+            case "$gate" in
+              "completed|success") ready=true; break ;;
+              "completed|"*)
+                echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN: $gate" >&2
+                exit 1
+                ;;
+            esac
+            [ "$attempt" -eq 24 ] && break
+            sleep 10
+          done
+          [ "$ready" = "true" ] || {
+            echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_INCOMPLETE_AFTER_BOUNDED_WAIT: ${gate:-MISSING}" >&2
             exit 1
           }
 
