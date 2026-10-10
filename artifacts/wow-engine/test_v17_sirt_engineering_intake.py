@@ -175,3 +175,20 @@ def test_partial_escalation_failure_retries_parent_without_duplicate_origin():
     assert sum(n == 1021 for n, _ in fake.posts) == 1
     assert sum(bridge.ESCALATION_PREFIX in body
                for n, body in fake.posts if n == 1388) == 1
+
+
+def test_sirt_pr_contract_cancels_only_superseded_pr_runs():
+    """PR contract CI must not compete with protected terminal workflows."""
+    import yaml
+
+    workflow = ROOT / ".github/workflows/wow-sirt-engineering-intake-contract.yml"
+    data = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    concurrency = data["concurrency"]
+    assert "github.workflow" in concurrency["group"]
+    assert "pr-{0}" in concurrency["group"]
+    assert "github.event.pull_request.number" in concurrency["group"]
+    assert "github.run_id" in concurrency["group"]
+    assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
+    assert data["permissions"]["contents"] == "read"
+    assert "issues" not in data["permissions"]
+    assert "pull-requests" not in data["permissions"]
