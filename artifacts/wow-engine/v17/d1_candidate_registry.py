@@ -35,20 +35,29 @@ def _validate_governance(row: Mapping[str, Any], *, prefix: str) -> None:
 def validate_candidate_partition_counts(candidate: Mapping[str, Any]) -> None:
     """Require partition metadata to agree with the fitted model's own metrics.
 
-    Older specialty packages may not carry numerical split metrics. For those
-    packages this adds no new claim; if ANY split metric is supplied, all three
-    must agree. Invalid packages are rejected before writing source/feature
-    records, leaving no misleading partial candidate ingestion.
+    Legacy specialty packages may lack numerical split metrics. The known
+    fitted NHL_REGULAR_SEASON_LOGISTIC_V1 must always supply all three; other
+    families preserve old behavior if no metrics are claimed. When any model
+    claims numeric split metrics, all three must agree. Fail before evidence
+    writes, not after partial ingestion.
     """
-    metrics = candidate.get("validation_metrics") or {}
+    metrics = candidate.get("validation_metrics")
+    if metrics is None:
+        metrics = {}
     if not isinstance(metrics, Mapping):
         raise D1RegistryError("D1_PARTITION_METRICS_INVALID", "metrics must be an object")
+    require_nhl = str(candidate.get("model_family") or "").strip().upper() == "NHL_REGULAR_SEASON_LOGISTIC_V1"
     pairs = (
         ("training_rows", "train_n"),
         ("calibration_rows", "calibration_n"),
         ("test_rows", "test_n"),
     )
     if not any(metric in metrics for _, metric in pairs):
+        if require_nhl:
+            raise D1RegistryError(
+                "D1_PARTITION_METRICS_INVALID",
+                "fitted NHL candidate requires train/calibration/test metrics",
+            )
         return
     for column, metric in pairs:
         value, reported = candidate.get(column), metrics.get(metric)
