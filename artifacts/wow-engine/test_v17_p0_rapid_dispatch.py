@@ -46,3 +46,17 @@ def test_p0_parallel_dispatch_never_cancels_partially_dispatched_work() -> None:
     assert data["concurrency"]["cancel-in-progress"] is False
     assert data["permissions"]["actions"] == "write"
     assert data["jobs"]["dispatch"]["timeout-minutes"] <= 10
+
+
+def test_rapid_dispatch_does_not_truncate_issue_or_pr_ownership_universe() -> None:
+    """A bounded discovery page must never permit duplicate writers."""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "P0_RAPID_OPEN_ISSUE_INVENTORY_INCOMPLETE" in text
+    assert "P0_RAPID_OPEN_PR_INVENTORY_INCOMPLETE" in text
+    assert "P0_RAPID_OPEN_ITEM_INVENTORY_INVALID" in text
+    assert "is:issue is:open" in text
+    assert "is:pr is:open" in text
+    assert 'issue_loaded=$(jq \'length\'' in text
+    assert 'pr_loaded=$(jq \'length\'' in text
+    assert "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE" in text
+    assert text.index("P0_RAPID_OPEN_PR_INVENTORY_INCOMPLETE") < text.index("python artifacts/wow-engine/v17/p0_parallel_dispatch.py")
