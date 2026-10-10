@@ -255,3 +255,14 @@ def test_replay_report_does_not_hide_partition_mismatch_from_lanes():
     assert nhl["status"] == "CERTIFICATION_REPLAY_BLOCKED"
     assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in nhl["blockers"]
     assert report["probability_publishable"] is False
+
+
+
+def test_replay_rejects_boolean_fractional_and_string_partition_counts():
+    for invalid in (True, 3.5, "3", -1, 0, None):
+        candidate = _candidate(
+            "NHL", training_rows=invalid, source_review_status="PASS",
+        )
+        result = assess_candidate("NHL", candidate, replay_evidence_pass=True).as_dict()
+        assert "CANDIDATE_PARTITIONS_INVALID" in result["blockers"]
+        assert result["status"] == "CERTIFICATION_REPLAY_BLOCKED"
