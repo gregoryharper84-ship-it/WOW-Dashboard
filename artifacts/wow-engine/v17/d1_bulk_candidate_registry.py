@@ -15,6 +15,7 @@ from v17.d1_candidate_registry import (
     SOURCE_TABLE,
     TRAINING_TABLE,
     persist_candidate,
+    validate_candidate_partition_counts,
 )
 
 CAN_EXECUTE = False
@@ -109,6 +110,7 @@ def persist_candidate_package_bulk(db: Any, package: Mapping[str, Any]) -> dict[
     model_family = str(candidate.get("model_family") or "").strip()
     if not model_family:
         raise D1RegistryError("D1_PACKAGE_MODEL_FAMILY_MISSING", "candidate model_family required")
+    validate_candidate_partition_counts(candidate)
 
     sources = [_source_row(row) for row in list(package.get("games") or [])]
     training = [_training_row(row, model_family=model_family) for row in list(package.get("feature_rows") or [])]

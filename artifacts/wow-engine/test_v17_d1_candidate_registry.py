@@ -103,7 +103,7 @@ def package():
             "artifact_checksum": "e" * 64,
             "artifact_payload": {"model_family": "NHL_REGULAR_SEASON_LOGISTIC_V1"},
             "calibrator_payload": {"method": "EMPIRICAL_WILSON_BINS_V1"},
-            "validation_metrics": {"can_execute": False, "probability_publishable": False},
+            "validation_metrics": {"can_execute": False, "probability_publishable": False, "train_n": 400, "calibration_n": 80, "test_n": 80},
             "training_rows": 400,
             "calibration_rows": 80,
             "test_rows": 80,
@@ -154,3 +154,74 @@ def test_candidate_registry_rejects_activation_or_publication():
     with pytest.raises(D1RegistryError) as caught:
         persist_candidate_package(db, bad)
     assert caught.value.code == "D1_CANDIDATE_GOVERNANCE_FLAGS_INVALID"
+
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda p: p["candidate"].update(training_rows=560),
+    lambda p: p["candidate"].update(calibration_rows=81),
+    lambda p: p["candidate"]["validation_metrics"].pop("test_n"),
+    lambda p: p["candidate"].update(test_rows=True),
+])
+def test_partition_mismatch_is_rejected_before_evidence_writes(mutate):
+    db = FakeDB()
+    bad = package()
+    bad["candidate"]["validation_metrics"].update(
+        train_n=400, calibration_n=80, test_n=80,
+    )
+    mutate(bad)
+    with pytest.raises(D1RegistryError) as caught:
+        persist_candidate_package(db, bad)
+    assert caught.value.code in {
+        "D1_PARTITION_COUNT_MISMATCH",
+        "D1_PARTITION_METRICS_INVALID",
+    }
+    assert not db.rows
+
+
+def test_partition_counts_matching_model_metrics_are_accepted():
+    db = FakeDB()
+    valid = package()
+    valid["candidate"]["validation_metrics"].update(
+        train_n=400, calibration_n=80, test_n=80,
+    )
+    assert persist_candidate_package(db, valid)["candidate"]["status"] == "CANDIDATE_REGISTERED"
+
+
+def test_bulk_registry_rejects_bad_partition_metadata_before_upsert():
+    from v17.d1_bulk_candidate_registry import persist_candidate_package_bulk
+
+    db = FakeDB()
+    bad = package()
+    bad["candidate"]["validation_metrics"].update(
+        train_n=320, calibration_n=80, test_n=80,
+    )
+    with pytest.raises(D1RegistryError) as caught:
+        persist_candidate_package_bulk(db, bad)
+    assert caught.value.code == "D1_PARTITION_COUNT_MISMATCH"
+    assert not db.rows
+
+
+@pytest.mark.parametrize("bad_metrics", [None, {}, {"raw_brier": 0.24}])
+def test_nhl_fitted_candidate_requires_all_three_partition_metrics_before_writes(bad_metrics):
+    db = FakeDB()
+    payload = package()
+    payload["candidate"]["model_family"] = "NHL_REGULAR_SEASON_LOGISTIC_V1"
+    payload["candidate"]["validation_metrics"] = bad_metrics
+    with pytest.raises(D1RegistryError) as error:
+        persist_candidate_package(db, payload)
+    assert error.value.code == "D1_PARTITION_METRICS_INVALID"
+    assert not db.rows
+
+
+def test_nhl_fitted_candidate_succeeds_only_with_consistent_split_metrics():
+    db = FakeDB()
+    payload = package()
+    payload["candidate"]["model_family"] = "NHL_REGULAR_SEASON_LOGISTIC_V1"
+    payload["candidate"]["validation_metrics"] = {
+        "train_n": 400, "calibration_n": 80, "test_n": 80,
+        "research_screen_pass": True,
+    }
+    outcome = persist_candidate_package(db, payload)
+    assert outcome["candidate"]["status"] == "CANDIDATE_REGISTERED"
+    assert outcome["can_execute"] is False
