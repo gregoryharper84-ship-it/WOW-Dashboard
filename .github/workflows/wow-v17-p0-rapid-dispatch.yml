@@ -10,9 +10,11 @@ permissions:
   contents: read
   issues: read
 
+# A dispatch cycle may start workers before it writes its final receipt.
+# Never cancel an active writer on an overlapping schedule/manual trigger.
 concurrency:
   group: wow-v17-p0-rapid-dispatch
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   dispatch:
