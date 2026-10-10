@@ -30,6 +30,19 @@ def _iso(value: Any) -> str:
 
 
 def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the candidate's frozen training corpus, not the live, growing ledger.
+
+    ``wow_d1_training_rows`` is append-only: later maintenance runs add new
+    seasons and re-materialized rows for events already trained on.  Replay must
+    rebuild exactly what the candidate was fitted on, so the corpus is bounded to
+    rows that existed when the candidate artifact was persisted.  The dataset-hash
+    and artifact-checksum comparisons below remain the integrity proof: if this
+    bound ever selects the wrong rows, replay fails closed rather than passing.
+    """
+    created_at = candidate.get("created_at")
+    if not created_at:
+        raise ValueError("CANDIDATE_CREATED_AT_REQUIRED_FOR_FROZEN_CORPUS")
+    corpus_bound = _iso(created_at)
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
@@ -40,6 +53,8 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
             .eq("league", candidate["league"])
             .eq("model_family", candidate["model_family"])
             .eq("feature_schema_version", candidate["feature_schema_version"])
+            .lte("created_at", corpus_bound)
+            .order("training_row_id")
             .range(offset, offset + 999)
             .execute()
         )
@@ -120,7 +135,11 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
     if str(c.get("source_policy_id") or "") != "TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1" or not str(c.get("model_family") or "").endswith("_DYNAMIC_TEAM_STATE_LOGIT_V2"):
         blockers.append("CANDIDATE_REPLAY_CONTRACT_UNSUPPORTED")
 
-    rows = _all_rows(db, c)
+    try:
+        rows = _all_rows(db, c)
+    except ValueError as exc:
+        blockers.append(str(exc))
+        rows = []
     expected = sum(int(c.get(k) or 0) for k in ("training_rows", "calibration_rows", "test_rows"))
     if len(rows) != expected:
         blockers.append("TRAINING_ROW_COUNT_MISMATCH")
