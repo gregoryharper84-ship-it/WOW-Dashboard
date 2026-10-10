@@ -36,6 +36,7 @@ on:
       - "artifacts/wow-engine/test_v17_first_six_ncaaf_hydrate_order.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
+      - "artifacts/wow-engine/test_v17_immutable_ledger_upserts.py"
       - "artifacts/wow-engine/test_v17_soccer_openfootball_row_order.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
@@ -68,6 +69,7 @@ on:
       - "artifacts/wow-engine/test_v17_nfl_event_context_challenger.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
+      - "artifacts/wow-engine/test_v17_immutable_ledger_upserts.py"
       - "artifacts/wow-engine/test_v17_soccer_openfootball_row_order.py"
       - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
 
@@ -105,6 +107,7 @@ jobs:
           test_v17_first_six_ncaaf_hydrate_order.py
           test_v17_first_six_certification.py
           test_v17_first_six_source_contracts.py
+          test_v17_immutable_ledger_upserts.py
           test_v17_soccer_openfootball_row_order.py
           test_v17_team_event_specialist_ownership.py
           test_v17_ncaaf_model_maintenance.py
