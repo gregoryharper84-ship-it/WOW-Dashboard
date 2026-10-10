@@ -88,6 +88,11 @@ def current_event_feature_package(
     resolved_start = _aware(canonical_resolution.get("event_start_time"))
     if abs((start - resolved_start).total_seconds()) > 60 * START_TOLERANCE_MINUTES:
         raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_CANONICAL_START_MISMATCH")
+    source_neutral = canonical_resolution.get("neutral_site")
+    if type(source_neutral) is not bool:
+        raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_MISSING")
+    if neutral_site is not source_neutral:
+        raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_CONTRADICTION")
 
     history: dict[str, list[dict[str, Any]]] = {home: [], away: []}
     source_times: list[datetime] = []
@@ -189,6 +194,7 @@ def current_event_feature_package(
         "canonical_identity_source": SOURCE_PROVIDER,
         "canonical_identity_resolution": str(canonical_resolution["identity_resolution"]),
         "canonical_event_start_time": resolved_start.isoformat(),
+        "canonical_neutral_site": source_neutral,
         "historical_reconstruction": True,
         "archived_pregame_snapshot": False,
         "can_execute": False,
