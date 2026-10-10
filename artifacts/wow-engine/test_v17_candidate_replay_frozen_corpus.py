@@ -125,3 +125,54 @@ def test_candidate_without_created_at_fails_closed_with_typed_blocker():
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
     assert db.inserted and db.inserted[0]["replay_status"] == "FAIL"
+
+
+def test_frozen_candidate_uses_latest_event_version_and_ignores_later_writes():
+    # A dynamic challenger trains once per canonical game, although later
+    # maintenance appends immutable source versions for the same event.
+    old = _row(1, "2026-09-20T00:00:00+00:00")
+    old["source_manifest_sha256"] = "old"
+    fresh = _row(1501, "2026-09-25T20:39:13+00:00")
+    fresh["source_manifest_sha256"] = "fresh"
+    after_cutoff = _row(3001, "2026-09-26T00:00:00+00:00")
+    after_cutoff["source_manifest_sha256"] = "not-visible"
+    separate = _row(2, "2026-09-20T00:00:00+00:00")
+    assert old["official_event_id"] == fresh["official_event_id"] == after_cutoff["official_event_id"]
+    db = _DB({"wow_d1_training_rows": [old, fresh, after_cutoff, separate]})
+    rows = evidence._all_rows(db, _candidate())
+    assert len(rows) == 2
+    one = next(row for row in rows if row["official_event_id"] == old["official_event_id"])
+    assert one["source_manifest_sha256"] == "fresh"
+
+
+def test_frozen_candidate_rejects_ambiguous_latest_source_fork():
+    one = _row(1, "2026-09-25T20:39:13+00:00")
+    other = _row(1501, "2026-09-25T20:39:13+00:00")
+    one["source_manifest_sha256"] = "manifest-A"
+    other["source_manifest_sha256"] = "manifest-B"
+    db = _DB({"wow_d1_training_rows": [one, other]})
+    import pytest
+    with pytest.raises(ValueError, match="CANDIDATE_CORPUS_LATEST_VERSION_AMBIGUOUS"):
+        evidence._all_rows(db, _candidate())
+
+
+def test_identical_same_instant_source_rewrite_does_not_double_count():
+    one = _row(1, "2026-09-25T20:39:13+00:00")
+    other = _row(1501, "2026-09-25T20:39:13+00:00")
+    one.update({"source_manifest_sha256": "identical", "features": {"p": 1.0}})
+    other.update({"source_manifest_sha256": "identical", "features": {"p": 1.0}})
+    db = _DB({"wow_d1_training_rows": [one, other]})
+    assert len(evidence._all_rows(db, _candidate())) == 1
+
+
+def test_frozen_corpus_replay_version_bumped_for_new_receipts():
+    assert evidence.VERIFIER_VERSION == "V17_CANDIDATE_BOUND_BINARY_REPLAY_V2"
+
+
+def test_frozen_candidate_missing_canonical_event_identity_fails():
+    bad = _row(1, "2026-09-25T20:39:13+00:00")
+    bad["official_event_id"] = ""
+    db = _DB({"wow_d1_training_rows": [bad]})
+    import pytest
+    with pytest.raises(ValueError, match="CANDIDATE_CORPUS_OFFICIAL_EVENT_ID_MISSING"):
+        evidence._all_rows(db, _candidate())
