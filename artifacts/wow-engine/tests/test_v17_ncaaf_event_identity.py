@@ -138,7 +138,7 @@ def test_oct_9_byu_cougars_short_school_alias_is_exact():
     ("Iowa State Cyclones", "Iowa"),
     ("Iowa Hawkeyes", "Iowa State"),
     ("BYU Bobcats", "BYU"),
-    ("UCF Knights", "UCF"),
+    ("UCF Bulls", "UCF"),  # wrong mascot; "UCF Knights" is now a verified ESPN identity (2026-10-10)
     ("", "Iowa"),
 ])
 def test_short_school_alias_does_not_accept_unsafe_prefixes(alias, canonical):
@@ -232,3 +232,50 @@ def test_production_cross_sport_handoff_keeps_unsafe_short_alias_held(monkeypatc
     assert resolved.official_event_id is None
     assert resolved.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
     assert resolved.raw["canonical_identity_blocker"] == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+# 2026-10-10 Saturday: six events stayed ALIAS_ONLY_UNRESOLVED because every one
+# involved a CFBD school name shorter than five characters.
+_SATURDAY_SHORT_SCHOOL_EVENTS = [
+    ("Oklahoma State Cowboys", "UCF Knights", "Oklahoma State", "UCF"),
+    ("Army Black Knights", "Tulane Green Wave", "Army", "Tulane"),
+    ("East Carolina Pirates", "Rice Owls", "East Carolina", "Rice"),
+    ("Georgia Tech Yellow Jackets", "Duke Blue Devils", "Georgia Tech", "Duke"),
+    ("Oregon Ducks", "UCLA Bruins", "Oregon", "UCLA"),
+    ("Navy Midshipmen", "Tulsa Golden Hurricane", "Navy", "Tulsa"),
+]
+
+
+@pytest.mark.parametrize(("espn_home", "espn_away", "cfbd_home", "cfbd_away"), _SATURDAY_SHORT_SCHOOL_EVENTS)
+def test_oct_10_short_school_events_resolve_exactly(espn_home, espn_away, cfbd_home, cfbd_away):
+    event_at = "2026-10-10T16:00:00Z"
+    result = identity.resolve_ncaaf_current_event_identity(
+        event_start_time=event_at,
+        home_team=espn_home,
+        away_team=espn_away,
+        client=_Client([
+            {"id": 401910001, "startDate": event_at, "homeTeam": cfbd_home, "awayTeam": cfbd_away},
+            {"id": 401910002, "startDate": event_at, "homeTeam": cfbd_away, "awayTeam": cfbd_home},
+        ]),
+    )
+    assert result["event_id"] == "401910001"
+    assert result["prediction_authority"] is False
+    assert result["can_execute"] is False
+
+
+def test_short_school_allowlist_keys_are_all_short_and_exact():
+    for school, aliases in identity._VERIFIED_SHORT_SCHOOL_MASCOTS.items():
+        assert len(school) < 5 and school == identity._norm(school)
+        assert aliases and all(alias.startswith(school) and len(alias) > len(school) for alias in aliases)
+
+
+@pytest.mark.parametrize(("alias", "canonical"), [
+    ("Utah State Aggies", "Utah"),
+    ("Ohio State Buckeyes", "Ohio"),
+    ("Troy Trojans", "USC"),
+    ("USC Trojans", "Troy"),
+    ("Army", "Navy"),
+    ("UCF", "UCLA"),
+])
+def test_short_school_allowlist_rejects_collisions(alias, canonical):
+    assert identity._name_match(alias, canonical) is False

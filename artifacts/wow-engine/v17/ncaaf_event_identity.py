@@ -43,8 +43,27 @@ def _norm(value: Any) -> str:
 # so accept short names only when the complete known school + mascot identity
 # is present. This is identity matching only; it is not a sporting feature.
 _VERIFIED_SHORT_SCHOOL_MASCOTS: dict[str, frozenset[str]] = {
-    "iowa": frozenset({"iowahawkeyes"}),
+    # Every FBS school whose CFBD name normalizes to fewer than five
+    # characters, mapped to its exact ESPN "<school> <mascot>" display name.
+    "army": frozenset({"armyblackknights"}),
     "byu": frozenset({"byucougars"}),
+    "duke": frozenset({"dukebluedevils"}),
+    "iowa": frozenset({"iowahawkeyes"}),
+    "lsu": frozenset({"lsutigers"}),
+    "navy": frozenset({"navymidshipmen"}),
+    "ohio": frozenset({"ohiobobcats"}),
+    "rice": frozenset({"riceowls"}),
+    "smu": frozenset({"smumustangs"}),
+    "tcu": frozenset({"tcuhornedfrogs"}),
+    "troy": frozenset({"troytrojans"}),
+    "uab": frozenset({"uabblazers"}),
+    "ucf": frozenset({"ucfknights"}),
+    "ucla": frozenset({"uclabruins"}),
+    "unlv": frozenset({"unlvrebels"}),
+    "usc": frozenset({"usctrojans"}),
+    "utah": frozenset({"utahutes"}),
+    "utep": frozenset({"utepminers"}),
+    "utsa": frozenset({"utsaroadrunners"}),
 }
 
 
