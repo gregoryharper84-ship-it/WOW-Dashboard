@@ -185,6 +185,7 @@ This evaluator uses genuine fitted candidate coefficients, but returns only `res
 | `NCAAF_SHADOW_FEATURE_TIME_INVALID` | NCAAF fitted-candidate shadow scoring | Feature evidence time is at/after event start, or mismatches source manifest. | No |
 | `NCAAF_SHADOW_FEATURE_SCHEMA_MISMATCH` | NCAAF fitted-candidate shadow scoring | Forward-feature names/order differ from fitted model's exact nine inputs. | No |
 | `NCAAF_SHADOW_FEATURE_VALUE_INVALID` | NCAAF fitted-candidate shadow scoring | An input feature is nonnumeric, boolean or nonfinite. | No |
+| `NCAAF_SHADOW_FEATURE_HASH_MISMATCH` | NCAAF fitted-candidate shadow scoring | Exact numeric forward-feature vector does not match the digest embedded in the previously validated source manifest and returned feature package; the provenance hash cannot be reused for a changed vector. | No |
 | `NCAAF_SHADOW_ARTIFACT_VECTOR_INVALID` | NCAAF fitted-candidate shadow scoring | A persisted fitted scaler/coefficients vector is missing, malformed or nonfinite. | No |
 | `NCAAF_SHADOW_ARTIFACT_SCALE_INVALID` | NCAAF fitted-candidate shadow scoring | Fitted scaler has a zero/negative scale. | No |
 | `NCAAF_SHADOW_NUMERIC_OVERFLOW` | NCAAF fitted-candidate shadow scoring | Fitted logit/probability arithmetic is nonfinite or invalid. | No |
