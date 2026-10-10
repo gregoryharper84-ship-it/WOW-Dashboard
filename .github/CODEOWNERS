@@ -4,6 +4,7 @@
 # /.github/ and /.agents/ cover NEW workflows, actions, scripts and agent skills.
 /.github/ @gregoryharper84-ship-it
 /.agents/ @gregoryharper84-ship-it
+/render.yaml @gregoryharper84-ship-it
 # Files executed or read by governance workflows (changing them changes how the gates decide):
 /artifacts/flask-scoring-api/requirements.txt @gregoryharper84-ship-it
 /artifacts/wow-engine/requirements.txt @gregoryharper84-ship-it
