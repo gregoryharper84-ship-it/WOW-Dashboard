@@ -22,19 +22,29 @@ requires all of:
 9. both the PR head and protected-main SHA must remain unchanged through QA and
    immediately before merge.
 
-The secret is intentionally not readable by Engineering and is scoped to the
+The secret must be held separately from Engineering credentials and is scoped to the
 existing `wow-release` GitHub environment. A stale approval cannot authorize a
 different PR or SHA.
 
 ## Owner operation
 
-Preferred chat/UI path: on the target PR, the owner posts exactly:
+Preferred chat/UI path: on the target PR, the owner posts exactly (after configuring the protected secret):
 
 `/wow-owner-bridge <EXACT_HEAD_SHA> incident=<ISSUE_NUMBER>`
 
-The protected-main workflow accepts that command only from
-`gregoryharper84-ship-it`, re-resolves the live PR head, then applies every CI
-and independent-QA gate before merging.
+Before posting the comment, the owner must configure the protected
+`wow-release` environment secret `WOW_OWNER_RELEASE_APPROVAL` to exactly
+`<PR_NUMBER>:<EXACT_HEAD_SHA>` using the GitHub environment settings.
+The protected-main workflow requires **both** the owner-authored comment
+and the separate exact-head environment secret; GitHub username alone is not
+proof of a separate human decision because Engineering credentials have
+previously shared the owner account identity. It re-resolves the live PR head,
+then applies every CI and independent-QA gate before merging.
+An absent, mismatched or stale secret fails closed with a typed error.
+
+Never post the secret value into a comment, log, PR, or chat message. The
+nonsecret command alone is deliberately insufficient. Rebind the environment
+approval after any new PR commit changes its SHA.
 
 Alternative manual-dispatch path: set the `wow-release` environment secret
 `WOW_OWNER_RELEASE_APPROVAL=<PR_NUMBER>:<EXACT_HEAD_SHA>` and run

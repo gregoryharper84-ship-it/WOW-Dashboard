@@ -78,3 +78,96 @@ def test_temporary_owner_bridge_binds_to_open_referenced_incident():
     assert "OWNER_BRIDGE_INCIDENT_NOT_OPEN" in text
     assert "OWNER_BRIDGE_PR_INCIDENT_LINK_MISSING" in text
     assert "grep -Eq" in text
+
+
+def _run_authorization_only(tmp_path, *, event_name="issue_comment", secret="", actor="gregoryharper84-ship-it", comment_sha=None):
+    """Execute the real bridge bash preflight up to its first GitHub API call."""
+    import os
+    import subprocess
+
+    document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = document["jobs"]["owner-bridge"]["steps"]
+    preflight = next(step["run"] for step in steps if step.get("id") == "preflight")
+    script, _ = preflight.split("pr_json=$(gh api", 1)
+    expected_sha = "a" * 40
+    request_sha = expected_sha if comment_sha is None else comment_sha
+    environment = dict(os.environ)
+    environment.update({
+        "EVENT_NAME": event_name,
+        "EVENT_ACTOR": actor,
+        "EVENT_PR_NUMBER": "1575",
+        "COMMENT_BODY": f"/wow-owner-bridge {request_sha} incident=1388",
+        "INPUT_PR_NUMBER": "1575",
+        "INPUT_HEAD_SHA": expected_sha,
+        "INPUT_INCIDENT_ID": "1388",
+        "OWNER_APPROVAL": secret,
+        "GITHUB_ENV": str(tmp_path / "github_env"),
+        "GITHUB_OUTPUT": str(tmp_path / "github_output"),
+    })
+    return subprocess.run(
+        ["bash", "-c", script], env=environment, capture_output=True,
+        text=True, check=False,
+    )
+
+
+def test_owner_bridge_comment_requires_exact_separate_secret(tmp_path):
+    head = "a" * 40
+    absent = _run_authorization_only(tmp_path, secret="")
+    assert absent.returncode != 0
+    assert "OWNER_BRIDGE_APPROVAL_SECRET_MISSING" in absent.stderr
+
+    mismatch = _run_authorization_only(tmp_path, secret=f"1574:{head}")
+    assert mismatch.returncode != 0
+    assert "OWNER_BRIDGE_EXACT_SHA_NOT_AUTHORIZED" in mismatch.stderr
+
+    authorized = _run_authorization_only(tmp_path, secret=f"1575:{head}")
+    assert authorized.returncode == 0, authorized.stderr
+    receipt = (tmp_path / "github_output").read_text()
+    assert "pr_number=1575" in receipt
+    assert f"head_sha={head}" in receipt
+    assert "authorization_mode=OWNER_EXACT_SHA_COMMENT" in receipt
+
+
+def test_owner_bridge_comment_rejects_stale_sha_or_nonowner(tmp_path):
+    head = "a" * 40
+    stale = _run_authorization_only(
+        tmp_path, secret=f"1575:{head}", comment_sha="b" * 40,
+    )
+    assert stale.returncode != 0
+    assert "OWNER_BRIDGE_EXACT_SHA_NOT_AUTHORIZED" in stale.stderr
+
+    nonowner = _run_authorization_only(
+        tmp_path, secret=f"1575:{head}", actor="engineering-bot",
+    )
+    assert nonowner.returncode != 0
+    assert "OWNER_BRIDGE_ACTOR_NOT_OWNER" in nonowner.stderr
+
+
+def test_owner_bridge_dispatch_path_still_requires_same_secret(tmp_path):
+    head = "a" * 40
+    absent = _run_authorization_only(tmp_path, event_name="workflow_dispatch")
+    assert absent.returncode != 0
+    assert "OWNER_BRIDGE_APPROVAL_SECRET_MISSING" in absent.stderr
+
+    good = _run_authorization_only(
+        tmp_path, event_name="workflow_dispatch", secret=f"1575:{head}",
+    )
+    assert good.returncode == 0, good.stderr
+    assert "authorization_mode=OWNER_ENVIRONMENT_SECRET" in (
+        tmp_path / "github_output"
+    ).read_text()
+
+
+def test_owner_bridge_denial_has_durable_run_summary_when_incident_unset():
+    """An auth failure must never die in the always() reporting step."""
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    receipt = next(step["run"] for step in doc["jobs"]["owner-bridge"]["steps"]
+                   if step.get("name") == "Publish bounded receipt")
+    assert "if: always()" not in receipt  # Workflow owns the if, not bash
+    assert "${INCIDENT_ID:-unresolved}" in receipt
+    assert "${PR_NUMBER:-unresolved}" in receipt
+    assert "${EXPECTED_HEAD_SHA:-unresolved}" in receipt
+    assert '>> "$GITHUB_STEP_SUMMARY"' in receipt
+    assert "OWNER_BRIDGE_RECEIPT_NO_VALIDATED_INCIDENT" in receipt
+    assert 'if [[ "${safe_incident}" =~ ^[0-9]+$ ]]' in receipt
+    assert "production_acceptance=false" in receipt
