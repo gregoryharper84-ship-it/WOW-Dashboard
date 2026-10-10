@@ -1,9 +1,10 @@
 name: wow-v17-scout-persist-resume
 
+# The canonical Scout writer already starts immediately when Multi-Scout ends.
+# Recover only on the bounded sweep (or an explicitly requested manual run):
+# subscribing to EVERY Morning-Green CI completion spawned unbounded no-op
+# recovery jobs across unrelated PRs, exhausting GitHub Actions capacity.
 on:
-  workflow_run:
-    workflows: ["wow-v17-morning-green-continuation"]
-    types: [completed]
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
@@ -12,22 +13,20 @@ permissions:
   actions: write
   contents: read
 
-# One global group let a */15 cron tick and a workflow_run trigger contend for
-# the single pending slot, so queued runs cancelled each other. Key the group by
-# trigger source (and, for workflow_run, by the SHA being resumed) so a
-# SHA-specific resume is never cancelled by an unrelated scheduled sweep.
+# Bounded single-writer recovery sweep; a pending tick never interrupts the
+# active resume. Source identity and receipt checks remain lossless/idempotent.
 concurrency:
-  group: wow-v17-scout-persist-resume-${{ github.event_name == 'workflow_run' && format('sha-{0}', github.event.workflow_run.head_sha) || 'scheduled' }}
+  group: wow-v17-scout-persist-resume-sweep
   cancel-in-progress: false
 
 jobs:
   resume-persistence:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ github.token }}
-      TARGET_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+      # Scheduled/manual recovery scans the durable Multi-Scout source ledger.
+      TARGET_SHA: ""
       # Global writer serialization may replace an older pending run when a
       # newer source queues. Recover cancelled source identities oldest-first
       # from the commit that enabled the global writer.
