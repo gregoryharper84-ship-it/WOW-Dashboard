@@ -37,3 +37,12 @@ def test_p0_parallel_rapid_dispatch_yaml_parses() -> None:
     assert data["permissions"]["actions"] == "write"
     assert data["permissions"]["contents"] == "read"
     assert data["permissions"]["issues"] == "read"
+
+
+def test_p0_parallel_dispatch_never_cancels_partially_dispatched_work() -> None:
+    """An overlapping trigger must not interrupt the active dispatch owner."""
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    assert data["concurrency"]["group"] == "wow-v17-p0-rapid-dispatch"
+    assert data["concurrency"]["cancel-in-progress"] is False
+    assert data["permissions"]["actions"] == "write"
+    assert data["jobs"]["dispatch"]["timeout-minutes"] <= 10
