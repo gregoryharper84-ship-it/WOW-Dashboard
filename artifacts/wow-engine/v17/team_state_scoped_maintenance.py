@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from v17.soccer_openfootball_candidate import COMPETITIONS
+from v17.team_state_intelligence import NCAAF_EXPECTED_SEASON_GAMES
 from v17.team_state_challenger_maintenance import (
     PROGRAM,
     _basketball_events,
@@ -77,7 +78,7 @@ def _job(client: Any, scope: str, code: str) -> Callable[[], dict[str, Any]] | N
     if scope == "NCAAF":
         return lambda: train_binary_challenger(
             client, sport="NCAAF", league="NCAAF", events=_ncaaf_events(client),
-            expected_season_games=13, training_code_sha=code, min_rows=300,
+            expected_season_games=NCAAF_EXPECTED_SEASON_GAMES, training_code_sha=code, min_rows=300,
         )
     if scope == "NCAAB":
         return lambda: train_binary_challenger(
