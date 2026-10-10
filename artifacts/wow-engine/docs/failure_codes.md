@@ -103,6 +103,8 @@ Emitted by the protected Claude engineering worker (`wow-v17-claude-engineering-
 | `ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED` | engineering persistence | Incident issue lookup or append-only receipt write failed. | `UNRESOLVED_TYPED_FAILURE` |
 
 Delivery statuses (not failures): `PR_READY` (exact-head open PR, disposition `PR_CREATED`) and `DRAFT_PR_GATES_FAILED` (exact-head draft PR; pre-PR gates failed; disposition `PR_CREATED`, does not authorize merge or deploy).
+
+Heartbeat lease states (not failures): `HELD` (run succeeded; claimed `lease_expires_at` kept) and `RELEASED_ON_FAILURE` (run ended with job status other than `success`; heartbeat reports `worker_mode: SAFE_HOLD`, `lease_expires_at` is set to the time the run ended, and the original claim is kept as `lease_claimed_expires_at` in the receipt).
 ## Agent identity and protection policy codes (incident #1550, parent #1540)
 
 Emitted by `artifacts/wow-engine/v17/agent_identity_policy.py evaluate`, which joins an owner inventory, per-runtime AI principal evidence and owner-observed live allow/deny probes. Any finding makes the verdict `HOLD` with disposition `BLOCKED_WITH_EXACT_REASON`. `PASS` is configuration evidence only: no work-item closure, merge, release or probability authority. None affects sporting probability, rank or `can_execute=false`.
@@ -180,6 +182,19 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
 | `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
 | `TARGET_SWEEP_UNREADABLE` | check targeting | Open-PR sweep listing could not be read; suffixed with HTTP status. | N/A |
+
+## Exact-target bootstrap and Claude structured-output codes (PR #1531)
+
+Engineering control plane only. None affects sporting probability, rank or `can_execute=false`, and none is a provider outage eligible for failover except where the provider classifier independently says so.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CLAUDE_STRUCTURED_OUTPUT_MISSING` | Claude agent action (`.github/actions/wow-claude-agent`) | Neither the API-key nor the OAuth attempt returned structured output (a provider exit 0 without structured output is not success). The agent step fails; in the Claude worker this surfaces as the cause-specific `ACTIONABLE_REPAIR_*` code of the step that needed it. | N/A |
+| `CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON` | Claude agent action | Structured output was present but not a JSON object. The agent step fails; downstream role gates never read it. | N/A |
+| `TARGET_INCIDENT_INVALID` | provider dispatcher | A targeted dispatch's incident identity is not a numeric issue number. Dispatch refused. | N/A |
+| `P0_DOMAIN_LEASE_MISSING` | engineering worker target selection | An exact P0 RAPID target was dispatched without a non-GLOBAL domain lease group in the dispatch manifest. Suffixed `:<incident>`. | N/A |
+| `STANDARD_TARGET_MUST_USE_GLOBAL_LEASE` | engineering worker target selection | An exact P1 STANDARD target was dispatched with a domain lease group instead of the GLOBAL writer lease. Suffixed `:<incident>`. | N/A |
+| `TARGET_INCIDENT_NOT_SUPPORTED` | engineering worker target selection | Exact target is neither P0 RAPID nor P1 STANDARD. Suffixed `:<incident>:<severity>:<lane>`. | N/A |
 
 ## Registry rule
 
