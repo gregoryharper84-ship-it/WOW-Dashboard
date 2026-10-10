@@ -234,3 +234,24 @@ def test_actual_school_mascot_suffix_remains_supported_after_collision_guard():
     )
     assert result["event_id"] == "401999986"
     assert result["can_execute"] is False
+
+
+
+def test_cfbd_neutral_site_is_raw_boolean_or_unknown_not_coerced():
+    for source_value, expected in [(True, True), (False, False), ("false", None), (None, None)]:
+        game = {
+            "id": "401999985",
+            "startDate": "2026-10-10T18:00:00Z",
+            "homeTeam": "Michigan State",
+            "awayTeam": "Oklahoma",
+        }
+        if source_value is not None:
+            game["neutralSite"] = source_value
+        result = identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T18:00:00Z",
+            home_team="Michigan State Spartans",
+            away_team="Oklahoma Sooners",
+            client=_Client([game]),
+        )
+        assert result["neutral_site"] is expected
+        assert result["prediction_authority"] is False
