@@ -1,0 +1,129 @@
+name: wow-v17-release-authority-check
+run-name: wow-v17-release-authority-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }}
+
+# Phase C of #1550. Runs from protected main only and never checks out or executes
+# PR code. Evidence is read with the read-only GITHUB_TOKEN; the check is published
+# with this role's own GitHub App token, downscoped to checks:write. The ruleset pins
+# the check to this App's integration_id. A pass is evidence, never merge, deploy or
+# probability authority. can_execute=false.
+
+on:
+  workflow_run:
+    workflows: [wow-v17-independent-qa-check]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to evaluate at its current exact head.
+        required: true
+  schedule:
+    - cron: "47 * * * *"
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  actions: read
+
+concurrency:
+  # One serialized queue per role: later runs see later evidence, so the newest
+  # published check always reflects the most complete evidence for that head.
+  group: wow-v17-release-authority-check
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
+    # not red. Once bound, a missing key fails closed in the identity step below.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && vars.WOW_RELEASE_APP_ID != ''
+    environment: wow-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Require this role's App identity
+        shell: bash
+        env:
+          APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+          KEY_PRESENT: ${{ secrets.WOW_RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${APP_ID:-}" =~ ^[0-9]+$ ]] || [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::RELEASE_APP_CREDENTIAL_MISSING: WOW_RELEASE_APP_ID / WOW_RELEASE_APP_PRIVATE_KEY not configured; no check published."
+            exit 1
+          fi
+
+      - name: Decide at exact head (read-only)
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_PR: ${{ inputs.pr_number }}
+          WR_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
+          QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
+          RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+        run: |
+          set -euo pipefail
+          tool=artifacts/wow-engine/v17/independent_release_checks.py
+          out="$RUNNER_TEMP/decisions"; mkdir -p "$out"
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR")
+          elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
+            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS")
+          else
+            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY")
+          fi
+          if [ "$(jq '.errors | length' <<<"$resolved")" != "0" ]; then
+            echo "::error::RELEASE_TARGETS_UNRESOLVED: $(jq -c .errors <<<"$resolved")"
+            exit 1
+          fi
+          i=0
+          while read -r target; do
+            pr=$(jq -r .pr <<<"$target"); head=$(jq -r .head <<<"$target")
+            ev="$out/evidence-$pr.json"
+            python "$tool" gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head" > "$ev"
+            python "$tool" decide-release --evidence "$ev" --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" > "$out/decision-$pr.json"
+            i=$((i + 1))
+          done < <(jq -c '.targets[]' <<<"$resolved")
+          echo "count=$i" >> "$GITHUB_OUTPUT"
+          echo "RELEASE decisions: $i" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mint checks-only App token
+        id: app_token
+        if: steps.decide.outputs.count != '0'
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.WOW_RELEASE_APP_ID }}
+          private-key: ${{ secrets.WOW_RELEASE_APP_PRIVATE_KEY }}
+          repositories: WOW-Dashboard
+          permission-checks: write
+
+      - name: Publish exact-head check
+        if: steps.decide.outputs.count != '0'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          for decision in "$RUNNER_TEMP"/decisions/decision-*.json; do
+            jq -e '.can_execute == false and .merge_or_release_authorized == false' "$decision" >/dev/null || {
+              echo "::error::RELEASE_DECISION_INVARIANT_VIOLATED: $decision"; exit 1; }
+            payload=$(jq '{name: .check_name, head_sha: .head_sha, status: "completed",
+              conclusion: .conclusion, output: {title: .title, summary: .summary}}' "$decision")
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input - <<<"$payload" >/dev/null; then
+              echo "::error::RELEASE_CHECK_PUBLISH_FAILED: $(jq -r '.head_sha' "$decision")"
+              exit 1
+            fi
+            echo "- $(jq -r '"\(.check_name) \(.conclusion) at \(.head_sha)"' "$decision")" >> "$GITHUB_STEP_SUMMARY"
+          done

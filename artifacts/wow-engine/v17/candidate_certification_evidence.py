@@ -14,7 +14,7 @@ from v17.model_source_entitlements import SOURCES, source_readiness
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
-VERIFIER_VERSION = "V17_CANDIDATE_BOUND_BINARY_REPLAY_V1"
+VERIFIER_VERSION = "V17_CANDIDATE_BOUND_BINARY_REPLAY_V2"
 RECEIPT_TABLE = "wow_d1_certification_evidence_receipts"
 
 
@@ -30,16 +30,31 @@ def _iso(value: Any) -> str:
 
 
 def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the candidate's frozen training corpus, not the live, growing ledger.
+
+    ``wow_d1_training_rows`` is append-only: later maintenance runs add new
+    seasons and re-materialized rows for events already trained on.  Replay must
+    rebuild exactly what the candidate was fitted on, so the corpus is bounded to
+    rows that existed when the candidate artifact was persisted.  The dataset-hash
+    and artifact-checksum comparisons below remain the integrity proof: if this
+    bound ever selects the wrong rows, replay fails closed rather than passing.
+    """
+    created_at = candidate.get("created_at")
+    if not created_at:
+        raise ValueError("CANDIDATE_CREATED_AT_REQUIRED_FOR_FROZEN_CORPUS")
+    corpus_bound = _iso(created_at)
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
         page = (
             db.table("wow_d1_training_rows")
-            .select("official_event_id,event_start_time,feature_as_of,features,outcome_json,source_manifest,source_manifest_sha256,market_features_used,can_execute")
+            .select("training_row_id,created_at,official_event_id,event_start_time,feature_as_of,features,outcome_json,source_manifest,source_manifest_sha256,market_features_used,can_execute")
             .eq("sport", candidate["sport"])
             .eq("league", candidate["league"])
             .eq("model_family", candidate["model_family"])
             .eq("feature_schema_version", candidate["feature_schema_version"])
+            .lte("created_at", corpus_bound)
+            .order("training_row_id")
             .range(offset, offset + 999)
             .execute()
         )
@@ -48,8 +63,37 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
         if len(batch) < 1000:
             break
         offset += 1000
-    rows.sort(key=lambda row: (_iso(row["event_start_time"]), str(row["official_event_id"])))
-    return rows
+    # The append-only ledger retains multiple source versions of an event.
+    # Reconstruct the last version that was present when this fitted
+    # candidate was saved. Source/dataset/model/calibrator/metric hash checks
+    # below remain mandatory: choosing the wrong version fails replay.
+    latest_by_event: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        event_id = str(row.get("official_event_id") or "").strip()
+        if not event_id:
+            raise ValueError("CANDIDATE_CORPUS_OFFICIAL_EVENT_ID_MISSING")
+        if not row.get("created_at"):
+            raise ValueError("CANDIDATE_CORPUS_ROW_CREATED_AT_MISSING")
+        timestamp = _iso(row["created_at"])
+        previous = latest_by_event.get(event_id)
+        if previous is None:
+            latest_by_event[event_id] = row
+            continue
+        earlier = _iso(previous["created_at"])
+        if timestamp > earlier:
+            latest_by_event[event_id] = row
+        elif timestamp == earlier:
+            # A same-instant fork is not resolved by an arbitrary UUID sort.
+            comparable = (
+                "source_manifest_sha256", "features", "outcome_json",
+                "event_start_time", "feature_as_of", "market_features_used",
+                "can_execute",
+            )
+            if any(row.get(field) != previous.get(field) for field in comparable):
+                raise ValueError("CANDIDATE_CORPUS_LATEST_VERSION_AMBIGUOUS")
+    unique_rows = list(latest_by_event.values())
+    unique_rows.sort(key=lambda row: (_iso(row["event_start_time"]), str(row["official_event_id"])))
+    return unique_rows
 
 
 def _source_id(manifest: Mapping[str, Any]) -> str:
@@ -120,7 +164,11 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
     if str(c.get("source_policy_id") or "") != "TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1" or not str(c.get("model_family") or "").endswith("_DYNAMIC_TEAM_STATE_LOGIT_V2"):
         blockers.append("CANDIDATE_REPLAY_CONTRACT_UNSUPPORTED")
 
-    rows = _all_rows(db, c)
+    try:
+        rows = _all_rows(db, c)
+    except ValueError as exc:
+        blockers.append(str(exc))
+        rows = []
     expected = sum(int(c.get(k) or 0) for k in ("training_rows", "calibration_rows", "test_rows"))
     if len(rows) != expected:
         blockers.append("TRAINING_ROW_COUNT_MISMATCH")
