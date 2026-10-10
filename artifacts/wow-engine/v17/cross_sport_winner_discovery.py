@@ -665,6 +665,23 @@ def normalize_discovered_event(
         or raw.get("event_start_time_utc")
     )
     event_id = raw.get("id") or raw.get("event_id") or raw.get("official_event_id") or raw.get("event_uuid")
+    regime = target.regime if target is not None else registry.REGULAR_SEASON
+
+    # A verified Rundown sport id owns the regime on primary acquisition.  The
+    # secondary ESPN scoreboard, however, returns ALL season phases even when
+    # queried as a fallback to a regular-season target.  Preserve ESPN's own
+    # normalized season phase for that specific fallback, or fail closed if
+    # unavailable; otherwise playoff rows can reach regular-season-only models.
+    if (
+        raw.get("_wow_secondary_source") == "ESPN_SCOREBOARD_RESEARCH_FALLBACK"
+        and raw.get("season_phase_source") == "ESPN_SCOREBOARD"
+    ):
+        season_phase = _text(raw.get("season_phase")).upper()
+        regime = {
+            "REGULAR_SEASON": registry.REGULAR_SEASON,
+            "POSTSEASON": registry.PLAYOFFS,
+            "PRESEASON": registry.PRESEASON,
+        }.get(season_phase, "UNKNOWN")
     return DiscoveredEvent(
         sport=normalize_team_event_identity(sport, league),
         league=league.upper(),
@@ -679,7 +696,7 @@ def normalize_discovered_event(
             now=now,
         ),
         source=source,
-        regime=target.regime if target is not None else registry.REGULAR_SEASON,
+        regime=regime,
         provider=target.provider if target is not None else None,
         provider_sport_id=target.sport_id if target is not None else None,
         raw=dict(raw),
