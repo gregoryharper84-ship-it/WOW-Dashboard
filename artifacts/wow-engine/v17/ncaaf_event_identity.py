@@ -78,9 +78,21 @@ def _name_match(provider_name: Any, canonical_name: Any) -> bool:
     if left == right:
         return True
     shorter, longer = sorted((left, right), key=len)
-    # ESPN often appends mascots while CFBD stores the school name. Require a
-    # meaningful prefix; never use fuzzy edit-distance matching.
-    return len(shorter) >= 5 and longer.startswith(shorter)
+    # ESPN often appends mascots while CFBD stores a school name. But a
+    # school-name prefix may describe a DIFFERENT university: Florida State
+    # is not Florida, Georgia Southern is not Georgia, and Texas A&M is not
+    # Texas. Reject known university-form qualifiers even if opponents and
+    # kickoff otherwise happen to match; do not silently pick a wrong game.
+    if len(shorter) < 5 or not longer.startswith(shorter):
+        return False
+    school_qualifiers = (
+        "state", "southern", "northern", "eastern", "western",
+        "central", "tech", "am", "international", "atlantic",
+    )
+    remainder = longer[len(shorter):]
+    if any(remainder.startswith(qualifier) for qualifier in school_qualifiers):
+        return False
+    return True
 
 
 def _aware(value: Any) -> datetime:
