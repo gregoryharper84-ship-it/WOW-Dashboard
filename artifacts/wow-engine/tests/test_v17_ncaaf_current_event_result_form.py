@@ -166,3 +166,21 @@ def test_prior_score_result_contradiction_is_blocked():
     with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
         _package(rows)
     assert err.value.code == "NCAAF_FORWARD_PRIOR_RESULT_CONTRADICTION"
+
+
+
+def test_result_source_cannot_predate_prior_game():
+    rows = _games()
+    rows[0]["result_source_timestamp"] = "2026-08-31T20:00:00+00:00"
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
+        _package(rows)
+    assert err.value.code == "NCAAF_FORWARD_PRIOR_EVIDENCE_TIME_CONTRADICTION"
+
+
+@pytest.mark.parametrize("bad_score", [True, 14.5, "14.5"])
+def test_prior_result_scores_must_be_real_whole_numbers(bad_score):
+    rows = _games()
+    rows[0]["home_points"] = bad_score
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
+        _package(rows)
+    assert err.value.code == "NCAAF_FORWARD_PRIOR_RESULT_INVALID"
