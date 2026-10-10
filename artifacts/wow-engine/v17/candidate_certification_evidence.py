@@ -30,6 +30,15 @@ def _iso(value: Any) -> str:
 
 
 def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Replay only the immutable candidate's historical training snapshot.
+
+    Current team-state maintenance appends new rows to the shared family/schema
+    ledger. Including those later observations in an older candidate's replay
+    breaks its frozen training split and could leak forward outcomes. The row
+    timestamps and candidate creation time are database-owned; candidate
+    dataset/artifact hashes are checked independently after this selection.
+    """
+    cutoff = _iso(candidate["created_at"])
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
@@ -40,6 +49,8 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
             .eq("league", candidate["league"])
             .eq("model_family", candidate["model_family"])
             .eq("feature_schema_version", candidate["feature_schema_version"])
+            .lte("created_at", cutoff)
+            .order("training_row_id")
             .range(offset, offset + 999)
             .execute()
         )
