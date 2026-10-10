@@ -197,7 +197,12 @@ def resolve_ncaaf_current_event_identity(
         for row in matches
         if str(row.get("id") or row.get("event_id") or "").strip() == selected_id
     )
+    neutral_raw = selected.get("neutralSite", selected.get("neutral_site"))
+    # Do not coerce a missing/non-boolean venue value to False: it is an
+    # observed sporting feature and must remain unknown until source-verified.
+    neutral_site = neutral_raw if type(neutral_raw) is bool else None
     return {
+        "neutral_site": neutral_site,
         "event_id": selected_id,
         "event_start_time": _aware(_start_value(selected)).isoformat(),
         "home_team": str(_home_name(selected) or ""),
