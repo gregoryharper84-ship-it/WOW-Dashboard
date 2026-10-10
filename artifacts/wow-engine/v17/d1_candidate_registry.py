@@ -171,12 +171,12 @@ def persist_training_rows(
 
 
 def persist_candidate(db: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
-    validate_candidate_partition_counts(raw)
     _validate_governance(raw, prefix="D1_CANDIDATE")
     if raw.get("lifecycle_state") != "CANDIDATE":
         raise D1RegistryError("D1_CANDIDATE_LIFECYCLE_INVALID", str(raw.get("lifecycle_state")))
     if any(bool(raw.get(name)) for name in ("promoted", "active", "automatic_certification", "automatic_promotion")):
         raise D1RegistryError("D1_CANDIDATE_GOVERNANCE_FLAGS_INVALID", "candidate must remain inert")
+    validate_candidate_partition_counts(raw)
     version = str(raw.get("model_artifact_version") or "").strip()
     checksum = str(raw.get("artifact_checksum") or "").strip().lower()
     if not version or len(checksum) != 64:
