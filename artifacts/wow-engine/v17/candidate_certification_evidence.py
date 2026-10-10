@@ -30,24 +30,49 @@ def _iso(value: Any) -> str:
 
 
 def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return the training pool as it stood when this candidate was persisted.
+
+    Maintenance re-runs append a new row per event whenever the event's source
+    manifest changes, so the table accumulates several rows per event over time.
+    The trainer persists its exact rows immediately before the candidate artifact,
+    so the candidate-bound pool is the newest row per event created at or before
+    the candidate.  This selection is only a reconstruction hypothesis: the replay
+    must still reproduce the stored dataset hash, artifact checksum, calibrator and
+    metrics exactly, otherwise the evidence fails closed.
+    """
+    created_at = candidate.get("created_at")
+    cutoff = _iso(created_at) if created_at else None
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
-        page = (
+        query = (
             db.table("wow_d1_training_rows")
-            .select("official_event_id,event_start_time,feature_as_of,features,outcome_json,source_manifest,source_manifest_sha256,market_features_used,can_execute")
+            .select("training_row_id,created_at,official_event_id,event_start_time,feature_as_of,features,outcome_json,source_manifest,source_manifest_sha256,market_features_used,can_execute")
             .eq("sport", candidate["sport"])
             .eq("league", candidate["league"])
             .eq("model_family", candidate["model_family"])
             .eq("feature_schema_version", candidate["feature_schema_version"])
-            .range(offset, offset + 999)
-            .execute()
         )
+        if cutoff is not None:
+            query = query.lte("created_at", cutoff)
+        page = query.order("training_row_id").range(offset, offset + 999).execute()
         batch = [dict(row) for row in (getattr(page, "data", None) or [])]
         rows.extend(batch)
         if len(batch) < 1000:
             break
         offset += 1000
+    if cutoff is not None:
+        latest: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if row.get("created_at") and _iso(row["created_at"]) > cutoff:
+                continue
+            key = str(row["official_event_id"])
+            current = latest.get(key)
+            if current is None or (
+                _iso(row.get("created_at") or cutoff), str(row.get("training_row_id") or "")
+            ) > (_iso(current.get("created_at") or cutoff), str(current.get("training_row_id") or "")):
+                latest[key] = row
+        rows = list(latest.values())
     rows.sort(key=lambda row: (_iso(row["event_start_time"]), str(row["official_event_id"])))
     return rows
 
