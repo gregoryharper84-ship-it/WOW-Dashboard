@@ -285,6 +285,11 @@ _VERIFIED_HISTORY_ALIASES: dict[str, str] = {
     "michiganstatespartans": "Michigan State",
     "washingtonstatecougars": "Washington State",
     "ohiostatebuckeyes": "Ohio State",
+    # Verified provider display names for the incident #1636 current slate.
+    # CFBD source history uses the canonical short school names below.
+    "oregonducks": "Oregon",
+    "houstoncougars": "Houston",
+    "illinoisfightingillini": "Illinois",
 }
 for _school_norm, _aliases in _VERIFIED_SHORT_SCHOOL_MASCOTS.items():
     for _alias in _aliases:
