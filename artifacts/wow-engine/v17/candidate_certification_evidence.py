@@ -131,7 +131,15 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
     if str(c.get("source_policy_id") or "") != "TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1" or not str(c.get("model_family") or "").endswith("_DYNAMIC_TEAM_STATE_LOGIT_V2"):
         blockers.append("CANDIDATE_REPLAY_CONTRACT_UNSUPPORTED")
 
-    rows = _all_rows(db, c)
+    # Malformed snapshot identity is a typed evidence hold, never a fallback to
+    # the mutable live training ledger or an untyped server exception.
+    try:
+        _iso(c["created_at"])
+    except (KeyError, TypeError, ValueError):
+        blockers.append("CANDIDATE_SNAPSHOT_TIME_INVALID")
+        rows = []
+    else:
+        rows = _all_rows(db, c)
     expected = sum(int(c.get(k) or 0) for k in ("training_rows", "calibration_rows", "test_rows"))
     if len(rows) != expected:
         blockers.append("TRAINING_ROW_COUNT_MISMATCH")
