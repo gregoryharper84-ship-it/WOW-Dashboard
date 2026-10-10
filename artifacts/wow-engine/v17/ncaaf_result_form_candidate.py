@@ -13,7 +13,10 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import math
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:  # annotation-only; the lifecycle (scikit-learn) stays lazily imported
+    from v17.binary_candidate_lifecycle import BinaryTrainingRow
 
 CAN_EXECUTE = False
 SPORT = LEAGUE = "NCAAF"
