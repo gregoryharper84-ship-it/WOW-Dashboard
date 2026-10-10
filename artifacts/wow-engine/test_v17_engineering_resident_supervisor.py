@@ -46,7 +46,8 @@ class FakeClient:
         if suffix.startswith("actions/runs?"):
             if self.active and "status=in_progress" in suffix:
                 return {"total_count": 1, "workflow_runs": [
-                    {"name": "wow-v17-chatgpt-engineering-worker"}
+                    {"name": "wow-v17-chatgpt-engineering-worker",
+                     "path": ".github/workflows/wow-v17-chatgpt-engineering-worker.yml"}
                 ]}
             return {"total_count": 0, "workflow_runs": []}
         if suffix in ("issues/1388", "issues/823"):
@@ -152,6 +153,120 @@ def test_empty_queue_never_dispatches():
     assert not client.sent
 
 
+@pytest.mark.parametrize("run_name,run_path,expected", [
+    ("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
+     ".github/workflows/wow-v17-chatgpt-engineering-worker.yml", True),
+    ("wow-v17-claude-engineering-worker lease=P0_LLP_RESTORE incident=1021",
+     ".github/workflows/wow-v17-claude-engineering-worker.yml", True),
+    # Observed GitHub Actions shape: the provider run name is NOT its workflow name.
+    ("WOW V17 provider source=wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO lease=GLOBAL incident=AUTO",
+     ".github/workflows/wow-v17-engineering-provider-dispatcher.yml", True),
+    ("wow-v17-chatgpt-engineering-worker-lookalike lease=GLOBAL incident=AUTO",
+     ".github/workflows/wow-v17-chatgpt-engineering-worker-lookalike.yml", False),
+    ("wow-v17-chatgpt-engineering-worker-fake",
+     ".github/workflows/wow-v17-chatgpt-engineering-worker-fake.yml", False),
+    ("unrelated-workflow lease=GLOBAL incident=1021",
+     ".github/workflows/unrelated-workflow.yml", False),
+])
+def test_active_worker_run_path_admission(run_name, run_path, expected):
+    class Running(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                if "status=in_progress" in suffix:
+                    return {"total_count": 1, "workflow_runs": [
+                        {"name": run_name, "path": run_path}
+                    ]}
+                return {"total_count": 0, "workflow_runs": []}
+            return super().get(suffix)
+    client = Running()
+    assert active_engineering_workflow(client) is expected
+    store = FakeRedis()
+    status = dispatch_once(client, store, MANIFEST)
+    if expected:
+        assert status == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+        assert client.sent == []
+    else:
+        assert status == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
+@pytest.mark.parametrize("run", [
+    {"name": "wow-v17-chatgpt-engineering-worker"},
+    {"name": "wow-v17-chatgpt-engineering-worker",
+     "path": ".github/workflows/untrusted-lookalike.yml"},
+    {"name": "wow-v17-chatgpt-engineering-worker", "path": None},
+    "malformed-run",
+])
+def test_active_workflow_missing_or_conflicting_identity_fails_closed(run):
+    class BadIdentity(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                return {"total_count": 1, "workflow_runs": [run]}
+            return super().get(suffix)
+    client = BadIdentity()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_IDENTITY"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert client.sent == []
+
+
+@pytest.mark.parametrize("name,path", [
+    ("WOW V17 provider source=wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
+     ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/heads/main"),
+    ("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=1021",
+     ".github/workflows/wow-v17-chatgpt-engineering-worker.yml@refs/heads/main"),
+    ("wow-v17-claude-engineering-worker lease=GLOBAL incident=1021",
+     ".github/workflows/wow-v17-claude-engineering-worker.yml@refs/pull/1545/merge"),
+])
+def test_trusted_active_run_path_ref_suffix_blocks_duplicate_dispatch(name, path):
+    class TrustedRef(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                if "status=in_progress" in suffix:
+                    return {"total_count": 1, "workflow_runs": [{"name": name, "path": path}]}
+                return {"total_count": 0, "workflow_runs": []}
+            return super().get(suffix)
+    client = TrustedRef()
+    assert active_engineering_workflow(client)
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+    assert client.sent == []
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@main",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/heads/main@bad",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/heads/main bad",
+])
+def test_malformed_workflow_ref_suffix_fails_closed(path):
+    class InvalidRef(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                return {"total_count": 1, "workflow_runs": [{
+                    "name": "WOW V17 provider source=automatic", "path": path,
+                }]}
+            return super().get(suffix)
+    client = InvalidRef()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_REF_INVALID"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert client.sent == []
+
+
+def test_lookalike_workflow_file_with_ref_is_not_trusted():
+    class Lookalike(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                if "status=in_progress" in suffix:
+                    return {"total_count": 1, "workflow_runs": [{
+                        "name": "other",
+                        "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml-lookalike@refs/heads/main",
+                    }]}
+                return {"total_count": 0, "workflow_runs": []}
+            return super().get(suffix)
+    client = Lookalike()
+    assert not active_engineering_workflow(client)
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
 def test_github_inventory_incomplete_fails_closed():
     class Incomplete(FakeClient):
         def get(self, suffix):
@@ -160,6 +275,93 @@ def test_github_inventory_incomplete_fails_closed():
             return super().get(suffix)
     with pytest.raises(RuntimeError, match="INCOMPLETE"):
         active_engineering_workflow(Incomplete())
+
+
+@pytest.mark.parametrize("body,matched", [
+    ("Incident: 1388", True),
+    ("Incident: #1388", True),
+    ("Incident: `1388`", True),
+    ("Incident: `#1388`", True),
+    ("Incident: `13880`", False),
+    ("Incident: 1388abc", False),
+    ("Incident: 1388 unrelated text", False),
+    ("Incident: `1388", False),
+    ("Refs #1388", True),
+    ("Refs #1021 and #1388", True),
+    ("Refs: #1388", True),
+    ("Fixes gregoryharper84-ship-it/WOW-Dashboard#1388", True),
+    ("Closes #1388", True),
+    ("Resolves #1388", True),
+    ("Incident: #13880", False),
+    ("Refs #13880", False),
+    ("Refs #11388", False),
+    ("Refs other/repo#1388", False),
+    ("Unrelated mention #1388", False),
+    ("Refs #1021", False),
+])
+def test_issue_reference_forms_hold_existing_repairs(body, matched):
+    class ReferencingPR(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("pulls?"):
+                return [{"body": body}]
+            return super().get(suffix)
+
+    client = ReferencingPR()
+    assert pending_pr_for_issue(client, 1388) is matched
+    outcome = dispatch_once(client, FakeRedis(), MANIFEST)
+    if matched:
+        assert outcome == "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
+        assert not client.sent
+    else:
+        assert outcome == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+        assert client.sent == [ISSUE]
+
+
+def test_full_pr_inventory_fails_closed_instead_of_missing_incident():
+    class FullInventory(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("pulls?"):
+                return [{"body": ""}] * 100
+            return super().get(suffix)
+
+    client = FullInventory()
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_NOT_EXHAUSTIVE"):
+        pending_pr_for_issue(client, 1388)
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_NOT_EXHAUSTIVE"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert not client.sent
+
+
+@pytest.mark.parametrize("inventory", [
+    {"workflow_runs": []},
+    {"workflow_runs": [], "total_count": -1},
+    {"workflow_runs": [], "total_count": "0"},
+    {"workflow_runs": [], "total_count": True},
+    {"workflow_runs": [], "total_count": 1},
+    {"workflow_runs": [{"name": "other", "path": "other"}], "total_count": 0},
+])
+def test_missing_or_inconsistent_active_inventory_fails_closed(inventory):
+    class BadInventory(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                return inventory
+            return super().get(suffix)
+    client = BadInventory()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert not client.sent
+
+
+def test_malformed_active_inventory_fails_closed():
+    class WrongType(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                return []
+            return super().get(suffix)
+    client = WrongType()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INVALID"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert not client.sent
 
 
 def test_open_pr_identity_is_not_silent_and_blocks_duplicate():

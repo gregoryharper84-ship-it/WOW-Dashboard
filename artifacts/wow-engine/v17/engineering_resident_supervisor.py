@@ -26,6 +26,11 @@ ACTIVE_WORKFLOWS = frozenset({
     "wow-v17-claude-engineering-worker",
     "wow-v17-engineering-provider-dispatcher",
 })
+# GitHub workflow_run.path is the trusted workflow identity. Run names are
+# presentation strings and may be prefixed or nested by Actions run-name.
+ACTIVE_WORKFLOW_PATHS = frozenset(
+    f".github/workflows/{name}.yml" for name in ACTIVE_WORKFLOWS
+)
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
@@ -87,15 +92,53 @@ class GitHubTransport:
         )
 
 
+def _trusted_workflow_name(run_name: Any) -> str:
+    """Strip only the known GitHub display suffix, never a lookalike prefix."""
+    if not isinstance(run_name, str):
+        return ""
+    # GitHub Actions run-name: "<workflow> lease=<group> incident=<id>".
+    # Exact workflow identity is still required after removing this metadata.
+    return run_name.split(" lease=", 1)[0].split(" incident=", 1)[0]
+
+
+def _canonical_workflow_path(path: str) -> str:
+    """Normalize only GitHub's optional @refs/... provenance suffix.
+
+    A trusted-looking path with unknown ref syntax is not admission evidence.
+    Active runs from any recognized ref must still block dispatch; no ref grants
+    merge, deploy or implementation authority.
+    """
+    if "@" not in path:
+        return path
+    workflow, sep, ref = path.partition("@")
+    if (not workflow or not sep or not ref.startswith("refs/")
+            or len(ref) <= len("refs/") or "@" in ref
+            or any(c.isspace() for c in ref)):
+        raise RuntimeError("ACTIVE_WORKFLOW_REF_INVALID")
+    return workflow
+
+
 def active_engineering_workflow(client: GitHubTransport) -> bool:
     """Fail closed when GitHub could not enumerate the complete active run set."""
     for state in ("queued", "in_progress", "waiting", "requested"):
         result = client.get(f"actions/runs?status={state}&per_page=100")
+        if not isinstance(result, dict):
+            raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
         runs = result.get("workflow_runs")
-        if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
+        total = result.get("total_count")
+        if (not isinstance(runs, list) or isinstance(total, bool)
+                or not isinstance(total, int) or total != len(runs)):
             raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(run.get("name") in ACTIVE_WORKFLOWS for run in runs):
-            return True
+        for run in runs:
+            if not isinstance(run, dict) or not isinstance(run.get("path"), str):
+                raise RuntimeError("ACTIVE_WORKFLOW_IDENTITY_INCOMPLETE")
+            workflow_path = _canonical_workflow_path(run["path"])
+            if workflow_path in ACTIVE_WORKFLOW_PATHS:
+                return True
+            # A trusted-looking name with a different path is not a worker;
+            # fail closed rather than trusting an unverified alias.
+            if _trusted_workflow_name(run.get("name")) in ACTIVE_WORKFLOWS:
+                raise RuntimeError("ACTIVE_WORKFLOW_IDENTITY_CONFLICT")
     return False
 
 
@@ -131,8 +174,23 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
     if len(result) == 100:
         raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
     import re
-    pattern = re.compile(r"(?im)^Incident:\s*(?:\x60)?#?" + re.escape(str(issue_number)) + r"(?:\x60)?\s*$")
-    return any(pattern.search(str(pr.get("body") or "")) for pr in result)
+    number = re.escape(str(issue_number))
+    # Accept the incident header and GitHub issue-reference conventions used
+    # by existing repair PRs. Never treat incidental "#123" mentions as claims.
+    incident = re.compile(
+        # Preserve the repository's canonical backticked Incident header
+        # while rejecting partial IDs, trailing text and malformed wrappers.
+        rf"(?im)^\s*Incident\s*:\s*(?:`#?{number}`|#?{number})\s*$"
+    )
+    references = re.compile(
+        rf"(?im)^\s*(?:Refs?|Fixes|Closes|Resolves)\b[^\n]*?(?<!\w)"
+        rf"(?:{re.escape(REPO)})?#{number}(?!\d)"
+    )
+    return any(
+        bool(incident.search(str(pr.get("body") or "")) or
+             references.search(str(pr.get("body") or "")))
+        for pr in result
+    )
 
 
 def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str, Any]) -> str:
