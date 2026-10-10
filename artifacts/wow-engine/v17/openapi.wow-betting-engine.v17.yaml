@@ -281,6 +281,24 @@ paths:
         '401': {description: Authentication failed}
         '409': {description: Sport-specific model unavailable or held}
         '422': {description: Host/event/evidence contract invalid}
+  /score-team-event-request:
+    post:
+      operationId: scoreWowTeamEventRequest
+      x-openai-isConsequential: false
+      description: >-
+        Authenticated 1-100 team/event row dispatcher. Fitted specialists and
+        terminal holds remain authoritative. No market or model substitution,
+        automatic certification, live wagers or orders; can_execute=false.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TeamEventRequestBatch'}
+      responses:
+        '200': {description: Governed per-event approvals and typed holds}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid request or batch size}
   /internal/v17/spread-forward-shadow:
     post:
       operationId: scoreWowV17SpreadForwardShadow
@@ -826,6 +844,38 @@ components:
         records:
           type: array
           items: {type: object, additionalProperties: true}
+    TeamEventRequestBatch:
+      type: object
+      additionalProperties: false
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: {$ref: '#/components/schemas/TeamEventRequestRow'}
+    TeamEventRequestRow:
+      type: object
+      additionalProperties: false
+      required: [research_run_id, objective_lane, sport, league, event_key, event_state, event_date, timezone, price_required_for_objective]
+      properties:
+        research_run_id: {type: string}
+        objective_lane: {type: string, enum: [OUTRIGHT_WIN_PROBABILITY, UPSET_PROBABILITY, MARKET_EDGE]}
+        sport: {type: string}
+        league: {type: string}
+        event_key: {type: string}
+        event_state: {type: string, enum: [PREGAME]}
+        event_date: {type: string, format: date}
+        timezone: {type: string}
+        price_required_for_objective: {type: boolean}
+        event_start_time_utc: {type: [string, 'null']}
+        home_team: {type: [string, 'null']}
+        away_team: {type: [string, 'null']}
+        source_snapshot_id: {type: [string, 'null']}
+        latest_material_update_timestamp: {type: [string, 'null']}
+        settlement_basis: {type: [string, 'null']}
+        market_input: {type: [object, 'null'], additionalProperties: true}
+        sport_specific_evidence: {type: object, additionalProperties: true}
     TeamEventRequest:
       type: object
       additionalProperties: false
