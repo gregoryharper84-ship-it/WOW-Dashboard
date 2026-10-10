@@ -138,15 +138,18 @@ def test_existing_pr_claim_is_consistent_with_no_duplicate_writer() -> None:
     assert skipped["1496"] == "EXISTING_OPEN_PR_REQUIRES_REVIEW"
 
 
+_UNSET_TOTAL = object()
+
+
 class _InventoryClient(_Client):
-    def __init__(self, runs, *, delta=0, total_override=None):
+    def __init__(self, runs, *, delta=0, total_override=_UNSET_TOTAL):
         super().__init__(runs)
         self.delta, self.total_override = delta, total_override
 
     def get(self, suffix):
         result = super().get(suffix)
         if "status=in_progress" in suffix:
-            result["total_count"] = (self.total_override if self.total_override is not None
+            result["total_count"] = (self.total_override if self.total_override is not _UNSET_TOTAL
                                      else result["total_count"] + self.delta)
         return result
 
