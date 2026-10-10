@@ -183,8 +183,12 @@ def hydrate_pregame(
             histories[h_id].append(_history_entry(dict(h), dict(a), game_id=gid, start=start))
         if a_id in histories:
             histories[a_id].append(_history_entry(dict(a), dict(h), game_id=gid, start=start))
+        # Bind the *actual observed box stats* as well as the provider manifest.
+        # Otherwise a modified score/feature input could reuse the same receipt hash.
         lineage.append({"game_id": gid, "event_version": game["event_version"],
-                        "source_manifest_sha256": digest, "settled_at": settled.isoformat(),
+                        "source_manifest_sha256": digest,
+                        "observed_box_stats_sha256": _hash({"home": h, "away": a}),
+                        "settled_at": settled.isoformat(),
                         "source_as_of": observed.isoformat()})
     for history in histories.values():
         history.sort(key=lambda row: (row["start"], row["event_id"]))
