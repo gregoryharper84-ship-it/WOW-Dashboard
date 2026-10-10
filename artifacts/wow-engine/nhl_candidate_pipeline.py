@@ -457,7 +457,10 @@ def candidate_record(candidate: BinaryCandidate, *, training_code_sha: str) -> d
         "artifact_payload": payload,
         "calibrator_payload": calibrator,
         "validation_metrics": metrics,
-        # These columns are mutually exclusive chronological partitions.\n        # Reporting total rows as training_rows double-counts calibration/test\n        # in D1 replay and breaks exact corpus/hash validation.\n        "training_rows": candidate.metrics.train_n,
+        # These columns are mutually exclusive chronological partitions.
+        # Reporting total rows as training_rows double-counts calibration/test
+        # in D1 replay and breaks exact corpus/hash validation.
+        "training_rows": candidate.metrics.train_n,
         "calibration_rows": candidate.metrics.calibration_n,
         "test_rows": candidate.metrics.test_n,
         "research_screen_pass": candidate.research_screen_pass,
