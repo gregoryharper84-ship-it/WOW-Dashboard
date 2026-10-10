@@ -734,7 +734,9 @@ async def worker_loop(
             # Own the one process-wide heavyweight slot before claiming durable
             # work. Memory pressure therefore defers the claim itself instead
             # of consuming a lease/attempt and later failing the candidate.
-            permit = memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF")
+            # Reclaim off the event loop; admission re-measures the gate.
+            await memory_admission.reclaim_under_pressure_async("SCOUT_HANDOFF")
+            permit = memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF", reclaim=False)
             if permit is None:
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=1.0)
