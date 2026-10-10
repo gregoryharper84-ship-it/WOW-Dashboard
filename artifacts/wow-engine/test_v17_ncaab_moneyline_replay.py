@@ -261,7 +261,36 @@ def test_loader_requires_exactly_one_candidate(base):
 
 
 def test_cli_without_credentials_is_typed_block(monkeypatch, capsys):
-    for k in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SERVICE_KEY"):
+    for k in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SERVICE_KEY",
+              "NCAAB_REPLAY_READ_ONLY_KEY"):
         monkeypatch.delenv(k, raising=False)
     assert replay.main([CID, SHA]) == 3
     assert "NCAAB_REPLAY_READ_CREDENTIAL_UNAVAILABLE" in capsys.readouterr().out
+
+
+def test_cli_rejects_privileged_credential_substitution(monkeypatch, capsys):
+    monkeypatch.setenv("SUPABASE_URL", "https://validation.example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "privileged-key-must-not-fallback")
+    monkeypatch.delenv("NCAAB_REPLAY_READ_ONLY_KEY", raising=False)
+    assert replay.main([CID, SHA]) == 3
+    assert "NCAAB_REPLAY_READ_CREDENTIAL_UNAVAILABLE" in capsys.readouterr().out
+
+
+def test_cli_typed_failure_on_missing_candidate(monkeypatch, capsys):
+    monkeypatch.setenv("SUPABASE_URL", "https://validation.example.supabase.co")
+    monkeypatch.setenv("NCAAB_REPLAY_READ_ONLY_KEY", "dedicated-select-only-test-key")
+    import supabase
+    monkeypatch.setattr(supabase, "create_client", lambda *_: _Client([], []))
+    assert replay.main([CID, SHA]) == 3
+    assert "NCAAB_REPLAY_CANDIDATE_MISSING" in capsys.readouterr().out
+
+
+def test_cli_typed_failure_on_provider_read_error(monkeypatch, capsys):
+    monkeypatch.setenv("SUPABASE_URL", "https://validation.example.supabase.co")
+    monkeypatch.setenv("NCAAB_REPLAY_READ_ONLY_KEY", "dedicated-select-only-test-key")
+    import supabase
+    monkeypatch.setattr(supabase, "create_client", lambda *_: (_ for _ in ()).throw(RuntimeError("sensitive-token")))
+    assert replay.main([CID, SHA]) == 3
+    output = capsys.readouterr().out
+    assert "NCAAB_REPLAY_SOURCE_READ_FAILED" in output
+    assert "sensitive-token" not in output
