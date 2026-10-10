@@ -158,3 +158,80 @@ def test_candidate_evidence_route_install_is_idempotent():
     assert [route.path for route in app.router.routes].count(
         "/internal/v17/team-event-certification-evidence/{candidate_id}"
     ) == 1
+
+
+def test_candidate_pool_microsecond_cutoff_never_includes_future_version():
+    candidate = _candidate(
+        created_at="2026-09-26T12:00:00.000000+00:00",
+        feature_schema_version="NCAAF_DYNAMIC_TEAM_STATE_FEATURES_V2",
+    )
+    rows = evidence._all_rows(
+        _Db([
+            _training_row("r1", "1", "2026-09-26T12:00:00.000000+00:00", "at-cutoff"),
+            _training_row("r2", "2", "2026-09-26T12:00:00.000001+00:00", "future"),
+        ]),
+        candidate,
+    )
+    assert [(r["official_event_id"], r["source_manifest_sha256"]) for r in rows] == [
+        ("1", "at-cutoff")
+    ]
+
+
+def test_candidate_without_snapshot_time_has_typed_hold_and_no_mutable_db_read():
+    from unittest.mock import patch
+
+    template = {
+        **_candidate(created_at=None),
+        "model_artifact_version": "NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2_frozen",
+        "artifact_checksum": "c" * 64,
+        "source_policy_id": "TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1",
+        "research_screen_pass": True,
+        "lifecycle_state": "CANDIDATE",
+        "promoted": False,
+        "active": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+    class _CandidateQuery:
+        def select(self, *_):
+            return self
+
+        def eq(self, *_):
+            return self
+
+        def limit(self, *_):
+            return self
+
+        def execute(self):
+            return _Page([template])
+
+    class _CandidateOnlyDb:
+        def table(self, name):
+            assert name == "wow_d1_candidate_artifacts", (
+                "Unsafe read of mutable candidate training ledger"
+            )
+            return _CandidateQuery()
+
+    for invalid in (None, "", "bad-timestamp"):
+        template["created_at"] = invalid
+        with (
+            patch.object(evidence, "_all_rows", side_effect=AssertionError("mutable read")),
+            patch.object(evidence, "_persist", return_value={
+                "source_review_status": "FAIL",
+                "replay_status": "FAIL",
+                "receipt_id": "held-receipt",
+                "evidence_sha256": "hold",
+            }),
+        ):
+            result = evidence.verify_candidate_certification_evidence(
+                _CandidateOnlyDb(), template["candidate_id"]
+            )
+        assert result["status"] == "CERTIFICATION_EVIDENCE_FAILED"
+        assert "CANDIDATE_SNAPSHOT_TIME_INVALID" in result["blockers"]
+        assert result["probability_publishable"] is False
+        assert result["automatic_certification"] is False
+        assert result["automatic_promotion"] is False
+        assert result["can_execute"] is False
