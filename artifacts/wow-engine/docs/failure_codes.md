@@ -180,6 +180,8 @@ This evaluator uses genuine fitted candidate coefficients, but returns only `res
 | `NCAAF_SHADOW_FORWARD_PACKAGE_INVALID` | NCAAF fitted-candidate shadow scoring | Feature package is not research-only, exact model family/schema, inert and non-publishable. | No |
 | `NCAAF_SHADOW_MANIFEST_INVALID` | NCAAF fitted-candidate shadow scoring | Source manifest lacks exact event identity, first-party CFBD resolver/provider proof, or market-free/pregame-reconstruction flags. | No |
 | `NCAAF_SHADOW_CANONICAL_START_MISMATCH` | NCAAF fitted-candidate shadow scoring | Hashed manifest's CFBD canonical kickoff differs from target event kickoff by more than the official identity tolerance. | No |
+| `NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_MISSING` | NCAAF fitted-candidate shadow scoring | The event source manifest has no concrete CFBD neutral-site boolean. | No |
+| `NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_CONTRADICTION` | NCAAF fitted-candidate shadow scoring | Numeric neutral-site model input differs from the CFBD-observed source value, even if input manifest digest was recomputed. | No |
 | `NCAAF_SHADOW_MANIFEST_CHECKSUM_MISMATCH` | NCAAF fitted-candidate shadow scoring | Forward feature source manifest hash fails exact content verification. | No |
 | `NCAAF_SHADOW_TIME_INVALID` | NCAAF fitted-candidate shadow scoring | Event or evidence timestamp missing, malformed or timezone-naive. | No |
 | `NCAAF_SHADOW_FEATURE_TIME_INVALID` | NCAAF fitted-candidate shadow scoring | Feature evidence time is at/after event start, or mismatches source manifest. | No |
