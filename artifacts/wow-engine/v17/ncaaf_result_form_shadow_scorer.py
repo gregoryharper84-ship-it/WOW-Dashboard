@@ -127,6 +127,11 @@ def score_ncaaf_research_shadow(
     if not isinstance(features, Mapping) or tuple(features.keys()) != FEATURE_NAMES:
         raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_FEATURE_SCHEMA_MISMATCH")
     values = [_number(features[name], "NCAAF_SHADOW_FEATURE_VALUE_INVALID") for name in FEATURE_NAMES]
+    canonical_neutral = manifest.get("canonical_neutral_site")
+    if type(canonical_neutral) is not bool:
+        raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_MISSING")
+    if features["neutral_site"] != float(canonical_neutral):
+        raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_CONTRADICTION")
     # Confirm these exact numeric features, not merely the event/source labels,
     # are bound into the previously verified immutable research manifest.
     feature_digest = _artifact_digest(features)
