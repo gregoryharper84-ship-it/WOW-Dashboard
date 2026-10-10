@@ -55,6 +55,7 @@ def _features():
         "canonical_identity_source": "CFBD:/games",
         "canonical_identity_resolution": "CFBD_EXACT_PARTICIPANTS_START_MATCH",
         "canonical_event_start_time": "2026-10-10T01:00:00+00:00",
+        "canonical_neutral_site": False,
         "market_features_used": False,
         "archived_pregame_snapshot": False,
     }
@@ -221,3 +222,23 @@ def test_shadow_fails_if_returned_feature_hash_disagrees_with_manifest():
     with pytest.raises(NCAAFShadowScoreBlocked) as error:
         score_ncaaf_research_shadow(candidate, forward)
     assert error.value.code == "NCAAF_SHADOW_FEATURE_HASH_MISMATCH"
+
+
+
+@pytest.mark.parametrize("source_flag", [None, "false", 0])
+def test_shadow_rejects_missing_neutral_source_verification(source_flag):
+    candidate, forward = _candidate(), _features()
+    forward["source_manifest"]["canonical_neutral_site"] = source_flag
+    forward["source_manifest_sha256"] = _digest(forward["source_manifest"])
+    with pytest.raises(NCAAFShadowScoreBlocked) as err:
+        score_ncaaf_research_shadow(candidate, forward)
+    assert err.value.code == "NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_MISSING"
+
+
+def test_shadow_rejects_neutral_site_disagreement_even_if_manifest_rehashed():
+    candidate, forward = _candidate(), _features()
+    forward["source_manifest"]["canonical_neutral_site"] = True
+    forward["source_manifest_sha256"] = _digest(forward["source_manifest"])
+    with pytest.raises(NCAAFShadowScoreBlocked) as err:
+        score_ncaaf_research_shadow(candidate, forward)
+    assert err.value.code == "NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_CONTRADICTION"
