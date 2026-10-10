@@ -199,3 +199,9 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## D1 certification replay split-metadata integrity (NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CANDIDATE_PARTITION_METRICS_MISMATCH` | team/event certification replay (read-only) | Persisted fitted D1 train/calibration/test partitions disagree with candidate `validation_metrics.train_n/calibration_n/test_n`, or partial/malformed fitted split metrics are supplied. A historical source-review or replay receipt cannot override the discrepancy; retain the candidate as immutable, fail the replay and require a new verified candidate. | No |
