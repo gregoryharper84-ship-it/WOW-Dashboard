@@ -11,6 +11,7 @@ with no certified artifact) must remain MODEL_UNAVAILABLE.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import uuid
 
 import pytest
@@ -200,3 +201,15 @@ def test_score_prop_registry_invalid_shape_is_typed_503(monkeypatch, auth):
     resp = TestClient(api_prod_market.app).post("/score-prop", json=_score_prop_payload(), headers=auth)
     assert resp.status_code == 503
     assert resp.json()["detail"]["code"] == "PROP_MODEL_REGISTRY_INVALID_RESPONSE"
+
+
+def test_custom_gpt_score_prop_contract_declares_typed_registry_503():
+    """A new HTTP 503 must be represented in the Action contract, fail closed."""
+    template = Path(__file__).resolve().parents[1] / "openapi.custom-gpt.template.yaml"
+    content = template.read_text(encoding="utf-8")
+    score_prop = content.split("  /score-prop:\n", 1)[1].split("\n  /score-event:\n", 1)[0]
+    assert "        '503':" in score_prop
+    for code in INFRA_CODES:
+        assert code in score_prop
+    assert "const: false" in score_prop
+    assert "required: [code, probability_publishable, can_execute]" in score_prop
