@@ -23,6 +23,8 @@ def stamp(t):
 def source(obj, name):
     obj["source_manifest"] = {
         "source": name, "source_policy": SOURCE_POLICY_ID,
+        "game_id": obj["game_id"], "home_team_id": obj["home_team_id"],
+        "away_team_id": obj["away_team_id"], "event_version": obj["event_version"],
         "market_features_used": False,
     }
     obj["source_manifest_sha256"] = _hash(obj["source_manifest"])
@@ -120,6 +122,7 @@ def test_input_order_independent_and_manifest_tamper_detected():
 @pytest.mark.parametrize("mutator,code", [
     (lambda e, g: e.update(home_team_id="Duke"), "NCAAB_PREGAME_CANONICAL_ID_REQUIRED"),
     (lambda e, g: e.update(away_team_id="12"), "NCAAB_PREGAME_TEAM_ID_COLLISION"),
+    (lambda e, g: e.update(home_team_id="34", away_team_id="12"), "NCAAB_PREGAME_MANIFEST_IDENTITY_MISMATCH"),
     (lambda e, g: e.update(official_event_id="NCAAB:0"), "NCAAB_PREGAME_EVENT_ID_MISMATCH"),
     (lambda e, g: e.update(neutral_site=True), "NCAAB_PREGAME_NEUTRAL_SITE_REVIEW_REQUIRED"),
     (lambda e, g: e.update(source_as_of=stamp(TARGET)), "NCAAB_PREGAME_TARGET_NOT_PREGAME"),
