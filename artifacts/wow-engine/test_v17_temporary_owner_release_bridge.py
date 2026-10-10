@@ -194,3 +194,53 @@ def test_owner_held_approval_secret_is_visible_to_preflight_step_only():
     assert secret_expr not in str(job.get("container", {}))
     # The value is compared locally, never sent to the persistent environment.
     assert 'echo "OWNER_APPROVAL=' not in preflight["run"]
+
+
+def test_read_only_qa_is_isolated_from_merge_capable_github_token():
+    """An agent reviewing untrusted PR text cannot inherit merge authority."""
+    document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    review = document["jobs"]["owner-readonly-qa"]
+    release = document["jobs"]["owner-bridge"]
+    for permission in ("contents", "issues", "pull-requests"):
+        assert review["permissions"][permission] == "read"
+    assert review["permissions"].get("actions") == "read"
+    assert "environment" not in review
+    assert "OWNER_APPROVAL" not in review.get("env", {})
+    assert "WOW_OWNER_RELEASE_APPROVAL" not in str(review)
+    qa_steps = [
+        s for s in review["steps"]
+        if "wow-claude-agent" in s.get("uses", "")
+    ]
+    assert len(qa_steps) == 1
+    assert qa_steps[0]["with"]["permission_profile"] == ":read-only"
+    assert "wow-claude-agent" not in str(release["steps"])
+    assert release["needs"] == "owner-readonly-qa"
+    assert "needs.owner-readonly-qa.result == 'success'" in release["if"]
+    assert "needs.owner-readonly-qa.outputs.exact_head_sha" in str(release)
+    assert "OWNER_BRIDGE_QA_SHA_MISMATCH" in str(release)
+    assert "OWNER_BRIDGE_CLASS_C_DENIED" in str(release)
+    # The owner-held authorization is confined to release preflight and never
+    # leaks through job outputs, QA content, artifacts, or a shared job env.
+    release_preflight = next(
+        s for s in release["steps"] if s.get("id") == "preflight"
+    )
+    assert release_preflight["env"]["OWNER_APPROVAL"] == (
+        "${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}"
+    )
+
+
+def test_isolated_qa_pins_source_and_blocks_unsafe_challenges():
+    document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    review = document["jobs"]["owner-readonly-qa"]
+    prepare = next(s for s in review["steps"]
+                   if s.get("id") == "qa_prepare")["run"]
+    assert ".head.sha == $h" in prepare
+    assert '.base.ref == "main"' in prepare
+    assert '.head.repo.full_name == $repo' in prepare
+    assert "candidate.diff" in prepare
+    validator = next(s for s in review["steps"]
+                     if s.get("id") == "qa_check")["run"]
+    assert '.decision == "PASS"' in validator
+    assert '.exact_head_sha == $sha' in validator
+    assert '.change_class == "A" or .change_class == "B"' in validator
+    assert 'echo "decision=PASS"' in validator
