@@ -128,6 +128,37 @@ def _partitions_valid(row: Mapping[str, Any]) -> bool:
         return False
 
 
+def _partition_metrics_mismatch(row: Mapping[str, Any]) -> bool:
+    """Audit persisted split counts against fitted metrics, without altering data.
+
+    Some legacy research candidates lack full split metrics. Preserve their
+    existing status (no new certification proof) while rejecting candidates
+    that *do* claim fitted train/calibration/test counts inconsistent with
+    the D1 columns. Historic NHL candidates wrongly stored total rows as
+    training_rows and double-counted the held-out blocks.
+    """
+    metrics = row.get("validation_metrics")
+    if metrics is None:
+        return False
+    if not isinstance(metrics, Mapping):
+        return True
+    partitions = (
+        ("training_rows", "train_n"),
+        ("calibration_rows", "calibration_n"),
+        ("test_rows", "test_n"),
+    )
+    if not any(name in metrics for _, name in partitions):
+        return False
+    for column, metric in partitions:
+        stored = row.get(column)
+        reported = metrics.get(metric)
+        if (isinstance(stored, bool) or isinstance(reported, bool)
+                or not isinstance(stored, int) or not isinstance(reported, int)
+                or stored <= 0 or reported <= 0 or stored != reported):
+            return True
+    return False
+
+
 def assess_candidate(
     sport: str,
     candidate: Mapping[str, Any] | None,
@@ -196,6 +227,8 @@ def assess_candidate(
         blockers.append("CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE")
     if not _partitions_valid(candidate):
         blockers.append("CANDIDATE_PARTITIONS_INVALID")
+    if _partition_metrics_mismatch(candidate):
+        blockers.append("CANDIDATE_PARTITION_METRICS_MISMATCH")
     if candidate.get("research_screen_pass") is not True:
         blockers.append("RESEARCH_SCREEN_FAILED")
 
@@ -332,7 +365,7 @@ def run_certification_replay(db: Any) -> dict[str, Any]:
         db.table(CANDIDATE_TABLE)
         .select(
             "candidate_id,created_at,sport,league,model_family,model_artifact_version,training_dataset_hash,"
-            "training_code_sha,artifact_checksum,training_rows,calibration_rows,test_rows,"
+            "training_code_sha,artifact_checksum,training_rows,calibration_rows,test_rows,validation_metrics,"
             "research_screen_pass,source_review_status,lifecycle_state,promoted,active,"
             "automatic_certification,automatic_promotion,probability_publishable,can_execute"
         )
