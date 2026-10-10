@@ -16,6 +16,7 @@ from typing import Any, Iterable
 from fastapi import FastAPI
 
 from github_actions_oidc import scout_route_auth_dependency
+from v17 import memory_admission
 from v17.d1_bulk_candidate_registry import persist_candidate_package_bulk
 from v17.d1_candidate_registry import D1RegistryError
 
@@ -151,7 +152,12 @@ def install_nhl_model_maintenance_route(
         operation_id="runWowV17NhlModelMaintenance",
     )
     def run_maintenance() -> dict[str, Any]:
-        return run_nhl_model_maintenance(db_client_fn())
+        try:
+            return memory_admission.run_admitted_background_job(
+                "NHL_MODEL_MAINTENANCE", lambda: run_nhl_model_maintenance(db_client_fn())
+            )
+        except memory_admission.HeavyJobDeferred as exc:
+            raise memory_admission.http_deferral(exc) from exc
 
 
 __all__ = [

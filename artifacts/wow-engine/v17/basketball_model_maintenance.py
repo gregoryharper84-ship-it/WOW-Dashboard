@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from basketball_event_hydration_runtime import BasketballHydrationError, hydrate
 from basketball_training_replay import run_training_replay
 from github_actions_oidc import scout_route_auth_dependency
+from v17 import memory_admission
 from v17.team_event_model_development_manifest import development_lane
 
 CAN_EXECUTE = False
@@ -173,7 +174,12 @@ def install_basketball_model_maintenance_route(
         operation_id="runWowV17BasketballModelMaintenance",
     )
     def run_maintenance() -> dict[str, Any]:
-        return run_basketball_model_maintenance(db_client_fn())
+        try:
+            return memory_admission.run_admitted_background_job(
+                "BASKETBALL_MODEL_MAINTENANCE", lambda: run_basketball_model_maintenance(db_client_fn())
+            )
+        except memory_admission.HeavyJobDeferred as exc:
+            raise memory_admission.http_deferral(exc) from exc
 
 
 __all__ = [

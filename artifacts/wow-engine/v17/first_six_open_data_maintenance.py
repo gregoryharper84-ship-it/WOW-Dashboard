@@ -12,6 +12,7 @@ from typing import Any, Callable
 from fastapi import FastAPI, HTTPException
 
 from github_actions_oidc import scout_route_auth_dependency
+from v17 import memory_admission
 
 CAN_EXECUTE = False
 
@@ -174,7 +175,10 @@ def _run_team_state_scope_singleflight(db_client_fn: Callable[[], Any], scope: s
 
     try:
         with _TEAM_STATE_EXECUTION_LOCK:
-            result = _run_team_state_scope(db_client_fn(), normalized)
+            result = memory_admission.run_admitted_background_job(
+                f"TEAM_STATE_SCOPE_MAINTENANCE_{normalized}",
+                lambda: _run_team_state_scope(db_client_fn(), normalized),
+            )
             _release_process_memory()
         future.set_result(result)
         return result
@@ -281,6 +285,14 @@ def _persist_team_state_batch_reclaiming(db: Any, payload: dict[str, Any]) -> di
         _release_process_memory()
 
 
+def _admitted(operation: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run maintenance under shared heavyweight admission; defer with typed 503."""
+    try:
+        return memory_admission.run_admitted_background_job(operation, fn)
+    except memory_admission.HeavyJobDeferred as exc:
+        raise memory_admission.http_deferral(exc) from exc
+
+
 def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_dependency: Any, db_client_fn: Any) -> None:
     dependency = scout_route_auth_dependency(auth_dependency)
     routes = {getattr(route,"path",None) for route in app.router.routes}
@@ -289,29 +301,32 @@ def install_first_six_open_data_maintenance_routes(app: FastAPI, *, auth_depende
         @app.post("/internal/v17/ncaab-model-maintenance",dependencies=[dependency],operation_id="runWowV17NcaabModelMaintenance")
         def run_ncaab_maintenance() -> dict[str, Any]:
             from v17.ncaab_sportsdataverse_candidate import NCAABCandidateUnavailable, train_and_persist as train_ncaab
-            return _run("NCAAB",train_ncaab,db_client_fn(),candidate_errors=(NCAABCandidateUnavailable,))
+            return _admitted("NCAAB_MODEL_MAINTENANCE", lambda: _run("NCAAB",train_ncaab,db_client_fn(),candidate_errors=(NCAABCandidateUnavailable,)))
 
     if "/internal/v17/soccer-model-maintenance" not in routes:
         @app.post("/internal/v17/soccer-model-maintenance",dependencies=[dependency],operation_id="runWowV17SoccerModelMaintenance")
         def run_soccer_maintenance() -> dict[str, Any]:
             from v17.soccer_openfootball_candidate import SoccerCandidateUnavailable, train_all as train_soccer
-            return _run("SOCCER",train_soccer,db_client_fn(),candidate_errors=(SoccerCandidateUnavailable,))
+            return _admitted("SOCCER_MODEL_MAINTENANCE", lambda: _run("SOCCER",train_soccer,db_client_fn(),candidate_errors=(SoccerCandidateUnavailable,)))
 
     if "/internal/v17/tennis-model-maintenance" not in routes:
         @app.post("/internal/v17/tennis-model-maintenance",dependencies=[dependency],operation_id="runWowV17TennisModelMaintenance")
         def run_tennis_maintenance() -> dict[str, Any]:
             from v17.tennis_valuebet_candidate import TennisCandidateUnavailable, train_all as train_tennis
-            return _run("TENNIS",train_tennis,db_client_fn(),candidate_errors=(TennisCandidateUnavailable,))
+            return _admitted("TENNIS_MODEL_MAINTENANCE", lambda: _run("TENNIS",train_tennis,db_client_fn(),candidate_errors=(TennisCandidateUnavailable,)))
 
     if "/internal/v17/team-state-challenger-maintenance" not in routes:
         @app.post("/internal/v17/team-state-challenger-maintenance",dependencies=[dependency],operation_id="runWowV17TeamStateChallengerMaintenance")
         def run_team_state_challenger_maintenance() -> dict[str, Any]:
-            return _run_team_state(db_client_fn())
+            return _admitted("TEAM_STATE_CHALLENGER_MAINTENANCE", lambda: _run_team_state(db_client_fn()))
 
     if "/internal/v17/team-state-challenger-maintenance/{scope}" not in routes:
         @app.post("/internal/v17/team-state-challenger-maintenance/{scope}",dependencies=[dependency],operation_id="runWowV17TeamStateChallengerMaintenanceScope")
         def run_team_state_challenger_maintenance_scope(scope: str) -> dict[str, Any]:
-            return _run_team_state_scope_singleflight(db_client_fn, scope)
+            try:
+                return _run_team_state_scope_singleflight(db_client_fn, scope)
+            except memory_admission.HeavyJobDeferred as exc:
+                raise memory_admission.http_deferral(exc) from exc
 
     if "/internal/v17/team-state-challenger-persist-batch" not in routes:
         @app.post("/internal/v17/team-state-challenger-persist-batch",dependencies=[dependency],operation_id="persistWowV17TeamStateChallengerBatch")
