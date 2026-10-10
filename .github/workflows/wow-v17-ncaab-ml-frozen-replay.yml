@@ -1,0 +1,214 @@
+name: wow-v17-ncaab-ml-frozen-replay
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/wow-v17-ncaab-ml-frozen-replay.yml"
+      - "artifacts/wow-engine/v17/ncaab_moneyline_replay.py"
+      - "artifacts/wow-engine/test_v17_ncaab_moneyline_replay.py"
+      - "artifacts/wow-engine/v17/ncaab_source_pinned_replay.py"
+      - "artifacts/wow-engine/test_v17_ncaab_source_pinned_replay.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-ncaab-ml-frozen-replay-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify NCAAB replay contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Focused and adjacent-lane regression tests
+        env:
+          PYTHONPATH: .
+        run: >-
+          python -m pytest -q
+          test_v17_ncaab_moneyline_replay.py
+          test_v17_ncaab_source_pinned_replay.py
+          test_v17_binary_candidate_lifecycle.py
+          test_v17_ncaaf_result_form_candidate.py
+
+  source_pinned_replay:
+    name: Independent source-pinned NCAAB fitted numerical challenger
+    needs: verify
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'claude/1644-ncaab-ml-frozen-replay'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS: "true"
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          # Match the training service's declared Python patch version from render.yaml.
+          python-version: "3.11.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Assert independent research-only identity
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS" = "true"
+      - name: Install pinned-source numerical replay dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Refit five hash-pinned CC-BY-4 source releases and verify exact model identity
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/ncaab-source-pinned-replay
+          python -m v17.ncaab_source_pinned_replay > artifacts/ncaab-source-pinned-replay/receipt.json
+      - name: Upload separate challenger receipt (NOT frozen DB replay or certification)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-v17-ncaab-source-pinned-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/wow-engine/artifacts/ncaab-source-pinned-replay/receipt.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  replay:
+    name: Research-only frozen numerical replay (28142 games)
+    needs: verify
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'claude/1644-ncaab-ml-frozen-replay'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    environment: wow-ncaab-replay-readonly
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      SUPABASE_URL: https://iczfhsmjrrafhvcpmqhr.supabase.co
+      NCAAB_REPLAY_READ_ONLY_KEY: ${{ secrets.WOW_NCAAB_REPLAY_READ_ONLY_KEY }}
+      CANDIDATE_ID: e874cd6d-5ea3-4b85-a1f0-ac239e285704
+      EXPECTED_DATASET_SHA: c5e99b10dbb4b676670feb3af943fa4666349fb396ec5ef344f966ec04239033
+      EXPECTED_ARTIFACT_SHA: c86e11cf76f07deca94b6e3fe539071487d052b2e4587f2a9ce9547805b07801
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS: "true"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Assert exact revision and research-only invariants
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PR_HEAD_SHA"
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test "$DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS" = "true"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Refit frozen candidate and validate evidence
+        shell: bash
+        env:
+          PYTHONPATH: .
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/ncaab-frozen-replay
+          VERIFIER_SHA="$(git rev-parse HEAD)"
+          export VERIFIER_SHA
+          set +e
+          python -m v17.ncaab_moneyline_replay "$CANDIDATE_ID" "$VERIFIER_SHA" > artifacts/ncaab-frozen-replay/receipt.json
+          replay_exit=$?
+          set -e
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("artifacts/ncaab-frozen-replay/receipt.json")
+          try:
+              payload = json.loads(p.read_text())
+              if not isinstance(payload, dict):
+                  raise ValueError("not an object")
+          except (OSError, ValueError):
+              p.write_text(json.dumps({"status": "BLOCKED_WITH_EXACT_REASON",
+                                       "code": "NCAAB_REPLAY_RUNTIME_EXCEPTION",
+                                       "can_execute": False, "probability_publishable": False}) + "\n")
+          PY
+          if test "$replay_exit" -ne 0; then
+            echo "::error::NCAAB_FROZEN_REPLAY_NOT_REPRODUCED (exit $replay_exit)"
+            exit 1
+          fi
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          r = json.loads(Path("artifacts/ncaab-frozen-replay/receipt.json").read_text())
+          assert r.get("status") == "REPLAY_REPRODUCED"
+          assert r.get("candidate_id") == os.environ["CANDIDATE_ID"]
+          assert r.get("expected_candidate_id") == os.environ["CANDIDATE_ID"]
+          assert r.get("verifier_sha") == os.environ["VERIFIER_SHA"]
+          for target, sha in (("dataset_hash", "EXPECTED_DATASET_SHA"),
+                              ("artifact_checksum", "EXPECTED_ARTIFACT_SHA")):
+              assert r.get("expected", {}).get(target) == os.environ[sha]
+              assert r.get("observed", {}).get(target) == os.environ[sha]
+          assert r.get("observed", {}).get("frozen_rows_in") == 28142
+          assert r.get("observed", {}).get("rows_replayed") == 28142
+          assert r.get("observed", {}).get("splits") == {
+              "train_n": 16885, "calibration_n": 5628, "test_n": 5629}
+          assert r.get("mismatches") == []
+          assert r.get("research_only") is True
+          for k in ("can_execute", "probability_publishable", "promotion", "certification"):
+              assert r.get(k) is False, k
+          assert len(r.get("receipt_sha256", "")) == 64
+          print(json.dumps({"status": r["status"], "candidate_id": r["candidate_id"],
+                            "verifier_sha": r["verifier_sha"],
+                            "receipt_sha256": r["receipt_sha256"],
+                            "frozen_rows_in": r["observed"]["frozen_rows_in"]}))
+          PY
+      - name: Upload receipt for independent QA
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-v17-ncaab-frozen-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/wow-engine/artifacts/ncaab-frozen-replay/receipt.json
+          if-no-files-found: warn
+          retention-days: 30
