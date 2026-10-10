@@ -9,6 +9,11 @@ on:
       - 'docs/wow/engineering/WOW_SIRT_TO_ENGINEERING_INTAKE.md'
   workflow_dispatch:
 
+# Bound CI capacity; superseded PR reviews cancel, dispatch runs are independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
