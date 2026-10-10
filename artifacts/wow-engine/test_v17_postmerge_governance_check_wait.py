@@ -203,7 +203,7 @@ def test_pending_agent_receipt_is_persisted_without_promotion(tmp_path):
 def test_malformed_model_output_must_not_publish_success_receipt(tmp_path, bad_result):
     result, receipt = _publish_receipt(tmp_path, outcome="success", result=bad_result)
     assert result.returncode != 0
-    assert "RELEASE_OBSERVABILITY_RESULT_SCHEMA_INVALID" in result.stderr
+    assert "RELEASE_OBSERVABILITY_RESULT_SCHEMA_OR_EXACT_MERGE_INVALID" in result.stderr
     assert receipt == ""
 
 
@@ -297,4 +297,50 @@ def test_governance_diagnostic_refuses_to_mislabel_success_as_hold(tmp_path):
     )
     assert result.returncode != 0
     assert "RELEASE_GOVERNANCE_DIAGNOSTIC_NO_DENIAL" in result.stderr
+    assert comment == ""
+
+
+def _model_release_result(*, status="PRODUCTION_VERIFIED", deployed_sha=None, main_sha=None):
+    return {
+        "status": status,
+        "main_sha": ("b" * 40) if main_sha is None else main_sha,
+        "production_sha": ("b" * 40) if deployed_sha is None else deployed_sha,
+        "acceptance": "PRODUCTION_VERIFIED",
+        "reconciliation": "Exact deployed revision verified against merged head",
+        "blocker": "",
+        "next_action": "Record immutable production verification receipt.",
+    }
+
+
+def test_exact_sha_release_claim_must_match_merged_commit(tmp_path):
+    result, comment = _publish_receipt(
+        tmp_path,
+        outcome="success",
+        result=json.dumps(_model_release_result()),
+    )
+    assert result.returncode == 0, result.stderr
+    assert '"status": "PRODUCTION_VERIFIED"' in comment
+
+
+@pytest.mark.parametrize("bad_sha", ["", "a" * 40, "not-a-sha", "b" * 39])
+def test_release_agent_cannot_publish_production_verified_with_wrong_sha(tmp_path, bad_sha):
+    result, comment = _publish_receipt(
+        tmp_path,
+        outcome="success",
+        result=json.dumps(_model_release_result(deployed_sha=bad_sha)),
+    )
+    assert result.returncode != 0
+    assert "RELEASE_OBSERVABILITY_RESULT_SCHEMA_OR_EXACT_MERGE_INVALID" in result.stderr
+    assert comment == ""
+
+
+@pytest.mark.parametrize("bad_main", ["", "not-a-sha", "b" * 39])
+def test_release_agent_cannot_publish_invalid_main_sha(tmp_path, bad_main):
+    result, comment = _publish_receipt(
+        tmp_path,
+        outcome="success",
+        result=json.dumps(_model_release_result(main_sha=bad_main)),
+    )
+    assert result.returncode != 0
+    assert "RELEASE_OBSERVABILITY_RESULT_SCHEMA_OR_EXACT_MERGE_INVALID" in result.stderr
     assert comment == ""
