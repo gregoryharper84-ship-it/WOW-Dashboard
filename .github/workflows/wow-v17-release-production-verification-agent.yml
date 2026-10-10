@@ -296,6 +296,9 @@ jobs:
       - name: Release / Production Verification agent
         if: steps.pr.outputs.number != ''
         id: release_agent
+        # Preserve the failure as a typed receipt, then fail the job below.
+        # A provider outage must never count as completed production acceptance.
+        continue-on-error: true
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -313,30 +316,65 @@ jobs:
           output_schema: '{"type":"object","properties":{"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
 
       - name: Publish release verification receipt
-        if: steps.pr.outputs.number != ''
+        if: ${{ always() && steps.pr.outputs.number != '' && (steps.release_agent.outcome == 'success' || steps.release_agent.outcome == 'failure') }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           RESULT: ${{ steps.release_agent.outputs.structured_output }}
+          AGENT_OUTCOME: ${{ steps.release_agent.outcome }}
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
         run: |
           set -euo pipefail
+          if [ "$AGENT_OUTCOME" != "success" ]; then
+            # This is an observability failure, not a sporting-model score
+            # or a verified deployment. Do not guess the provider's error.
+            RESULT=$(jq -nc \
+              --arg main "$MERGE_SHA" \
+              '{status: "BLOCKED_WITH_EXACT_REASON",
+                main_sha: $main, production_sha: "",
+                acceptance: "NOT_VERIFIED",
+                reconciliation: "RELEASE_OBSERVABILITY_INCOMPLETE",
+                blocker: "RELEASE_OBSERVABILITY_AGENT_FAILED",
+                next_action: "Diagnose provider failure from the workflow job logs and rerun exact-head production verification; do not publish a success receipt.",
+                can_execute: false}')
+          else
+            # Typed JSON is required even when the model action reports success.
+            jq -e '
+              type == "object" and
+              (.status | IN("PRODUCTION_VERIFIED", "PENDING", "BLOCKED_WITH_EXACT_REASON")) and
+              (.main_sha | type == "string") and
+              (.production_sha | type == "string") and
+              (.acceptance | type == "string") and
+              (.reconciliation | type == "string") and
+              (.blocker | type == "string") and
+              (.next_action | type == "string")
+            ' <<<"$RESULT" >/dev/null || {
+              echo "RELEASE_OBSERVABILITY_RESULT_SCHEMA_INVALID" >&2
+              exit 1
+            }
+          fi
           body="$RUNNER_TEMP/release-comment.md"
           {
             echo "## Release / Production Verification Agent"
             echo
             echo "Provider: OpenAI/ChatGPT"
             echo
-            echo "- governed_pr_head_sha: `$HEAD_SHA`"
-            echo "- protected_main_merge_sha: `$MERGE_SHA`"
+            printf -- '- governed_pr_head_sha: `%s`\n' "$HEAD_SHA"
+            printf -- '- protected_main_merge_sha: `%s`\n' "$MERGE_SHA"
             echo "- trusted_handoff_receipt: VERIFIED"
             echo
             echo '~~~json'
             echo "$RESULT"
             echo '~~~'
             echo
-            echo "`can_execute=false`"
+            echo '`can_execute=false`'
           } > "$body"
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
           cat "$body" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail closed if release-observability agent failed
+        if: ${{ always() && steps.release_agent.outcome == 'failure' }}
+        run: |
+          echo "RELEASE_OBSERVABILITY_AGENT_FAILED: receipt attempted; independent production acceptance remains blocked." >&2
+          exit 1
