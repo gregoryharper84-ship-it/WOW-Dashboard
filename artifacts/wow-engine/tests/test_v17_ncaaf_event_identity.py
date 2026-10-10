@@ -88,3 +88,170 @@ def test_multiple_matches_fail_ambiguous():
             client=_Client(rows),
         )
     assert exc.value.code == "NCAAF_CANONICAL_EVENT_AMBIGUOUS"
+
+
+@pytest.mark.parametrize(
+    "display_home,cfbd_home",
+    [
+        ("BYU Cougars", "Brigham Young"),
+        ("Brigham Young Cougars", "BYU"),
+        ("Iowa State Cyclones", "Iowa St."),
+    ],
+)
+def test_explicit_school_aliases_require_exact_opponent_and_start(display_home, cfbd_home):
+    client = _Client([{
+        "id": 401999999,
+        "startDate": "2026-10-10T02:15:00Z",
+        "homeTeam": cfbd_home,
+        "awayTeam": "Washington State",
+    }])
+    out = identity.resolve_ncaaf_current_event_identity(
+        event_start_time="2026-10-10T02:15:00Z",
+        home_team=display_home,
+        away_team="Washington State Cougars",
+        client=client,
+    )
+    assert out["event_id"] == "401999999"
+    assert out["prediction_authority"] is False
+    assert out["can_execute"] is False
+
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T04:00:00Z",
+            home_team=display_home,
+            away_team="Washington State Cougars",
+            client=client,
+        )
+    assert exc.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_school_alias_does_not_conflate_iowa_and_iowa_state():
+    client = _Client([{
+        "id": 401999999,
+        "startDate": "2026-10-10T02:15:00Z",
+        "homeTeam": "Iowa State",
+        "awayTeam": "Washington",
+    }])
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T02:15:00Z",
+            home_team="Iowa Hawkeyes",
+            away_team="Washington Huskies",
+            client=client,
+        )
+    assert exc.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+@pytest.mark.parametrize("false_alias", ["Iowa Starlings", "BYU County"])
+def test_alias_prefix_without_school_boundary_does_not_match(false_alias):
+    rows = [{
+        "id": 401999998,
+        "startDate": "2026-10-10T02:15:00Z",
+        "homeTeam": "Iowa State" if false_alias.startswith("Iowa") else "Brigham Young",
+        "awayTeam": "Washington",
+    }]
+    with pytest.raises(identity.NCAAFEventIdentityError) as exc:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T02:15:00Z",
+            home_team=false_alias,
+            away_team="Washington Huskies",
+            client=_Client(rows),
+        )
+    assert exc.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_short_iowa_canonical_name_resolves_without_matching_iowa_state():
+    client = _Client([
+        {
+            "id": 401999997,
+            "startDate": "2026-10-10T01:00:00Z",
+            "homeTeam": "Washington",
+            "awayTeam": "Iowa",
+        },
+        {
+            "id": 401999996,
+            "startDate": "2026-10-10T01:00:00Z",
+            "homeTeam": "Washington",
+            "awayTeam": "Iowa State",
+        },
+    ])
+    out = identity.resolve_ncaaf_current_event_identity(
+        event_start_time="2026-10-10T01:00:00Z",
+        home_team="Washington Huskies",
+        away_team="Iowa Hawkeyes",
+        client=client,
+    )
+    assert out["event_id"] == "401999997"
+    assert out["can_execute"] is False
+
+
+
+@pytest.mark.parametrize(
+    "short_school,distinct_school",
+    [
+        ("Michigan", "Michigan State"),
+        ("Florida", "Florida State"),
+        ("Georgia", "Georgia Southern"),
+        ("Washington", "Washington State"),
+        ("Texas", "Texas A&M"),
+        ("Ohio", "Ohio State"),
+        ("Virginia", "Virginia Tech"),
+        ("Florida", "Florida Atlantic"),
+        ("Louisiana", "Louisiana Tech"),
+        ("Alabama", "Alabama State"),
+    ],
+)
+def test_distinct_university_prefix_never_becomes_canonical_event(short_school, distinct_school):
+    # Identical opponent and kickoff MUST NOT erase distinct school identity.
+    client = _Client([{
+        "id": 401999987,
+        "startDate": "2026-10-10T18:00:00Z",
+        "homeTeam": distinct_school,
+        "awayTeam": "Oklahoma",
+    }])
+    with pytest.raises(identity.NCAAFEventIdentityError) as err:
+        identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T18:00:00Z",
+            home_team=short_school,
+            away_team="Oklahoma Sooners",
+            client=client,
+        )
+    assert err.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_actual_school_mascot_suffix_remains_supported_after_collision_guard():
+    client = _Client([{
+        "id": 401999986,
+        "startDate": "2026-10-10T18:00:00Z",
+        "homeTeam": "Michigan State",
+        "awayTeam": "Oklahoma",
+    }])
+    result = identity.resolve_ncaaf_current_event_identity(
+        event_start_time="2026-10-10T18:00:00Z",
+        home_team="Michigan State Spartans",
+        away_team="Oklahoma Sooners",
+        client=client,
+    )
+    assert result["event_id"] == "401999986"
+    assert result["can_execute"] is False
+
+
+
+def test_cfbd_neutral_site_is_raw_boolean_or_unknown_not_coerced():
+    for source_value, expected in [(True, True), (False, False), ("false", None), (None, None)]:
+        game = {
+            "id": "401999985",
+            "startDate": "2026-10-10T18:00:00Z",
+            "homeTeam": "Michigan State",
+            "awayTeam": "Oklahoma",
+        }
+        if source_value is not None:
+            game["neutralSite"] = source_value
+        result = identity.resolve_ncaaf_current_event_identity(
+            event_start_time="2026-10-10T18:00:00Z",
+            home_team="Michigan State Spartans",
+            away_team="Oklahoma Sooners",
+            client=_Client([game]),
+        )
+        assert result["neutral_site"] is expected
+        assert result["prediction_authority"] is False

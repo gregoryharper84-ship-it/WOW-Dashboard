@@ -163,3 +163,78 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## D1 fitted candidate partition integrity (P0 NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `D1_PARTITION_METRICS_INVALID` | D1 candidate ingestion preflight | One or more of the three fitted split metrics is supplied, but the train/calibration/test metrics or persisted partition counts are incomplete, noninteger, boolean, or nonpositive. Reject candidate before source/feature writes. | No |
+| `D1_PARTITION_COUNT_MISMATCH` | D1 candidate ingestion preflight | Candidate `training_rows`, `calibration_rows` or `test_rows` differs from the matching `validation_metrics.train_n`, `calibration_n`, or `test_n`. Reject candidate before source/feature writes. Historical records are not edited. | No |
+
+
+## D1 certification replay split-metadata integrity (NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CANDIDATE_PARTITION_METRICS_MISMATCH` | team/event certification replay (read-only) | Persisted fitted D1 train/calibration/test partitions disagree with candidate `validation_metrics.train_n/calibration_n/test_n`, or partial/malformed fitted split metrics are supplied. A historical source-review or replay receipt cannot override the discrepancy; retain the candidate as immutable, fail the replay and require a new verified candidate. | No |
+
+
+## NCAAF result/form research forward-feature diagnostics (P0 #665)
+
+These are **research feature preparation** failures, not certified model inference failures. The feature builder never produces a probability, ranking, value result, or wager, regardless of diagnostic success. Both `probability_publishable` and `can_execute` remain false.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `NCAAF_FORWARD_EVENT_TIME_INVALID` | NCAAF research forward feature builder | Current event or relevant settled-result timestamp missing, invalid or timezone-naive. | No |
+| `NCAAF_FORWARD_CANONICAL_IDENTITY_NOT_PROVEN` | NCAAF research forward feature builder | Upstream CFBD canonical event identity has not been proven for this event. | No |
+| `NCAAF_FORWARD_CANONICAL_PROOF_INVALID` | NCAAF research forward feature builder | Claimed CFBD event-resolution object is missing, does not match official event identity/participants, or contains contradictory provider/market/authority fields. | No |
+| `NCAAF_FORWARD_CANONICAL_START_MISMATCH` | NCAAF research forward feature builder | Caller kickoff differs from CFBD resolver kickoff beyond the canonical identity tolerance. | No |
+| `NCAAF_FORWARD_EVENT_IDENTITY_INVALID` | NCAAF research forward feature builder | Empty or contradictory canonical event ID/team participants. | No |
+| `NCAAF_FORWARD_NEUTRAL_SITE_INVALID` | NCAAF research forward feature builder | Neutral-site indicator is not a concrete boolean. | No |
+| `NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_MISSING` | NCAAF research forward feature builder | CFBD canonical event resolution has no concrete boolean neutral-site observation. Do not impute home field. | No |
+| `NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_CONTRADICTION` | NCAAF research forward feature builder | Caller-provided neutral site disagrees with the CFBD event's neutral-site observation. | No |
+| `NCAAF_FORWARD_TARGET_IN_HISTORY` | NCAAF research forward feature builder | Target event appears in the settled-results input, creating a potential target/outcome leakage path. | No |
+| `NCAAF_FORWARD_PRIOR_EVENT_ID_MISSING` | NCAAF research forward feature builder | A relevant settled prior result lacks an immutable official event ID. | No |
+| `NCAAF_FORWARD_PRIOR_EVENT_DUPLICATE` | NCAAF research forward feature builder | A relevant settled prior event identity occurs more than once in accepted evidence. | No |
+| `NCAAF_FORWARD_PRIOR_RESULT_INVALID` | NCAAF research forward feature builder | Relevant prior-game score/status cannot be reconciled to a valid settled winner. | No |
+| `NCAAF_FORWARD_PRIOR_RESULT_CONTRADICTION` | NCAAF research forward feature builder | Source home_won disagrees with settled score. | No |
+| `NCAAF_FORWARD_PRIOR_EVIDENCE_TIME_CONTRADICTION` | NCAAF research forward feature builder | Settled-result acquisition timestamp is at or before its game's scheduled start, so outcome evidence could not yet exist. | No |
+| `NCAAF_FORWARD_PRIOR_FORM_INSUFFICIENT` | NCAAF research forward feature builder | One or both teams lack the model's minimum three source-eligible settled prior games; no baseline imputation. | No |
+| `NCAAF_FORWARD_FEATURE_SCHEMA_INVALID` | NCAAF research forward feature builder | Computed numeric features do not exactly match the candidate model schema or finite-number contract. | No |
+| `NCAAF_FORWARD_FEATURE_NOT_PREGAME` | NCAAF research forward feature builder | Latest evidence acquisition timestamp is not strictly before the target event start. | No |
+
+
+## NCAAF unregistered fitted shadow scorer (research only, P0 #665)
+
+This evaluator uses genuine fitted candidate coefficients, but returns only `research_raw_probability`. It does **not** return a governed model probability or calibrated bounds, never claims fitted model certification, and cannot rank, publish or execute wagers.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `NCAAF_SHADOW_INPUT_INVALID` | NCAAF fitted-candidate shadow scoring | Research candidate or forward-feature package is not a typed object. | No |
+| `NCAAF_SHADOW_MODEL_ROUTE_MISMATCH` | NCAAF fitted-candidate shadow scoring | Wrong sport/model family or fitted feature schema for the candidate. | No |
+| `NCAAF_SHADOW_CANDIDATE_NOT_INERT` | NCAAF fitted-candidate shadow scoring | Candidate not research-screened or cannot prove candidate-only inert flags. | No |
+| `NCAAF_SHADOW_ARTIFACT_IDENTITY_INVALID` | NCAAF fitted-candidate shadow scoring | Missing/invalid version or immutable training dataset hash. | No |
+| `NCAAF_SHADOW_ARTIFACT_INVALID` | NCAAF fitted-candidate shadow scoring | Candidate fitted artifact payload absent or not a JSON object. | No |
+| `NCAAF_SHADOW_ARTIFACT_CHECKSUM_MISMATCH` | NCAAF fitted-candidate shadow scoring | Saved fitted artifact payload does not match immutable checksum. | No |
+| `NCAAF_SHADOW_ARTIFACT_SCHEMA_MISMATCH` | NCAAF fitted-candidate shadow scoring | Fitted artifact format, model identity or ordered feature list does not match controlling candidate. | No |
+| `NCAAF_SHADOW_FORWARD_PACKAGE_INVALID` | NCAAF fitted-candidate shadow scoring | Feature package is not research-only, exact model family/schema, inert and non-publishable. | No |
+| `NCAAF_SHADOW_MANIFEST_INVALID` | NCAAF fitted-candidate shadow scoring | Source manifest lacks exact event identity, first-party CFBD resolver/provider proof, or market-free/pregame-reconstruction flags. | No |
+| `NCAAF_SHADOW_CANONICAL_START_MISMATCH` | NCAAF fitted-candidate shadow scoring | Hashed manifest's CFBD canonical kickoff differs from target event kickoff by more than the official identity tolerance. | No |
+| `NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_MISSING` | NCAAF fitted-candidate shadow scoring | The event source manifest has no concrete CFBD neutral-site boolean. | No |
+| `NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_CONTRADICTION` | NCAAF fitted-candidate shadow scoring | Numeric neutral-site model input differs from the CFBD-observed source value, even if input manifest digest was recomputed. | No |
+| `NCAAF_SHADOW_MANIFEST_CHECKSUM_MISMATCH` | NCAAF fitted-candidate shadow scoring | Forward feature source manifest hash fails exact content verification. | No |
+| `NCAAF_SHADOW_TIME_INVALID` | NCAAF fitted-candidate shadow scoring | Event or evidence timestamp missing, malformed or timezone-naive. | No |
+| `NCAAF_SHADOW_FEATURE_TIME_INVALID` | NCAAF fitted-candidate shadow scoring | Feature evidence time is at/after event start, or mismatches source manifest. | No |
+| `NCAAF_SHADOW_FEATURE_SCHEMA_MISMATCH` | NCAAF fitted-candidate shadow scoring | Forward-feature names/order differ from fitted model's exact nine inputs. | No |
+| `NCAAF_SHADOW_FEATURE_VALUE_INVALID` | NCAAF fitted-candidate shadow scoring | An input feature is nonnumeric, boolean or nonfinite. | No |
+| `NCAAF_SHADOW_FEATURE_HASH_MISMATCH` | NCAAF fitted-candidate shadow scoring | Exact numeric forward-feature vector does not match the digest embedded in the previously validated source manifest and returned feature package; the provenance hash cannot be reused for a changed vector. | No |
+| `NCAAF_SHADOW_ARTIFACT_VECTOR_INVALID` | NCAAF fitted-candidate shadow scoring | A persisted fitted scaler/coefficients vector is missing, malformed or nonfinite. | No |
+| `NCAAF_SHADOW_ARTIFACT_SCALE_INVALID` | NCAAF fitted-candidate shadow scoring | Fitted scaler has a zero/negative scale. | No |
+| `NCAAF_SHADOW_NUMERIC_OVERFLOW` | NCAAF fitted-candidate shadow scoring | Fitted logit/probability arithmetic is nonfinite or invalid. | No |
+
+
+## NCAAF CFBD settled-game neutral-site evidence (research ingestion)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---|
+| `NCAAF_TRAINING_NEUTRAL_SITE_EVIDENCE_MISSING` | NCAAF CFBD settled-game materializer | One or more completed game rows have missing or non-boolean CFBD `neutralSite`. Such rows are skipped rather than persisted with an invented `neutral_site=False`; valid rows may still persist, but the missing-evidence blocker remains visible. Historical rows already ingested are not modified and require separately governed data-quality repair/refit. | No |
