@@ -101,6 +101,12 @@ def test_batch_registry_infra_failure_is_typed_not_model_unavailable(infra_code)
     assert row["code"] == infra_code
     assert row["code"] != "MODEL_UNAVAILABLE"
     assert row["terminal_status"] == "HELD"
+    assert row["terminal_label"] == "REGISTRY_INFRASTRUCTURE_BLOCKED"
+    assert row["verdict_class"] == "REGISTRY_INFRASTRUCTURE_BLOCKED"
+    assert row["terminal_cause"] == "INFRASTRUCTURE"
+    assert row["infrastructure_blocked"] is True
+    assert row["model_evaluated"] is False
+    assert row["detail"]["terminal_label"] == row["terminal_label"]
     assert row["detail"]["specialist_invoked"] is False
     assert row.get("probability_publishable") in (False, None)
 
@@ -110,6 +116,22 @@ def test_batch_genuinely_absent_artifact_stays_model_unavailable():
     assert row["code"] == "MODEL_UNAVAILABLE"
     assert row["detail"]["blocker_code"] == "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"
     assert row["terminal_status"] == "HELD"
+    assert row["terminal_label"] == "MODEL_UNAVAILABLE"
+    assert row["verdict_class"] == "CAPABILITY_BLOCKED"
+
+
+@pytest.mark.parametrize("infra_code", INFRA_CODES)
+def test_batch_registry_outage_counts_as_blocked_preflight(infra_code):
+    resp = _batch_client({"ok": False, "code": infra_code}).post(
+        "/score-pick-request",
+        json={"request_id": f"t-{uuid.uuid4()}", "rows": [_row()]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["telemetry"]["route_preflight_blocked"] == 1
+    assert body["telemetry"]["registry_infrastructure_failures"] == 1
+    assert body["infrastructure_blocked_count"] == 1
+    assert body["rows"][0]["terminal_cause"] == "INFRASTRUCTURE"
 
 
 # ---------------------------------------------------------- /score-prop route
