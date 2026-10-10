@@ -176,6 +176,8 @@ These are **research feature preparation** failures, not certified model inferen
 | `NCAAF_FORWARD_CANONICAL_START_MISMATCH` | NCAAF research forward feature builder | Caller kickoff differs from CFBD resolver kickoff beyond the canonical identity tolerance. | No |
 | `NCAAF_FORWARD_EVENT_IDENTITY_INVALID` | NCAAF research forward feature builder | Empty or contradictory canonical event ID/team participants. | No |
 | `NCAAF_FORWARD_NEUTRAL_SITE_INVALID` | NCAAF research forward feature builder | Neutral-site indicator is not a concrete boolean. | No |
+| `NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_MISSING` | NCAAF research forward feature builder | CFBD canonical event resolution has no concrete boolean neutral-site observation. Do not impute home field. | No |
+| `NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_CONTRADICTION` | NCAAF research forward feature builder | Caller-provided neutral site disagrees with the CFBD event's neutral-site observation. | No |
 | `NCAAF_FORWARD_TARGET_IN_HISTORY` | NCAAF research forward feature builder | Target event appears in the settled-results input, creating a potential target/outcome leakage path. | No |
 | `NCAAF_FORWARD_PRIOR_EVENT_ID_MISSING` | NCAAF research forward feature builder | A relevant settled prior result lacks an immutable official event ID. | No |
 | `NCAAF_FORWARD_PRIOR_EVENT_DUPLICATE` | NCAAF research forward feature builder | A relevant settled prior event identity occurs more than once in accepted evidence. | No |
