@@ -112,10 +112,9 @@ def test_input_order_independent_and_manifest_tamper_detected():
     assert first["feature_values"] == second["feature_values"]
     modified = deepcopy(games)
     modified[2]["home"]["team_score"] += 1
-    # The original snapshot manifest is unchanged: underlying stats are part of
-    # the archived snapshot and must be immutable in the real provider record.
-    # Data-specific exact hashes are independently bound in the evidence envelope.
-    assert hydrate_pregame(event, modified)["input_sha256"] == first["input_sha256"]
+    # A modified game score must change the immutable input identity, even when
+    # a provider source-manifest digest was copied without modification.
+    assert hydrate_pregame(event, modified)["input_sha256"] != first["input_sha256"]
 
 
 @pytest.mark.parametrize("mutator,code", [
