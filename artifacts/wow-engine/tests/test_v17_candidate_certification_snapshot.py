@@ -139,3 +139,69 @@ def test_replay_does_not_pull_other_sports_or_feature_families():
 def test_missing_or_invalid_snapshot_cannot_load_mutable_rows(bad):
     with pytest.raises((TypeError, ValueError)):
         evidence._all_rows(_DB([_row(1)]), _candidate(created_at=bad))
+
+
+def test_invalid_candidate_cutoff_returns_typed_certification_hold_without_rows():
+    from unittest.mock import patch
+
+    candidate = {
+        **_candidate(created_at="bad-timestamp"),
+        "candidate_id": "11111111-1111-1111-1111-111111111111",
+        "model_artifact_version": "NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2_frozen",
+        "training_dataset_hash": "a" * 64,
+        "artifact_checksum": "b" * 64,
+        "source_policy_id": "TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1",
+        "research_screen_pass": True,
+        "lifecycle_state": "CANDIDATE",
+        "training_rows": 1,
+        "calibration_rows": 1,
+        "test_rows": 1,
+        "promoted": False,
+        "active": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+    class CandidateQuery:
+        def select(self, *args):
+            return self
+
+        def eq(self, *args):
+            return self
+
+        def limit(self, *args):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[candidate])
+
+    class CandidateDB:
+        def table(self, name):
+            assert name == "wow_d1_candidate_artifacts", (
+                "Invalid timestamp must not access the training row ledger"
+            )
+            return CandidateQuery()
+
+    fake_receipt = {
+        "source_review_status": "FAIL",
+        "replay_status": "FAIL",
+        "receipt_id": "synthetic-hold",
+        "evidence_sha256": "synthetic-hash",
+    }
+    with (
+        patch.object(evidence, "_all_rows", side_effect=AssertionError("mutable training read")),
+        patch.object(evidence, "_persist", return_value=fake_receipt) as persist,
+    ):
+        result = evidence.verify_candidate_certification_evidence(
+            CandidateDB(), candidate["candidate_id"]
+        )
+
+    assert result["status"] == "CERTIFICATION_EVIDENCE_FAILED"
+    assert "CANDIDATE_SNAPSHOT_TIME_INVALID" in result["blockers"]
+    assert result["probability_publishable"] is False
+    assert result["automatic_certification"] is False
+    assert result["automatic_promotion"] is False
+    assert result["can_execute"] is False
+    assert persist.called
