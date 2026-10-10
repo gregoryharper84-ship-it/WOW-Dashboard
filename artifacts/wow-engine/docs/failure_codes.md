@@ -199,3 +199,9 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## NCAAF CFBD settled-game neutral-site evidence (research ingestion)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---|
+| `NCAAF_TRAINING_NEUTRAL_SITE_EVIDENCE_MISSING` | NCAAF CFBD settled-game materializer | One or more completed game rows have missing or non-boolean CFBD `neutralSite`. Such rows are skipped rather than persisted with an invented `neutral_site=False`; valid rows may still persist, but the missing-evidence blocker remains visible. Historical rows already ingested are not modified and require separately governed data-quality repair/refit. | No |
