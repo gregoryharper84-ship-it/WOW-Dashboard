@@ -346,3 +346,46 @@ def test_source_bound_cfbd_without_neutral_site_refuses_forward_features():
             neutral_site=False, client=cfbd,
         )
     assert exc.value.code == "NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_MISSING"
+
+
+
+def test_source_bound_history_uses_cfbd_school_names_not_espn_mascots():
+    cfbd = _FakeCFBD([{
+        "id": 401858254,
+        "home_team": "Louisville",
+        "away_team": "Florida State",
+        "start_date": TARGET_START,
+        "neutralSite": False,
+    }])
+    result = current_event_feature_package_from_cfbd(
+        _games(), event_start_time=TARGET_START,
+        home_team="Louisville Cardinals",
+        away_team="Florida State Seminoles",
+        neutral_site=False, client=cfbd,
+    )
+    assert result["status"] == "RESEARCH_FORWARD_FEATURES_ONLY"
+    assert result["source_manifest"]["home_team"] == "Louisville"
+    assert result["source_manifest"]["away_team"] == "Florida State"
+    assert result["features"]["home_games_prior_log"] == pytest.approx(math.log1p(4))
+    assert result["features"]["away_games_prior_log"] == pytest.approx(math.log1p(4))
+    assert result["probability_publishable"] is False
+
+
+def test_source_bound_event_time_uses_cfbd_kickoff_not_tolerated_provider_clock():
+    cfbd = _FakeCFBD([{
+        "id": 401858254,
+        "home_team": "Louisville",
+        "away_team": "Florida State",
+        "start_date": TARGET_START,
+        "neutralSite": False,
+    }])
+    result = current_event_feature_package_from_cfbd(
+        _games(),
+        event_start_time="2026-10-09T23:30:00+00:00",
+        home_team="Louisville Cardinals",
+        away_team="Florida State Seminoles",
+        neutral_site=False, client=cfbd,
+    )
+    assert result["source_manifest"]["event_start_time"] == TARGET_START
+    assert result["source_manifest"]["canonical_event_start_time"] == TARGET_START
+    assert result["can_execute"] is False
