@@ -66,6 +66,7 @@ def _package(rows=None, **changes):
             "market_features_used": False,
             "prediction_authority": False,
             "can_execute": False,
+            "neutral_site": False,
         },
     }
     options.update(changes)
@@ -223,6 +224,7 @@ def test_canonical_cfbd_identity_proof_fields_must_match(invalid_proof):
         "market_features_used": False,
         "prediction_authority": False,
         "can_execute": False,
+        "neutral_site": False,
     }
     correct.update(invalid_proof)
     with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
@@ -241,6 +243,7 @@ def test_canonical_event_start_tolerance_cannot_be_violated():
         "market_features_used": False,
         "prediction_authority": False,
         "can_execute": False,
+        "neutral_site": False,
     }
     with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
         _package(canonical_resolution=resolution)
@@ -271,6 +274,7 @@ def test_source_bound_entrypoint_calls_cfbd_and_preserves_canonical_id():
         "home_team": "Louisville",
         "away_team": "Florida State",
         "start_date": TARGET_START,
+        "neutralSite": False,
     }])
     result = current_event_feature_package_from_cfbd(
         _games(), event_start_time=TARGET_START,
@@ -300,3 +304,45 @@ def test_source_bound_entrypoint_does_not_manufacture_missing_cfbd_identity():
             neutral_site=False, client=cfbd,
         )
     assert err.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+
+@pytest.mark.parametrize("source_value", [None, "false", 0])
+def test_missing_or_nonboolean_cfbd_neutral_site_cannot_be_imputed(source_value):
+    proof = {
+        "event_id": "401858254",
+        "event_start_time": TARGET_START,
+        "home_team": "Louisville",
+        "away_team": "Florida State",
+        "identity_provider": "CFBD:/games",
+        "identity_resolution": "CFBD_EXACT_PARTICIPANTS_START_MATCH",
+        "market_features_used": False,
+        "prediction_authority": False,
+        "can_execute": False,
+        "neutral_site": source_value,
+    }
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as exc:
+        _package(canonical_resolution=proof)
+    assert exc.value.code == "NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_MISSING"
+
+
+def test_caller_neutral_site_conflict_with_cfbd_fails_closed():
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as exc:
+        _package(neutral_site=True)
+    assert exc.value.code == "NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_CONTRADICTION"
+
+
+def test_source_bound_cfbd_without_neutral_site_refuses_forward_features():
+    cfbd = _FakeCFBD([{
+        "id": 401858254,
+        "home_team": "Louisville",
+        "away_team": "Florida State",
+        "start_date": TARGET_START,
+    }])
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as exc:
+        current_event_feature_package_from_cfbd(
+            _games(), event_start_time=TARGET_START,
+            home_team="Louisville", away_team="Florida State",
+            neutral_site=False, client=cfbd,
+        )
+    assert exc.value.code == "NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_MISSING"
