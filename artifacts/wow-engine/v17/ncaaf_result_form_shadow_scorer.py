@@ -107,6 +107,8 @@ def score_ncaaf_research_shadow(
     if not isinstance(manifest, Mapping):
         raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_MANIFEST_INVALID")
     if (manifest.get("canonical_identity_verified_by_caller") is not True
+            or manifest.get("canonical_identity_source") != "CFBD:/games"
+            or manifest.get("canonical_identity_resolution") != "CFBD_EXACT_PARTICIPANTS_START_MATCH"
             or manifest.get("market_features_used") is not False
             or manifest.get("archived_pregame_snapshot") is not False
             or manifest.get("official_event_id") != forward_features.get("official_event_id")):
@@ -115,6 +117,9 @@ def score_ncaaf_research_shadow(
     if len(manifest_hash) != 64 or _artifact_digest(manifest) != manifest_hash:
         raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_MANIFEST_CHECKSUM_MISMATCH")
     event_start = _aware(manifest.get("event_start_time"))
+    source_start = _aware(manifest.get("canonical_event_start_time"))
+    if abs((source_start - event_start).total_seconds()) > 3600:
+        raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_CANONICAL_START_MISMATCH")
     as_of = _aware(forward_features.get("feature_as_of"))
     if as_of >= event_start or as_of != _aware(manifest.get("feature_as_of")):
         raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_FEATURE_TIME_INVALID")
