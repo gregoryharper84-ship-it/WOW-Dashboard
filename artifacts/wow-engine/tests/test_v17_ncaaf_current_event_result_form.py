@@ -54,6 +54,17 @@ def _package(rows=None, **changes):
         "away_team": "Florida State",
         "neutral_site": False,
         "canonical_identity_verified": True,
+        "canonical_resolution": {
+            "event_id": "401858254",
+            "event_start_time": TARGET_START,
+            "home_team": "Louisville",
+            "away_team": "Florida State",
+            "identity_provider": "CFBD:/games",
+            "identity_resolution": "CFBD_EXACT_PARTICIPANTS_START_MATCH",
+            "market_features_used": False,
+            "prediction_authority": False,
+            "can_execute": False,
+        },
     }
     options.update(changes)
     return current_event_feature_package(_games() if rows is None else rows, **options)
@@ -184,3 +195,55 @@ def test_prior_result_scores_must_be_real_whole_numbers(bad_score):
     with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
         _package(rows)
     assert err.value.code == "NCAAF_FORWARD_PRIOR_RESULT_INVALID"
+
+
+@pytest.mark.parametrize("invalid_proof", [
+    {},
+    {"event_id": "WRONG"},
+    {"home_team": "Wrong School"},
+    {"away_team": "Wrong School"},
+    {"identity_provider": "ESPN"},
+    {"identity_resolution": "UNVERIFIED_ALIAS"},
+    {"market_features_used": True},
+    {"prediction_authority": True},
+    {"can_execute": True},
+])
+def test_canonical_cfbd_identity_proof_fields_must_match(invalid_proof):
+    correct = {
+        "event_id": "401858254",
+        "event_start_time": TARGET_START,
+        "home_team": "Louisville",
+        "away_team": "Florida State",
+        "identity_provider": "CFBD:/games",
+        "identity_resolution": "CFBD_EXACT_PARTICIPANTS_START_MATCH",
+        "market_features_used": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+    correct.update(invalid_proof)
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
+        _package(canonical_resolution=correct)
+    assert err.value.code == "NCAAF_FORWARD_CANONICAL_PROOF_INVALID"
+
+
+def test_canonical_event_start_tolerance_cannot_be_violated():
+    resolution = {
+        "event_id": "401858254",
+        "event_start_time": "2026-10-09T21:59:00+00:00",
+        "home_team": "Louisville",
+        "away_team": "Florida State",
+        "identity_provider": "CFBD:/games",
+        "identity_resolution": "CFBD_EXACT_PARTICIPANTS_START_MATCH",
+        "market_features_used": False,
+        "prediction_authority": False,
+        "can_execute": False,
+    }
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
+        _package(canonical_resolution=resolution)
+    assert err.value.code == "NCAAF_FORWARD_CANONICAL_START_MISMATCH"
+
+
+def test_bare_verified_boolean_is_not_a_canonical_source_proof():
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
+        _package(canonical_resolution={})
+    assert err.value.code == "NCAAF_FORWARD_CANONICAL_PROOF_INVALID"
