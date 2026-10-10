@@ -198,7 +198,7 @@ def test_prior_result_scores_must_be_real_whole_numbers(bad_score):
 
 
 @pytest.mark.parametrize("invalid_proof", [
-    {},
+    {"event_id": None},
     {"event_id": "WRONG"},
     {"home_team": "Wrong School"},
     {"away_team": "Wrong School"},
