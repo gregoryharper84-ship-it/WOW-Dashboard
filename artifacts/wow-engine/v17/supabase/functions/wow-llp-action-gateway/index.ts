@@ -20,6 +20,7 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/v17\/daily-snapshot-run$/, auth: true },
   { method: "GET", pattern: /^\/v17\/daily-snapshot-run\/[^/]+\/rows$/, auth: true },
   { method: "POST", pattern: /^\/score-team-event$/, auth: true },
+  { method: "POST", pattern: /^\/score-team-event-request$/, auth: true },
   { method: "POST", pattern: /^\/internal\/v17\/spread-forward-shadow$/, auth: true },
   { method: "POST", pattern: /^\/internal\/v17\/nfl-spread-forward-shadow$/, auth: true },
   { method: "POST", pattern: /^\/internal\/v17\/wnba-spread-forward-shadow$/, auth: true },
