@@ -47,13 +47,24 @@ _SCHOOL_ALIASES = {
 }
 
 
+_ALIAS_MASCOTS = {
+    "byu": "cougars",
+    "brighamyounguniversity": "cougars",
+    "iowast": "cyclones",
+    "iastate": "cyclones",
+}
+
+
 def _canonical_school_name(value: Any) -> str:
     normalized = _norm(value)
-    if normalized.startswith("iowastate"):
-        return normalized
-    for alias, canonical in sorted(_SCHOOL_ALIASES.items(), key=lambda item: -len(item[0])):
-        if normalized.startswith(alias):
-            return canonical + normalized[len(alias):]
+    # Never treat an arbitrary string beginning with an alias as the same
+    # school (for example "Iowa Starlings" is not "Iowa State").
+    for alias, canonical in _SCHOOL_ALIASES.items():
+        if normalized == alias:
+            return canonical
+        mascot = _ALIAS_MASCOTS[alias]
+        if normalized == alias + mascot:
+            return canonical + mascot
     return normalized
 
 
