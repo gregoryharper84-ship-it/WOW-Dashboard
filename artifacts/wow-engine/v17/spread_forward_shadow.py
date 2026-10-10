@@ -266,54 +266,51 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
         _FORWARD_CONTEXT_LOCK.release()
 
 
-# A requested name that continues a known school name with one of these words (or a
-# parenthetical) may denote a *different* school that simply has no history
-# (``Washington State`` vs ``Washington``).  Such names are never resolved by prefix.
-_SCHOOL_QUALIFIER_TOKENS = frozenset({
-    "state", "tech", "a&m", "am", "christian", "international", "polytechnic",
-    "southern", "northern", "eastern", "western", "central", "atlantic", "pacific",
-    "carolina", "dakota", "florida", "texas", "michigan", "kentucky", "tennessee",
-    "illinois", "alabama", "georgia", "virginia", "washington", "oregon", "colorado",
-    "mexico", "louisiana", "mississippi", "arkansas", "memphis", "monroe", "lafayette",
-    "tulsa", "baptist", "university", "college", "military", "naval", "academy",
-})
+# Explicit provider display-name identities. Never infer a school from an arbitrary
+# prefix: "Kansas St" must not inherit Kansas's settled history.
+# Short-school aliases are shared with the canonical NCAAF identity module.
+from v17.ncaaf_event_identity import _VERIFIED_SHORT_SCHOOL_MASCOTS, _norm as _identity_norm
 
-
-def _name_tokens(value: Any) -> tuple[str, ...]:
-    text = unicodedata.normalize("NFKD", str(value or "").casefold())
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return tuple(text.split())
+_VERIFIED_HISTORY_ALIASES: dict[str, str] = {
+    "texaslonghorns": "Texas",
+    "texastechredraiders": "Texas Tech",
+    "oklahomasooners": "Oklahoma",
+    "oklahomastatecowboys": "Oklahoma State",
+    "miamihurricanes": "Miami",
+    "miamiohredhawks": "Miami (OH)",
+    "washingtonhuskies": "Washington",
+    "kansasjayhawks": "Kansas",
+    "kansasstatewildcats": "Kansas State",
+    "michiganwolverines": "Michigan",
+    "michiganstatespartans": "Michigan State",
+    "washingtonstatecougars": "Washington State",
+    "ohiostatebuckeyes": "Ohio State",
+}
+for _school_norm, _aliases in _VERIFIED_SHORT_SCHOOL_MASCOTS.items():
+    for _alias in _aliases:
+        _VERIFIED_HISTORY_ALIASES[_alias] = _school_norm
 
 
 def _resolve_history_team(requested: str, known_teams: Sequence[str]) -> str:
-    """Map a requested team name onto the settled-history team key it denotes.
+    """Resolve only exact school identities or explicitly verified mascot aliases.
 
-    History is keyed by the CFBD school name (``Texas``) while current slate providers
-    often append a mascot (``Texas Longhorns``).  Exact match always wins.  Otherwise
-    the requested name must start, on whole-word boundaries, with exactly one longest
-    known school name (>= 5 characters) and the remainder must look like a mascot:
-    not empty, not a parenthetical, and not beginning with a school-qualifier word
-    (``State``, ``Tech``, ``A&M`` ...), because then it could be another school that
-    merely lacks history.  Anything else is returned unchanged and fails closed on
-    insufficient history.
+    Ambiguous abbreviations and unknown provider spellings retain their original
+    name, which fails closed under SPREAD_FORWARD_HISTORY_INSUFFICIENT.
     """
     if requested in known_teams:
         return requested
-    target = _name_tokens(requested)
-    matches: list[tuple[int, str]] = []
-    for team in known_teams:
-        tokens = _name_tokens(team)
-        if len("".join(tokens)) < 5 or len(target) <= len(tokens) or target[: len(tokens)] != tokens:
-            continue
-        first_rest = target[len(tokens)]
-        if first_rest.startswith("(") or first_rest in _SCHOOL_QUALIFIER_TOKENS:
-            continue
-        matches.append((len(tokens), team))
-    if not matches:
+    normalized = _identity_norm(requested)
+    # Normalized exact CFBD names are acceptable only when unambiguous.
+    exact = [team for team in known_teams if _identity_norm(team) == normalized]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
         return requested
-    longest = max(n for n, _ in matches)
-    best = {team for n, team in matches if n == longest}
-    return next(iter(best)) if len(best) == 1 else requested
+    canonical = _VERIFIED_HISTORY_ALIASES.get(normalized)
+    if canonical is None:
+        return requested
+    matches = [team for team in known_teams if _identity_norm(team) == _identity_norm(canonical)]
+    return matches[0] if len(matches) == 1 else requested
 
 
 def build_forward_matchup_features(
