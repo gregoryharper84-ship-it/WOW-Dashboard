@@ -172,6 +172,8 @@ These are **research feature preparation** failures, not certified model inferen
 |---|---|---|---:|
 | `NCAAF_FORWARD_EVENT_TIME_INVALID` | NCAAF research forward feature builder | Current event or relevant settled-result timestamp missing, invalid or timezone-naive. | No |
 | `NCAAF_FORWARD_CANONICAL_IDENTITY_NOT_PROVEN` | NCAAF research forward feature builder | Upstream CFBD canonical event identity has not been proven for this event. | No |
+| `NCAAF_FORWARD_CANONICAL_PROOF_INVALID` | NCAAF research forward feature builder | Claimed CFBD event-resolution object is missing, does not match official event identity/participants, or contains contradictory provider/market/authority fields. | No |
+| `NCAAF_FORWARD_CANONICAL_START_MISMATCH` | NCAAF research forward feature builder | Caller kickoff differs from CFBD resolver kickoff beyond the canonical identity tolerance. | No |
 | `NCAAF_FORWARD_EVENT_IDENTITY_INVALID` | NCAAF research forward feature builder | Empty or contradictory canonical event ID/team participants. | No |
 | `NCAAF_FORWARD_NEUTRAL_SITE_INVALID` | NCAAF research forward feature builder | Neutral-site indicator is not a concrete boolean. | No |
 | `NCAAF_FORWARD_TARGET_IN_HISTORY` | NCAAF research forward feature builder | Target event appears in the settled-results input, creating a potential target/outcome leakage path. | No |
