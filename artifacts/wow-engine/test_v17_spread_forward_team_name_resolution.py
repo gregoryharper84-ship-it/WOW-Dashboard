@@ -70,3 +70,25 @@ def test_both_names_resolving_to_same_school_is_rejected():
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         build_forward_matchup_features(events, target_event=target)
     assert exc.value.code == "SPREAD_FORWARD_EVENT_IDENTITY_INVALID"
+
+
+def test_school_without_own_history_is_never_mapped_to_a_prefix_school():
+    known = ("Washington", "Texas", "Miami", "Oklahoma", "Florida")
+    # Each of these is a different school that merely lacks history here.
+    assert _resolve_history_team("Washington State Cougars", known) == "Washington State Cougars"
+    assert _resolve_history_team("Texas State Bobcats", known) == "Texas State Bobcats"
+    assert _resolve_history_team("Texas Tech Red Raiders", known) == "Texas Tech Red Raiders"
+    assert _resolve_history_team("Miami (OH) RedHawks", known) == "Miami (OH) RedHawks"
+    assert _resolve_history_team("Florida Atlantic Owls", known) == "Florida Atlantic Owls"
+    assert _resolve_history_team("Oklahoma State Cowboys", known) == "Oklahoma State Cowboys"
+    # A genuine mascot still resolves.
+    assert _resolve_history_team("Washington Huskies", known) == "Washington"
+
+
+def test_prefix_school_history_is_not_used_for_absent_school():
+    events = _events("Texas", "Oklahoma")
+    target = {"event_id": "t", "event_start_time": "2026-10-10T17:00:00+00:00",
+              "home_team": "Texas State Bobcats", "away_team": "Oklahoma Sooners", "season": 2026}
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        build_forward_matchup_features(events, target_event=target)
+    assert exc.value.code == "SPREAD_FORWARD_HISTORY_INSUFFICIENT"

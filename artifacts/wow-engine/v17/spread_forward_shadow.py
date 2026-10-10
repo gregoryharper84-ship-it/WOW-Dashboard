@@ -266,35 +266,53 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
         _FORWARD_CONTEXT_LOCK.release()
 
 
-def _norm_team_name(value: Any) -> str:
+# A requested name that continues a known school name with one of these words (or a
+# parenthetical) may denote a *different* school that simply has no history
+# (``Washington State`` vs ``Washington``).  Such names are never resolved by prefix.
+_SCHOOL_QUALIFIER_TOKENS = frozenset({
+    "state", "tech", "a&m", "am", "christian", "international", "polytechnic",
+    "southern", "northern", "eastern", "western", "central", "atlantic", "pacific",
+    "carolina", "dakota", "florida", "texas", "michigan", "kentucky", "tennessee",
+    "illinois", "alabama", "georgia", "virginia", "washington", "oregon", "colorado",
+    "mexico", "louisiana", "mississippi", "arkansas", "memphis", "monroe", "lafayette",
+    "tulsa", "baptist", "university", "college", "military", "naval", "academy",
+})
+
+
+def _name_tokens(value: Any) -> tuple[str, ...]:
     text = unicodedata.normalize("NFKD", str(value or "").casefold())
-    return "".join(ch for ch in text if ch.isalnum() and not unicodedata.combining(ch))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return tuple(text.split())
 
 
 def _resolve_history_team(requested: str, known_teams: Sequence[str]) -> str:
     """Map a requested team name onto the settled-history team key it denotes.
 
-    History is keyed by the school name stored from CFBD (``Texas``) while current
-    slate providers often append a mascot (``Texas Longhorns``).  An exact match
-    always wins.  Otherwise the requested name must start with exactly one longest
-    known school name (>= 5 characters, the same rule as ``ncaaf_event_identity``),
-    so ``Oklahoma State Cowboys`` resolves to ``Oklahoma State`` and never to
-    ``Oklahoma``.  No fuzzy matching; ambiguity or no match returns the name
-    unchanged, which then fails closed on insufficient history.
+    History is keyed by the CFBD school name (``Texas``) while current slate providers
+    often append a mascot (``Texas Longhorns``).  Exact match always wins.  Otherwise
+    the requested name must start, on whole-word boundaries, with exactly one longest
+    known school name (>= 5 characters) and the remainder must look like a mascot:
+    not empty, not a parenthetical, and not beginning with a school-qualifier word
+    (``State``, ``Tech``, ``A&M`` ...), because then it could be another school that
+    merely lacks history.  Anything else is returned unchanged and fails closed on
+    insufficient history.
     """
     if requested in known_teams:
         return requested
-    target = _norm_team_name(requested)
-    if not target:
-        return requested
-    matches = [
-        team for team in known_teams
-        if len(_norm_team_name(team)) >= 5 and target.startswith(_norm_team_name(team))
-    ]
+    target = _name_tokens(requested)
+    matches: list[tuple[int, str]] = []
+    for team in known_teams:
+        tokens = _name_tokens(team)
+        if len("".join(tokens)) < 5 or len(target) <= len(tokens) or target[: len(tokens)] != tokens:
+            continue
+        first_rest = target[len(tokens)]
+        if first_rest.startswith("(") or first_rest in _SCHOOL_QUALIFIER_TOKENS:
+            continue
+        matches.append((len(tokens), team))
     if not matches:
         return requested
-    longest = max(len(_norm_team_name(team)) for team in matches)
-    best = {team for team in matches if len(_norm_team_name(team)) == longest}
+    longest = max(n for n, _ in matches)
+    best = {team for n, team in matches if n == longest}
     return next(iter(best)) if len(best) == 1 else requested
 
 
