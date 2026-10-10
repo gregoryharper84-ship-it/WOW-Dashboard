@@ -44,6 +44,7 @@ _SCHOOL_ALIASES = {
     "brighamyounguniversity": "brighamyoung",
     "iowast": "iowastate",
     "iastate": "iowastate",
+    "iowahawkeyes": "iowa",
 }
 
 
@@ -52,6 +53,7 @@ _ALIAS_MASCOTS = {
     "brighamyounguniversity": "cougars",
     "iowast": "cyclones",
     "iastate": "cyclones",
+    "iowahawkeyes": "",
 }
 
 
