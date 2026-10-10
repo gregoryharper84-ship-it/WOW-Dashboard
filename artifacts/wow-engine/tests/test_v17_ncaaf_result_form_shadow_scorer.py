@@ -52,6 +52,9 @@ def _features():
         "event_start_time": "2026-10-10T01:00:00+00:00",
         "feature_as_of": "2026-10-09T23:00:00+00:00",
         "canonical_identity_verified_by_caller": True,
+        "canonical_identity_source": "CFBD:/games",
+        "canonical_identity_resolution": "CFBD_EXACT_PARTICIPANTS_START_MATCH",
+        "canonical_event_start_time": "2026-10-10T01:00:00+00:00",
         "market_features_used": False,
         "archived_pregame_snapshot": False,
     }
@@ -165,3 +168,26 @@ def test_duplicate_or_cross_sport_feature_names_are_rejected():
     with pytest.raises(NCAAFShadowScoreBlocked) as err:
         score_ncaaf_research_shadow(candidate, _features())
     assert err.value.code == "NCAAF_SHADOW_ARTIFACT_SCHEMA_MISMATCH"
+
+
+@pytest.mark.parametrize("key,value", [
+    ("canonical_identity_source", "ESPN"),
+    ("canonical_identity_resolution", "ALIAS_ONLY_UNRESOLVED"),
+    ("canonical_identity_source", None),
+])
+def test_research_shadow_requires_cfbd_source_resolution(key, value):
+    candidate, forward = _candidate(), _features()
+    forward["source_manifest"][key] = value
+    forward["source_manifest_sha256"] = _digest(forward["source_manifest"])
+    with pytest.raises(NCAAFShadowScoreBlocked) as error:
+        score_ncaaf_research_shadow(candidate, forward)
+    assert error.value.code == "NCAAF_SHADOW_MANIFEST_INVALID"
+
+
+def test_research_shadow_cannot_override_cfbd_source_kickoff():
+    candidate, forward = _candidate(), _features()
+    forward["source_manifest"]["canonical_event_start_time"] = "2026-10-09T22:00:00+00:00"
+    forward["source_manifest_sha256"] = _digest(forward["source_manifest"])
+    with pytest.raises(NCAAFShadowScoreBlocked) as error:
+        score_ncaaf_research_shadow(candidate, forward)
+    assert error.value.code == "NCAAF_SHADOW_CANONICAL_START_MISMATCH"
