@@ -6,6 +6,8 @@ workflow must keep the agent (QA) away from write tokens and the merge job
 away from the agent.
 """
 import base64
+import json
+import os
 import shutil
 import re
 import subprocess
@@ -184,3 +186,63 @@ def test_signed_release_external_actions_are_immutable_pins():
             assert name in expected and sha == expected[name], action
             found.add(name)
     assert found == set(expected)
+
+
+
+def _run_signed_release_qa_enforcement(payload):
+    assert shutil.which("jq"), "jq required by signed-release QA enforcement"
+    qa_job = _wf()["jobs"]["qa"]
+    step = next(s for s in qa_job["steps"] if s.get("name") == "Enforce QA result")
+    env = dict(os.environ, EXPECTED_HEAD_SHA=HEAD, QA_RESULT=json.dumps(payload))
+    return subprocess.run(
+        ["bash", "-c", step["run"]],
+        env=env, text=True, capture_output=True,
+    )
+
+
+def _qa_payload(**updates):
+    base = {
+        "decision": "PASS",
+        "change_class": "B",
+        "exact_head_sha": HEAD,
+        "findings": [],
+        "reason": "Exact-head evidence verified independently",
+    }
+    base.update(updates)
+    return base
+
+
+@pytest.mark.parametrize("class_code", ["A", "B"])
+def test_signed_release_qa_accepts_only_complete_class_a_or_b(class_code):
+    out = _run_signed_release_qa_enforcement(_qa_payload(change_class=class_code))
+    assert out.returncode == 0, out.stderr
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _qa_payload(change_class="C"),
+        _qa_payload(change_class=None),
+        _qa_payload(change_class="X"),
+        _qa_payload(change_class=""),
+        _qa_payload(decision="HOLD"),
+        _qa_payload(decision=None),
+        _qa_payload(exact_head_sha="b"*40),
+        _qa_payload(findings=None),
+        _qa_payload(findings=[{"malformed": True}]),
+        _qa_payload(reason=None),
+        _qa_payload(reason=""),
+    ],
+)
+def test_signed_release_qa_missing_invalid_or_class_c_fails_closed(payload):
+    out = _run_signed_release_qa_enforcement(payload)
+    assert out.returncode != 0, payload
+    assert "OWNER_SIGNED_RELEASE_" in out.stderr
+
+
+def test_signed_release_qa_omitted_class_or_reason_does_not_pass():
+    for missing in ("decision", "change_class", "exact_head_sha", "findings", "reason"):
+        payload = _qa_payload()
+        payload.pop(missing)
+        out = _run_signed_release_qa_enforcement(payload)
+        assert out.returncode != 0, missing
