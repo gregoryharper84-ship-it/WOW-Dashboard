@@ -79,7 +79,8 @@ def test_wow_action_has_prop_and_team_event_delegation():
 def test_llp_action_has_team_event_and_line_shadows_but_no_prop_scoring_operation():
     text = LLP_SCHEMA.read_text()
     ops = _operations(text)
-    assert len(ops) == 15
+    assert len(ops) == 16
+    assert "scoreLlpV17TeamEventBatch" in ops
     assert "runLlpV17FullSlate" in ops
     assert "readLlpV17FullSlateRows" in ops
     assert "scoreLlpV17TeamEvent" in ops
