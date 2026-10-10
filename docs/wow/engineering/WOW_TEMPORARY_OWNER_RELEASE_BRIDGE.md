@@ -38,12 +38,17 @@ This action is for eligible **non-trust-root Class A/B** PRs only. Human-only
 trust-root bootstrap PRs must be manually merged by the owner in the UI after
 independent evidence; the bridge intentionally denies them.
 
-The separately owner-held factor is supplied **only** to the short release
-preflight step. The untrusted-diff-reviewing Claude action runs in a separate
-`owner-readonly-qa` job with **read-only GitHub token permissions**, no release
-environment, and no owner factor. The merge-capable `owner-bridge` job starts
-only after an exact-SHA Class A/B QA PASS, independently revalidates owner
-authorization, all CI, branch provenance and unchanged PR/base SHAs.
+The owner-held factor is supplied **only** to the step-local environment of
+the first `owner-authorization` job, which has **read-only GitHub permissions**
+and the protected `wow-release` environment. A failed or missing factor
+terminates the workflow **before any paid Claude review** or privileged merge
+job runs, with a durable Actions summary. This preauthorization publishes
+only validated PR number, exact head SHA, and incident number; no secret bytes.
+The `owner-readonly-qa` job runs only after successful authorization, has
+read-only GitHub permissions and no release secret/environment. The privileged
+`owner-bridge` job requires both authorization and exact-SHA Class A/B QA
+PASS, and independently rechecks the authorized PR/SHA/incident, all CI, branch
+provenance, and unchanged PR/base SHAs. It never receives the owner factor.
 
 An alternative PR comment command exists, but the account name is shared
 by some Engineering integrations, so the command **alone cannot prove human
