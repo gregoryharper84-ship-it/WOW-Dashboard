@@ -43,4 +43,5 @@ def test_ci_mirror_does_not_remove_protected_aggregate_gates():
     engine = yaml.safe_load((ROOT / ".github/workflows/wow-engine-verify.yml").read_text())
     assert "required-three" in " ".join(verify["jobs"])
     assert "governed" in " ".join(engine["jobs"])
-    assert "can_execute=false" not in ""  # marker is not used as CI bypass
+    assert any("needs:" in line for line in (ROOT / ".github/workflows/wow-verify.yml").read_text().splitlines())
+    assert any("needs:" in line for line in (ROOT / ".github/workflows/wow-engine-verify.yml").read_text().splitlines())
