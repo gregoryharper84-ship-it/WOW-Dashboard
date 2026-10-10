@@ -246,3 +246,55 @@ def test_signed_release_qa_omitted_class_or_reason_does_not_pass():
         payload.pop(missing)
         out = _run_signed_release_qa_enforcement(payload)
         assert out.returncode != 0, missing
+
+
+
+def _owner_signed_pr_file_filter(rows):
+    # Run the exact jq expression used by the workflow over a fake GitHub
+    # paginated /pulls/:number/files response. This is real parser behavior,
+    # not merely a string check on source code.
+    source = WORKFLOW.read_text()
+    match = re.search(r"--jq '([^']+)' > evidence/files\.txt", source)
+    assert match, "signed owner release must retain an auditable file filter"
+    assert shutil.which("jq"), "jq is required for file-scope parsing tests"
+    outcome = subprocess.run(
+        ["jq", "-r", match.group(1)],
+        input=json.dumps(rows), text=True, capture_output=True,
+    )
+    assert outcome.returncode == 0, outcome.stderr
+    return outcome.stdout.splitlines()
+
+
+@pytest.mark.parametrize("origin", [
+    ".github/workflows/wow-verify.yml",
+    ".github/release/owner_allowed_signers",
+    ".agents/skills/wow-engineering-qa-verification-agent/SKILL.md",
+])
+def test_signed_release_file_filter_exposes_protected_rename_origin(origin):
+    paths = _owner_signed_pr_file_filter([{
+        "filename": "docs/innocent-filename.md",
+        "previous_filename": origin,
+        "status": "renamed",
+    }])
+    assert paths == ["docs/innocent-filename.md", origin]
+    workflow = WORKFLOW.read_text()
+    assert '.github/*|.agents/*) deny "TRUST_ROOT_CHANGE:$path"' in workflow
+
+
+@pytest.mark.parametrize("origin", [None, "", 17, False])
+def test_signed_release_file_filter_rejects_missing_or_corrupt_rename_origin(origin):
+    row = {"filename": "docs/ordinary.md", "status": "renamed"}
+    if origin is not None:
+        row["previous_filename"] = origin
+    assert "__MISSING_RENAME_ORIGIN__" in _owner_signed_pr_file_filter([row])
+    assert 'deny RENAME_ORIGIN_MISSING' in WORKFLOW.read_text()
+
+
+def test_signed_release_file_filter_rejects_invalid_path_and_empty_evidence():
+    assert _owner_signed_pr_file_filter([{"status": "modified"}]) == ["__INVALID_FILE_PATH__"]
+    assert _owner_signed_pr_file_filter([{"status": "added", "filename": ""}]) == ["__INVALID_FILE_PATH__"]
+    assert _owner_signed_pr_file_filter([]) == []
+    source = WORKFLOW.read_text()
+    assert 'deny PR_FILES_MISSING' in source
+    assert 'deny PR_FILE_EVIDENCE_TRUNCATED' in source
+    assert 'deny FILE_PATH_INVALID' in source
