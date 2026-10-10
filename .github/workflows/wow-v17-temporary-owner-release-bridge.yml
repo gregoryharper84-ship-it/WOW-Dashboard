@@ -45,7 +45,6 @@ jobs:
     timeout-minutes: 45
     environment: wow-release
     env:
-      OWNER_APPROVAL: ${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}
       EVENT_NAME: ${{ github.event_name }}
       EVENT_ACTOR: ${{ github.actor }}
       EVENT_PR_NUMBER: ${{ github.event.issue.number || '' }}
@@ -67,6 +66,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # Never expose this owner-held factor to checkout, agent QA,
+          # merge, or receipt steps. Only this local preflight may read it.
+          OWNER_APPROVAL: ${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}
         run: |
           set -euo pipefail
           [ "$EVENT_ACTOR" = "gregoryharper84-ship-it" ] || {
