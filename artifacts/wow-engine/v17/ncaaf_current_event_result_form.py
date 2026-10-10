@@ -170,7 +170,13 @@ def current_event_feature_package(
     as_of = max(source_times)
     if as_of >= start:
         raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_FEATURE_NOT_PREGAME")
+    # Bind the exact numeric candidate-compatible vector to source provenance.
+    # This is an integrity digest, not an external-source signature.
+    features_sha256 = sha256(
+        json.dumps(features, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     manifest = {
+        "features_sha256": features_sha256,
         "feature_bridge_version": CURRENT_FEATURE_BRIDGE_VERSION,
         "source_policy_id": SOURCE_POLICY_ID,
         "official_event_id": event_id,
@@ -194,6 +200,7 @@ def current_event_feature_package(
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "candidate_model_family": MODEL_FAMILY,
         "features": features,
+        "features_sha256": features_sha256,
         "feature_as_of": as_of.isoformat(),
         "source_manifest": manifest,
         "source_manifest_sha256": digest,
