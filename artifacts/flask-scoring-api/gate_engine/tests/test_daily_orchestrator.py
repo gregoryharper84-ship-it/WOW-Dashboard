@@ -40,6 +40,7 @@ import sys
 import os
 import types
 import unittest
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -479,6 +480,20 @@ class TestRunDailyOrchestration(unittest.TestCase):
              "terminal_bucket": "Watch", "wow_score": 40.0,
              "final_approval_blocker": None, "audit_valid": False},
         ]})
+        # The Flask app may import on an unrelated daemon thread while the
+        # GitHub CI shards share a process. A global MagicMock call-count is
+        # then contaminated by that unrelated thread's DB bootstrap, even if
+        # this persist=False run correctly avoids ALL manifest writes. Scope
+        # observation to the thread actually invoking this orchestration.
+        owner_thread_id = threading.get_ident()
+        scoped_db_writes = []
+
+        def _record_manifest_write(name):
+            def record(*args, **kwargs):
+                if threading.get_ident() == owner_thread_id:
+                    scoped_db_writes.append(name)
+            return record
+
         with (
             patch.object(orch, "_union_props_for_sport", side_effect=self._mock_union),
             patch("jobs.wow_daily_scan.run_scan", return_value=scan_result),
@@ -489,17 +504,24 @@ class TestRunDailyOrchestration(unittest.TestCase):
             patch("storage.daily_manifest.finalize_run")  as mock_finalize,
             patch("storage.daily_manifest.save_run_row")  as mock_save,
         ):
+            for name, mocked in (
+                ("ensure_tables", mock_ensure),
+                ("create_run", mock_create),
+                ("persist_discovery_checkpoint", mock_checkpoint),
+                ("begin_scoring", mock_begin_scoring),
+                ("finalize_run", mock_finalize),
+                ("save_run_row", mock_save),
+            ):
+                mocked.side_effect = _record_manifest_write(name)
             run_daily_orchestration(
                 sports=sports, environment="test",
                 runtime_provenance=None, session_id=None,
                 persist=False,
             )
-        mock_ensure.assert_not_called()
-        mock_create.assert_not_called()
-        mock_checkpoint.assert_not_called()
-        mock_begin_scoring.assert_not_called()
-        mock_finalize.assert_not_called()
-        mock_save.assert_not_called()
+        self.assertEqual(
+            scoped_db_writes, [],
+            f"persist=False daily run attempted manifest writes: {scoped_db_writes}",
+        )
 
     def test_degraded_status_on_failed_modules(self):
         from gate_engine.daily_orchestrator import run_daily_orchestration
