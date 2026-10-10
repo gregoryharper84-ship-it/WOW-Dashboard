@@ -56,6 +56,30 @@ jobs:
             --json number,title,body \
             > "$RUNNER_TEMP/wow-open-prs.json"
 
+          # The list command is bounded. Verify against full open counts;
+          # an omitted PR can hide the existing repair owner, while an omitted
+          # issue silently removes it from the dispatch candidate universe.
+          issue_total=$(gh api -X GET /search/issues \
+            -f "q=repo:$GITHUB_REPOSITORY is:issue is:open" \
+            -f per_page=1 --jq '.total_count')
+          pr_total=$(gh api -X GET /search/issues \
+            -f "q=repo:$GITHUB_REPOSITORY is:pr is:open" \
+            -f per_page=1 --jq '.total_count')
+          [[ "$issue_total" =~ ^[0-9]+$ && "$pr_total" =~ ^[0-9]+$ ]] || {
+            echo "P0_RAPID_OPEN_ITEM_INVENTORY_INVALID" >&2
+            exit 1
+          }
+          issue_loaded=$(jq 'length' "$RUNNER_TEMP/wow-open-issues.json")
+          pr_loaded=$(jq 'length' "$RUNNER_TEMP/wow-open-prs.json")
+          if [ "$issue_loaded" -ne "$issue_total" ]; then
+            echo "P0_RAPID_OPEN_ISSUE_INVENTORY_INCOMPLETE:$issue_loaded:$issue_total" >&2
+            exit 1
+          fi
+          if [ "$pr_loaded" -ne "$pr_total" ]; then
+            echo "P0_RAPID_OPEN_PR_INVENTORY_INCOMPLETE:$pr_loaded:$pr_total" >&2
+            exit 1
+          fi
+
           # Snapshot all active runs; fail closed if a page is incomplete.
           # Distinct, verified domain leases may run concurrently.
           for state in queued in_progress waiting requested; do
