@@ -171,3 +171,26 @@ def test_owner_bridge_denial_has_durable_run_summary_when_incident_unset():
     assert "OWNER_BRIDGE_RECEIPT_NO_VALIDATED_INCIDENT" in receipt
     assert 'if [[ "${safe_incident}" =~ ^[0-9]+$ ]]' in receipt
     assert "production_acceptance=false" in receipt
+
+
+def test_owner_held_approval_secret_is_visible_to_preflight_step_only():
+    """The untrusted-diff-reviewing Claude action must never inherit owner MFA."""
+    document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    job = document["jobs"]["owner-bridge"]
+    secret_expr = "${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}"
+    assert "OWNER_APPROVAL" not in job.get("env", {})
+    steps = job["steps"]
+    preflight = next(step for step in steps if step.get("id") == "preflight")
+    assert preflight.get("env", {}).get("OWNER_APPROVAL") == secret_expr
+    assert preflight["env"].get("GH_TOKEN")  # independent API proof stays intact
+    for step in steps:
+        if step is preflight:
+            continue
+        assert "OWNER_APPROVAL" not in step.get("env", {}), step.get("name")
+        assert secret_expr not in str(step.get("with", {})), step.get("name")
+        assert secret_expr not in str(step.get("run", "")), step.get("name")
+    assert secret_expr not in str(job.get("with", {}))
+    assert secret_expr not in str(job.get("outputs", {}))
+    assert secret_expr not in str(job.get("container", {}))
+    # The value is compared locally, never sent to the persistent environment.
+    assert 'echo "OWNER_APPROVAL=' not in preflight["run"]
