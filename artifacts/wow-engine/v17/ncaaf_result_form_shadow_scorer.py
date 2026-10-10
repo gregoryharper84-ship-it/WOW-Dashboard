@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from math import exp, isfinite
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from v17.ncaaf_result_form_candidate import (
     FEATURE_NAMES, FEATURE_SCHEMA_VERSION, MODEL_FAMILY,
@@ -78,10 +78,14 @@ def score_ncaaf_research_shadow(
             or candidate.get("research_screen_pass") is not True
             or any(candidate.get(key) is not False for key in (
                 "promoted", "active", "probability_publishable", "can_execute",
+                "automatic_certification", "automatic_promotion",
             ))):
         raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_CANDIDATE_NOT_INERT")
     version = str(candidate.get("model_artifact_version") or "").strip()
     if not version or not version.startswith("NCAAF_RESULT_FORM_LOGIT_V1_"):
+        raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_ARTIFACT_IDENTITY_INVALID")
+    dataset_hash = str(candidate.get("training_dataset_hash") or "").strip().lower()
+    if len(dataset_hash) != 64 or any(ch not in "0123456789abcdef" for ch in dataset_hash):
         raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_ARTIFACT_IDENTITY_INVALID")
     artifact = candidate.get("artifact_payload")
     if not isinstance(artifact, Mapping):
@@ -144,7 +148,7 @@ def score_ncaaf_research_shadow(
         "model_artifact_version": version,
         "model_family": MODEL_FAMILY,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
-        "training_dataset_hash": candidate.get("training_dataset_hash"),
+        "training_dataset_hash": dataset_hash,
         "artifact_checksum": checksum,
         "source_manifest_sha256": manifest_hash,
         "research_raw_probability": raw,
