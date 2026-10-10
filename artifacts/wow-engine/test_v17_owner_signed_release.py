@@ -7,6 +7,7 @@ away from the agent.
 """
 import base64
 import shutil
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -160,3 +161,26 @@ def test_trust_root_and_class_c_denied_and_unsafe_bridge_removed():
     assert "CLASS_C_DENIED" in text
     assert "issue_comment" not in text and "WOW_OWNER_RELEASE_APPROVAL" not in text
     assert not (ROOT / ".github/workflows/wow-v17-temporary-owner-release-bridge.yml").exists()
+
+
+
+def test_signed_release_external_actions_are_immutable_pins():
+    # These SHAs are resolved from the official action repositories. A tag
+    # such as @v4/@v6 is mutable and cannot be trusted on a release-authority
+    # workflow that handles owner signatures, model QA and merge credentials.
+    expected = {
+        "actions/checkout": "11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    }
+    found = set()
+    for job in _wf()["jobs"].values():
+        for step in job["steps"]:
+            action = step.get("uses", "")
+            if not action.startswith("actions/"):
+                continue
+            assert re.fullmatch(r"actions/[a-z0-9-]+@[0-9a-f]{40}", action), action
+            name, sha = action.split("@", 1)
+            assert name in expected and sha == expected[name], action
+            found.add(name)
+    assert found == set(expected)
