@@ -133,3 +133,15 @@ def test_unverified_team_name_does_not_borrow_prefix_history_end_to_end():
     with pytest.raises(SpreadChallengerUnavailable) as exc:
         build_forward_matchup_features(events, target_event=target)
     assert exc.value.code == "SPREAD_FORWARD_HISTORY_INSUFFICIENT"
+
+
+def test_normalized_exact_name_collision_is_rejected():
+    # Two distinct CFBD keys can normalize to the same value.
+    known = ("Miami (OH)", "Miami OH")
+    assert _resolve_history_team("miami-oh", known) == "miami-oh"
+
+
+def test_ambiguous_verified_alias_does_not_select_arbitrary_history_key():
+    # The verified alias must identify exactly one history key.
+    known = ("Texas", "Téxas")
+    assert _resolve_history_team("Texas Longhorns", known) == "Texas Longhorns"
