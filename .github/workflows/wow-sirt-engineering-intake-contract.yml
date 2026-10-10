@@ -1,0 +1,25 @@
+name: wow-sirt-engineering-intake-contract
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/wow-sirt-engineering-finding-bridge.yml'
+      - '.github/workflows/wow-sirt-engineering-intake-contract.yml'
+      - 'artifacts/wow-engine/v17/sirt_engineering_intake.py'
+      - 'artifacts/wow-engine/test_v17_sirt_engineering_intake.py'
+      - 'docs/wow/engineering/WOW_SIRT_TO_ENGINEERING_INTAKE.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest 'celery>=5.4,<6'
+      - run: python -m pytest -q artifacts/wow-engine/test_v17_sirt_engineering_intake.py
