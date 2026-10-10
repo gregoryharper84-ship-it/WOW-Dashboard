@@ -40,8 +40,9 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
     must still reproduce the stored dataset hash, artifact checksum, calibrator and
     metrics exactly, otherwise the evidence fails closed.
     """
-    created_at = candidate.get("created_at")
-    cutoff = _iso(created_at) if created_at else None
+    # A frozen candidate without a valid database creation timestamp has no
+    # replayable training snapshot. Never inherit the mutable family ledger.
+    cutoff = _iso(candidate["created_at"])
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
@@ -53,26 +54,24 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
             .eq("model_family", candidate["model_family"])
             .eq("feature_schema_version", candidate["feature_schema_version"])
         )
-        if cutoff is not None:
-            query = query.lte("created_at", cutoff)
+        query = query.lte("created_at", cutoff)
         page = query.order("training_row_id").range(offset, offset + 999).execute()
         batch = [dict(row) for row in (getattr(page, "data", None) or [])]
         rows.extend(batch)
         if len(batch) < 1000:
             break
         offset += 1000
-    if cutoff is not None:
-        latest: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            if row.get("created_at") and _iso(row["created_at"]) > cutoff:
-                continue
-            key = str(row["official_event_id"])
-            current = latest.get(key)
-            if current is None or (
-                _iso(row.get("created_at") or cutoff), str(row.get("training_row_id") or "")
-            ) > (_iso(current.get("created_at") or cutoff), str(current.get("training_row_id") or "")):
-                latest[key] = row
-        rows = list(latest.values())
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row.get("created_at") and _iso(row["created_at"]) > cutoff:
+            continue
+        key = str(row["official_event_id"])
+        current = latest.get(key)
+        if current is None or (
+            _iso(row.get("created_at") or cutoff), str(row.get("training_row_id") or "")
+        ) > (_iso(current.get("created_at") or cutoff), str(current.get("training_row_id") or "")):
+            latest[key] = row
+    rows = list(latest.values())
     rows.sort(key=lambda row: (_iso(row["event_start_time"]), str(row["official_event_id"])))
     return rows
 
@@ -145,7 +144,15 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
     if str(c.get("source_policy_id") or "") != "TEAM_STATE_DYNAMIC_PRIOR_ONLY_V1" or not str(c.get("model_family") or "").endswith("_DYNAMIC_TEAM_STATE_LOGIT_V2"):
         blockers.append("CANDIDATE_REPLAY_CONTRACT_UNSUPPORTED")
 
-    rows = _all_rows(db, c)
+    # An absent/malformed snapshot timestamp is an evidence hold, not a
+    # transient 500 or permission to replay every historical row version.
+    try:
+        _iso(c["created_at"])
+    except (KeyError, TypeError, ValueError):
+        blockers.append("CANDIDATE_SNAPSHOT_TIME_INVALID")
+        rows = []
+    else:
+        rows = _all_rows(db, c)
     expected = sum(int(c.get(k) or 0) for k in ("training_rows", "calibration_rows", "test_rows"))
     if len(rows) != expected:
         blockers.append("TRAINING_ROW_COUNT_MISMATCH")
