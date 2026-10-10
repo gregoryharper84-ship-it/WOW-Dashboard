@@ -124,7 +124,8 @@ def test_owner_bridge_comment_requires_exact_separate_secret(tmp_path):
     receipt = (tmp_path / "github_output").read_text()
     assert "pr_number=1575" in receipt
     assert f"head_sha={head}" in receipt
-    assert "authorization_mode=OWNER_EXACT_SHA_COMMENT" in receipt
+    assert "incident=1388" in receipt
+    assert receipt.count("head_sha=") == 1
 
 
 def test_owner_bridge_comment_rejects_stale_sha_or_nonowner(tmp_path):
@@ -152,9 +153,10 @@ def test_owner_bridge_dispatch_path_still_requires_same_secret(tmp_path):
         tmp_path, event_name="workflow_dispatch", secret=f"1575:{head}",
     )
     assert good.returncode == 0, good.stderr
-    assert "authorization_mode=OWNER_ENVIRONMENT_SECRET" in (
-        tmp_path / "github_output"
-    ).read_text()
+    receipt = (tmp_path / "github_output").read_text()
+    assert "pr_number=1575" in receipt
+    assert "incident=1388" in receipt
+    assert f"head_sha={head}" in receipt
 
 
 def test_owner_bridge_denial_has_durable_run_summary_when_incident_unset():
