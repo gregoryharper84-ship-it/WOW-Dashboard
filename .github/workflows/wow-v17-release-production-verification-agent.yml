@@ -393,17 +393,20 @@ jobs:
                 can_execute: false}')
           else
             # Typed JSON is required even when the model action reports success.
-            jq -e '
+            jq -e --arg merge "$MERGE_SHA" '
               type == "object" and
               (.status | IN("PRODUCTION_VERIFIED", "PENDING", "BLOCKED_WITH_EXACT_REASON")) and
-              (.main_sha | type == "string") and
+              (.main_sha | type == "string" and test("^[0-9a-f]{40}$")) and
               (.production_sha | type == "string") and
               (.acceptance | type == "string") and
               (.reconciliation | type == "string") and
               (.blocker | type == "string") and
-              (.next_action | type == "string")
+              (.next_action | type == "string") and
+              # A model claim alone is not evidence of the deployed revision.
+              # Never publish PRODUCTION_VERIFIED for a wrong/absent merge SHA.
+              (if .status == "PRODUCTION_VERIFIED" then .production_sha == $merge else true end)
             ' <<<"$RESULT" >/dev/null || {
-              echo "RELEASE_OBSERVABILITY_RESULT_SCHEMA_INVALID" >&2
+              echo "RELEASE_OBSERVABILITY_RESULT_SCHEMA_OR_EXACT_MERGE_INVALID" >&2
               exit 1
             }
           fi
