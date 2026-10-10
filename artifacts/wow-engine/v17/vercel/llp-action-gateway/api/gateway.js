@@ -9,6 +9,7 @@ const ROUTES = new Map([
   ["/v17/daily-snapshot-run", { method: "POST", auth: true }],
   ["/v17/daily-snapshot-run/__ROWS__", { method: "GET", auth: true }],
   ["/score-team-event", { method: "POST", auth: true }],
+  ["/score-team-event-request", { method: "POST", auth: true }],
   ["/live-probability/health", { method: "GET", auth: true }],
   ["/capture-live-event-state", { method: "POST", auth: true }],
   ["/score-live-event", { method: "POST", auth: true }],
