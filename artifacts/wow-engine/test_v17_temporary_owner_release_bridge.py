@@ -10,7 +10,7 @@ def test_temporary_owner_bridge_is_manual_exact_sha_merge_only():
     doc = yaml.safe_load(text)
     assert "workflow_dispatch" in doc[True]
     assert "WOW_OWNER_RELEASE_APPROVAL" in text
-    assert 'expected_approval="${PR_NUMBER}:${EXPECTED_HEAD_SHA}"' in text
+    assert '[ "$OWNER_APPROVAL" = "${pr}:${head}" ]' in text
     assert "OWNER_BRIDGE_EXACT_SHA_NOT_AUTHORIZED" in text
     assert "OWNER_BRIDGE_HEAD_CHANGED_AFTER_REVIEW" in text
     assert "-f sha=\"$EXPECTED_HEAD_SHA\"" in text
@@ -86,9 +86,8 @@ def _run_authorization_only(tmp_path, *, event_name="issue_comment", secret="", 
     import subprocess
 
     document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    steps = document["jobs"]["owner-bridge"]["steps"]
-    preflight = next(step["run"] for step in steps if step.get("id") == "preflight")
-    script, _ = preflight.split("pr_json=$(gh api", 1)
+    steps = document["jobs"]["owner-authorization"]["steps"]
+    script = next(step["run"] for step in steps if step.get("id") == "authorize")
     expected_sha = "a" * 40
     request_sha = expected_sha if comment_sha is None else comment_sha
     environment = dict(os.environ)
@@ -173,60 +172,74 @@ def test_owner_bridge_denial_has_durable_run_summary_when_incident_unset():
     assert "production_acceptance=false" in receipt
 
 
-def test_owner_held_approval_secret_is_visible_to_preflight_step_only():
-    """The untrusted-diff-reviewing Claude action must never inherit owner MFA."""
+def test_owner_held_approval_is_readonly_and_precedes_any_model_review():
+    """A shared owner actor cannot trigger Claude without the owner factor."""
     document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    job = document["jobs"]["owner-bridge"]
-    secret_expr = "${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}"
-    assert "OWNER_APPROVAL" not in job.get("env", {})
-    steps = job["steps"]
-    preflight = next(step for step in steps if step.get("id") == "preflight")
-    assert preflight.get("env", {}).get("OWNER_APPROVAL") == secret_expr
-    assert preflight["env"].get("GH_TOKEN")  # independent API proof stays intact
-    for step in steps:
-        if step is preflight:
-            continue
-        assert "OWNER_APPROVAL" not in step.get("env", {}), step.get("name")
-        assert secret_expr not in str(step.get("with", {})), step.get("name")
-        assert secret_expr not in str(step.get("run", "")), step.get("name")
-    assert secret_expr not in str(job.get("with", {}))
-    assert secret_expr not in str(job.get("outputs", {}))
-    assert secret_expr not in str(job.get("container", {}))
-    # The value is compared locally, never sent to the persistent environment.
-    assert 'echo "OWNER_APPROVAL=' not in preflight["run"]
-
-
-def test_read_only_qa_is_isolated_from_merge_capable_github_token():
-    """An agent reviewing untrusted PR text cannot inherit merge authority."""
-    document = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    auth = document["jobs"]["owner-authorization"]
     review = document["jobs"]["owner-readonly-qa"]
     release = document["jobs"]["owner-bridge"]
-    for permission in ("contents", "issues", "pull-requests"):
-        assert review["permissions"][permission] == "read"
-    assert review["permissions"].get("actions") == "read"
+    secret_expr = "${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}"
+    assert auth["environment"] == "wow-release"
+    assert auth["timeout-minutes"] <= 5
+    for name in ("contents", "issues", "pull-requests"):
+        assert auth["permissions"][name] == "read"
     assert "environment" not in review
-    assert "OWNER_APPROVAL" not in review.get("env", {})
+    assert "environment" not in release
+    assert "OWNER_APPROVAL" not in auth.get("env", {})
+    secret_step = next(step for step in auth["steps"]
+                       if step.get("id") == "authorize")
+    assert secret_step["env"]["OWNER_APPROVAL"] == secret_expr
+    assert '[ "$OWNER_APPROVAL" = "${pr}:${head}" ]' in secret_step["run"]
+    assert "OWNER_BRIDGE_APPROVAL_SECRET_MISSING" in secret_step["run"]
+    assert auth["outputs"]["head_sha"] == "${{ steps.authorize.outputs.head_sha }}"
+    for job in (review, release):
+        assert secret_expr not in str(job)
+        assert "OWNER_APPROVAL" not in job.get("env", {})
+    assert review["needs"] == "owner-authorization"
+    assert "needs.owner-authorization.result == 'success'" in review["if"]
+    assert release["needs"] == ["owner-authorization", "owner-readonly-qa"]
+    assert "needs.owner-authorization.result == 'success'" in release["if"]
+    assert "needs.owner-readonly-qa.result == 'success'" in release["if"]
+    assert "model_review_started: false" in str(auth["steps"])
+
+
+def test_readonly_qa_and_merge_job_have_disjoint_authorities():
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    review = doc["jobs"]["owner-readonly-qa"]
+    release = doc["jobs"]["owner-bridge"]
+    for name in ("contents", "issues", "pull-requests", "actions"):
+        assert review["permissions"][name] == "read"
+    assert "environment" not in review
     assert "WOW_OWNER_RELEASE_APPROVAL" not in str(review)
-    qa_steps = [
-        s for s in review["steps"]
-        if "wow-claude-agent" in s.get("uses", "")
-    ]
+    qa_steps = [step for step in review["steps"]
+                if "wow-claude-agent" in step.get("uses", "")]
     assert len(qa_steps) == 1
     assert qa_steps[0]["with"]["permission_profile"] == ":read-only"
     assert "wow-claude-agent" not in str(release["steps"])
-    assert release["needs"] == "owner-readonly-qa"
-    assert "needs.owner-readonly-qa.result == 'success'" in release["if"]
     assert "needs.owner-readonly-qa.outputs.exact_head_sha" in str(release)
     assert "OWNER_BRIDGE_QA_SHA_MISMATCH" in str(release)
     assert "OWNER_BRIDGE_CLASS_C_DENIED" in str(release)
-    # The owner-held authorization is confined to release preflight and never
-    # leaks through job outputs, QA content, artifacts, or a shared job env.
-    release_preflight = next(
-        s for s in release["steps"] if s.get("id") == "preflight"
-    )
-    assert release_preflight["env"]["OWNER_APPROVAL"] == (
-        "${{ secrets.WOW_OWNER_RELEASE_APPROVAL }}"
-    )
+    gate = next(step for step in release["steps"]
+                if step.get("id") == "preflight")
+    assert "OWNER_APPROVAL" not in gate.get("env", {})
+    assert '"$PR_NUMBER" = "$AUTH_PR"' in gate["run"]
+    assert '"$EXPECTED_HEAD_SHA" = "$AUTH_SHA"' in gate["run"]
+    assert '"$INCIDENT_ID" = "$AUTH_INCIDENT"' in gate["run"]
+
+
+def test_owner_denial_happens_before_any_paid_agent():
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    auth = doc["jobs"]["owner-authorization"]
+    qa = doc["jobs"]["owner-readonly-qa"]
+    merge = doc["jobs"]["owner-bridge"]
+    assert auth["steps"][0]["id"] == "authorize"
+    assert not any("wow-claude-agent" in step.get("uses", "")
+                   for step in auth["steps"])
+    assert qa["needs"] == "owner-authorization"
+    assert "needs.owner-authorization.result == 'success'" in qa["if"]
+    assert "needs.owner-authorization.result == 'success'" in merge["if"]
+    assert "WOW_OWNER_RELEASE_APPROVAL" not in str(qa)
+    assert "WOW_OWNER_RELEASE_APPROVAL" not in str(merge)
 
 
 def test_isolated_qa_pins_source_and_blocks_unsafe_challenges():
