@@ -160,7 +160,8 @@ def test_identical_same_instant_source_rewrite_does_not_double_count():
     one = _row(1, "2026-09-25T20:39:13+00:00")
     other = _row(1501, "2026-09-25T20:39:13+00:00")
     one.update({"source_manifest_sha256": "identical", "features": {"p": 1.0}})
-    other.update({"source_manifest_sha256": "identical", "features": {"p": 1.0}})
+    other.update({"source_manifest_sha256": "identical", "features": {"p": 1.0},
+                  "event_start_time": one["event_start_time"]})
     db = _DB({"wow_d1_training_rows": [one, other]})
     assert len(evidence._all_rows(db, _candidate())) == 1
 
