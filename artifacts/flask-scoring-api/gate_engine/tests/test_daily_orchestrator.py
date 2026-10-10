@@ -481,7 +481,10 @@ class TestRunDailyOrchestration(unittest.TestCase):
         ]})
         with (
             patch.object(orch, "_union_props_for_sport", side_effect=self._mock_union),
-            patch("jobs.wow_daily_scan.run_scan", return_value=scan_result),
+            # Mock the orchestration scanner boundary, NOT jobs.wow_daily_scan:
+            # importing that module executes Flask app startup and a background
+            # daemon can call ensure_tables() during the unrelated no-write test.
+            patch.object(orch, "_run_scan_isolated", return_value=(scan_result, None)) as mock_scan,
             patch("storage.daily_manifest.ensure_tables") as mock_ensure,
             patch("storage.daily_manifest.create_run")    as mock_create,
             patch("storage.daily_manifest.persist_discovery_checkpoint") as mock_checkpoint,
@@ -494,6 +497,7 @@ class TestRunDailyOrchestration(unittest.TestCase):
                 runtime_provenance=None, session_id=None,
                 persist=False,
             )
+            mock_scan.assert_called_once()
         mock_ensure.assert_not_called()
         mock_create.assert_not_called()
         mock_checkpoint.assert_not_called()
