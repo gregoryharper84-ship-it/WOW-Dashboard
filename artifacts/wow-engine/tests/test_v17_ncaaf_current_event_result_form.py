@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 import math
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from v17.ncaaf_current_event_result_form import (
     NCAAFForwardFeatureUnavailable,
     current_event_feature_package,
+    current_event_feature_package_from_cfbd,
 )
 from v17.ncaaf_result_form_candidate import FEATURE_NAMES, FEATURE_SCHEMA_VERSION, MODEL_FAMILY
 
@@ -249,3 +251,52 @@ def test_bare_verified_boolean_is_not_a_canonical_source_proof():
     with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
         _package(canonical_resolution={})
     assert err.value.code == "NCAAF_FORWARD_CANONICAL_PROOF_INVALID"
+
+
+
+class _FakeCFBD:
+    def __init__(self, rows):
+        self.rows = rows
+        self.requested_year = None
+
+    def games(self, *, year, classification):
+        assert classification == "fbs"
+        self.requested_year = year
+        return SimpleNamespace(rows=self.rows)
+
+
+def test_source_bound_entrypoint_calls_cfbd_and_preserves_canonical_id():
+    cfbd = _FakeCFBD([{
+        "id": 401858254,
+        "home_team": "Louisville",
+        "away_team": "Florida State",
+        "start_date": TARGET_START,
+    }])
+    result = current_event_feature_package_from_cfbd(
+        _games(), event_start_time=TARGET_START,
+        home_team="Louisville", away_team="Florida State",
+        neutral_site=False, client=cfbd,
+    )
+    assert cfbd.requested_year == 2026
+    assert result["official_event_id"] == "401858254"
+    assert result["source_manifest"]["canonical_identity_source"] == "CFBD:/games"
+    assert result["source_manifest"]["canonical_identity_resolution"] == "CFBD_EXACT_PARTICIPANTS_START_MATCH"
+    assert result["features_sha256"] == result["source_manifest"]["features_sha256"]
+    assert result["calibrated_probability"] is None
+    assert result["probability_publishable"] is False
+
+
+def test_source_bound_entrypoint_does_not_manufacture_missing_cfbd_identity():
+    cfbd = _FakeCFBD([{
+        "id": "other",
+        "home_team": "Louisville",
+        "away_team": "Wrong School",
+        "start_date": TARGET_START,
+    }])
+    with pytest.raises(NCAAFForwardFeatureUnavailable) as err:
+        current_event_feature_package_from_cfbd(
+            _games(), event_start_time=TARGET_START,
+            home_team="Louisville", away_team="Florida State",
+            neutral_site=False, client=cfbd,
+        )
+    assert err.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
