@@ -65,6 +65,12 @@ jobs:
       - name: Analyze canonical incident history
         if: always()
         shell: bash
+        # This mode needs the same read-only Supabase source as the heartbeat
+        # step; otherwise it silently emits UNVERIFIED symptom cohorts.
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           python artifacts/wow-engine/v17/sirt_assurance.py failures > "$RUNNER_TEMP/sirt-failure-families.json"
 
