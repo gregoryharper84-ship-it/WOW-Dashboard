@@ -122,10 +122,12 @@ def _artifact_identity_complete(row: Mapping[str, Any]) -> bool:
 
 
 def _partitions_valid(row: Mapping[str, Any]) -> bool:
-    try:
-        return all(int(row.get(name) or 0) > 0 for name in ("training_rows", "calibration_rows", "test_rows"))
-    except (TypeError, ValueError):
-        return False
+    # bool is an int subclass, and int(3.5) silently truncates. Neither may
+    # satisfy immutable fitted train/calibration/test evidence.
+    return all(
+        type(row.get(name)) is int and row[name] > 0
+        for name in ("training_rows", "calibration_rows", "test_rows")
+    )
 
 
 def _partition_metrics_mismatch(row: Mapping[str, Any]) -> bool:
