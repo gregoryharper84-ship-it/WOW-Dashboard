@@ -193,8 +193,23 @@ jobs:
           QA_RESULT: ${{ steps.qa_agent.outputs.structured_output }}
         run: |
           set -euo pipefail
+          # Schema enforcement in the model agent is NOT a trust boundary:
+          # fail closed even if the agent returns truncated/malformed JSON.
+          jq -e 'type == "object" and
+            (.decision | type == "string") and
+            (.change_class | type == "string") and
+            (.exact_head_sha | type == "string") and
+            (.findings | type == "array") and
+            (.findings | all(.[]; type == "string")) and
+            (.reason | type == "string" and length > 0)' <<<"$QA_RESULT" >/dev/null || {
+              echo "OWNER_SIGNED_RELEASE_QA_SCHEMA_INVALID" >&2; exit 1; }
           [ "$(jq -r '.decision' <<<"$QA_RESULT")" = "PASS" ] || { echo "OWNER_SIGNED_RELEASE_QA_HOLD" >&2; exit 1; }
-          [ "$(jq -r '.change_class' <<<"$QA_RESULT")" != "C" ] || { echo "OWNER_SIGNED_RELEASE_CLASS_C_DENIED" >&2; exit 1; }
+          qa_class=$(jq -r '.change_class' <<<"$QA_RESULT")
+          case "$qa_class" in
+            A|B) ;;
+            C) echo "OWNER_SIGNED_RELEASE_CLASS_C_DENIED" >&2; exit 1 ;;
+            *) echo "OWNER_SIGNED_RELEASE_QA_CLASS_INVALID" >&2; exit 1 ;;
+          esac
           [ "$(jq -r '.exact_head_sha' <<<"$QA_RESULT")" = "$EXPECTED_HEAD_SHA" ] || { echo "OWNER_SIGNED_RELEASE_QA_SHA_MISMATCH" >&2; exit 1; }
 
   merge:
