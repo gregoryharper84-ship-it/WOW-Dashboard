@@ -673,11 +673,15 @@ def normalize_discovered_event(
     # queried as a fallback to a regular-season target.  Preserve ESPN's own
     # normalized season phase for that specific fallback, or fail closed if
     # unavailable; otherwise playoff rows can reach regular-season-only models.
-    if (
-        raw.get("_wow_secondary_source") == "ESPN_SCOREBOARD_RESEARCH_FALLBACK"
-        and raw.get("season_phase_source") == "ESPN_SCOREBOARD"
-    ):
-        season_phase = _text(raw.get("season_phase")).upper()
+    if raw.get("_wow_secondary_source") == "ESPN_SCOREBOARD_RESEARCH_FALLBACK":
+        # The fallback spans season regimes regardless of its primary target.
+        # Missing ESPN phase provenance must also fail closed, not inherit the
+        # primary REGULAR_SEASON target and score an uncertified postseason row.
+        season_phase = (
+            _text(raw.get("season_phase")).upper()
+            if raw.get("season_phase_source") == "ESPN_SCOREBOARD"
+            else ""
+        )
         regime = {
             "REGULAR_SEASON": registry.REGULAR_SEASON,
             "POSTSEASON": registry.PLAYOFFS,
