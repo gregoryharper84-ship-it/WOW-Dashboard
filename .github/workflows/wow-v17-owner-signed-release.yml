@@ -106,10 +106,18 @@ jobs:
           mkdir -p evidence
           printf '%s\n' "$pr_json" > evidence/pr.json
           gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > evidence/candidate.diff
+          # Include BOTH destination and rename origin. A protected
+          # .github/** file renamed into an unprotected path is still a
+          # trust-root change and must never use the signed Class A/B bridge.
           gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
-            --jq '.[].filename' > evidence/files.txt
+            --jq '.[] | if ((.filename | type) != "string" or (.filename | length) == 0) then "__INVALID_FILE_PATH__" elif .status == "renamed" then .filename, (if ((.previous_filename | type) == "string" and (.previous_filename | length) > 0) then .previous_filename else "__MISSING_RENAME_ORIGIN__" end) else .filename end' > evidence/files.txt
+          [ -s evidence/files.txt ] || deny PR_FILES_MISSING
+          file_count=$(wc -l < evidence/files.txt)
+          [ "$file_count" -lt 3000 ] || deny PR_FILE_EVIDENCE_TRUNCATED
           while IFS= read -r path; do
             case "$path" in
+              __INVALID_FILE_PATH__) deny FILE_PATH_INVALID ;;
+              __MISSING_RENAME_ORIGIN__) deny RENAME_ORIGIN_MISSING ;;
               .github/*|.agents/*) deny "TRUST_ROOT_CHANGE:$path" ;;
             esac
           done < evidence/files.txt
