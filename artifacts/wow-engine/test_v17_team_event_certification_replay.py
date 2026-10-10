@@ -196,3 +196,96 @@ def test_route_install_is_idempotent():
     install_team_event_certification_replay_route(app, auth_dependency=lambda: None, db_client_fn=lambda: _DB())
     paths = [route.path for route in app.router.routes]
     assert paths.count("/internal/v17/team-event-certification-replay") == 1
+
+
+
+def test_historic_nhl_total_as_train_split_cannot_pass_replay_even_with_receipts():
+    candidate = _candidate(
+        "NHL", training_rows=6128, calibration_rows=1226, test_rows=1226,
+        validation_metrics={"train_n": 3676, "calibration_n": 1226, "test_n": 1226},
+        source_review_status="PASS",
+    )
+    result = assess_candidate("NHL", candidate, replay_evidence_pass=True).as_dict()
+    assert result["status"] == "CERTIFICATION_REPLAY_BLOCKED"
+    assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in result["blockers"]
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+    assert candidate["training_rows"] == 6128  # immutable historical candidate
+
+
+def test_correct_disjoint_nhl_splits_preserve_evidence_only_replay():
+    candidate = _candidate(
+        "NHL", training_rows=3676, calibration_rows=1226, test_rows=1226,
+        validation_metrics={"train_n": 3676, "calibration_n": 1226, "test_n": 1226},
+        source_review_status="PASS",
+    )
+    result = assess_candidate("NHL", candidate, replay_evidence_pass=True).as_dict()
+    assert result["status"] == "CERTIFICATION_REPLAY_PASS"
+    assert result["blockers"] == []
+    assert result["probability_publishable"] is False
+
+
+def test_partial_or_corrupt_fitted_metrics_cannot_pass_replay():
+    for metrics in (
+        {"train_n": 3676, "calibration_n": 1226},
+        {"train_n": 3676, "calibration_n": 1226, "test_n": True},
+        {"train_n": "3676", "calibration_n": 1226, "test_n": 1226},
+        [],
+    ):
+        candidate = _candidate(
+            "NHL", training_rows=3676, calibration_rows=1226, test_rows=1226,
+            validation_metrics=metrics, source_review_status="PASS",
+        )
+        out = assess_candidate("NHL", candidate, replay_evidence_pass=True).as_dict()
+        assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in out["blockers"]
+        assert out["status"] == "CERTIFICATION_REPLAY_BLOCKED"
+
+
+def test_replay_report_does_not_hide_partition_mismatch_from_lanes():
+    candidate = _candidate(
+        "NHL", training_rows=6128, calibration_rows=1226, test_rows=1226,
+        validation_metrics={"train_n": 3676, "calibration_n": 1226, "test_n": 1226},
+        source_review_status="PASS",
+    )
+    report = build_certification_report(
+        [candidate],
+        replay_evidence_by_lane={"NHL:NHL:NHL_MODEL_V1": True},
+    )
+    nhl = next(x for x in report["sports"] if x["sport"] == "NHL")
+    assert nhl["status"] == "CERTIFICATION_REPLAY_BLOCKED"
+    assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in nhl["blockers"]
+    assert report["probability_publishable"] is False
+
+
+
+def test_replay_rejects_boolean_fractional_and_string_partition_counts():
+    for invalid in (True, 3.5, "3", -1, 0, None):
+        candidate = _candidate(
+            "NHL", training_rows=invalid, source_review_status="PASS",
+        )
+        result = assess_candidate("NHL", candidate, replay_evidence_pass=True).as_dict()
+        assert "CANDIDATE_PARTITIONS_INVALID" in result["blockers"]
+        assert result["status"] == "CERTIFICATION_REPLAY_BLOCKED"
+
+
+def test_nhl_fitted_family_cannot_omit_all_partition_metrics():
+    for metrics in (None, {}, {"brier": 0.22}):
+        row = _candidate(
+            "NHL", model_family="NHL_REGULAR_SEASON_LOGISTIC_V1",
+            validation_metrics=metrics, source_review_status="PASS",
+        )
+        verdict = assess_candidate("NHL", row, replay_evidence_pass=True).as_dict()
+        assert "CANDIDATE_PARTITION_METRICS_MISMATCH" in verdict["blockers"]
+        assert verdict["status"] == "CERTIFICATION_REPLAY_BLOCKED"
+        assert verdict["probability_publishable"] is False
+
+
+def test_other_legacy_family_still_requires_review_but_no_fabricated_metrics():
+    row = _candidate(
+        "NBA", model_family="NBA_LEGACY_RESEARCH_V0",
+        validation_metrics=None, source_review_status="REQUIRED",
+    )
+    verdict = assess_candidate("NBA", row).as_dict()
+    assert "CANDIDATE_PARTITION_METRICS_MISMATCH" not in verdict["blockers"]
+    assert "SOURCE_REVIEW_REQUIRED" in verdict["blockers"]
+    assert verdict["can_execute"] is False
