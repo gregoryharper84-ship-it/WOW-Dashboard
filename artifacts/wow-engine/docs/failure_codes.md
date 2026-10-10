@@ -163,3 +163,27 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## NCAAF unregistered fitted shadow scorer (research only, P0 #665)
+
+This evaluator uses genuine fitted candidate coefficients, but returns only `research_raw_probability`. It does **not** return a governed model probability or calibrated bounds, never claims fitted model certification, and cannot rank, publish or execute wagers.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `NCAAF_SHADOW_INPUT_INVALID` | NCAAF fitted-candidate shadow scoring | Research candidate or forward-feature package is not a typed object. | No |
+| `NCAAF_SHADOW_MODEL_ROUTE_MISMATCH` | NCAAF fitted-candidate shadow scoring | Wrong sport/model family or fitted feature schema for the candidate. | No |
+| `NCAAF_SHADOW_CANDIDATE_NOT_INERT` | NCAAF fitted-candidate shadow scoring | Candidate not research-screened or cannot prove candidate-only inert flags. | No |
+| `NCAAF_SHADOW_ARTIFACT_IDENTITY_INVALID` | NCAAF fitted-candidate shadow scoring | Missing/invalid version or immutable training dataset hash. | No |
+| `NCAAF_SHADOW_ARTIFACT_INVALID` | NCAAF fitted-candidate shadow scoring | Candidate fitted artifact payload absent or not a JSON object. | No |
+| `NCAAF_SHADOW_ARTIFACT_CHECKSUM_MISMATCH` | NCAAF fitted-candidate shadow scoring | Saved fitted artifact payload does not match immutable checksum. | No |
+| `NCAAF_SHADOW_ARTIFACT_SCHEMA_MISMATCH` | NCAAF fitted-candidate shadow scoring | Fitted artifact format, model identity or ordered feature list does not match controlling candidate. | No |
+| `NCAAF_SHADOW_FORWARD_PACKAGE_INVALID` | NCAAF fitted-candidate shadow scoring | Feature package is not research-only, exact model family/schema, inert and non-publishable. | No |
+| `NCAAF_SHADOW_MANIFEST_INVALID` | NCAAF fitted-candidate shadow scoring | Source manifest lacks exact event identity, upstream identity assertion or market-free/pregame-reconstruction flags. | No |
+| `NCAAF_SHADOW_MANIFEST_CHECKSUM_MISMATCH` | NCAAF fitted-candidate shadow scoring | Forward feature source manifest hash fails exact content verification. | No |
+| `NCAAF_SHADOW_TIME_INVALID` | NCAAF fitted-candidate shadow scoring | Event or evidence timestamp missing, malformed or timezone-naive. | No |
+| `NCAAF_SHADOW_FEATURE_TIME_INVALID` | NCAAF fitted-candidate shadow scoring | Feature evidence time is at/after event start, or mismatches source manifest. | No |
+| `NCAAF_SHADOW_FEATURE_SCHEMA_MISMATCH` | NCAAF fitted-candidate shadow scoring | Forward-feature names/order differ from fitted model's exact nine inputs. | No |
+| `NCAAF_SHADOW_FEATURE_VALUE_INVALID` | NCAAF fitted-candidate shadow scoring | An input feature is nonnumeric, boolean or nonfinite. | No |
+| `NCAAF_SHADOW_ARTIFACT_VECTOR_INVALID` | NCAAF fitted-candidate shadow scoring | A persisted fitted scaler/coefficients vector is missing, malformed or nonfinite. | No |
+| `NCAAF_SHADOW_ARTIFACT_SCALE_INVALID` | NCAAF fitted-candidate shadow scoring | Fitted scaler has a zero/negative scale. | No |
+| `NCAAF_SHADOW_NUMERIC_OVERFLOW` | NCAAF fitted-candidate shadow scoring | Fitted logit/probability arithmetic is nonfinite or invalid. | No |
