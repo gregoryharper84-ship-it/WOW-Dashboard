@@ -650,9 +650,10 @@ def normalize_discovered_event(
 ) -> DiscoveredEvent:
     """Translate one provider event row into a canonical discovery candidate.
 
-    The target's league and regime win over anything the row says about itself:
-    the provider sport id is what was actually queried, so it is the authority on
-    which competition and which season regime this row belongs to.
+    The verified provider sport id owns the primary feed's regime. An ESPN
+    scoreboard fallback spans multiple season phases regardless of that target,
+    so only its explicitly sourced phase is used; unknown phases fail closed
+    rather than silently inheriting regular-season fitted model eligibility.
     """
     league = _text(raw.get("league") or raw.get("league_name") or raw.get("sport_title")) or sport
     if target is not None and target.league:
