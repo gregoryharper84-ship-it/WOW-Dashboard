@@ -62,6 +62,12 @@ PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
     ("NFL", "RUSHING_YARDS"): "RUSHING_YARDS",
     ("NFL", "REC_YARDS"): "RECEIVING_YARDS",
     ("NFL", "RECEIVING_YARDS"): "RECEIVING_YARDS",
+    # Autonomous discovery can emit PLAYER_ prefixed labels for the exact
+    # same NFL yardage stats. Normalize identity before the existing fitted
+    # specialist/artifact gates; aliases never grant model capability.
+    ("NFL", "PLAYER_PASSING_YARDS"): "PASSING_YARDS",
+    ("NFL", "PLAYER_RUSHING_YARDS"): "RUSHING_YARDS",
+    ("NFL", "PLAYER_RECEIVING_YARDS"): "RECEIVING_YARDS",
     ("NFL", "ANYTIME_TD"): "ANYTIME_TD",
     ("NFL", "ANYTIME_TDS"): "ANYTIME_TD",
     ("NFL", "ANYTIME_TOUCHDOWN"): "ANYTIME_TD",
