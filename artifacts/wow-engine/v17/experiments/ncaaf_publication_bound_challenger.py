@@ -73,6 +73,17 @@ def _paginate_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]
     return rows
 
 
+def _candidate_bound_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Same candidate-bound pool the certification-evidence replay verified.
+
+    Later maintenance appends extra rows per event; those must not enter the frozen
+    train/calibration/test partitions of an already-persisted candidate.
+    """
+    from v17.candidate_certification_evidence import _all_rows
+
+    return _all_rows(db, candidate)
+
+
 def _exact_candidate(db: Any, candidate_id: str) -> dict[str, Any]:
     result = (
         db.table("wow_d1_candidate_artifacts")
@@ -304,7 +315,7 @@ def _counterexample_bins(lower: np.ndarray, correct: np.ndarray, bins: int = 5) 
 def run_ncaaf_publication_bound_challenger(db: Any, candidate_id: str) -> dict[str, Any]:
     candidate = _exact_candidate(db, candidate_id)
     receipt = _verified_receipt(db, candidate)
-    rows = _paginate_rows(db, candidate)
+    rows = _candidate_bound_rows(db, candidate)
     train_n = int(candidate.get("training_rows") or 0)
     calibration_n = int(candidate.get("calibration_rows") or 0)
     test_n = int(candidate.get("test_rows") or 0)
