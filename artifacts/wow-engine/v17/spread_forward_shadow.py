@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import monotonic
 import threading
+import unicodedata
 from typing import Any, Mapping, Sequence
 
 from v17.spread_margin_challenger import (
@@ -265,6 +266,38 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
         _FORWARD_CONTEXT_LOCK.release()
 
 
+def _norm_team_name(value: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    return "".join(ch for ch in text if ch.isalnum() and not unicodedata.combining(ch))
+
+
+def _resolve_history_team(requested: str, known_teams: Sequence[str]) -> str:
+    """Map a requested team name onto the settled-history team key it denotes.
+
+    History is keyed by the school name stored from CFBD (``Texas``) while current
+    slate providers often append a mascot (``Texas Longhorns``).  An exact match
+    always wins.  Otherwise the requested name must start with exactly one longest
+    known school name (>= 5 characters, the same rule as ``ncaaf_event_identity``),
+    so ``Oklahoma State Cowboys`` resolves to ``Oklahoma State`` and never to
+    ``Oklahoma``.  No fuzzy matching; ambiguity or no match returns the name
+    unchanged, which then fails closed on insufficient history.
+    """
+    if requested in known_teams:
+        return requested
+    target = _norm_team_name(requested)
+    if not target:
+        return requested
+    matches = [
+        team for team in known_teams
+        if len(_norm_team_name(team)) >= 5 and target.startswith(_norm_team_name(team))
+    ]
+    if not matches:
+        return requested
+    longest = max(len(_norm_team_name(team)) for team in matches)
+    best = {team for team in matches if len(_norm_team_name(team)) == longest}
+    return next(iter(best)) if len(best) == 1 else requested
+
+
 def build_forward_matchup_features(
     settled_events: Sequence[Mapping[str, Any]],
     *,
@@ -311,6 +344,14 @@ def build_forward_matchup_features(
         consumed += 1
         latest_prior = start if latest_prior is None or start > latest_prior else latest_prior
 
+    known_teams = tuple(history)
+    home = _resolve_history_team(home, known_teams)
+    away = _resolve_history_team(away, known_teams)
+    if home == away:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_FORWARD_EVENT_IDENTITY_INVALID",
+            "home_team and away_team resolve to the same school",
+        )
     home_history = history.get(home, [])
     away_history = history.get(away, [])
     if len(home_history) < min_prior_games or len(away_history) < min_prior_games:
