@@ -127,6 +127,12 @@ def score_ncaaf_research_shadow(
     if not isinstance(features, Mapping) or tuple(features.keys()) != FEATURE_NAMES:
         raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_FEATURE_SCHEMA_MISMATCH")
     values = [_number(features[name], "NCAAF_SHADOW_FEATURE_VALUE_INVALID") for name in FEATURE_NAMES]
+    # Confirm these exact numeric features, not merely the event/source labels,
+    # are bound into the previously verified immutable research manifest.
+    feature_digest = _artifact_digest(features)
+    if (str(manifest.get("features_sha256") or "").lower() != feature_digest
+            or str(forward_features.get("features_sha256") or "").lower() != feature_digest):
+        raise NCAAFShadowScoreBlocked("NCAAF_SHADOW_FEATURE_HASH_MISMATCH")
     mean = _vector(artifact.get("scaler_mean"), "scaler_mean")
     scales = _vector(artifact.get("scaler_scale"), "scaler_scale")
     coefs = _vector(artifact.get("coefficients"), "coefficients")
@@ -156,6 +162,7 @@ def score_ncaaf_research_shadow(
         "training_dataset_hash": dataset_hash,
         "artifact_checksum": checksum,
         "source_manifest_sha256": manifest_hash,
+        "features_sha256": feature_digest,
         "research_raw_probability": raw,
         "model_probability": None,
         "calibrated_probability": None,
