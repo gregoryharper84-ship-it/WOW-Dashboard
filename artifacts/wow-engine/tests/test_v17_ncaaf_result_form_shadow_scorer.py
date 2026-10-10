@@ -36,6 +36,8 @@ def _candidate():
         "research_screen_pass": True,
         "promoted": False,
         "active": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
         "probability_publishable": False,
         "can_execute": False,
         "training_dataset_hash": "e" * 64,
