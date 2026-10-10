@@ -41,6 +41,13 @@ from prop_terminal_reducer_v2 import EVENT_BLOCKERS, TRUE_MODEL_REJECTION_LABELS
 from v17.portfolio_exposure_gate import evaluate_portfolio_qualification
 from v17.slip_portfolio_optimizer import optimize_portfolio, thesis_identity
 
+# Exact-route registry codes that mean the lookup itself failed (infrastructure),
+# as opposed to the certified fitted artifact being genuinely absent. Must match
+# api_prod_market.PROP_ROUTE_REGISTRY_INFRA_CODES.
+PROP_ROUTE_REGISTRY_INFRA_CODES = frozenset(
+    {"PROP_MODEL_REGISTRY_UNAVAILABLE", "PROP_MODEL_REGISTRY_INVALID_RESPONSE"}
+)
+
 
 PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
     ("MLB", "K"): "PITCHER_STRIKEOUTS",
@@ -690,6 +697,7 @@ def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
     auto_attempted = 0
     auto_succeeded = 0
     route_blocked = 0
+    registry_infrastructure_failures = 0
     acquisition_failures = 0
     model_completed = 0
     for outcome in outcomes:
@@ -702,8 +710,11 @@ def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
             "SPECIALIST_ROUTING_UNAVAILABLE",
             "MODEL_UNAVAILABLE",
             "PROP_PROBABILITY_UNAVAILABLE",
+            *PROP_ROUTE_REGISTRY_INFRA_CODES,
         } and acquisition.get("mode") == "NOT_ATTEMPTED_ROUTE_BLOCKED":
             route_blocked += 1
+        if outcome.get("code") in PROP_ROUTE_REGISTRY_INFRA_CODES:
+            registry_infrastructure_failures += 1
         if outcome.get("code") in {
             "RUN_INVALID_ACQUISITION_INCOMPLETE",
             "PROP_AUTO_HYDRATION_UNSUPPORTED_ROUTE",
@@ -722,6 +733,7 @@ def _telemetry(outcomes: list[dict[str, Any]]) -> dict[str, int]:
         "auto_hydration_attempted": auto_attempted,
         "auto_hydration_succeeded": auto_succeeded,
         "route_preflight_blocked": route_blocked,
+        "registry_infrastructure_failures": registry_infrastructure_failures,
         "acquisition_failures": acquisition_failures,
         "model_completed": model_completed,
         "false_global_failure_count": 0,
@@ -961,6 +973,28 @@ def install_pick_request_routes(
                 continue
 
             route = market_api._prop_route_artifact(sport, canonical_stat)
+            route_code = str(route.get("code") or "")
+            if route_code in PROP_ROUTE_REGISTRY_INFRA_CODES:
+                # Registry transport/shape failure is infrastructure, not proof
+                # that the fitted capability is absent. Never rewrite it into
+                # MODEL_UNAVAILABLE (failure_codes.md registry rule).
+                utilization["exact_blocker"] = route_code
+                outcomes.append(
+                    _terminal(
+                        row_key,
+                        "HELD",
+                        route_code,
+                        detail={
+                            "terminal_label": "REGISTRY_INFRASTRUCTURE_BLOCKED",
+                            "sport": sport,
+                            "stat_type": canonical_stat,
+                            "specialist_invoked": False,
+                            "stage": "EXACT_ROUTE_ARTIFACT_LOOKUP",
+                        },
+                        acquisition=route_blocked_acquisition,
+                    )
+                )
+                continue
             if route.get("ok") is not True or route.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
                 utilization["exact_blocker"] = str(
                     route.get("code") or "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND"
