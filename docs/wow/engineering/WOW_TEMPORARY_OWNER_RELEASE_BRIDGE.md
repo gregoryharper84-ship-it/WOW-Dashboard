@@ -22,23 +22,45 @@ requires all of:
 9. both the PR head and protected-main SHA must remain unchanged through QA and
    immediately before merge.
 
-The secret is intentionally not readable by Engineering and is scoped to the
+The secret must be held separately from Engineering credentials and is scoped to the
 existing `wow-release` GitHub environment. A stale approval cannot authorize a
 different PR or SHA.
 
 ## Owner operation
 
-Preferred chat/UI path: on the target PR, the owner posts exactly:
+**Preferred: owner-controlled workflow_dispatch in the authenticated GitHub UI.**
+After human review of all seven exact-head CI gates and separately obtained
+read-only technical QA, configure the existing `wow-release` environment secret
+`WOW_OWNER_RELEASE_APPROVAL` to exactly `<PR_NUMBER>:<EXACT_HEAD_SHA>`.
+Run **Actions -> wow-v17-temporary-owner-release-bridge -> Run workflow**
+on **main**, entering `pr_number`, `expected_head_sha` and `incident_id`.
+This action is for eligible **non-trust-root Class A/B** PRs only. Human-only
+trust-root bootstrap PRs must be manually merged by the owner in the UI after
+independent evidence; the bridge intentionally denies them.
+
+The owner-held factor is supplied **only** to the step-local environment of
+the first `owner-authorization` job, which has **read-only GitHub permissions**
+and the protected `wow-release` environment. A failed or missing factor
+terminates the workflow **before any paid Claude review** or privileged merge
+job runs, with a durable Actions summary. This preauthorization publishes
+only validated PR number, exact head SHA, and incident number; no secret bytes.
+The `owner-readonly-qa` job runs only after successful authorization, has
+read-only GitHub permissions and no release secret/environment. The privileged
+`owner-bridge` job requires both authorization and exact-SHA Class A/B QA
+PASS, and independently rechecks the authorized PR/SHA/incident, all CI, branch
+provenance, and unchanged PR/base SHAs. It never receives the owner factor.
+
+An alternative PR comment command exists, but the account name is shared
+by some Engineering integrations, so the command **alone cannot prove human
+authorization**. It is ineffective without the separate protected exact-head
+owner secret, and the manual-dispatch UI is preferred:
 
 `/wow-owner-bridge <EXACT_HEAD_SHA> incident=<ISSUE_NUMBER>`
 
-The protected-main workflow accepts that command only from
-`gregoryharper84-ship-it`, re-resolves the live PR head, then applies every CI
-and independent-QA gate before merging.
-
-Alternative manual-dispatch path: set the `wow-release` environment secret
-`WOW_OWNER_RELEASE_APPROVAL=<PR_NUMBER>:<EXACT_HEAD_SHA>` and run
-**wow-v17-temporary-owner-release-bridge** with the matching inputs.
+Never post any secret value into an issue, comment, log, PR, or chat. Rebind
+the protected environment approval after any new PR commit. A missing,
+mismatched or stale secret must fail closed with a typed error and a run
+summary; never retry with guessed values.
 
 Trust-root changes are never eligible for either bridge path; they remain
 explicit owner-bootstrap candidates. A stale command or secret cannot authorize a different SHA. If `main` moves,
