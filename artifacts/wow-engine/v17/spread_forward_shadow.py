@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from time import monotonic
 import threading
+import unicodedata
 from typing import Any, Mapping, Sequence
 
 from v17.spread_margin_challenger import (
@@ -265,6 +266,58 @@ def _cached_forward_context(client: Any) -> tuple[_ForwardContext, str, float]:
         _FORWARD_CONTEXT_LOCK.release()
 
 
+# Explicit provider display-name identities. Never infer a school from an arbitrary
+# prefix: "Kansas St" must not inherit Kansas's settled history.
+# Short-school aliases are shared with the canonical NCAAF identity module.
+from v17.ncaaf_event_identity import _VERIFIED_SHORT_SCHOOL_MASCOTS, _norm as _identity_norm
+
+_VERIFIED_HISTORY_ALIASES: dict[str, str] = {
+    "texaslonghorns": "Texas",
+    "texastechredraiders": "Texas Tech",
+    "oklahomasooners": "Oklahoma",
+    "oklahomastatecowboys": "Oklahoma State",
+    "miamihurricanes": "Miami",
+    "miamiohredhawks": "Miami (OH)",
+    "washingtonhuskies": "Washington",
+    "kansasjayhawks": "Kansas",
+    "kansasstatewildcats": "Kansas State",
+    "michiganwolverines": "Michigan",
+    "michiganstatespartans": "Michigan State",
+    "washingtonstatecougars": "Washington State",
+    "ohiostatebuckeyes": "Ohio State",
+    # Verified provider display names for the incident #1636 current slate.
+    # CFBD source history uses the canonical short school names below.
+    "oregonducks": "Oregon",
+    "houstoncougars": "Houston",
+    "illinoisfightingillini": "Illinois",
+}
+for _school_norm, _aliases in _VERIFIED_SHORT_SCHOOL_MASCOTS.items():
+    for _alias in _aliases:
+        _VERIFIED_HISTORY_ALIASES[_alias] = _school_norm
+
+
+def _resolve_history_team(requested: str, known_teams: Sequence[str]) -> str:
+    """Resolve only exact school identities or explicitly verified mascot aliases.
+
+    Ambiguous abbreviations and unknown provider spellings retain their original
+    name, which fails closed under SPREAD_FORWARD_HISTORY_INSUFFICIENT.
+    """
+    if requested in known_teams:
+        return requested
+    normalized = _identity_norm(requested)
+    # Normalized exact CFBD names are acceptable only when unambiguous.
+    exact = [team for team in known_teams if _identity_norm(team) == normalized]
+    if len(exact) == 1:
+        return exact[0]
+    if exact:
+        return requested
+    canonical = _VERIFIED_HISTORY_ALIASES.get(normalized)
+    if canonical is None:
+        return requested
+    matches = [team for team in known_teams if _identity_norm(team) == _identity_norm(canonical)]
+    return matches[0] if len(matches) == 1 else requested
+
+
 def build_forward_matchup_features(
     settled_events: Sequence[Mapping[str, Any]],
     *,
@@ -311,6 +364,14 @@ def build_forward_matchup_features(
         consumed += 1
         latest_prior = start if latest_prior is None or start > latest_prior else latest_prior
 
+    known_teams = tuple(history)
+    home = _resolve_history_team(home, known_teams)
+    away = _resolve_history_team(away, known_teams)
+    if home == away:
+        raise SpreadChallengerUnavailable(
+            "SPREAD_FORWARD_EVENT_IDENTITY_INVALID",
+            "home_team and away_team resolve to the same school",
+        )
     home_history = history.get(home, [])
     away_history = history.get(away, [])
     if len(home_history) < min_prior_games or len(away_history) < min_prior_games:
