@@ -133,15 +133,16 @@ def _partitions_valid(row: Mapping[str, Any]) -> bool:
 def _partition_metrics_mismatch(row: Mapping[str, Any]) -> bool:
     """Audit persisted split counts against fitted metrics, without altering data.
 
-    Some legacy research candidates lack full split metrics. Preserve their
-    existing status (no new certification proof) while rejecting candidates
-    that *do* claim fitted train/calibration/test counts inconsistent with
-    the D1 columns. Historic NHL candidates wrongly stored total rows as
-    training_rows and double-counted the held-out blocks.
+    Some legacy research candidates lack fitted split metrics. Preserve their
+    existing status only when the model family does not require these metrics.
+    The fitted NHL_REGULAR_SEASON_LOGISTIC_V1 family must always provide them;
+    otherwise absence would bypass the very guard against the historical
+    total-as-training split-count defect.
     """
     metrics = row.get("validation_metrics")
+    nhl_fitted = str(row.get("model_family") or "").strip().upper() == "NHL_REGULAR_SEASON_LOGISTIC_V1"
     if metrics is None:
-        return False
+        return nhl_fitted
     if not isinstance(metrics, Mapping):
         return True
     partitions = (
@@ -150,7 +151,7 @@ def _partition_metrics_mismatch(row: Mapping[str, Any]) -> bool:
         ("test_rows", "test_n"),
     )
     if not any(name in metrics for _, name in partitions):
-        return False
+        return nhl_fitted
     for column, metric in partitions:
         stored = row.get(column)
         reported = metrics.get(metric)
