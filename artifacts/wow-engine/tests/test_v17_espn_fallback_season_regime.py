@@ -102,20 +102,21 @@ def test_verified_primary_provider_regime_still_owns_classification():
     )
 
 
-def test_espn_incomplete_provenance_cannot_override_verified_provider_target():
+@pytest.mark.parametrize("target_regime", [registry.REGULAR_SEASON, registry.PLAYOFFS])
+def test_espn_incomplete_provenance_cannot_inherit_provider_regime(target_regime):
     target = discovery.DiscoveryTarget(
         family="MLB",
         provider=registry.PROVIDER,
         league="MLB",
-        regime=registry.PLAYOFFS,
-        sport_id=31,
+        regime=target_regime,
+        sport_id=31 if target_regime == registry.PLAYOFFS else 3,
     )
     event = discovery.normalize_discovered_event(
         {
-            "id": "provider-31-123",
+            "id": "espn-849831",
             "commence_time": "2026-10-11T00:00:00Z",
             "_wow_secondary_source": "ESPN_SCOREBOARD_RESEARCH_FALLBACK",
-            # Missing provenance season_phase_source: no trusted ESPN phase.
+            # Missing season_phase_source means a claimed regular season is not trusted.
             "season_phase": "REGULAR_SEASON",
         },
         sport="MLB",
@@ -123,7 +124,10 @@ def test_espn_incomplete_provenance_cannot_override_verified_provider_target():
         source="DISCOVERY_FEED",
         target=target,
     )
-    assert event.regime == registry.PLAYOFFS
+    assert event.regime == "UNKNOWN"
+    assert not discovery.model_supports_regime(
+        event, SimpleNamespace(supported_regimes=(target_regime,))
+    )
 
 
 def test_postseason_espn_fallback_requires_matching_postseason_model_regime():
