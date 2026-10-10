@@ -38,9 +38,23 @@ def _norm(value: Any) -> str:
     return "".join(ch for ch in text if ch.isalnum() and not unicodedata.combining(ch))
 
 
+# Provider school aliases; an identity still needs exact participants and time.
+_SCHOOL_ALIASES = {
+    "byu": "brighamyoung",
+    "brighamyounguniversity": "brighamyoung",
+    "iowast": "iowastate",
+    "iastate": "iowastate",
+}
+
+
+def _canonical_school_name(value: Any) -> str:
+    normalized = _norm(value)
+    return _SCHOOL_ALIASES.get(normalized, normalized)
+
+
 def _name_match(provider_name: Any, canonical_name: Any) -> bool:
-    left = _norm(provider_name)
-    right = _norm(canonical_name)
+    left = _canonical_school_name(provider_name)
+    right = _canonical_school_name(canonical_name)
     if not left or not right:
         return False
     if left == right:
