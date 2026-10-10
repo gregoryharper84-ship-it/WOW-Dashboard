@@ -195,6 +195,7 @@ def _persist_rows(client: Any, competition: str, rows: list[MulticlassTrainingRo
         client.table("wow_d1_training_rows").upsert(
             payloads[offset:offset + 250],
             on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
 
 
@@ -230,7 +231,7 @@ def train_and_persist_competition(client: Any, *, competition: str, code: str, t
         "source_review_status": "CC0_PUBLIC_DOMAIN_PROVENANCE_READY", "lifecycle_state": "CANDIDATE",
         "promoted": False, "active": False, "automatic_certification": False,
         "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
-    }, on_conflict="model_artifact_version").execute()
+    }, on_conflict="model_artifact_version", ignore_duplicates=True).execute()
     return {
         "competition": competition, "model_artifact_version": version,
         "eligible_rows": len(rows), "source_assets": len(sources), "metrics": metrics,
