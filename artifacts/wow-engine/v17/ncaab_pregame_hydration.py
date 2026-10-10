@@ -69,6 +69,11 @@ def _source(record: Mapping[str, Any], label: str) -> str:
         raise NCAABPregameHold("NCAAB_PREGAME_SOURCE_MISSING", label)
     if _hash(manifest) != actual:
         raise NCAABPregameHold("NCAAB_PREGAME_SOURCE_TAMPERED", label)
+    # The provider's own canonical event/team side identity must agree with
+    # caller fields; a re-ordered fixture cannot silently invert home/away.
+    for field in ("game_id", "home_team_id", "away_team_id", "event_version"):
+        if manifest.get(field) != record.get(field):
+            raise NCAABPregameHold("NCAAB_PREGAME_MANIFEST_IDENTITY_MISMATCH", f"{label}:{field}")
     if manifest.get("market_features_used") is not False or record.get("market_features_used") is not False:
         raise NCAABPregameHold("NCAAB_PREGAME_MARKET_INPUT_REJECTED", label)
     if record.get("can_execute") is not False:
