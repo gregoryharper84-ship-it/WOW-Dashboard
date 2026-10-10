@@ -158,3 +158,28 @@ def test_alias_prefix_without_school_boundary_does_not_match(false_alias):
             client=_Client(rows),
         )
     assert exc.value.code == "NCAAF_CANONICAL_EVENT_NOT_FOUND"
+
+
+def test_short_iowa_canonical_name_resolves_without_matching_iowa_state():
+    client = _Client([
+        {
+            "id": 401999997,
+            "startDate": "2026-10-10T01:00:00Z",
+            "homeTeam": "Washington",
+            "awayTeam": "Iowa",
+        },
+        {
+            "id": 401999996,
+            "startDate": "2026-10-10T01:00:00Z",
+            "homeTeam": "Washington",
+            "awayTeam": "Iowa State",
+        },
+    ])
+    out = identity.resolve_ncaaf_current_event_identity(
+        event_start_time="2026-10-10T01:00:00Z",
+        home_team="Washington Huskies",
+        away_team="Iowa Hawkeyes",
+        client=client,
+    )
+    assert out["event_id"] == "401999997"
+    assert out["can_execute"] is False
