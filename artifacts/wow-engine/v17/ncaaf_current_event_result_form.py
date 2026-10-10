@@ -15,6 +15,7 @@ import json
 import math
 from typing import Any, Mapping, Sequence
 
+from v17.ncaaf_event_identity import SOURCE_PROVIDER, START_TOLERANCE_MINUTES, _name_match
 from v17.ncaaf_result_form_candidate import (
     FEATURE_NAMES,
     FEATURE_SCHEMA_VERSION,
@@ -53,6 +54,7 @@ def current_event_feature_package(
     away_team: str,
     neutral_site: bool,
     canonical_identity_verified: bool,
+    canonical_resolution: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Build exact candidate features, not a governed probability package.
 
@@ -70,6 +72,22 @@ def current_event_feature_package(
     if not isinstance(neutral_site, bool):
         raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_NEUTRAL_SITE_INVALID")
     start = _aware(event_start_time)
+    # Reconcile the caller's claim to an actual resolver-shaped CFBD proof.
+    # A bare true flag can never establish canonical identity.
+    if not isinstance(canonical_resolution, Mapping):
+        raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_CANONICAL_PROOF_INVALID")
+    if (str(canonical_resolution.get("event_id") or "").strip() != event_id
+            or canonical_resolution.get("identity_provider") != SOURCE_PROVIDER
+            or canonical_resolution.get("identity_resolution") != "CFBD_EXACT_PARTICIPANTS_START_MATCH"
+            or canonical_resolution.get("market_features_used") is not False
+            or canonical_resolution.get("prediction_authority") is not False
+            or canonical_resolution.get("can_execute") is not False
+            or not _name_match(home, canonical_resolution.get("home_team"))
+            or not _name_match(away, canonical_resolution.get("away_team"))):
+        raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_CANONICAL_PROOF_INVALID")
+    resolved_start = _aware(canonical_resolution.get("event_start_time"))
+    if abs((start - resolved_start).total_seconds()) > 60 * START_TOLERANCE_MINUTES:
+        raise NCAAFForwardFeatureUnavailable("NCAAF_FORWARD_CANONICAL_START_MISMATCH")
 
     history: dict[str, list[dict[str, Any]]] = {home: [], away: []}
     source_times: list[datetime] = []
@@ -162,6 +180,9 @@ def current_event_feature_package(
         "feature_as_of": as_of.isoformat(),
         "market_features_used": False,
         "canonical_identity_verified_by_caller": True,
+        "canonical_identity_source": SOURCE_PROVIDER,
+        "canonical_identity_resolution": str(canonical_resolution["identity_resolution"]),
+        "canonical_event_start_time": resolved_start.isoformat(),
         "historical_reconstruction": True,
         "archived_pregame_snapshot": False,
         "can_execute": False,
