@@ -213,10 +213,54 @@ def current_event_feature_package(
     }
 
 
+def current_event_feature_package_from_cfbd(
+    games: Sequence[Mapping[str, Any]],
+    *,
+    event_start_time: str,
+    home_team: str,
+    away_team: str,
+    neutral_site: bool,
+    client: Any = None,
+) -> dict[str, Any]:
+    """Preferred source-bound entrypoint: resolve canonical identity at CFBD.
+
+    A caller-supplied boolean or fabricated identity dictionary must not be
+    regarded as CFBD attestation. This function invokes the canonical resolver
+    itself (or its injectable CFBD client in deterministic tests) and passes
+    that result directly into the research-only feature builder.
+    """
+    from v17.ncaaf_event_identity import (
+        NCAAFEventIdentityError,
+        resolve_ncaaf_current_event_identity,
+    )
+
+    try:
+        resolved = resolve_ncaaf_current_event_identity(
+            event_start_time=event_start_time,
+            home_team=home_team,
+            away_team=away_team,
+            client=client,
+        )
+    except NCAAFEventIdentityError as exc:
+        raise NCAAFForwardFeatureUnavailable(exc.code, str(exc)) from exc
+
+    return current_event_feature_package(
+        games,
+        official_event_id=str(resolved["event_id"]),
+        event_start_time=event_start_time,
+        home_team=home_team,
+        away_team=away_team,
+        neutral_site=neutral_site,
+        canonical_identity_verified=True,
+        canonical_resolution=resolved,
+    )
+
+
 __all__ = [
     "CAN_EXECUTE",
     "PROBABILITY_PUBLISHABLE",
     "CURRENT_FEATURE_BRIDGE_VERSION",
     "NCAAFForwardFeatureUnavailable",
     "current_event_feature_package",
+    "current_event_feature_package_from_cfbd",
 ]
