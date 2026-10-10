@@ -136,3 +136,78 @@ def test_existing_pr_claim_is_consistent_with_no_duplicate_writer() -> None:
     assert [row["incident_id"] for row in selected["selected"]] == ["823", "1388"]
     skipped = {row["incident_id"]: row["reason"] for row in selected["skipped"]}
     assert skipped["1496"] == "EXISTING_OPEN_PR_REQUIRES_REVIEW"
+
+
+class _InventoryClient(_Client):
+    def __init__(self, runs, *, delta=0, total_override=None):
+        super().__init__(runs)
+        self.delta, self.total_override = delta, total_override
+
+    def get(self, suffix):
+        result = super().get(suffix)
+        if "status=in_progress" in suffix:
+            result["total_count"] = (self.total_override if self.total_override is not None
+                                     else result["total_count"] + self.delta)
+        return result
+
+
+@pytest.mark.parametrize("total", [None, "1", True, -1, 2])
+def test_resident_active_workflow_inventory_requires_exact_typed_count(total):
+    trusted = _run(
+        ".github/workflows/wow-v17-claude-engineering-worker.yml",
+        "wow-v17-claude-engineering-worker lease=P0_RUNTIME incident=1388",
+    )
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE"):
+        active_engineering_workflow(
+            _InventoryClient([trusted], total_override=total), ROWS[0], MANIFEST
+        )
+
+
+@pytest.mark.parametrize("path,expected", [
+    (".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/heads/main", True),
+    (".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/tags/v1", True),
+    (".github/workflows/wow-v17-engineering-provider-dispatcher.yml@evil", None),
+    (".github/workflows/wow-v17-engineering-provider-dispatcher.yml@refs/heads/main@evil", None),
+])
+def test_resident_live_provider_name_and_source_ref_fail_closed(path, expected):
+    active = _run(
+        path,
+        "WOW V17 provider source=wow-v17-chatgpt-engineering-worker "
+        "lease=GLOBAL incident=AUTO lease=GLOBAL incident=AUTO",
+    )
+    client = _Client([active])
+    if expected is None:
+        with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_REF_INVALID"):
+            active_engineering_workflow(client, ROWS[0], MANIFEST)
+    else:
+        assert active_engineering_workflow(client, ROWS[0], MANIFEST) is expected
+
+
+def test_resident_provider_name_on_untrusted_path_cannot_hide_worker():
+    active = _run(
+        ".github/workflows/lookalike-provider.yml",
+        "WOW V17 provider source=manual lease=GLOBAL incident=AUTO",
+    )
+    assert active_engineering_workflow(_Client([active]), ROWS[0], MANIFEST) is True
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("Incident: `823`", True),
+    ("Incident: #823", True),
+    ("Refs #823", True),
+    ("Fixes gregoryharper84-ship-it/WOW-Dashboard#823", True),
+    ("Closes #823", True),
+    ("Unrelated debugging mentions #823", False),
+    ("Incident: `8230`", False),
+    ("Incident: `823` analysis only", False),
+    ("Refs #8230", False),
+])
+def test_resident_existing_pr_claim_exactness(body, expected):
+    from v17.engineering_resident_supervisor import pending_pr_for_issue
+
+    class PRClient:
+        def get(self, suffix):
+            assert suffix == "pulls?state=open&per_page=100"
+            return [{"body": body}]
+
+    assert pending_pr_for_issue(PRClient(), 823) is expected

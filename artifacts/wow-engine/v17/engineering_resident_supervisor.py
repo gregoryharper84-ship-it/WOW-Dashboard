@@ -90,33 +90,50 @@ class GitHubTransport:
         )
 
 
+
+def _canonical_active_workflow_path(path: str) -> str:
+    """Accept only GitHub's documented optional @refs/... workflow suffix."""
+    if "@" not in path:
+        return path
+    workflow, marker, ref = path.partition("@")
+    if (not workflow or not marker or not ref.startswith("refs/")
+            or len(ref) <= len("refs/") or "@" in ref
+            or any(char.isspace() for char in ref)):
+        raise RuntimeError("ACTIVE_WORKFLOW_REF_INVALID")
+    return workflow
+
+
 def active_engineering_workflow(
     client: GitHubTransport,
     candidate: dict[str, Any] | None = None,
     manifest: dict[str, Any] | None = None,
 ) -> bool:
-    """Block only overlapping trusted runs; fail closed on unknown run identity.
-
-    Without a candidate, retain the legacy any-active predicate for callers.
-    Distinct leases alone are insufficient: explicit conflict keys must also
-    be disjoint. The authoritative GitHub run identity is checked every cycle.
-    """
+    """Admit only nonoverlapping known writers; malformed provenance blocks."""
     import re
 
-    active = []
+    active: list[dict[str, Any]] = []
     for state in ("queued", "in_progress", "waiting", "requested"):
         result = client.get(f"actions/runs?status={state}&per_page=100")
-        runs = result.get("workflow_runs")
-        if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
+        if not isinstance(result, dict):
+            raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+        runs, total = result.get("workflow_runs"), result.get("total_count")
+        if (not isinstance(runs, list) or isinstance(total, bool)
+                or not isinstance(total, int) or total != len(runs)):
             raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
         for run in runs:
-            if not isinstance(run, dict):
-                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
-            run_name = str(run.get("name") or "").split(" lease=", 1)[0]
-            run_path = str(run.get("path") or "").split("@", 1)[0]
-            # A forged workflow may reuse a trusted display name. Include it in
-            # the busy set, then fail closed on its untrusted path/branch.
-            if run_name in ACTIVE_WORKFLOWS or run_path in TRUSTED_WORKFLOW_PATHS:
+            if not isinstance(run, dict) or not isinstance(run.get("path"), str):
+                raise RuntimeError("ACTIVE_WORKFLOW_IDENTITY_INCOMPLETE")
+            run_path = _canonical_active_workflow_path(run["path"])
+            title = str(run.get("display_title") or run.get("name") or "")
+            # Real provider titles start "WOW V17 provider source=..." and
+            # may contain a nested source lease/incident pair. A forged
+            # lookalike name on a different path must never be admitted as
+            # an unrelated job: it is an unresolved writer, not an idle lane.
+            claimed_worker = (
+                any(title.startswith(name) for name in ACTIVE_WORKFLOWS)
+                or title.startswith("WOW V17 provider source=")
+            )
+            if run_path in TRUSTED_WORKFLOW_PATHS or claimed_worker:
                 active.append(run)
     if candidate is None:
         return bool(active)
@@ -128,19 +145,19 @@ def active_engineering_workflow(
     candidate_keys = set(candidate["conflict_keys"])
     candidate_lease = str(candidate.get("lease_group") or "GLOBAL")
     for run in active:
-        path = str(run.get("path") or "").split("@", 1)[0]
+        path = _canonical_active_workflow_path(run["path"])
         if path not in TRUSTED_WORKFLOW_PATHS or run.get("head_branch") != "main":
-            return True  # Workflow name alone cannot establish trusted writer provenance.
+            return True  # Untrusted lookalike or wrong-branch provenance.
         title = str(run.get("display_title") or run.get("name") or "")
         identity = re.search(r"(?:^|\s)lease=([A-Za-z0-9_-]+)\s+incident=([0-9]+)(?:\s|$)", title)
         if not identity:
-            return True  # Unknown identity is never treated as safe.
+            return True
         lease, incident = identity.group(1), int(identity.group(2))
         if incident not in entries:
-            return True  # Cannot establish conflict isolation.
+            return True
         occupied = entries[incident]
         if lease != str(occupied.get("lease_group") or "GLOBAL"):
-            return True  # Forged/stale identity or wrong lease.
+            return True
         if incident == int(candidate["issue_number"]) or lease == candidate_lease:
             return True
         if candidate_keys & set(occupied["conflict_keys"]):
@@ -174,14 +191,25 @@ def next_approved_issue(
 
 def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
     result = client.get("pulls?state=open&per_page=100")
-    # GitHub returns a list for this endpoint; our transport also supports lists.
     if not isinstance(result, list):
         raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
-    if len(result) == 100:
+    if len(result) >= 100:
         raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
     import re
-    pattern = re.compile(r"(?im)^Incident:\s*(?:\x60)?#?" + re.escape(str(issue_number)) + r"(?:\x60)?\s*$")
-    return any(pattern.search(str(pr.get("body") or "")) for pr in result)
+    number = re.escape(str(issue_number))
+    # Exact ownership only. Generic analysis mentioning #123 is not a claim.
+    incident = re.compile(
+        rf"(?im)^\s*Incident\s*:\s*(?:`#?{number}`|#?{number})\s*$"
+    )
+    references = re.compile(
+        rf"(?im)^\s*(?:Refs?|Fixes|Closes|Resolves)\b[^\n]*?(?<!\w)"
+        rf"(?:{re.escape(REPO)})?#{number}(?!\d)"
+    )
+    return any(
+        bool(incident.search(str(pr.get("body") or ""))
+             or references.search(str(pr.get("body") or "")))
+        for pr in result
+    )
 
 
 def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str, Any]) -> str:
