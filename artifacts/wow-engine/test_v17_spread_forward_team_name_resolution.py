@@ -145,3 +145,46 @@ def test_ambiguous_verified_alias_does_not_select_arbitrary_history_key():
     # The verified alias must identify exactly one history key.
     known = ("Texas", "Téxas")
     assert _resolve_history_team("Texas Longhorns", known) == "Texas Longhorns"
+
+
+@pytest.mark.parametrize("incoming,school", [
+    ("Oregon Ducks", "Oregon"),
+    ("Houston Cougars", "Houston"),
+    ("Illinois Fighting Illini", "Illinois"),
+])
+def test_all_previously_unresolved_saturday_provider_school_names(incoming, school):
+    known = ("Oregon", "Oregon State", "Houston", "Illinois", "Illinois State")
+    assert _resolve_history_team(incoming, known) == school
+
+
+@pytest.mark.parametrize("canon_home,canon_away,provider_home,provider_away", [
+    ("Oregon", "UCLA", "Oregon Ducks", "UCLA Bruins"),
+    ("Kansas State", "Houston", "Kansas State Wildcats", "Houston Cougars"),
+    ("Michigan State", "Illinois", "Michigan State Spartans", "Illinois Fighting Illini"),
+])
+def test_three_remaining_incident_spread_matchups_find_real_history(
+    canon_home, canon_away, provider_home, provider_away
+):
+    events = _events(canon_home, canon_away)
+    target = {
+        "event_id": "strict-evidence-preview",
+        "event_start_time": "2026-10-10T17:00:00+00:00",
+        "home_team": provider_home,
+        "away_team": provider_away,
+        "season": 2026,
+    }
+    features, audit = build_forward_matchup_features(events, target_event=target)
+    assert features and all(isinstance(v, float) for v in features.values())
+
+
+@pytest.mark.parametrize("incoming", [
+    "Oregon State Beavers", "Houston Christian Huskies",
+    "Illinois State Redbirds", "Oregn Ducks",
+])
+def test_new_aliases_do_not_steal_similar_school_history(incoming):
+    known = ("Oregon", "Houston", "Illinois")
+    assert _resolve_history_team(incoming, known) == incoming
+
+
+def test_new_alias_does_not_choose_ambiguous_canonical_history_key():
+    assert _resolve_history_team("Oregon Ducks", ("Oregon", "Orégon")) == "Oregon Ducks"
