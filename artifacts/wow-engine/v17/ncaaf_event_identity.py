@@ -49,7 +49,12 @@ _SCHOOL_ALIASES = {
 
 def _canonical_school_name(value: Any) -> str:
     normalized = _norm(value)
-    return _SCHOOL_ALIASES.get(normalized, normalized)
+    if normalized.startswith("iowastate"):
+        return normalized
+    for alias, canonical in sorted(_SCHOOL_ALIASES.items(), key=lambda item: -len(item[0])):
+        if normalized.startswith(alias):
+            return canonical + normalized[len(alias):]
+    return normalized
 
 
 def _name_match(provider_name: Any, canonical_name: Any) -> bool:
