@@ -14,7 +14,7 @@ from v17.model_source_entitlements import SOURCES, source_readiness
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
-VERIFIER_VERSION = "V17_CANDIDATE_BOUND_BINARY_REPLAY_V1"
+VERIFIER_VERSION = "V17_CANDIDATE_BOUND_BINARY_REPLAY_V2"
 RECEIPT_TABLE = "wow_d1_certification_evidence_receipts"
 
 
@@ -48,7 +48,7 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
     while True:
         page = (
             db.table("wow_d1_training_rows")
-            .select("official_event_id,event_start_time,feature_as_of,features,outcome_json,source_manifest,source_manifest_sha256,market_features_used,can_execute")
+            .select("training_row_id,created_at,official_event_id,event_start_time,feature_as_of,features,outcome_json,source_manifest,source_manifest_sha256,market_features_used,can_execute")
             .eq("sport", candidate["sport"])
             .eq("league", candidate["league"])
             .eq("model_family", candidate["model_family"])
@@ -63,8 +63,37 @@ def _all_rows(db: Any, candidate: Mapping[str, Any]) -> list[dict[str, Any]]:
         if len(batch) < 1000:
             break
         offset += 1000
-    rows.sort(key=lambda row: (_iso(row["event_start_time"]), str(row["official_event_id"])))
-    return rows
+    # The append-only ledger retains multiple source versions of an event.
+    # Reconstruct the last version that was present when this fitted
+    # candidate was saved. Source/dataset/model/calibrator/metric hash checks
+    # below remain mandatory: choosing the wrong version fails replay.
+    latest_by_event: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        event_id = str(row.get("official_event_id") or "").strip()
+        if not event_id:
+            raise ValueError("CANDIDATE_CORPUS_OFFICIAL_EVENT_ID_MISSING")
+        if not row.get("created_at"):
+            raise ValueError("CANDIDATE_CORPUS_ROW_CREATED_AT_MISSING")
+        timestamp = _iso(row["created_at"])
+        previous = latest_by_event.get(event_id)
+        if previous is None:
+            latest_by_event[event_id] = row
+            continue
+        earlier = _iso(previous["created_at"])
+        if timestamp > earlier:
+            latest_by_event[event_id] = row
+        elif timestamp == earlier:
+            # A same-instant fork is not resolved by an arbitrary UUID sort.
+            comparable = (
+                "source_manifest_sha256", "features", "outcome_json",
+                "event_start_time", "feature_as_of", "market_features_used",
+                "can_execute",
+            )
+            if any(row.get(field) != previous.get(field) for field in comparable):
+                raise ValueError("CANDIDATE_CORPUS_LATEST_VERSION_AMBIGUOUS")
+    unique_rows = list(latest_by_event.values())
+    unique_rows.sort(key=lambda row: (_iso(row["event_start_time"]), str(row["official_event_id"])))
+    return unique_rows
 
 
 def _source_id(manifest: Mapping[str, Any]) -> str:
