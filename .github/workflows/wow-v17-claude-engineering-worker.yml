@@ -262,6 +262,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-5-5
           permission_profile: ":read-only"
           prompt: |
             You are the independent WOW V17 ENGINEERING_LEAD_AGENT running on Anthropic/Claude fallback tooling.
@@ -306,6 +307,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-5-5
           permission_profile: ":read-only"
           prompt: |
             You are the independent WOW V17 ACCELERATION_TRIAGE_AGENT running on fallback tooling.
@@ -348,6 +350,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-5-5
           permission_profile: ":read-only"
           prompt: |
             You are the independent WOW V17 RESEARCH_TRIAGE_AGENT running on Anthropic/Claude fallback tooling.
@@ -406,6 +409,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-opus-5-5
           permission_profile: ":read-only"
           prompt: |
             You are the independent WOW V17 ${{ steps.specialist_route.outputs.subagent }} running on Anthropic/Claude fallback tooling.
@@ -513,6 +517,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-opus-5-5
           permission_profile: ":workspace"
           prompt: |
             You are the WOW V17 ENGINEERING_AGENT running on Anthropic/Claude fallback tooling
@@ -588,6 +593,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-5-5
           permission_profile: ":read-only"
           prompt: |
             You are the independent WOW V17 INDEPENDENT_REVIEW_AGENT running on Anthropic/Claude fallback tooling.
@@ -614,6 +620,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-5-5
           permission_profile: ":read-only"
           prompt: |
             You are the independent WOW V17 SYSTEM_ARCHITECT_AGENT running on Anthropic/Claude fallback tooling.
@@ -656,6 +663,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-sonnet-5-5
           permission_profile: ":read-only"
           prompt: |
             You are the independent WOW V17 QA_VERIFICATION_AGENT running on Anthropic/Claude fallback tooling.
