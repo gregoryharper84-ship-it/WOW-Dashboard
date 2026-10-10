@@ -105,9 +105,18 @@ def test_expired_and_too_long_lived_signatures_rejected(tmp_path):
 
 
 def test_unbootstrapped_repository_signers_fail_closed(tmp_path):
+    # Use an explicit unbootstrapped fixture, never the installed production
+    # signer registry. Once the owner bootstraps the real public key, tests
+    # must still verify the missing-key denial rather than incorrectly fail
+    # with SIGNATURE_INVALID against an unrelated ephemeral test key.
     key = _keypair(tmp_path, "owner")
     expires, sig = _sign(tmp_path, key)
-    out = _verify(ROOT / ".github/release/owner_allowed_signers", expires=expires, sig=sig)
+    signers = tmp_path / "unbootstrapped_allowed_signers"
+    signers.write_text(
+        "# Owner signer pending human bootstrap.\n"
+        "# No authorized public key is installed in this fixture.\n"
+    )
+    out = _verify(signers, expires=expires, sig=sig)
     assert out.returncode != 0 and "OWNER_SIGNER_NOT_BOOTSTRAPPED" in out.stderr
 
 
