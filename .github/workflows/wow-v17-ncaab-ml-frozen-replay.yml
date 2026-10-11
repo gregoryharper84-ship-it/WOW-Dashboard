@@ -91,7 +91,8 @@ jobs:
           set -euo pipefail
           # Verified by independent hash-pinned source replays on PR #1645;
           # isolate historical numeric pins from serving and training dependencies.
-          python -m pip install -r requirements.txt "numpy==2.4.6" "scipy==1.17.1" "scikit-learn==1.8.0" "joblib==1.6.0" "threadpoolctl==3.7.0"
+          python -m pip install -r requirements.txt
+          python -m pip install "scikit-learn==1.8.0"
           python -m pip check
           python -c 'import numpy, scipy, sklearn, joblib, threadpoolctl; assert (numpy.__version__, scipy.__version__, sklearn.__version__, joblib.__version__, threadpoolctl.__version__) == ("2.4.6", "1.17.1", "1.8.0", "1.6.0", "3.7.0")'
       - name: Refit five hash-pinned CC-BY-4 source releases and verify exact model identity
@@ -158,7 +159,8 @@ jobs:
           set -euo pipefail
           # Database-frozen verifier and public-source challenger must refit in
           # the same isolated, already-reproduced numerical environment.
-          python -m pip install -r requirements.txt "numpy==2.4.6" "scipy==1.17.1" "scikit-learn==1.8.0" "joblib==1.6.0" "threadpoolctl==3.7.0"
+          python -m pip install -r requirements.txt
+          python -m pip install "scikit-learn==1.8.0"
           python -m pip check
           python -c 'import numpy, scipy, sklearn, joblib, threadpoolctl; assert (numpy.__version__, scipy.__version__, sklearn.__version__, joblib.__version__, threadpoolctl.__version__) == ("2.4.6", "1.17.1", "1.8.0", "1.6.0", "3.7.0")'
       - name: Refit frozen candidate and validate evidence
