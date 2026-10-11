@@ -238,6 +238,8 @@ def test_gemini_is_a_registered_evidence_only_provider():
     ({"disposition": "FIXED_AND_VERIFIED"}, "gemini_authority"),
 ])
 def test_gemini_cannot_self_certify_or_release(changes, field):
+    row = base(provider="gemini", role="adversarial_reviewer")
+    row.update(changes)
     with pytest.raises(er.ReceiptError) as exc:
-        er.build_receipt(**base(provider="gemini", role="adversarial_reviewer", **changes))
+        er.build_receipt(**row)
     assert exc.value.code == "RECEIPT_INVALID:" + field

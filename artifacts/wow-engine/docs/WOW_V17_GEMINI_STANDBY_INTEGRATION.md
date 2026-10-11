@@ -25,6 +25,16 @@ WOW_GEMINI_ACTIVE_TASKS=
 GEMINI_MODEL=
 GEMINI_API_KEY=[server secret; never commit]
 ```
+Safe status / manual canary entrypoint:
+```bash
+cd artifacts/wow-engine
+python -m v17.gemini_optional_worker --status
+# only after approved activation:
+python -m v17.gemini_optional_worker --task code_review \\
+  --data-classification PUBLIC --input-file /path/to/reviewed_public_fixture.txt
+```
+No background workers, cron, or automatic trigger is installed.
+
 Activation requires setting `WOW_GEMINI_ENABLED=true`, a reviewed model identifier,
 `GEMINI_ACTIVE_TASKS` under `WOW_GEMINI_ACTIVE_TASKS` (comma-separated), and the
 API key in the server secret store. Supported tasks are `code_review`,

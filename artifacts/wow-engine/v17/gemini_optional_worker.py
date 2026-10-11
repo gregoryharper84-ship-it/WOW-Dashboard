@@ -141,3 +141,37 @@ def run_challenger(
         "evidence_refs": result["evidence_refs"], "input_evidence_refs": refs,
         "verification_state": "UNVERIFIED_CHALLENGER_OUTPUT",
     }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Explicit CLI: status is safe; run still requires the disabled-off gates."""
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(description="Optional WOW Gemini challenger")
+    parser.add_argument("--status", action="store_true", help="Display redacted configuration only")
+    parser.add_argument("--task", choices=sorted(TASKS))
+    parser.add_argument("--input-file", help="Reviewed sanitized/public text fixture")
+    parser.add_argument("--data-classification", choices=sorted(INPUT_CLASSES))
+    args = parser.parse_args(argv)
+    if args.status:
+        print(json.dumps(status(), sort_keys=True))
+        return 0
+    if not args.task or not args.input_file or not args.data_classification:
+        print(json.dumps({"status": "GEMINI_INPUT_INVALID", "can_execute": False}))
+        return 2
+    try:
+        with open(args.input_file, encoding="utf-8") as f:
+            prompt = f.read(MAX_INPUT_CHARS + 1)
+        output = run_challenger(args.task, prompt, data_classification=args.data_classification)
+    except OSError:
+        print(json.dumps({"status": "GEMINI_INPUT_INVALID", "can_execute": False}))
+        return 2
+    except GeminiWorkerError as exc:
+        print(json.dumps({"status": exc.code, "can_execute": False}))
+        return 1
+    print(json.dumps(output, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
