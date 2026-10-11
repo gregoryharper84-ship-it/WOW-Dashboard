@@ -60,3 +60,13 @@ live betting picks or proprietary WOW files.
 
 No deploy, live Gemini execution or independent certification is claimed by
 this draft.
+
+
+## NFL gateway fixture contract (#1660)
+- `tests/fixtures/nfl_moneyline_gateway_sample.py` is deliberately **synthetic**, with three known planted issues; it is not a copy of WOW gateway source or user data.
+- Run the **offline** fake-transport contract test from `artifacts/wow-engine`:
+  `python -m pytest tests/integration/test_gemini_nfl_gateway_task.py -k "test_moneyline_gateway_review" -v`
+- Fixture hash is computed from **actual UTF-8 file bytes**. A static `e3b0c442...` input hash is invalid because it corresponds to an empty file. Findings hash is computed from the returned strings.
+- `status=OFFLINE_MOCK_PASS`, `latency_ms=842` (simulated), `circuit_breaker_state=NOT_IMPLEMENTED`, `provider_execution_verified=false`, `persistence_verified=false` mean **no actual Gemini task execution, breaker, or durable audit store is claimed**.
+- `ai_audit_logs` table was **not found** in the accessible WOW validation Supabase project at planning time; do not insert to an invented table or overload existing `wow_engineering_attempt_receipts` with mismatched columns.
+- Production task receipt persistence, approved metadata schema/migration, real monotonic latency, provider response ID, actual breaker lifecycle, two scheduled cycles, and independent verified repair belong to a **separate protected implementation** after security and billing review. Nothing here changes published sporting probabilities.
