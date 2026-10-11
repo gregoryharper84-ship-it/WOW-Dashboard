@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -122,7 +123,7 @@ def run_challenger(
         if exc.code == 429:
             raise GeminiWorkerError("GEMINI_RATE_LIMITED") from None
         raise GeminiWorkerError("GEMINI_TRANSPORT_FAILED") from None
-    except (URLError, TimeoutError, OSError):
+    except (URLError, TimeoutError, OSError, HTTPException):
         raise GeminiWorkerError("GEMINI_TRANSPORT_FAILED") from None
     if len(raw) > MAX_RESPONSE_BYTES:
         raise GeminiWorkerError("GEMINI_RESPONSE_INVALID")
@@ -142,7 +143,7 @@ def run_challenger(
             raise ValueError("findings")
         if not isinstance(parsed["evidence_refs"], list) or not all(isinstance(x, str) for x in parsed["evidence_refs"]):
             raise ValueError("evidence_refs")
-    except (ValueError, KeyError, IndexError, TypeError):
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise GeminiWorkerError("GEMINI_RESPONSE_INVALID") from None
     return {
         "provider": "gemini", "model": model, "task": task,

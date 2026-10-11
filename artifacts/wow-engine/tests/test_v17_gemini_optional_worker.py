@@ -1,7 +1,8 @@
 """Offline Gemini challenger tests; never call the real provider."""
 import io
 import json
-from urllib.error import HTTPError
+from http.client import HTTPException
+from urllib.error import HTTPError, URLError
 
 import pytest
 from v17 import gemini_optional_worker as worker
@@ -119,3 +120,81 @@ def test_registry_never_changes_scoring_golden_paths():
     assert all(c[k] is False for k in ("probability_authority",
         "terminal_authority", "safe_hold_authority", "can_execute"))
     assert not any("GEMINI" in x for route in registry["golden_paths"].values() for x in route)
+
+
+@pytest.mark.parametrize("bad_response", [
+    {"candidates": ["not-a-candidate-object"]},
+    {"candidates": [{"finishReason": "STOP", "content": {"parts": [42]}}]},
+    {"candidates": [{"finishReason": "STOP", "content": {"parts": ["invalid"]}}]},
+])
+def test_malformed_provider_shape_is_typed_hold(bad_response):
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_RESPONSE_INVALID"):
+        worker.run_challenger(
+            "code_review", "public fixture", data_classification="PUBLIC",
+            env=enabled(), opener=lambda *a, **k: Response(json.dumps(bad_response).encode()),
+        )
+
+
+@pytest.mark.parametrize("error,expected", [
+    (URLError("offline synthetic failure"), "GEMINI_TRANSPORT_FAILED"),
+    (TimeoutError("offline synthetic timeout"), "GEMINI_TRANSPORT_FAILED"),
+    (HTTPException("offline synthetic incomplete response"), "GEMINI_TRANSPORT_FAILED"),
+    (HTTPError("https://example.invalid", 503, "unavailable", {}, None), "GEMINI_TRANSPORT_FAILED"),
+])
+def test_transport_error_is_typed_and_no_retry(error, expected):
+    call_count = []
+    def opener(*args, **kwargs):
+        call_count.append(True)
+        raise error
+    with pytest.raises(worker.GeminiWorkerError, match=expected):
+        worker.run_challenger("code_review", "public fixture",
+            data_classification="PUBLIC", env=enabled(), opener=opener)
+    assert len(call_count) == 1
+
+
+@pytest.mark.parametrize("prompt,refs", [
+    ("", None),
+    ("x" * (worker.MAX_INPUT_CHARS + 1), None),
+    (None, None),
+    ("public", [None]),
+    ("public", "not-list"),
+    ("public", ["x" * 1025]),
+    ("public", ["ok"] * 21),
+])
+def test_invalid_input_rejected_before_network(prompt, refs):
+    calls = []
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_INPUT_INVALID"):
+        worker.run_challenger("code_review", prompt,
+            data_classification="PUBLIC", evidence_refs=refs,
+            env=enabled(), opener=lambda *a, **k: calls.append(True))
+    assert not calls
+
+
+def test_oversized_response_is_typed_hold():
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_RESPONSE_INVALID"):
+        worker.run_challenger("code_review", "public fixture",
+            data_classification="PUBLIC", env=enabled(),
+            opener=lambda *a, **k: Response(b"x" * (worker.MAX_RESPONSE_BYTES + 1)))
+
+
+def test_cli_status_is_redacted_and_offline(monkeypatch, capsys):
+    def network_forbidden(*args, **kwargs):
+        raise AssertionError("unexpected live HTTP")
+    monkeypatch.setattr(worker, "urlopen", network_forbidden)
+    for name in ["WOW_GEMINI_ENABLED", "GEMINI_API_KEY", "GEMINI_MODEL"]:
+        monkeypatch.delenv(name, raising=False)
+    assert worker.main(["--status"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["configured"] is False
+    assert printed["can_execute"] is False
+    assert "api_key" not in printed
+
+
+def test_cli_no_auth_is_typed_and_offline(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("WOW_GEMINI_ENABLED", "false")
+    text_file = tmp_path / "public.txt"
+    text_file.write_text("synthetic public fixture")
+    assert worker.main(["--task", "code_review", "--input-file", str(text_file),
+                        "--data-classification", "PUBLIC"]) == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == {"status": "GEMINI_DISABLED", "can_execute": False}

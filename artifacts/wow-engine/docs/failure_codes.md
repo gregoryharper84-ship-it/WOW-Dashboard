@@ -203,6 +203,9 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
 
 ## Optional Gemini evidence challenger (#1655; manual-only; disabled by default)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
 | `GEMINI_DISABLED` | Gemini evidence adapter | Switch off; no request sent. | No |
 | `GEMINI_TASK_DISABLED` | Gemini evidence adapter | Task not in bounded allowlist; no request. | No |
 | `GEMINI_INPUT_CLASS_BLOCKED` | Gemini evidence adapter | Classification not PUBLIC/SANITIZED. | No |
