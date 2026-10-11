@@ -50,7 +50,7 @@ def test_only_fixed_public_fixture_transmitted():
     assert len(requests)==1
     request=requests[0]
     assert request.get_method()=="POST"
-    assert request.full_url.endswith("/models/gemini-2.5-flash-lite:generateContent")
+    assert request.full_url.endswith("/models/gemini-3.5-flash-lite:generateContent")
     payload=json.loads(request.data)
     assert payload["contents"][0]["parts"][0]["text"]==FIXTURE
     assert payload["generationConfig"]["maxOutputTokens"]==128

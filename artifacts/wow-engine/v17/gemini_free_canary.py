@@ -14,8 +14,8 @@ from urllib.request import Request, urlopen
 
 CAN_EXECUTE = False
 AUTHORITY = "PUBLIC_SYNTHETIC_CONNECTIVITY_ONLY"
-ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
-MODEL = "gemini-2.5-flash-lite"
+ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
+MODEL = "gemini-3.5-flash-lite"
 FIXTURE = "This is a public synthetic connectivity test. Reply only with a JSON object containing status='ok' and echo='WOW_FREE_CANARY'."
 MAX_RESPONSE = 4096
 

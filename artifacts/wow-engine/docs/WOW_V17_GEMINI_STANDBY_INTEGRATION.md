@@ -321,3 +321,12 @@ production source/context use, switch to a verified Paid API project, complete
 independent privacy/SIRT review and enforce the separate paid-only routes.
 References: https://ai.google.dev/gemini-api/docs/billing and
 https://ai.google.dev/gemini-api/docs/pricing
+
+Free canary model selection updated October 10, 2026: stable
+`gemini-3.5-flash-lite` is available on the free Standard API tier for new
+projects. Google's model documentation limits legacy Gemini 2.5 availability
+on newly created projects. Free canary remains fixed-prompt, disabled,
+no confidential inputs and no automatic connection. Verify project quota
+and model availability in Google AI Studio before the first manual call.
+References: https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite
+and https://ai.google.dev/gemini-api/docs/pricing
