@@ -250,3 +250,17 @@ A new code requires, in the same change: code name, owning lane/stage, exact con
 | `GEMINI_PROVIDER_ID_REQUIRED` | Gemini central spend budget/receipts | No provider ID at confirmation stage; never a probability scorer result. | No |
 | `GEMINI_PROVIDER_ID_MISMATCH` | Gemini central spend budget/receipts | Confirmed provider identity cannot be rewritten; never a probability scorer result. | No |
 | `GEMINI_APPROVED_SCOPE_MISMATCH` | Gemini external submission gate | Configured model or paid API project differs from prepared job; no reservation or outbound request. | No |
+| `GEMINI_BUDGET_INPUT_INVALID` | Gemini optional provider budget/transport | Budget RPC client input invalid, no reservation; not a sporting probability status. | No |
+| `GEMINI_BUDGET_RPC_UNAVAILABLE` | Gemini optional provider budget/transport | Atomic reservation/status RPC transport failed; not a sporting probability status. | No |
+| `GEMINI_BUDGET_RPC_INVALID` | Gemini optional provider budget/transport | Reservation/status RPC response not valid evidence; not a sporting probability status. | No |
+| `GEMINI_BUDGET_READBACK_MISMATCH` | Gemini optional provider budget/transport | Durable readback does not prove expected budget receipt; not a sporting probability status. | No |
+| `GEMINI_EXTERNAL_MUTATIONS_DISABLED` | Gemini optional provider budget/transport | Global Gemini Batch/cache outbound creation disabled; not a sporting probability status. | No |
+| `GEMINI_SUBMISSION_INVALID` | Gemini optional provider budget/transport | Prepared Batch/cache manifest mismatch or invalid scope; not a sporting probability status. | No |
+| `GEMINI_DURABLE_LEDGER_REQUIRED` | Gemini optional provider budget/transport | Trusted server-side budget gateway required; not a sporting probability status. | No |
+| `GEMINI_SUBMISSION_RESERVATION_FAILED` | Gemini optional provider budget/transport | No verified pre-send budget reservation and unknown fence; not a sporting probability status. | No |
+| `GEMINI_PROVIDER_OUTCOME_UNKNOWN` | Gemini optional provider budget/transport | Provider POST result uncertain, never silently retry; not a sporting probability status. | No |
+| `GEMINI_PROVIDER_CONFIRMED_RECEIPT_MISSING` | Gemini optional provider budget/transport | Provider accepted but exact resource receipt not persisted/read back; not a sporting probability status. | No |
+| `GEMINI_STANDARD_API_DISABLED` | Gemini optional provider budget/transport | Standard Gemini API calls disabled by separate owner-controlled switch; not a sporting probability status. | No |
+| `GEMINI_STANDARD_BUDGET_UNVERIFIED` | Gemini optional provider budget/transport | Standard request lacks a durable approved spending reservation; not a sporting probability status. | No |
+| `GEMINI_STANDARD_RECEIPT_UNVERIFIED` | Gemini optional provider budget/transport | Standard provider response and completion receipt unverified; not a sporting probability status. | No |
+| `GEMINI_BATCH_JSONL_INVALID` | Gemini optional provider budget/transport | JSONL batch output is not bounded, valid, or complete; not a sporting probability status. | No |
