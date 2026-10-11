@@ -17,11 +17,16 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify-policy:
+    # Only protected main may request a deploy; the broker re-asserts every claim.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    environment: wow-release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       checks: read
       pull-requests: read
+      id-token: write
     steps:
       - name: Verify exact SHA and independent named check identities
         shell: bash
@@ -32,6 +37,8 @@ jobs:
           set -euo pipefail
           deny() { echo "RELEASE_HOLD:$1" >&2; exit 1; }
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || deny INVALID_SHA
+          # The OIDC sha claim is GITHUB_SHA; the broker only deploys that SHA.
+          test "$GITHUB_SHA" = "$EXPECTED_SHA" || deny RUN_SHA_NOT_EXPECTED
           current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
           test "$current" = "$EXPECTED_SHA" || deny STALE_MAIN
           checks="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$EXPECTED_SHA/check-runs?per_page=100")"
@@ -54,7 +61,28 @@ jobs:
           # Catch a branch move during verification; never accept a stale candidate.
           final_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
           test "$final_main" = "$EXPECTED_SHA" || deny STALE_MAIN
-      - name: Hold pending isolated cryptographic signer and deploy credentials
+      - name: Request deploy from isolated broker (OIDC)
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          BROKER_URL: ${{ vars.DEPLOY_BROKER_URL }}
+          BROKER_AUDIENCE: ${{ vars.DEPLOY_BROKER_AUDIENCE }}
+        # ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN come from the runner; never re-map them in env:.
         run: |
-          echo "RELEASE_HOLD:ISOLATED_SIGNER_AND_DEPLOYMENT_IDENTITY_NOT_PROVISIONED"
-          exit 1
+          set -euo pipefail
+          deny() { echo "RELEASE_HOLD:$1" >&2; exit 1; }
+          [[ "${BROKER_URL:-}" == https://* ]] || deny BROKER_URL_MISSING
+          [ -n "${BROKER_AUDIENCE:-}" ] || deny BROKER_AUDIENCE_MISSING
+          aud=$(jq -rn --arg a "$BROKER_AUDIENCE" '$a|@uri')
+          jwt=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}" | jq -er '.value') || deny OIDC_MINT_FAILED
+          echo "::add-mask::$jwt"
+          body=$(jq -cn --arg sha "$EXPECTED_SHA" '{commit_sha: $sha}')
+          resp=$(curl -sS -X POST "$BROKER_URL" --max-time 60 \
+            -H "Authorization: Bearer $jwt" -H "Content-Type: application/json" \
+            -d "$body") || deny BROKER_UNREACHABLE
+          echo "Broker response: $resp"
+          jq -e --arg sha "$EXPECTED_SHA" \
+            '.status == "DEPLOY_DISPATCHED" and .commit_sha == $sha' <<<"$resp" >/dev/null \
+            || deny BROKER_REJECTED
+          echo "- DEPLOY_DISPATCHED $(jq -r '.deploy_id' <<<"$resp") at $EXPECTED_SHA" >> "$GITHUB_STEP_SUMMARY"
