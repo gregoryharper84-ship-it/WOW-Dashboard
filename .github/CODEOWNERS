@@ -1,0 +1,35 @@
+# Owner review for WOW release trust roots (#1550 phase D).
+# Generated from agent_identity_policy.trust_root_paths() + governance_trust_roots(); a test fails on drift.
+# The sole human owner must approve any change to these paths, including this file.
+# /.github/ and /.agents/ cover NEW workflows, actions, scripts and agent skills.
+/.github/ @gregoryharper84-ship-it
+/.agents/ @gregoryharper84-ship-it
+/render.yaml @gregoryharper84-ship-it
+# Files executed or read by governance workflows (changing them changes how the gates decide):
+/artifacts/flask-scoring-api/requirements.txt @gregoryharper84-ship-it
+/artifacts/wow-engine/requirements.txt @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/agent_identity_policy.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_agent_team.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_dispatch_manifest.json @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_dispatch_queue.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_effectiveness.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_provider_failover.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/independent_release_checks.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/persistent_worker_safety.py @gregoryharper84-ship-it
+# Protected list mirrored from .github/workflows/wow-v17-existing-pr-governance-review.yml:
+/.github/workflows/wow-verify.yml @gregoryharper84-ship-it
+/.github/workflows/wow-engine-verify.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-rapid-repair.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-change-impact-gate.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-trusted-governance-gate.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-existing-pr-governance-review.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-morning-green-continuation.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-release-production-verification-agent.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-chatgpt-engineering-worker.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-claude-engineering-worker.yml @gregoryharper84-ship-it
+/.github/workflows/wow-v17-engineering-provider-dispatcher.yml @gregoryharper84-ship-it
+/.github/scripts/verify_engineering_governance_receipt.py @gregoryharper84-ship-it
+/.github/scripts/verify_existing_pr_governance_receipt.py @gregoryharper84-ship-it
+/.github/actions/wow-chatgpt-agent/* @gregoryharper84-ship-it
+/.github/actions/wow-claude-agent/* @gregoryharper84-ship-it
+/.github/CODEOWNERS @gregoryharper84-ship-it
