@@ -14,6 +14,7 @@ Existing LLP/WOW/Kalshi golden paths remain unchanged. `can_execute=false`.
 - `v17/engineering_receipts.py` and migration: allow Gemini evidence receipts only;
   no independent QA PASS, release authorization, deployed SHA, or FIXED_AND_VERIFIED.
 - Tests and canonical failure-code entries.
+- `v17/gemini_cost_routing.py`: pure, non-executable tier/urgency/batch/cache routing planner and model-specific offline price-card forecast. Neither adapter nor automatic dispatch is installed.
 - No new daemon, scheduler, automatic fallback, production endpoint, or API request
   is enabled by this PR.
 
@@ -22,6 +23,7 @@ On an approved, restricted server worker ONLY, configure:
 ```text
 WOW_GEMINI_ENABLED=false
 WOW_GEMINI_ACTIVE_TASKS=
+WOW_GEMINI_PAID_API_PROJECT_VERIFIED=false
 GEMINI_MODEL=
 GEMINI_API_KEY=[server secret; never commit]
 ```
@@ -68,3 +70,70 @@ Gemini output is `UNVERIFIED_CHALLENGER_OUTPUT`; evidence must be checked by
 Engineering/SIRT. No Gemini output may set probability, rank, calibration,
 specialist ownership, terminal disposition, or release/QA acceptance. Missing
 Gemini capacity must never turn into MODEL_UNAVAILABLE for a fitted specialist.
+
+## Economics / privacy contract — October 2026 documentation review
+
+Official Google sources:
+- [Pricing by model, mode, and effective period](https://ai.google.dev/gemini-api/docs/pricing)
+- [Batch API](https://ai.google.dev/gemini-api/docs/batch-api)
+- [Caching](https://ai.google.dev/gemini-api/docs/caching)
+- [Thinking / output budget](https://ai.google.dev/gemini-api/docs/generate-content/thinking)
+- [Additional API terms](https://ai.google.dev/gemini-api/terms)
+
+1. **Paid API project must be independently verified.** `WOW_GEMINI_PAID_API_PROJECT_VERIFIED=true`
+   is an operator assertion requiring a checked paid Google Cloud billing project. It is
+   *not* verification provided by the flag itself. Even PUBLIC canary calls are blocked
+   when this is not true. Google AI Pro subscription does not establish API Paid Tier.
+   Do not send raw proprietary data through any tier; privacy/DLP approval still required.
+2. **Batch API** can cost ~50% of Standard, but target turnaround is up to 24 hours.
+   It is noninteractive and must have durable submission IDs, deduplication, retries,
+   out-of-order result mapping, timeout/expiry/cancellation handling, and durable result
+   read-back. No Batch submission/poller exists in this scaffold: the offline planner
+   returns `GEMINI_BATCH_NOT_IMPLEMENTED`. Immediate CI/P0/pregame freshness cannot
+   wait on batch, and must not be silently rerouted to full-price Standard.
+3. **Caching** uses minimum token thresholds and model-specific TTL/storage costs. Never
+   assume whole repositories can be cached or that cache is free. Explicit caching
+   requires content allowlist, redact-first review, provenance version/hash, short
+   bounded TTL, deletion plan, billing/retention approval, and verified model support.
+   No explicit cache creation/refresh/delete exists; the planner returns
+   `GEMINI_CACHE_NOT_IMPLEMENTED`. Implicit caching may occur automatically in
+   supported models and must be reflected in provider usage metadata when reported.
+4. **Flash-first is a candidate optimization, not a certification**: routine tasks
+   may be planned for Flash, deep tasks for Pro, but actual tiers/models and eligibility
+   require benchmarked evidence quality. Do not assert 80% share or 10x price advantage
+   without workload testing and current rate cards.
+5. **2027 pricing**: some published rates expire December 31, 2026 and increase
+   January 1, 2027. Forecast both date regimes using the *exact chosen model*
+   and pricing mode. Never apply one universal multiplier across models.
+6. **Thinking tokens** are billable output. The transport exposes reported
+   `thinking_tokens`, `visible_output_tokens`, `cached_input_tokens`,
+   and other reported usage counters as non-authoritative accounting metadata.
+   `maxOutputTokens` is a response limit, not a strict spend guarantee; small
+   limits can truncate reasoning and still accrue charges. `thinkingLevel` /
+   `thinkingBudget` are model-family-dependent and are deliberately not
+   turned on automatically.
+7. **Cost controls**: prior to *any automated* calling, require real durable
+   per-project token/cost ledgers, pricing snapshots, budget reservation and
+   idempotent settlement, rate limits, task caps, anomaly alerts, and a kill switch.
+   No such automation is active. The estimator uses operator-verified price cards
+   and returns `FORECAST_ONLY_NOT_BILLING_EVIDENCE`.
+
+Example of a non-executable planning probe:
+```python
+from v17.gemini_cost_routing import plan_challenger
+plan_challenger(
+    task="research_challenger", urgency="BACKGROUND", complexity="ROUTINE",
+    data_classification="PUBLIC", paid_api_project_verified=False,
+    batch_requested=True, explicit_cache_requested=False,
+)
+# HOLD: GEMINI_BILLING_UNVERIFIED; no network
+```
+
+### Engineering + SIRT additions to activation acceptance
+- Verify actual paid API Cloud project, not merely an individual Gemini subscription.
+- Confirm Google region/data policies, retention, vendor and DLP treatment.
+- Verify real use-metadata recording including *thinking* and cached tokens.
+- Price samples under 2026 and 2027 rate periods using model/mode-specific cards.
+- Compare Flash vs Pro on fixed historical fixtures, not narrative assertions.
+- Approve actual Batch and explicit cache adapters as separate work items when
+  automated processing is needed. Until then `STANDARD` is manual-only.

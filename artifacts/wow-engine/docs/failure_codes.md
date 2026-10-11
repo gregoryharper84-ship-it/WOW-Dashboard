@@ -212,3 +212,7 @@ A new code requires, in the same change: code name, owning lane/stage, exact con
 | `GEMINI_RATE_LIMITED` | optional external Gemini challenger | Google returned 429; no research evidence returned. Never a fitted-model or terminal failure. | No |
 | `GEMINI_TRANSPORT_FAILED` | optional external Gemini challenger | Gemini HTTP transport failed; no evidence returned. Never a fitted-model or terminal failure. | No |
 | `GEMINI_RESPONSE_INVALID` | optional external Gemini challenger | Gemini response missing, malformed, or unfinished; no evidence returned. Never a fitted-model or terminal failure. | No |
+| `GEMINI_BILLING_UNVERIFIED` | optional Gemini provider activation | Paid Gemini API Cloud project has not been independently confirmed by the operator; no external request allowed. | No |
+| `GEMINI_BATCH_LATENCY_INCOMPATIBLE` | Gemini offline routing plan | Batch was requested for an interactive task; no async substitution. | No |
+| `GEMINI_BATCH_NOT_IMPLEMENTED` | Gemini offline routing plan | Batch job submission and result lifecycle are not implemented/approved in the standby scaffold. | No |
+| `GEMINI_CACHE_NOT_IMPLEMENTED` | Gemini offline routing plan | Explicit cache lifecycle and privacy approvals are not implemented/approved in the standby scaffold. | No |

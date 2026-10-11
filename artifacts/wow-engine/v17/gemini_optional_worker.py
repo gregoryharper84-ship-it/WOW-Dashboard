@@ -40,7 +40,8 @@ def status(env: dict[str, str] | None = None) -> dict[str, object]:
         "provider": "gemini",
         "enabled": enabled,
         "configured": enabled and bool(e.get("GEMINI_API_KEY")) and bool(MODEL_PATTERN.fullmatch(model))
-        and bool(approved) and approved.issubset(TASKS),
+        and bool(approved) and approved.issubset(TASKS)
+        and e.get("WOW_GEMINI_PAID_API_PROJECT_VERIFIED", "").strip().lower() == "true",
         "active_tasks": sorted(approved & TASKS) if enabled else [],
         "authority": "EVIDENCE_ONLY",
         "can_execute": False,
@@ -70,6 +71,10 @@ def run_challenger(
         raise GeminiWorkerError("GEMINI_TASK_DISABLED")
     if data_classification not in INPUT_CLASSES:
         raise GeminiWorkerError("GEMINI_INPUT_CLASS_BLOCKED")
+    # Human-reviewed billing evidence must back this explicit operator attestation.
+    # An AI Pro subscription is not an API Paid Tier project.
+    if e.get("WOW_GEMINI_PAID_API_PROJECT_VERIFIED", "").strip().lower() != "true":
+        raise GeminiWorkerError("GEMINI_BILLING_UNVERIFIED")
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_INPUT_CHARS:
         raise GeminiWorkerError("GEMINI_INPUT_INVALID")
     refs = [] if evidence_refs is None else evidence_refs
@@ -133,6 +138,20 @@ def run_challenger(
     except (ValueError, KeyError, TypeError, IndexError):
         raise GeminiWorkerError("GEMINI_RESPONSE_INVALID") from None
 
+    usage = response.get("usageMetadata")
+    safe_usage = {}
+    if isinstance(usage, dict):
+        for field, label in (
+            ("promptTokenCount", "prompt_tokens"),
+            ("candidatesTokenCount", "visible_output_tokens"),
+            ("thoughtsTokenCount", "thinking_tokens"),
+            ("cachedContentTokenCount", "cached_input_tokens"),
+            ("totalTokenCount", "total_reported_tokens"),
+        ):
+            v = usage.get(field)
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                safe_usage[label] = v
+
     return {
         "provider": "gemini", "model": model, "task": task,
         "authority": "EVIDENCE_ONLY", "can_execute": False,
@@ -140,6 +159,9 @@ def run_challenger(
         "summary": result["summary"], "findings": result["findings"],
         "evidence_refs": result["evidence_refs"], "input_evidence_refs": refs,
         "verification_state": "UNVERIFIED_CHALLENGER_OUTPUT",
+        "usage_metadata_status": "REPORTED" if safe_usage else "NOT_REPORTED",
+        "usage_tokens": safe_usage,
+        "cost_usd": None,  # no price-card/rate authority in this narrow API adapter
     }
 
 

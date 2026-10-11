@@ -21,6 +21,7 @@ def config(**overrides):
         "WOW_GEMINI_ACTIVE_TASKS": "code_review,research_challenger",
         "GEMINI_API_KEY": "fake-test-key",
         "GEMINI_MODEL": "gemini-test-model",
+        "WOW_GEMINI_PAID_API_PROJECT_VERIFIED": "true",
     }
     settings.update(overrides)
     return settings
@@ -96,6 +97,7 @@ def test_approved_challenger_returns_unverified_evidence_only():
     assert seen[0][0].full_url.startswith(worker.API_ROOT)
     payload = json.loads(seen[0][0].data)
     assert payload["generationConfig"]["responseMimeType"] == "application/json"
+    assert result["cost_usd"] is None and result["usage_metadata_status"] == "NOT_REPORTED"
 
 
 @pytest.mark.parametrize("content,finish", [
@@ -127,3 +129,34 @@ def test_registry_is_optional_and_never_scoring_authority():
         if "GEMINI" in name:
             assert handoff["critical"] is False
             assert handoff["required_verifier"] == "NONE"
+
+
+def test_public_fixture_requires_paid_project_attestation_before_network():
+    invoked = []
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_BILLING_UNVERIFIED"):
+        worker.run_challenger(
+            "code_review", "Public code review fixture", data_classification="PUBLIC",
+            env=config(WOW_GEMINI_PAID_API_PROJECT_VERIFIED="false"),
+            opener=lambda *a, **kw: invoked.append(True),
+        )
+    assert invoked == []
+    assert worker.status(config(WOW_GEMINI_PAID_API_PROJECT_VERIFIED="false"))["configured"] is False
+
+
+def test_response_usage_tracks_thinking_without_inventing_cost():
+    def opener(*args, **kwargs):
+        body = {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps({
+            "summary": "ok", "findings": [], "evidence_refs": []})}]}}],
+            "usageMetadata": {"promptTokenCount": 200, "candidatesTokenCount": 35,
+                              "thoughtsTokenCount": 410, "cachedContentTokenCount": 90,
+                              "totalTokenCount": 645}}
+        return FakeResponse(json.dumps(body).encode())
+    result = run(opener=opener)
+    assert result["usage_tokens"] == {
+        "prompt_tokens": 200,
+        "visible_output_tokens": 35,
+        "thinking_tokens": 410,
+        "cached_input_tokens": 90,
+        "total_reported_tokens": 645,
+    }
+    assert result["cost_usd"] is None
