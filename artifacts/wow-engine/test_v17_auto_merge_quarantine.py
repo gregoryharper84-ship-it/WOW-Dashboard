@@ -8,6 +8,8 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 AUTO = ROOT / ".github/workflows/wow-v17-enable-auto-merge.yml"
+EXPERIMENT = ROOT / ".github/workflows/wow-v17-model-improvement-experiment.yml"
+HOURLY = ROOT / ".github/workflows/wow-v17-24h-engineering-closure-loop.yml"
 SIGNED = ROOT / ".github/workflows/wow-v17-owner-signed-release.yml"
 
 
@@ -44,3 +46,16 @@ def test_owner_signed_separate_recovery_path_remains():
     assert "owner_signature:" in signed
     assert 'namespace "wow-release"' in signed
     assert "Never deploys" in signed
+
+
+def test_no_secondary_auto_merge_arming_routes():
+    for path in (AUTO, EXPERIMENT, HOURLY):
+        content = path.read_text(encoding="utf-8")
+        active = _shell_lines(content)
+        assert not re.search(r"\bgh\s+pr\s+merge\b", active), path
+        assert "AUTO_MERGE_HOLD_POLICY_UNVERIFIED" in content, path
+    # The hourly loop can still diagnose broken experiment CI and dispatch a
+    # repair attempt; removing unsafe release rights must not halt engineering.
+    hourly = HOURLY.read_text(encoding="utf-8")
+    assert "wow-v17-model-improvement-experiment.yml" in hourly
+    assert "Failed experiment CI routed to bounded ChatGPT experiment repair." in hourly
