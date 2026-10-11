@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import copy
 
 from v17.binary_candidate_lifecycle import BinaryCandidate, BinaryCandidateMetrics
 from v17.ncaab_sportsdataverse_candidate import FEATURE_NAMES, MODEL_FAMILY, _json_hash
@@ -171,3 +172,93 @@ def test_numeric_provenance_binds_native_libraries_without_leaking_paths():
                 len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
             )
     assert "filepath" not in str(runtime)
+
+
+def _synthetic_cpu_negative_control():
+    """Build a signed synthetic receipt matching production-shaped evidence."""
+    from v17 import ncaab_source_pinned_replay as replay
+    a, m, c, e = fixture()
+    fitted = replace(c, artifact_payload={"coefficients": [0.7]})
+    receipt = run(candidate=fitted)
+    observed = receipt["observed"]
+    observed["dataset_hash"] = replay.EXPECTED_DATASET_HASH
+    observed["calibrator_sha256"] = replay.EXPECTED_CALIBRATOR_SHA256
+    observed["source_hashes"] = {
+        str(k): value for k, value in replay.EXPECTED_SOURCE_HASHES.items()
+    }
+    observed["row_counts_by_season"] = {
+        str(k): count for k, count in replay.EXPECTED_SOURCE_ROW_COUNTS.items()
+    }
+    observed["training_rows"] = sum(replay.EXPECTED_SOURCE_ROW_COUNTS.values())
+    observed["metrics"] = dict(replay.EXPECTED_METRICS)
+    receipt["expected"] = {
+        "dataset_hash": replay.EXPECTED_DATASET_HASH,
+        "artifact_checksum": replay.EXPECTED_ARTIFACT_CHECKSUM,
+        "calibrator_sha256": replay.EXPECTED_CALIBRATOR_SHA256,
+        "source_hashes": observed["source_hashes"],
+    }
+    receipt["mismatches"] = [{
+        "code": "NCAAB_SOURCE_ARTIFACT_CHECKSUM_MISMATCH",
+        "detail": observed["artifact_checksum"],
+    }]
+    receipt["receipt_sha256"] = _json_hash({
+        key: value for key, value in receipt.items() if key != "receipt_sha256"
+    })
+    return receipt
+
+
+def test_cpu_negative_control_is_verified_without_claiming_replay_pass():
+    from v17.ncaab_source_pinned_replay import cpu_dispatch_negative_control_verified
+    receipt = _synthetic_cpu_negative_control()
+    assert receipt["status"] == "SOURCE_PINNED_REPLAY_MISMATCH_HOLD"
+    assert cpu_dispatch_negative_control_verified(receipt, process_exit=1)
+    assert not cpu_dispatch_negative_control_verified(receipt, process_exit=0)
+    assert not cpu_dispatch_negative_control_verified(receipt, process_exit=3)
+    assert receipt["certification"] is False
+    assert receipt["probability_publishable"] is False
+
+
+def test_cpu_negative_control_rejects_false_green_and_untrusted_receipts():
+    from v17 import ncaab_source_pinned_replay as replay
+    base = _synthetic_cpu_negative_control()
+    for field, invalid in (
+        ("status", "SOURCE_PINNED_REPLAY_REPRODUCED"),
+        ("candidate_id", "another-candidate"),
+        ("can_execute", True),
+        ("probability_publishable", True),
+        ("research_only", False),
+    ):
+        receipt = copy.deepcopy(base)
+        receipt[field] = invalid
+        receipt["receipt_sha256"] = _json_hash({
+            k: v for k, v in receipt.items() if k != "receipt_sha256"
+        })
+        assert not replay.cpu_dispatch_negative_control_verified(receipt, process_exit=1), field
+
+    for section, field, value in (
+        ("observed", "dataset_hash", "0" * 64),
+        ("observed", "calibrator_sha256", "0" * 64),
+        ("observed", "source_hashes", {}),
+        ("observed", "row_counts_by_season", {}),
+        ("observed", "training_rows", 0),
+        ("observed", "artifact_checksum", replay.EXPECTED_ARTIFACT_CHECKSUM),
+        ("observed", "metrics", {}),
+        ("expected", "dataset_hash", "0" * 64),
+    ):
+        receipt = copy.deepcopy(base)
+        receipt[section][field] = value
+        receipt["receipt_sha256"] = _json_hash({
+            k: v for k, v in receipt.items() if k != "receipt_sha256"
+        })
+        assert not replay.cpu_dispatch_negative_control_verified(receipt, process_exit=1), field
+
+    receipt = copy.deepcopy(base)
+    receipt["mismatches"].append({"code": "NCAAB_SOURCE_ROW_PROVENANCE_MISMATCH", "detail": "unknown"})
+    receipt["receipt_sha256"] = _json_hash({
+        k: v for k, v in receipt.items() if k != "receipt_sha256"
+    })
+    assert not replay.cpu_dispatch_negative_control_verified(receipt, process_exit=1)
+
+    altered = copy.deepcopy(base)
+    altered["unexpected_untrusted_value"] = "tampered"
+    assert not replay.cpu_dispatch_negative_control_verified(altered, process_exit=1)
