@@ -5,6 +5,9 @@ Issue #1663. The audit-only workflow cannot grant release authorization.
 from pathlib import Path
 import re
 
+import pytest
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 AUTO = ROOT / ".github/workflows/wow-v17-enable-auto-merge.yml"
@@ -61,13 +64,48 @@ def test_no_secondary_auto_merge_arming_routes():
     assert "Failed experiment CI routed to bounded ChatGPT experiment repair." in hourly
 
 
-def test_no_unreviewed_auto_merge_can_be_rearmed_from_another_workflow():
-    """Global regression: new workflows cannot silently restore auto-merge."""
+def _executable_workflow_commands(path: Path) -> str:
+    """Inspect actual workflow shell steps, including multiline continuations.
+
+    YAML parsing avoids finding text in ordinary workflow documentation. Shell
+    continuations are joined before checking for a direct GitHub merge command.
+    This is a conservative prohibition, not an authorization mechanism.
+    """
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    runs = []
+    for job in (workflow.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            script = step.get("run") or ""
+            # Join shell's backslash-newline continuations (including spaces).
+            script = re.sub(r"\\\r?\n[ \t]*", " ", script)
+            script = "\n".join(
+                line for line in script.splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            runs.append(script)
+    return "\n".join(runs)
+
+
+def _contains_direct_merge(script: str) -> bool:
+    return bool(re.search(r"\bgh\s+pr\s+merge\b", script))
+
+
+@pytest.mark.parametrize("script", [
+    'gh pr merge "$PR" --auto --merge',
+    'gh pr merge "$PR" --merge --match-head-commit "$SHA"',
+    'gh pr \\\n      merge "$PR" --merge',
+    'gh \\\n      pr merge "$PR" --merge',
+])
+def test_direct_merge_guard_catches_auto_manual_and_multiline(script):
+    assert _contains_direct_merge(re.sub(r"\\\r?\n[ \t]*", " ", script))
+
+
+def test_no_unreviewed_direct_merge_in_any_workflow():
+    """Direct PR merge is reserved for separately signed owner-only workflow."""
     workflows = ROOT / ".github/workflows"
     for path in sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml")):
-        # Signed owner-held merge is separate and never auto-authorizes.
         if path.name == "wow-v17-owner-signed-release.yml":
             continue
-        active = _shell_lines(path.read_text(encoding="utf-8"))
-        assert not re.search(r"\bgh\s+pr\s+merge\b[^\n]{0,400}--auto\b", active), path
-        assert "enablePullRequestAutoMerge" not in active, path
+        script = _executable_workflow_commands(path)
+        assert not _contains_direct_merge(script), path
+        assert "enablePullRequestAutoMerge" not in script, path
