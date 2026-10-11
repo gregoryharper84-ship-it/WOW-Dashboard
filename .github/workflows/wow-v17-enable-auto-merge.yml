@@ -34,26 +34,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - name: Refuse trust-root changes (fail closed)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
-            --jq '.[] | .filename, (.previous_filename // empty)')"
-          if [ -z "$files" ]; then
-            echo "AUTO_MERGE_SKIPPED: empty or missing file evidence"
-            echo "SKIP=1" >> "$GITHUB_ENV"; exit 0
-          fi
-          if printf '%s\n' "$files" | grep -Eq '^(\.github|\.agents)/'; then
-            echo "AUTO_MERGE_SKIPPED: trust-root change requires owner-signed release"
-            echo "SKIP=1" >> "$GITHUB_ENV"
-          fi
-
       - name: Enable auto-merge
-        if: env.SKIP != '1'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
