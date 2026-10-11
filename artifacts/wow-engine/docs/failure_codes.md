@@ -216,3 +216,14 @@ A new code requires, in the same change: code name, owning lane/stage, exact con
 | `GEMINI_BATCH_LATENCY_INCOMPATIBLE` | Gemini offline routing plan | Batch was requested for an interactive task; no async substitution. | No |
 | `GEMINI_BATCH_NOT_IMPLEMENTED` | Gemini offline routing plan | Batch job submission and result lifecycle are not implemented/approved in the standby scaffold. | No |
 | `GEMINI_CACHE_NOT_IMPLEMENTED` | Gemini offline routing plan | Explicit cache lifecycle and privacy approvals are not implemented/approved in the standby scaffold. | No |
+| `GEMINI_BATCH_INPUT_INVALID` | Gemini standby Batch/cache contract | Input schema, row count, provenance or size rejected before Batch submission; no governed probability publication. | No |
+| `GEMINI_BATCH_IDENTITY_INVALID` | Gemini standby Batch/cache contract | Batch request key or provider job name not exact and valid; no governed probability publication. | No |
+| `GEMINI_BATCH_RESPONSE_INVALID` | Gemini standby Batch/cache contract | Batch result invalid, unfinished, or missing governed evidence structure; no governed probability publication. | No |
+| `GEMINI_BATCH_RESULTS_UNAVAILABLE` | Gemini standby Batch/cache contract | File-backed Batch result requires a separate reviewed download contract; no governed probability publication. | No |
+| `GEMINI_BATCH_RESULT_IDENTITY_MISSING` | Gemini standby Batch/cache contract | Provider Batch output has no stable per-row key; no governed probability publication. | No |
+| `GEMINI_BATCH_RESULT_IDENTITY_DUPLICATED` | Gemini standby Batch/cache contract | Duplicate provider result key detected; no governed probability publication. | No |
+| `GEMINI_BATCH_RESULT_SET_MISMATCH` | Gemini standby Batch/cache contract | Batch result keys do not match submitted manifest; no governed probability publication. | No |
+| `GEMINI_BATCH_ROW_FAILED` | Gemini standby Batch/cache contract | Provider returned an error for one or more expected rows; no governed probability publication. | No |
+| `GEMINI_CACHE_INPUT_INVALID` | Gemini standby Batch/cache contract | Cache text, provenance, TTL, timestamp invalid; no governed probability publication. | No |
+| `GEMINI_CACHE_IDENTITY_INVALID` | Gemini standby Batch/cache contract | Cache resource identity or model mismatch; no governed probability publication. | No |
+| `GEMINI_CACHE_EXPIRY_INVALID` | Gemini standby Batch/cache contract | Cache expires without valid time metadata; no governed probability publication. | No |

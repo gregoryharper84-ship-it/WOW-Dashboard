@@ -137,3 +137,34 @@ plan_challenger(
 - Compare Flash vs Pro on fixed historical fixtures, not narrative assertions.
 - Approve actual Batch and explicit cache adapters as separate work items when
   automated processing is needed. Until then `STANDARD` is manual-only.
+
+## Async + cache lifecycle foundation (standby iteration)
+
+`v17/gemini_async_contracts.py` and
+`tests/test_v17_gemini_async_contracts.py` now define **offline-only** REST
+manifests and reconciliation. These functions intentionally do not create
+Google jobs, cached content, or charge the paid API project. Supported:
+- Stable per-row request keys, manifest SHA-256 and provenance refs for inline
+  Batch requests. Exact approved task allowlist, max 16 items, text-only,
+  BACKGROUND-only; no implicit full-price interactive fallback.
+- Provider-reported Batch states PENDING/RUNNING/SUCCEEDED/FAILED/
+  CANCELLED/EXPIRED, where terminal failures always hold.
+- Key-based result set reconciliation, duplicate and unknown key rejection,
+  no list-order-based result attribution; never accept unverifiable findings
+  as governed sporting probabilities or independent QA.
+- Separate refusal for file-output batches pending reviewed JSONL download
+  support and bounded ingestion.
+- Cache-manifest preparation from vetted excerpts with content SHA, provenance
+  refs and TTL 5–60 minutes; metadata-only cache expiration/identity checks.
+  `cacheContents` resource creation, update, deletion and application to
+  model prompts are not wired yet.
+
+**Next release boundaries:** real Batch submission needs an atomic durable
+reservation/receipt writer and budget gate *before* network POST; polling needs
+a durable lease and typed per-row result readback. Explicit cache CREATE must
+prove a paid API project, supported model/minimum token count, TTL and retention
+approval, and independently reviewed DLP. Neither transport is enabled by
+the registry, dispatcher, environment or scheduled jobs.
+
+Documentation: [Google Batch API](https://ai.google.dev/gemini-api/docs/batch-api),
+[Google CachedContent API](https://ai.google.dev/api/caching).
