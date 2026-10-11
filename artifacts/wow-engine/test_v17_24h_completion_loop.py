@@ -96,7 +96,7 @@ def test_open_experiment_pr_is_actively_advanced_only_after_product_health_pass(
     assert "Resume governed model-experiment PR" in text
     assert 'elif [ -n "$experiment_pr" ]; then' in text
     assert text.index('product_health" != "PASS"') < text.index('elif [ -n "$experiment_pr" ]; then')
-    _assert_experiment_auto_merge_contract(text)
+    _assert_experiment_release_hold_contract(text)
     assert 'repair_pr="$PR_NUMBER"' in text
     assert "Failed experiment CI routed to bounded ChatGPT experiment repair." in text
     assert "Experiment PR escaped non-serving boundary" in text
