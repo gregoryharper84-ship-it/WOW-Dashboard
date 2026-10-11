@@ -69,20 +69,16 @@ def evaluate(snapshot):
         for p,y in graded:
             buckets[min(9,int(p*10))].append((p,y))
         ece = sum(len(v)/n*abs(sum(p for p,_ in v)/len(v)-sum(y for _,y in v)/len(v)) for v in buckets.values()) if n else None
-        gates = route.get("gates", {})
-        gate1 = bool(n and not errors and gates.get("statistical_validation") is True)
-        gate2 = bool(gate1 and gates.get("fitted_artifact_certified") is True and gates.get("calibrator_certified") is True
-                     and gates.get("frozen_replay_verified") is True and gates.get("specialist_certified") is True)
-        gate3 = bool(gate2 and gates.get("genuine_gpt_action_verified") is True and gates.get("terminal_reducer_verified") is True
-                     and gates.get("deployed_sha_verified") is True and gates.get("independent_release_verified") is True)
-        # Even complete supplied evidence is not authority to self-certify.
+        # Caller-supplied gate flags are assertions, not independently verified receipts.
+        # Fail closed until a separate trusted verifier supplies source-pinned evidence.
+        gate1 = gate2 = gate3 = False
         claimed = route.get("state", "NO_CAPABILITY")
         if claimed not in STATES:
             errors.append("UNKNOWN_STATE")
-        if claimed == "PRODUCTION_VERIFIED" and not gate3:
+        if claimed == "PRODUCTION_VERIFIED":
             errors.append("UNSUPPORTED_PRODUCTION_CLAIM")
         output.append({"sport": sport, "market": market, "claimed_state": claimed,
-                       "verified_state": "CERTIFICATION_HOLD" if errors or (claimed == "PRODUCTION_VERIFIED" and not gate3) else claimed,
+                       "verified_state": "CERTIFICATION_HOLD" if errors else claimed,
                        "eligible_count": len(rows), "graded_count": n, "brier": brier,
                        "log_loss": logloss, "ece_10_bins": ece, "gate_evidence": [gate1,gate2,gate3],
                        "errors": sorted(set(errors)), "evidence_sha256": _digest(route),
