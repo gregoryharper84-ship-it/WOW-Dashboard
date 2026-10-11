@@ -117,3 +117,27 @@ def test_governance_change_always_holds():
     a, m, c, e = fixture()
     for field in ("can_execute", "probability_publishable", "automatic_certification", "automatic_promotion"):
         assert "NCAAB_SOURCE_GOVERNANCE_VIOLATION" in codes(run(candidate=replace(c, **{field: True})))
+
+
+def test_replay_receipt_records_redacted_numeric_runtime_and_component_digests():
+    receipt = run()
+    observed = receipt["observed"]
+    runtime = observed["numeric_runtime"]
+    assert runtime["python"] and runtime["numpy"] and runtime["scipy"]
+    assert runtime["scikit_learn"]
+    assert isinstance(runtime["threadpools"], list)
+    assert "filepath" not in str(runtime) and "SUPABASE" not in str(runtime)
+    assert observed["artifact_component_sha256"]["coefficients"] == _json_hash([0.1])
+    assert all(len(value) == 64 for value in observed["artifact_component_sha256"].values())
+    assert run()["receipt_sha256"] == receipt["receipt_sha256"]
+
+
+def test_mismatch_records_numeric_evidence_without_weakening_gate():
+    a, m, c, e = fixture()
+    changed = replace(c, artifact_payload={"coefficients": [0.10000000000000002]})
+    receipt = run(candidate=changed)
+    assert receipt["status"] == "SOURCE_PINNED_REPLAY_MISMATCH_HOLD"
+    assert "NCAAB_SOURCE_ARTIFACT_CHECKSUM_MISMATCH" in codes(receipt)
+    assert receipt["observed"]["numeric_runtime"]["scikit_learn"]
+    assert receipt["observed"]["artifact_component_sha256"]["coefficients"] != _json_hash([0.1])
+    assert receipt["promotion"] is False and receipt["probability_publishable"] is False
