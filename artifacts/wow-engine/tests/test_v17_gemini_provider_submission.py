@@ -107,3 +107,26 @@ def test_disabled_paid_project_blocks_even_with_key():
     with pytest.raises(GeminiSubmissionError,match="GEMINI_BILLING_UNVERIFIED"):
         call(gw=gw,env=env(WOW_GEMINI_PAID_API_PROJECT_VERIFIED="false"))
     assert gw.events==[]
+
+
+def test_tampered_cache_payload_cannot_spend():
+    p=prepare_explicit_cache(model="gemini-test-model",content="Approved public excerpt",
+        ttl_seconds=300,data_classification="PUBLIC",source_refs=["public:sha"])
+    p["api_payload"]["contents"][0]["parts"][0]["text"]="changed"
+    gw=Gateway()
+    with pytest.raises(GeminiSubmissionError,match="GEMINI_SUBMISSION_INVALID"):
+        call(plan_value=p,gw=gw,env=env())
+    assert gw.events==[]
+
+
+def test_tampered_batch_sensitive_text_does_not_egress():
+    p=plan()
+    p["api_payload"]["batch"]["input_config"]["requests"]["requests"][0]["request"]["contents"][0]["parts"][0]["text"]="DB_PASSWORD=secret-now"
+    # Fake attacker re-hashes manifest; egress preflight still rejects.
+    from v17.gemini_async_contracts import _digest
+    p["manifest"]["payload_sha256"]=_digest(p["api_payload"])
+    p["manifest_sha256"]=_digest(p["manifest"])
+    gw=Gateway()
+    with pytest.raises(GeminiSubmissionError,match="GEMINI_SENSITIVE_MATERIAL_REJECTED"):
+        call(plan_value=p,gw=gw,env=env())
+    assert gw.events==[]

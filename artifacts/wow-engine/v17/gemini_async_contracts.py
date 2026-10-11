@@ -223,14 +223,19 @@ def prepare_explicit_cache(
                "contents": [{"role": "user", "parts": [{"text": content}]}],
                "ttl": str(ttl_seconds) + "s",
                "displayName": "wow-reviewed-excerpts"}
+    source_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    manifest = {
+        "model": model, "payload_sha256": _digest(payload),
+        "content_sha256": source_sha, "source_refs": list(source_refs),
+        "data_classification": data_classification, "ttl_seconds": ttl_seconds,
+    }
     return {
         "provider": "gemini", "kind": "CACHE_CREATE_PREPARED",
         "api_route": "/v1beta/cachedContents", "api_payload": payload,
-        "manifest_sha256": _digest({"payload": payload, "source_refs": source_refs,
-                                    "data_classification": data_classification}),
-        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-        "source_refs": list(source_refs), "status": "PREPARED_NOT_CREATED",
-        "can_execute": False, "terminal_authority": TERMINAL_AUTHORITY,
+        "manifest": manifest, "manifest_sha256": _digest(manifest),
+        "content_sha256": source_sha, "source_refs": list(source_refs),
+        "status": "PREPARED_NOT_CREATED", "can_execute": False,
+        "terminal_authority": TERMINAL_AUTHORITY,
     }
 
 

@@ -12,7 +12,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from v17.gemini_async_contracts import (
-    BATCH_NAME_RE, CACHE_NAME_RE, GeminiContractError, _digest,
+    BATCH_NAME_RE, CACHE_NAME_RE, _digest,
+)
+from v17.gemini_input_safety import (
+    GeminiSensitiveMaterialError, ensure_no_obvious_sensitive_material,
 )
 from v17.gemini_budget_gateway import GeminiBudgetGateway, BudgetGatewayError
 
@@ -57,8 +60,17 @@ def submit_prepared(*, plan: dict, ledger: GeminiBudgetGateway, project_key: str
             raise GeminiSubmissionError("GEMINI_BATCH_LATENCY_INCOMPATIBLE")
         if _digest(plan.get("api_payload")) != plan.get("manifest",{}).get("payload_sha256"):
             raise GeminiSubmissionError("GEMINI_SUBMISSION_INVALID")
-        if _digest(plan["manifest"]) != plan.get("manifest_sha256"):
+        if (_digest(plan["manifest"]) != plan.get("manifest_sha256")
+            or plan["manifest"].get("data_classification") not in ("PUBLIC", "SANITIZED")):
             raise GeminiSubmissionError("GEMINI_SUBMISSION_INVALID")
+        # Re-scan at final egress, not only at manifest-preparation time.
+        try:
+            for item in plan["api_payload"]["batch"]["input_config"]["requests"]["requests"]:
+                words = [part["text"] for msg in item["request"]["contents"]
+                         for part in msg["parts"] if "text" in part]
+                ensure_no_obvious_sensitive_material(*words)
+        except (KeyError,TypeError,GeminiSensitiveMaterialError):
+            raise GeminiSubmissionError("GEMINI_SENSITIVE_MATERIAL_REJECTED") from None
         pattern = BATCH_NAME_RE
         budget_kind = "BATCH_INLINE"
         token_guard = "batch"
@@ -67,8 +79,19 @@ def submit_prepared(*, plan: dict, ledger: GeminiBudgetGateway, project_key: str
         if route != "/v1beta/cachedContents" or not isinstance(plan.get("api_payload"),dict):
             raise GeminiSubmissionError("GEMINI_SUBMISSION_INVALID")
         source_refs = plan.get("source_refs")
-        if not isinstance(source_refs,list) or not isinstance(plan.get("manifest_sha256"),str):
+        manifest = plan.get("manifest")
+        if (not isinstance(source_refs,list) or not isinstance(manifest,dict)
+            or _digest(plan["api_payload"]) != manifest.get("payload_sha256")
+            or _digest(manifest) != plan.get("manifest_sha256")
+            or manifest.get("source_refs") != source_refs
+            or manifest.get("data_classification") not in ("PUBLIC","SANITIZED")):
             raise GeminiSubmissionError("GEMINI_SUBMISSION_INVALID")
+        try:
+            words=[part["text"] for msg in plan["api_payload"]["contents"]
+                   for part in msg["parts"] if "text" in part]
+            ensure_no_obvious_sensitive_material(*words,*source_refs)
+        except (KeyError,TypeError,GeminiSensitiveMaterialError):
+            raise GeminiSubmissionError("GEMINI_SENSITIVE_MATERIAL_REJECTED") from None
         # Cache's reviewed model/context/TTL are still subject to an independent
         # upstream allowlist and provider capability gate.
         pattern = CACHE_NAME_RE
