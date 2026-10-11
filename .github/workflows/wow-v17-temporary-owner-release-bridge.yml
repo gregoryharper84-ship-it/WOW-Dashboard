@@ -110,6 +110,11 @@ jobs:
             echo "pr_number=$pr"
             echo "head_sha=$head"
             echo "incident=$incident_id"
+            if [ "$EVENT_NAME" = "issue_comment" ]; then
+              echo "authorization_mode=OWNER_EXACT_SHA_COMMENT"
+            else
+              echo "authorization_mode=OWNER_ENVIRONMENT_SECRET"
+            fi
           } >> "$GITHUB_OUTPUT"
 
       - name: Record rejected authorization without paying for QA
