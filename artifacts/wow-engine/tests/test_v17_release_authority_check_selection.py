@@ -36,9 +36,12 @@ def test_superseded_pass_does_not_authorize():
         result = subprocess.run(
             ["jq", "-es", "--arg", "sha", SHA, expression()],
             input=json.dumps({"check_runs": rows}), text=True, capture_output=True,
-            timeout=5, check=True,
+            timeout=5, check=False,
         )
-        return result.stdout.strip()
+        output = result.stdout.strip()
+        assert output in {"true", "false"}, result.stderr
+        assert result.returncode == (0 if output == "true" else 1), result.stderr
+        return output
     assert run(checks) == "true"
     assert run(checks + [record(*REQUIRED[0], id=99, conclusion="failure")]) == "false"
     assert run(checks + [record(*REQUIRED[0], id=99, status="in_progress", conclusion=None)]) == "false"
