@@ -141,3 +141,18 @@ def test_mismatch_records_numeric_evidence_without_weakening_gate():
     assert receipt["observed"]["numeric_runtime"]["scikit_learn"]
     assert receipt["observed"]["artifact_component_sha256"]["coefficients"] != _json_hash([0.1])
     assert receipt["promotion"] is False and receipt["probability_publishable"] is False
+
+
+def test_failure_diagnostic_only_exposes_allowlisted_numeric_evidence():
+    from v17.ncaab_source_pinned_replay import failure_diagnostic
+    a, m, c, e = fixture()
+    changed = replace(c, artifact_payload={"coefficients": [0.7]})
+    r = run(candidate=changed)
+    r["mismatches"][0]["detail"] = "SECRET_PRIVATE_TOKEN_DO_NOT_LOG"
+    r["unexpected_secret"] = "SECRET_PRIVATE_TOKEN_DO_NOT_LOG"
+    diagnostic = failure_diagnostic(r)
+    assert "NCAAB_SOURCE_ARTIFACT_CHECKSUM_MISMATCH" in diagnostic["mismatch_codes"]
+    assert "SECRET_PRIVATE_TOKEN_DO_NOT_LOG" not in str(diagnostic)
+    assert "coefficients" not in diagnostic
+    assert diagnostic["numeric_runtime"]["scikit_learn"]
+    assert diagnostic["certification"] is False and diagnostic["can_execute"] is False
