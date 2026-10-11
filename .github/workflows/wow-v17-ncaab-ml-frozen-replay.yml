@@ -66,6 +66,11 @@ jobs:
       WOW_DRY_RUN_ONLY: "true"
       DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS: "true"
       PYTHONPATH: .
+      # Bounded research probe: eliminate multi-thread BLAS scheduling variance.
+      # NEVER applies to production scoring or changes stored candidate semantics.
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -95,17 +100,48 @@ jobs:
           python -m pip install "scikit-learn==1.8.0"
           python -m pip check
           python -c 'import numpy, scipy, sklearn, joblib, threadpoolctl; assert (numpy.__version__, scipy.__version__, sklearn.__version__, joblib.__version__, threadpoolctl.__version__) == ("2.4.6", "1.17.1", "1.8.0", "1.6.0", "3.7.0")'
-      - name: Refit five hash-pinned CC-BY-4 source releases and verify exact model identity
+      - name: Independently refit source twice with single-thread BLAS (both must match)
         run: |
           set -euo pipefail
           mkdir -p artifacts/ncaab-source-pinned-replay
+          set +e
           python -m v17.ncaab_source_pinned_replay > artifacts/ncaab-source-pinned-replay/receipt.json
+          first_exit=$?
+          python -m v17.ncaab_source_pinned_replay > artifacts/ncaab-source-pinned-replay/receipt_repeat.json
+          repeat_exit=$?
+          set -e
+          FIRST_EXIT="$first_exit" REPEAT_EXIT="$repeat_exit" python - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          base = Path("artifacts/ncaab-source-pinned-replay")
+          try:
+              first = json.loads((base / "receipt.json").read_text())
+              second = json.loads((base / "receipt_repeat.json").read_text())
+              fields = ("dataset_hash", "artifact_checksum", "calibrator_sha256")
+              exact = all(first.get("observed", {}).get(k) == second.get("observed", {}).get(k) for k in fields)
+              published = (first.get("status") == "SOURCE_PINNED_REPLAY_REPRODUCED"
+                           and second.get("status") == "SOURCE_PINNED_REPLAY_REPRODUCED")
+              safe = all(first.get(k) is False and second.get(k) is False
+                         for k in ("certification", "promotion", "probability_publishable", "can_execute"))
+          except (OSError, ValueError, TypeError, KeyError):
+              print("::error::NCAAB_SOURCE_REPLAY_RECEIPT_INVALID")
+              sys.exit(1)
+          if not exact:
+              print("::error::NCAAB_SOURCE_REPLAY_NONDETERMINISTIC_HOLD")
+          if not published:
+              print("::error::NCAAB_SOURCE_REPLAY_EXPECTED_IDENTITY_HOLD")
+          if not safe:
+              print("::error::NCAAB_SOURCE_REPLAY_GOVERNANCE_HOLD")
+          if os.environ["FIRST_EXIT"] != "0" or os.environ["REPEAT_EXIT"] != "0" or not (exact and published and safe):
+              sys.exit(1)
+          print("NCAAB_SOURCE_PINNED_REPLAY_REPRODUCED_TWICE")
+          PY
       - name: Upload separate challenger receipt (NOT frozen DB replay or certification)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-ncaab-source-pinned-replay-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/wow-engine/artifacts/ncaab-source-pinned-replay/receipt.json
+          path: artifacts/wow-engine/artifacts/ncaab-source-pinned-replay/receipt*.json
           if-no-files-found: warn
           retention-days: 30
 
