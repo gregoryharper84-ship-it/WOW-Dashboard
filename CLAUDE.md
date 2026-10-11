@@ -320,3 +320,12 @@ When a real stop condition occurs:
 3. keep affected lanes fail-closed
 4. continue unaffected lanes when allowed by active WOW governance
 5. do not guess or silently relax a gate
+
+## 11. Evidence-only operational reporting
+
+FACTUAL STATUS
+- Operational claims need current authoritative receipt, source/ID, checked time, SHA/identity and scope; else UNVERIFIED. Chat/request != execution.
+- Requested/submitted/running/merged/deployed/verified are separate: success receipt/current job/exact SHA/production acceptance plus required independent verification.
+- Label plans/estimates; deadlines are targets. Never invent escalation, workers, progress or background work. Correct unsupported claims.
+
+Apply to every engineering report and handoff. A disclaimer cannot repair an unsupported headline. Missing, stale, conflicting or mismatched evidence must remain UNVERIFIED with the exact next verification action. Percent complete requires a defined denominator and verified completed items. Preserve all existing release, independence and probability gates. This policy does not itself install live editor changes.
