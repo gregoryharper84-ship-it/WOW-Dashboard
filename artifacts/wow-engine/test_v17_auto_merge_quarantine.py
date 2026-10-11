@@ -59,3 +59,15 @@ def test_no_secondary_auto_merge_arming_routes():
     hourly = HOURLY.read_text(encoding="utf-8")
     assert "wow-v17-model-improvement-experiment.yml" in hourly
     assert "Failed experiment CI routed to bounded ChatGPT experiment repair." in hourly
+
+
+def test_no_unreviewed_auto_merge_can_be_rearmed_from_another_workflow():
+    """Global regression: new workflows cannot silently restore auto-merge."""
+    workflows = ROOT / ".github/workflows"
+    for path in sorted(workflows.glob("*.yml")) + sorted(workflows.glob("*.yaml")):
+        # Signed owner-held merge is separate and never auto-authorizes.
+        if path.name == "wow-v17-owner-signed-release.yml":
+            continue
+        active = _shell_lines(path.read_text(encoding="utf-8"))
+        assert not re.search(r"\bgh\s+pr\s+merge\b[^\n]{0,400}--auto\b", active), path
+        assert "enablePullRequestAutoMerge" not in active, path
