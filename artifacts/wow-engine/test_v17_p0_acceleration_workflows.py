@@ -23,12 +23,13 @@ def test_scout_stress_workflow_is_manual_staging_safe_and_10x_by_default():
     assert data["permissions"]["contents"] == "read"
 
 
-def test_existing_morning_green_workflow_is_merge_captain():
+def test_existing_morning_green_workflow_is_read_only_release_captain():
     text = CAPTAIN.read_text()
     assert "Re-verify all protected checks on exact head SHA" in text
     assert "Verify trusted exact-head governance receipt" in text
     assert "Verify Morning-Green diff scope" in text
-    assert 'gh pr merge "$PR_NUMBER"' in text
-    assert "--match-head-commit" in text
+    assert "DIRECT_MERGE_HOLD_INDEPENDENT_AUTHORIZATION_REQUIRED" in text
+    assert 'state="RELEASE_AUTHORIZATION_HOLD"' in text
+    assert "gh pr merge" not in text
     assert "Morning-Green autonomous merge denied" in text
     assert "can_execute: false" in text

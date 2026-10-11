@@ -1,16 +1,16 @@
 name: wow-v17-enable-auto-merge
 
-# Arms GitHub auto-merge on ordinary same-repo PRs so they merge themselves
-# once every REQUIRED check on main passes (3 regression checks +
-# WOW Independent QA exact-head + WOW Release Authority exact-head).
+# P0 #1663: QUARANTINED. The old pull_request_target job invoked
+# gh pr merge --auto --merge based on an unverified assumption that main
+# requires separately issued Independent QA + Release Authority checks.
+# PRs #1647 and #1662 merged without any submitted independent PR reviews.
+# Until the real branch protection and distinct identities are proven, this
+# workflow is strictly read-only. A successful audit job is NOT approval.
 #
-# Safety:
-# - pull_request_target, but PR code is NEVER checked out or executed.
-# - Fork PRs and drafts are ignored.
-# - PRs touching trust roots (.github/**, .agents/**), including rename
-#   origins, are NOT armed; they stay on the owner-signed release path.
-# - Arming auto-merge grants nothing by itself: branch protection still
-#   requires QA + Release Authority from their own GitHub Apps.
+# Recovery route: verified independent exact-head review -> owner-held signed
+# release authorization; deploy only under a SEPARATE production approval.
+# Never execute PR code or grant auto-merge on missing/403 policy evidence.
+# can_execute=false; probability models and release authorities unchanged.
 
 on:
   pull_request_target:
@@ -25,40 +25,40 @@ concurrency:
 
 jobs:
   arm:
+    name: Auto-merge quarantine (audit only; NOT release approval)
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
     steps:
-      - name: Refuse trust-root changes (fail closed)
+      - name: Record typed fail-closed auto-merge hold
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
-            --jq '.[] | .filename, (.previous_filename // empty)')"
-          if [ -z "$files" ]; then
-            echo "AUTO_MERGE_SKIPPED: empty or missing file evidence"
-            echo "SKIP=1" >> "$GITHUB_ENV"; exit 0
-          fi
-          if printf '%s\n' "$files" | grep -Eq '^(\.github|\.agents)/'; then
-            echo "AUTO_MERGE_SKIPPED: trust-root change requires owner-signed release"
-            echo "SKIP=1" >> "$GITHUB_ENV"
+          # Read GitHub's current PR state. No PR checkout or write-capable token.
+          # If the read fails, this step fails closed without authorizing a merge.
+          actual_head="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')"
+          if [ -z "$actual_head" ] || [ "$actual_head" != "$EXPECTED_HEAD" ]; then
+            echo "::error::AUTO_MERGE_HOLD_STALE_HEAD expected=$EXPECTED_HEAD actual=$actual_head"
+            exit 1
           fi
 
-      - name: Enable auto-merge
-        if: env.SKIP != '1'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          gh pr merge "$PR" --repo "$REPO" --auto --merge
-          echo "AUTO_MERGE_ARMED pr=$PR (merges only when all required checks pass)"
+          echo "::warning::AUTO_MERGE_HOLD_POLICY_UNVERIFIED pr=$PR head=$actual_head"
+          {
+            echo "### P0 #1663 — automatic merge quarantined"
+            echo ""
+            echo "- PR: $PR"
+            echo "- Observed exact head: \`$actual_head\`"
+            echo "- Decision: \`AUTO_MERGE_HOLD_POLICY_UNVERIFIED\`"
+            echo "- This is a read-only audit receipt, **not** independent QA or approval."
+            echo "- Next: distinct independent exact-head verification, then owner-signed release."
+            echo "- Production deployment requires separate owner authorization and live verification."
+          } >> "$GITHUB_STEP_SUMMARY"

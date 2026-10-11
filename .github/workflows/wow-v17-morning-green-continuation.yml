@@ -11,10 +11,10 @@ on:
         required: false
 
 permissions:
-  actions: write
+  actions: read
   checks: read
-  contents: write
-  pull-requests: write
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: wow-v17-morning-green-${{ github.event.workflow_run.head_sha || inputs.pr_number || github.run_id }}
@@ -291,7 +291,7 @@ jobs:
           elif [ "${READY:-false}" = "true" ] && [ "${SCOPE_APPROVED:-false}" = "true" ] && [ "${GOVERNANCE_APPROVED:-false}" != "true" ]; then
             state="GOVERNANCE_REWORK"
           elif [ "${READY:-false}" = "true" ] && [ "${SCOPE_APPROVED:-false}" = "true" ] && [ "${GOVERNANCE_APPROVED:-false}" = "true" ]; then
-            state="MERGING"
+            state="RELEASE_AUTHORIZATION_HOLD"
           fi
           jq -n --arg incident_id "PR-${PR_NUMBER}" --arg risk "$RISK" --arg state "$state" --arg head_sha "$HEAD_SHA" --argjson failed_checks "${FAILED_CHECKS:-[]}" --argjson pending_checks "${PENDING_CHECKS:-[]}" '{incident_id:$incident_id,risk:$risk,state:$state,head_sha:$head_sha,failed_checks:$failed_checks,pending_checks:$pending_checks,can_execute:false}' > "$RUNNER_TEMP/wow-closure/closure-state.json"
           echo "state=$state" >> "$GITHUB_OUTPUT"
@@ -311,6 +311,7 @@ jobs:
         shell: bash
         env:
           CLOSURE_STATE: ${{ steps.closure.outputs.state }}
+          RELEASE_HOLD: ${{ steps.release_hold.outputs.release_hold }}
           INCIDENT_HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
         run: |
           set -euo pipefail
@@ -318,40 +319,18 @@ jobs:
           echo "deferred=true" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Merge protected Morning-Green repair
-        id: merge
+      - name: Hold protected Morning-Green repair for independent release
+        id: release_hold
         if: steps.resolve.outputs.eligible == 'true' && steps.gates.outputs.ready == 'true' && steps.scope.outputs.approved == 'true' && steps.governance.outputs.approved == 'true'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --merge --match-head-commit "$HEAD_SHA"
-          merge_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.merge_commit_sha')
-          echo "merge_sha=$merge_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Resume required main checks after bot merge
-        if: steps.merge.outcome == 'success'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh workflow run wow-engine-verify.yml --repo "$GITHUB_REPOSITORY" --ref main
-          gh workflow run wow-verify.yml --repo "$GITHUB_REPOSITORY" --ref main
-          gh workflow run wow-v17-render-production-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
-
-      - name: Resume whitelisted acceptance workflow after bot merge
-        if: steps.merge.outcome == 'success' && steps.resolve.outputs.acceptance != 'none'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ACCEPTANCE_WORKFLOW: ${{ steps.resolve.outputs.acceptance }}
-        run: |
-          set -euo pipefail
-          gh workflow run "$ACCEPTANCE_WORKFLOW" --repo "$GITHUB_REPOSITORY" --ref main
+          echo "::warning::DIRECT_MERGE_HOLD_INDEPENDENT_AUTHORIZATION_REQUIRED pr=$PR_NUMBER head=$HEAD_SHA"
+          echo "release_hold=true" >> "$GITHUB_OUTPUT"
+          echo "Morning-Green PR #$PR_NUMBER at exact head $HEAD_SHA passed read-only evidence checks, but requires independent review and owner-controlled merge. No automatic merge, protected-main dispatch, or production deploy is authorized." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record resumable continuation state
         if: always() && steps.resolve.outputs.eligible == 'true'
@@ -359,7 +338,6 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
-          MERGE_SHA: ${{ steps.merge.outputs.merge_sha }}
           RISK: ${{ steps.resolve.outputs.risk }}
           ACCEPTANCE: ${{ steps.resolve.outputs.acceptance }}
           READY: ${{ steps.gates.outputs.ready }}
@@ -371,10 +349,11 @@ jobs:
             echo "### Morning-Green continuation"
             echo "- PR: #${PR_NUMBER}"
             echo "- Head SHA: ${HEAD_SHA}"
-            echo "- Merge SHA: ${MERGE_SHA:-not-merged}"
+            echo "- Merge SHA: not-merged (owner authorization required)"
             echo "- Risk: ${RISK}"
             echo "- Acceptance workflow: ${ACCEPTANCE:-none}"
             echo "- Closure state: ${CLOSURE_STATE:-unknown}"
+            echo "- Release authorization hold: ${RELEASE_HOLD:-true}"
             echo "- Required checks ready: ${READY:-false}"
             echo "- Required check failure detected: ${FAILED:-false}"
             echo "- Scope approved: ${SCOPE_APPROVED:-false}"

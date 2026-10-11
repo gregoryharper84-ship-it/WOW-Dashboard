@@ -231,7 +231,8 @@ jobs:
             esac
           done
 
-          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge || true
+          echo "::warning::AUTO_MERGE_HOLD_POLICY_UNVERIFIED experiment_pr=$PR_NUMBER head=$head_sha"
+          echo "Experiment PR #$PR_NUMBER remains open; CI repair continues, but merge requires distinct independent review and owner authorization." >> "$GITHUB_STEP_SUMMARY"
           checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" -H 'Accept: application/vnd.github+json' --jq '.check_runs')
           failed=$(jq '[.[] | select(.status == "completed") | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' <<<"$checks")
           if [ "$failed" -gt 0 ]; then
