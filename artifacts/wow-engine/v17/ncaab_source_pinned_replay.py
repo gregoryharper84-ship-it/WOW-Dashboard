@@ -15,6 +15,7 @@ from dataclasses import asdict
 from hashlib import sha256
 import json
 import platform
+import sys
 from typing import Any, Mapping, Sequence
 
 from v17.binary_candidate_lifecycle import BinaryCandidate, train_binary_candidate
@@ -182,6 +183,23 @@ def verify_public_source(
     return receipt
 
 
+def failure_diagnostic(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """Redacted CI HOLD summary: no source rows, model coefficients or secrets."""
+    observed = receipt.get("observed") or {}
+    return {
+        "status": receipt.get("status"),
+        "mismatch_codes": [m.get("code") for m in receipt.get("mismatches", [])],
+        "dataset_hash": observed.get("dataset_hash"),
+        "artifact_checksum": observed.get("artifact_checksum"),
+        "calibrator_sha256": observed.get("calibrator_sha256"),
+        "numeric_runtime": observed.get("numeric_runtime"),
+        "artifact_component_sha256": observed.get("artifact_component_sha256"),
+        "can_execute": False,
+        "probability_publishable": False,
+        "certification": False,
+    }
+
+
 def main() -> int:
     try:
         games, sources = fetch_games(seasons=SEASONS)
@@ -208,6 +226,11 @@ def main() -> int:
                           "exception_type": type(exc).__name__,
                           "can_execute": False, "probability_publishable": False}, sort_keys=True))
         return 3
+    if receipt["status"] != "SOURCE_PINNED_REPLAY_REPRODUCED":
+        # Main receipt stays on stdout for immutable artifact upload; CI only
+        # receives minimal numeric drift/provenance, never full model parameters.
+        print("NCAAB_SOURCE_REPLAY_HOLD " + json.dumps(failure_diagnostic(receipt), sort_keys=True),
+              file=sys.stderr)
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["status"] == "SOURCE_PINNED_REPLAY_REPRODUCED" else 1
 
