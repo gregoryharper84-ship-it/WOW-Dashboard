@@ -7,8 +7,12 @@ name: wow-v17-enable-auto-merge
 # Safety:
 # - pull_request_target, but PR code is NEVER checked out or executed.
 # - Fork PRs and drafts are ignored.
-# - PRs touching trust roots (.github/**, .agents/**), including rename
-#   origins, are NOT armed; they stay on the owner-signed release path.
+# - Same-repo PRs are armed regardless of which paths they touch,
+#   INCLUDING trust roots (.github/**, .agents/**). This workflow does
+#   NOT enforce a trust-root exclusion (removed in #1675 so restoration
+#   repairs can merge). Trust-root authorization must be enforced
+#   independently (branch protection / rulesets / required reviewers),
+#   not by this workflow.
 # - Arming auto-merge grants nothing by itself: branch protection still
 #   requires QA + Release Authority from their own GitHub Apps.
 
