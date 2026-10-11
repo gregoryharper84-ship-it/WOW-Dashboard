@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from v17.gemini_optional_worker import MAX_INPUT_CHARS, MODEL_PATTERN, TASKS
+from v17.gemini_input_safety import (GeminiSensitiveMaterialError,
+                                     ensure_no_obvious_sensitive_material)
 
 CAN_EXECUTE = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -89,6 +91,10 @@ def prepare_inline_batch(
         if (not isinstance(refs, list) or not refs or
                 any(not isinstance(r, str) or not r.strip() or len(r) > 512 for r in refs)):
             raise GeminiContractError("GEMINI_BATCH_INPUT_INVALID")
+        try:
+            ensure_no_obvious_sensitive_material(prompt, *refs)
+        except GeminiSensitiveMaterialError:
+            raise GeminiContractError("GEMINI_SENSITIVE_MATERIAL_REJECTED") from None
         provenance[key] = list(refs)
         entries.append({
             "metadata": {"key": key},
@@ -207,6 +213,10 @@ def prepare_explicit_cache(
     if (not isinstance(source_refs, list) or not source_refs
         or any(not isinstance(r, str) or not r.strip() or len(r) > 512 for r in source_refs)):
         raise GeminiContractError("GEMINI_CACHE_INPUT_INVALID")
+    try:
+        ensure_no_obvious_sensitive_material(content, *source_refs)
+    except GeminiSensitiveMaterialError:
+        raise GeminiContractError("GEMINI_SENSITIVE_MATERIAL_REJECTED") from None
     # Cache contents remain external to WOW; caller still must perform an actual
     # data-classification/DLP review. A caller label is not a privacy guarantee.
     payload = {"model": "models/" + model,

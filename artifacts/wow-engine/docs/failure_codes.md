@@ -237,3 +237,4 @@ A new code requires, in the same change: code name, owning lane/stage, exact con
 | `GEMINI_RESOURCE_NAME_INVALID` | Gemini optional standby journal/inspection | Unexpected Batch/cache resource path rejected before network. Never a governed model failure. | No |
 | `GEMINI_INSPECTION_RESPONSE_INVALID` | Gemini optional standby journal/inspection | Provider read response malformed/oversized. Never a governed model failure. | No |
 | `GEMINI_RESOURCE_IDENTITY_MISMATCH` | Gemini optional standby journal/inspection | Provider returned a different resource name. Never a governed model failure. | No |
+| `GEMINI_SENSITIVE_MATERIAL_REJECTED` | Gemini provider egress guard | Obvious secret/credential/PII pattern detected in prompt, evidence reference or cached input. Reject before request; never echo suspected content. | No |

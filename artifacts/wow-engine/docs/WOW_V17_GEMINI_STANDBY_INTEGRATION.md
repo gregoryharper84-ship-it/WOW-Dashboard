@@ -195,3 +195,15 @@ WOW_GEMINI_READONLY_INSPECTION_ENABLED=false
 ```
 No Batch or cache resource creation, cancellation, deletion, or automatic
 dispatch is wired. Existing `can_execute=false` V17 governance remains.
+
+## SIRT outbound data guard (standby)
+
+`v17/gemini_input_safety.py` conservatively refuses obvious API credentials,
+Bearer tokens, private key blocks, database-password URIs and email addresses
+before any API request or Batch/cache manifest. A protected caller cannot
+override this by asserting `SANITIZED`. It raises a typed **non-echoing**
+`GEMINI_SENSITIVE_MATERIAL_REJECTED` status. This check is NOT comprehensive
+DLP and does not by itself prove data sharing is approved, nor does it cover
+arbitrary secrets, internal knowledge, private names, or all PII formats.
+Independent privacy/security review and explicit approved-source allowlists
+are still mandatory before any Gemini enablement.

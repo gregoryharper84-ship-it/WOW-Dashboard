@@ -12,6 +12,9 @@ import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from v17.gemini_input_safety import (GeminiSensitiveMaterialError,
+                                     ensure_no_obvious_sensitive_material)
+
 CAN_EXECUTE = False
 PROBABILITY_AUTHORITY = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -80,6 +83,10 @@ def run_challenger(
     refs = [] if evidence_refs is None else evidence_refs
     if not isinstance(refs, list) or any(not isinstance(r, str) or not r.strip() for r in refs):
         raise GeminiWorkerError("GEMINI_INPUT_INVALID")
+    try:
+        ensure_no_obvious_sensitive_material(prompt, *refs)
+    except GeminiSensitiveMaterialError:
+        raise GeminiWorkerError("GEMINI_SENSITIVE_MATERIAL_REJECTED") from None
     if not e.get("GEMINI_API_KEY"):
         raise GeminiWorkerError("GEMINI_CONFIG_MISSING")
     model = e.get("GEMINI_MODEL", "")
