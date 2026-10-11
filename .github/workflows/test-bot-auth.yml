@@ -1,0 +1,19 @@
+name: Test Bot Auth
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App Token
+        id: generate_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_BOT_APP_ID }}
+          private-key: ${{ secrets.WOW_ENGINEERING_BOT_PRIVATE_KEY }}
+
+      - name: Test Authentication
+        run: |
+          echo "Successfully generated token!"
