@@ -18,13 +18,11 @@ def _text(path: Path) -> str:
     return path.read_text()
 
 
-def _assert_experiment_auto_merge_contract(text: str) -> None:
-    pattern = re.compile(
-        r'gh\s+pr\s+merge\s+"\$PR_NUMBER"\s+'
-        r'--repo\s+"\$GITHUB_REPOSITORY"\s+'
-        r'--auto\s+--merge(?:\s+\|\|\s+true)?'
+def _assert_experiment_release_hold_contract(text: str) -> None:
+    assert "AUTO_MERGE_HOLD_POLICY_UNVERIFIED" in text
+    assert not re.search(r"\bgh\s+pr\s+merge\b", text), (
+        "governance-unverified experiment PR must never be auto-merged"
     )
-    assert pattern.search(text), "experiment PR must remain on protected GitHub auto-merge"
 
 
 def test_24h_loop_runs_hourly_and_advances_real_work() -> None:
@@ -147,8 +145,9 @@ def test_model_experiment_requires_tests_regression_and_repair_mode() -> None:
     assert "Experiment repair run produced no corrective change." in text
     assert "python -m pytest -q artifacts/wow-engine/v17/experiments" in text
     assert "python -m pytest -q artifacts/wow-engine" in text
-    assert 'gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge' in text
-    _assert_experiment_auto_merge_contract(_text(LOOP))
+    assert "AUTO_MERGE_HOLD_POLICY_UNVERIFIED" in text
+    assert not re.search(r"\bgh\s+pr\s+merge\b", text)
+    _assert_experiment_release_hold_contract(_text(LOOP))
 
 
 def test_new_workflows_parse_as_yaml() -> None:
