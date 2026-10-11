@@ -1,107 +1,38 @@
 from pathlib import Path
+DEPLOY_WORKFLOW = Path(__file__).resolve().parents[3] / ".github/workflows/wow-v17-render-production-deploy.yml"
+
+def test_legacy_deployment_is_read_only_and_manual():
+    import yaml
+    workflow = yaml.safe_load(DEPLOY_WORKFLOW.read_text())
+    assert (workflow.get("on") or workflow.get(True)) == {"workflow_dispatch": None}
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(workflow["jobs"]) == {"legacy-deployment-disabled"}
+    job = workflow["jobs"]["legacy-deployment-disabled"]
+    assert job["permissions"] == {"contents": "read"}
+    assert "env" not in workflow and "env" not in job
 
 
-REQUIRED_CHECKS = (
-    "WOW additional required regression",
-    "WOW governed probability backend",
-    "WOW required-three regression",
-)
+def test_legacy_dispatch_fails_without_side_effects():
+    import subprocess
+    import yaml
+    workflow = yaml.safe_load(DEPLOY_WORKFLOW.read_text())
+    steps = workflow["jobs"]["legacy-deployment-disabled"]["steps"]
+    assert len(steps) == 1
+    assert set(steps[0]) == {"name", "run"}
+    # Exact allowlist keeps the executable probe free of deployment side effects.
+    assert steps[0]["run"].strip() == 'echo "LEGACY_DEPLOYMENT_DISABLED"\nexit 1'
+    result = subprocess.run(["bash", "-c", steps[0]["run"]], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 1
+    assert result.stdout.strip() == "LEGACY_DEPLOYMENT_DISABLED"
 
 
-def _workflow_text() -> str:
-    repo_root = Path(__file__).resolve().parents[3]
-    return (repo_root / ".github" / "workflows" / "wow-v17-render-production-deploy.yml").read_text(
-        encoding="utf-8"
-    )
-
-
-def test_render_deploy_gate_waits_for_protected_main_required_checks():
-    text = _workflow_text()
-
-    assert 'workflows: ["wow-verify"]' in text
-    assert 'head_branch != "main"' in text
-    assert 'conclusion != "success"' in text
-    assert 'github_json("/branches/main")' in text
-    assert "if main_sha != target_sha:" in text
-    for check_name in REQUIRED_CHECKS:
-        assert check_name in text
-
-
-def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
-    text = _workflow_text()
-
-    assert 'RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}' in text
-    assert 'WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"' in text
-    assert "WOW_ACTION_API_KEY" not in text
-    assert "SUPABASE_SERVICE_ROLE_KEY" not in text
-    assert 'WOW_CAN_EXECUTE: "false"' in text
-    assert 'WOW_DRY_RUN_ONLY: "true"' in text
-    assert '"can_execute":False' in text or '"can_execute": False' in text
-    assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
-    assert 'render_json(\n                  "POST"' in text
-    assert '{"clearCache":"do_not_clear"}' in text
-
-
-def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
-    text = _workflow_text()
-
-    assert "/deploys?limit=20" in text
-    assert "commit_sha(deploy) == target_sha" in text
-    assert "EXACT_SHA_ALREADY_LIVE" in text
-    assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in text
-    assert "RENDER_DEPLOY_WRONG_SHA" in text
-    assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
-    assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
-    assert "deploy_deadline = time.time() + 900" in text
-    assert "time.sleep(10)" in text
-
-
-def test_render_deploy_handoff_reconciles_successful_create_without_top_level_id():
-    text = _workflow_text()
-
-    assert 'isinstance(created.get("deploy"), dict)' in text
-    assert 'created_deploy = created["deploy"]' in text
-    assert 'deploy_id = ""' in text
-    assert "RENDER_DEPLOY_CREATE_INVALID" not in text
-    assert "if target is None and matching:" in text
-    assert "target = matching[0]" in text
-
-
-def test_render_deploy_list_unwraps_render_pagination_entries():
-    text = _workflow_text()
-
-    assert 'isinstance(item.get("deploy"), dict)' in text
-    assert 'deploys.append(item["deploy"])' in text
-    assert "elif isinstance(item, dict):" in text
-    assert "deploys.append(item)" in text
-
-
-def test_render_deploy_receipt_is_durable_and_pointer_reconciler_is_governed():
-    text = _workflow_text()
-
-    assert "deployments: write" in text
-    assert "wow-v17-render-deploy-receipt.json" in text
-    assert "def emit_receipt(payload):" in text
-    assert 'body["workflow_run_id"]' in text
-    assert 'body["workflow_run_attempt"]' in text
-    assert "Reconcile exact Render receipt to durable deployment pointer" in text
-    assert "python artifacts/wow-engine/v17/render_deployment_pointer.py" in text
-    assert "actions/checkout@v4" in text
-    assert "ref: main" in text
-
-
-def test_render_deploy_no_deploy_paths_emit_typed_receipts_before_exit():
-    text = _workflow_text()
-
-    for status in (
-        "NON_MAIN_NO_DEPLOY",
-        "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
-        "STALE_SHA_NO_DEPLOY",
-        "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
-    ):
-        marker = f'"status":"{status}"'
-        assert marker in text
-        assert text.index("emit_receipt({", text.index(marker) - 40) < text.index("raise SystemExit(0)", text.index(marker))
+def test_legacy_deployment_cannot_provide_credentials_or_live_receipts():
+    text = DEPLOY_WORKFLOW.read_text()
+    for forbidden in ("secrets.", "RENDER_API_KEY", "deployments: write", "uses:",
+                      "render_deployment_pointer.py", "emit_receipt",
+                      "EXACT_SHA_ALREADY_LIVE", "EXACT_SHA_RENDER_DEPLOY_LIVE",
+                      "EXACT_DEPLOY_ACCEPTED_FOR_CANARIES"):
+        assert forbidden not in text
 
 
 def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():

@@ -10,43 +10,38 @@ PRIORITY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-priority-prop-lifecyc
 DAILY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-daily-snapshot.yml"
 
 
-def test_deploy_controller_filters_non_main_upstream_runs_before_creation():
-    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-    workflow_run = text.index("workflow_run:")
-    workflow_dispatch = text.index("workflow_dispatch:")
-    trigger = text[workflow_run:workflow_dispatch]
-
-    assert 'workflows: ["wow-verify"]' in trigger
-    assert "types: [completed]" in trigger
-    assert "branches: [main]" in trigger
-
-
-def test_non_advancing_deploy_receipts_fail_controller_after_pointer_reconcile():
-    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-
-    reconcile = text.index("Reconcile exact Render receipt to durable deployment pointer")
-    final_gate = text.index("Fail closed when no exact deployment advanced")
-    assert reconcile < final_gate
-    for status in (
-        "NON_MAIN_NO_DEPLOY",
-        "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
-        "STALE_SHA_NO_DEPLOY",
-        "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
-    ):
-        assert status in text[final_gate:]
-    assert '"POST_DEPLOY_CANARIES_BLOCKED"' in text[final_gate:]
-    assert "raise SystemExit(1)" in text[final_gate:]
+def test_legacy_deployment_is_read_only_and_manual():
+    import yaml
+    workflow = yaml.safe_load(DEPLOY_WORKFLOW.read_text())
+    assert (workflow.get("on") or workflow.get(True)) == {"workflow_dispatch": None}
+    assert workflow["permissions"] == {"contents": "read"}
+    assert set(workflow["jobs"]) == {"legacy-deployment-disabled"}
+    job = workflow["jobs"]["legacy-deployment-disabled"]
+    assert job["permissions"] == {"contents": "read"}
+    assert "env" not in workflow and "env" not in job
 
 
-def test_exact_live_deploy_receipts_still_authorize_successful_controller():
-    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-    final_gate = text.index("Fail closed when no exact deployment advanced")
-    gated = text[final_gate:]
+def test_legacy_dispatch_fails_without_side_effects():
+    import subprocess
+    import yaml
+    workflow = yaml.safe_load(DEPLOY_WORKFLOW.read_text())
+    steps = workflow["jobs"]["legacy-deployment-disabled"]["steps"]
+    assert len(steps) == 1
+    assert set(steps[0]) == {"name", "run"}
+    # Exact allowlist keeps the executable probe free of deployment side effects.
+    assert steps[0]["run"].strip() == 'echo "LEGACY_DEPLOYMENT_DISABLED"\nexit 1'
+    result = subprocess.run(["bash", "-c", steps[0]["run"]], capture_output=True, text=True, timeout=5)
+    assert result.returncode == 1
+    assert result.stdout.strip() == "LEGACY_DEPLOYMENT_DISABLED"
 
-    assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in gated
-    assert "EXACT_SHA_ALREADY_LIVE" in gated
-    assert '"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES"' in gated
-    assert "raise SystemExit(0)" in gated
+
+def test_legacy_deployment_cannot_provide_credentials_or_live_receipts():
+    text = DEPLOY_WORKFLOW.read_text()
+    for forbidden in ("secrets.", "RENDER_API_KEY", "deployments: write", "uses:",
+                      "render_deployment_pointer.py", "emit_receipt",
+                      "EXACT_SHA_ALREADY_LIVE", "EXACT_SHA_RENDER_DEPLOY_LIVE",
+                      "EXACT_DEPLOY_ACCEPTED_FOR_CANARIES"):
+        assert forbidden not in text
 
 
 def test_post_deploy_orchestrator_is_only_deploy_consumer_for_heavy_verification():
@@ -172,9 +167,8 @@ def test_wnba_canary_preserves_exact_governed_source_blocker():
     assert 'elapsed_seconds' in wnba
 
 
-def test_release_gate_preserves_non_execution_governance():
-    text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-
-    assert 'WOW_CAN_EXECUTE: "false"' in text
-    assert 'WOW_DRY_RUN_ONLY: "true"' in text
-    assert '"can_execute":False' in text or '"can_execute": False' in text
+def test_disabled_release_cannot_unlock_post_deploy_canaries():
+    text = ORCHESTRATOR_WORKFLOW.read_text()
+    assert "github.event.workflow_run.conclusion == 'success'" in text
+    assert "github.event.workflow_run.head_branch == 'main'" in text
+    assert "exit 1" in DEPLOY_WORKFLOW.read_text()
