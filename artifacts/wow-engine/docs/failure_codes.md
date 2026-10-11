@@ -227,3 +227,13 @@ A new code requires, in the same change: code name, owning lane/stage, exact con
 | `GEMINI_CACHE_INPUT_INVALID` | Gemini standby Batch/cache contract | Cache text, provenance, TTL, timestamp invalid; no governed probability publication. | No |
 | `GEMINI_CACHE_IDENTITY_INVALID` | Gemini standby Batch/cache contract | Cache resource identity or model mismatch; no governed probability publication. | No |
 | `GEMINI_CACHE_EXPIRY_INVALID` | Gemini standby Batch/cache contract | Cache expires without valid time metadata; no governed probability publication. | No |
+| `GEMINI_JOURNAL_STORAGE_UNVERIFIED` | Gemini optional standby journal/inspection | Local persistent SQLite journal unavailable; no reservation. Never a governed model failure. | No |
+| `GEMINI_JOURNAL_INPUT_INVALID` | Gemini optional standby journal/inspection | Invalid kind/hash/authority reference/status in journal. Never a governed model failure. | No |
+| `GEMINI_OPERATION_ALREADY_RESERVED` | Gemini optional standby journal/inspection | An exact manifest is already reserved; no duplicate submission. Never a governed model failure. | No |
+| `GEMINI_JOURNAL_RESERVATION_MISSING` | Gemini optional standby journal/inspection | State transition attempted without prior durable reservation. Never a governed model failure. | No |
+| `GEMINI_JOURNAL_TRANSITION_REJECTED` | Gemini optional standby journal/inspection | Illegal replay/terminal-state transition. Never a governed model failure. | No |
+| `GEMINI_JOURNAL_PROVIDER_ID_INVALID` | Gemini optional standby journal/inspection | Provider identity missing or incompatible with operation kind. Never a governed model failure. | No |
+| `GEMINI_INSPECTION_DISABLED` | Gemini optional standby journal/inspection | Read-only provider inspection feature flag off. Never a governed model failure. | No |
+| `GEMINI_RESOURCE_NAME_INVALID` | Gemini optional standby journal/inspection | Unexpected Batch/cache resource path rejected before network. Never a governed model failure. | No |
+| `GEMINI_INSPECTION_RESPONSE_INVALID` | Gemini optional standby journal/inspection | Provider read response malformed/oversized. Never a governed model failure. | No |
+| `GEMINI_RESOURCE_IDENTITY_MISMATCH` | Gemini optional standby journal/inspection | Provider returned a different resource name. Never a governed model failure. | No |

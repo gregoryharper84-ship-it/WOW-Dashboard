@@ -168,3 +168,30 @@ the registry, dispatcher, environment or scheduled jobs.
 
 Documentation: [Google Batch API](https://ai.google.dev/gemini-api/docs/batch-api),
 [Google CachedContent API](https://ai.google.dev/api/caching).
+
+## Provider-inspection / append-only journal foundation
+
+A bounded **read-only** Batch/cache REST inspector now exists in
+`v17/gemini_readonly_inspection.py`. `inspect_batch` reads an exact
+`batches/<id>`; `inspect_cache` reads an exact `cachedContents/<id>`.
+Both require existing global flags, a paid project attestation and new
+`WOW_GEMINI_READONLY_INSPECTION_ENABLED=true`; otherwise **no network**.
+Each validates identity and returns only metadata/typed unverified evidence.
+No automatic polling loop and no POST/DELETE transport has been installed.
+
+`v17/gemini_async_journal.py` is a local SQLite **append-only**
+reservation/status ledger, with atomic unique manifest reservations and
+an OUTCOME_UNKNOWN state that forbids automatic replay after timeouts.
+It stores hashes, external approval/budget reference identifiers, statuses
+and provider IDs, **not** prompts or credentials. It is for local/isolated
+recovery testing. A container's ephemeral filesystem is not durable enough
+for production; do not activate autonomous Batch/cache work without an
+approved persistent Supabase/Postgres journal, truly validated spend
+reservations and reconcile/readback workflows.
+
+Only operators with proper authority may set:
+```text
+WOW_GEMINI_READONLY_INSPECTION_ENABLED=false
+```
+No Batch or cache resource creation, cancellation, deletion, or automatic
+dispatch is wired. Existing `can_execute=false` V17 governance remains.
