@@ -15,14 +15,16 @@ def test_morning_green_nonterminal_state_does_not_poison_main_checkspass_deploy(
     assert "successful workflow termination is forbidden" not in workflow
 
 
-def test_morning_green_still_blocks_merge_until_required_checks_and_scope_are_ready():
+def test_morning_green_never_merges_even_when_checks_and_scope_are_ready():
     repo_root = Path(__file__).resolve().parents[3]
     workflow = (
         repo_root / ".github" / "workflows" / "wow-v17-morning-green-continuation.yml"
     ).read_text(encoding="utf-8")
 
     assert "steps.gates.outputs.ready == 'true' && steps.scope.outputs.approved == 'true'" in workflow
-    assert "gh pr merge" in workflow
+    assert "DIRECT_MERGE_HOLD_INDEPENDENT_AUTHORIZATION_REQUIRED" in workflow
+    assert "gh pr merge" not in workflow
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in workflow
     assert "can_execute: false" in workflow
 
 
