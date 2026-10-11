@@ -201,3 +201,14 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## Optional Gemini evidence-only challenger (disabled by default)
+
+| `GEMINI_DISABLED` | optional external Gemini challenger | Feature switch is off; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_TASK_DISABLED` | optional external Gemini challenger | Task is not in explicitly configured allowlist; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_INPUT_CLASS_BLOCKED` | optional external Gemini challenger | Text is not attested PUBLIC/SANITIZED; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_INPUT_INVALID` | optional external Gemini challenger | Missing/oversized input or invalid provenance; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_CONFIG_MISSING` | optional external Gemini challenger | API key/model missing or model identifier invalid; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_RATE_LIMITED` | optional external Gemini challenger | Google returned 429; no research evidence returned. Never a fitted-model or terminal failure. | No |
+| `GEMINI_TRANSPORT_FAILED` | optional external Gemini challenger | Gemini HTTP transport failed; no evidence returned. Never a fitted-model or terminal failure. | No |
+| `GEMINI_RESPONSE_INVALID` | optional external Gemini challenger | Gemini response missing, malformed, or unfinished; no evidence returned. Never a fitted-model or terminal failure. | No |
