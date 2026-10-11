@@ -249,3 +249,4 @@ A new code requires, in the same change: code name, owning lane/stage, exact con
 | `GEMINI_PROVIDER_ID_INVALID` | Gemini central spend budget/receipts | Malformed provider identity; never a probability scorer result. | No |
 | `GEMINI_PROVIDER_ID_REQUIRED` | Gemini central spend budget/receipts | No provider ID at confirmation stage; never a probability scorer result. | No |
 | `GEMINI_PROVIDER_ID_MISMATCH` | Gemini central spend budget/receipts | Confirmed provider identity cannot be rewritten; never a probability scorer result. | No |
+| `GEMINI_APPROVED_SCOPE_MISMATCH` | Gemini external submission gate | Configured model or paid API project differs from prepared job; no reservation or outbound request. | No |

@@ -236,3 +236,41 @@ a strict provider-side cost guarantee. Independently verify model/token
 limits, provider spending/quotas, usage reconciliation and project spend
 caps before activation. Never infer authorization just from an
 `approval_ref` string.
+
+## Final activation bindings (remain false / unset in production)
+
+The guarded Gemini Batch/cache submitter is now implemented but disabled.
+It cannot attempt external creation unless all of these operator settings
+and protected server-only credentials agree:
+```text
+WOW_GEMINI_ENABLED=false
+WOW_GEMINI_PAID_API_PROJECT_VERIFIED=false
+WOW_GEMINI_EXTERNAL_MUTATIONS_ENABLED=false
+WOW_GEMINI_READONLY_INSPECTION_ENABLED=false
+WOW_GEMINI_PROJECT_KEY=
+GEMINI_MODEL=
+GEMINI_API_KEY=[not yet configured; server secret only]
+```
+A private database budget control must also be explicitly enabled by
+authorized DBA action after paid-project identity, price card and daily
+spending policy approval. The reserve RPC serializes requests by project
+and rejects overspend, duplicate manifest and unauthorized individual jobs.
+Only `service_role` may invoke its limited PUBLIC SECURITY INVOKER wrapper;
+the actual mutation lives in a non-exposed private schema. **No direct table
+writes are granted to the runtime**, and readback is mandatory.
+
+The `v17/gemini_provider_submission.py` path records
+`OUTCOME_UNKNOWN` before its one outbound POST and will never auto-retry
+unknown submissions. It returns `SUBMITTED_UNVERIFIED`, not QA PASS or
+governed probability. `v17/gemini_batch_jsonl.py` covers bounded,
+read-only downloaded JSONL with exact request-key conservation.
+No autonomous polling or recurring paid workload was added.
+
+**Remaining out-of-band gates before enablement:** deploy and query-test
+the reviewed SQL migration in a real staging database; configure and verify
+paid Google Cloud API project, project spend caps and secrets; obtain SIRT
+privacy/DLP acceptance and independent QA; benchmark and certify selected
+Flash/Pro models; prove real end-to-end provider receipts and billing usage;
+obtain protected owner/release authorization and deployed revision readback.
+Nothing in the branch grants permission to bypass these steps or alters
+WOW/LLP scoring.

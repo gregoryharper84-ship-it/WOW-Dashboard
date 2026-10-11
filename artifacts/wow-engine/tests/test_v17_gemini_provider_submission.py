@@ -23,7 +23,8 @@ class Resp(io.BytesIO):
 
 def env(**kw):
     data=dict(WOW_GEMINI_ENABLED="true",WOW_GEMINI_EXTERNAL_MUTATIONS_ENABLED="true",
-        WOW_GEMINI_PAID_API_PROJECT_VERIFIED="true",GEMINI_API_KEY="dummy-test-key")
+        WOW_GEMINI_PAID_API_PROJECT_VERIFIED="true",GEMINI_API_KEY="dummy-test-key",
+        GEMINI_MODEL="gemini-test-model",WOW_GEMINI_PROJECT_KEY="test_project")
     data.update(kw)
     return data
 
@@ -130,3 +131,16 @@ def test_tampered_batch_sensitive_text_does_not_egress():
     with pytest.raises(GeminiSubmissionError,match="GEMINI_SENSITIVE_MATERIAL_REJECTED"):
         call(plan_value=p,gw=gw,env=env())
     assert gw.events==[]
+
+
+def test_configured_model_and_project_are_authoritative():
+    gw=Gateway()
+    posted=[]
+    with pytest.raises(GeminiSubmissionError,match="GEMINI_APPROVED_SCOPE_MISMATCH"):
+        call(gw=gw,env=env(GEMINI_MODEL="another-model"),
+             opener=lambda *a,**k:posted.append(True))
+    assert gw.events==[] and posted==[]
+    with pytest.raises(GeminiSubmissionError,match="GEMINI_APPROVED_SCOPE_MISMATCH"):
+        call(gw=gw,env=env(WOW_GEMINI_PROJECT_KEY="different_project"),
+             opener=lambda *a,**k:posted.append(True))
+    assert gw.events==[] and posted==[]

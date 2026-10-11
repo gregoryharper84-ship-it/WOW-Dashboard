@@ -69,7 +69,9 @@ def submit_prepared(*, plan: dict, ledger: GeminiBudgetGateway, project_key: str
                 words = [part["text"] for msg in item["request"]["contents"]
                          for part in msg["parts"] if "text" in part]
                 ensure_no_obvious_sensitive_material(*words)
-        except (KeyError,TypeError,GeminiSensitiveMaterialError):
+            for refs in plan["manifest"]["evidence_refs"].values():
+                ensure_no_obvious_sensitive_material(*refs)
+        except (KeyError,TypeError,GeminiSensitiveMaterialError,AttributeError):
             raise GeminiSubmissionError("GEMINI_SENSITIVE_MATERIAL_REJECTED") from None
         pattern = BATCH_NAME_RE
         budget_kind = "BATCH_INLINE"
@@ -99,6 +101,13 @@ def submit_prepared(*, plan: dict, ledger: GeminiBudgetGateway, project_key: str
         token_guard = "cache"
     else:
         raise GeminiSubmissionError("GEMINI_SUBMISSION_INVALID")
+    approved_model = settings.get("GEMINI_MODEL")
+    approved_project = settings.get("WOW_GEMINI_PROJECT_KEY")
+    intended_model = (plan.get("manifest") or {}).get("model")
+    if (not isinstance(approved_model, str) or not approved_model
+        or approved_model != intended_model
+        or approved_project != project_key):
+        raise GeminiSubmissionError("GEMINI_APPROVED_SCOPE_MISMATCH")
     key = settings.get("GEMINI_API_KEY")
     if not key:
         raise GeminiSubmissionError("GEMINI_CONFIG_MISSING")
