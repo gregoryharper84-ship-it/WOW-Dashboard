@@ -147,7 +147,7 @@ jobs:
 
 
   cpu_dispatch_probe:
-    name: NCAAB read-only generic CPU numerical reproduction (NOT certification)
+    name: NCAAB generic-CPU expected HOLD regression (NOT replay certification)
     needs: verify
     if: >-
       github.event_name == 'pull_request' &&
@@ -195,11 +195,34 @@ jobs:
           python -m pip install "scikit-learn==1.8.0"
           python -m pip check
           python -c 'import numpy, scipy, sklearn, joblib, threadpoolctl; assert (numpy.__version__, scipy.__version__, sklearn.__version__, joblib.__version__, threadpoolctl.__version__) == ("2.4.6", "1.17.1", "1.8.0", "1.6.0", "3.7.0")'
-      - name: Compare generic CPU source-pinned SHA (typed failure if mismatch)
+      - name: Confirm generic CPU *negative control* rejects exact-artifact mismatch
         run: |
           set -euo pipefail
           mkdir -p artifacts/ncaab-cpu-dispatch-probe
+          set +e
           python -m v17.ncaab_source_pinned_replay > artifacts/ncaab-cpu-dispatch-probe/receipt.json
+          replay_exit=$?
+          set -e
+          REPLAY_EXIT="$replay_exit" python - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          from v17.ncaab_source_pinned_replay import cpu_dispatch_negative_control_verified
+          try:
+              receipt = json.loads(Path("artifacts/ncaab-cpu-dispatch-probe/receipt.json").read_text())
+              verified = cpu_dispatch_negative_control_verified(
+                  receipt, process_exit=int(os.environ["REPLAY_EXIT"])
+              )
+          except (OSError, ValueError, TypeError):
+              verified = False
+          if not verified:
+              print("::error::NCAAB_CPU_DISPATCH_NEGATIVE_CONTROL_UNVERIFIED")
+              sys.exit(1)
+          # This is a PASS for catching the EXPECTED negative case only.
+          # The original receipt stays SOURCE_PINNED_REPLAY_MISMATCH_HOLD;
+          # this job NEVER certifies, publishes, or replaces the successful
+          # standard source-pinned replay or the protected frozen DB replay.
+          print("NCAAB_CPU_DISPATCH_EXPECTED_ARTIFACT_HOLD_CONFIRMED")
+          PY
       - name: Upload independent research-only CPU receipt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
