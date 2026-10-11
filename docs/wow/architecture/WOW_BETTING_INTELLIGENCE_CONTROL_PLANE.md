@@ -289,3 +289,7 @@ The repository-level neutral ecosystem coordinator is defined separately in:
 `artifacts/wow-engine/v17/ecosystem_conductor.py`
 
 Its role is complementary rather than competing: Betting Intelligence owns product semantics; the Conductor owns ecosystem-wide coordination and authority-boundary conservation.
+
+## Global scoped blockers / mandatory continuation
+
+Follow `docs/wow/engineering/GLOBAL_SCOPED_BLOCKER_POLICY.md`. A blocker stops only dependent actions; release held does not mean development halted. Identify the prohibited operation, evidence, dependency and unblock condition; immediately continue authorized independent work within role, ownership, lease, isolation and baseline constraints. Keep development and release states separate. If no permitted action exists, record exact reasons and a revisit trigger. Preserve all safety, independent review and release gates. Policy changes are not proof of deployed worker enforcement.
