@@ -1,0 +1,9 @@
+name = "wow-deploy-broker"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+# Non-secret bindings. Secrets are set with `wrangler secret put` (see README.md).
+[vars]
+DEPLOY_BROKER_AUDIENCE = "https://wow-deploy-broker.internal"
+GITHUB_REPOSITORY_ID = "1240256887"   # gregoryharper84-ship-it/WOW-Dashboard
+GITHUB_OWNER_ID = "285088163"         # gregoryharper84-ship-it

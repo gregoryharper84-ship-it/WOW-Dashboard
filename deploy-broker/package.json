@@ -1,0 +1,15 @@
+{
+  "name": "wow-deploy-broker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "jose": "5.9.6"
+  },
+  "devDependencies": {
+    "wrangler": "3.99.0"
+  }
+}
