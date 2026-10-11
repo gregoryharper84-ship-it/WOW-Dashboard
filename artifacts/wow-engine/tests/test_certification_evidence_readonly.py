@@ -53,10 +53,20 @@ def test_unverified_action_blocks_publication():
              "calibrator_certified","frozen_replay_verified","specialist_certified",
              "terminal_reducer_verified","deployed_sha_verified","independent_release_verified")}
     result = run([row()], "PRODUCTION_VERIFIED", gates)
-    assert result["gate_evidence"] == [True,True,False]
+    assert result["gate_evidence"] == [False,False,False]
     assert result["verified_state"] == "CERTIFICATION_HOLD"
 
 def test_read_only_contract():
     output = mod.evaluate({"routes":[]})
     assert output["can_execute"] is False
     assert output["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+def test_all_self_asserted_flags_cannot_certify():
+    flags = {k: True for k in ("statistical_validation", "fitted_artifact_certified",
+             "calibrator_certified", "frozen_replay_verified", "specialist_certified",
+             "genuine_gpt_action_verified", "terminal_reducer_verified",
+             "deployed_sha_verified", "independent_release_verified")}
+    result = run([row()], "PRODUCTION_VERIFIED", flags)
+    assert result["gate_evidence"] == [False, False, False]
+    assert result["verified_state"] == "CERTIFICATION_HOLD"
+    assert "UNSUPPORTED_PRODUCTION_CLAIM" in result["errors"]
