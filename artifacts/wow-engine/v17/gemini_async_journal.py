@@ -10,7 +10,10 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+
+from v17.gemini_async_contracts import BATCH_NAME_RE, CACHE_NAME_RE
 
 CAN_EXECUTE = False
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -87,7 +90,7 @@ class GeminiJournal:
             or not REF_RE.fullmatch(budget_reservation_ref)
             or not isinstance(approval_ref, str) or not REF_RE.fullmatch(approval_ref)):
             raise JournalError("GEMINI_JOURNAL_INPUT_INVALID")
-        with self._open() as conn:
+        with closing(self._open()) as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 old = conn.execute(
@@ -118,11 +121,11 @@ class GeminiJournal:
         if provider_name is not None and (
             not isinstance(provider_name, str) or not REF_RE.fullmatch(provider_name)):
             raise JournalError("GEMINI_JOURNAL_INPUT_INVALID")
-        prefix = "batches/" if kind == "BATCH_INLINE" else "cachedContents/"
+        identity_pattern = BATCH_NAME_RE if kind == "BATCH_INLINE" else CACHE_NAME_RE
         if next_stage == "PROVIDER_CONFIRMED" and (
-                not provider_name or not provider_name.startswith(prefix)):
+                not provider_name or not identity_pattern.fullmatch(provider_name)):
             raise JournalError("GEMINI_JOURNAL_PROVIDER_ID_INVALID")
-        with self._open() as conn:
+        with closing(self._open()) as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 last = conn.execute(
@@ -155,7 +158,7 @@ class GeminiJournal:
     def history(self, *, kind: str, manifest_sha256: str) -> list[dict[str, object]]:
         if kind not in KINDS or not isinstance(manifest_sha256, str) or not HASH_RE.fullmatch(manifest_sha256):
             raise JournalError("GEMINI_JOURNAL_INPUT_INVALID")
-        with self._open() as conn:
+        with closing(self._open()) as conn:
             rows = conn.execute(
                 """SELECT event_id, stage, provider_name, created_at
                    FROM gemini_lifecycle_events WHERE kind=? AND manifest_sha256=?

@@ -161,3 +161,11 @@ def test_mismatched_provider_resource_fails():
         return FakeResponse(b'{"name":"batches/other","metadata":{"state":"JOB_STATE_RUNNING"}}')
     with pytest.raises(GeminiContractError,match="GEMINI_RESOURCE_IDENTITY_MISMATCH"):
         inspect_batch(batch_name="batches/abc",expected_keys=["x"],env=env(),opener=opener)
+
+
+def test_provider_journal_rejects_traversal_like_id(tmp_path):
+    j = fixture(tmp_path)
+    reserve(j)
+    with pytest.raises(JournalError,match="GEMINI_JOURNAL_PROVIDER_ID_INVALID"):
+        j.record(kind="BATCH_INLINE",manifest_sha256=DIGEST,
+                 next_stage="PROVIDER_CONFIRMED", provider_name="batches/../invalid")
