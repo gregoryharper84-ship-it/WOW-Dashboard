@@ -156,3 +156,18 @@ def test_failure_diagnostic_only_exposes_allowlisted_numeric_evidence():
     assert "coefficients" not in diagnostic
     assert diagnostic["numeric_runtime"]["scikit_learn"]
     assert diagnostic["certification"] is False and diagnostic["can_execute"] is False
+
+
+def test_numeric_provenance_binds_native_libraries_without_leaking_paths():
+    runtime = run()["observed"]["numeric_runtime"]
+    assert runtime["joblib"] and runtime["threadpoolctl"]
+    assert isinstance(runtime["numpy_enabled_simd"], list)
+    assert all(flag.isidentifier() for flag in runtime["numpy_enabled_simd"])
+    for library in runtime["threadpools"]:
+        assert "filepath" not in library and "hostname" not in library
+        if "binary_sha256" in library:
+            digest = library["binary_sha256"]
+            assert digest == "UNAVAILABLE" or (
+                len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+            )
+    assert "filepath" not in str(runtime)
