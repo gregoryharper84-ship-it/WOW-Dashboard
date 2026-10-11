@@ -7,8 +7,11 @@ def test_no_budget_is_activated_by_migration():
     assert "enabled boolean NOT NULL DEFAULT false" in SQL
     assert "cap_microusd bigint NOT NULL DEFAULT 0" in SQL
     assert "max_single_request_microusd bigint NOT NULL DEFAULT 0" in SQL
-    assert "SECURITY DEFINER" not in "\n".join(x for x in SQL.splitlines() if not x.strip().startswith("--"))
-    assert "SECURITY INVOKER" in SQL
+    assert "CREATE OR REPLACE FUNCTION wow_gemini_internal.wow_gemini_reserve_spend" in SQL
+    assert "CREATE OR REPLACE FUNCTION wow_gemini_internal.wow_gemini_record_spend_stage" in SQL
+    assert "SECURITY DEFINER SET search_path = pg_catalog, pg_temp" in SQL
+    assert "CREATE OR REPLACE FUNCTION public.wow_gemini_reserve_spend" in SQL
+    assert "SECURITY INVOKER SET search_path = pg_catalog, pg_temp" in SQL
 
 def test_reservation_has_atomic_control_lock_and_conflict_guard():
     assert "FOR UPDATE" in SQL
@@ -24,8 +27,12 @@ def test_no_anonymous_mutating_api_permissions():
     assert "GRANT SELECT ON public.wow_gemini_budget_controls TO service_role" in SQL
     assert "GRANT EXECUTE ON FUNCTION public.wow_gemini_reserve_spend" in SQL
     assert "FROM PUBLIC, anon, authenticated" in SQL
-    assert "GRANT INSERT ON public.wow_gemini_budget_controls" not in SQL
-    assert "GRANT UPDATE ON public.wow_gemini_budget_controls" not in SQL
+    for table in ("wow_gemini_budget_controls", "wow_gemini_spend_reservations",
+                  "wow_gemini_spend_events"):
+        assert "GRANT INSERT ON public." + table not in SQL
+        assert "GRANT UPDATE ON public." + table not in SQL
+    assert "REVOKE ALL ON SCHEMA wow_gemini_internal FROM PUBLIC, anon, authenticated" in SQL
+    assert "GRANT USAGE ON SCHEMA wow_gemini_internal TO service_role" in SQL
 
 def test_append_only_receipts_and_typed_state_transitions():
     assert "gemini_events_no_update" not in SQL or "wow_gemini_events_guard" in SQL

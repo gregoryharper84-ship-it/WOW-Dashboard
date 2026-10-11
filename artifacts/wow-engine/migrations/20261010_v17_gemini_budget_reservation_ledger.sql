@@ -71,16 +71,17 @@ DROP TRIGGER IF EXISTS wow_gemini_events_guard ON public.wow_gemini_spend_events
 CREATE TRIGGER wow_gemini_events_guard BEFORE UPDATE OR DELETE OR TRUNCATE
  ON public.wow_gemini_spend_events FOR EACH STATEMENT
  EXECUTE FUNCTION public.wow_gemini_events_immutable();
--- No SECURITY DEFINER in the exposed public schema. SECURITY INVOKER RPCs
--- rely on the service_role's scoped INSERT permission, never a broad public grant.
-GRANT INSERT ON public.wow_gemini_spend_reservations TO service_role;
-GRANT INSERT ON public.wow_gemini_spend_events TO service_role;
-GRANT USAGE, SELECT ON SEQUENCE public.wow_gemini_spend_events_event_id_seq TO service_role;
+-- No client, including service_role, can INSERT directly into budget rows,
+-- reservations or events. SECURITY DEFINER mutation lives only in an unexposed
+-- private schema, and is entered through a PUBLIC SECURITY INVOKER RPC wrapper.
+CREATE SCHEMA IF NOT EXISTS wow_gemini_internal;
+REVOKE ALL ON SCHEMA wow_gemini_internal FROM PUBLIC, anon, authenticated;
+GRANT USAGE ON SCHEMA wow_gemini_internal TO service_role;
 
-CREATE OR REPLACE FUNCTION public.wow_gemini_reserve_spend(
+CREATE OR REPLACE FUNCTION wow_gemini_internal.wow_gemini_reserve_spend(
   p_project_key text, p_manifest_sha256 text, p_kind text,
   p_reserved_microusd bigint, p_approval_ref text, p_tariff_sha256 text
-) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path = public, pg_temp AS $$
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $
 DECLARE
   ctl public.wow_gemini_budget_controls%ROWTYPE;
   total_reserved bigint;
@@ -128,14 +129,24 @@ BEGIN
     'manifest_sha256',p_manifest_sha256,'reserved_microusd',p_reserved_microusd,
     'can_execute',false);
 END $$;
+REVOKE ALL ON FUNCTION wow_gemini_internal.wow_gemini_reserve_spend(text,text,text,bigint,text,text)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION wow_gemini_internal.wow_gemini_reserve_spend(text,text,text,bigint,text,text)
+  TO service_role;
+CREATE OR REPLACE FUNCTION public.wow_gemini_reserve_spend(
+  p_project_key text, p_manifest_sha256 text, p_kind text,
+  p_reserved_microusd bigint, p_approval_ref text, p_tariff_sha256 text
+) RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $
+  SELECT wow_gemini_internal.wow_gemini_reserve_spend($1,$2,$3,$4,$5,$6)
+$;
 REVOKE ALL ON FUNCTION public.wow_gemini_reserve_spend(text,text,text,bigint,text,text)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.wow_gemini_reserve_spend(text,text,text,bigint,text,text)
   TO service_role;
 
-CREATE OR REPLACE FUNCTION public.wow_gemini_record_spend_stage(
+CREATE OR REPLACE FUNCTION wow_gemini_internal.wow_gemini_record_spend_stage(
   p_reservation_id uuid, p_stage text, p_provider_name text DEFAULT NULL
-) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER SET search_path = public, pg_temp AS $$
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $
 DECLARE
   prior text;
   kind_name text;
@@ -181,6 +192,15 @@ BEGIN
   RETURN jsonb_build_object('status',p_stage,'reservation_id',p_reservation_id,
                             'can_execute',false);
 END $$;
+REVOKE ALL ON FUNCTION wow_gemini_internal.wow_gemini_record_spend_stage(uuid,text,text)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION wow_gemini_internal.wow_gemini_record_spend_stage(uuid,text,text)
+  TO service_role;
+CREATE OR REPLACE FUNCTION public.wow_gemini_record_spend_stage(
+  p_reservation_id uuid, p_stage text, p_provider_name text DEFAULT NULL
+) RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $
+  SELECT wow_gemini_internal.wow_gemini_record_spend_stage($1,$2,$3)
+$;
 REVOKE ALL ON FUNCTION public.wow_gemini_record_spend_stage(uuid,text,text)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.wow_gemini_record_spend_stage(uuid,text,text)
