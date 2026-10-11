@@ -14,6 +14,7 @@ from collections import Counter
 from dataclasses import asdict
 from hashlib import sha256
 import json
+import platform
 from typing import Any, Mapping, Sequence
 
 from v17.binary_candidate_lifecycle import BinaryCandidate, train_binary_candidate
@@ -47,6 +48,32 @@ EXPECTED_METRICS = {
 }
 METRIC_TOLERANCE = 1e-9
 RECEIPT_VERSION = "NCAAB_PUBLIC_SOURCE_PINNED_NUMERICAL_REPLAY_V1"
+
+
+def numerical_runtime_provenance() -> dict[str, Any]:
+    """Capture public numeric-runtime facts, not secrets, paths or credentials.
+
+    This is diagnostic evidence ONLY. Version metadata cannot authorize
+    tolerances, retroactively certify a fit, or change the immutable candidate.
+    """
+    import numpy
+    import scipy
+    import sklearn
+    from threadpoolctl import threadpool_info
+
+    allowed = ("internal_api", "user_api", "prefix", "version", "threading_layer", "num_threads")
+    libraries = [
+        {key: pool[key] for key in allowed if pool.get(key) is not None}
+        for pool in threadpool_info()
+    ]
+    return {
+        "python": platform.python_version(),
+        "machine": platform.machine(),
+        "numpy": numpy.__version__,
+        "scipy": scipy.__version__,
+        "scikit_learn": sklearn.__version__,
+        "threadpools": sorted(libraries, key=lambda item: json.dumps(item, sort_keys=True)),
+    }
 
 
 def verify_public_source(
@@ -132,6 +159,10 @@ def verify_public_source(
             "training_rows": len(metadata),
             "dataset_hash": fitted.dataset_hash,
             "artifact_checksum": checksum,
+            "artifact_component_sha256": {
+                key: _json_hash(value) for key, value in sorted(dict(fitted.artifact_payload).items())
+            },
+            "numeric_runtime": numerical_runtime_provenance(),
             "calibrator_sha256": calibrator_sha, "metrics": metrics,
             "research_screen_pass": fitted.research_screen_pass,
         },
