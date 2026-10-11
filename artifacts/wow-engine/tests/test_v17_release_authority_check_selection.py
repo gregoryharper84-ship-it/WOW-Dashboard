@@ -51,10 +51,28 @@ def test_superseded_pass_does_not_authorize():
 
 
 def test_verifier_stays_read_only_and_signer_hold_remains():
+    """Repo-side authority stays read-only; deploy is delegated to the OIDC broker."""
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "contents: read" in text and "checks: read" in text
-    assert "ISOLATED_SIGNER_AND_DEPLOYMENT_IDENTITY_NOT_PROVISIONED" in text
+    assert "contents: write" not in text and "pull-requests: write" not in text
     assert "exit 1" in text
     assert "final_main=" in text
     assert "grep -qx true" in text
     assert "sort_by(.id) | last" in text
+
+
+def test_deploy_only_through_oidc_broker_from_protected_main():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    # No deployment credential ever enters the repository workflow.
+    assert "RENDER_API_KEY" not in text and "secrets." not in text
+    assert "api.render.com" not in text
+    assert "environment: wow-release" in text
+    assert "id-token: write" in text
+    assert "github.ref == 'refs/heads/main'" in text
+    assert 'test "$GITHUB_SHA" = "$EXPECTED_SHA" || deny RUN_SHA_NOT_EXPECTED' in text
+    # Runner-provided OIDC request variables must not be re-mapped (would blank them).
+    assert "ACTIONS_ID_TOKEN_REQUEST_URL: ${{" not in text
+    assert "deny BROKER_URL_MISSING" in text and "deny BROKER_REJECTED" in text
+    assert '.status == "DEPLOY_DISPATCHED" and .commit_sha == $sha' in text
+    # Broker step runs only after the exact-head policy step in the same job.
+    assert text.index("grep -qx true") < text.index("Request deploy from isolated broker")
