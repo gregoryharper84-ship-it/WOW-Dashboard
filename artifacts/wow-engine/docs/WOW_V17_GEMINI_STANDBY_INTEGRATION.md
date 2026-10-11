@@ -288,3 +288,36 @@ results require Google's `responseId` and readback-confirmed completion.
 The response's token metadata is evidence, **not** an exact bill or a cost
 guarantee. SIRT must approve external data sharing and verify the actual
 paid API project before any activation.
+
+## Free-tier first: separate public synthetic connectivity canary
+
+The owner prefers connecting the **free Gemini API tier** before considering
+paid API integration. The unpaid API tier permits Google to use submitted
+content for product improvement. Therefore `v17/gemini_free_canary.py`
+uses only a **fixed, synthetic, non-confidential prompt** and a separate key
+and enablement switch. It does not accept arbitrary user prompts, repository
+files, project code, logs, model artifacts, or private evidence. It cannot
+use Batch/caching or access the WOW/LLP scoring/terminal lanes.
+
+```text
+WOW_GEMINI_FREE_CANARY_ENABLED=false
+WOW_GEMINI_FREE_PROJECT_VERIFIED=false
+GEMINI_FREE_CANARY_API_KEY=[separate server secret, not stored in GitHub]
+```
+```bash
+cd artifacts/wow-engine
+python -m v17.gemini_free_canary --status
+# Only after owner provisions and attests an actual Free Tier AI Studio project:
+python -m v17.gemini_free_canary --probe
+```
+
+This is an operator-confirmed public test, not an automated verification of
+Google's actual billing status. No cron, queue, retries, live network calls
+or payment method are configured by this PR. A free consumer Gemini app
+login is NOT an API key; obtain the project's Gemini API key using
+https://aistudio.google.com/api-keys, and inject it as a protected server
+secret rather than posting it in chat. Before requesting authorization for
+production source/context use, switch to a verified Paid API project, complete
+independent privacy/SIRT review and enforce the separate paid-only routes.
+References: https://ai.google.dev/gemini-api/docs/billing and
+https://ai.google.dev/gemini-api/docs/pricing

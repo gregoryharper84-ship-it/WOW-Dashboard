@@ -39,3 +39,9 @@ def test_append_only_receipts_and_typed_state_transitions():
     assert "BEFORE UPDATE OR DELETE OR TRUNCATE" in SQL
     assert "'OUTCOME_UNKNOWN'" in SQL and "'RECONCILED'" in SQL
     assert "GEMINI_STAGE_TRANSITION_REJECTED" in SQL
+
+
+def test_sql_dollar_quoting_is_well_formed():
+    assert " AS $\\n" not in SQL
+    assert "\\n$;" not in SQL
+    assert SQL.count(" AS $$") >= 5
