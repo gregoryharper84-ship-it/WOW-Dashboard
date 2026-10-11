@@ -60,19 +60,43 @@ def numerical_runtime_provenance() -> dict[str, Any]:
     import numpy
     import scipy
     import sklearn
+    import joblib
+    import threadpoolctl
     from threadpoolctl import threadpool_info
+    from numpy._core import _multiarray_umath
 
     allowed = ("internal_api", "user_api", "prefix", "version", "threading_layer", "num_threads")
-    libraries = [
-        {key: pool[key] for key in allowed if pool.get(key) is not None}
-        for pool in threadpool_info()
-    ]
+    libraries = []
+    for pool in threadpool_info():
+        evidence = {key: pool[key] for key in allowed if pool.get(key) is not None}
+        # Record the exact native BLAS/OpenMP library bytes without exposing
+        # any runner-local filesystem path, hostname, or workflow secrets.
+        library_path = pool.get("filepath")
+        if isinstance(library_path, str) and library_path:
+            digest = sha256()
+            try:
+                with open(library_path, "rb") as native:
+                    for chunk in iter(lambda: native.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                evidence["binary_sha256"] = digest.hexdigest()
+            except OSError:
+                evidence["binary_sha256"] = "UNAVAILABLE"
+        libraries.append(evidence)
+
+    cpu_features = getattr(_multiarray_umath, "__cpu_features__", {})
+    enabled = sorted(
+        key for key, active in cpu_features.items()
+        if active is True and key.isidentifier()
+    )
     return {
         "python": platform.python_version(),
         "machine": platform.machine(),
         "numpy": numpy.__version__,
         "scipy": scipy.__version__,
         "scikit_learn": sklearn.__version__,
+        "joblib": joblib.__version__,
+        "threadpoolctl": threadpoolctl.__version__,
+        "numpy_enabled_simd": enabled,
         "threadpools": sorted(libraries, key=lambda item: json.dumps(item, sort_keys=True)),
     }
 
