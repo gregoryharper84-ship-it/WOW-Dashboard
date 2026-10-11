@@ -1,0 +1,41 @@
+name: wow-v17-release-authority
+# Staged release authority: intentionally fail closed until external isolation,
+# trusted identity policy and deployment environment are provisioned.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact 40-character main commit SHA
+        required: true
+        type: string
+permissions:
+  contents: read
+  checks: read
+concurrency:
+  group: wow-v17-release-authority
+  cancel-in-progress: false
+jobs:
+  verify-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Verify exact main SHA and required App identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          test "$current" = "$EXPECTED_SHA"
+          checks="$(gh api "repos/$GITHUB_REPOSITORY/commits/$EXPECTED_SHA/check-runs?per_page=100")"
+          for app in 15368 5245832 5245853; do
+            jq -e --argjson app "$app" '[.check_runs[] | select(.app.id == $app and .conclusion == "success" and .head_sha == env.EXPECTED_SHA)] | length > 0' <<< "$checks" >/dev/null
+          done
+      - name: Explicit hold pending isolated signer and credential provisioning
+        run: |
+          echo "RELEASE_AUTHORITY_NOT_PROVISIONED: no signing or deployment permitted"
+          exit 1
