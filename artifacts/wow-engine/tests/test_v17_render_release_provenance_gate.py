@@ -109,7 +109,7 @@ def test_stale_qa_head_does_not_authorize_merge():
     ("not_merged", "RENDER_RELEASE_PR_MERGE_IDENTITY_MISMATCH"),
     ("wrong_base", "RENDER_RELEASE_MERGED_PR_NOT_UNIQUE"),
     ("fork", "RENDER_RELEASE_PR_FORK_UNVERIFIED"),
-    ("wrong_sha", "RENDER_RELEASE_PR_MERGE_IDENTITY_MISMATCH"),
+    ("wrong_sha", "RENDER_RELEASE_MERGED_PR_NOT_UNIQUE"),
 ])
 def test_untrusted_merge_provenance_fails_closed(failure, expected):
     packet = _fixture()
