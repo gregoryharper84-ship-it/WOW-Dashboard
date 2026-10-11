@@ -81,7 +81,7 @@ GRANT USAGE ON SCHEMA wow_gemini_internal TO service_role;
 CREATE OR REPLACE FUNCTION wow_gemini_internal.wow_gemini_reserve_spend(
   p_project_key text, p_manifest_sha256 text, p_kind text,
   p_reserved_microusd bigint, p_approval_ref text, p_tariff_sha256 text
-) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
   ctl public.wow_gemini_budget_controls%ROWTYPE;
   total_reserved bigint;
@@ -136,9 +136,9 @@ GRANT EXECUTE ON FUNCTION wow_gemini_internal.wow_gemini_reserve_spend(text,text
 CREATE OR REPLACE FUNCTION public.wow_gemini_reserve_spend(
   p_project_key text, p_manifest_sha256 text, p_kind text,
   p_reserved_microusd bigint, p_approval_ref text, p_tariff_sha256 text
-) RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $
+) RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $$
   SELECT wow_gemini_internal.wow_gemini_reserve_spend($1,$2,$3,$4,$5,$6)
-$;
+$$;
 REVOKE ALL ON FUNCTION public.wow_gemini_reserve_spend(text,text,text,bigint,text,text)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.wow_gemini_reserve_spend(text,text,text,bigint,text,text)
@@ -146,7 +146,7 @@ GRANT EXECUTE ON FUNCTION public.wow_gemini_reserve_spend(text,text,text,bigint,
 
 CREATE OR REPLACE FUNCTION wow_gemini_internal.wow_gemini_record_spend_stage(
   p_reservation_id uuid, p_stage text, p_provider_name text DEFAULT NULL
-) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
   prior text;
   kind_name text;
@@ -198,9 +198,9 @@ GRANT EXECUTE ON FUNCTION wow_gemini_internal.wow_gemini_record_spend_stage(uuid
   TO service_role;
 CREATE OR REPLACE FUNCTION public.wow_gemini_record_spend_stage(
   p_reservation_id uuid, p_stage text, p_provider_name text DEFAULT NULL
-) RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $
+) RETURNS jsonb LANGUAGE sql SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $$
   SELECT wow_gemini_internal.wow_gemini_record_spend_stage($1,$2,$3)
-$;
+$$;
 REVOKE ALL ON FUNCTION public.wow_gemini_record_spend_stage(uuid,text,text)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.wow_gemini_record_spend_stage(uuid,text,text)
