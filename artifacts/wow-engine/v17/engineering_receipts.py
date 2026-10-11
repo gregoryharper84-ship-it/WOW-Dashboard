@@ -30,7 +30,7 @@ TABLE = "wow_engineering_attempt_receipts"
 CAN_EXECUTE = False
 USER_AGENT = "wow-engineering-receipt-writer"
 
-PROVIDERS = frozenset({"openai", "claude", "human_owner", "automation"})
+PROVIDERS = frozenset({"openai", "claude", "gemini", "human_owner", "automation"})
 ROLES = frozenset({
     "implementer", "adversarial_reviewer", "sirt_challenger", "release_preflight",
     "research_challenger", "independent_qa", "release_authority", "conductor",
@@ -91,6 +91,12 @@ def build_receipt(**fields: Any) -> dict[str, Any]:
         raise _invalid("provider")
     if row.get("role") not in ROLES:
         raise _invalid("role")
+    if row.get("provider") == "gemini":
+        if row.get("role") not in {"implementer", "adversarial_reviewer", "research_challenger", "sirt_challenger"}:
+            raise _invalid("gemini_role")
+        if (row.get("qa_decision") is not None or row.get("release_decision") is not None
+                or row.get("deployed_sha") is not None or row.get("disposition") == "FIXED_AND_VERIFIED"):
+            raise _invalid("gemini_authority")
     if not _nonempty_text(row.get("worker_run_id")):
         raise _invalid("worker_run_id")
     if row.get("disposition") not in DISPOSITIONS:

@@ -201,3 +201,16 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## Optional Gemini evidence challenger (#1655; manual-only; disabled by default)
+| `GEMINI_DISABLED` | Gemini evidence adapter | Switch off; no request sent. | No |
+| `GEMINI_TASK_DISABLED` | Gemini evidence adapter | Task not in bounded allowlist; no request. | No |
+| `GEMINI_INPUT_CLASS_BLOCKED` | Gemini evidence adapter | Classification not PUBLIC/SANITIZED. | No |
+| `GEMINI_INPUT_INVALID` | Gemini evidence adapter | Missing, malformed or oversized fixture/provenance. | No |
+| `GEMINI_CONFIG_MISSING` | Gemini evidence adapter | Credential/model unavailable or invalid; no request. | No |
+| `GEMINI_BILLING_UNVERIFIED` | Gemini evidence adapter | Paid API project attestation missing; no dynamic evidence request. | No |
+| `GEMINI_MANUAL_APPROVAL_REQUIRED` | Gemini evidence adapter | Explicit manual task approval missing; no request. | No |
+| `GEMINI_SENSITIVE_MATERIAL_REJECTED` | Gemini evidence adapter | Obvious PII/secret detected; no request or secret echo. | No |
+| `GEMINI_RATE_LIMITED` | Gemini evidence adapter | Google returned 429; typed hold, no fallback. | No |
+| `GEMINI_TRANSPORT_FAILED` | Gemini evidence adapter | Provider transport failure; typed hold, no fallback. | No |
+| `GEMINI_RESPONSE_INVALID` | Gemini evidence adapter | Invalid or unfinished JSON evidence; no authority. | No |
