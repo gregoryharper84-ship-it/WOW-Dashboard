@@ -207,3 +207,32 @@ DLP and does not by itself prove data sharing is approved, nor does it cover
 arbitrary secrets, internal knowledge, private names, or all PII formats.
 Independent privacy/security review and explicit approved-source allowlists
 are still mandatory before any Gemini enablement.
+
+## Central Postgres spending authority (staged, not deployed)
+
+The proposed migration
+`migrations/20261010_v17_gemini_budget_reservation_ledger.sql`
+establishes a **separate** per-project daily spending ceiling (integer
+micro-USD), unique immutable manifest reservations and append-only stage
+transitions. Every reservation locks its project budget row before summing
+same-day reservations, preventing concurrent overspend/double submits.
+An unknown provider POST outcome cannot release budget or be reserved again.
+
+The migration creates no enabled project rows and grants NO budget-control
+writes to the runtime. A DBA/owner must independently configure the verified
+Paid API project, explicit daily budget, max per-job cap and signed approval
+record; `WOW_GEMINI_ENABLED` remains false.
+
+**Security:** API RPCs are SECURITY INVOKER, only `service_role` can read,
+reserve or record transitions, anon/authenticated receive no grants. RLS is
+enabled. No service credential is stored in the repository or this table.
+The actual SQL migration, RLS/grants, concurrency race, and PostgREST receipt
+round-trip need testing against the authorized Postgres instance before any
+live Gemini calls. The file alone is not deployed persistence.
+
+**Limit:** The spending ledger reserves worst-case expense; it does not
+measure actual Google billing, obtain receipts from Google, or provide
+a strict provider-side cost guarantee. Independently verify model/token
+limits, provider spending/quotas, usage reconciliation and project spend
+caps before activation. Never infer authorization just from an
+`approval_ref` string.

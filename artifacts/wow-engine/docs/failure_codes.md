@@ -238,3 +238,14 @@ A new code requires, in the same change: code name, owning lane/stage, exact con
 | `GEMINI_INSPECTION_RESPONSE_INVALID` | Gemini optional standby journal/inspection | Provider read response malformed/oversized. Never a governed model failure. | No |
 | `GEMINI_RESOURCE_IDENTITY_MISMATCH` | Gemini optional standby journal/inspection | Provider returned a different resource name. Never a governed model failure. | No |
 | `GEMINI_SENSITIVE_MATERIAL_REJECTED` | Gemini provider egress guard | Obvious secret/credential/PII pattern detected in prompt, evidence reference or cached input. Reject before request; never echo suspected content. | No |
+| `GEMINI_RESERVATION_INPUT_INVALID` | Gemini central spend budget/receipts | Budget reservation RPC rejected invalid amount, approval or manifest; never a probability scorer result. | No |
+| `GEMINI_BUDGET_DISABLED` | Gemini central spend budget/receipts | Paid project is not explicitly owner-enabled; never a probability scorer result. | No |
+| `GEMINI_REQUEST_BUDGET_EXCEEDED` | Gemini central spend budget/receipts | Individual Gemini job exceeds authorized maximum; never a probability scorer result. | No |
+| `GEMINI_DUPLICATE_MANIFEST` | Gemini central spend budget/receipts | Identical project + manifest already reserved; no second POST; never a probability scorer result. | No |
+| `GEMINI_DAILY_BUDGET_EXCEEDED` | Gemini central spend budget/receipts | Project daily reservation allowance exhausted; never a probability scorer result. | No |
+| `GEMINI_STAGE_INVALID` | Gemini central spend budget/receipts | Unsupported Postgres journal stage; never a probability scorer result. | No |
+| `GEMINI_RESERVATION_MISSING` | Gemini central spend budget/receipts | Stage transition has no previously verified reservation; never a probability scorer result. | No |
+| `GEMINI_STAGE_TRANSITION_REJECTED` | Gemini central spend budget/receipts | Illegal state progression/double completion; never a probability scorer result. | No |
+| `GEMINI_PROVIDER_ID_INVALID` | Gemini central spend budget/receipts | Malformed provider identity; never a probability scorer result. | No |
+| `GEMINI_PROVIDER_ID_REQUIRED` | Gemini central spend budget/receipts | No provider ID at confirmation stage; never a probability scorer result. | No |
+| `GEMINI_PROVIDER_ID_MISMATCH` | Gemini central spend budget/receipts | Confirmed provider identity cannot be rewritten; never a probability scorer result. | No |
