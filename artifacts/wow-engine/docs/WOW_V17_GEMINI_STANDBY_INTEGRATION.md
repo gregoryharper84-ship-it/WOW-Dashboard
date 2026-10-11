@@ -274,3 +274,17 @@ Flash/Pro models; prove real end-to-end provider receipts and billing usage;
 obtain protected owner/release authorization and deployed revision readback.
 Nothing in the branch grants permission to bypass these steps or alters
 WOW/LLP scoring.
+
+## Standard API spend closure
+
+The original synchronous `run_challenger` route is now **also hard-gated**
+behind `WOW_GEMINI_STANDARD_API_ENABLED=false` by default and a trusted
+`GeminiBudgetGateway` with `WOW_GEMINI_PROJECT_KEY`, reviewed tariff SHA,
+spend reservation and durable response receipts. Without the gateway the
+manual `--task` CLI holds; `--status` remains safe.
+No direct Standard API call may bypass the central daily/individual budget.
+An immutable `OUTCOME_UNKNOWN` fence precedes each provider POST; accepted
+results require Google's `responseId` and readback-confirmed completion.
+The response's token metadata is evidence, **not** an exact bill or a cost
+guarantee. SIRT must approve external data sharing and verify the actual
+paid API project before any activation.

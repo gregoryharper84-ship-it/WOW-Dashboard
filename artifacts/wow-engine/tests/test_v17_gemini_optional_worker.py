@@ -6,6 +6,17 @@ from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
+from v17.gemini_budget_gateway import GeminiBudgetGateway
+
+class FakeLedger(GeminiBudgetGateway):
+    def __init__(self):
+        self.events=[]
+    def reserve(self, **kw):
+        self.events.append("RESERVED")
+        return {"reservation_id":"b3505cb5-93a1-4da7-ad8e-121eb318d068"}
+    def record(self, **kw):
+        self.events.append(kw["stage"])
+        return {"status":kw["stage"]}
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("gemini_optional_worker", ROOT / "v17" / "gemini_optional_worker.py")
@@ -22,6 +33,8 @@ def config(**overrides):
         "GEMINI_API_KEY": "fake-test-key",
         "GEMINI_MODEL": "gemini-test-model",
         "WOW_GEMINI_PAID_API_PROJECT_VERIFIED": "true",
+        "WOW_GEMINI_STANDARD_API_ENABLED": "true",
+        "WOW_GEMINI_PROJECT_KEY": "test_project",
     }
     settings.update(overrides)
     return settings
@@ -29,7 +42,9 @@ def config(**overrides):
 
 def run(**kwargs):
     return worker.run_challenger("code_review", "Public code review fixture",
-        data_classification="PUBLIC", env=config(), **kwargs)
+        data_classification="PUBLIC", env=config(), budget_gateway=FakeLedger(),
+        reserved_microusd=2000, approval_ref="review:fixture",
+        tariff_sha256="a"*64, **kwargs)
 
 
 def test_disabled_by_default_no_network():
@@ -79,7 +94,7 @@ class FakeResponse(io.BytesIO):
 
 
 def response(text, finish="STOP"):
-    return FakeResponse(json.dumps({"candidates": [
+    return FakeResponse(json.dumps({"responseId":"test_response_1","candidates": [
         {"finishReason": finish, "content": {"parts": [{"text": text}]}}
     ]}).encode())
 
@@ -145,7 +160,7 @@ def test_public_fixture_requires_paid_project_attestation_before_network():
 
 def test_response_usage_tracks_thinking_without_inventing_cost():
     def opener(*args, **kwargs):
-        body = {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps({
+        body = {"responseId":"test_response_2", "candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps({
             "summary": "ok", "findings": [], "evidence_refs": []})}]}}],
             "usageMetadata": {"promptTokenCount": 200, "candidatesTokenCount": 35,
                               "thoughtsTokenCount": 410, "cachedContentTokenCount": 90,
@@ -160,3 +175,35 @@ def test_response_usage_tracks_thinking_without_inventing_cost():
         "total_reported_tokens": 645,
     }
     assert result["cost_usd"] is None
+
+
+def test_standard_without_authoritative_budget_gateway_cannot_call_provider():
+    calls=[]
+    with pytest.raises(worker.GeminiWorkerError,match="GEMINI_DURABLE_LEDGER_REQUIRED"):
+        worker.run_challenger("code_review","public source",data_classification="PUBLIC",
+            env=config(),opener=lambda *a,**k:calls.append(True))
+    assert calls==[]
+
+
+def test_standard_disabled_even_with_paid_project_and_budget():
+    calls=[]
+    with pytest.raises(worker.GeminiWorkerError,match="GEMINI_STANDARD_API_DISABLED"):
+        worker.run_challenger("code_review","public source",data_classification="PUBLIC",
+            env=config(WOW_GEMINI_STANDARD_API_ENABLED="false"),
+            budget_gateway=FakeLedger(),opener=lambda *a,**k:calls.append(True))
+    assert calls==[]
+
+
+def test_standard_fence_precedes_post_and_completion_is_readback():
+    ledger=FakeLedger()
+    attempts=[]
+    def fake(req,timeout):
+        attempts.append(list(ledger.events))
+        return response('{"summary":"ok","findings":[],"evidence_refs":[]}')
+    result=worker.run_challenger("code_review","public source",
+        data_classification="PUBLIC",env=config(),budget_gateway=ledger,
+        reserved_microusd=2000,approval_ref="review:fixture",
+        tariff_sha256="a"*64,opener=fake)
+    assert attempts==[["RESERVED","OUTCOME_UNKNOWN"]]
+    assert ledger.events==["RESERVED","OUTCOME_UNKNOWN","PROVIDER_CONFIRMED","RECONCILED"]
+    assert result["provider_response_id"]=="test_response_1"

@@ -6,6 +6,7 @@ The caller must sanitize inputs and explicitly classify every external submissio
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from v17.gemini_input_safety import (GeminiSensitiveMaterialError,
                                      ensure_no_obvious_sensitive_material)
+from v17.gemini_budget_gateway import GeminiBudgetGateway, BudgetGatewayError
 
 CAN_EXECUTE = False
 PROBABILITY_AUTHORITY = False
@@ -61,6 +63,10 @@ def run_challenger(
     evidence_refs: list[str] | None = None,
     env: dict[str, str] | None = None,
     opener=None,
+    budget_gateway: GeminiBudgetGateway | None = None,
+    reserved_microusd: int | None = None,
+    approval_ref: str | None = None,
+    tariff_sha256: str | None = None,
 ) -> dict[str, object]:
     """Execute a bounded, explicitly enabled text-only research task.
 
@@ -107,6 +113,30 @@ def run_challenger(
         "generationConfig": {"responseMimeType": "application/json", "maxOutputTokens": 1024,
                              "temperature": 0},
     }).encode("utf-8")
+    # No Standard API call may bypass the same atomic central spending RPC
+    # used for Batch and cache. A manual CLI without a trusted gateway HOLDS.
+    if e.get("WOW_GEMINI_STANDARD_API_ENABLED") != "true":
+        raise GeminiWorkerError("GEMINI_STANDARD_API_DISABLED")
+    if (not isinstance(budget_gateway, GeminiBudgetGateway)
+        or not isinstance(e.get("WOW_GEMINI_PROJECT_KEY"), str)
+        or not e["WOW_GEMINI_PROJECT_KEY"]):
+        raise GeminiWorkerError("GEMINI_DURABLE_LEDGER_REQUIRED")
+    manifest_material = json.dumps({
+        "model": model, "task": task, "payload": json.loads(body),
+        "source_refs": refs, "classification": data_classification,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    manifest_sha256 = hashlib.sha256(manifest_material).hexdigest()
+    try:
+        reserved = budget_gateway.reserve(
+            project_key=e["WOW_GEMINI_PROJECT_KEY"], manifest_sha256=manifest_sha256,
+            kind="STANDARD", budget_microusd=reserved_microusd,
+            approval_ref=approval_ref, tariff_sha256=tariff_sha256)
+        reservation_id = reserved["reservation_id"]
+        # Persistent unknown-outcome fence MUST be written before POST.
+        budget_gateway.record(reservation_id=reservation_id, stage="OUTCOME_UNKNOWN")
+    except (BudgetGatewayError, KeyError, TypeError):
+        raise GeminiWorkerError("GEMINI_STANDARD_BUDGET_UNVERIFIED") from None
+
     request = Request(
         API_ROOT + model + ":generateContent",
         data=body,
@@ -145,6 +175,17 @@ def run_challenger(
     except (ValueError, KeyError, TypeError, IndexError):
         raise GeminiWorkerError("GEMINI_RESPONSE_INVALID") from None
 
+    response_id = response.get("responseId")
+    if not isinstance(response_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,150}", response_id):
+        raise GeminiWorkerError("GEMINI_RESPONSE_INVALID")
+    try:
+        budget_gateway.record(reservation_id=reservation_id,
+                              stage="PROVIDER_CONFIRMED",
+                              provider_name="responses/" + response_id)
+        budget_gateway.record(reservation_id=reservation_id, stage="RECONCILED")
+    except BudgetGatewayError:
+        raise GeminiWorkerError("GEMINI_STANDARD_RECEIPT_UNVERIFIED") from None
+
     usage = response.get("usageMetadata")
     safe_usage = {}
     if isinstance(usage, dict):
@@ -168,7 +209,9 @@ def run_challenger(
         "verification_state": "UNVERIFIED_CHALLENGER_OUTPUT",
         "usage_metadata_status": "REPORTED" if safe_usage else "NOT_REPORTED",
         "usage_tokens": safe_usage,
-        "cost_usd": None,  # no price-card/rate authority in this narrow API adapter
+        "cost_usd": None,  # reserved budget is NOT actual invoice evidence
+        "reservation_id": reservation_id, "manifest_sha256": manifest_sha256,
+        "provider_response_id": response_id,
     }
 
 
