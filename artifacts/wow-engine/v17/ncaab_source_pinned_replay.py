@@ -224,6 +224,69 @@ def failure_diagnostic(receipt: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def cpu_dispatch_negative_control_verified(receipt: Mapping[str, Any], *, process_exit: int) -> bool:
+    """Validate a deliberately divergent CPU experiment, NOT a replay PASS.
+
+    A green negative-control job means that a known exact-artifact mismatch
+    was *correctly held*. It must never establish certification, promotion,
+    a frozen-DB replay, or source-pinned exact reproduction.
+    """
+    if type(process_exit) is not int or process_exit != 1:
+        return False
+    if not isinstance(receipt, Mapping):
+        return False
+    signed = dict(receipt)
+    claimed_sha = signed.pop("receipt_sha256", None)
+    if not isinstance(claimed_sha, str) or claimed_sha != _json_hash(signed):
+        return False
+    if (receipt.get("status") != "SOURCE_PINNED_REPLAY_MISMATCH_HOLD"
+            or receipt.get("candidate_id") != EXPECTED_CANDIDATE_ID
+            or receipt.get("source_replay_not_db_frozen_replay") is not True
+            or receipt.get("research_only") is not True):
+        return False
+    for flag in ("certification", "promotion", "probability_publishable", "can_execute"):
+        if receipt.get(flag) is not False:
+            return False
+    observed, expected = receipt.get("observed"), receipt.get("expected")
+    if not isinstance(observed, Mapping) or not isinstance(expected, Mapping):
+        return False
+    if (expected.get("dataset_hash") != EXPECTED_DATASET_HASH
+            or observed.get("dataset_hash") != EXPECTED_DATASET_HASH
+            or expected.get("artifact_checksum") != EXPECTED_ARTIFACT_CHECKSUM
+            or expected.get("calibrator_sha256") != EXPECTED_CALIBRATOR_SHA256
+            or observed.get("calibrator_sha256") != EXPECTED_CALIBRATOR_SHA256
+            or expected.get("source_hashes") != {str(k): v for k, v in EXPECTED_SOURCE_HASHES.items()}
+            or observed.get("source_hashes") != expected.get("source_hashes")
+            or observed.get("row_counts_by_season") != {
+                str(k): v for k, v in EXPECTED_SOURCE_ROW_COUNTS.items()
+            }
+            or observed.get("training_rows") != sum(EXPECTED_SOURCE_ROW_COUNTS.values())):
+        return False
+    checksum = observed.get("artifact_checksum")
+    if (not isinstance(checksum, str) or len(checksum) != 64
+            or any(ch not in "0123456789abcdef" for ch in checksum)
+            or checksum == EXPECTED_ARTIFACT_CHECKSUM):
+        return False
+    mismatches = receipt.get("mismatches")
+    if (not isinstance(mismatches, list) or len(mismatches) != 1
+            or mismatches[0] != {
+                "code": "NCAAB_SOURCE_ARTIFACT_CHECKSUM_MISMATCH",
+                "detail": checksum,
+            }):
+        return False
+    # The held challenger must still agree with all original untouched scores.
+    metrics = observed.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return False
+    for key, value in EXPECTED_METRICS.items():
+        actual = metrics.get(key)
+        if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+            return False
+        if not (abs(float(actual) - float(value)) <= METRIC_TOLERANCE):
+            return False
+    return True
+
+
 def main() -> int:
     try:
         games, sources = fetch_games(seasons=SEASONS)
