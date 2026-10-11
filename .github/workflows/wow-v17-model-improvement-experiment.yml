@@ -219,7 +219,7 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "experiment_id=$experiment_id" >> "$GITHUB_OUTPUT"
 
-      - name: Open governed experiment PR and enable auto-merge
+      - name: Open governed experiment PR (release authorization required)
         if: steps.scope.outputs.changed == 'true' && steps.mode.outputs.mode == 'new'
         shell: bash
         env:
@@ -250,10 +250,10 @@ jobs:
           pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
             --title "Model experiment: $EXPERIMENT_ID" --body-file "$body")
           pr_number=${pr_url##*/}
-          gh pr merge "$pr_number" --repo "$GITHUB_REPOSITORY" --auto --merge
-          echo "Experiment PR #$pr_number created with auto-merge after protected checks." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AUTO_MERGE_HOLD_POLICY_UNVERIFIED experiment_pr=$pr_number"
+          echo "Experiment PR #$pr_number created; automatic merge disabled pending independent review and owner authorization." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Restore auto-merge after experiment repair
+      - name: Keep repaired experiment PR on independent release hold
         if: steps.scope.outputs.changed == 'true' && steps.mode.outputs.mode == 'repair'
         shell: bash
         env:
@@ -261,8 +261,8 @@ jobs:
           PR_NUMBER: ${{ steps.mode.outputs.pr_number }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --auto --merge
-          echo "Repaired experiment PR #$PR_NUMBER pushed and returned to protected CI/auto-merge." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::AUTO_MERGE_HOLD_POLICY_UNVERIFIED experiment_pr=$PR_NUMBER"
+          echo "Repaired experiment PR #$PR_NUMBER pushed for CI, independent review and authorized release; automatic merge disabled." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record experiment receipt
         if: always()
