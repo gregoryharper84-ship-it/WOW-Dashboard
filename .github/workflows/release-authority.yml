@@ -35,19 +35,25 @@ jobs:
           current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
           test "$current" = "$EXPECTED_SHA" || deny STALE_MAIN
           checks="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$EXPECTED_SHA/check-runs?per_page=100")"
-          # Each required name must be produced by the designated App at exact SHA.
+          # Use the most recent check for each trusted App/name pair; an older
+          # successful run cannot override a later failure or in-progress rerun.
+          # API pagination is flattened and then sorted by GitHub numeric check-run id.
           jq -es --arg sha "$EXPECTED_SHA" '
             [ .[] | .check_runs[] ] as $runs |
             def passed($app; $name):
-              any($runs[]; .app.id == $app and .name == $name
-                and .head_sha == $sha and .status == "completed"
-                and .conclusion == "success");
+              ([ $runs[] | select(.app.id == $app and .name == $name
+                and .head_sha == $sha) ] | sort_by(.id) | last) as $latest |
+              ($latest != null and $latest.status == "completed"
+                and $latest.conclusion == "success");
             passed(15368; "WOW additional required regression")
             and passed(15368; "WOW governed probability backend")
             and passed(15368; "WOW required-three regression")
             and passed(5245832; "WOW Independent QA exact-head")
             and passed(5245853; "WOW Release Authority exact-head")
-          ' <<< "$checks" >/dev/null || deny REQUIRED_CHECK_MISSING
+          ' <<< "$checks" | grep -qx true || deny REQUIRED_CHECK_MISSING
+          # Catch a branch move during verification; never accept a stale candidate.
+          final_main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          test "$final_main" = "$EXPECTED_SHA" || deny STALE_MAIN
       - name: Hold pending isolated cryptographic signer and deploy credentials
         run: |
           echo "RELEASE_HOLD:ISOLATED_SIGNER_AND_DEPLOYMENT_IDENTITY_NOT_PROVISIONED"
