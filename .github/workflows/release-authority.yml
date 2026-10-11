@@ -1,16 +1,17 @@
 name: wow-v17-release-authority
-# Staged release authority: intentionally fail closed until external isolation,
-# trusted identity policy and deployment environment are provisioned.
+# Fail-closed, read-only candidate verifier. Signing and deployment require
+# an externally protected machine identity and independently configured trust policy.
 on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Exact 40-character main commit SHA
+        description: Exact protected-main SHA
         required: true
         type: string
 permissions:
   contents: read
   checks: read
+  pull-requests: read
 concurrency:
   group: wow-v17-release-authority
   cancel-in-progress: false
@@ -20,22 +21,34 @@ jobs:
     permissions:
       contents: read
       checks: read
+      pull-requests: read
     steps:
-      - name: Verify exact main SHA and required App identities
+      - name: Verify exact SHA and independent named check identities
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
-        shell: bash
         run: |
           set -euo pipefail
-          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          deny() { echo "RELEASE_HOLD:$1" >&2; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || deny INVALID_SHA
           current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
-          test "$current" = "$EXPECTED_SHA"
-          checks="$(gh api "repos/$GITHUB_REPOSITORY/commits/$EXPECTED_SHA/check-runs?per_page=100")"
-          for app in 15368 5245832 5245853; do
-            jq -e --argjson app "$app" '[.check_runs[] | select(.app.id == $app and .conclusion == "success" and .head_sha == env.EXPECTED_SHA)] | length > 0' <<< "$checks" >/dev/null
-          done
-      - name: Explicit hold pending isolated signer and credential provisioning
+          test "$current" = "$EXPECTED_SHA" || deny STALE_MAIN
+          checks="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$EXPECTED_SHA/check-runs?per_page=100")"
+          # Each required name must be produced by the designated App at exact SHA.
+          jq -es --arg sha "$EXPECTED_SHA" '
+            [ .[] | .check_runs[] ] as $runs |
+            def passed($app; $name):
+              any($runs[]; .app.id == $app and .name == $name
+                and .head_sha == $sha and .status == "completed"
+                and .conclusion == "success");
+            passed(15368; "WOW additional required regression")
+            and passed(15368; "WOW governed probability backend")
+            and passed(15368; "WOW required-three regression")
+            and passed(5245832; "WOW Independent QA exact-head")
+            and passed(5245853; "WOW Release Authority exact-head")
+          ' <<< "$checks" >/dev/null || deny REQUIRED_CHECK_MISSING
+      - name: Hold pending isolated cryptographic signer and deploy credentials
         run: |
-          echo "RELEASE_AUTHORITY_NOT_PROVISIONED: no signing or deployment permitted"
+          echo "RELEASE_HOLD:ISOLATED_SIGNER_AND_DEPLOYMENT_IDENTITY_NOT_PROVISIONED"
           exit 1
