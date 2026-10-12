@@ -184,6 +184,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
 | `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
 | `TARGET_SWEEP_UNREADABLE` | check targeting | Open-PR sweep listing could not be read; suffixed with HTTP status. | N/A |
+| `TARGET_SWEEP_TRUNCATED` | check targeting | More open PRs than the bounded sweep can page through (MAX_PAGES x 100); nothing is evaluated rather than silently skipping PRs. | N/A |
 
 ## Exact-target bootstrap and Claude structured-output codes (PR #1531)
 

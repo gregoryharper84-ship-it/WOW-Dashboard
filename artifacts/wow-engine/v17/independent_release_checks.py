@@ -108,10 +108,24 @@ def gather(repo: str, pr_number: int, expected_head: str, *, fetch: Fetch = gh_f
 
 
 MAX_TARGETS = 20
+SWEEP_SLOT_SECONDS = 3600  # QA/Release sweeps are scheduled hourly
+
+
+def _sweep_window(eligible: list[dict], now: float | None) -> list[dict]:
+    """Fair, stateless rotation: each run evaluates MAX_TARGETS PRs, and the window
+    advances one slot per hour, so every eligible PR is evaluated within
+    ceil(len(eligible) / MAX_TARGETS) consecutive sweeps instead of starving (#1697)."""
+    if len(eligible) <= MAX_TARGETS:
+        return eligible
+    import time
+    slot = int((time.time() if now is None else now) // SWEEP_SLOT_SECONDS)
+    start = (slot * MAX_TARGETS) % len(eligible)
+    return [eligible[(start + i) % len(eligible)] for i in range(MAX_TARGETS)]
 
 
 def targets(repo: str, *, pr: str | None = None,
-            workflow_run_prs: list[dict] | None = None, fetch: Fetch = gh_fetch) -> dict[str, Any]:
+            workflow_run_prs: list[dict] | None = None, fetch: Fetch = gh_fetch,
+            now: float | None = None) -> dict[str, Any]:
     """Resolve (PR, exact head) pairs to evaluate. Bounded; never trusts untyped input."""
     errors: list[str] = []
     out: list[dict] = []
@@ -137,17 +151,33 @@ def targets(repo: str, *, pr: str | None = None,
             else:
                 out.append({"pr": int(pr), "head": sha})
     else:
-        status, body = fetch(f"repos/{repo}/pulls?state=open&base=main&per_page={PER_PAGE}")
-        if status != 200 or not isinstance(body, list):
-            errors.append(f"TARGET_SWEEP_UNREADABLE:{status}")
-        else:
+        # Read every page of eligible PRs (bounded), then rotate fairly. The first
+        # page keeps its historical URL; later pages add an explicit page number.
+        base = f"repos/{repo}/pulls?state=open&base=main&per_page={PER_PAGE}"
+        eligible: dict[int, dict] = {}
+        complete = False
+        for page in range(1, MAX_PAGES + 1):
+            status, body = fetch(base if page == 1 else f"{base}&page={page}")
+            if status != 200 or not isinstance(body, list):
+                errors.append(f"TARGET_SWEEP_UNREADABLE:{status}")
+                break
             for item in body:
-                if item.get("draft") or ((item.get("head") or {}).get("repo") or {}).get("full_name") != repo:
+                number = item.get("number")
+                if not isinstance(number, int) or item.get("draft"):
+                    continue
+                if ((item.get("head") or {}).get("repo") or {}).get("full_name") != repo:
                     continue
                 sha = (item.get("head") or {}).get("sha")
                 if SHA_RE.match(str(sha or "")):
-                    out.append({"pr": item.get("number"), "head": sha})
-            out = out[:MAX_TARGETS]
+                    eligible[number] = {"pr": number, "head": sha}
+            if len(body) < PER_PAGE:
+                complete = True
+                break
+        if not errors and not complete:
+            # More open PRs than MAX_PAGES * PER_PAGE: typed, never silent.
+            errors.append("TARGET_SWEEP_TRUNCATED")
+        if not errors:
+            out = _sweep_window([eligible[n] for n in sorted(eligible)], now)
     return {"targets": out, "errors": errors}
 
 

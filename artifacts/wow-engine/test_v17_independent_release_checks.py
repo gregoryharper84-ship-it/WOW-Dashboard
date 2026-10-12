@@ -237,6 +237,55 @@ def test_sweep_skips_drafts_and_forks_and_is_bounded():
     assert 2 not in numbers and 3 not in numbers and len(numbers) == m.MAX_TARGETS
 
 
+def _pulls(numbers, draft=()):
+    return [{"number": n, "draft": n in draft, "head": {"sha": HEAD, "repo": {"full_name": REPO}}}
+            for n in numbers]
+
+
+SWEEP = f"repos/{REPO}/pulls?state=open&base=main&per_page=100"
+
+
+def test_sweep_rotation_covers_every_eligible_pr_no_starvation():
+    # #1697 regression: 57 non-draft PRs; #1528 sat at position 41 and was never
+    # re-evaluated because the sweep always took the first 20.
+    numbers = list(range(1500, 1557))
+    fetch = Fake({SWEEP: (200, _pulls(numbers))})
+    slots = -(-len(numbers) // m.MAX_TARGETS)
+    seen = set()
+    for slot in range(slots):
+        out = m.targets(REPO, fetch=fetch, now=slot * m.SWEEP_SLOT_SECONDS)
+        assert out["errors"] == [] and len(out["targets"]) == m.MAX_TARGETS
+        seen |= {t["pr"] for t in out["targets"]}
+    assert seen == set(numbers)
+
+
+def test_sweep_window_is_deterministic_and_small_sets_are_unrotated():
+    fetch = Fake({SWEEP: (200, _pulls(range(1, 61)))})
+    assert m.targets(REPO, fetch=fetch, now=7200.0) == m.targets(REPO, fetch=fetch, now=7200.0 + 59)
+    small = Fake({SWEEP: (200, _pulls([9, 3, 5]))})
+    assert [t["pr"] for t in m.targets(REPO, fetch=small, now=123456.0)["targets"]] == [3, 5, 9]
+
+
+def test_sweep_reads_later_pages_so_older_prs_are_reachable():
+    fetch = Fake({SWEEP: (200, _pulls(range(1, 101))), f"{SWEEP}&page=2": (200, _pulls(range(101, 131)))})
+    slots = -(-130 // m.MAX_TARGETS)
+    seen = set()
+    for slot in range(slots):
+        seen |= {t["pr"] for t in m.targets(REPO, fetch=fetch, now=slot * m.SWEEP_SLOT_SECONDS)["targets"]}
+    assert set(range(101, 131)) <= seen
+
+
+def test_sweep_page_failure_and_truncation_fail_closed_with_typed_errors():
+    broken = Fake({SWEEP: (200, _pulls(range(1, 101)))})  # page 2 missing -> 404
+    out = m.targets(REPO, fetch=broken, now=0.0)
+    assert out == {"targets": [], "errors": ["TARGET_SWEEP_UNREADABLE:404"]}
+    full = {SWEEP: (200, _pulls(range(1, 101)))}
+    full.update({f"{SWEEP}&page={p}": (200, _pulls(range(p * 100 + 1, p * 100 + 101)))
+                 for p in range(2, m.MAX_PAGES + 1)})
+    out = m.targets(REPO, fetch=Fake(full), now=0.0)
+    assert out == {"targets": [], "errors": ["TARGET_SWEEP_TRUNCATED"]}
+
+
 def _gather_routes(files=None, runs=None, changed=None):
     files = files if files is not None else [{"filename": "artifacts/x.py"}]
     runs = runs if runs is not None else [{"id": 1, "name": "n", "head_sha": HEAD, "status": "completed",
