@@ -38,6 +38,35 @@ def _norm(value: Any) -> str:
     return "".join(ch for ch in text if ch.isalnum() and not unicodedata.combining(ch))
 
 
+# CFBD may use abbreviated official school names while ESPN adds a mascot.
+# Broad prefixes for 3-4 character names are unsafe (e.g. Iowa vs Iowa State),
+# so accept short names only when the complete known school + mascot identity
+# is present. This is identity matching only; it is not a sporting feature.
+_VERIFIED_SHORT_SCHOOL_MASCOTS: dict[str, frozenset[str]] = {
+    # Every FBS school whose CFBD name normalizes to fewer than five
+    # characters, mapped to its exact ESPN "<school> <mascot>" display name.
+    "army": frozenset({"armyblackknights"}),
+    "byu": frozenset({"byucougars"}),
+    "duke": frozenset({"dukebluedevils"}),
+    "iowa": frozenset({"iowahawkeyes"}),
+    "lsu": frozenset({"lsutigers"}),
+    "navy": frozenset({"navymidshipmen"}),
+    "ohio": frozenset({"ohiobobcats"}),
+    "rice": frozenset({"riceowls"}),
+    "smu": frozenset({"smumustangs"}),
+    "tcu": frozenset({"tcuhornedfrogs"}),
+    "troy": frozenset({"troytrojans"}),
+    "uab": frozenset({"uabblazers"}),
+    "ucf": frozenset({"ucfknights"}),
+    "ucla": frozenset({"uclabruins"}),
+    "unlv": frozenset({"unlvrebels"}),
+    "usc": frozenset({"usctrojans"}),
+    "utah": frozenset({"utahutes"}),
+    "utep": frozenset({"utepminers"}),
+    "utsa": frozenset({"utsaroadrunners"}),
+}
+
+
 def _name_match(provider_name: Any, canonical_name: Any) -> bool:
     left = _norm(provider_name)
     right = _norm(canonical_name)
@@ -46,9 +75,11 @@ def _name_match(provider_name: Any, canonical_name: Any) -> bool:
     if left == right:
         return True
     shorter, longer = sorted((left, right), key=len)
-    # ESPN often appends mascots while CFBD stores the school name. Require a
-    # meaningful prefix; never use fuzzy edit-distance matching.
-    return len(shorter) >= 5 and longer.startswith(shorter)
+    # CFBD lists the school while ESPN commonly appends the mascot. Short
+    # schools require explicit verified aliases to avoid prefix collisions.
+    if len(shorter) < 5:
+        return longer in _VERIFIED_SHORT_SCHOOL_MASCOTS.get(shorter, ())
+    return longer.startswith(shorter)
 
 
 def _aware(value: Any) -> datetime:
