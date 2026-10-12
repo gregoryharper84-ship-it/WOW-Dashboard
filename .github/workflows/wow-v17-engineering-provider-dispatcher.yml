@@ -89,10 +89,15 @@ jobs:
               lease_group="${BASH_REMATCH[1]}"
             fi
           fi
-          if [ -n "$target_incident" ] && [ "$lease_group" = "GLOBAL" ]; then
-            echo "TARGET_INCIDENT_REQUIRES_DOMAIN_LEASE:$target_incident" >&2
+          # P0 targets require a manifest domain lease; standard P1 targets
+          # carry the exact incident under GLOBAL, validated by the worker.
+          if [ -n "$target_incident" ] && ! [[ "$target_incident" =~ ^[0-9]+$ ]]; then
+            echo "TARGET_INCIDENT_INVALID" >&2
             exit 1
           fi
+          # Classify against the exact workflow identity, not a suffixed
+          # Actions display title. Preserve SOURCE_WORKFLOW in receipts.
+          source_workflow_id="${SOURCE_WORKFLOW%% *}"
           receipt="$RUNNER_TEMP/provider-route.json"
 
           classify_run() {
@@ -108,7 +113,7 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_run" ]; then
             if [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
-            elif [ "$SOURCE_WORKFLOW" = "wow-v17-chatgpt-engineering-worker" ]; then
+            elif [ "$source_workflow_id" = "wow-v17-chatgpt-engineering-worker" ]; then
               classification=$(classify_run "$SOURCE_RUN_ID" openai)
               code=$(jq -r '.code' <<<"$classification")
               eligible=$(jq -r '.failover_eligible' <<<"$classification")
@@ -124,7 +129,7 @@ jobs:
                   reason="${code}:ANTHROPIC_AUTH_MISSING"
                 fi
               fi
-            elif [ "$SOURCE_WORKFLOW" = "wow-v17-claude-engineering-worker" ]; then
+            elif [ "$source_workflow_id" = "wow-v17-claude-engineering-worker" ]; then
               classification=$(classify_run "$SOURCE_RUN_ID" anthropic)
               code=$(jq -r '.code' <<<"$classification")
               reason="$code"
