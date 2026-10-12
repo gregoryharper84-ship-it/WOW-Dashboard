@@ -78,7 +78,9 @@ def verify_inventory_bytes(payload: bytes, *, expected_sha256: str, source_id: s
         if not isinstance(row, dict):
             raise InventoryIntegrityError("SOURCE_EVENT_ROW_INVALID")
         event_id = row.get("official_event_id")
-        if not isinstance(event_id, str) or not event_id.strip() or len(event_id) > 180:
+        if (not isinstance(event_id, str) or not event_id.strip()
+                or event_id != event_id.strip() or not event_id.isprintable()
+                or len(event_id) > 180):
             raise InventoryIntegrityError("SOURCE_CANONICAL_EVENT_ID_INVALID")
         if event_id in seen:
             raise InventoryIntegrityError("SOURCE_CANONICAL_EVENT_ID_DUPLICATE")
