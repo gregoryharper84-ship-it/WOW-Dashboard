@@ -242,3 +242,82 @@ def test_provider_consistent_duplicate_identity_preserves_disjoint_lane():
     )
     assert active_engineering_workflow(_Client([active]), ROWS[0], MANIFEST) is False
     assert active_engineering_workflow(_Client([active]), ROWS[2], MANIFEST) is True
+
+
+class _PagedPullRequestClient:
+    def __init__(self, pages, *, mutate_first_page=False):
+        self.pages = pages
+        self.mutate_first_page = mutate_first_page
+        self.requests = []
+
+    def get(self, suffix):
+        assert suffix.startswith("pulls?state=open&per_page=100&sort=created&direction=asc&page=")
+        page = int(suffix.rsplit("page=", 1)[1])
+        self.requests.append(page)
+        result = self.pages.get(page, [])
+        if self.mutate_first_page and page == 1 and self.requests.count(1) > 1:
+            return [dict(result[0], body="Incident: #9999"), *result[1:]]
+        return result
+
+
+def _pr_page(start, count=100, *, claimed_incident=None):
+    return [
+        {"number": start + i,
+         "body": "Incident: #" + str(claimed_incident) if claimed_incident is not None and i == count - 1
+                 else "Unrelated engineering discussion"}
+        for i in range(count)
+    ]
+
+
+def test_open_pr_claim_on_second_page_blocks_duplicate_writer():
+    from v17.engineering_resident_supervisor import pending_pr_for_issue
+
+    client = _PagedPullRequestClient({
+        1: _pr_page(1), 2: _pr_page(101, 1, claimed_incident=823)
+    })
+    assert pending_pr_for_issue(client, 823) is True
+    assert client.requests == [1, 2, 1]
+
+
+def test_full_open_pr_inventory_without_claim_can_admit():
+    from v17.engineering_resident_supervisor import pending_pr_for_issue
+
+    client = _PagedPullRequestClient({1: _pr_page(1), 2: _pr_page(101, 1)})
+    assert pending_pr_for_issue(client, 823) is False
+    assert client.requests == [1, 2, 1]
+
+
+@pytest.mark.parametrize("defect,code", [
+    ("duplicate", "OPEN_PR_INVENTORY_DUPLICATE"),
+    ("nonlist", "OPEN_PR_INVENTORY_INVALID"),
+    ("bad_identity", "OPEN_PR_INVENTORY_IDENTITY_INVALID"),
+    ("mutation", "OPEN_PR_INVENTORY_CHANGED_DURING_SCAN"),
+    ("page_limit", "OPEN_PR_INVENTORY_PAGE_LIMIT"),
+])
+def test_open_pr_inventory_fails_closed_on_untrusted_or_unstable_pagination(defect, code):
+    from v17.engineering_resident_supervisor import pending_pr_for_issue
+
+    pages = {1: _pr_page(1)}
+    if defect == "duplicate":
+        pages[2] = [{"number": 1, "body": "Incident: #823"}]
+    elif defect == "nonlist":
+        pages[2] = {"error": "rate limited"}
+    elif defect == "bad_identity":
+        pages[2] = [{"number": "101", "body": ""}]
+    elif defect == "page_limit":
+        pages = {i: _pr_page((i - 1) * 100 + 1) for i in range(1, 11)}
+    else:
+        pages[2] = _pr_page(101, 1)
+    client = _PagedPullRequestClient(pages, mutate_first_page=(defect == "mutation"))
+    with pytest.raises(RuntimeError, match=code):
+        pending_pr_for_issue(client, 823)
+
+
+def test_open_pr_third_page_claim_is_not_missed():
+    from v17.engineering_resident_supervisor import pending_pr_for_issue
+
+    client = _PagedPullRequestClient({
+        1: _pr_page(1), 2: _pr_page(101), 3: _pr_page(201, 1, claimed_incident=823)
+    })
+    assert pending_pr_for_issue(client, 823)
+    assert client.requests == [1, 2, 3, 1]
