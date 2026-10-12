@@ -242,3 +242,98 @@ def test_shadow_rejects_neutral_site_disagreement_even_if_manifest_rehashed():
     with pytest.raises(NCAAFShadowScoreBlocked) as err:
         score_ncaaf_research_shadow(candidate, forward)
     assert err.value.code == "NCAAF_SHADOW_NEUTRAL_SITE_SOURCE_CONTRADICTION"
+
+
+# Incident #665 engineering-audit closure: each registered research-only failure
+# must be reached by a deterministic negative regression, not just documented.
+@pytest.mark.parametrize("bad", [None, [], 42, "research"])
+def test_shadow_invalid_input_is_typed_and_cannot_score(bad):
+    with pytest.raises(NCAAFShadowScoreBlocked) as exc:
+        score_ncaaf_research_shadow(bad, _features())
+    assert exc.value.code == "NCAAF_SHADOW_INPUT_INVALID"
+
+
+@pytest.mark.parametrize("bad_version,bad_hash", [
+    ("BAD_VERSION", None),
+    (None, "not-a-sha256"),
+])
+def test_shadow_rejects_invalid_candidate_artifact_identity(bad_version, bad_hash):
+    candidate = _candidate()
+    if bad_version is not None:
+        candidate["model_artifact_version"] = bad_version
+    if bad_hash is not None:
+        candidate["training_dataset_hash"] = bad_hash
+    with pytest.raises(NCAAFShadowScoreBlocked) as exc:
+        score_ncaaf_research_shadow(candidate, _features())
+    assert exc.value.code == "NCAAF_SHADOW_ARTIFACT_IDENTITY_INVALID"
+
+
+def test_shadow_rejects_non_mapping_artifact_before_checksum_checks():
+    candidate = _candidate()
+    candidate["artifact_payload"] = []
+    with pytest.raises(NCAAFShadowScoreBlocked) as exc:
+        score_ncaaf_research_shadow(candidate, _features())
+    assert exc.value.code == "NCAAF_SHADOW_ARTIFACT_INVALID"
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("status", "FINAL_APPROVED"),
+    ("can_execute", True),
+])
+def test_shadow_forward_package_must_stay_research_only(field, bad):
+    forward = _features()
+    forward[field] = bad
+    with pytest.raises(NCAAFShadowScoreBlocked) as exc:
+        score_ncaaf_research_shadow(_candidate(), forward)
+    assert exc.value.code == "NCAAF_SHADOW_FORWARD_PACKAGE_INVALID"
+
+
+@pytest.mark.parametrize("bad_timestamp", ["not-a-date", "2026-10-10T01:00:00"])
+def test_shadow_rejects_malformed_or_naive_canonical_timestamp(bad_timestamp):
+    forward = _features()
+    forward["source_manifest"]["event_start_time"] = bad_timestamp
+    forward["source_manifest_sha256"] = _digest(forward["source_manifest"])
+    with pytest.raises(NCAAFShadowScoreBlocked) as exc:
+        score_ncaaf_research_shadow(_candidate(), forward)
+    assert exc.value.code == "NCAAF_SHADOW_TIME_INVALID"
+
+
+@pytest.mark.parametrize("bad_vector", [
+    [0.0],                             # wrong number of fitted coefficients
+    None,                              # missing vector
+    [True] * len(FEATURE_NAMES),       # booleans are not fitted floats
+])
+def test_shadow_rejects_invalid_artifact_vectors_with_rehashed_payload(bad_vector):
+    candidate = _candidate()
+    candidate["artifact_payload"]["scaler_mean"] = bad_vector
+    candidate["artifact_checksum"] = _digest(candidate["artifact_payload"])
+    with pytest.raises(NCAAFShadowScoreBlocked) as exc:
+        score_ncaaf_research_shadow(candidate, _features())
+    assert exc.value.code == "NCAAF_SHADOW_ARTIFACT_VECTOR_INVALID"
+
+
+def test_shadow_detects_finite_inputs_that_overflow_fitted_linear_sum():
+    candidate = _candidate()
+    forward = _features()
+    # Both inputs are individually finite. Their product must still fail closed.
+    candidate["artifact_payload"]["coefficients"][0] = 1e308
+    candidate["artifact_checksum"] = _digest(candidate["artifact_payload"])
+    forward["features"][FEATURE_NAMES[0]] = 1e308
+    features_hash = _digest(forward["features"])
+    forward["features_sha256"] = features_hash
+    forward["source_manifest"]["features_sha256"] = features_hash
+    forward["source_manifest_sha256"] = _digest(forward["source_manifest"])
+    with pytest.raises(NCAAFShadowScoreBlocked) as exc:
+        score_ncaaf_research_shadow(candidate, forward)
+    assert exc.value.code == "NCAAF_SHADOW_NUMERIC_OVERFLOW"
+
+
+def test_research_only_probability_cannot_be_imported_by_runtime_entrypoints():
+    # A diagnostic raw-probability key must never become a production input.
+    from pathlib import Path
+    package = Path(__file__).resolve().parents[1] / "v17"
+    for filename in ("team_event_scorer.py", "team_event_batch_scorer.py",
+                     "terminal_reducer.py", "scoring_gateway.py"):
+        file = package / filename
+        if file.is_file():
+            assert "research_raw_probability" not in file.read_text(encoding="utf-8")
