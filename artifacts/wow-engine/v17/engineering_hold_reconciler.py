@@ -58,25 +58,26 @@ def select_hold(
         if not isinstance(runs, list):
             raise HoldDiscoveryError("CHECKS_UNREADABLE:" + sha)
         author = (pr.get("user") or {}).get("login")
-        valid_failures = []
+        role_latest = []
         for name, role in ROLES.items():
             source = [r for r in runs if isinstance(r, dict)
                       and r.get("name") == name
                       and r.get("head_sha") == sha
                       and (r.get("app") or {}).get("id") == allowed[role]]
-            if not source:
-                continue
-            latest = max(source, key=lambda r: int(r.get("id") or 0))
-            if latest.get("status") != "completed" or latest.get("conclusion") != "failure":
-                continue
-            summary = (latest.get("output") or {}).get("summary") or ""
-            findings = CODE.findall(summary)
-            if not findings:
-                raise HoldDiscoveryError("ROLE_FAILURE_WITHOUT_TYPED_FINDINGS:" + name)
-            valid_failures.append((int(latest.get("id") or 0), name, summary, findings))
-        if not valid_failures:
+            if source:
+                latest = max(source, key=lambda r: int(r.get("id") or 0))
+                role_latest.append((int(latest.get("id") or 0), name, latest))
+        if not role_latest:
             continue
-        _, name, summary, findings = max(valid_failures, key=lambda x: x[0])
+        _, name, latest = max(role_latest, key=lambda x: x[0])
+        # A newer pending or successful role check supersedes an older failure;
+        # otherwise an obsolete HOLD could trigger redundant repair work.
+        if latest.get("status") != "completed" or latest.get("conclusion") != "failure":
+            continue
+        summary = (latest.get("output") or {}).get("summary") or ""
+        findings = CODE.findall(summary)
+        if not findings:
+            raise HoldDiscoveryError("ROLE_FAILURE_WITHOUT_TYPED_FINDINGS:" + name)
         # Never automatically repair owner-user or fork-authored PR code. Only
         # route an owner-authored protected-root PR to Engineering App re-proposal.
         if author != "wow-engineering[bot]":
@@ -123,7 +124,7 @@ def discover(repo: str, token: str, qa_app_id: int, release_app_id: int) -> dict
         if data.get("total_count", 0) > len(data["check_runs"]):
             raise HoldDiscoveryError("CHECKS_TRUNCATED:" + sha)
         checks[sha] = data["check_runs"]
-    return select_hold(pulls, checks, repository=repo, qa_app_id=qa_app_id,
+    return select_hold(pulls[:20], checks, repository=repo, qa_app_id=qa_app_id,
                        release_app_id=release_app_id)
 
 
