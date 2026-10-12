@@ -19,6 +19,8 @@ from v17.engineering_auditor_github import (
     bootstrap_open_github_work,
     issue_to_event,
     reconcile_github_updates,
+    reconcile_sirt_watchdog,
+    GitHubAuditUnavailable,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -250,3 +252,175 @@ def test_auditor_skill_is_independent_and_read_only():
     assert "edit production code" in text
     assert "set `can_execute=true`" in text
     assert "AUDIT_FINDING -> REPORTER/INTAKE" in text
+
+
+class _WatchdogSession:
+    def __init__(self, runs, code=200):
+        self.runs, self.code = runs, code
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        assert url.endswith("/actions/workflows/wow-sirt-independent-reliability-sentinel.yml/runs")
+        return _Response({"workflow_runs": self.runs}, status_code=self.code)
+
+
+class _WatchdogStore:
+    def __init__(self):
+        self.opened = []
+        self.resolved = []
+
+    def open_finding(self, kind, **kwargs):
+        self.opened.append((kind, kwargs))
+        return {"status": "OPEN"}
+
+    def resolve_finding(self, kind, component, **kwargs):
+        self.resolved.append((kind, component, kwargs))
+        return True
+
+
+def _watchdog_run(at, *, conclusion="failure", branch="main", status="completed", event="schedule"):
+    return {
+        "id": 12345, "created_at": at.isoformat(),
+        "head_branch": branch, "status": status, "conclusion": conclusion,
+        "event": event,
+    }
+
+
+def test_render_side_watchdog_deadman_creates_durable_p0_on_missing_runs():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    store, session = _WatchdogStore(), _WatchdogSession([])
+    assert reconcile_sirt_watchdog(store, session=session, now=now) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert len(store.opened) == 1
+    kind, fields = store.opened[0]
+    assert kind == "AUDITOR_HEALTH"
+    assert fields["severity"] == "P0"
+    assert fields["evidence"]["finding_code"] == "WATCHDOG_HEARTBEAT_MISSING"
+    assert fields["evidence"]["event"] == "schedule"
+    assert fields["evidence"]["can_execute"] is False
+    assert fields["evidence"]["last_completed_run_id"] is None
+    assert session.calls[0][1]["params"]["branch"] == "main"
+    assert session.calls[0][1]["params"]["event"] == "schedule"
+    assert not store.resolved
+
+
+def test_render_side_watchdog_deadman_rejects_stale_and_skipped_runs():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    stale = _watchdog_run(now - timedelta(hours=2))
+    skipped = _watchdog_run(now - timedelta(minutes=1), conclusion="skipped")
+    wrong = _watchdog_run(now - timedelta(minutes=1), branch="untrusted")
+    store = _WatchdogStore()
+    assert reconcile_sirt_watchdog(
+        store, session=_WatchdogSession([wrong, skipped, stale]), now=now
+    ) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert store.opened[0][1]["evidence"]["last_completed_run_id"] == "12345"
+
+
+def test_render_side_watchdog_deadman_accepts_failed_watchdog_as_live_not_healthy():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    store = _WatchdogStore()
+    run = _watchdog_run(now - timedelta(minutes=10), conclusion="failure")
+    assert reconcile_sirt_watchdog(
+        store, session=_WatchdogSession([run]), now=now
+    ) == "WATCHDOG_RUN_OBSERVED"
+    assert not store.opened
+    assert store.resolved[0][0] == "AUDITOR_HEALTH"
+
+
+def test_render_side_watchdog_deadman_malformed_or_http_error_fails_closed():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    with pytest.raises(GitHubAuditUnavailable, match="SIRT_WATCHDOG_RUN_IDENTITY_INVALID"):
+        reconcile_sirt_watchdog(
+            _WatchdogStore(),
+            session=_WatchdogSession([{"head_branch": "main", "event": "schedule", "status": "completed", "conclusion": "failure"}]),
+            now=now,
+        )
+    with pytest.raises(GitHubAuditUnavailable, match="GITHUB_AUDIT_HTTP_403"):
+        reconcile_sirt_watchdog(
+            _WatchdogStore(), session=_WatchdogSession([], code=403), now=now
+        )
+
+
+def test_render_worker_wires_independent_watchdog_with_typed_degraded_status():
+    source = WORKER.read_text()
+    assert "reconcile_sirt_watchdog(store)" in source
+    assert "reconcile_sirt_watchdog(store, now=now)" in source
+    assert "poll_health.runtime_state()" in source
+    assert "poll_health.watchdog_unavailable()" in source
+    assert "WOW_ENGINEERING_RESIDENT_DISPATCH_ENABLED" not in GITHUB_RECONCILER.read_text()
+
+
+def test_watchdog_failure_sticks_across_fast_worker_ticks_until_new_observation():
+    from v17.engineering_auditor_worker import IndependentPollHealth
+    state = IndependentPollHealth()
+    assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_UNVERIFIED")
+    state.report_github(None)
+    state.report_watchdog("WATCHDOG_HEARTBEAT_MISSING")
+    for _ in range(12):  # 12 ordinary 30-second ticks without another GitHub poll
+        assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_HEARTBEAT_MISSING")
+    state.report_github("GITHUB_AUDIT_HTTP_403")
+    assert state.runtime_state()[0] == "DEGRADED"
+    state.report_github(None)
+    assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_HEARTBEAT_MISSING")
+    state.report_watchdog("WATCHDOG_RUN_OBSERVED")
+    assert state.runtime_state() == ("RUNNING", "CLEAR")
+
+
+def test_watchdog_source_failure_is_independent_of_issue_reconciliation():
+    from v17.engineering_auditor_worker import IndependentPollHealth, _github_interval_seconds
+    state = IndependentPollHealth()
+    state.report_github("GITHUB_AUDIT_HTTP_403")
+    state.report_watchdog("WATCHDOG_RUN_OBSERVED")
+    assert state.runtime_state() == ("DEGRADED", "GITHUB_AUDIT_HTTP_403")
+    state.watchdog_unavailable()
+    assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_SOURCE_UNAVAILABLE")
+    state.report_github(None)
+    assert state.runtime_state() == ("DEGRADED", "SIRT_WATCHDOG_SOURCE_UNAVAILABLE")
+    state.report_watchdog("WATCHDOG_RUN_OBSERVED")
+    assert state.runtime_state() == ("RUNNING", "CLEAR")
+    assert _github_interval_seconds() >= 300
+
+
+def test_watchdog_and_github_polls_have_distinct_failure_boundaries():
+    source = WORKER.read_text()
+    assert '# Poll the watchdog separately even when ordinary GitHub' in source
+    assert 'poll_health.report_watchdog(reconcile_sirt_watchdog(store, now=now))' in source
+    assert 'poll_health.report_github(IndependentPollHealth.github_failure(exc))' in source
+
+
+def test_scheduler_watchdog_cannot_be_masked_by_push_or_workflow_run():
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    store = _WatchdogStore()
+    runs = [
+        _watchdog_run(now - timedelta(minutes=1), event="push"),
+        _watchdog_run(now - timedelta(minutes=2), event="workflow_run"),
+        _watchdog_run(now - timedelta(minutes=3), event="workflow_dispatch"),
+    ]
+    assert reconcile_sirt_watchdog(
+        store, session=_WatchdogSession(runs), now=now
+    ) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert store.opened[0][0] == "AUDITOR_HEALTH"
+
+
+@pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", "skipped"])
+def test_scheduler_watchdog_does_not_count_incomplete_conclusions(conclusion):
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    store = _WatchdogStore()
+    assert reconcile_sirt_watchdog(
+        store,
+        session=_WatchdogSession([_watchdog_run(now - timedelta(minutes=1), conclusion=conclusion)]),
+        now=now,
+    ) == "WATCHDOG_HEARTBEAT_MISSING"
+
+
+def test_watchdog_finding_type_respects_real_postgres_schema_constraint():
+    """Avoid fake-store false greens when DB rejects a newly invented type."""
+    migration = MIGRATION.read_text()
+    assert "constraint wow_engineering_audit_findings_type" in migration
+    assert "'AUDITOR_HEALTH'" in migration
+    assert "'WATCHDOG_HEARTBEAT_MISSING'" not in migration
+    store = _WatchdogStore()
+    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
+    reconcile_sirt_watchdog(store, session=_WatchdogSession([]), now=now)
+    assert store.opened[0][0] == "AUDITOR_HEALTH"
+    assert store.opened[0][1]["evidence"]["finding_code"] == "WATCHDOG_HEARTBEAT_MISSING"

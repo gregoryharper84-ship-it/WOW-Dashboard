@@ -12,7 +12,9 @@ def test_worker_preserves_edits_when_openai_agent_returns_working_tree_changes()
     assert 'git add --all' in text
     assert 'git commit -m "ChatGPT Engineering: ${incident:-nightly-repair}"' in text
     assert 'git push --set-upstream origin "$branch"' in text
-    assert 'GITHUB_TOKEN: ${{ github.token }}' in text
+    # Push authors as wow-engineering[bot] via the minted App token, not the ambient
+    # Actions token (#1550/#1663 item 1) — see .github/scripts/pr_authoring_token_audit.py.
+    assert 'GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}' in text
 
 
 def test_worker_uses_openai_writer_with_bounded_claude_read_only_peers():

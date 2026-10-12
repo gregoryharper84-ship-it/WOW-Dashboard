@@ -282,3 +282,25 @@ def test_sirt_watchdog_has_independent_event_trigger_for_existing_hourly_loop():
         assert forbidden not in wf
     assert "workflow_dispatch:" in wf
     assert 'vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT' in wf
+
+
+def test_sirt_incident_history_step_receives_same_supabase_source_as_heartbeat():
+    """Regression for missing secrets that made live symptom cohorts UNVERIFIED.
+
+    The history reader never needs broader permissions or execution authority;
+    both commands must reuse the same restricted service-role credentials.
+    """
+    from pathlib import Path
+    import yaml
+
+    wf_path = (Path(__file__).resolve().parents[2]
+               / ".github/workflows/wow-sirt-independent-reliability-sentinel.yml")
+    steps = yaml.safe_load(wf_path.read_text())["jobs"]["watchdog"]["steps"]
+    heartbeat = next(s for s in steps if s.get("name") == "Evaluate independent heartbeat and governance")
+    history = next(s for s in steps if s.get("name") == "Analyze canonical incident history")
+    assert history["if"] == "always()"
+    for key in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SERVICE_KEY"):
+        assert history["env"][key] == heartbeat["env"][key]
+    assert "sirt_assurance.py failures" in history["run"]
+    assert "actions: read" in wf_path.read_text()
+    assert "actions: write" not in wf_path.read_text()

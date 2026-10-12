@@ -1,0 +1,44 @@
+name: wow-v17-anthropic-key-diagnostic
+
+# Manual, status-only check of the ANTHROPIC_API_KEY secret (#1021).
+# Prints only key format, whitespace warning, HTTP status and error.type per
+# model. Never prints the key or any response body. Safe for a public repo.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: wow-v17-anthropic-key-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  api-key-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check ANTHROPIC_API_KEY (status only)
+        shell: bash
+        env:
+          K: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -uo pipefail
+          note() { echo "$1"; echo "::notice title=anthropic-key-diagnostic::$1"; }
+          if [ -z "${K:-}" ]; then note "secret: EMPTY or not available to this run"; exit 1; fi
+          case "$K" in
+            sk-ant-api03-*) note "format: sk-ant-api03" ;;
+            sk-ant-usr-*)   note "format: sk-ant-usr" ;;
+            *)              note "format: unrecognized" ;;
+          esac
+          if [ "$K" != "$(printf '%s' "$K" | tr -d '[:space:]')" ]; then
+            note "WARNING: key contains whitespace/newline"
+          fi
+          resp="$RUNNER_TEMP/anthropic-diag.json"
+          for M in claude-opus-5-5 claude-sonnet-5-5; do
+            CODE=$(curl -s -o "$resp" -w "%{http_code}" https://api.anthropic.com/v1/messages \
+              -H "x-api-key: $K" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+              -d "{\"model\":\"$M\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+            TYPE=$(jq -r '.error.type // "none"' "$resp" 2>/dev/null || echo "unparseable")
+            note "$M -> HTTP $CODE, error.type=$TYPE"
+            rm -f "$resp"
+          done
