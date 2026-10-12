@@ -210,8 +210,8 @@ def test_resident_existing_pr_claim_exactness(body, expected):
 
     class PRClient:
         def get(self, suffix):
-            assert suffix == "pulls?state=open&per_page=100"
-            return [{"body": body}]
+            assert suffix == "pulls?state=open&per_page=100&sort=created&direction=asc&page=1"
+            return [{"number": 77, "body": body}]
 
     assert pending_pr_for_issue(PRClient(), 823) is expected
 
