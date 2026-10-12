@@ -90,7 +90,6 @@ def test_never_updates_or_upserts(fake):
     ({"unexpected": 1}, "unexpected"),
     ({"incident_id": " "}, "incident_id"),
     ({"incident_id": "x" * 201}, "incident_id"),
-    ({"provider": "gemini"}, "provider"),
     ({"role": "approver"}, "role"),
     ({"worker_run_id": ""}, "worker_run_id"),
     ({"disposition": "MODEL_UNAVAILABLE"}, "disposition"),
@@ -221,3 +220,26 @@ def test_cli_unavailable_exit_code(monkeypatch, capsys, tmp_path):
     path.write_text(json.dumps(base()))
     assert er.main(["--receipt-json", str(path)]) == 3
     assert json.loads(capsys.readouterr().out)["reason"] == "RECEIPT_PERSISTENCE_UNAVAILABLE"
+
+
+
+def test_gemini_is_a_registered_evidence_only_provider():
+    row = er.build_receipt(**base(provider="gemini", role="adversarial_reviewer"))
+    assert row["provider"] == "gemini" and row["disposition"] == "IN_PROGRESS"
+
+
+@pytest.mark.parametrize("changes,field", [
+    ({"role": "release_authority"}, "gemini_role"),
+    ({"role": "independent_qa"}, "gemini_role"),
+    ({"role": "conductor"}, "gemini_role"),
+    ({"qa_decision": "PASS"}, "gemini_authority"),
+    ({"release_decision": "DEPLOYED"}, "gemini_authority"),
+    ({"deployed_sha": SHA}, "gemini_authority"),
+    ({"disposition": "FIXED_AND_VERIFIED"}, "gemini_authority"),
+])
+def test_gemini_cannot_self_certify_or_release(changes, field):
+    row = base(provider="gemini", role="adversarial_reviewer")
+    row.update(changes)
+    with pytest.raises(er.ReceiptError) as exc:
+        er.build_receipt(**row)
+    assert exc.value.code == "RECEIPT_INVALID:" + field
