@@ -34,6 +34,7 @@ def _inputs(p: float = .51) -> tuple[list[dict], list[dict]]:
         "entry_id": "entry-other",
         "receipt_id": "receipt-other",
         "availability_source": "documented-before-lock",
+        "audience": "OPPONENT_ENTRIES",
         "submitted_at": "2026-10-10T13:00:00Z",
         "available_to_user_at": "2026-10-10T14:00:00Z",
         "picks": {"AWAY@HOME": "HOME"},
@@ -157,3 +158,14 @@ def test_missing_opponent_cannot_fake_full_pool_simulation():
     picks, others = _inputs()
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_POOL_SIZE_MISMATCH"):
         evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=12)
+
+
+def test_duplicate_ownership_receipt_and_wrong_audience_blocked():
+    picks, others = _inputs()
+    copied = deepcopy(others[0])
+    copied["entry_id"] = "second-name-same-receipt"
+    with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_DUPLICATE_OPPONENT_RECEIPT"):
+        evaluate_full_pool_shadow(picks, [others[0], copied], lock_at=LOCK, pool_size=3)
+    others[0]["audience"] = "ALL_ENTRIES"
+    with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_OPPONENT_AUDIENCE_INVALID"):
+        evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=2)
