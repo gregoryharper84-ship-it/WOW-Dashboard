@@ -47,7 +47,7 @@ LOCK = "2026-10-11T12:00:00Z"
 def test_exact_two_outcome_enumeration_selects_competitive_minor_side_without_model_mutation():
     picks, others = _inputs()
     immutable = deepcopy(picks)
-    output = evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+    output = evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
     assert output["scenario_count"] == 2
     assert output["pool_size"] == 2
     assert output["baseline"]["sole_first_probability_proxy"] == pytest.approx(0)
@@ -72,7 +72,7 @@ def test_full_pool_can_disfavor_high_accuracy_baseline_with_three_opponents():
         entry["entry_id"] = f"other-{i}"
         entry["receipt_id"] = f"receipt-{i}"
         others.append(entry)
-    output = evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+    output = evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
     assert output["baseline"]["equal_split_first_share_proxy"] == pytest.approx(.25)
     assert output["research_challenger"]["sole_first_probability_proxy"] == pytest.approx(.49)
     assert output["research_challenger"]["equal_split_first_share_proxy"] == pytest.approx(.49)
@@ -86,7 +86,7 @@ def test_full_pool_can_disfavor_high_accuracy_baseline_with_three_opponents():
 
 def test_high_confidence_baseline_not_flipped_by_extreme_opponent_concentration():
     picks, others = _inputs(.9)
-    output = evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+    output = evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
     assert output["changed_picks"] == []
     assert output["expected_correct_sacrifice"] == pytest.approx(0)
 
@@ -94,36 +94,36 @@ def test_high_confidence_baseline_not_flipped_by_extreme_opponent_concentration(
 def test_missing_or_revealed_after_lock_opponent_entries_fail_closed():
     picks, others = _inputs()
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_PRELOCK_OPPONENTS_REQUIRED"):
-        evaluate_full_pool_shadow(picks, [], lock_at=LOCK)
+        evaluate_full_pool_shadow(picks, [], lock_at=LOCK, pool_size=1 + len(others))
     others[0]["available_to_user_at"] = "2026-10-11T12:00:01Z"
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_OPPONENT_NOT_PRELOCK_AVAILABLE"):
-        evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+        evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
 
 
 def test_post_kickoff_model_wrong_specialist_and_missing_bounds_fail_closed():
     picks, others = _inputs()
     picks[0]["immutable_model_timestamp"] = "2026-10-11T20:00:00Z"
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_STALE_OR_POST_LOCK_MODEL"):
-        evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+        evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
     picks, others = _inputs()
     picks[0]["controlling_specialist"] = "odds-model"
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_SPECIALIST_MISMATCH"):
-        evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+        evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
     picks, others = _inputs()
     del picks[0]["calibrated_selection_lower_bound"]
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_BOUNDS_REQUIRED"):
-        evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+        evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
 
 
 def test_probability_and_event_identity_are_not_fabricated():
     picks, others = _inputs()
     picks[0]["away_probability"] = .33
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_BASELINE_MODEL_CONFLICT"):
-        evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+        evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
     picks, others = _inputs()
     others[0]["picks"] = {"not-the-game": "HOME"}
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_OPPONENT_EVENT_SET_MISMATCH"):
-        evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+        evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
 
 
 def test_two_game_board_is_deterministic_and_respects_zero_flip_limit():
@@ -137,8 +137,8 @@ def test_two_game_board_is_deterministic_and_respects_zero_flip_limit():
     p2["source_snapshot_id"] = "snapshot-2"
     others[0]["picks"]["A2@H2"] = "H2"
     picks.append(p2)
-    first = evaluate_full_pool_shadow(picks, others, lock_at=LOCK, max_flips=0)
-    second = evaluate_full_pool_shadow(picks, others, lock_at=LOCK, max_flips=0)
+    first = evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others), max_flips=0)
+    second = evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others), max_flips=0)
     assert first == second
     assert first["scenario_count"] == 4
     assert first["changed_picks"] == []
@@ -149,5 +149,11 @@ def test_valid_boundary_calibration_interval_can_include_zero_and_one():
     picks, others = _inputs()
     picks[0]["calibrated_selection_lower_bound"] = 0.0
     picks[0]["calibrated_selection_upper_bound"] = 1.0
-    out = evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+    out = evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=1 + len(others))
     assert out["status"] == "RESEARCH_SHADOW_COMPLETE"
+
+
+def test_missing_opponent_cannot_fake_full_pool_simulation():
+    picks, others = _inputs()
+    with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_POOL_SIZE_MISMATCH"):
+        evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=12)
