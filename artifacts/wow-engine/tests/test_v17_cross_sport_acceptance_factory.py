@@ -178,3 +178,17 @@ def test_missing_model_calibration_and_canary_stay_typed():
     r = _reconciled(checks=checks)
     assert "ACCEPTANCE_GATE_HOLD:MODEL_CALIBRATION_AND_BOUNDS" in r["blockers"]
     assert "ACCEPTANCE_GATE_DEFERRED:BACKEND_ACTION_CANARY" in r["blockers"]
+
+
+def test_malformed_policy_inputs_fail_closed_without_throwing():
+    p = CohortPolicy(13, NOW, NOW + timedelta(days=5), max_window_days=None, max_source_age=None)
+    r = _result(policy=p)
+    assert "ACCEPTANCE_WINDOW_LIMIT_INVALID" in r.blockers
+    assert "ACCEPTANCE_SOURCE_AGE_POLICY_INVALID" in r.blockers
+    malformed = SourceInventory("provider", None, NOW, _fixtures())
+    assert "ACCEPTANCE_SOURCE_PROVENANCE_MISSING" in _result(inventory=malformed).blockers
+
+
+def test_malformed_deployment_sha_fails_closed():
+    r = _reconciled(source_commit_sha=12345)
+    assert "ACCEPTANCE_DEPLOY_SHA_INVALID" in r["blockers"]
