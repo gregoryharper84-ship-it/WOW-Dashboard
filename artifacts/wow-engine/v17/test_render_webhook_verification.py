@@ -10,6 +10,7 @@ from v17.render_webhook_verification import RenderWebhookError, verify_render_we
 
 SECRET = "whsec_" + base64.b64encode(b"this-is-an-isolated-test-secret-32").decode()
 NOW = 1791840000
+ALLOW = {"allowed_service_ids": frozenset({"srv-test"}), "allowed_event_types": frozenset({"deploy_ended"})}
 
 
 def signed(body=None, event_id="evt-test123", sent_at=NOW):
@@ -22,7 +23,7 @@ def signed(body=None, event_id="evt-test123", sent_at=NOW):
 
 def test_accepts_authentic_event_without_dispatch():
     headers, body = signed()
-    result = verify_render_webhook(headers, body, SECRET, now=NOW)
+    result = verify_render_webhook(headers, body, SECRET, now=NOW, **ALLOW)
     assert (result.event_id, result.service_id, result.event_type) == ("evt-test123", "srv-test", "deploy_ended")
 
 
@@ -47,16 +48,34 @@ def test_rejects_invalid_envelopes(mutation):
     elif mutation == "large":
         body += b"x" * 16385
     with pytest.raises(RenderWebhookError):
-        verify_render_webhook(headers, body, secret, now=NOW)
+        verify_render_webhook(headers, body, secret, now=NOW, **ALLOW)
 
 
 def test_handles_multiple_rotation_signatures():
     headers, body = signed()
     headers["webhook-signature"] = "v1,AAAA " + headers["webhook-signature"]
-    assert verify_render_webhook(headers, body, SECRET, now=NOW).event_id == "evt-test123"
+    assert verify_render_webhook(headers, body, SECRET, now=NOW, **ALLOW).event_id == "evt-test123"
 
 
 def test_rejects_payload_id_mismatch_even_with_valid_signature():
     headers, body = signed(body={"type": "deploy_ended", "data": {"id": "evt-another", "serviceId": "srv-test"}})
     with pytest.raises(RenderWebhookError, match="EVENT_ID_MISMATCH"):
+        verify_render_webhook(headers, body, SECRET, now=NOW, **ALLOW)
+
+
+def test_rejects_event_without_configured_allowlist():
+    headers, body = signed()
+    with pytest.raises(RenderWebhookError, match="SERVICE_NOT_ALLOWED"):
         verify_render_webhook(headers, body, SECRET, now=NOW)
+
+
+def test_rejects_signed_event_from_unexpected_service():
+    headers, body = signed(body={"type": "deploy_ended", "data": {"id": "evt-test123", "serviceId": "srv-other"}})
+    with pytest.raises(RenderWebhookError, match="SERVICE_NOT_ALLOWED"):
+        verify_render_webhook(headers, body, SECRET, now=NOW, **ALLOW)
+
+
+def test_rejects_signed_event_from_unexpected_event_type():
+    headers, body = signed(body={"type": "plan_changed", "data": {"id": "evt-test123", "serviceId": "srv-test"}})
+    with pytest.raises(RenderWebhookError, match="EVENT_TYPE_NOT_ALLOWED"):
+        verify_render_webhook(headers, body, SECRET, now=NOW, **ALLOW)
