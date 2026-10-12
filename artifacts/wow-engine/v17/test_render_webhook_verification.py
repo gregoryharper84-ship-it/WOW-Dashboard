@@ -79,3 +79,15 @@ def test_rejects_signed_event_from_unexpected_event_type():
     headers, body = signed(body={"type": "plan_changed", "data": {"id": "evt-test123", "serviceId": "srv-test"}})
     with pytest.raises(RenderWebhookError, match="EVENT_TYPE_NOT_ALLOWED"):
         verify_render_webhook(headers, body, SECRET, now=NOW, **ALLOW)
+
+
+@pytest.mark.parametrize("event_id", ["evt-é", "evt-\u2603", "evt-"])
+def test_malformed_identity_fails_with_typed_error(event_id):
+    headers, body = signed(event_id=event_id)
+    with pytest.raises(RenderWebhookError, match="EVENT_ID_INVALID"):
+        verify_render_webhook(headers, body, SECRET, now=NOW, **ALLOW)
+
+
+def test_standard_webhook_id_can_include_hyphenated_suffix():
+    headers, body = signed(event_id="evt-test-123")
+    assert verify_render_webhook(headers, body, SECRET, now=NOW, **ALLOW).event_id == "evt-test-123"
