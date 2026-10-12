@@ -46,3 +46,58 @@ def test_payload_size_bounded():
     with pytest.raises(InventoryIntegrityError, match="SOURCE_PAYLOAD_SIZE_INVALID"):
         verify_inventory_bytes(b" "*2_000_001, expected_sha256="0"*64, source_id="provider",
                                fetched_at=NOW, sport="NFL")
+
+
+@pytest.mark.parametrize("obj,code", [
+    ({"events": [{**EVENT, "official_event_id": " nfl-123"}]}, "SOURCE_CANONICAL_EVENT_ID_INVALID"),
+    ({"events": [{**EVENT, "official_event_id": "nfl-123\n"}]}, "SOURCE_CANONICAL_EVENT_ID_INVALID"),
+    ({"events": [{**EVENT, "official_event_id": "a" * 181}]}, "SOURCE_CANONICAL_EVENT_ID_INVALID"),
+    ({"events": [{**EVENT, "start_utc": 1759900000}]}, "SOURCE_EVENT_TIMESTAMP_INVALID"),
+    ({"events": [{**EVENT, "official_event_id": 7}]}, "SOURCE_CANONICAL_EVENT_ID_INVALID"),
+])
+def test_reject_untrusted_event_identity_variants(obj, code):
+    with pytest.raises(InventoryIntegrityError, match=code):
+        call(obj)
+
+
+def test_empty_inventory_and_final_event_are_valid_observations_not_certification():
+    assert call({"events": []}).fixtures == ()
+    assert call({"events": [{**EVENT, "status": "FINAL"}]}).fixtures[0].status == "FINAL"
+
+
+def test_timestamp_with_timezone_offset_is_normalized_to_utc():
+    result = call({"events": [{**EVENT, "start_utc": "2026-10-14T19:00:00-05:00"}]})
+    assert result.fixtures[0].start_utc.isoformat() == "2026-10-15T00:00:00+00:00"
+
+
+@pytest.mark.parametrize("kwargs,code", [
+    ({"expected_sha256": "INVALID"}, "SOURCE_EXPECTED_DIGEST_INVALID"),
+    ({"source_id": "   "}, "SOURCE_IDENTITY_MISSING"),
+    ({"fetched_at": datetime(2026, 10, 12)}, "SOURCE_FETCH_TIMEZONE_MISSING"),
+    ({"sport": "nfl"}, "SOURCE_SPORT_INVALID"),
+    ({"sport": None}, "SOURCE_SPORT_INVALID"),
+])
+def test_fail_closed_invalid_verified_source_context(kwargs, code):
+    raw = json.dumps({"events": [EVENT]}).encode()
+    valid = dict(expected_sha256=hashlib.sha256(raw).hexdigest(), source_id="upstream",
+                 fetched_at=NOW, sport="NFL")
+    valid.update(kwargs)
+    with pytest.raises(InventoryIntegrityError, match=code):
+        verify_inventory_bytes(raw, **valid)
+
+
+@pytest.mark.parametrize("raw,code", [
+    (b"", "SOURCE_PAYLOAD_SIZE_INVALID"),
+    (b"{", "SOURCE_PAYLOAD_JSON_INVALID"),
+    (b"\xff", "SOURCE_PAYLOAD_JSON_INVALID"),
+    (b"[]", "SOURCE_EVENT_LIST_INVALID"),
+])
+def test_fail_closed_invalid_payload(raw, code):
+    with pytest.raises(InventoryIntegrityError, match=code):
+        verify_inventory_bytes(raw, expected_sha256=hashlib.sha256(raw).hexdigest(),
+                               source_id="upstream", fetched_at=NOW, sport="NFL")
+
+
+def test_fail_closed_event_count_limit():
+    with pytest.raises(InventoryIntegrityError, match="SOURCE_EVENT_COUNT_LIMIT"):
+        call({"events": [EVENT] * 2001})
