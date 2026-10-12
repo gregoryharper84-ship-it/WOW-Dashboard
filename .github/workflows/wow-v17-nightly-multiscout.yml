@@ -100,9 +100,10 @@ on:
 permissions:
   contents: read
 
+# PR verification gets its own group so it never queues behind (or cancels) live runs.
 concurrency:
-  group: wow-v17-nightly-multiscout
-  cancel-in-progress: false
+  group: wow-v17-nightly-multiscout-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'live' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:

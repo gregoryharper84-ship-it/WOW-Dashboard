@@ -168,10 +168,19 @@ def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("bootstrap JSON must be an object")
-    required = ("event_id", "event_start_time", "sport", "player", "stat_type", "line")
+    required = ("event_id", "event_start_time", "sport", "player", "stat_type", "line", "direction")
     missing = [key for key in required if value.get(key) in (None, "")]
     if missing:
         raise ValueError("bootstrap JSON missing required fields: " + ",".join(missing))
+    direction = str(value["direction"]).strip().upper()
+    if direction not in {"MORE", "LESS"}:
+        raise ValueError("bootstrap direction must be MORE or LESS")
+    try:
+        exact_line = float(value["line"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("bootstrap exact line invalid") from exc
+    if not math.isfinite(exact_line):
+        raise ValueError("bootstrap exact line must be finite")
     event_start = _aware(value["event_start_time"])
     if event_start <= datetime.now(timezone.utc):
         raise ValueError("bootstrap event already started")
@@ -182,8 +191,8 @@ def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
         "sport": str(value["sport"]).upper(),
         "player": str(value["player"]),
         "stat_type": str(value["stat_type"]).upper(),
-        "line": float(value["line"]),
-        "direction": str(value.get("direction") or "MORE").upper(),
+        "line": exact_line,
+        "direction": direction,
         "source_type": "AUTONOMOUS_DISCOVERY",
         "platform": "WOW_PRODUCTION_SELF_ACCEPTANCE",
         "league": str(value.get("league") or value["sport"]).upper(),
@@ -204,6 +213,7 @@ def _expected_bootstrap_model_family(payload: dict[str, Any]) -> str:
     nfl_aliases = {
         "PASS_YARDS", "PASSING_YARDS", "RUSH_YARDS", "RUSHING_YARDS",
         "REC_YARDS", "RECEIVING_YARDS", "ANYTIME_TD", "ANYTIME_TDS",
+        "PLAYER_PASSING_YARDS", "PLAYER_RUSHING_YARDS", "PLAYER_RECEIVING_YARDS",
         "ANYTIME_TOUCHDOWN", "ANYTIME_TOUCHDOWNS",
     }
     if sport == "NFL" and stat in nfl_aliases:

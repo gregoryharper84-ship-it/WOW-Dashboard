@@ -14,6 +14,23 @@ def test_aliases():
     assert runtime._canonical_stat("NFL", "Anytime TDs") == "ANYTIME_TD"
 
 
+def test_autonomous_nfl_player_yardage_labels_normalize_only_stat_identity():
+    """Scout PLAYER_ labels must reach their existing fitted-route preflight."""
+    expected = {
+        "PLAYER_PASSING_YARDS": "PASSING_YARDS",
+        "PLAYER_RUSHING_YARDS": "RUSHING_YARDS",
+        "PLAYER_RECEIVING_YARDS": "RECEIVING_YARDS",
+    }
+    for discovery_stat, canonical_stat in expected.items():
+        assert runtime._canonical_stat("NFL", discovery_stat) == canonical_stat
+        assert runtime._canonical_stat("NFL", discovery_stat.lower().replace("_", " ")) == canonical_stat
+        # Normalization alone cannot promote an unregistered sport/stat model.
+        assert provider_for_sport("NFL", canonical_stat) is not None
+
+    assert runtime._canonical_stat("NFL", "PLAYER_RECEPTIONS") == "PLAYER_RECEPTIONS"
+    assert runtime._canonical_stat("NBA", "PLAYER_RECEIVING_YARDS") == "PLAYER_RECEIVING_YARDS"
+
+
 def test_registration():
     prop_fitted_provider.clear_model_family_adapters()
     getattr(prop_discrete_engine, "_CALIBRATION_ADAPTERS").clear()
