@@ -172,8 +172,14 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
 
     winners = week.get("settled_winners")
     _event_set(winners, events, "PICKEM_REPLAY_SETTLED_EVENT_SET_MISMATCH")
+    tie_events = sorted(event for event, side in winners.items() if side == "TIE")
+    tie_policy = week.get("tie_policy")
+    if tie_policy not in (None, "NO_POINT"):
+        raise ReplayInputError("PICKEM_REPLAY_TIE_POLICY_UNSUPPORTED")
+    if tie_events and tie_policy != "NO_POINT":
+        raise ReplayInputError("PICKEM_REPLAY_TIE_RULE_REQUIRED")
     for event, side in winners.items():
-        if side not in allowed_sides[event]:
+        if side != "TIE" and side not in allowed_sides[event]:
             raise ReplayInputError("PICKEM_REPLAY_SETTLED_SIDE_INVALID")
 
     raw_ownership = week.get("ownership_snapshots")
@@ -192,6 +198,12 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
         observed = _timestamp(snapshot.get("observed_at"), "PICKEM_REPLAY_OWNERSHIP_TIMESTAMP_INVALID")
         if observed > lock:
             raise ReplayInputError("PICKEM_REPLAY_POST_LOCK_OWNERSHIP")
+        available = _timestamp(snapshot.get("available_to_user_at"),
+                               "PICKEM_REPLAY_OWNERSHIP_AVAILABILITY_INVALID")
+        if available > lock:
+            raise ReplayInputError("PICKEM_REPLAY_POST_LOCK_OWNERSHIP_AVAILABILITY")
+        if available < observed:
+            raise ReplayInputError("PICKEM_REPLAY_OWNERSHIP_AVAILABILITY_BEFORE_OBSERVATION")
         shares = snapshot.get("shares")
         _event_set(shares, allowed_sides[event], "PICKEM_REPLAY_OWNERSHIP_SIDES_MISMATCH")
         values = [_probability(shares[side], "PICKEM_REPLAY_OWNERSHIP_SHARE_INVALID")
@@ -205,6 +217,7 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw_entries, list) or not raw_entries:
         raise ReplayInputError("PICKEM_REPLAY_OPPONENT_ENTRIES_REQUIRED")
     entry_ids: set[str] = set()
+    opponent_receipts: set[str] = set()
     opponents: dict[str, Mapping[str, str]] = {}
     for entry in raw_entries:
         if not isinstance(entry, Mapping):
@@ -213,10 +226,24 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
         if entry_id in entry_ids:
             raise ReplayInputError("PICKEM_REPLAY_DUPLICATE_OPPONENT")
         entry_ids.add(entry_id)
-        if _timestamp(entry.get("submitted_at"),
-                      "PICKEM_REPLAY_OPPONENT_SUBMISSION_INVALID") > lock:
+        submitted = _timestamp(entry.get("submitted_at"),
+                               "PICKEM_REPLAY_OPPONENT_SUBMISSION_INVALID")
+        if submitted > lock:
             raise ReplayInputError("PICKEM_REPLAY_POST_LOCK_OPPONENT_CARD")
-        _required_text(entry.get("receipt_id"), "PICKEM_REPLAY_OPPONENT_RECEIPT_REQUIRED")
+        available = _timestamp(entry.get("available_to_user_at"),
+                               "PICKEM_REPLAY_OPPONENT_AVAILABILITY_INVALID")
+        if available > lock:
+            raise ReplayInputError("PICKEM_REPLAY_POST_LOCK_OPPONENT_AVAILABILITY")
+        if available < submitted:
+            raise ReplayInputError("PICKEM_REPLAY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION")
+        _required_text(entry.get("availability_source"),
+                       "PICKEM_REPLAY_OPPONENT_AVAILABILITY_SOURCE_REQUIRED")
+        if entry.get("audience") != "OPPONENT_ENTRIES":
+            raise ReplayInputError("PICKEM_REPLAY_OPPONENT_AUDIENCE_INVALID")
+        receipt = _required_text(entry.get("receipt_id"), "PICKEM_REPLAY_OPPONENT_RECEIPT_REQUIRED")
+        if receipt in opponent_receipts:
+            raise ReplayInputError("PICKEM_REPLAY_DUPLICATE_OPPONENT_RECEIPT")
+        opponent_receipts.add(receipt)
         card = entry.get("picks")
         _event_set(card, events, "PICKEM_REPLAY_OPPONENT_CARD_EVENT_SET_MISMATCH")
         for event, side in card.items():
@@ -253,6 +280,10 @@ def replay_one_week(week: Mapping[str, Any]) -> dict[str, Any]:
         "event_count": len(events),
         "pool_size": size,
         "settlement_source": settlement_source,
+        "tie_policy": tie_policy,
+        "tied_events": tie_events,
+        "historical_ties_scored_no_points": bool(tie_events),
+        "nfl_tie_probabilities_certified": False,
         "ownership_snapshot_ids": ownership_receipts,
         "source_terminal_labels_preserved": source_terminals,
         "baseline": baseline_score,
