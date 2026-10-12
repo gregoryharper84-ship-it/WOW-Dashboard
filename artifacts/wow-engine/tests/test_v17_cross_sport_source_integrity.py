@@ -111,7 +111,7 @@ def test_fail_closed_event_count_limit():
     (b'{"events":[],"discarded":Infinity}', "SOURCE_PAYLOAD_JSON_NONFINITE_NUMBER"),
     (b'{"events":[],"discarded":-Infinity}', "SOURCE_PAYLOAD_JSON_NONFINITE_NUMBER"),
     ('{"events":[]}'.encode("utf-16"), "SOURCE_PAYLOAD_JSON_INVALID"),
-    (b'\x5cxef\x5cxbb\x5cxbf{"events":[]}', "SOURCE_PAYLOAD_JSON_INVALID"),
+    (b'\xef\xbb\xbf{"events":[]}', "SOURCE_PAYLOAD_JSON_INVALID"),
     (b'{"events":[]} trailing', "SOURCE_PAYLOAD_JSON_INVALID"),
 ])
 def test_strict_json_rejects_ambiguous_bytes(raw, code):
