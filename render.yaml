@@ -14,7 +14,9 @@ services:
   - type: web
     name: wow-governed-probability-engine
     runtime: python
-    plan: free
+    # Align the Blueprint with the verified live 1 CPU / 2 GiB Render instance.
+    # Do not change deployment trigger, secrets, or execution safety controls.
+    plan: 1c-2g
     region: oregon
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
