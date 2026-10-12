@@ -165,7 +165,7 @@ def test_receipt_store_failure_never_grants_production_authority(monkeypatch):
     monkeypatch.setattr(registration, "run_prop_certification_audit", lambda *_args, **_kwargs: {
         "artifact_rows": [{**_artifact(), "status": "CALIBRATION_CERTIFIED_PASS", "evidence_hash": "evidence-hash"}],
         "certified_pass_n": 1,
-        "reviewed_policy_pass_n": 0,
+        "reviewed_policy_count": 0,
     })
     monkeypatch.setattr(registration, "_artifact_rows", lambda _db: [_artifact()])
     monkeypatch.setattr(registration, "REVIEWED_CERTIFICATION_RELEASES", {
