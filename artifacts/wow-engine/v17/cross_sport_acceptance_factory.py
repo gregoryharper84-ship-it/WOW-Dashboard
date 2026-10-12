@@ -118,24 +118,25 @@ def evaluate_cohort(lane: Lane, inventory: SourceInventory, policy: CohortPolicy
     league-aware window and source inventory. A thin slate is a typed HOLD.
     """
     blockers: list[str] = []
+    window_limit_valid = type(policy.max_window_days) is int and 1 <= policy.max_window_days <= 14
+    source_age_valid = isinstance(policy.max_source_age, timedelta) and policy.max_source_age > timedelta(0)
+    if not window_limit_valid:
+        blockers.append("ACCEPTANCE_WINDOW_LIMIT_INVALID")
+    if not source_age_valid:
+        blockers.append("ACCEPTANCE_SOURCE_AGE_POLICY_INVALID")
     if not all(_aware(t) for t in (now, inventory.fetched_at, policy.window_start, policy.window_end)):
         blockers.append("ACCEPTANCE_TIMEZONE_UNVERIFIED")
     else:
-        if now < inventory.fetched_at or now - inventory.fetched_at > policy.max_source_age:
+        if source_age_valid and (now < inventory.fetched_at or now - inventory.fetched_at > policy.max_source_age):
             blockers.append("ACCEPTANCE_SOURCE_STALE_OR_FUTURE")
-        if policy.window_end <= policy.window_start or policy.window_end - policy.window_start > timedelta(days=policy.max_window_days):
+        if window_limit_valid and (policy.window_end <= policy.window_start or policy.window_end - policy.window_start > timedelta(days=policy.max_window_days)):
             blockers.append("ACCEPTANCE_COHORT_WINDOW_INVALID")
         if policy.window_end <= now:
             blockers.append("ACCEPTANCE_HISTORICAL_COHORT_NOT_PREGAME")
-    if not inventory.source_id or not _SHA256.fullmatch(inventory.payload_sha256):
+    if not inventory.source_id or not isinstance(inventory.payload_sha256, str) or not _SHA256.fullmatch(inventory.payload_sha256):
         blockers.append("ACCEPTANCE_SOURCE_PROVENANCE_MISSING")
     if type(policy.minimum_unique_events) is not int or policy.minimum_unique_events < 1:
         blockers.append("ACCEPTANCE_THRESHOLD_INVALID")
-    if type(policy.max_window_days) is not int or not 1 <= policy.max_window_days <= 14:
-        blockers.append("ACCEPTANCE_WINDOW_LIMIT_INVALID")
-    if policy.max_source_age <= timedelta(0):
-        blockers.append("ACCEPTANCE_SOURCE_AGE_POLICY_INVALID")
-
     eligible: dict[str, Fixture] = {}
     for event in inventory.fixtures:
         if not event.official_event_id or not _aware(event.start_utc):
@@ -189,7 +190,7 @@ def reconcile_lane(
     complete evidence here cannot cause release, scoring or model promotion.
     """
     blockers: list[str] = []
-    if not _SHA.fullmatch(source_commit_sha or "") or not _SHA.fullmatch(deployed_commit_sha or ""):
+    if not (isinstance(source_commit_sha, str) and _SHA.fullmatch(source_commit_sha)) or not (isinstance(deployed_commit_sha, str) and _SHA.fullmatch(deployed_commit_sha)):
         blockers.append("ACCEPTANCE_DEPLOY_SHA_INVALID")
     elif source_commit_sha != deployed_commit_sha:
         blockers.append("ACCEPTANCE_DEPLOY_SHA_MISMATCH")
