@@ -330,10 +330,25 @@ def test_shadow_detects_finite_inputs_that_overflow_fitted_linear_sum():
 
 def test_research_only_probability_cannot_be_imported_by_runtime_entrypoints():
     # A diagnostic raw-probability key must never become a production input.
+    # Scan every non-test module in the engine (not a hand-picked list that can
+    # silently go stale) and require the scan to be non-vacuous.
     from pathlib import Path
-    package = Path(__file__).resolve().parents[1] / "v17"
-    for filename in ("team_event_scorer.py", "team_event_batch_scorer.py",
-                     "terminal_reducer.py", "scoring_gateway.py"):
-        file = package / filename
-        if file.is_file():
-            assert "research_raw_probability" not in file.read_text(encoding="utf-8")
+    engine = Path(__file__).resolve().parents[1]
+    scorer = engine / "v17" / "ncaaf_result_form_shadow_scorer.py"
+    scanned = 0
+    offenders = []
+    for file in engine.rglob("*.py"):
+        rel = file.relative_to(engine)
+        if (
+            file == scorer
+            or rel.parts[0] == "tests"
+            or file.name.startswith("test_")
+            or "__pycache__" in rel.parts
+        ):
+            continue
+        scanned += 1
+        text = file.read_text(encoding="utf-8", errors="replace")
+        if "research_raw_probability" in text or "ncaaf_result_form_shadow_scorer" in text:
+            offenders.append(str(rel))
+    assert scanned > 100, f"isolation scan looked at only {scanned} modules"
+    assert offenders == [], f"production modules consume research-only output: {offenders}"
