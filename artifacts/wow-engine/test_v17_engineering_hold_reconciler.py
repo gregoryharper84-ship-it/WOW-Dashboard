@@ -123,3 +123,20 @@ def test_workflow_stays_read_only_until_engineering_app_and_never_authorizes_rel
     assert "No automatic impersonation, merge, deployment, or bypass permitted." in workflow
     assert "gh pr merge" not in workflow
     assert "trigger_deploy" not in workflow
+
+
+def test_newer_success_supersedes_stale_qa_failure():
+    older = check(cid=8)
+    newer = check(name="WOW Release Authority exact-head", app=RELEASE,
+                  cid=9, status="completed", conclusion="success")
+    assert discover(checks={SHA: [older, newer]})["eligible"] is False
+
+
+def test_bounded_scan_does_not_lose_existing_pr_identity():
+    # Bounded WIP: no unbounded API scans or automated dispatch loops.
+    many = [dict(pr(), number=i) for i in range(25)]
+    result = select_hold(many, {SHA: [check()]}, repository=REPO,
+                         qa_app_id=QA, release_app_id=RELEASE, max_targets=1)
+    assert result["eligible"] is True
+    assert result["pr_number"] == 0
+    assert result["scanned"] == 1
