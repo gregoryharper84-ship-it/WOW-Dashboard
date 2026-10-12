@@ -79,7 +79,7 @@ def test_high_confidence_side_cannot_be_flipped_to_create_differentiation():
 def test_missing_snapshot_and_post_lock_availability_block_without_dummy_opponents():
     picks, forecast = _inputs()
     with pytest.raises(PoolEquityInputError, match="PICKEM_OWNERSHIP_FORECAST_REQUIRED"):
-        evaluate_projected_pool_shadow(picks, {}, lock_at=LOCK, pool_size=12)
+        evaluate_projected_pool_shadow(picks, None, lock_at=LOCK, pool_size=12)
     forecast["available_to_user_at"] = "2026-10-11T12:00:01Z"
     with pytest.raises(PoolEquityInputError, match="PICKEM_OWNERSHIP_POST_LOCK_FORECAST"):
         evaluate_projected_pool_shadow(picks, forecast, lock_at=LOCK, pool_size=12)
