@@ -279,3 +279,66 @@ def test_short_school_allowlist_keys_are_all_short_and_exact():
 ])
 def test_short_school_allowlist_rejects_collisions(alias, canonical):
     assert identity._name_match(alias, canonical) is False
+
+
+# Independent engineering-audit regression matrix for issue #665. The
+# short-school rule, 5+ character qualifier rule, and legitimate mascot forms
+# must remain mutually exclusive: a school identity cannot be a broad prefix.
+@pytest.mark.parametrize(("provider", "canonical"), [
+    ("Iowa Hawkeyes", "Iowa State"),
+    ("Iowa State Cyclones", "Iowa"),
+    ("UCF Knights", "UCLA"),
+    ("Michigan Wolverines", "Michigan State"),
+    ("Florida Gators", "Florida State"),
+    ("Florida Gators", "Florida Atlantic"),
+    ("Arizona Wildcats", "Arizona State"),
+    ("Texas Longhorns", "Texas A&M"),
+    ("Georgia Bulldogs", "Georgia Tech"),
+])
+def test_shared_cfbd_identity_qualifier_collisions_fail_closed(provider, canonical):
+    assert identity._name_match(provider, canonical) is False
+    assert identity._name_match(canonical, provider) is False
+
+
+@pytest.mark.parametrize(("provider", "canonical"), [
+    ("Iowa Hawkeyes", "Iowa"),
+    ("Iowa State Cyclones", "Iowa State"),
+    ("BYU Cougars", "BYU"),
+    ("Iowa St Cyclones", "Iowa State"),
+    ("Michigan Wolverines", "Michigan"),
+    ("Florida State Seminoles", "Florida State"),
+    ("Arizona State Sun Devils", "Arizona State"),
+    ("Texas A&M Aggies", "Texas A&M"),
+    ("Sam Houston Bearkats", "Sam Houston"),
+])
+def test_verified_school_mascot_suffixes_still_resolve_after_qualifier_guard(provider, canonical):
+    assert identity._name_match(provider, canonical) is True
+
+
+@pytest.mark.parametrize(("source_value", "expected"), [
+    (True, True),
+    (False, False),
+    ("true", None),
+    (1, None),
+    (None, None),
+])
+def test_direct_cfbd_identity_contract_neutral_site_boolean_or_unknown(source_value, expected):
+    event_at = "2026-10-10T18:00:00Z"
+    source = _Client([{
+        "id": 401998765,
+        "startDate": event_at,
+        "homeTeam": "Texas",
+        "awayTeam": "Oklahoma",
+        "neutralSite": source_value,
+    }])
+    result = identity.resolve_ncaaf_current_event_identity(
+        event_start_time=event_at,
+        home_team="Texas Longhorns",
+        away_team="Oklahoma Sooners",
+        client=source,
+    )
+    assert result["neutral_site"] is expected
+    assert result["event_id"] == "401998765"
+    assert result["market_features_used"] is False
+    assert result["prediction_authority"] is False
+    assert result["can_execute"] is False
