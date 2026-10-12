@@ -22,6 +22,9 @@ from basketball_event_hydration_runtime import (
 CAN_EXECUTE = False
 SOURCE_PROVIDER = "SPORTSDATAVERSE_ESPN"
 _CACHE_TTL_SECONDS = 300.0
+# Used only to break a team/date-window tie (e.g. same home/away pairing on
+# consecutive days). Consecutive games are ~24h apart, far outside this bound.
+START_TOLERANCE_MINUTES = 30.0
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict[int, tuple[float, list[Mapping[str, Any]]]] = {}
 
@@ -46,6 +49,25 @@ def _aware(value: Any) -> datetime:
 def _strip_espn(value: Any) -> str:
     token = str(value or "").strip()
     return token.removeprefix("espn-").strip()
+
+
+def _row_start(row: Mapping[str, Any]) -> datetime | None:
+    """Exact scheduled start from a SportsDataverse row, or None if unproven."""
+    if str(row.get("time_valid") or "").strip().casefold() in {"false", "0"}:
+        return None
+    for key in ("start_date", "date", "game_date_time"):
+        raw = str(row.get(key) or "").strip()
+        if len(raw) <= 10:  # empty or date-only: carries no start time
+            continue
+        try:
+            return _aware(raw)
+        except NBAEventIdentityError:
+            continue
+    return None
+
+
+def _row_id(row: Mapping[str, Any]) -> str:
+    return str(row.get("game_id") or row.get("id") or "").strip()
 
 
 def schedule_season_year(event_time: datetime) -> int:
@@ -109,27 +131,37 @@ def resolve_nba_current_event_identity(
         and str(row.get("game_id") or row.get("id") or "").strip()
     ]
 
-    ids = {
-        str(row.get("game_id") or row.get("id") or "").strip()
-        for row in matches
-    }
+    ids = {_row_id(row) for row in matches}
     if not ids:
         raise NBAEventIdentityError("NBA_CANONICAL_EVENT_NOT_FOUND")
+    resolution = "SPORTSDATAVERSE_SCHEDULE_EXACT_TEAM_DATE_MATCH"
     if len(ids) != 1:
-        raise NBAEventIdentityError("NBA_CANONICAL_EVENT_AMBIGUOUS")
+        # Same pairing on adjacent dates (2026-27 schedule has several). Break the
+        # tie only with the schedule's own exact start time; otherwise fail closed.
+        timed: list[Mapping[str, Any]] = []
+        for row in matches:
+            start = _row_start(row)
+            if start is None:
+                continue
+            if abs((event_time - start).total_seconds()) / 60.0 <= START_TOLERANCE_MINUTES:
+                timed.append(row)
+        timed_ids = {_row_id(row) for row in timed}
+        if len(timed_ids) != 1:
+            raise NBAEventIdentityError("NBA_CANONICAL_EVENT_AMBIGUOUS")
+        matches, ids = timed, timed_ids
+        resolution = "SPORTSDATAVERSE_SCHEDULE_TEAM_DATE_START_TIME_DISAMBIGUATED"
 
     event_id = next(iter(ids))
-    selected = next(
-        row for row in matches
-        if str(row.get("game_id") or row.get("id") or "").strip() == event_id
-    )
+    selected = next(row for row in matches if _row_id(row) == event_id)
+    selected_start = _row_start(selected)
     return {
         "event_id": f"espn-{event_id.removeprefix('espn-')}",
         "game_date": str(selected.get("game_date") or selected.get("date") or "")[:10],
+        "event_start_time": selected_start.isoformat() if selected_start else None,
         "home_team_id": f"espn-{home_id}",
         "away_team_id": f"espn-{away_id}",
         "identity_provider": SOURCE_PROVIDER,
-        "identity_resolution": "SPORTSDATAVERSE_SCHEDULE_EXACT_TEAM_DATE_MATCH",
+        "identity_resolution": resolution,
         "market_features_used": False,
         "prediction_authority": False,
         "can_execute": False,
@@ -145,6 +177,7 @@ __all__ = [
     "CAN_EXECUTE",
     "NBAEventIdentityError",
     "SOURCE_PROVIDER",
+    "START_TOLERANCE_MINUTES",
     "resolve_nba_current_event_identity",
     "reset_cache",
     "schedule_season_year",
