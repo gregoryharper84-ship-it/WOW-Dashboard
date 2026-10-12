@@ -30,6 +30,7 @@ from prop_terminal_reducer_v2 import (
     INPUT_BLOCKERS,
     MODEL_CAPABILITY_BLOCKERS,
     OUTPUT_INVALID_BLOCKERS,
+    REGISTRY_INFRA_BLOCKERS,
     SCORER_FAILURE_BLOCKERS,
     reduce_prop_terminal,
 )
@@ -142,6 +143,7 @@ class NoCategoryCollapsesIntoAnotherTest(unittest.TestCase):
             "MODEL_SCORER_FAILED": SCORER_FAILURE_BLOCKERS,
             "MODEL_INPUTS_INSUFFICIENT": INPUT_BLOCKERS,
             "MODEL_OUTPUT_INVALID": OUTPUT_INVALID_BLOCKERS,
+            "REGISTRY_INFRASTRUCTURE_BLOCKED": REGISTRY_INFRA_BLOCKERS,
         }
         names = list(sets)
         for i in range(len(names)):
@@ -150,11 +152,25 @@ class NoCategoryCollapsesIntoAnotherTest(unittest.TestCase):
                 overlap = sets[a] & sets[b]
                 self.assertFalse(overlap, f"{a} and {b} share blocker codes: {overlap}")
 
+    def test_registry_outage_is_never_fitted_model_absence(self):
+        for code in ("PROP_MODEL_REGISTRY_UNAVAILABLE", "PROP_MODEL_REGISTRY_INVALID_RESPONSE"):
+            with self.subTest(code=code):
+                self.assertIn(code, REGISTRY_INFRA_BLOCKERS)
+                self.assertNotIn(code, MODEL_CAPABILITY_BLOCKERS)
+                decision = reduce_prop_terminal(
+                    proposed_label="RESEARCH_INTEREST", blockers=[code], model_evaluated=False
+                )
+                self.assertEqual(decision.terminal_label, "REGISTRY_INFRASTRUCTURE_BLOCKED")
+                self.assertEqual(decision.verdict_class, "REGISTRY_INFRASTRUCTURE_BLOCKED")
+                self.assertTrue(decision.infrastructure_blocked)
+                self.assertEqual(decision.terminal_cause, "INFRASTRUCTURE")
+                self.assertFalse(decision.model_evaluated)
+
     def test_strikeout_specific_blockers_each_land_in_exactly_one_set(self):
         strikeout_blockers = {
             STRIKEOUT_RECENT_STARTS_INSUFFICIENT_CODE: INPUT_BLOCKERS,
         }
-        all_sets = [MODEL_CAPABILITY_BLOCKERS, SCORER_FAILURE_BLOCKERS, INPUT_BLOCKERS, OUTPUT_INVALID_BLOCKERS]
+        all_sets = [MODEL_CAPABILITY_BLOCKERS, SCORER_FAILURE_BLOCKERS, INPUT_BLOCKERS, OUTPUT_INVALID_BLOCKERS, REGISTRY_INFRA_BLOCKERS]
         for code, expected_set in strikeout_blockers.items():
             membership_count = sum(1 for s in all_sets if code in s)
             self.assertEqual(membership_count, 1, f"{code} must belong to exactly one canonical set")

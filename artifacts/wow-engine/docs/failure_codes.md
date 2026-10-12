@@ -9,6 +9,8 @@ This file is the repository source of truth for governed typed failure/status co
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `MODEL_SCORER_FAILED` | model invocation | Selected model was invoked but threw, timed out, transport-failed, or returned no valid completion. | No |
+| `PROP_MODEL_REGISTRY_UNAVAILABLE` | prop exact-route artifact registry | The `wow_prop_certified_model_artifact` registry RPC could not be called (transport/auth/service failure). Infrastructure HOLD (`terminal_label=REGISTRY_INFRASTRUCTURE_BLOCKED`, `terminal_cause=INFRASTRUCTURE`) on `/score-pick-request` and HTTP 503 on `/score-prop`; never rewritten to `MODEL_UNAVAILABLE`, since it proves nothing about capability absence. Regression: `tests/test_v17_prop_registry_infra_typed_failure.py`. | No |
+| `PROP_MODEL_REGISTRY_INVALID_RESPONSE` | prop exact-route artifact registry | The registry RPC returned an unusable response shape. Same handling as `PROP_MODEL_REGISTRY_UNAVAILABLE`. | No |
 | `MODEL_OUTPUT_INVALID` | model validation | Selected model returned malformed, non-numeric, schema-invalid, impossible, or non-normalized output. | No |
 | `EVENT_ALREADY_STARTED` | slate/final refresh | Pregame candidate has started or completed and cannot remain on a pregame leaderboard. | No |
 | `MARKET_DATA_UNOBTAINABLE` | market/evidence | Required market evidence could not be acquired. Does not erase an already-completed sporting probability. | Sporting probability may remain eligible; market/value lane blocked |
@@ -146,6 +148,42 @@ Emitted by `artifacts/wow-engine/v17/agent_identity_policy.py evaluate`, which j
 | `PROTECTION_LIVE_PROBE_MISSING` | engineering governance | A required owner-observed allow/deny probe against the enforced ruleset has no record; suffixed `:<probe>`. | N/A |
 | `PROTECTION_LIVE_PROBE_FAILED` | engineering governance | A live probe observed the opposite of the required outcome (e.g. ordinary PR blocked, trust-root PR allowed); suffixed `:<probe>`. | N/A |
 | `PROTECTION_LIVE_PROBE_INVALID` | engineering governance | A live probe record is malformed or unbound (expected outcome, PR number, 40-hex head SHA, timestamp, nonce); suffixed `:<probe>`. | N/A |
+
+## Independent QA and Release Authority check codes (#1550 Phase C)
+
+Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow-v17-independent-qa-check` / `wow-v17-release-authority-check` workflows. Any finding publishes a `failure` check (or no check, for credential/target/publish errors), which blocks merge once the ruleset requires the check. Release re-derives every QA condition and reports it prefixed `RELEASE_` (e.g. `RELEASE_QA_HEAD_STALE`). A `success` check is evidence for the ruleset only: never merge, deployment or probability authority. None affects sporting probability, rank or `can_execute=false`.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `QA_APP_CREDENTIAL_MISSING` | independent QA | `WOW_QA_APP_ID` is not numeric or `WOW_QA_APP_PRIVATE_KEY` is absent; no QA check is published (the required check stays missing, so merges block). | N/A |
+| `QA_TARGETS_UNRESOLVED` | independent QA | QA could not resolve any valid (PR, exact head) target; details in the annotation. | N/A |
+| `QA_DECISION_INVARIANT_VIOLATED` | independent QA | A QA decision file claimed merge/release or execution authority; nothing published. | N/A |
+| `QA_CHECK_PUBLISH_FAILED` | independent QA | Creating the QA check run with the QA App token failed. | N/A |
+| `QA_EVIDENCE_INCOMPLETE` | independent QA | An evidence input was unreadable, truncated, or malformed (repo, PR, files, check runs, reviews); suffixed with the input. For changed files, both rename destination and `previous_filename` (source) are evaluated; a missing/invalid rename origin emits `QA_EVIDENCE_INCOMPLETE:FILES_RENAME_ORIGIN_MISSING`, invalid names emit `...:FILES_PATH_INVALID`, and rename origins cannot mask `...:FILES_TRUNCATED`. | N/A |
+| `QA_HEAD_INVALID` | independent QA | Expected or current head is not a 40-hex SHA. | N/A |
+| `QA_HEAD_STALE` | independent QA | The PR head moved after the trigger; the check is published only on the superseded SHA. | N/A |
+| `QA_PR_NOT_OPEN` | independent QA | PR is closed or merged. | N/A |
+| `QA_PR_DRAFT` | independent QA | PR is a draft. | N/A |
+| `QA_PR_BASE_NOT_MAIN` | independent QA | PR does not target `main`. | N/A |
+| `QA_PR_HEAD_REPOSITORY_MISMATCH` | independent QA | PR head is in another repository (fork). | N/A |
+| `QA_FILES_EMPTY` | independent QA | No changed files could be listed. | N/A |
+| `QA_EVIDENCE_MISSING` | independent QA | A required exact-head check from `github-actions` (App 15368) has no completed run at the head; same-named checks from other Apps are ignored. Suffixed `:<check>`. | N/A |
+| `QA_EVIDENCE_FAILED` | independent QA | The latest exact-head run of a required check is not `success`; suffixed `:<check>`. | N/A |
+| `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING` | independent QA | The PR changes a trust root (`.github/`, `.agents/`, or a file a governance workflow executes or reads) and the owner's latest review is not APPROVED on this exact head. | N/A |
+| `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; it can never be independently approved (re-propose from the Engineering App). | N/A |
+| `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
+| `RELEASE_TARGETS_UNRESOLVED` | release authority | Release could not resolve any valid (PR, exact head) target. | N/A |
+| `RELEASE_DECISION_INVARIANT_VIOLATED` | release authority | A Release decision file claimed authority; nothing published. | N/A |
+| `RELEASE_CHECK_PUBLISH_FAILED` | release authority | Creating the Release check run with the Release App token failed. | N/A |
+| `RELEASE_APP_IDENTITY_UNBOUND` | release authority | QA or Release App ID is not configured as a number. | N/A |
+| `RELEASE_IDENTITY_NOT_DISTINCT` | release authority | QA and Release are bound to the same App. | N/A |
+| `RELEASE_QA_MISSING` | release authority | No completed `WOW Independent QA exact-head` run from the QA App at this head. | N/A |
+| `RELEASE_QA_FAILED` | release authority | The latest QA App check at this head is not `success`. | N/A |
+| `RELEASE_QA_FOREIGN_SOURCE` | release authority | A `WOW Independent QA exact-head` run exists at this head but from a principal other than the QA App (spoof or misconfiguration). | N/A |
+| `TARGET_HEAD_INVALID` | check targeting | A workflow_run pull request entry has no valid 40-hex head SHA; suffixed `:<pr>`. | N/A |
+| `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
+| `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
+| `TARGET_SWEEP_UNREADABLE` | check targeting | Open-PR sweep listing could not be read; suffixed with HTTP status. | N/A |
 
 ## Exact-target bootstrap and Claude structured-output codes (PR #1531)
 
