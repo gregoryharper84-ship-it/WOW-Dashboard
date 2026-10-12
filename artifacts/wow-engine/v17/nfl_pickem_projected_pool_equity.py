@@ -49,6 +49,9 @@ def evaluate_projected_pool_shadow(
         raise PoolEquityInputError("PICKEM_PROJECTED_DRAW_COUNT_INVALID")
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**32:
         raise PoolEquityInputError("PICKEM_PROJECTED_SEED_INVALID")
+    # Cap random draws across all competitors/events to avoid runaway CPU cost.
+    if draws * (pool_size - 1) * len(governed_picks) > 8_000_000:
+        raise PoolEquityInputError("PICKEM_PROJECTED_RESOURCE_BUDGET_EXCEEDED")
     if isinstance(max_flips, bool) or not isinstance(max_flips, int) or not 0 <= max_flips <= MAX_GAMES:
         raise PoolEquityInputError("PICKEM_EQUITY_MAX_FLIPS_INVALID")
     if (isinstance(max_expected_correct_sacrifice, bool)
