@@ -1,0 +1,186 @@
+name: wow-v17-engineering-auto-repair
+
+# Auto-repair on HOLD (#1550/#1663 item 3). Triggers when WOW Independent QA exact-head
+# or WOW Release Authority exact-head publishes a failing ("HOLD") check on a
+# wow-engineering[bot] PR. Routes the typed findings through the recovery planner
+# (artifacts/wow-engine/v17/engineering_recovery_planner.py):
+# - Non-repairable findings (QA_TRUST_ROOT_*, *_OWNER_APPROVAL_MISSING) are never
+#   retried; they wait on the owner and surface in the daily digest.
+# - Repairable findings dispatch the worker to push a fix to the same branch, up to
+#   3 attempts per PR, tracked via a hidden marker comment on the PR itself.
+# - Past the cap: label `needs-owner` and stop.
+#
+# Reads with the ambient read-only GITHUB_TOKEN; only the comment/label/dispatch
+# mutations use the wow-engineering App token. can_execute=false; never merges.
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-independent-qa-check", "wow-v17-release-authority-check"]
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-engineering-auto-repair-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  route-hold-findings:
+    if: github.event.workflow_run.conclusion == 'success'
+    environment: wow-engineering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Resolve exact-head PR and published HOLD checks
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          prs=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq --arg sha "$HEAD_SHA" '[.[] | select(.head.sha == $sha)]')
+          pr_number=$(jq -r '.[0].number // empty' <<<"$prs")
+          author=$(jq -r '.[0].user.login // empty' <<<"$prs")
+          if [ -z "$pr_number" ] || [ "$author" != "wow-engineering[bot]" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "No open wow-engineering[bot] PR at head ${HEAD_SHA}; nothing to route." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+            -H 'Accept: application/vnd.github+json' --jq '.check_runs')
+          summary=$(jq -r '
+            [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")
+                 | select(.conclusion == "failure")]
+            | sort_by(.started_at // .created_at) | last // {} | .output.summary // ""
+          ' <<<"$checks")
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          if [ -z "$summary" ]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "PR #$pr_number: no failing QA/Release exact-head check found; nothing to route." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "summary<<EOF"
+            echo "$summary"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+
+      - name: Read and increment the PR's recovery-attempt marker
+        id: attempts
+        if: steps.resolve.outputs.eligible == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          marker='<!-- WOW_RECOVERY_ATTEMPTS -->'
+          comments=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")
+          comment_id=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].id // empty' <<<"$comments")
+          attempts=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments" \
+            | grep -oE 'attempts: [0-9]+' | grep -oE '[0-9]+' || true)
+          echo "comment_id=${comment_id:-}" >> "$GITHUB_OUTPUT"
+          echo "attempts=${attempts:-0}" >> "$GITHUB_OUTPUT"
+
+      - name: Plan recovery
+        id: plan
+        if: steps.resolve.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_recovery_planner.py \
+            --pr-number "${{ steps.resolve.outputs.pr_number }}" \
+            --summary "${{ steps.resolve.outputs.summary }}" \
+            --attempts "${{ steps.attempts.outputs.attempts }}" \
+            --is-wow-engineering-pr \
+            | tee "$RUNNER_TEMP/recovery-plan.json"
+          echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+          echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Record recovery-attempt marker
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          COMMENT_ID: ${{ steps.attempts.outputs.comment_id }}
+          NEW_ATTEMPTS: ${{ steps.plan.outputs.new_attempts }}
+        run: |
+          set -euo pipefail
+          body="<!-- WOW_RECOVERY_ATTEMPTS -->
+          ### WOW V17 auto-repair
+          - attempts: ${NEW_ATTEMPTS}
+          - can_execute: false"
+          if [ -n "${COMMENT_ID:-}" ]; then
+            gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -f body="$body" >/dev/null
+          else
+            gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body" >/dev/null
+          fi
+          echo "Dispatching worker to repair PR #${PR_NUMBER} (attempt ${NEW_ATTEMPTS}/3)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch worker to repair the same branch
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main
+
+      - name: Label needs-owner past the retry cap
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'NEEDS_OWNER_RETRY_CAP'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-owner
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "NEEDS_OWNER_RETRY_CAP: 3 automatic repair attempts exhausted. Stopping; this PR now requires a human. can_execute=false."
+          echo "PR #${PR_NUMBER}: retry cap exhausted, labelled needs-owner." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record waiting-on-owner (non-repairable finding)
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_OWNER'
+        shell: bash
+        run: |
+          echo "PR #${{ steps.resolve.outputs.pr_number }}: non-repairable trust-root/owner-approval finding; waiting on owner (see daily digest), not retried." >> "$GITHUB_STEP_SUMMARY"
