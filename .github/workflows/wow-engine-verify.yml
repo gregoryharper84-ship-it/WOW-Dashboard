@@ -232,7 +232,7 @@ jobs:
           service = by_name["wow-governed-probability-engine"]
           assert service["type"] == "web"
           assert service["runtime"] == "python"
-          assert service["plan"] == "free"
+          assert service["plan"] == "1c-2g"
           assert service["rootDir"] == "artifacts/wow-engine"
           assert service["healthCheckPath"] == "/health/live"
           assert service["startCommand"] == "uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT"
