@@ -277,6 +277,23 @@ Research-only ownership assumptions. These codes never authorize production stra
 
 | `PICKEM_PROJECTED_RESOURCE_BUDGET_EXCEEDED` | Pick'em projected pool-equity research | Requested draws × opponent count × game count exceeds the 8,000,000 work-unit safety limit. | No |
 
+
+## NFL Pick'em time-of-availability replay integrity and tie grading (PR #1680)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_REPLAY_DUPLICATE_OPPONENT_RECEIPT` | NFL Pick'em research historical replay | Two distinct purported opponent entries reuse one immutable receipt. | No |
+| `PICKEM_REPLAY_OPPONENT_AUDIENCE_INVALID` | NFL Pick'em research historical replay | Opponent entry snapshot does not explicitly declare OPPONENT_ENTRIES audience. | No |
+| `PICKEM_REPLAY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION` | NFL Pick'em research historical replay | Opponent card claims to be visible before submission. | No |
+| `PICKEM_REPLAY_OPPONENT_AVAILABILITY_INVALID` | NFL Pick'em research historical replay | Opponent card missing a valid timezone-aware visibility timestamp. | No |
+| `PICKEM_REPLAY_OPPONENT_AVAILABILITY_SOURCE_REQUIRED` | NFL Pick'em research historical replay | Opponent card does not identify the source that establishes pre-lock visibility. | No |
+| `PICKEM_REPLAY_OWNERSHIP_AVAILABILITY_BEFORE_OBSERVATION` | NFL Pick'em research historical replay | Ownership snapshot claims to be visible before its observation. | No |
+| `PICKEM_REPLAY_OWNERSHIP_AVAILABILITY_INVALID` | NFL Pick'em research historical replay | Ownership snapshot missing a valid timezone-aware visibility timestamp. | No |
+| `PICKEM_REPLAY_POST_LOCK_OPPONENT_AVAILABILITY` | NFL Pick'em research historical replay | Submitted opponent card became visible only after contest lock; replay must not use it. | No |
+| `PICKEM_REPLAY_POST_LOCK_OWNERSHIP_AVAILABILITY` | NFL Pick'em research historical replay | Ownership estimate became visible only after contest lock. | No |
+| `PICKEM_REPLAY_TIE_POLICY_UNSUPPORTED` | NFL Pick'em research historical replay | Unrecognized pool scoring contract for tied games. | No |
+| `PICKEM_REPLAY_TIE_RULE_REQUIRED` | NFL Pick'em research historical replay | Official NFL tie requires explicit NO_POINT pool rule before retrospective grading. | No |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
