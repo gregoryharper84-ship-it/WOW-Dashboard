@@ -247,6 +247,25 @@ All rows below are typed input gates for a research-only strategy diagnostic or 
 | `PICKEM_POSTMORTEM_TIE_POLICY_UNSUPPORTED` | NFL Pick'em settled-week postmortem | Explicit supplied tie scoring policy is not NO_POINT. | No |
 | `PICKEM_POSTMORTEM_TIE_RULE_REQUIRED` | NFL Pick'em settled-week postmortem | Official tie is present but the pool NO_POINT policy was not explicitly supplied. | No |
 
+
+## NFL Pick'em pre-lock ownership forecast validation (PR #1680)
+
+Research-only ownership assumptions. These codes never authorize production strategy or change sporting probabilities.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_OWNERSHIP_FORECAST_REQUIRED` | Pick'em ownership research preflight | Forecast is not a mapping. | No |
+| `PICKEM_OWNERSHIP_AUDIENCE_INVALID` | Pick'em ownership research preflight | Forecast audience is not OPPONENT_OWNERSHIP_RESEARCH. | No |
+| `PICKEM_OWNERSHIP_SOURCE_REQUIRED` | Pick'em ownership research preflight | Source ID is missing or empty. | No |
+| `PICKEM_OWNERSHIP_SNAPSHOT_REQUIRED` | Pick'em ownership research preflight | Immutable snapshot ID is missing or empty. | No |
+| `PICKEM_OWNERSHIP_TIMESTAMP_INVALID` | Pick'em ownership research preflight | Source timestamp missing, malformed, or timezone-naive. | No |
+| `PICKEM_OWNERSHIP_AVAILABILITY_INVALID` | Pick'em ownership research preflight | Available-to-user timestamp missing, malformed, or timezone-naive. | No |
+| `PICKEM_OWNERSHIP_POST_LOCK_FORECAST` | Pick'em ownership research preflight | Source or availability time exceeds lock, or availability precedes source creation. | No |
+| `PICKEM_OWNERSHIP_EVENT_ID_INVALID` | Pick'em ownership research preflight | Event ID is missing or duplicated, or an event row is invalid. | No |
+| `PICKEM_OWNERSHIP_TEAM_ID_INVALID` | Pick'em ownership research preflight | Home/away team ID missing or blank. | No |
+| `PICKEM_OWNERSHIP_EVENT_SET_MISMATCH` | Pick'em ownership research preflight | Ownership mapping does not exactly cover the governed event set. | No |
+| `PICKEM_OWNERSHIP_FRACTION_INVALID` | Pick'em ownership research preflight | Opponent home-side selection fraction is nonnumeric, nonfinite or outside [0,1]. | No |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
