@@ -67,19 +67,59 @@ _VERIFIED_SHORT_SCHOOL_MASCOTS: dict[str, frozenset[str]] = {
 }
 
 
+_SCHOOL_ALIASES = {
+    "byu": "brighamyoung",
+    "brighamyounguniversity": "brighamyoung",
+    "iowast": "iowastate",
+    "iastate": "iowastate",
+    "iowahawkeyes": "iowa",
+}
+
+
+_ALIAS_MASCOTS = {
+    "byu": "cougars",
+    "brighamyounguniversity": "cougars",
+    "iowast": "cyclones",
+    "iastate": "cyclones",
+    "iowahawkeyes": "",
+}
+
+
+def _canonical_school_name(value: Any) -> str:
+    normalized = _norm(value)
+    # Never treat an arbitrary string beginning with an alias as the same
+    # school (for example "Iowa Starlings" is not "Iowa State").
+    for alias, canonical in _SCHOOL_ALIASES.items():
+        if normalized == alias:
+            return canonical
+        mascot = _ALIAS_MASCOTS[alias]
+        if normalized == alias + mascot:
+            return canonical + mascot
+    return normalized
+
+
 def _name_match(provider_name: Any, canonical_name: Any) -> bool:
-    left = _norm(provider_name)
-    right = _norm(canonical_name)
+    left = _canonical_school_name(provider_name)
+    right = _canonical_school_name(canonical_name)
     if not left or not right:
         return False
     if left == right:
         return True
     shorter, longer = sorted((left, right), key=len)
-    # CFBD lists the school while ESPN commonly appends the mascot. Short
-    # schools require explicit verified aliases to avoid prefix collisions.
+    # Preserve the independently verified short-school mascot allowlist.
+    # Never treat arbitrary extensions of e.g. UCF or Iowa as the same school.
     if len(shorter) < 5:
         return longer in _VERIFIED_SHORT_SCHOOL_MASCOTS.get(shorter, ())
-    return longer.startswith(shorter)
+    if not longer.startswith(shorter):
+        return False
+    # A school prefix can also name a DISTINCT university, not a mascot.
+    # These ambiguous cases must hold rather than assign a false CFBD ID.
+    qualifiers = (
+        "state", "southern", "northern", "eastern", "western",
+        "central", "tech", "am", "international", "atlantic",
+    )
+    suffix = longer[len(shorter):]
+    return not any(suffix.startswith(token) for token in qualifiers)
 
 
 def _aware(value: Any) -> datetime:
@@ -184,7 +224,12 @@ def resolve_ncaaf_current_event_identity(
         for row in matches
         if str(row.get("id") or row.get("event_id") or "").strip() == selected_id
     )
+    # Do not impute absent/nonboolean CFBD neutralSite; downstream model
+    # features must be reconciled to a real source boolean.
+    neutral_raw = selected.get("neutralSite", selected.get("neutral_site"))
+    neutral_site = neutral_raw if type(neutral_raw) is bool else None
     return {
+        "neutral_site": neutral_site,
         "event_id": selected_id,
         "event_start_time": _aware(_start_value(selected)).isoformat(),
         "home_team": str(_home_name(selected) or ""),
