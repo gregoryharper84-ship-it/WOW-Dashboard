@@ -59,6 +59,15 @@ def _prob(value: Any, code: str) -> float:
     return result
 
 
+def _bound(value: Any, code: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        raise PoolEquityInputError(code)
+    result = float(value)
+    if not isfinite(result) or not 0 <= result <= 1:
+        raise PoolEquityInputError(code)
+    return result
+
+
 def evaluate_full_pool_shadow(
     governed_picks: Sequence[Mapping[str, Any]],
     opponent_entries: Sequence[Mapping[str, Any]],
@@ -114,8 +123,8 @@ def evaluate_full_pool_shadow(
                 or not isclose(p_selected, p_home if selected == home else p_away, abs_tol=1e-9)
                 or p_selected + 1e-9 < max(p_home, p_away)):
             raise PoolEquityInputError("PICKEM_EQUITY_BASELINE_MODEL_CONFLICT")
-        lower = _prob(row.get("calibrated_selection_lower_bound"), "PICKEM_EQUITY_BOUNDS_REQUIRED")
-        upper = _prob(row.get("calibrated_selection_upper_bound"), "PICKEM_EQUITY_BOUNDS_REQUIRED")
+        lower = _bound(row.get("calibrated_selection_lower_bound"), "PICKEM_EQUITY_BOUNDS_REQUIRED")
+        upper = _bound(row.get("calibrated_selection_upper_bound"), "PICKEM_EQUITY_BOUNDS_REQUIRED")
         if not lower <= p_selected <= upper:
             raise PoolEquityInputError("PICKEM_EQUITY_BOUNDS_INVALID")
         pred = _required(row.get("source_prediction_id"), "PICKEM_EQUITY_PREDICTION_RECEIPT_REQUIRED")
