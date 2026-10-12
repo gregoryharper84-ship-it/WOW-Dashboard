@@ -32,6 +32,49 @@ def _validate_governance(row: Mapping[str, Any], *, prefix: str) -> None:
         raise D1RegistryError(f"{prefix}_PROBABILITY_PUBLICATION_FORBIDDEN", "candidate registry is non-publishable")
 
 
+def validate_candidate_partition_counts(candidate: Mapping[str, Any]) -> None:
+    """Require partition metadata to agree with the fitted model's own metrics.
+
+    Legacy specialty packages may lack numerical split metrics. The known
+    fitted NHL_REGULAR_SEASON_LOGISTIC_V1 must always supply all three; other
+    families preserve old behavior if no metrics are claimed. When any model
+    claims numeric split metrics, all three must agree. Fail before evidence
+    writes, not after partial ingestion.
+    """
+    metrics = candidate.get("validation_metrics")
+    if metrics is None:
+        metrics = {}
+    if not isinstance(metrics, Mapping):
+        raise D1RegistryError("D1_PARTITION_METRICS_INVALID", "metrics must be an object")
+    require_nhl = str(candidate.get("model_family") or "").strip().upper() == "NHL_REGULAR_SEASON_LOGISTIC_V1"
+    pairs = (
+        ("training_rows", "train_n"),
+        ("calibration_rows", "calibration_n"),
+        ("test_rows", "test_n"),
+    )
+    if not any(metric in metrics for _, metric in pairs):
+        if require_nhl:
+            raise D1RegistryError(
+                "D1_PARTITION_METRICS_INVALID",
+                "fitted NHL candidate requires train/calibration/test metrics",
+            )
+        return
+    for column, metric in pairs:
+        value, reported = candidate.get(column), metrics.get(metric)
+        if (isinstance(value, bool) or isinstance(reported, bool)
+                or not isinstance(value, int) or not isinstance(reported, int)
+                or value <= 0 or reported <= 0):
+            raise D1RegistryError(
+                "D1_PARTITION_METRICS_INVALID",
+                f"{column}/{metric} missing, noninteger, or nonpositive",
+            )
+        if value != reported:
+            raise D1RegistryError(
+                "D1_PARTITION_COUNT_MISMATCH",
+                f"{column}={value} differs from {metric}={reported}",
+            )
+
+
 def persist_source_events(db: Any, rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     inserted_n = 0
     existing_n = 0
@@ -142,6 +185,7 @@ def persist_candidate(db: Any, raw: Mapping[str, Any]) -> dict[str, Any]:
         raise D1RegistryError("D1_CANDIDATE_LIFECYCLE_INVALID", str(raw.get("lifecycle_state")))
     if any(bool(raw.get(name)) for name in ("promoted", "active", "automatic_certification", "automatic_promotion")):
         raise D1RegistryError("D1_CANDIDATE_GOVERNANCE_FLAGS_INVALID", "candidate must remain inert")
+    validate_candidate_partition_counts(raw)
     version = str(raw.get("model_artifact_version") or "").strip()
     checksum = str(raw.get("artifact_checksum") or "").strip().lower()
     if not version or len(checksum) != 64:
@@ -206,6 +250,7 @@ def persist_candidate_package(db: Any, package: Mapping[str, Any]) -> dict[str, 
     model_family = str(candidate.get("model_family") or "").strip()
     if not model_family:
         raise D1RegistryError("D1_PACKAGE_MODEL_FAMILY_MISSING", "candidate model_family required")
+    validate_candidate_partition_counts(candidate)
     source_result = persist_source_events(db, list(package.get("games") or []))
     training_result = persist_training_rows(db, list(package.get("feature_rows") or []), model_family=model_family)
     candidate_result = persist_candidate(db, candidate)
@@ -229,6 +274,7 @@ __all__ = [
     "TRAINING_TABLE",
     "persist_candidate",
     "persist_candidate_package",
+    "validate_candidate_partition_counts",
     "persist_source_events",
     "persist_training_rows",
 ]

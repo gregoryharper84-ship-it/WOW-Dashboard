@@ -101,7 +101,7 @@ def fake_package():
             "training_code_sha": "d" * 40, "artifact_checksum": "e" * 64,
             "artifact_payload": {"model_family": "NHL_REGULAR_SEASON_LOGISTIC_V1"},
             "calibrator_payload": {"method": "EMPIRICAL_WILSON_BINS_V1"},
-            "validation_metrics": {"can_execute": False, "probability_publishable": False},
+            "validation_metrics": {"can_execute": False, "probability_publishable": False, "train_n": 400, "calibration_n": 80, "test_n": 80},
             "training_rows": 400, "calibration_rows": 80, "test_rows": 80,
             "research_screen_pass": True, "source_review_status": "REQUIRED",
             "lifecycle_state": "CANDIDATE", "promoted": False, "active": False,
