@@ -34,6 +34,8 @@ def verify_render_webhook(
     now: int | None = None,
     max_age_seconds: int = 300,
     max_body_bytes: int = 16384,
+    allowed_service_ids: frozenset[str] | None = None,
+    allowed_event_types: frozenset[str] | None = None,
 ) -> VerifiedRenderEvent:
     """Verify signature, freshness and envelope without producing side effects."""
     if not isinstance(raw_body, bytes) or len(raw_body) > max_body_bytes:
@@ -84,8 +86,12 @@ def verify_render_webhook(
     event_type = payload.get("type")
     if not isinstance(service_id, str) or not service_id.startswith("srv-"):
         raise RenderWebhookError("SERVICE_ID_INVALID")
+    if not allowed_service_ids or service_id not in allowed_service_ids:
+        raise RenderWebhookError("SERVICE_NOT_ALLOWED")
     if not isinstance(event_type, str) or not event_type or len(event_type) > 100:
         raise RenderWebhookError("EVENT_TYPE_INVALID")
+    if not allowed_event_types or event_type not in allowed_event_types:
+        raise RenderWebhookError("EVENT_TYPE_NOT_ALLOWED")
     status = data.get("status")
     if status is not None and status not in ("succeeded", "failed", "canceled"):
         raise RenderWebhookError("STATUS_INVALID")
