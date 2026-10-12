@@ -73,6 +73,7 @@ def evaluate_full_pool_shadow(
     opponent_entries: Sequence[Mapping[str, Any]],
     *,
     lock_at: str,
+    pool_size: int,
     max_flips: int = 3,
     max_expected_correct_sacrifice: float = 0.25,
 ) -> dict[str, Any]:
@@ -87,6 +88,10 @@ def evaluate_full_pool_shadow(
         raise PoolEquityInputError("PICKEM_EQUITY_GAME_COUNT_INVALID")
     if not isinstance(opponent_entries, (list, tuple)) or not opponent_entries:
         raise PoolEquityInputError("PICKEM_EQUITY_PRELOCK_OPPONENTS_REQUIRED")
+    if isinstance(pool_size, bool) or not isinstance(pool_size, int) or pool_size < 2:
+        raise PoolEquityInputError("PICKEM_EQUITY_POOL_SIZE_INVALID")
+    if len(opponent_entries) != pool_size - 1:
+        raise PoolEquityInputError("PICKEM_EQUITY_POOL_SIZE_MISMATCH")
     if isinstance(max_flips, bool) or not isinstance(max_flips, int) or not 0 <= max_flips <= MAX_GAMES:
         raise PoolEquityInputError("PICKEM_EQUITY_MAX_FLIPS_INVALID")
     if (isinstance(max_expected_correct_sacrifice, bool)
@@ -241,7 +246,7 @@ def evaluate_full_pool_shadow(
         "serving_mode": SERVING_MODE,
         "objective": OBJECTIVE,
         "scenario_count": len(scenarios),
-        "pool_size": 1 + len(opponents),
+        "pool_size": pool_size,
         "event_count": n,
         "baseline": baseline,
         "research_challenger": selected_grade,
