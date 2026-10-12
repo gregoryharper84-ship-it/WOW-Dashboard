@@ -46,13 +46,16 @@ class FakeClient:
         if suffix.startswith("actions/runs?"):
             if self.active and "status=in_progress" in suffix:
                 return {"total_count": 1, "workflow_runs": [
-                    {"name": "wow-v17-chatgpt-engineering-worker"}
+                    {"name": "wow-v17-chatgpt-engineering-worker",
+                     "path": ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+                     "display_title": "wow-v17-chatgpt-engineering-worker lease=P0_RUNTIME incident=1388",
+                     "head_branch": "main"}
                 ]}
             return {"total_count": 0, "workflow_runs": []}
         if suffix in ("issues/1388", "issues/823"):
             return {"state": "open" if self.issue_open else "closed"}
         if suffix.startswith("pulls?"):
-            return [{"body": "Incident: 1388"}] if self.open_pr else []
+            return [{"number": 1001, "body": "Incident: 1388"}] if self.open_pr else []
         raise AssertionError(suffix)
 
     def dispatch(self, issue):

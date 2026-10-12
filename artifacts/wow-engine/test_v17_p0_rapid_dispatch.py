@@ -13,10 +13,14 @@ def test_p0_parallel_rapid_dispatch_contract() -> None:
     assert "p0_parallel_dispatch.py" in text
     assert "max_parallel_writers: 3" in text
     assert "implementation_lease_scope: domain-scoped" in text
-    assert "stream_A: Scout/Data Plane (#1237 -> #1250)" in text
-    assert "stream_B: State/Scoring (#1189 -> #960)" in text
-    assert "stream_C: Runtime/Ingest (#502 -> #1127)" in text
+    assert "stream_A: canonical acquisition / official event identity (#823 -> #1407)" in text
+    assert "stream_B: MLB scorer numeric input integrity (#1496 / #1507)" in text
+    assert "stream_C: production memory and interactive latency (#1388 -> #1501 -> #502)" in text
     assert "status,displayTitle" in text
+    assert '--open-prs "$RUNNER_TEMP/wow-open-prs.json"' in text
+    assert '--active-runs "$RUNNER_TEMP/wow-active-runs.json"' in text
+    assert "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE" in text
+    assert "--json number,title,body" in text
     assert 'contains(\\\"lease=${lease_group}\\\")' in text
     assert "wow-v17-engineering-provider-dispatcher.yml" in text
     assert "-f force_provider=auto" in text
