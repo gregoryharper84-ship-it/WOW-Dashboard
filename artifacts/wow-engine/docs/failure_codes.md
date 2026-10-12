@@ -266,6 +266,16 @@ Research-only ownership assumptions. These codes never authorize production stra
 | `PICKEM_OWNERSHIP_EVENT_SET_MISMATCH` | Pick'em ownership research preflight | Ownership mapping does not exactly cover the governed event set. | No |
 | `PICKEM_OWNERSHIP_FRACTION_INVALID` | Pick'em ownership research preflight | Opponent home-side selection fraction is nonnumeric, nonfinite or outside [0,1]. | No |
 
+
+## Projected Pick'em research-scenario failure codes (PR #1680)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_PROJECTED_POOL_SIZE_INVALID` | Pick'em projected pool-equity research | Research scenario requires an integer pool size in the supported 2–1000 range. | No |
+| `PICKEM_PROJECTED_DRAW_COUNT_INVALID` | Pick'em projected pool-equity research | Research scenario draw count must be 1000–20000. | No |
+| `PICKEM_PROJECTED_SEED_INVALID` | Pick'em projected pool-equity research | Reproducible research seed must be a valid nonnegative 32-bit integer. | No |
+| `PICKEM_PROJECTED_EVENT_IDENTITY_INVALID` | Pick'em projected pool-equity research | Projected scenario event identity is duplicated or the baseline side mismatches canonical home/away identities. | No |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
