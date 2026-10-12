@@ -101,3 +101,23 @@ def test_fail_closed_invalid_payload(raw, code):
 def test_fail_closed_event_count_limit():
     with pytest.raises(InventoryIntegrityError, match="SOURCE_EVENT_COUNT_LIMIT"):
         call({"events": [EVENT] * 2001})
+
+
+@pytest.mark.parametrize("raw,code", [
+    (b'{"events":[],"events":[]}', "SOURCE_PAYLOAD_JSON_DUPLICATE_KEY"),
+    (b'{"events":[{"sport":"NFL","sport":"NBA"}]}', "SOURCE_PAYLOAD_JSON_DUPLICATE_KEY"),
+    (b'{"events":[],"metadata":{"x":1,"x":2}}', "SOURCE_PAYLOAD_JSON_DUPLICATE_KEY"),
+    (b'{"events":[],"discarded":NaN}', "SOURCE_PAYLOAD_JSON_NONFINITE_NUMBER"),
+    (b'{"events":[],"discarded":Infinity}', "SOURCE_PAYLOAD_JSON_NONFINITE_NUMBER"),
+    (b'{"events":[],"discarded":-Infinity}', "SOURCE_PAYLOAD_JSON_NONFINITE_NUMBER"),
+    ('{"events":[]}'.encode("utf-16"), "SOURCE_PAYLOAD_JSON_INVALID"),
+    (b'\x5cxef\x5cxbb\x5cxbf{"events":[]}', "SOURCE_PAYLOAD_JSON_INVALID"),
+    (b'{"events":[]} trailing', "SOURCE_PAYLOAD_JSON_INVALID"),
+])
+def test_strict_json_rejects_ambiguous_bytes(raw, code):
+    with pytest.raises(InventoryIntegrityError) as exc:
+        verify_inventory_bytes(
+            raw, expected_sha256=hashlib.sha256(raw).hexdigest(),
+            source_id="authenticated-upstream", fetched_at=NOW, sport="NFL",
+        )
+    assert exc.value.code == code
