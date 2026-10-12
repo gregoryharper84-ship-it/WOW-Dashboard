@@ -38,6 +38,7 @@ jobs:
     name: WOW V17 Claude fallback engineering team
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    environment: wow-engineering
 
     steps:
       - name: Checkout protected main
@@ -46,6 +47,24 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity for PR authoring
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured; this worker never authors PRs under an owner-scoped credential."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -534,7 +553,7 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.implementation_agent.outputs.structured_output }}
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}
           EXPECTED_INCIDENT: ${{ steps.triage.outputs.incident }}
           EXPECTED_RISK: ${{ steps.triage.outputs.risk }}
         run: |
@@ -785,7 +804,7 @@ jobs:
         if: steps.impl.outputs.changed == 'true'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           BRANCH: ${{ steps.impl.outputs.branch }}
           INCIDENT: ${{ steps.impl.outputs.incident }}
           RISK: ${{ steps.impl.outputs.risk }}
