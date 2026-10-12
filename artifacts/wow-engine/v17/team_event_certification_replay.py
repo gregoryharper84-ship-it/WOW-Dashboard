@@ -122,10 +122,44 @@ def _artifact_identity_complete(row: Mapping[str, Any]) -> bool:
 
 
 def _partitions_valid(row: Mapping[str, Any]) -> bool:
-    try:
-        return all(int(row.get(name) or 0) > 0 for name in ("training_rows", "calibration_rows", "test_rows"))
-    except (TypeError, ValueError):
-        return False
+    # bool is an int subclass, and int(3.5) silently truncates. Neither may
+    # satisfy immutable fitted train/calibration/test evidence.
+    return all(
+        type(row.get(name)) is int and row[name] > 0
+        for name in ("training_rows", "calibration_rows", "test_rows")
+    )
+
+
+def _partition_metrics_mismatch(row: Mapping[str, Any]) -> bool:
+    """Audit persisted split counts against fitted metrics, without altering data.
+
+    Some legacy research candidates lack fitted split metrics. Preserve their
+    existing status only when the model family does not require these metrics.
+    The fitted NHL_REGULAR_SEASON_LOGISTIC_V1 family must always provide them;
+    otherwise absence would bypass the very guard against the historical
+    total-as-training split-count defect.
+    """
+    metrics = row.get("validation_metrics")
+    nhl_fitted = str(row.get("model_family") or "").strip().upper() == "NHL_REGULAR_SEASON_LOGISTIC_V1"
+    if metrics is None:
+        return nhl_fitted
+    if not isinstance(metrics, Mapping):
+        return True
+    partitions = (
+        ("training_rows", "train_n"),
+        ("calibration_rows", "calibration_n"),
+        ("test_rows", "test_n"),
+    )
+    if not any(name in metrics for _, name in partitions):
+        return nhl_fitted
+    for column, metric in partitions:
+        stored = row.get(column)
+        reported = metrics.get(metric)
+        if (isinstance(stored, bool) or isinstance(reported, bool)
+                or not isinstance(stored, int) or not isinstance(reported, int)
+                or stored <= 0 or reported <= 0 or stored != reported):
+            return True
+    return False
 
 
 def assess_candidate(
@@ -196,6 +230,8 @@ def assess_candidate(
         blockers.append("CANDIDATE_ARTIFACT_IDENTITY_INCOMPLETE")
     if not _partitions_valid(candidate):
         blockers.append("CANDIDATE_PARTITIONS_INVALID")
+    if _partition_metrics_mismatch(candidate):
+        blockers.append("CANDIDATE_PARTITION_METRICS_MISMATCH")
     if candidate.get("research_screen_pass") is not True:
         blockers.append("RESEARCH_SCREEN_FAILED")
 
@@ -332,7 +368,7 @@ def run_certification_replay(db: Any) -> dict[str, Any]:
         db.table(CANDIDATE_TABLE)
         .select(
             "candidate_id,created_at,sport,league,model_family,model_artifact_version,training_dataset_hash,"
-            "training_code_sha,artifact_checksum,training_rows,calibration_rows,test_rows,"
+            "training_code_sha,artifact_checksum,training_rows,calibration_rows,test_rows,validation_metrics,"
             "research_screen_pass,source_review_status,lifecycle_state,promoted,active,"
             "automatic_certification,automatic_promotion,probability_publishable,can_execute"
         )
