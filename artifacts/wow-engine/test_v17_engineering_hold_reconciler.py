@@ -96,3 +96,30 @@ def test_failure_without_typed_evidence_fails_closed():
 
 def test_zero_mutation_authority_in_no_action_result():
     assert discover(pulls=[]) == {"eligible": False, "scanned": 0, "can_execute": False}
+
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = ROOT / ".github/workflows/wow-v17-engineering-auto-repair.yml"
+
+
+def test_recovery_uses_pr_head_not_source_workflow_sha():
+    workflow = WORKFLOW.read_text()
+    assert "engineering_hold_reconciler.py" in workflow
+    assert '--qa-app-id "$QA_APP_ID"' in workflow
+    assert '--release-app-id "$RELEASE_APP_ID"' in workflow
+    assert "SOURCE_AUTHOR" in workflow
+    assert "SUMMARY_B64" in workflow
+    assert "base64 --decode" in workflow
+
+
+def test_workflow_stays_read_only_until_engineering_app_and_never_authorizes_release():
+    workflow = WORKFLOW.read_text()
+    assert "ref: main" in workflow
+    assert "Mint wow-engineering App token" in workflow
+    assert "Record Engineering App re-proposal requirement" in workflow
+    assert "REPROPOSE_WITH_ENGINEERING_APP" in workflow
+    assert "No automatic impersonation, merge, deployment, or bypass permitted." in workflow
+    assert "gh pr merge" not in workflow
+    assert "trigger_deploy" not in workflow
