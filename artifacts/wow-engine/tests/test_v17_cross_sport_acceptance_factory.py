@@ -192,3 +192,80 @@ def test_malformed_policy_inputs_fail_closed_without_throwing():
 def test_malformed_deployment_sha_fails_closed():
     r = _reconciled(source_commit_sha=12345)
     assert "ACCEPTANCE_DEPLOY_SHA_INVALID" in r["blockers"]
+
+
+# #1689 — week-aware selection is source-driven; it never manufactures a slate.
+from v17.cross_sport_acceptance_factory import (
+    SourceWeekWindow, choose_current_pregame_cohort,
+)
+
+
+def _week(week, start, end, sport="NFL"):
+    return SourceWeekWindow(sport, "2026", week, start, end)
+
+
+def test_verified_source_week_selection_skips_partly_played_current_week():
+    weeks = (
+        _week("05", NOW - timedelta(days=6), NOW + timedelta(days=1)),
+        _week("06", NOW + timedelta(days=2), NOW + timedelta(days=8)),
+    )
+    result = choose_current_pregame_cohort(
+        _lane(), _inventory(), weeks, now=NOW, minimum_unique_events=13,
+    )
+    assert result["status"] == "COHORT_ELIGIBLE_FOR_TEST"
+    assert result["selected_week"]["week_key"] == "06"
+    assert result["cohort"]["eligible_event_count"] == 13
+    assert result["attempted_week_receipts"][0]["status"] == "COHORT_HELD"
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_verified_week_cannot_lower_required_complete_slate_threshold():
+    upcoming = _week("06", NOW + timedelta(days=2), NOW + timedelta(days=8))
+    row = choose_current_pregame_cohort(
+        _lane(), _inventory(_fixtures(12)), (upcoming,), now=NOW, minimum_unique_events=13,
+    )
+    assert row["status"] == "COHORT_HELD"
+    assert row["selected_week"] is None
+    assert "ACCEPTANCE_ELIGIBLE_COHORT_INSUFFICIENT" in row["attempted_week_receipts"][0]["blockers"]
+
+
+def test_verified_week_no_current_events_is_typed_hold_not_empty_success():
+    past = _week("04", NOW - timedelta(days=8), NOW - timedelta(days=1))
+    row = choose_current_pregame_cohort(
+        _lane(), _inventory(), (past,), now=NOW, minimum_unique_events=13,
+    )
+    assert row["blockers"] == ["ACCEPTANCE_NO_CURRENT_OR_FUTURE_VERIFIED_WEEK"]
+
+
+def test_verified_week_rejects_duplicate_or_cross_sport_schedule():
+    week = _week("06", NOW + timedelta(days=2), NOW + timedelta(days=8))
+    base = dict(lane=_lane(), inventory=_inventory(), now=NOW, minimum_unique_events=13)
+    assert "ACCEPTANCE_DUPLICATE_VERIFIED_WEEK" in choose_current_pregame_cohort(
+        **base, source_weeks=(week, week),
+    )["blockers"]
+    assert "ACCEPTANCE_VERIFIED_WEEK_IDENTITY_INVALID" in choose_current_pregame_cohort(
+        **base, source_weeks=(_week("06", week.window_start, week.window_end, "MLB"),),
+    )["blockers"]
+
+
+def test_verified_week_stale_provider_snapshot_never_promotes_acceptance():
+    upcoming = _week("06", NOW + timedelta(days=2), NOW + timedelta(days=8))
+    stale = SourceInventory("CFBD-INTERNAL-TEST", SOURCE_HASH, NOW - timedelta(hours=9), _fixtures())
+    row = choose_current_pregame_cohort(
+        _lane(), stale, (upcoming,), now=NOW, minimum_unique_events=13,
+    )
+    assert row["status"] == "COHORT_HELD"
+    assert "ACCEPTANCE_SOURCE_STALE_OR_FUTURE" in row["attempted_week_receipts"][0]["blockers"]
+
+
+def test_verified_week_does_not_accept_far_future_or_invalid_calendar():
+    base = dict(lane=_lane(), inventory=_inventory(), now=NOW, minimum_unique_events=13)
+    distant = _week("10", NOW + timedelta(days=16), NOW + timedelta(days=22))
+    assert choose_current_pregame_cohort(
+        **base, source_weeks=(distant,),
+    )["status"] == "COHORT_HELD"
+    invalid = _week("06", NOW + timedelta(days=2), NOW + timedelta(days=16))
+    assert choose_current_pregame_cohort(
+        **base, source_weeks=(invalid,),
+    )["blockers"] == ["ACCEPTANCE_VERIFIED_WEEK_WINDOW_INVALID"]

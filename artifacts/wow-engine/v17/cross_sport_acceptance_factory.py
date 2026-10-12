@@ -233,3 +233,116 @@ def reconcile_lane(
         "can_execute": False,
         "global_terminal_authority": TERMINAL_AUTHORITY,
     }
+
+
+@dataclass(frozen=True)
+class SourceWeekWindow:
+    """League-designated week from an independently validated schedule source.
+
+    A caller must authenticate and canonicalize the upstream schedule; this
+    object does not certify a provider, fixture, model, or official week.
+    """
+    sport: str
+    season_key: str
+    week_key: str
+    window_start: datetime
+    window_end: datetime
+
+
+def choose_current_pregame_cohort(
+    lane: Lane,
+    inventory: SourceInventory,
+    source_weeks: tuple[SourceWeekWindow, ...],
+    *,
+    now: datetime,
+    minimum_unique_events: int,
+    max_lookahead: timedelta = timedelta(days=14),
+) -> dict[str, Any]:
+    """Select the nearest complete source-declared future/current league week.
+
+    This is ONLY coverage selection. Do not infer week boundaries from clock
+    dates, splice games from different weeks, reuse completed events, or lower
+    coverage thresholds when the current week is already partly played.
+    Model/Action/editor/terminal certification remains wholly independent.
+    """
+    def hold(code: str, attempted: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        return {
+            "status": "COHORT_HELD",
+            "blockers": [code],
+            "selected_week": None,
+            "cohort": None,
+            "attempted_week_receipts": attempted or [],
+            "probability_publishable": False,
+            "can_execute": False,
+            "global_terminal_authority": TERMINAL_AUTHORITY,
+        }
+
+    if not _aware(now):
+        return hold("ACCEPTANCE_TIMEZONE_UNVERIFIED")
+    if type(minimum_unique_events) is not int or minimum_unique_events < 1:
+        return hold("ACCEPTANCE_THRESHOLD_INVALID")
+    if not isinstance(max_lookahead, timedelta) or not timedelta(0) < max_lookahead <= timedelta(days=14):
+        return hold("ACCEPTANCE_LOOKAHEAD_INVALID")
+    if not isinstance(source_weeks, (list, tuple)):
+        return hold("ACCEPTANCE_VERIFIED_WEEK_INPUT_INVALID")
+
+    seen: set[tuple[str, str, str]] = set()
+    windows: list[SourceWeekWindow] = []
+    for week in source_weeks:
+        if not isinstance(week, SourceWeekWindow):
+            return hold("ACCEPTANCE_VERIFIED_WEEK_INPUT_INVALID")
+        if week.sport != lane.sport or not week.season_key or not week.week_key:
+            return hold("ACCEPTANCE_VERIFIED_WEEK_IDENTITY_INVALID")
+        if not _aware(week.window_start) or not _aware(week.window_end):
+            return hold("ACCEPTANCE_TIMEZONE_UNVERIFIED")
+        if not timedelta(0) < week.window_end - week.window_start <= timedelta(days=9):
+            return hold("ACCEPTANCE_VERIFIED_WEEK_WINDOW_INVALID")
+        key = (week.sport, week.season_key, week.week_key)
+        if key in seen:
+            return hold("ACCEPTANCE_DUPLICATE_VERIFIED_WEEK")
+        seen.add(key)
+        if week.window_end > now and week.window_start <= now + max_lookahead:
+            windows.append(week)
+
+    if not windows:
+        return hold("ACCEPTANCE_NO_CURRENT_OR_FUTURE_VERIFIED_WEEK")
+
+    attempts: list[dict[str, Any]] = []
+    for week in sorted(windows, key=lambda w: (w.window_start, w.season_key, w.week_key)):
+        cohort = evaluate_cohort(
+            lane, inventory,
+            CohortPolicy(minimum_unique_events, week.window_start, week.window_end),
+            now=now,
+        )
+        receipt = {
+            "season_key": week.season_key,
+            "week_key": week.week_key,
+            "status": cohort.status,
+            "blockers": list(cohort.blockers),
+            "eligible_count": cohort.eligible_count,
+            "required_count": cohort.required_count,
+        }
+        attempts.append(receipt)
+        if cohort.status == "COHORT_ELIGIBLE_FOR_TEST":
+            return {
+                "status": "COHORT_ELIGIBLE_FOR_TEST",
+                "blockers": [],
+                "selected_week": {"sport": week.sport, "season_key": week.season_key, "week_key": week.week_key},
+                "cohort": cohort.as_dict(),
+                "attempted_week_receipts": attempts,
+                "probability_publishable": False,
+                "can_execute": False,
+                "global_terminal_authority": TERMINAL_AUTHORITY,
+            }
+
+    # Preserve every per-week reason. The service may not manufacture a slate.
+    return {
+        "status": "COHORT_HELD",
+        "blockers": ["ACCEPTANCE_NO_FULL_VERIFIED_WEEK"],
+        "selected_week": None,
+        "cohort": None,
+        "attempted_week_receipts": attempts,
+        "probability_publishable": False,
+        "can_execute": False,
+        "global_terminal_authority": TERMINAL_AUTHORITY,
+    }
