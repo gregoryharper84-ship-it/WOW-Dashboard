@@ -112,3 +112,67 @@ def test_duplicate_official_matches_fail_closed():
             session=_Session(payload),
         )
     assert exc.value.code == "NHL_CANONICAL_EVENT_AMBIGUOUS"
+
+
+# --- Alias normalization: diacritics and ESPN short abbreviations -----------
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("Montréal Canadiens", "MTL"),   # odds-proxy spelling
+        ("MONTRÉAL CANADIENS", "MTL"),
+        ("Montreal Canadiens", "MTL"),
+        ("Montréal Canadiens", "MTL"),  # decomposed accent
+        ("TB", "TBL"),
+        ("NJ", "NJD"),
+        ("SJ", "SJS"),
+        ("LA", "LAK"),
+        ("UTAH", "UTA"),
+        ("tbl", "TBL"),
+    ],
+)
+def test_real_world_alias_variants_resolve(value, expected):
+    assert team_abbreviation(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value", ["", None, "Quebec Nordiques", "Montréal Impact", "L.A. Galaxy", "ÉÉ"]
+)
+def test_unknown_aliases_still_fail_closed(value):
+    assert team_abbreviation(value) is None
+
+
+def test_accented_away_team_resolves_official_identity():
+    payload = {
+        "games": [{
+            "id": 2026020055,
+            "gameType": 2,
+            "gameState": "FUT",
+            "startTimeUTC": "2026-10-10T23:00:00Z",
+            "homeTeam": {"abbrev": "TOR"},
+            "awayTeam": {"abbrev": "MTL"},
+        }]
+    }
+    session = _Session(payload)
+    out = resolve_nhl_current_event_identity(
+        event_start_time="2026-10-10T23:00:00Z",
+        home_team="Toronto Maple Leafs",
+        away_team="Montréal Canadiens",
+        session=session,
+    )
+    assert out["event_id"] == "2026020055"
+    assert out["away_team"] == "MTL"
+    assert out["can_execute"] is False
+    assert out["prediction_authority"] is False
+    assert "/club-schedule-season/TOR/20262027" in session.calls[0][0]
+
+
+def test_same_team_after_alias_folding_fails_closed():
+    with pytest.raises(NHLEventIdentityError) as exc:
+        resolve_nhl_current_event_identity(
+            event_start_time="2026-10-08T00:00:00Z",
+            home_team="TB",
+            away_team="Tampa Bay Lightning",
+            session=_Session(_payload()),
+        )
+    assert exc.value.code == "NHL_EVENT_PARTICIPANT_IDENTITY_UNRESOLVED"
