@@ -65,44 +65,39 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Resolve exact-head PR and published HOLD checks
+      - name: Resolve exact-head PR from App-published HOLD evidence
         id: resolve
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
+          RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
         run: |
           set -euo pipefail
-          prs=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
-            --jq --arg sha "$HEAD_SHA" '[.[] | select(.head.sha == $sha)]')
-          pr_number=$(jq -r '.[0].number // empty' <<<"$prs")
-          author=$(jq -r '.[0].user.login // empty' <<<"$prs")
-          if [ -z "$pr_number" ] || [ "$author" != "wow-engineering[bot]" ]; then
+          # This workflow runs at the protected-main SHA, NOT the PR head.
+          # Discover the current head through GitHub's PR API and independently
+          # source-pinned QA/Release check runs. Missing evidence fails closed.
+          python artifacts/wow-engine/v17/engineering_hold_reconciler.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --qa-app-id "$QA_APP_ID" \
+            --release-app-id "$RELEASE_APP_ID" > "$RUNNER_TEMP/hold.json"
+          if [ "$(jq -r '.eligible' "$RUNNER_TEMP/hold.json")" != "true" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "No open wow-engineering[bot] PR at head ${HEAD_SHA}; nothing to route." >> "$GITHUB_STEP_SUMMARY"
+            echo "No independently sourced failed PR-head check to route." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-
-          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
-            -H 'Accept: application/vnd.github+json' --jq '.check_runs')
-          summary=$(jq -r '
-            [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")
-                 | select(.conclusion == "failure")]
-            | sort_by(.started_at // .created_at) | last // {} | .output.summary // ""
-          ' <<<"$checks")
-
+          pr_number=$(jq -r '.pr_number' "$RUNNER_TEMP/hold.json")
+          author=$(jq -r '.author' "$RUNNER_TEMP/hold.json")
+          head=$(jq -r '.head_sha' "$RUNNER_TEMP/hold.json")
+          # Encode summary in a single output line; never interpolate
+          # check-run content into Bash or workflow-output delimiters.
+          summary_b64=$(jq -r '.summary' "$RUNNER_TEMP/hold.json" | base64 -w 0)
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
-          if [ -z "$summary" ]; then
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "PR #$pr_number: no failing QA/Release exact-head check found; nothing to route." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          {
-            echo "summary<<EOF"
-            echo "$summary"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "author=$author" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head" >> "$GITHUB_OUTPUT"
+          echo "summary_b64=$summary_b64" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
+          echo "Typed HOLD PR #$pr_number at $head from a pinned QA/Release App." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Read and increment the PR's recovery-attempt marker
         id: attempts
@@ -125,13 +120,19 @@ jobs:
         id: plan
         if: steps.resolve.outputs.eligible == 'true'
         shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          SOURCE_AUTHOR: ${{ steps.resolve.outputs.author }}
+          SUMMARY_B64: ${{ steps.resolve.outputs.summary_b64 }}
+          ATTEMPTS: ${{ steps.attempts.outputs.attempts }}
         run: |
           set -euo pipefail
-          python artifacts/wow-engine/v17/engineering_recovery_planner.py \
-            --pr-number "${{ steps.resolve.outputs.pr_number }}" \
-            --summary "${{ steps.resolve.outputs.summary }}" \
-            --attempts "${{ steps.attempts.outputs.attempts }}" \
-            --is-wow-engineering-pr \
+          summary=$(printf '%s' "$SUMMARY_B64" | base64 --decode)
+          args=(--pr-number "$PR_NUMBER" --summary "$summary" --attempts "$ATTEMPTS")
+          if [ "$SOURCE_AUTHOR" = "wow-engineering[bot]" ]; then
+            args+=(--is-wow-engineering-pr)
+          fi
+          python artifacts/wow-engine/v17/engineering_recovery_planner.py "${args[@]}" \
             | tee "$RUNNER_TEMP/recovery-plan.json"
           echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
           echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
@@ -184,3 +185,15 @@ jobs:
         shell: bash
         run: |
           echo "PR #${{ steps.resolve.outputs.pr_number }}: non-repairable trust-root/owner-approval finding; waiting on owner (see daily digest), not retried." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record Engineering App re-proposal requirement
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'REPROPOSE_WITH_ENGINEERING_APP'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          SOURCE_HEAD: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          echo "PR #$PR_NUMBER at $SOURCE_HEAD is owner-authored and changes trust roots." >> "$GITHUB_STEP_SUMMARY"
+          echo "REPROPOSE_WITH_ENGINEERING_APP: requires a distinct App-authored new PR," >> "$GITHUB_STEP_SUMMARY"
+          echo "then exact-head owner CODEOWNERS approval and independent QA/Release checks." >> "$GITHUB_STEP_SUMMARY"
+          echo "No automatic impersonation, merge, deployment, or bypass permitted." >> "$GITHUB_STEP_SUMMARY"
