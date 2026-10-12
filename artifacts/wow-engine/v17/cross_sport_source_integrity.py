@@ -45,6 +45,21 @@ def _timestamp(value):
         raise InventoryIntegrityError("SOURCE_EVENT_TIMEZONE_MISSING")
     return dt.astimezone(timezone.utc)
 
+def _unique_json_object(pairs):
+    """Reject duplicate keys at every object depth, including discarded metadata."""
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise InventoryIntegrityError("SOURCE_PAYLOAD_JSON_DUPLICATE_KEY")
+        obj[key] = value
+    return obj
+
+
+def _reject_json_constant(_value):
+    """Python otherwise accepts NaN/Infinity, which are not JSON values."""
+    raise InventoryIntegrityError("SOURCE_PAYLOAD_JSON_NONFINITE_NUMBER")
+
+
 def verify_inventory_bytes(payload: bytes, *, expected_sha256: str, source_id: str,
                            fetched_at: datetime, sport: str) -> VerifiedInventory:
     """Check original bytes against independently authenticated expected digest.
@@ -65,8 +80,11 @@ def verify_inventory_bytes(payload: bytes, *, expected_sha256: str, source_id: s
     if not isinstance(sport, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{1,15}", sport):
         raise InventoryIntegrityError("SOURCE_SPORT_INVALID")
     try:
-        obj = json.loads(payload)
-    except (ValueError, UnicodeDecodeError) as exc:
+        obj = json.loads(payload.decode("utf-8"), object_pairs_hook=_unique_json_object,
+                         parse_constant=_reject_json_constant)
+    except InventoryIntegrityError:
+        raise
+    except (ValueError, UnicodeError, RecursionError) as exc:
         raise InventoryIntegrityError("SOURCE_PAYLOAD_JSON_INVALID") from exc
     if not isinstance(obj, dict) or not isinstance(obj.get("events"), list):
         raise InventoryIntegrityError("SOURCE_EVENT_LIST_INVALID")
