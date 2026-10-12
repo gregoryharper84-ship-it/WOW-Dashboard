@@ -276,6 +276,8 @@ Research-only ownership assumptions. These codes never authorize production stra
 | `PICKEM_PROJECTED_SEED_INVALID` | Pick'em projected pool-equity research | Reproducible research seed must be a valid nonnegative 32-bit integer. | No |
 | `PICKEM_PROJECTED_EVENT_IDENTITY_INVALID` | Pick'em projected pool-equity research | Projected scenario event identity is duplicated or the baseline side mismatches canonical home/away identities. | No |
 
+| `PICKEM_PROJECTED_RESOURCE_BUDGET_EXCEEDED` | Pick'em projected pool-equity research | Requested draws × opponent count × game count exceeds the 8,000,000 work-unit safety limit. | No |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
