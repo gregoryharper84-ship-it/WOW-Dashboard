@@ -124,3 +124,11 @@ def test_zero_flip_budget_keeps_probability_intact():
     r = evaluate_projected_pool_shadow(picks, forecast, lock_at=LOCK, pool_size=12, max_flips=0)
     assert r["baseline"] == r["research_challenger"]
     assert r["changed_picks"] == []
+
+
+def test_large_pool_draws_refuse_resource_exhaustion():
+    picks, forecast = _inputs()
+    with pytest.raises(PoolEquityInputError, match="PICKEM_PROJECTED_RESOURCE_BUDGET_EXCEEDED"):
+        evaluate_projected_pool_shadow(
+            picks, forecast, lock_at=LOCK, pool_size=1000, draws=20000,
+        )
