@@ -200,11 +200,11 @@ def next_approved_issue(
 
 
 def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
-    result = client.get("pulls?state=open&per_page=100")
-    if not isinstance(result, list):
-        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
-    if len(result) >= 100:
-        raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
+    """Fail closed on incomplete PR inventory; never duplicate an open writer.
+
+    GitHub returns at most 100 PRs per REST page. Scan up to ten pages and
+    re-read page one to detect concurrent mutations before admitting a writer.
+    """
     import re
     number = re.escape(str(issue_number))
     # Exact ownership only. Generic analysis mentioning #123 is not a claim.
@@ -215,11 +215,49 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
         rf"(?im)^\s*(?:Refs?|Fixes|Closes|Resolves)\b[^\n]*?(?<!\w)"
         rf"(?:{re.escape(REPO)})?#{number}(?!\d)"
     )
-    return any(
-        bool(incident.search(str(pr.get("body") or ""))
-             or references.search(str(pr.get("body") or "")))
-        for pr in result
-    )
+
+    def read_page(page: int) -> list[dict[str, Any]]:
+        result = client.get(
+            f"pulls?state=open&per_page=100&sort=created&direction=asc&page={page}"
+        )
+        if not isinstance(result, list) or len(result) > 100:
+            raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+        if any(
+            not isinstance(pr, dict) or type(pr.get("number")) is not int
+            or pr["number"] <= 0
+            for pr in result
+        ):
+            raise RuntimeError("OPEN_PR_INVENTORY_IDENTITY_INVALID")
+        return result
+
+    seen: set[int] = set()
+    first_page: list[dict[str, Any]] | None = None
+    matched = False
+    for page in range(1, 11):
+        prs = read_page(page)
+        if first_page is None:
+            first_page = prs
+        for pr in prs:
+            if pr["number"] in seen:
+                raise RuntimeError("OPEN_PR_INVENTORY_DUPLICATE")
+            seen.add(pr["number"])
+            body = str(pr.get("body") or "")
+            if incident.search(body) or references.search(body):
+                matched = True
+        if len(prs) < 100:
+            # Conservative re-entry check for mutations during pagination.
+            latest = read_page(1)
+            def signature(rows: list[dict[str, Any]]) -> tuple[tuple[Any, ...], ...]:
+                return tuple(
+                    (r["number"], r.get("body"),
+                     r.get("head", {}).get("sha")
+                     if isinstance(r.get("head"), dict) else None)
+                    for r in rows
+                )
+            if signature(first_page) != signature(latest):
+                raise RuntimeError("OPEN_PR_INVENTORY_CHANGED_DURING_SCAN")
+            return matched
+    raise RuntimeError("OPEN_PR_INVENTORY_PAGE_LIMIT")
 
 
 def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str, Any]) -> str:
