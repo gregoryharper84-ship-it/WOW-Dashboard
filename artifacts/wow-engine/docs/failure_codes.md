@@ -198,7 +198,6 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 | `STANDARD_TARGET_MUST_USE_GLOBAL_LEASE` | engineering worker target selection | An exact P1 STANDARD target was dispatched with a domain lease group instead of the GLOBAL writer lease. Suffixed `:<incident>`. | N/A |
 | `TARGET_INCIDENT_NOT_SUPPORTED` | engineering worker target selection | Exact target is neither P0 RAPID nor P1 STANDARD. Suffixed `:<incident>:<severity>:<lane>`. | N/A |
 
-
 ## NFL Pick'em pre-lock full-pool research and zero-point tie settlement (PR #1680)
 
 All rows below are typed input gates for a research-only strategy diagnostic or postmortem settlement. None changes fitted sporting probability, can grant probability publication, or permits card execution. Each is covered by direct regression tests or by shared input-family validation paths in the proposed PR.
@@ -281,3 +280,27 @@ Research-only ownership assumptions. These codes never authorize production stra
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## NCAAF result/form research forward-feature diagnostics (P0 #665)
+
+These are **research feature preparation** failures, not certified model inference failures. The feature builder never produces a probability, ranking, value result, or wager, regardless of diagnostic success. Both `probability_publishable` and `can_execute` remain false.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `NCAAF_FORWARD_EVENT_TIME_INVALID` | NCAAF research forward feature builder | Current event or relevant settled-result timestamp missing, invalid or timezone-naive. | No |
+| `NCAAF_FORWARD_CANONICAL_IDENTITY_NOT_PROVEN` | NCAAF research forward feature builder | Upstream CFBD canonical event identity has not been proven for this event. | No |
+| `NCAAF_FORWARD_CANONICAL_PROOF_INVALID` | NCAAF research forward feature builder | Claimed CFBD event-resolution object is missing, does not match official event identity/participants, or contains contradictory provider/market/authority fields. | No |
+| `NCAAF_FORWARD_CANONICAL_START_MISMATCH` | NCAAF research forward feature builder | Caller kickoff differs from CFBD resolver kickoff beyond the canonical identity tolerance. | No |
+| `NCAAF_FORWARD_EVENT_IDENTITY_INVALID` | NCAAF research forward feature builder | Empty or contradictory canonical event ID/team participants. | No |
+| `NCAAF_FORWARD_NEUTRAL_SITE_INVALID` | NCAAF research forward feature builder | Neutral-site indicator is not a concrete boolean. | No |
+| `NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_MISSING` | NCAAF research forward feature builder | CFBD canonical event resolution has no concrete boolean neutral-site observation. Do not impute home field. | No |
+| `NCAAF_FORWARD_NEUTRAL_SITE_SOURCE_CONTRADICTION` | NCAAF research forward feature builder | Caller-provided neutral site disagrees with the CFBD event's neutral-site observation. | No |
+| `NCAAF_FORWARD_TARGET_IN_HISTORY` | NCAAF research forward feature builder | Target event appears in the settled-results input, creating a potential target/outcome leakage path. | No |
+| `NCAAF_FORWARD_PRIOR_EVENT_ID_MISSING` | NCAAF research forward feature builder | A relevant settled prior result lacks an immutable official event ID. | No |
+| `NCAAF_FORWARD_PRIOR_EVENT_DUPLICATE` | NCAAF research forward feature builder | A relevant settled prior event identity occurs more than once in accepted evidence. | No |
+| `NCAAF_FORWARD_PRIOR_RESULT_INVALID` | NCAAF research forward feature builder | Relevant prior-game score/status cannot be reconciled to a valid settled winner. | No |
+| `NCAAF_FORWARD_PRIOR_RESULT_CONTRADICTION` | NCAAF research forward feature builder | Source home_won disagrees with settled score. | No |
+| `NCAAF_FORWARD_PRIOR_EVIDENCE_TIME_CONTRADICTION` | NCAAF research forward feature builder | Settled-result acquisition timestamp is at or before its game's scheduled start, so outcome evidence could not yet exist. | No |
+| `NCAAF_FORWARD_PRIOR_FORM_INSUFFICIENT` | NCAAF research forward feature builder | One or both teams lack the model's minimum three source-eligible settled prior games; no baseline imputation. | No |
+| `NCAAF_FORWARD_FEATURE_SCHEMA_INVALID` | NCAAF research forward feature builder | Computed numeric features do not exactly match the candidate model schema or finite-number contract. | No |
+| `NCAAF_FORWARD_FEATURE_NOT_PREGAME` | NCAAF research forward feature builder | Latest evidence acquisition timestamp is not strictly before the target event start. | No |
