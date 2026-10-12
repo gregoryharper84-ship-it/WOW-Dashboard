@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
   checks: read
   deployments: write
 
@@ -29,6 +30,8 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
       GH_API_TOKEN: ${{ github.token }}
+      WOW_QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
+      WOW_RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"
     steps:
@@ -99,6 +102,59 @@ jobs:
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
 
+          def validate_release_provenance(*, target_sha, repository, pull_requests, merged_pr,
+                                          check_runs, qa_app_id, release_app_id):
+              """Require one merged same-repo PR plus independent exact-head App checks.
+
+              Three successful regression checks on a merge commit are necessary but
+              never sufficient evidence of independent release authorization.
+              """
+              if not (str(qa_app_id).isdigit() and str(release_app_id).isdigit()):
+                  raise RuntimeError("RENDER_RELEASE_APP_IDENTITIES_UNBOUND")
+              if int(qa_app_id) == int(release_app_id):
+                  raise RuntimeError("RENDER_RELEASE_APP_IDENTITIES_NOT_DISTINCT")
+              if not isinstance(pull_requests, list) or not isinstance(merged_pr, dict):
+                  raise RuntimeError("RENDER_RELEASE_PR_EVIDENCE_INVALID")
+              matching = [
+                  pr for pr in pull_requests
+                  if isinstance(pr, dict)
+                  and str(pr.get("merge_commit_sha") or "") == target_sha
+                  and (pr.get("base") or {}).get("ref") == "main"
+                  and str((pr.get("base") or {}).get("repo", {}).get("full_name") or "") == repository
+                  and pr.get("merged_at")
+              ]
+              if len(matching) != 1 or matching[0].get("number") != merged_pr.get("number"):
+                  raise RuntimeError("RENDER_RELEASE_MERGED_PR_NOT_UNIQUE")
+              if not merged_pr.get("merged") or str(merged_pr.get("merge_commit_sha") or "") != target_sha:
+                  raise RuntimeError("RENDER_RELEASE_PR_MERGE_IDENTITY_MISMATCH")
+              if str((merged_pr.get("base") or {}).get("ref") or "") != "main":
+                  raise RuntimeError("RENDER_RELEASE_PR_BASE_MISMATCH")
+              if str((merged_pr.get("head") or {}).get("repo", {}).get("full_name") or "") != repository:
+                  raise RuntimeError("RENDER_RELEASE_PR_FORK_UNVERIFIED")
+              source_head = str((merged_pr.get("head") or {}).get("sha") or "")
+              if len(source_head) != 40 or any(c not in "0123456789abcdef" for c in source_head.lower()):
+                  raise RuntimeError("RENDER_RELEASE_PR_HEAD_INVALID")
+              if not isinstance(check_runs, list):
+                  raise RuntimeError("RENDER_RELEASE_CHECK_EVIDENCE_INVALID")
+              required_roles = {
+                  "WOW Independent QA exact-head": int(qa_app_id),
+                  "WOW Release Authority exact-head": int(release_app_id),
+              }
+              for name, role_app_id in required_roles.items():
+                  from_role = [
+                      check for check in check_runs
+                      if isinstance(check, dict)
+                      and str(check.get("name") or "") == name
+                      and str(check.get("head_sha") or "") == source_head
+                      and (check.get("app") or {}).get("id") == role_app_id
+                  ]
+                  if not from_role:
+                      raise RuntimeError("RENDER_RELEASE_ROLE_CHECK_MISSING_OR_FOREIGN:" + name)
+                  latest = max(from_role, key=lambda check: int(check.get("id") or 0))
+                  if latest.get("status") != "completed" or latest.get("conclusion") != "success":
+                      raise RuntimeError("RENDER_RELEASE_ROLE_CHECK_NOT_SUCCESS:" + name)
+              return source_head
+
           required = {
               "WOW additional required regression",
               "WOW governed probability backend",
@@ -129,6 +185,43 @@ jobs:
               if time.time() >= check_deadline:
                   raise RuntimeError("RENDER_DEPLOY_REQUIRED_CHECK_TIMEOUT:" + ",".join(missing + pending))
               time.sleep(15)
+
+          # Verify the independent QA and Release App checks on the exact
+          # source PR head. Checks on the merge commit alone do not authorize
+          # deployment, and an owner-authored trust-root PR cannot self-certify.
+          merged_candidates = github_json(
+              f"/commits/{urllib.parse.quote(target_sha, safe='')}/pulls?per_page=100"
+          )
+          if not isinstance(merged_candidates, list):
+              raise RuntimeError("RENDER_RELEASE_PR_LOOKUP_INVALID")
+          matching_candidates = [
+              item for item in merged_candidates
+              if isinstance(item, dict) and str(item.get("merge_commit_sha") or "") == target_sha
+          ]
+          if len(matching_candidates) != 1:
+              raise RuntimeError("RENDER_RELEASE_MERGED_PR_NOT_UNIQUE")
+          source_pr = github_json(f"/pulls/{int(matching_candidates[0]['number'])}")
+          source_head = str((source_pr.get("head") or {}).get("sha") or "")
+          source_checks = github_json(
+              f"/commits/{urllib.parse.quote(source_head, safe='')}/check-runs?per_page=100"
+          )
+          authorized_pr_head = validate_release_provenance(
+              target_sha=target_sha,
+              repository=repo,
+              pull_requests=merged_candidates,
+              merged_pr=source_pr,
+              check_runs=(source_checks or {}).get("check_runs"),
+              qa_app_id=os.environ.get("WOW_QA_APP_ID", ""),
+              release_app_id=os.environ.get("WOW_RELEASE_APP_ID", ""),
+          )
+          print(json.dumps({
+              "status": "RENDER_RELEASE_PROVENANCE_VERIFIED",
+              "merge_sha": target_sha,
+              "source_pr": int(source_pr["number"]),
+              "source_pr_head": authorized_pr_head,
+              "qa_release_checks": ["WOW Independent QA exact-head", "WOW Release Authority exact-head"],
+              "can_execute": False,
+          }, sort_keys=True))
 
           main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
           if main_sha != target_sha:
