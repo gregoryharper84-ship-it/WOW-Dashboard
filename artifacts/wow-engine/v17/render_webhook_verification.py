@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Mapping
@@ -52,9 +53,9 @@ def verify_render_webhook(
     event_id = normalized.get("webhook-id", "")
     timestamp = normalized.get("webhook-timestamp", "")
     signature = normalized.get("webhook-signature", "")
-    if not event_id.startswith("evt-") or len(event_id) > 128 or not event_id[4:].isalnum():
+    if not isinstance(event_id, str) or not re.fullmatch(r"evt-[a-zA-Z0-9_-]{1,124}", event_id, re.ASCII):
         raise RenderWebhookError("EVENT_ID_INVALID")
-    if not timestamp.isascii() or not timestamp.isdecimal() or len(timestamp) > 12:
+    if not isinstance(timestamp, str) or not timestamp.isascii() or not timestamp.isdecimal() or len(timestamp) > 12:
         raise RenderWebhookError("TIMESTAMP_INVALID")
     sent_at = int(timestamp)
     current = int(time.time()) if now is None else now
@@ -63,7 +64,7 @@ def verify_render_webhook(
     message = event_id.encode("ascii") + b"." + timestamp.encode("ascii") + b"." + raw_body
     expected = hmac.new(signing_key, message, hashlib.sha256).digest()
     valid = False
-    for candidate in signature.split():
+    for candidate in signature.split() if isinstance(signature, str) else ():
         if not candidate.startswith("v1,"):
             continue
         try:
