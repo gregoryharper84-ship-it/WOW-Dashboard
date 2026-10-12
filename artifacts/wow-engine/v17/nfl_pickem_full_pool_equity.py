@@ -150,6 +150,7 @@ def evaluate_full_pool_shadow(
 
     opponents: list[int] = []
     opponent_ids: set[str] = set()
+    opponent_receipts: set[str] = set()
     for entry in opponent_entries:
         if not isinstance(entry, Mapping):
             raise PoolEquityInputError("PICKEM_EQUITY_OPPONENT_INVALID")
@@ -157,7 +158,12 @@ def evaluate_full_pool_shadow(
         if entry_id in opponent_ids:
             raise PoolEquityInputError("PICKEM_EQUITY_DUPLICATE_OPPONENT")
         opponent_ids.add(entry_id)
-        _required(entry.get("receipt_id"), "PICKEM_EQUITY_OPPONENT_RECEIPT_REQUIRED")
+        receipt = _required(entry.get("receipt_id"), "PICKEM_EQUITY_OPPONENT_RECEIPT_REQUIRED")
+        if receipt in opponent_receipts:
+            raise PoolEquityInputError("PICKEM_EQUITY_DUPLICATE_OPPONENT_RECEIPT")
+        opponent_receipts.add(receipt)
+        if entry.get("audience") != "OPPONENT_ENTRIES":
+            raise PoolEquityInputError("PICKEM_EQUITY_OPPONENT_AUDIENCE_INVALID")
         _required(entry.get("availability_source"), "PICKEM_EQUITY_OPPONENT_AVAILABILITY_SOURCE_REQUIRED")
         if (_time(entry.get("submitted_at"), "PICKEM_EQUITY_OPPONENT_SUBMISSION_INVALID") > lock
                 or _time(entry.get("available_to_user_at"), "PICKEM_EQUITY_OPPONENT_AVAILABILITY_INVALID") > lock):
