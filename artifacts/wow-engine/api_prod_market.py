@@ -499,6 +499,14 @@ def _prop_period(stat_type: str) -> str:
     return "FIRST_INNING" if "1IP" in upper or "FIRST_INNING" in upper else "FULL_GAME"
 
 
+# Exact-route registry codes meaning the lookup itself failed (infrastructure),
+# not that the certified fitted artifact is absent. Must match
+# pick_request_runtime_core.PROP_ROUTE_REGISTRY_INFRA_CODES.
+PROP_ROUTE_REGISTRY_INFRA_CODES = frozenset(
+    {"PROP_MODEL_REGISTRY_UNAVAILABLE", "PROP_MODEL_REGISTRY_INVALID_RESPONSE"}
+)
+
+
 def _prop_route_artifact(sport: str, stat_type: str) -> dict[str, Any]:
     """Resolve the exact certified fitted-model route before model invocation.
 
@@ -731,6 +739,37 @@ def _preflight_prop_route(
         )
 
     route_artifact = _prop_route_artifact(req.sport, req.stat_type)
+    route_code = str(route_artifact.get("code") or "")
+    if route_code in PROP_ROUTE_REGISTRY_INFRA_CODES:
+        # Registry transport/shape failure is infrastructure, not proof that the
+        # fitted capability is absent. Never rewrite it into MODEL_UNAVAILABLE.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": route_code,
+                "governed_probability_status": "NOT_PRODUCED",
+                "requested_route": {
+                    "sport": str(req.sport).upper(),
+                    "stat_type": str(req.stat_type).upper(),
+                    "feature_schema_version": PROP_FEATURE_SCHEMA_VERSION,
+                },
+                "evidence_hydration": "NOT_ATTEMPTED_ROUTE_BLOCKED",
+                "controlling_specialist": specialist.get("controlling_specialist"),
+                "specialist_invoked": False,
+                "backend_traversal": {
+                    "requester_model": model_identity,
+                    "render": "PASS",
+                    "supabase_capability": "PASS",
+                    "supabase_evidence": "NOT_ATTEMPTED",
+                    "controlling_specialist": "PASS",
+                    "exact_route_artifact": "REGISTRY_FAILED",
+                    "governed_model": "NOT_INVOKED",
+                    "prediction_ledger_write": "NOT_ATTEMPTED",
+                },
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
     if route_artifact.get("ok") is not True or route_artifact.get("code") != "PROP_CERTIFIED_MODEL_ARTIFACT_READY":
         raise HTTPException(
             status_code=409,
