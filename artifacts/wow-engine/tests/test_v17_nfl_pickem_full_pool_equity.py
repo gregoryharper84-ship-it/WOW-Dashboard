@@ -52,8 +52,8 @@ def test_exact_two_outcome_enumeration_selects_competitive_minor_side_without_mo
     assert output["pool_size"] == 2
     assert output["baseline"]["sole_first_probability_proxy"] == pytest.approx(0)
     assert output["baseline"]["equal_split_first_share_proxy"] == pytest.approx(.5)
-    assert output["research_challenger"]["sole_first_probability_proxy"] == pytest.approx(.49)
-    assert output["research_challenger"]["equal_split_first_share_proxy"] == pytest.approx(.49)
+    assert output["research_challenger"]["sole_first_probability_proxy"] == pytest.approx(0)
+    assert output["research_challenger"]["equal_split_first_share_proxy"] == pytest.approx(.5)
     # The baseline splits a tie every time and therefore remains preferable
     # by the equal-split objective when p_home=.51; no blind contrarianism.
     assert output["changed_picks"] == []
@@ -143,3 +143,11 @@ def test_two_game_board_is_deterministic_and_respects_zero_flip_limit():
     assert first["scenario_count"] == 4
     assert first["changed_picks"] == []
     assert first["research_challenger"] == first["baseline"]
+
+
+def test_valid_boundary_calibration_interval_can_include_zero_and_one():
+    picks, others = _inputs()
+    picks[0]["calibrated_selection_lower_bound"] = 0.0
+    picks[0]["calibrated_selection_upper_bound"] = 1.0
+    out = evaluate_full_pool_shadow(picks, others, lock_at=LOCK)
+    assert out["status"] == "RESEARCH_SHADOW_COMPLETE"
