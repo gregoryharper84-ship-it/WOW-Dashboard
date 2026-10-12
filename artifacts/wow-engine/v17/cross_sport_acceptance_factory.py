@@ -20,6 +20,8 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SUPPORTED_MARKETS = frozenset({"MONEYLINE", "SPREAD", "RUN_LINE", "PUCK_LINE", "PROP"})
 _PREGAME_STATES = frozenset({"SCHEDULED", "PRE_GAME"})
 _KNOWN_NONPREGAME = frozenset({"IN_PROGRESS", "FINAL", "POSTPONED", "CANCELLED", "CANCELED"})
+# Played states; POSTPONED/CANCELLED are not evidence the window was played.
+_ELAPSED_STATES = frozenset({"IN_PROGRESS", "FINAL"})
 
 
 def _aware(value: datetime) -> bool:
@@ -152,7 +154,13 @@ def evaluate_cohort(lane: Lane, inventory: SourceInventory, policy: CohortPolicy
             continue
         if not policy.window_start <= event.start_utc < policy.window_end:
             continue
-        if event.status not in _PREGAME_STATES or event.start_utc <= now:
+        # #1690: an in-window game that is live/final, or whose pregame-status
+        # kickoff has already passed (fail closed on stale status), means the
+        # window is partly played. Remaining games never form a complete week.
+        if event.status in _ELAPSED_STATES or (event.status in _PREGAME_STATES and event.start_utc <= now):
+            blockers.append("ACCEPTANCE_WEEK_PARTIALLY_ELAPSED")
+            continue
+        if event.status not in _PREGAME_STATES:
             continue
         if event.official_event_id in eligible:
             blockers.append("ACCEPTANCE_CANONICAL_EVENT_DUPLICATE")

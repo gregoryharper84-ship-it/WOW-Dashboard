@@ -269,3 +269,103 @@ def test_verified_week_does_not_accept_far_future_or_invalid_calendar():
     assert choose_current_pregame_cohort(
         **base, source_weeks=(invalid,),
     )["blockers"] == ["ACCEPTANCE_VERIFIED_WEEK_WINDOW_INVALID"]
+
+
+# #1690 governance REJECT — a week with started/final games AND 13+ remaining
+# pregame games must never be accepted as a complete-week cohort.
+_W05 = (NOW - timedelta(days=3), NOW + timedelta(days=4))
+_W06 = (NOW + timedelta(days=5), NOW + timedelta(days=11))
+
+
+def _partial_week05(remaining=13):
+    played = (
+        Fixture("NFL", "w05-final-0", NOW - timedelta(days=2), "FINAL"),
+        Fixture("NFL", "w05-final-1", NOW - timedelta(days=1), "FINAL"),
+        Fixture("NFL", "w05-final-2", NOW - timedelta(hours=20), "FINAL"),
+        Fixture("NFL", "w05-live-0", NOW - timedelta(hours=1), "IN_PROGRESS"),
+    )
+    pregame = tuple(
+        Fixture("NFL", f"w05-pre-{i}", NOW + timedelta(hours=2 + i * 3), "SCHEDULED")
+        for i in range(remaining)
+    )
+    return played + pregame
+
+
+def _full_week06(count=13):
+    return tuple(
+        Fixture("NFL", f"w06-pre-{i}", _W06[0] + timedelta(hours=1 + i * 3), "SCHEDULED")
+        for i in range(count)
+    )
+
+
+def test_partially_elapsed_week_with_13_remaining_is_held_directly():
+    policy = CohortPolicy(13, *_W05)
+    result = evaluate_cohort(_lane(), _inventory(_partial_week05(13)), policy, now=NOW)
+    assert result.eligible_count == 13
+    assert result.status == "COHORT_HELD"
+    assert "ACCEPTANCE_WEEK_PARTIALLY_ELAPSED" in result.blockers
+    assert result.as_dict()["probability_publishable"] is False
+
+
+def test_partially_elapsed_week_with_more_than_13_remaining_is_still_held():
+    policy = CohortPolicy(13, *_W05)
+    result = evaluate_cohort(_lane(), _inventory(_partial_week05(15)), policy, now=NOW)
+    assert result.eligible_count == 15
+    assert result.status == "COHORT_HELD"
+    assert "ACCEPTANCE_WEEK_PARTIALLY_ELAPSED" in result.blockers
+
+
+def test_selector_skips_partial_week_with_13_remaining_and_selects_next_full_week():
+    inventory = _inventory(_partial_week05(13) + _full_week06(13))
+    weeks = (_week("05", *_W05), _week("06", *_W06))
+    row = choose_current_pregame_cohort(_lane(), inventory, weeks, now=NOW, minimum_unique_events=13)
+    assert row["status"] == "COHORT_ELIGIBLE_FOR_TEST"
+    assert row["selected_week"]["week_key"] == "06"
+    assert row["cohort"]["eligible_event_count"] == 13
+    assert all(e.startswith("w06-") for e in row["cohort"]["canonical_event_ids"])
+    first = row["attempted_week_receipts"][0]
+    assert first["week_key"] == "05" and first["status"] == "COHORT_HELD"
+    assert first["eligible_count"] == 13
+    assert "ACCEPTANCE_WEEK_PARTIALLY_ELAPSED" in first["blockers"]
+    assert row["can_execute"] is False
+
+
+def test_selector_partial_week_without_full_next_week_is_typed_hold():
+    inventory = _inventory(_partial_week05(14) + _full_week06(12))
+    weeks = (_week("05", *_W05), _week("06", *_W06))
+    row = choose_current_pregame_cohort(_lane(), inventory, weeks, now=NOW, minimum_unique_events=13)
+    assert row["status"] == "COHORT_HELD"
+    assert row["selected_week"] is None and row["cohort"] is None
+    assert row["blockers"] == ["ACCEPTANCE_NO_FULL_VERIFIED_WEEK"]
+    receipts = {r["week_key"]: r for r in row["attempted_week_receipts"]}
+    assert "ACCEPTANCE_WEEK_PARTIALLY_ELAPSED" in receipts["05"]["blockers"]
+    assert "ACCEPTANCE_ELIGIBLE_COHORT_INSUFFICIENT" in receipts["06"]["blockers"]
+    assert "ACCEPTANCE_WEEK_PARTIALLY_ELAPSED" not in receipts["06"]["blockers"]
+
+
+def test_pregame_status_with_passed_kickoff_counts_as_elapsed_fail_closed():
+    stale_status = Fixture("NFL", "w05-stale", NOW - timedelta(minutes=5), "SCHEDULED")
+    pregame = tuple(
+        Fixture("NFL", f"w05-pre-{i}", NOW + timedelta(hours=2 + i), "PRE_GAME") for i in range(13)
+    )
+    result = evaluate_cohort(_lane(), _inventory((stale_status,) + pregame), CohortPolicy(13, *_W05), now=NOW)
+    assert result.status == "COHORT_HELD"
+    assert "ACCEPTANCE_WEEK_PARTIALLY_ELAPSED" in result.blockers
+
+
+def test_postponed_or_cancelled_in_window_is_not_elapsed_and_full_week_passes():
+    rows = _full_week06(13) + (
+        Fixture("NFL", "w06-ppd", _W06[0] + timedelta(hours=2), "POSTPONED"),
+        Fixture("NFL", "w06-can", _W06[0] + timedelta(hours=3), "CANCELLED"),
+    )
+    result = evaluate_cohort(_lane(), _inventory(rows), CohortPolicy(13, *_W06), now=NOW)
+    assert result.status == "COHORT_ELIGIBLE_FOR_TEST"
+    assert result.blockers == ()
+    assert result.eligible_count == 13
+
+
+def test_played_games_outside_window_do_not_taint_full_future_week():
+    inventory = _inventory(_partial_week05(13) + _full_week06(13))
+    result = evaluate_cohort(_lane(), inventory, CohortPolicy(13, *_W06), now=NOW)
+    assert result.status == "COHORT_ELIGIBLE_FOR_TEST"
+    assert result.eligible_count == 13
