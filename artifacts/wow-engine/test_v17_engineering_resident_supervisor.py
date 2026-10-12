@@ -52,7 +52,7 @@ class FakeClient:
         if suffix in ("issues/1388", "issues/823"):
             return {"state": "open" if self.issue_open else "closed"}
         if suffix.startswith("pulls?"):
-            return [{"body": "Incident: 1388"}] if self.open_pr else []
+            return [{"number": 1001, "body": "Incident: 1388"}] if self.open_pr else []
         raise AssertionError(suffix)
 
     def dispatch(self, issue):
