@@ -39,6 +39,12 @@ def _game_row(raw: Mapping[str, Any], *, snapshot: SourceSnapshot) -> dict[str, 
     season_type = raw.get("seasonType")
     if any(value is None for value in (event_id, start, home, away, week, season, season_type)):
         return None
+    # CFBD source-neutral is an actual fitted-model feature. Missing values
+    # and strings such as "false" must not silently become a home-field
+    # assumption in the immutable settled research corpus.
+    neutral_site = raw.get("neutralSite")
+    if type(neutral_site) is not bool:
+        return None
     return {
         "official_event_id": str(event_id),
         "season": int(season),
@@ -46,7 +52,7 @@ def _game_row(raw: Mapping[str, Any], *, snapshot: SourceSnapshot) -> dict[str, 
         "season_type": str(season_type),
         "event_start_time": str(start),
         "venue": raw.get("venue"),
-        "neutral_site": bool(raw.get("neutralSite", False)),
+        "neutral_site": neutral_site,
         "home_team": str(home),
         "away_team": str(away),
         "home_points": int(home_points),
@@ -61,6 +67,7 @@ def _game_row(raw: Mapping[str, Any], *, snapshot: SourceSnapshot) -> dict[str, 
 def materialize_training_games(supabase_client: Any, snapshots: Iterable[SourceSnapshot]) -> MaterializationResult:
     rows: list[dict[str, Any]] = []
     skipped = 0
+    missing_neutral_site_n = 0
     for snapshot in snapshots:
         if snapshot.endpoint != "/games" or snapshot.acquisition_status != "AVAILABLE":
             continue
@@ -68,15 +75,21 @@ def materialize_training_games(supabase_client: Any, snapshots: Iterable[SourceS
             row = _game_row(raw, snapshot=snapshot)
             if row is None:
                 skipped += 1
+                if raw.get("completed") is True and type(raw.get("neutralSite")) is not bool:
+                    missing_neutral_site_n += 1
             else:
                 rows.append(row)
 
+    neutral_blockers = (
+        ["NCAAF_TRAINING_NEUTRAL_SITE_EVIDENCE_MISSING"]
+        if missing_neutral_site_n else []
+    )
     if not rows:
         return MaterializationResult(
             candidate_rows=0,
             persisted_rows=0,
             skipped_rows=skipped,
-            blocker_codes=("NCAAF_NO_SETTLED_TRAINING_GAMES_MATERIALIZED",),
+            blocker_codes=tuple(neutral_blockers + ["NCAAF_NO_SETTLED_TRAINING_GAMES_MATERIALIZED"]),
         )
 
     result = supabase_client.table("wow_ncaaf_training_games").upsert(
@@ -85,7 +98,7 @@ def materialize_training_games(supabase_client: Any, snapshots: Iterable[SourceS
     ).execute()
     data = getattr(result, "data", None)
     persisted = len(data) if isinstance(data, list) else 0
-    blockers: list[str] = []
+    blockers: list[str] = list(neutral_blockers)
     if persisted < len(rows):
         blockers.append("NCAAF_TRAINING_GAME_PERSISTENCE_COUNT_MISMATCH")
     return MaterializationResult(
