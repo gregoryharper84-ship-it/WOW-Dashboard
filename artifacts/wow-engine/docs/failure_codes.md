@@ -201,3 +201,66 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
+
+## Optional Gemini evidence-only challenger (disabled by default)
+
+| `GEMINI_DISABLED` | optional external Gemini challenger | Feature switch is off; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_TASK_DISABLED` | optional external Gemini challenger | Task is not in explicitly configured allowlist; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_INPUT_CLASS_BLOCKED` | optional external Gemini challenger | Text is not attested PUBLIC/SANITIZED; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_INPUT_INVALID` | optional external Gemini challenger | Missing/oversized input or invalid provenance; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_CONFIG_MISSING` | optional external Gemini challenger | API key/model missing or model identifier invalid; no request sent. Never a fitted-model or terminal failure. | No |
+| `GEMINI_RATE_LIMITED` | optional external Gemini challenger | Google returned 429; no research evidence returned. Never a fitted-model or terminal failure. | No |
+| `GEMINI_TRANSPORT_FAILED` | optional external Gemini challenger | Gemini HTTP transport failed; no evidence returned. Never a fitted-model or terminal failure. | No |
+| `GEMINI_RESPONSE_INVALID` | optional external Gemini challenger | Gemini response missing, malformed, or unfinished; no evidence returned. Never a fitted-model or terminal failure. | No |
+| `GEMINI_BILLING_UNVERIFIED` | optional Gemini provider activation | Paid Gemini API Cloud project has not been independently confirmed by the operator; no external request allowed. | No |
+| `GEMINI_BATCH_LATENCY_INCOMPATIBLE` | Gemini offline routing plan | Batch was requested for an interactive task; no async substitution. | No |
+| `GEMINI_BATCH_NOT_IMPLEMENTED` | Gemini offline routing plan | Batch job submission and result lifecycle are not implemented/approved in the standby scaffold. | No |
+| `GEMINI_CACHE_NOT_IMPLEMENTED` | Gemini offline routing plan | Explicit cache lifecycle and privacy approvals are not implemented/approved in the standby scaffold. | No |
+| `GEMINI_BATCH_INPUT_INVALID` | Gemini standby Batch/cache contract | Input schema, row count, provenance or size rejected before Batch submission; no governed probability publication. | No |
+| `GEMINI_BATCH_IDENTITY_INVALID` | Gemini standby Batch/cache contract | Batch request key or provider job name not exact and valid; no governed probability publication. | No |
+| `GEMINI_BATCH_RESPONSE_INVALID` | Gemini standby Batch/cache contract | Batch result invalid, unfinished, or missing governed evidence structure; no governed probability publication. | No |
+| `GEMINI_BATCH_RESULTS_UNAVAILABLE` | Gemini standby Batch/cache contract | File-backed Batch result requires a separate reviewed download contract; no governed probability publication. | No |
+| `GEMINI_BATCH_RESULT_IDENTITY_MISSING` | Gemini standby Batch/cache contract | Provider Batch output has no stable per-row key; no governed probability publication. | No |
+| `GEMINI_BATCH_RESULT_IDENTITY_DUPLICATED` | Gemini standby Batch/cache contract | Duplicate provider result key detected; no governed probability publication. | No |
+| `GEMINI_BATCH_RESULT_SET_MISMATCH` | Gemini standby Batch/cache contract | Batch result keys do not match submitted manifest; no governed probability publication. | No |
+| `GEMINI_BATCH_ROW_FAILED` | Gemini standby Batch/cache contract | Provider returned an error for one or more expected rows; no governed probability publication. | No |
+| `GEMINI_CACHE_INPUT_INVALID` | Gemini standby Batch/cache contract | Cache text, provenance, TTL, timestamp invalid; no governed probability publication. | No |
+| `GEMINI_CACHE_IDENTITY_INVALID` | Gemini standby Batch/cache contract | Cache resource identity or model mismatch; no governed probability publication. | No |
+| `GEMINI_CACHE_EXPIRY_INVALID` | Gemini standby Batch/cache contract | Cache expires without valid time metadata; no governed probability publication. | No |
+| `GEMINI_JOURNAL_STORAGE_UNVERIFIED` | Gemini optional standby journal/inspection | Local persistent SQLite journal unavailable; no reservation. Never a governed model failure. | No |
+| `GEMINI_JOURNAL_INPUT_INVALID` | Gemini optional standby journal/inspection | Invalid kind/hash/authority reference/status in journal. Never a governed model failure. | No |
+| `GEMINI_OPERATION_ALREADY_RESERVED` | Gemini optional standby journal/inspection | An exact manifest is already reserved; no duplicate submission. Never a governed model failure. | No |
+| `GEMINI_JOURNAL_RESERVATION_MISSING` | Gemini optional standby journal/inspection | State transition attempted without prior durable reservation. Never a governed model failure. | No |
+| `GEMINI_JOURNAL_TRANSITION_REJECTED` | Gemini optional standby journal/inspection | Illegal replay/terminal-state transition. Never a governed model failure. | No |
+| `GEMINI_JOURNAL_PROVIDER_ID_INVALID` | Gemini optional standby journal/inspection | Provider identity missing or incompatible with operation kind. Never a governed model failure. | No |
+| `GEMINI_INSPECTION_DISABLED` | Gemini optional standby journal/inspection | Read-only provider inspection feature flag off. Never a governed model failure. | No |
+| `GEMINI_RESOURCE_NAME_INVALID` | Gemini optional standby journal/inspection | Unexpected Batch/cache resource path rejected before network. Never a governed model failure. | No |
+| `GEMINI_INSPECTION_RESPONSE_INVALID` | Gemini optional standby journal/inspection | Provider read response malformed/oversized. Never a governed model failure. | No |
+| `GEMINI_RESOURCE_IDENTITY_MISMATCH` | Gemini optional standby journal/inspection | Provider returned a different resource name. Never a governed model failure. | No |
+| `GEMINI_SENSITIVE_MATERIAL_REJECTED` | Gemini provider egress guard | Obvious secret/credential/PII pattern detected in prompt, evidence reference or cached input. Reject before request; never echo suspected content. | No |
+| `GEMINI_RESERVATION_INPUT_INVALID` | Gemini central spend budget/receipts | Budget reservation RPC rejected invalid amount, approval or manifest; never a probability scorer result. | No |
+| `GEMINI_BUDGET_DISABLED` | Gemini central spend budget/receipts | Paid project is not explicitly owner-enabled; never a probability scorer result. | No |
+| `GEMINI_REQUEST_BUDGET_EXCEEDED` | Gemini central spend budget/receipts | Individual Gemini job exceeds authorized maximum; never a probability scorer result. | No |
+| `GEMINI_DUPLICATE_MANIFEST` | Gemini central spend budget/receipts | Identical project + manifest already reserved; no second POST; never a probability scorer result. | No |
+| `GEMINI_DAILY_BUDGET_EXCEEDED` | Gemini central spend budget/receipts | Project daily reservation allowance exhausted; never a probability scorer result. | No |
+| `GEMINI_STAGE_INVALID` | Gemini central spend budget/receipts | Unsupported Postgres journal stage; never a probability scorer result. | No |
+| `GEMINI_RESERVATION_MISSING` | Gemini central spend budget/receipts | Stage transition has no previously verified reservation; never a probability scorer result. | No |
+| `GEMINI_STAGE_TRANSITION_REJECTED` | Gemini central spend budget/receipts | Illegal state progression/double completion; never a probability scorer result. | No |
+| `GEMINI_PROVIDER_ID_INVALID` | Gemini central spend budget/receipts | Malformed provider identity; never a probability scorer result. | No |
+| `GEMINI_PROVIDER_ID_REQUIRED` | Gemini central spend budget/receipts | No provider ID at confirmation stage; never a probability scorer result. | No |
+| `GEMINI_PROVIDER_ID_MISMATCH` | Gemini central spend budget/receipts | Confirmed provider identity cannot be rewritten; never a probability scorer result. | No |
+| `GEMINI_APPROVED_SCOPE_MISMATCH` | Gemini external submission gate | Configured model or paid API project differs from prepared job; no reservation or outbound request. | No |
+| `GEMINI_BUDGET_INPUT_INVALID` | Gemini optional provider budget/transport | Budget RPC client input invalid, no reservation; not a sporting probability status. | No |
+| `GEMINI_BUDGET_RPC_UNAVAILABLE` | Gemini optional provider budget/transport | Atomic reservation/status RPC transport failed; not a sporting probability status. | No |
+| `GEMINI_BUDGET_RPC_INVALID` | Gemini optional provider budget/transport | Reservation/status RPC response not valid evidence; not a sporting probability status. | No |
+| `GEMINI_BUDGET_READBACK_MISMATCH` | Gemini optional provider budget/transport | Durable readback does not prove expected budget receipt; not a sporting probability status. | No |
+| `GEMINI_EXTERNAL_MUTATIONS_DISABLED` | Gemini optional provider budget/transport | Global Gemini Batch/cache outbound creation disabled; not a sporting probability status. | No |
+| `GEMINI_SUBMISSION_INVALID` | Gemini optional provider budget/transport | Prepared Batch/cache manifest mismatch or invalid scope; not a sporting probability status. | No |
+| `GEMINI_DURABLE_LEDGER_REQUIRED` | Gemini optional provider budget/transport | Trusted server-side budget gateway required; not a sporting probability status. | No |
+| `GEMINI_SUBMISSION_RESERVATION_FAILED` | Gemini optional provider budget/transport | No verified pre-send budget reservation and unknown fence; not a sporting probability status. | No |
+| `GEMINI_PROVIDER_OUTCOME_UNKNOWN` | Gemini optional provider budget/transport | Provider POST result uncertain, never silently retry; not a sporting probability status. | No |
+| `GEMINI_PROVIDER_CONFIRMED_RECEIPT_MISSING` | Gemini optional provider budget/transport | Provider accepted but exact resource receipt not persisted/read back; not a sporting probability status. | No |
+| `GEMINI_STANDARD_API_DISABLED` | Gemini optional provider budget/transport | Standard Gemini API calls disabled by separate owner-controlled switch; not a sporting probability status. | No |
+| `GEMINI_STANDARD_BUDGET_UNVERIFIED` | Gemini optional provider budget/transport | Standard request lacks a durable approved spending reservation; not a sporting probability status. | No |
+| `GEMINI_STANDARD_RECEIPT_UNVERIFIED` | Gemini optional provider budget/transport | Standard provider response and completion receipt unverified; not a sporting probability status. | No |
+| `GEMINI_BATCH_JSONL_INVALID` | Gemini optional provider budget/transport | JSONL batch output is not bounded, valid, or complete; not a sporting probability status. | No |

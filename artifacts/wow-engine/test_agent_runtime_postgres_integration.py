@@ -389,3 +389,84 @@ def test_receipts_writer_round_trip_through_real_postgrest(receipts_schema):
     with _receipts_conn() as conn, conn.cursor() as cur:
         cur.execute(f"select next_action from {RECEIPTS_TABLE} where receipt_id=%s", (stored["receipt_id"],))
         assert cur.fetchone() == (None,)
+
+
+def test_gemini_standby_budget_rpc_real_postgres():
+    """Real SQL verifies atomic budget ceilings and zero direct runtime writes.
+
+    This test is intentionally part of the existing ephemeral Postgres job;
+    it never connects to a production Supabase project or Google API.
+    """
+    import hashlib
+    import uuid
+
+    _apply_schema()
+    migration = Path("migrations/20261010_v17_gemini_budget_reservation_ledger.sql").read_text()
+    with psycopg.connect(_pg_dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(migration)
+        cur.execute(migration)  # idempotent migration must not weaken policy
+
+        name = "gemini_ci_" + uuid.uuid4().hex[:20]
+        cur.execute(
+            """INSERT INTO public.wow_gemini_budget_controls
+               (project_key, enabled, cap_microusd, max_single_request_microusd,
+                approved_by, approved_at)
+               VALUES (%s, true, 6000, 4500, 'CI_TEST_ONLY', now())""",
+            (name,),
+        )
+        first = hashlib.sha256(b"first").hexdigest()
+        second = hashlib.sha256(b"second").hexdigest()
+        tariff = hashlib.sha256(b"tariff").hexdigest()
+
+        cur.execute("SET ROLE service_role")
+        cur.execute(
+            "SELECT public.wow_gemini_reserve_spend(%s,%s,'BATCH_INLINE',4000,'approval:CI',%s)",
+            (name, first, tariff),
+        )
+        result = cur.fetchone()[0]
+        assert result["status"] == "RESERVED"
+        assert result["can_execute"] is False
+        reservation_id = result["reservation_id"]
+
+        with pytest.raises(psycopg.Error) as duplicate:
+            cur.execute(
+                "SELECT public.wow_gemini_reserve_spend(%s,%s,'BATCH_INLINE',4000,'approval:CI',%s)",
+                (name, first, tariff),
+            )
+        assert "GEMINI_DUPLICATE_MANIFEST" in str(duplicate.value)
+
+        with pytest.raises(psycopg.Error) as exceeded:
+            cur.execute(
+                "SELECT public.wow_gemini_reserve_spend(%s,%s,'BATCH_INLINE',3000,'approval:CI',%s)",
+                (name, second, tariff),
+            )
+        assert "GEMINI_DAILY_BUDGET_EXCEEDED" in str(exceeded.value)
+
+        # A bypass attempt must be rejected even with the privileged runtime role.
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            cur.execute(
+                "INSERT INTO public.wow_gemini_spend_events(reservation_id,stage) VALUES (%s,'RECONCILED')",
+                (reservation_id,),
+            )
+
+        cur.execute("SELECT public.wow_gemini_record_spend_stage(%s,'OUTCOME_UNKNOWN',NULL)",
+                    (reservation_id,))
+        assert cur.fetchone()[0]["status"] == "OUTCOME_UNKNOWN"
+        cur.execute("SELECT public.wow_gemini_record_spend_stage(%s,'PROVIDER_CONFIRMED','batches/abc')",
+                    (reservation_id,))
+        assert cur.fetchone()[0]["status"] == "PROVIDER_CONFIRMED"
+        cur.execute("SELECT public.wow_gemini_record_spend_stage(%s,'RECONCILED',NULL)",
+                    (reservation_id,))
+        assert cur.fetchone()[0]["status"] == "RECONCILED"
+
+        with pytest.raises(psycopg.Error):
+            cur.execute("SELECT public.wow_gemini_record_spend_stage(%s,'RECONCILED',NULL)",
+                        (reservation_id,))
+        cur.execute("RESET ROLE")
+
+        # Owner/DBA cannot silently rewrite the immutable event history either.
+        with pytest.raises(psycopg.Error):
+            cur.execute(
+                "UPDATE public.wow_gemini_spend_events SET stage='TERMINAL_HOLD' WHERE reservation_id=%s",
+                (reservation_id,),
+            )

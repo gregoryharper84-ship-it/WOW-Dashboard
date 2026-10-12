@@ -106,6 +106,16 @@
       "terminal_authority": false,
       "safe_hold_authority": false,
       "authority_domain": "PERSISTENCE_PUBLICATION"
+    },
+    "GEMINI_STANDBY_CHALLENGER": {
+      "category": "OPTIONAL_EXTERNAL_RESEARCH_CHALLENGER",
+      "mission": "Owner-activated, evidence-only provider for bounded engineering, SIRT, and research challenge tasks; disabled by default.",
+      "authority_domain": "DISCOVERY_EVIDENCE",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safe_hold_authority": false,
+      "can_execute": false,
+      "enabled_by_default": false
     }
   },
   "handoffs": {
@@ -308,6 +318,22 @@
       ],
       "decision_right": "RETURN_VERIFIED_CLOSURE_STATE",
       "required_verifier": "INDEPENDENT_VERIFICATION"
+    },
+    "CONDUCTOR_TO_GEMINI_CHALLENGER": {
+      "source": "WOW_ECOSYSTEM_CONDUCTOR",
+      "target": "GEMINI_STANDBY_CHALLENGER",
+      "critical": false,
+      "hold_on": [],
+      "decision_right": "OPTIONAL_EVIDENCE_CHALLENGE_ONLY",
+      "required_verifier": "NONE"
+    },
+    "GEMINI_CHALLENGER_TO_CONDUCTOR": {
+      "source": "GEMINI_STANDBY_CHALLENGER",
+      "target": "WOW_ECOSYSTEM_CONDUCTOR",
+      "critical": false,
+      "hold_on": [],
+      "decision_right": "RETURN_UNVERIFIED_EVIDENCE_ONLY",
+      "required_verifier": "NONE"
     }
   },
   "golden_paths": {
