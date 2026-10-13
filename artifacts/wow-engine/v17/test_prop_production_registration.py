@@ -181,4 +181,49 @@ def test_receipt_store_failure_never_grants_production_authority(monkeypatch):
     assert "CANARY_RECEIPT_STORE_UNAVAILABLE" in row["blockers"]
     assert row["action_canary_verified"] is False
     assert row["production_numerical_authority"] is False
+    assert row["status"] != PRODUCTION_REGISTERED
     assert row["can_execute"] is False
+
+
+def test_canary_store_failure_preserves_upstream_lifecycle_status(monkeypatch):
+    monkeypatch.setattr(registration, "run_prop_certification_audit", lambda *_a, **_kw: {
+        "artifact_rows": [], "certified_pass_n": 0, "reviewed_policy_count": 0,
+    })
+    monkeypatch.setattr(registration, "_artifact_rows", lambda _db: [_artifact()])
+    monkeypatch.setattr(registration, "REVIEWED_CERTIFICATION_RELEASES", {
+        registration._release_key("WNBA", "POINTS", "WNBA_PTS_FORWARD_V2", "a" * 64): _release()
+    })
+
+    def unavailable(*_args):
+        raise registration.CanaryReceiptStoreUnavailable("CANARY_RECEIPT_STORE_UNAVAILABLE")
+
+    monkeypatch.setattr(registration, "_canary_receipts", unavailable)
+    for upstream in (
+        "CALIBRATION_EVIDENCE_REQUIRED",
+        "CERTIFICATION_REVIEW_REQUIRED",
+        "GOVERNED_PROMOTION_REQUIRED",
+        "HYDRATION_OR_RUNTIME_ADAPTER_REQUIRED",
+        PRODUCTION_REGISTERED,
+    ):
+        monkeypatch.setattr(registration, "audit_registration_for_artifact", lambda *_a, **_kw: {
+            "sport": "WNBA", "stat_type": "POINTS",
+            "status": upstream,
+            "blockers": [], "action_canary_blockers": [],
+            "action_canary_verified": True,
+            "production_numerical_authority": True,
+            "can_execute": False,
+        })
+        result = registration.run_prop_production_registration_audit(
+            registration.PropProductionRegistrationAuditRequest(routes=["WNBA:POINTS"]), db=object()
+        )
+        row = result["route_rows"][0]
+        expected = ("HYDRATION_OR_RUNTIME_ADAPTER_REQUIRED"
+                    if upstream == PRODUCTION_REGISTERED else upstream)
+        assert row["status"] == expected
+        assert row["status"] != PRODUCTION_REGISTERED
+        assert row["production_numerical_authority"] is False
+        assert row["action_canary_verified"] is False
+        assert "CANARY_RECEIPT_STORE_UNAVAILABLE" in row["blockers"]
+        assert "CANARY_RECEIPT_STORE_UNAVAILABLE" in row["action_canary_blockers"]
+        assert result["production_registered_n"] == 0
+        assert result["can_execute"] is False
