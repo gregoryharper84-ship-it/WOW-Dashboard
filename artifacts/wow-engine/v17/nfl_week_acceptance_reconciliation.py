@@ -45,7 +45,8 @@ def reconcile_week(
         receipt = daily_receipts[day]
         if not isinstance(receipt, Mapping) or receipt.get("requested_slate_date") != day:
             return _held("NFL_WEEK_RESPONSE_DATE_MISMATCH")
-        if receipt.get("run_status") != "COMPLETE":
+        if (receipt.get("run_status") != "COMPLETED" or receipt.get("terminal") is not True
+                or receipt.get("blockers") not in ([], ())):
             return _held("NFL_WEEK_RESPONSE_INCOMPLETE")
         if receipt.get("can_execute") is not False or receipt.get("global_terminal_authority") != TERMINAL:
             return _held("NFL_WEEK_RESPONSE_GOVERNANCE_INVALID")
@@ -55,7 +56,7 @@ def reconcile_week(
         if (not isinstance(reconciliation, Mapping) or reconciliation.get("balanced") is not True
                 or not isinstance(cross, Mapping) or cross.get("row_reconciliation") != "PASS"
                 or type(cross.get("events_discovered")) is not int
-                or cross.get("events_discovered") != len(ids)
+                or cross.get("events_discovered") < len(ids)
                 or cross.get("events_accounted") != cross.get("events_discovered")):
             return _held("NFL_WEEK_DAILY_RECONCILIATION_INVALID")
         rows = receipt.get("rows")
