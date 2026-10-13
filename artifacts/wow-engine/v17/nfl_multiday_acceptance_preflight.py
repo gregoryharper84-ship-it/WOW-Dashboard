@@ -4,7 +4,7 @@ Does not invoke Actions, certify or publish scores, or modify release controls.
 """
 from __future__ import annotations
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Mapping, Any
 from v17.cross_sport_acceptance_factory import SourceInventory
@@ -14,7 +14,15 @@ TERMINAL = "V17_TERMINAL_REDUCER"
 def hold(reason: str) -> dict[str, Any]:
     return {"status":"PREFLIGHT_HELD","blockers":[reason],"can_execute":False,"probability_publishable":False,"global_terminal_authority":TERMINAL}
 
-def plan_nfl_week_dates(selection: Mapping[str,Any], inventory: SourceInventory, *, independently_authenticated_source_sha256: str, minimum_events: int=13) -> dict[str,Any]:
+def plan_nfl_week_dates(selection: Mapping[str,Any], inventory: SourceInventory, *, independently_authenticated_source_sha256: str, trusted_now: datetime, minimum_events: int=13) -> dict[str,Any]:
+    # The authorized server caller must provide a trusted current UTC/aware clock.
+    # No implicit datetime.now() and no source-provided 'now' are accepted here.
+    if not isinstance(trusted_now, datetime) or trusted_now.tzinfo is None or trusted_now.utcoffset() is None:
+        return hold("NFL_WEEK_TRUSTED_CLOCK_REQUIRED")
+    if not isinstance(inventory.fetched_at, datetime) or inventory.fetched_at.tzinfo is None or inventory.fetched_at.utcoffset() is None:
+        return hold("NFL_WEEK_SOURCE_TIME_UNVERIFIED")
+    if not timedelta(0) <= trusted_now - inventory.fetched_at <= timedelta(hours=6):
+        return hold("NFL_WEEK_SOURCE_STALE_OR_FUTURE")
     if type(minimum_events) is not int or minimum_events < 13:
         return hold("NFL_WEEK_THRESHOLD_INVALID")
     if not isinstance(selection, Mapping) or selection.get("status") != "COHORT_ELIGIBLE_FOR_TEST":
@@ -39,6 +47,8 @@ def plan_nfl_week_dates(selection: Mapping[str,Any], inventory: SourceInventory,
         f=by_id[eid][0]
         if f.sport!="NFL" or f.status not in ("SCHEDULED","PRE_GAME") or not isinstance(f.start_utc,datetime) or f.start_utc.tzinfo is None or f.start_utc.utcoffset() is None:
             return hold("NFL_WEEK_FIXTURE_NOT_VERIFIED_PREGAME")
+        if f.start_utc <= trusted_now:
+            return hold("NFL_WEEK_KICKOFF_NOT_FUTURE")
         dates[f.start_utc.astimezone(ZoneInfo("America/Chicago")).date().isoformat()].append(eid)
     if len(dates)>9 or any(len(v)>32 for v in dates.values()):
         return hold("NFL_WEEK_BATCH_LIMIT")
