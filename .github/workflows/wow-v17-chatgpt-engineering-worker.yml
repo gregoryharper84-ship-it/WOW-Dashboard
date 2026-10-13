@@ -694,7 +694,8 @@ jobs:
           if [ "$changed" = "true" ]; then
             # git diff ignores untracked files; a repair that only adds files is a real change (#1021).
             [ -z "$(git status --porcelain)" ] && { echo "::error::ChatGPT reported changes but returned no working-tree diff."; exit 1; }
-            branch="${REPAIR_BRANCH:-chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+            branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            if [ -n "${REPAIR_BRANCH:-}" ]; then branch="$REPAIR_BRANCH"; fi
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             if [ -z "${REPAIR_BRANCH:-}" ]; then git switch -c "$branch"; fi
