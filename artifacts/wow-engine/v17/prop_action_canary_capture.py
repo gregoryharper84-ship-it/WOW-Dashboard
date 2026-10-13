@@ -42,6 +42,10 @@ def _hash(payload: Mapping[str, Any]) -> str:
 
 
 def _finite_probability(value: Any) -> float | None:
+    # Python bool is int-like: float(True)==1.0 and float(False)==0.0.
+    # Neither is valid numerical probability evidence or durable readback.
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
