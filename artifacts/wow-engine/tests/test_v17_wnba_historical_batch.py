@@ -94,3 +94,28 @@ def test_batch_preserves_unbound_events_as_blockers(monkeypatch):
     assert result["blocked_event_n"] == 1
     assert result["blockers_by_event"]["A"] == "SPREAD_ESPN_SUMMARY_NOT_FINAL"
     assert result["probability_publishable"] is False
+
+
+def test_checkpoint_atomic_roundtrip_and_integrity(monkeypatch, tmp_path):
+    monkeypatch.setattr(batch, "acquire_wnba_close_proxies", _fake_acquire)
+    original = batch.advance_wnba_historical_batch(
+        identities={"A": {"home_team_id": "1", "away_team_id": "2"}},
+        holdout_event_ids=["A"], summary_loader=lambda _: {},
+    )
+    path = tmp_path / "wnba.json"
+    batch.write_checkpoint_atomic(path, original)
+    assert batch.read_checkpoint(path) == original
+    assert not list(tmp_path.glob(".wnba-*"))
+    path.write_text(path.read_text().replace('"can_execute": false', '"can_execute": true'))
+    with pytest.raises(ValueError, match="INTEGRITY_MISMATCH"):
+        batch.read_checkpoint(path)
+
+
+def test_checkpoint_write_rejects_tampered_content(monkeypatch, tmp_path):
+    monkeypatch.setattr(batch, "acquire_wnba_close_proxies", _fake_acquire)
+    original = batch.advance_wnba_historical_batch(
+        identities={"A": {}}, holdout_event_ids=["A"], summary_loader=lambda _: {},
+    )
+    original["attempted_event_ids"].append("B")
+    with pytest.raises(ValueError, match="INTEGRITY_MISMATCH"):
+        batch.write_checkpoint_atomic(tmp_path / "wnba.json", original)
