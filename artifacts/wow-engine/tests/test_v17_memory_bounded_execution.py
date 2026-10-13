@@ -45,6 +45,121 @@ def test_memory_pressure_is_typed_nonterminal_and_does_not_strand_slot(monkeypat
     permit.release()
 
 
+def test_bounded_idle_reclaim_can_reopen_slot_only_after_measured_resume(monkeypatch):
+    measured = {"current": 90}
+    calls = []
+    monkeypatch.setattr(
+        memory_admission,
+        "_read_cgroup_memory_bytes",
+        lambda: (measured["current"], 100),
+    )
+    monkeypatch.setattr(memory_admission, "_monotonic_clock", lambda: 1_000.0)
+    monkeypatch.setattr(
+        memory_admission,
+        "release_process_memory",
+        lambda: (calls.append("gc_and_trim"), measured.update(current=67)),
+    )
+    permit = memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+    assert permit is not None
+    assert permit.admission["memory_ratio"] == pytest.approx(0.67)
+    assert permit.admission["under_pressure"] is False
+    assert calls == ["gc_and_trim"]
+    permit.release()
+
+
+def test_failed_reclaim_preserves_pressure_and_is_rate_limited(monkeypatch):
+    clock = {"now": 500.0}
+    calls = []
+    monkeypatch.setattr(memory_admission, "_monotonic_clock", lambda: clock["now"])
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (94, 100))
+    monkeypatch.setattr(memory_admission, "release_process_memory", lambda: calls.append("reclaim"))
+    for _ in range(2):
+        with pytest.raises(memory_admission.HeavyJobDeferred) as exc:
+            memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+        assert exc.value.code == "MEMORY_PRESSURE"
+        assert exc.value.receipt()["memory_ratio"] == pytest.approx(0.94)
+        assert exc.value.receipt()["can_execute"] is False
+    assert calls == ["reclaim"]
+    clock["now"] = 561.0
+    with pytest.raises(memory_admission.HeavyJobDeferred):
+        memory_admission.acquire_heavy_job("DAILY_SNAPSHOT", wait_seconds=0.0)
+    assert calls == ["reclaim", "reclaim"]
+
+
+def test_reclaim_cannot_claim_recovery_when_followup_cgroup_sample_vanishes(monkeypatch):
+    measured = {"valid": True}
+    monkeypatch.setattr(
+        memory_admission,
+        "_read_cgroup_memory_bytes",
+        lambda: (93, 100) if measured["valid"] else None,
+    )
+    monkeypatch.setattr(
+        memory_admission,
+        "release_process_memory",
+        lambda: measured.update(valid=False),
+    )
+    with pytest.raises(memory_admission.HeavyJobDeferred) as exc:
+        memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+    assert exc.value.receipt()["code"] == "MEMORY_PRESSURE"
+    assert exc.value.receipt()["memory_ratio"] == pytest.approx(0.93)
+    assert exc.value.receipt()["probability_publishable"] is False
+
+
+def test_snapshot_exposes_process_rss_without_affecting_gate(monkeypatch):
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (50, 100))
+    monkeypatch.setattr(memory_admission, "_read_process_rss_bytes", lambda: 12_345_678)
+    snapshot = memory_admission.admission_snapshot("TEST")
+    assert snapshot["process_rss_bytes"] == 12_345_678
+    assert snapshot["memory_current_bytes"] == 50
+    assert snapshot["memory_limit_bytes"] == 100
+    assert snapshot["under_pressure"] is False
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_admission_measurement_exception_is_typed_and_does_not_strand_slot(
+    monkeypatch, interactive
+):
+    # Any unexpected measurement exception must not leave the single
+    # process-wide heavyweight lock held indefinitely.
+    def broken_sample():
+        raise RuntimeError("unreadable sensor")
+
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", broken_sample)
+    acquire = (
+        lambda: memory_admission.acquire_heavy_job("DAILY_SNAPSHOT", wait_seconds=0.0)
+        if interactive
+        else memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+    )
+    with pytest.raises(memory_admission.HeavyJobDeferred) as caught:
+        acquire()
+    assert caught.value.code == "MEMORY_ADMISSION_MEASUREMENT_FAILED"
+    receipt = caught.value.receipt()
+    assert receipt["terminal"] is False
+    assert receipt["probability_publishable"] is False
+    assert receipt["can_execute"] is False
+    assert receipt["error_type"] == "RuntimeError"
+    assert memory_admission._HEAVY_JOB_LOCK.locked() is False
+
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (50, 100))
+    permit = acquire()
+    assert permit is not None
+    permit.release()
+
+
+def test_failed_reclaim_does_not_suppress_original_pressure_receipt(monkeypatch):
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (90, 100))
+
+    def broken_reclaim():
+        raise OSError("arena unavailable")
+
+    monkeypatch.setattr(memory_admission, "release_process_memory", broken_reclaim)
+    with pytest.raises(memory_admission.HeavyJobDeferred) as exc:
+        memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT")
+    assert exc.value.code == "MEMORY_PRESSURE"
+    assert exc.value.receipt()["memory_ratio"] == pytest.approx(0.9)
+    assert memory_admission._HEAVY_JOB_LOCK.locked() is False
+
+
 def test_shared_heavy_slot_serializes_jobs(monkeypatch):
     monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (50, 100))
     first = memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF")
@@ -194,3 +309,55 @@ def test_daily_snapshot_preacquired_permit_does_not_reacquire_or_release(monkeyp
 
     assert result["run_id"] == "r"
     assert permit.release_count == 0
+
+
+def test_async_reclaim_runs_off_event_loop_and_then_admits(monkeypatch):
+    """gc.collect()/malloc_trim must never block the FastAPI event loop."""
+    import asyncio
+
+    measured = {"current": 90}
+    reclaim_threads = []
+    monkeypatch.setattr(
+        memory_admission, "_read_cgroup_memory_bytes", lambda: (measured["current"], 100)
+    )
+    monkeypatch.setattr(memory_admission, "_monotonic_clock", lambda: 1_000.0)
+
+    def _fake_release():
+        reclaim_threads.append(threading.get_ident())
+        measured.update(current=67)
+
+    monkeypatch.setattr(memory_admission, "release_process_memory", _fake_release)
+
+    async def _worker_step():
+        loop_thread = threading.get_ident()
+        await memory_admission.reclaim_under_pressure_async("DAILY_SNAPSHOT")
+        permit = memory_admission.try_acquire_heavy_job("DAILY_SNAPSHOT", reclaim=False)
+        return loop_thread, permit
+
+    loop_thread, permit = asyncio.run(_worker_step())
+    assert len(reclaim_threads) == 1
+    assert reclaim_threads[0] != loop_thread
+    assert permit is not None
+    assert permit.admission["under_pressure"] is False
+    permit.release()
+
+
+def test_reclaim_false_never_reclaims_inline_and_still_enforces_gate(monkeypatch):
+    calls = []
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (90, 100))
+    monkeypatch.setattr(memory_admission, "release_process_memory", lambda: calls.append(1))
+    with pytest.raises(memory_admission.HeavyJobDeferred) as caught:
+        memory_admission.try_acquire_heavy_job("SCOUT_HANDOFF", reclaim=False)
+    assert caught.value.receipt()["code"] == "MEMORY_PRESSURE"
+    assert calls == []
+    assert memory_admission._HEAVY_JOB_LOCK.locked() is False
+
+
+def test_async_reclaim_is_noop_without_pressure(monkeypatch):
+    import asyncio
+
+    calls = []
+    monkeypatch.setattr(memory_admission, "_read_cgroup_memory_bytes", lambda: (40, 100))
+    monkeypatch.setattr(memory_admission, "release_process_memory", lambda: calls.append(1))
+    asyncio.run(memory_admission.reclaim_under_pressure_async("DAILY_SNAPSHOT"))
+    assert calls == []
