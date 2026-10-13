@@ -135,11 +135,48 @@ def test_workflow_stays_read_only_until_engineering_app_and_never_authorizes_rel
     assert "trigger_deploy" not in workflow
 
 
-def test_newer_success_supersedes_stale_qa_failure():
+def test_newer_success_supersedes_stale_failure_from_same_authority():
     older = check(cid=8)
-    newer = check(name="WOW Release Authority exact-head", app=RELEASE,
-                  cid=9, status="completed", conclusion="success")
+    newer = check(cid=9, status="completed", conclusion="success")
     assert discover(checks={SHA: [older, newer]})["eligible"] is False
+
+
+def test_newer_qa_success_must_not_clear_independent_release_hold():
+    release_failed = check(name="WOW Release Authority exact-head", app=RELEASE,
+                           cid=8, summary="Typed findings:\\n- `RELEASE_EXACT_HEAD_FAILED`")
+    qa_success = check(cid=9, conclusion="success")
+    result = discover(checks={SHA: [release_failed, qa_success]})
+    assert result["eligible"] is True
+    assert result["check_name"] == "WOW Release Authority exact-head"
+    assert "RELEASE_EXACT_HEAD_FAILED" in result["findings"]
+    assert result["can_execute"] is False
+
+
+def test_newer_release_success_must_not_clear_independent_qa_hold():
+    qa_failed = check(cid=8)
+    release_success = check(name="WOW Release Authority exact-head", app=RELEASE,
+                            cid=9, conclusion="success")
+    result = discover(checks={SHA: [qa_failed, release_success]})
+    assert result["eligible"] is True
+    assert result["check_name"] == "WOW Independent QA exact-head"
+    assert result["can_execute"] is False
+
+
+def test_pending_qa_holds_recovery_even_if_release_failed():
+    release_failed = check(name="WOW Release Authority exact-head", app=RELEASE, cid=8)
+    pending_qa = check(cid=9, status="in_progress", conclusion=None)
+    assert discover(checks={SHA: [release_failed, pending_qa]})["eligible"] is False
+
+
+def test_newer_success_in_same_role_does_not_clear_other_failed_role():
+    stale_qa_failure = check(cid=6)
+    current_qa_success = check(cid=10, conclusion="success")
+    current_release_failure = check(name="WOW Release Authority exact-head", app=RELEASE, cid=7)
+    result = discover(checks={SHA: [
+        stale_qa_failure, current_qa_success, current_release_failure
+    ]})
+    assert result["eligible"] is True
+    assert result["check_name"] == "WOW Release Authority exact-head"
 
 
 def test_bounded_scan_does_not_lose_existing_pr_identity():
