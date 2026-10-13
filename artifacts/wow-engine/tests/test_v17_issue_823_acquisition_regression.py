@@ -52,3 +52,21 @@ def test_provider_failure_cannot_starve_later_configured_families() -> None:
         blocker["status"] == discovery.PROVIDER_RATE_LIMITED
         for blocker in inventory.source_blockers
     )
+
+
+def test_families_without_public_schedule_report_typed_unsupported_state() -> None:
+    from datetime import datetime, timezone
+
+    from v17 import cross_sport_resilience_overlay as resilience
+    from v17 import quota_aware_degraded_discovery as quota_aware
+
+    started = datetime(2026, 10, 13, tzinfo=timezone.utc)
+    for family in ("SOCCER", "TENNIS", "MMA", "PGA", "BOXING", "CRICKET"):
+        assert family not in resilience._ESPN_FAMILY_KEYS
+        ok, rows, code = quota_aware._public_schedule_fetch(
+            family, started=started, horizon_hours=24
+        )
+        assert (ok, rows) == (False, [])
+        assert code == "PUBLIC_DISCOVERY_UNSUPPORTED_FOR_FAMILY"
+        assert code != "MODEL_UNAVAILABLE"
+    assert resilience.CAN_EXECUTE is False
