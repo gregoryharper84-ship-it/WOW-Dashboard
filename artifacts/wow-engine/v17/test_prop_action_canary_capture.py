@@ -247,3 +247,27 @@ def test_canary_readback_corrupted_probability_package_is_rejected(monkeypatch):
     assert audit["status"] == "COMPLETED_WITH_BLOCKERS"
     assert "CANARY_RECEIPT_READBACK_MISMATCH" in audit["blockers"]
     assert audit["can_execute"] is False
+
+
+def test_boolean_values_never_become_probability_evidence():
+    assert subject._finite_probability(True) is None
+    assert subject._finite_probability(False) is None
+    assert subject._finite_probability(0.0) == 0.0
+    assert subject._finite_probability(1.0) == 1.0
+
+
+def test_boolean_probability_fields_fail_closed_before_receipt_write(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    for field in ("raw_model_probability", "calibrated_probability", "calibrated_probability_lower_bound"):
+        for boolean in (True, False):
+            prediction = _prediction()
+            prediction[field] = boolean
+            db = _DB(prediction)
+            audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+            assert audit["eligible_rows"] == 1, (field, boolean, audit)
+            assert audit["persisted_rows"] == 0, (field, boolean, audit)
+            assert "CANARY_GOVERNED_PROBABILITY_PACKAGE_INVALID" in audit["blockers"]
+            assert db.receipts == []
+            assert audit["can_execute"] is False
