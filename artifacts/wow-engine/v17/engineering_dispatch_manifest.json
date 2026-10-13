@@ -6,22 +6,9 @@
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
     {
-      "issue_number": 1688,
-      "severity": "P0",
-      "priority_rank": 1,
-      "execution_lane": "RAPID",
-      "conflict_keys": [
-        "ENGINEERING_AUTONOMY",
-        "WORKFLOW_TRUST_ROOT",
-        "RECOVERY_CONTROL_PLANE"
-      ],
-      "rapid_stream": "AUTONOMY_RESTORE",
-      "lease_group": "P0_AUTONOMY_RESTORE"
-    },
-    {
       "issue_number": 1388,
       "severity": "P0",
-      "priority_rank": 2,
+      "priority_rank": 1,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "PRODUCTION_RUNTIME",
@@ -34,7 +21,7 @@
     {
       "issue_number": 1313,
       "severity": "P0",
-      "priority_rank": 3,
+      "priority_rank": 2,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "ACTION_TRANSPORT",
@@ -47,7 +34,7 @@
     {
       "issue_number": 502,
       "severity": "P0",
-      "priority_rank": 4,
+      "priority_rank": 3,
       "execution_lane": "RAPID",
       "conflict_keys": [
         "WOW_HOST_ORCHESTRATION",
@@ -56,6 +43,19 @@
       ],
       "rapid_stream": "LLP_RESTORE",
       "lease_group": "P0_LLP_RESTORE"
+    },
+    {
+      "issue_number": 1688,
+      "severity": "P0",
+      "priority_rank": 4,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "ENGINEERING_AUTONOMY",
+        "WORKFLOW_TRUST_ROOT",
+        "RECOVERY_CONTROL_PLANE"
+      ],
+      "rapid_stream": "AUTONOMY_RESTORE",
+      "lease_group": "P0_AUTONOMY_RESTORE"
     },
     {
       "issue_number": 823,
