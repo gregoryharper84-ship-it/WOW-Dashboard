@@ -1,4 +1,7 @@
 from pathlib import Path
+import json
+import subprocess
+import sys
 
 from v17.engineering_agent_team import AGENT_ROLES
 from v17.engineering_effectiveness import (
@@ -174,3 +177,36 @@ def test_repository_user_journey_health_fail_closed_and_blocks_model_research() 
     assert product_health_allows_model_improvement(status) is False
     assert product_health_allows_model_improvement("UNKNOWN") is False
     assert product_health_allows_model_improvement("PASS") is True
+
+
+def test_health_command_fails_nonpass_even_when_declaration_is_present(tmp_path) -> None:
+    """The live-acceptance workflow must not conclude green on a FAIL/UNKNOWN."""
+    cli = Path(__file__).resolve().parent / "v17" / "engineering_effectiveness.py"
+    for markdown, expected_status, expected_exit in (
+        ("Status: **FAIL — NO_END_TO_END_GOVERNED_PROP_RESULT**", "FAIL", 1),
+        ("Missing status declaration", "UNKNOWN", 1),
+        ("Status: **PASS**", "PASS", 0),
+    ):
+        health = tmp_path / "user_journey_health.md"
+        health.write_text(markdown + "\n", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(cli), "health", str(health)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == expected_exit, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["user_journey_status"] == expected_status
+        assert payload["model_improvement_allowed"] is (expected_status == "PASS")
+        assert payload["can_execute"] is False
+
+
+def test_golden_workflow_executes_the_fail_closed_health_command() -> None:
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/wow-v17-golden-product-acceptance.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "python artifacts/wow-engine/v17/engineering_effectiveness.py health" in workflow
+    assert "artifacts/wow-engine/V17_USER_JOURNEY_HEALTH.md" in workflow
+    assert "set -euo pipefail" in workflow
