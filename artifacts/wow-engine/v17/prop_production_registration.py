@@ -344,7 +344,10 @@ def run_prop_production_registration_audit(req: PropProductionRegistrationAuditR
             ]))
             assessment["action_canary_verified"] = False
             assessment["production_numerical_authority"] = False
-            assessment["status"] = "HYDRATION_OR_RUNTIME_ADAPTER_REQUIRED"
+            # Never erase stricter upstream calibration, review or promotion
+            # blockers with a downstream receipt-store availability failure.
+            if assessment["status"] == "PRODUCTION_REGISTERED":
+                assessment["status"] = "HYDRATION_OR_RUNTIME_ADAPTER_REQUIRED"
         output.append(assessment)
     output.sort(key=lambda row: (row["sport"], row["stat_type"]))
     return {
