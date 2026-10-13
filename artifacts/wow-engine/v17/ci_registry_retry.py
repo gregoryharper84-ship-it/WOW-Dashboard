@@ -177,12 +177,23 @@ def main() -> int:
         if not os.getenv("GH_TOKEN"):
             raise RetryBlocked("GH_TOKEN_MISSING")
         rid = run["id"]
+        def require_current_run() -> None:
+            live = json.loads(gh("api", f"repos/{REPO}/actions/runs/{rid}"))
+            for key in ("id", "head_sha", "run_attempt", "status", "conclusion", "path", "event"):
+                if live.get(key) != run.get(key):
+                    raise RetryBlocked("RUN_MOVED_OR_RETRIED:" + key)
+            if live.get("status") != "completed" or live.get("run_attempt") != 1:
+                raise RetryBlocked("RUN_NOT_SINGLE_COMPLETED_ATTEMPT")
+        require_current_run()
         raw = gh("api", f"repos/{REPO}/actions/runs/{rid}/jobs?per_page=100&filter=latest")
         jobs = json.loads(raw)
         result = classify(event, jobs, lambda job_id: gh("run", "view",
                           "--repo", REPO, "--job", str(job_id), "--log"))
         receipt = result.receipt()
         if args.execute and result.state == "RETRY_ALLOWED":
+            # Recheck immediately before the single mutation: a concurrent
+            # operator retry must fail closed rather than duplicate work.
+            require_current_run()
             gh("api", "--method", "POST",
                f"repos/{REPO}/actions/runs/{rid}/rerun-failed-jobs")
             receipt["state"] = "RETRY_DISPATCHED"
