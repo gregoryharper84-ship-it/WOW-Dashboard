@@ -118,9 +118,12 @@ def test_workflow_stays_read_only_until_engineering_app_and_never_authorizes_rel
     workflow = WORKFLOW.read_text()
     assert "ref: main" in workflow
     assert "Mint wow-engineering App token" in workflow
-    assert "Record Engineering App re-proposal requirement" in workflow
+    assert "Re-propose protected source under Engineering App as draft only" in workflow
     assert "REPROPOSE_WITH_ENGINEERING_APP" in workflow
-    assert "No automatic impersonation, merge, deployment, or bypass permitted." in workflow
+    assert "engineering_app_reproposal.py" in workflow
+    assert "--write" in workflow
+    assert "UNREVIEWED_REPROPOSAL_SOURCE" in workflow
+    assert ".owner_approval_required == true" in workflow
     assert "gh pr merge" not in workflow
     assert "trigger_deploy" not in workflow
 
