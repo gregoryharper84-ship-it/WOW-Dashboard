@@ -110,6 +110,7 @@ def _allowed_app():
     api.request.return_value = {"repositories": [{"full_name": REPO}]}
     api.get.side_effect = [
         {"object": {"sha": MAIN}},
+        None,
         {"tree": {"sha": "d" * 40}},
     ]
     api.post.side_effect = [
@@ -175,3 +176,33 @@ def test_unverifiable_branch_ref_cannot_open_pr():
         create_draft(api, 1683, HEAD, MAIN,
                      [ProposedFile("render.yaml", b"after", "modified")])
     assert api.post.call_count == 4
+
+
+def test_existing_exact_source_app_draft_is_idempotent():
+    api = _allowed_app()
+    branch = "engineering/repropose-1683-aaaaaaaaaaaa-cccccccccccc"
+    api.get.side_effect = [
+        {"object": {"sha": MAIN}},
+        {"object": {"sha": "1" * 40}},
+        [{"number": 999, "draft": True, "user": {"login": APP_LOGIN},
+          "head": {"sha": "1" * 40}, "body": "Source head: " + HEAD}],
+    ]
+    result = create_draft(api, 1683, HEAD, MAIN,
+                          [ProposedFile("render.yaml", b"after", "modified")])
+    assert result["state"] == "DUPLICATE"
+    assert result["owner_approval_required"] is True
+    api.post.assert_not_called()
+
+
+def test_existing_untrusted_branch_fails_closed_without_writes():
+    api = _allowed_app()
+    api.get.side_effect = [
+        {"object": {"sha": MAIN}},
+        {"object": {"sha": "1" * 40}},
+        [{"number": 999, "draft": True, "user": {"login": "foreign[bot]"},
+          "head": {"sha": "1" * 40}, "body": "Source head: " + HEAD}],
+    ]
+    with pytest.raises(ReproposalBlocked, match="EXISTING_BRANCH_UNVERIFIED"):
+        create_draft(api, 1683, HEAD, MAIN,
+                     [ProposedFile("render.yaml", b"after", "modified")])
+    api.post.assert_not_called()
