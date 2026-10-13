@@ -20,9 +20,14 @@ ROLES = {
     "WOW Release Authority exact-head": "release",
 }
 
-# Only source PRs explicitly reviewed by the App re-proposal implementation.
-# Never route arbitrary owner-authored protected code into privileged copy flows.
-OWNER_REPROPOSAL_SOURCES = frozenset({1683, 1702, 1716, 1717})
+# Authoritative source allowlist and exact source-head pins live in the
+# App draft re-proposal module. Never independently widen the HOLD resolver:
+# it would route a PR into a privileged workflow that cannot verify its bytes.
+from v17.engineering_app_reproposal import SOURCE_ALLOWLIST, SOURCE_PINNED_HEADS
+
+if set(SOURCE_ALLOWLIST) != set(SOURCE_PINNED_HEADS):
+    raise RuntimeError("REPROPOSAL_SOURCE_TRUST_ROOT_MISMATCH")
+OWNER_REPROPOSAL_SOURCES = frozenset(SOURCE_ALLOWLIST)
 
 
 class HoldDiscoveryError(ValueError):
