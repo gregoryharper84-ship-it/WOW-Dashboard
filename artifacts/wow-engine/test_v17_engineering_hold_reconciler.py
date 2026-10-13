@@ -107,6 +107,7 @@ WORKFLOW = ROOT / ".github/workflows/wow-v17-engineering-auto-repair.yml"
 def test_recovery_uses_pr_head_not_source_workflow_sha():
     workflow = WORKFLOW.read_text()
     assert "engineering_hold_reconciler.py" in workflow
+    assert "PYTHONPATH=artifacts/wow-engine python artifacts/wow-engine/v17/engineering_hold_reconciler.py" in workflow
     # Read-only PR-head preflight must run before app-token minting. No
     # credential acquisition for irrelevant or spoofed workflow_run events.
     assert workflow.index("Resolve exact-head PR from App-published HOLD evidence") < workflow.index(
