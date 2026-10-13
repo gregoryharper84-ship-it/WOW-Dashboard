@@ -51,14 +51,19 @@ def reconcile_nfl_week_snapshots(plan: Mapping[str,Any], results: Mapping[str,Ma
     if not isinstance(results,Mapping) or set(results)!={b["requested_slate_date"] for b in batches}:
         return hold("NFL_WEEK_DATE_COVERAGE_MISMATCH")
     observed=[]
+    run_ids=set()
     for b in batches:
         day=b["requested_slate_date"]
         r=results[day]
         if not isinstance(r,Mapping) or r.get("requested_slate_date")!=day or r.get("can_execute") is not False or r.get("global_terminal_authority")!=TERMINAL or r.get("automation_auth")!="GITHUB_ACTIONS_OIDC" or r.get("terminal") is not True or r.get("run_status")!="COMPLETED" or r.get("requested_timezone")!="America/Chicago":
             return hold("NFL_WEEK_DAILY_AUTH_OR_TERMINAL_INVALID")
+        run_id=r.get("run_id")
+        if not isinstance(run_id,str) or not run_id.strip() or run_id in run_ids:
+            return hold("NFL_WEEK_DAILY_RUN_ID_INVALID_OR_DUPLICATE")
+        run_ids.add(run_id)
         rec=r.get("reconciliation") or {}
         audit=(r.get("cross_sport_discovery_audit") or {}).get("reconciliation") or {}
-        if rec.get("balanced") is not True or audit.get("row_reconciliation")!="PASS" or audit.get("events_accounted")!=audit.get("events_discovered"):
+        if rec.get("balanced") is not True or audit.get("row_reconciliation")!="PASS" or type(audit.get("events_discovered")) is not int or type(audit.get("events_accounted")) is not int or audit.get("events_accounted")<0 or audit.get("events_accounted")!=audit.get("events_discovered"):
             return hold("NFL_WEEK_RECONCILIATION_FAILED")
         day_ids=[]
         for row in r.get("rows") or []:
