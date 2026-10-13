@@ -71,3 +71,13 @@ def test_ineligible_if_base_wrong_or_state_closed():
     p = pr()
     p["state"] = "closed"
     assert not policy(p)[0]
+
+
+def test_auto_merge_policy_itself_requires_owner_code_review():
+    from pathlib import Path
+    from v17.agent_identity_policy import _codeowners_owners
+    root = Path(__file__).resolve().parents[2]
+    rules = (root / ".github/CODEOWNERS").read_text()
+    assert _codeowners_owners(
+        rules, "artifacts/wow-engine/v17/auto_merge_eligibility.py"
+    ) == ["@gregoryharper84-ship-it"]
