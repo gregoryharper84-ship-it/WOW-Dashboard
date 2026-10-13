@@ -165,8 +165,11 @@ def evaluate_full_pool_shadow(
         if entry.get("audience") != "OPPONENT_ENTRIES":
             raise PoolEquityInputError("PICKEM_EQUITY_OPPONENT_AUDIENCE_INVALID")
         _required(entry.get("availability_source"), "PICKEM_EQUITY_OPPONENT_AVAILABILITY_SOURCE_REQUIRED")
-        if (_time(entry.get("submitted_at"), "PICKEM_EQUITY_OPPONENT_SUBMISSION_INVALID") > lock
-                or _time(entry.get("available_to_user_at"), "PICKEM_EQUITY_OPPONENT_AVAILABILITY_INVALID") > lock):
+        submitted = _time(entry.get("submitted_at"), "PICKEM_EQUITY_OPPONENT_SUBMISSION_INVALID")
+        available = _time(entry.get("available_to_user_at"), "PICKEM_EQUITY_OPPONENT_AVAILABILITY_INVALID")
+        if available < submitted:
+            raise PoolEquityInputError("PICKEM_EQUITY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION")
+        if submitted > lock or available > lock:
             raise PoolEquityInputError("PICKEM_EQUITY_OPPONENT_NOT_PRELOCK_AVAILABLE")
         picks = entry.get("picks")
         if not isinstance(picks, Mapping) or set(picks) != set(ids):
