@@ -119,11 +119,20 @@ jobs:
           set -euo pipefail
           marker='<!-- WOW_RECOVERY_ATTEMPTS -->'
           comments=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | jq -s 'add')
-          comment_id=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].id // empty' <<<"$comments")
-          attempts=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments" \
-            | grep -oE 'attempts: [0-9]+' | grep -oE '[0-9]+' || true)
+          # Only the authenticated Engineering App may own recovery budget state.
+          # An owner/user/bot lookalike marker must never consume or reset retries.
+          marker_comment=$(jq -c --arg marker "$marker" \
+            '[.[] | select(.user.login == "wow-engineering[bot]" and (.body | contains($marker)))] | sort_by(.updated_at // .created_at, .id) | last // null' <<<"$comments")
+          comment_id=$(jq -r '.id // empty' <<<"$marker_comment")
+          if [ -n "$comment_id" ]; then
+            attempts=$(jq -er '.body | capture("(?m)^- attempts: (?<n>[0-9]+)$").n' <<<"$marker_comment") || {
+              echo "::error::RECOVERY_ATTEMPT_MARKER_INVALID"; exit 1;
+            }
+          else
+            attempts=0
+          fi
           echo "comment_id=${comment_id:-}" >> "$GITHUB_OUTPUT"
-          echo "attempts=${attempts:-0}" >> "$GITHUB_OUTPUT"
+          echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
 
       - name: Plan recovery
         id: plan
