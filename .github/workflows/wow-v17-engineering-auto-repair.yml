@@ -206,7 +206,7 @@ jobs:
             --expected-head "$SOURCE_HEAD" \
             --write \
             | tee "$RUNNER_TEMP/reproposal.json"
-          jq -e '.state == "PR_CREATED" and .can_execute == false and .owner_approval_required == true' \
+          jq -e '(.state == "PR_CREATED" or .state == "DUPLICATE") and .can_execute == false and .owner_approval_required == true' \
             "$RUNNER_TEMP/reproposal.json" >/dev/null
-          echo "App-authored draft created for source PR #$PR_NUMBER, exact SHA $SOURCE_HEAD." >> "$GITHUB_STEP_SUMMARY"
+          echo "App-authored draft created or independently reconciled for source PR #$PR_NUMBER, exact SHA $SOURCE_HEAD." >> "$GITHUB_STEP_SUMMARY"
           echo "Owner CODEOWNERS approval plus pinned QA/Release checks remain mandatory." >> "$GITHUB_STEP_SUMMARY"
