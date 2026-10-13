@@ -224,6 +224,7 @@ def _merge_base_api(*, merge_base=BASE, drifted_path=None):
         if path == "/pulls/1683":
             source = source_pr()
             source["base"]["sha"] = MAIN   # moving PR base: NOT the merge base
+            source["changed_files"] = len(changed)
             return source
         if path == "/pulls/1683/files?per_page=100":
             return changed
