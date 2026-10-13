@@ -119,13 +119,27 @@ def classify(
         # Infrastructure service startup occurs BEFORE any executable user
         # step. A test failure, even if it prints a matching string, is never
         # an eligible registry throttle.
-        steps = job.get("steps") or []
-        if not isinstance(steps, list) or any(
-            not isinstance(s, dict) or s.get("conclusion") == "failure"
-            or (s.get("status") == "completed" and s.get("conclusion") == "success")
-            for s in steps
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            raise RetryBlocked("JOB_STEPS_UNVERIFIED:" + job_name)
+        infra_failure = [
+            step for step in steps
+            if isinstance(step, dict) and step.get("name") == "Initialize containers"
+            and step.get("status") == "completed" and step.get("conclusion") == "failure"
+        ]
+        if len(infra_failure) != 1:
+            raise RetryBlocked("CONTAINER_INITIALIZATION_FAILURE_MISSING:" + job_name)
+        runner_steps = {"Set up job", "Initialize containers",
+                        "Stop containers", "Complete job"}
+        if any(
+            not isinstance(step, dict)
+            or (step.get("name") not in runner_steps
+                and step.get("conclusion") != "skipped")
+            or (step.get("name") in runner_steps
+                and step.get("conclusion") not in ("success", "failure", "skipped"))
+            for step in steps
         ):
-            raise RetryBlocked("EXECUTED_STEPS_NOT_RETRIABLE:" + job_name)
+            raise RetryBlocked("EXECUTED_TEST_OR_MALFORMED_STEPS:" + job_name)
         log = fetch_job_log(job_id)
         if not isinstance(log, str) or len(log.encode("utf-8")) > MAX_LOG_BYTES:
             raise RetryBlocked("JOB_LOG_MISSING_OR_OVERSIZED")
