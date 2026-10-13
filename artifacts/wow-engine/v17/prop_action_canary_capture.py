@@ -184,9 +184,38 @@ def capture_action_canary_receipts(
                 receipt,
                 on_conflict="immutable_receipt_hash",
             ).execute()
-            persisted += 1
         except Exception as exc:
             blockers.append(f"CANARY_RECEIPT_PERSISTENCE_UNAVAILABLE:{type(exc).__name__}")
+            continue
+
+        # A successful upsert response alone is not proof that the exact receipt
+        # can be fetched durably. Never count a receipt without an exact readback.
+        try:
+            stored_rows = (
+                db.table(CANARY_TABLE)
+                .select("*")
+                .eq("immutable_receipt_hash", receipt["immutable_receipt_hash"])
+                .limit(1)
+                .execute().data or []
+            )
+        except Exception as exc:
+            blockers.append(f"CANARY_RECEIPT_READBACK_UNAVAILABLE:{type(exc).__name__}")
+            continue
+        if not stored_rows:
+            blockers.append("CANARY_RECEIPT_READBACK_MISSING")
+            continue
+        stored = stored_rows[0]
+        if not isinstance(stored, Mapping) or any(
+            stored.get(field) != value
+            for field, value in receipt.items()
+            if field not in ("raw_model_probability", "calibrated_probability", "calibrated_lower_bound")
+        ) or any(
+            _finite_probability(stored.get(field)) != receipt[field]
+            for field in ("raw_model_probability", "calibrated_probability", "calibrated_lower_bound")
+        ):
+            blockers.append("CANARY_RECEIPT_READBACK_MISMATCH")
+            continue
+        persisted += 1
 
     return {
         "status": "PASS" if not blockers else "COMPLETED_WITH_BLOCKERS",
