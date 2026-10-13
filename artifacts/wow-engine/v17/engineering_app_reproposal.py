@@ -199,7 +199,15 @@ def build_plan(api: GitHub, source_pr: int, expected_head: str) -> tuple[str, li
     main_sha = (current_ref.get("object") or {}).get("sha")
     if not isinstance(main_sha, str) or not SHA.fullmatch(main_sha):
         raise ReproposalBlocked("MAIN_SHA_INVALID")
-    base_sha = source["base"]["sha"]
+    # A PR's base.sha may move when main advances. Use the server-verified
+    # merge base of the exact source head and the pinned current main instead.
+    # Otherwise a later main edit to a protected path can be mistaken for
+    # the original branch base and silently overwritten by the re-proposal.
+    comparison = api.get(f"/compare/{main_sha}...{expected_head}")
+    merge_base = comparison.get("merge_base_commit") if isinstance(comparison, dict) else None
+    base_sha = merge_base.get("sha") if isinstance(merge_base, dict) else None
+    if not isinstance(base_sha, str) or not SHA.fullmatch(base_sha):
+        raise ReproposalBlocked("SOURCE_MERGE_BASE_UNVERIFIED")
     source_files = {p: _source_blob(api, p, expected_head, absent_ok=False) for p, _ in files}
     base_files = {p: _source_blob(api, p, base_sha, absent_ok=True) for p, _ in files}
     main_files = {p: _source_blob(api, p, main_sha, absent_ok=True) for p, _ in files}
