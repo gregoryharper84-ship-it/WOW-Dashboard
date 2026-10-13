@@ -246,6 +246,11 @@ def _main() -> None:
             sort_keys=True,
         )
     )
+    # The golden-product-acceptance workflow invokes this very CLI step.
+    # Never return an exit-zero workflow result for an unverified live journey.
+    # JSON is still printed above for diagnostics; CI now fails closed.
+    if not product_health_allows_model_improvement(status):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
