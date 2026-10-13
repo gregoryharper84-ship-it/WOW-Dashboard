@@ -294,6 +294,8 @@ Research-only ownership assumptions. These codes never authorize production stra
 | `PICKEM_REPLAY_TIE_POLICY_UNSUPPORTED` | NFL Pick'em research historical replay | Unrecognized pool scoring contract for tied games. | No |
 | `PICKEM_REPLAY_TIE_RULE_REQUIRED` | NFL Pick'em research historical replay | Official NFL tie requires explicit NO_POINT pool rule before retrospective grading. | No |
 
+| `PICKEM_EQUITY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION` | NFL Pick'em full-pool research preflight | Opponent card asserts availability to the user before it was submitted; impossible provenance timeline, reject. | No |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
