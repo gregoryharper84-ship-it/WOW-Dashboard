@@ -150,3 +150,41 @@ def test_cli_plan_outputs_json(capsys):
 
     payload = json.loads(out)
     assert payload["action"] == "DISPATCH_REPAIR"
+
+
+def test_owner_authored_trust_root_routes_to_safe_app_reproposal_not_ignore():
+    result = rp.plan_recovery(
+        pr_number=1683,
+        findings=["QA_PR_DRAFT", "QA_TRUST_ROOT_OWNER_AUTHORED"],
+        attempts=0,
+        is_wow_engineering_pr=False,
+    )
+    assert result["action"] == "REPROPOSE_WITH_ENGINEERING_APP"
+    assert result["source_head_verification_required"] is True
+    assert result["new_pr_author_required"] == "wow-engineering[bot]"
+    assert result["exact_head_owner_approval_required"] is True
+    assert result["independent_qa_release_required"] is True
+    assert result["dispatch_authorized"] is False
+    assert result["can_execute"] is False
+
+
+def test_owner_authored_release_finding_routes_with_attempts_unchanged():
+    result = rp.plan_recovery(
+        pr_number=1683,
+        findings=["RELEASE_QA_TRUST_ROOT_OWNER_AUTHORED"],
+        attempts=2,
+        is_wow_engineering_pr=False,
+    )
+    assert result["action"] == "REPROPOSE_WITH_ENGINEERING_APP"
+    assert result["attempts"] == 2
+
+
+def test_untrusted_non_engineering_failures_are_not_dispatched():
+    result = rp.plan_recovery(
+        pr_number=1683,
+        findings=["QA_EVIDENCE_FAILED"],
+        attempts=0,
+        is_wow_engineering_pr=False,
+    )
+    assert result["action"] == "IGNORE"
+    assert result["can_execute"] is False

@@ -63,6 +63,24 @@ def plan_recovery(
     should persist going forward.
     """
     if not is_wow_engineering_pr:
+        # Owner-authored trust-root PRs can never satisfy independent owner
+        # approval. They must be re-proposed by the existing Engineering App,
+        # with a fresh exact-head review and owner approval on the *new* PR.
+        # This is a typed handoff, not permission to copy code, merge or deploy.
+        if any(str(f).endswith("TRUST_ROOT_OWNER_AUTHORED") for f in findings):
+            return {
+                "pr_number": pr_number,
+                "action": "REPROPOSE_WITH_ENGINEERING_APP",
+                "reason": "owner-authored trust root cannot self-approve",
+                "findings": list(findings),
+                "source_head_verification_required": True,
+                "new_pr_author_required": "wow-engineering[bot]",
+                "exact_head_owner_approval_required": True,
+                "independent_qa_release_required": True,
+                "dispatch_authorized": False,
+                "attempts": attempts,
+                "can_execute": False,
+            }
         return {
             "pr_number": pr_number,
             "action": "IGNORE",

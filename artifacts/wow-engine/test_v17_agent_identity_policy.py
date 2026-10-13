@@ -554,3 +554,4 @@ def test_new_agent_skill_requires_owner_coverage():
     findings = m.evaluate(owner, principals=[principal(r) for r in m.AI_RUNTIMES], live_acceptance=live(),
                           trust_roots=TRUST_ROOTS + m.governance_trust_roots(ROOT), now=NOW)["findings"]
     assert "PROTECTION_CODEOWNERS_UNCOVERED:.agents/skills/__new_skill__/SKILL.md" in findings
+
