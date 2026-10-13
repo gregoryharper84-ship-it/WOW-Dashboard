@@ -141,7 +141,7 @@ jobs:
           echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
 
       - name: Record recovery-attempt marker
-        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
+        if: false # Never consume retry budget until a verified targeted worker handoff exists.
         shell: bash
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
