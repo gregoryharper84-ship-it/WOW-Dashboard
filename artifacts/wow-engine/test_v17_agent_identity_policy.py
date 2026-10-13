@@ -554,3 +554,26 @@ def test_new_agent_skill_requires_owner_coverage():
     findings = m.evaluate(owner, principals=[principal(r) for r in m.AI_RUNTIMES], live_acceptance=live(),
                           trust_roots=TRUST_ROOTS + m.governance_trust_roots(ROOT), now=NOW)["findings"]
     assert "PROTECTION_CODEOWNERS_UNCOVERED:.agents/skills/__new_skill__/SKILL.md" in findings
+
+
+# P0 #1663 — protect privileged executables even when outside .github/.
+@pytest.mark.parametrize("privileged_path", [
+    "artifacts/wow-engine/v17/render_deployment_pointer.py",
+    "artifacts/wow-engine/v17/secret_sync.py",
+    "artifacts/wow-engine/v17/engineering_recovery_planner.py",
+])
+def test_privileged_executable_codeowner_is_owner_only(privileged_path):
+    codeowners = (ROOT / ".github/CODEOWNERS").read_text()
+    assert m._codeowners_owners(codeowners, privileged_path) == [f"@{OWNER}"]
+    assert m._codeowners_owners(codeowners + "\\n" + f"/{privileged_path} @other-user", privileged_path) != [f"@{OWNER}"]
+
+
+def test_privileged_paths_present_in_live_codeowners_manifest():
+    paths = [
+        "artifacts/wow-engine/v17/render_deployment_pointer.py",
+        "artifacts/wow-engine/v17/secret_sync.py",
+        "artifacts/wow-engine/v17/engineering_recovery_planner.py",
+    ]
+    codeowners = (ROOT / ".github/CODEOWNERS").read_text()
+    for path in paths:
+        assert f"/{path} @{OWNER}" in codeowners
