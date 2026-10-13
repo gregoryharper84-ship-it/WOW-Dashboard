@@ -1,3 +1,8 @@
+---
+name: wow-engineering-lifecycle-closure-cell
+description: Coordinates governed WOW V17 engineering incident lifecycle, exact-head review handoffs, and verified closure without execution authority.
+---
+
 # WOW V17 Engineering Lifecycle Closure Cell
 
 Status: `ACTIVE_ON_MERGE`
