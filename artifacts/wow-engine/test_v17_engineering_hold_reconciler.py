@@ -294,3 +294,17 @@ def test_discover_holds_on_truncated_source_check_runs(monkeypatch):
     monkeypatch.setattr(module, "fetch_json", fake_fetch)
     with pytest.raises(HoldDiscoveryError, match="CHECKS_TRUNCATED"):
         module.discover(REPO, "read-only-token", QA, RELEASE)
+
+
+def test_new_1716_owner_manifest_source_routes_only_with_exact_approved_identity():
+    owner = dict(pr(author=REPO.split("/")[0], draft=True), number=1716)
+    candidate = discover(pulls=[owner])
+    assert candidate["eligible"] is True
+    assert candidate["pr_number"] == 1716
+    assert candidate["can_execute"] is False
+
+
+def test_workflow_reproposal_allowlist_includes_only_three_reviewed_sources():
+    workflow = WORKFLOW.read_text()
+    assert 'if [ "$PR_NUMBER" != "1683" ] && [ "$PR_NUMBER" != "1702" ] && [ "$PR_NUMBER" != "1716" ]; then' in workflow
+    assert 'UNREVIEWED_REPROPOSAL_SOURCE' in workflow
