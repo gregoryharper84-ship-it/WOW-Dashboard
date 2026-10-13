@@ -145,7 +145,9 @@ def test_reproposal_creates_only_draft_under_app_identity():
 
 def test_different_app_created_pr_fails_after_draft_creation():
     api = _allowed_app()
-    api.post.side_effect[-1]["user"]["login"] = "other-bot[bot]"
+    responses = list(api.post.side_effect)
+    responses[-1]["user"]["login"] = "other-bot[bot]"
+    api.post.side_effect = responses
     with pytest.raises(ReproposalBlocked, match="CREATED_PR_IDENTITY_UNVERIFIED_DRAFT_HOLD"):
         create_draft(api, 1683, HEAD, MAIN,
                      [ProposedFile("render.yaml", b"after", "modified")])
