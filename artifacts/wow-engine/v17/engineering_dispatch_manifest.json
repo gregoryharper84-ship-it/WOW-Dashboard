@@ -1,7 +1,7 @@
 {
   "schema_version": "2.1",
   "source": "WOW_V17_ACTIVE_EXECUTION_BOARD",
-  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. All engineering capacity targets the highest-priority existing closure journey. Product focus is LLP all-sports moneyline/spread usability and WOW governed all-sports player/scalar props.",
+  "description": "Closure-focus routing metadata. GitHub issue open/closed state remains authoritative. All engineering capacity targets the highest-priority existing closure journey. Product focus is LLP all-sports moneyline/spread usability and WOW governed all-sports player/scalar props. P1 #1701 is explicitly admitted to GLOBAL-lease recovery; independent trust-root gates remain mandatory.",
   "can_execute": false,
   "terminal_authority": "V17_TERMINAL_REDUCER",
   "restoration": [
@@ -45,9 +45,21 @@
       "lease_group": "P0_LLP_RESTORE"
     },
     {
-      "issue_number": 823,
+      "issue_number": 1701,
       "severity": "P1",
       "priority_rank": 4,
+      "execution_lane": "STANDARD",
+      "lease_group": "GLOBAL",
+      "conflict_keys": [
+        "ENGINEERING_RELEASE_GOVERNANCE",
+        "PROTECTED_PR_REPROPOSAL",
+        "SINGLE_WRITER_GLOBAL"
+      ]
+    },
+    {
+      "issue_number": 823,
+      "severity": "P1",
+      "priority_rank": 5,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "SPORT_DISCOVERY",
@@ -58,7 +70,7 @@
     {
       "issue_number": 1309,
       "severity": "P1",
-      "priority_rank": 5,
+      "priority_rank": 6,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "TEAM_MARKET_CERTIFICATION",
@@ -69,7 +81,7 @@
     {
       "issue_number": 487,
       "severity": "P1",
-      "priority_rank": 6,
+      "priority_rank": 7,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "PROP_LIFECYCLE",
@@ -81,7 +93,7 @@
     {
       "issue_number": 491,
       "severity": "P1",
-      "priority_rank": 7,
+      "priority_rank": 8,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "PROP_FORWARD_EVIDENCE",
@@ -92,7 +104,7 @@
     {
       "issue_number": 1087,
       "severity": "P1",
-      "priority_rank": 8,
+      "priority_rank": 9,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "PRODUCTION_RUNTIME",
@@ -102,7 +114,7 @@
     {
       "issue_number": 1150,
       "severity": "P1",
-      "priority_rank": 9,
+      "priority_rank": 10,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "ACTION_SCHEMA",
@@ -113,7 +125,7 @@
     {
       "issue_number": 1152,
       "severity": "P1",
-      "priority_rank": 10,
+      "priority_rank": 11,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "NCAAF_TEAM_STATE",
