@@ -96,7 +96,10 @@ def decode_content(payload: dict | None, *, may_be_absent: bool = False) -> byte
     if payload.get("encoding") != "base64":
         raise ReproposalBlocked("CONTENTS_ENCODING_INVALID")
     try:
-        blob = base64.b64decode(payload["content"], validate=False)
+        encoded = payload["content"]
+        if not isinstance(encoded, str):
+            raise ReproposalBlocked("CONTENTS_DECODE_INVALID")
+        blob = base64.b64decode("".join(encoded.split()), validate=True)
     except (TypeError, ValueError, KeyError, binascii.Error) as exc:
         raise ReproposalBlocked("CONTENTS_DECODE_INVALID") from exc
     if len(blob) > MAX_FILE_BYTES or not blob:
