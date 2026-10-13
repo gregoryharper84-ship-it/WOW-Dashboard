@@ -186,14 +186,27 @@ jobs:
         run: |
           echo "PR #${{ steps.resolve.outputs.pr_number }}: non-repairable trust-root/owner-approval finding; waiting on owner (see daily digest), not retried." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Record Engineering App re-proposal requirement
+      - name: Re-propose protected source under Engineering App as draft only
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'REPROPOSE_WITH_ENGINEERING_APP'
         shell: bash
         env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           SOURCE_HEAD: ${{ steps.resolve.outputs.head_sha }}
         run: |
-          echo "PR #$PR_NUMBER at $SOURCE_HEAD is owner-authored and changes trust roots." >> "$GITHUB_STEP_SUMMARY"
-          echo "REPROPOSE_WITH_ENGINEERING_APP: requires a distinct App-authored new PR," >> "$GITHUB_STEP_SUMMARY"
-          echo "then exact-head owner CODEOWNERS approval and independent QA/Release checks." >> "$GITHUB_STEP_SUMMARY"
-          echo "No automatic impersonation, merge, deployment, or bypass permitted." >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          # Only two explicitly audited recovery sources may be copied.
+          # Never replay arbitrary owner-authored PR code under an App token.
+          if [ "$PR_NUMBER" != "1683" ] && [ "$PR_NUMBER" != "1702" ]; then
+            echo "::error::UNREVIEWED_REPROPOSAL_SOURCE"
+            exit 1
+          fi
+          python artifacts/wow-engine/v17/engineering_app_reproposal.py \
+            --source-pr "$PR_NUMBER" \
+            --expected-head "$SOURCE_HEAD" \
+            --write \
+            | tee "$RUNNER_TEMP/reproposal.json"
+          jq -e '.state == "PR_CREATED" and .can_execute == false and .owner_approval_required == true' \
+            "$RUNNER_TEMP/reproposal.json" >/dev/null
+          echo "App-authored draft created for source PR #$PR_NUMBER, exact SHA $SOURCE_HEAD." >> "$GITHUB_STEP_SUMMARY"
+          echo "Owner CODEOWNERS approval plus pinned QA/Release checks remain mandatory." >> "$GITHUB_STEP_SUMMARY"
