@@ -97,6 +97,7 @@ jobs:
           ' <<<"$checks")
 
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           if [ -z "$summary" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             echo "PR #$pr_number: no failing QA/Release exact-head check found; nothing to route." >> "$GITHUB_STEP_SUMMARY"
@@ -145,8 +146,33 @@ jobs:
           echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
           echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
 
-      - name: Record recovery-attempt marker
-        if: false # Never consume retry budget until a verified targeted worker handoff exists.
+      - name: Dispatch exact-head repair to Engineering App worker
+        id: targeted_dispatch
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          jq -e --arg sha "$HEAD_SHA" '.head.sha == $sha and .state == "open" and .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || { echo "::error::REPAIR_HEAD_STALE"; exit 1; }
+          body=$(jq -r '.body // ""' <<<"$pr")
+          incident=$(sed -nE 's/^Incident:[[:space:]]*\x60?([0-9]+)\x60?[[:space:]]*$/\1/p' <<<"$body" | head -1)
+          [[ "$incident" =~ ^[1-9][0-9]*$ ]] || { echo "::error::REPAIR_INCIDENT_MISSING"; exit 1; }
+          issue=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${incident}")
+          jq -e '.state == "open" and ([.labels[].name] | index("P1") != null)' <<<"$issue" >/dev/null || { echo "::error::REPAIR_TARGET_NOT_APPROVED_P1_GLOBAL"; exit 1; }
+          # Existing standard P1 queue uses the GLOBAL single-writer lease.
+          # P0/domain repairs require a separately validated exact domain lease.
+          gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f target_incident="$incident" -f lease_group=GLOBAL \
+            -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
+          echo "accepted=true" >> "$GITHUB_OUTPUT"
+          echo "Targeted dispatch accepted: PR #$PR_NUMBER incident #$incident expected SHA $HEAD_SHA (P1/GLOBAL)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record recovery attempt after accepted dispatch
+        if: steps.targeted_dispatch.outputs.accepted == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
@@ -164,21 +190,6 @@ jobs:
           else
             gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body" >/dev/null
           fi
-          echo "Recovery attempt reserved for PR #${PR_NUMBER} (${NEW_ATTEMPTS}/3); worker dispatch requires verified incident/lease binding." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Dispatch worker to repair the same branch
-        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
-          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
-        run: |
-          set -euo pipefail
-          # The worker accepts incident identifiers, not arbitrary PR numbers. Fail closed
-          # rather than dispatching an untargeted worker and claiming same-branch repair.
-          echo "::error::AUTO_REPAIR_TARGET_HANDOFF_REQUIRED: PR #${PR_NUMBER} has no verified incident/lease handoff to the worker. Do not dispatch an unrelated queue item."
-          echo "BLOCKED_WITH_EXACT_REASON: AUTO_REPAIR_TARGET_HANDOFF_REQUIRED PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
-          exit 1
 
       - name: Label needs-owner past the retry cap
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'NEEDS_OWNER_RETRY_CAP'
