@@ -57,11 +57,19 @@ def select_hold(
                 or (head.get("repo") or {}).get("full_name") != repository
                 or base.get("ref") != "main"):
             continue
+        author = (pr.get("user") or {}).get("login")
+        number = pr.get("number")
+        if type(number) is not int or number <= 0:
+            raise HoldDiscoveryError("PR_IDENTITY_INVALID")
+        if author != "wow-engineering[bot]" and (
+            author != repository.split("/")[0] or number not in OWNER_REPROPOSAL_SOURCES
+        ):
+            # Ineligible PRs must not consume the 20-target budget.
+            continue
         considered += 1
         runs = checks_by_sha.get(sha)
         if not isinstance(runs, list):
             raise HoldDiscoveryError("CHECKS_UNREADABLE:" + sha)
-        author = (pr.get("user") or {}).get("login")
         role_latest = []
         for name, role in ROLES.items():
             source = [r for r in runs if isinstance(r, dict)
@@ -115,23 +123,54 @@ def fetch_json(repo: str, endpoint: str, token: str) -> Any:
 
 
 def discover(repo: str, token: str, qa_app_id: int, release_app_id: int) -> dict[str, Any]:
-    pulls = fetch_json(repo, "pulls?state=open&base=main&per_page=100", token)
-    if not isinstance(pulls, list):
-        raise HoldDiscoveryError("PR_INVENTORY_INVALID")
+    # Bounded inventory across all open PR pages. Do not let unrelated PRs
+    # starve the verified App-authored or explicitly audited owner source pool.
+    pulls: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for page in range(1, 6):
+        batch = fetch_json(
+            repo, f"pulls?state=open&base=main&per_page=100&sort=created&direction=asc&page={page}",
+            token,
+        )
+        if not isinstance(batch, list) or len(batch) > 100:
+            raise HoldDiscoveryError("PR_INVENTORY_INVALID")
+        for pr in batch:
+            if not isinstance(pr, dict) or type(pr.get("number")) is not int or pr["number"] <= 0:
+                raise HoldDiscoveryError("PR_IDENTITY_INVALID")
+            if pr["number"] in seen:
+                raise HoldDiscoveryError("PR_INVENTORY_DUPLICATE")
+            seen.add(pr["number"])
+        pulls.extend(batch)
+        if len(batch) < 100:
+            break
+    else:
+        # Do not pretend a truncated inventory is complete.
+        raise HoldDiscoveryError("PR_INVENTORY_PAGE_LIMIT")
+
+    owner = repo.split("/")[0]
+    approved = [
+        pr for pr in pulls
+        if (pr.get("user") or {}).get("login") == "wow-engineering[bot]"
+        or ((pr.get("user") or {}).get("login") == owner
+            and pr["number"] in OWNER_REPROPOSAL_SOURCES)
+    ]
+    if len(approved) > 20:
+        # A queue-full observation is not "no work"; demand explicit WIP review.
+        raise HoldDiscoveryError("ELIGIBLE_PR_POOL_OVER_BUDGET")
+
     checks: dict[str, list[dict[str, Any]]] = {}
-    for pr in pulls[:20]:
-        sha = ((pr.get("head") or {}).get("sha") if isinstance(pr, dict) else None)
+    for pr in approved:
+        sha = (pr.get("head") or {}).get("sha")
         if not isinstance(sha, str) or not SHA.fullmatch(sha):
-            continue
+            raise HoldDiscoveryError("PR_HEAD_INVALID")
         data = fetch_json(repo, f"commits/{sha}/check-runs?per_page=100", token)
         if not isinstance(data, dict) or not isinstance(data.get("check_runs"), list):
             raise HoldDiscoveryError("CHECKS_UNREADABLE:" + sha)
         if data.get("total_count", 0) > len(data["check_runs"]):
             raise HoldDiscoveryError("CHECKS_TRUNCATED:" + sha)
         checks[sha] = data["check_runs"]
-    return select_hold(pulls[:20], checks, repository=repo, qa_app_id=qa_app_id,
+    return select_hold(approved, checks, repository=repo, qa_app_id=qa_app_id,
                        release_app_id=release_app_id)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()
