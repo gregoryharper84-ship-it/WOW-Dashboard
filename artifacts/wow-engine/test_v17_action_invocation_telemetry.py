@@ -378,3 +378,64 @@ def test_atomic_receipt_migration_preserves_security_and_immutability():
     assert "to service_role" in sql
     assert "from public, anon, authenticated" in sql
     assert "can_execute', false" in sql
+
+
+def test_validation_code_capture_preserves_422_response_and_redacts_details():
+    receipts = []
+    app = FastAPI()
+    install_action_invocation_middleware(app, db_client_fn=lambda: _DB(receipts))
+
+    @app.post("/score-prop")
+    def rejected():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND",
+                "player": "PRIVATE_PLAYER",
+                "probability": 0.77,
+                "can_execute": False,
+            },
+        )
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/score-prop",
+            headers={"X-WOW-Request-ID": "chat-correlation-1"},
+            json={"token": "PRIVATE_CREDENTIAL"},
+        )
+        assert r.status_code == 422
+        assert r.json()["detail"]["player"] == "PRIVATE_PLAYER"
+        deadline = time.monotonic() + 2.0
+        while app.state.wow_action_invocation_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert len(receipts) == 1
+    assert receipts[0]["validation_code"] == "PROP_EVIDENCE_SNAPSHOT_NOT_FOUND"
+    assert receipts[0]["request_id"] == "chat-correlation-1"
+    assert receipts[0]["can_execute"] is False
+    assert "PRIVATE_PLAYER" not in repr(receipts)
+    assert "PRIVATE_CREDENTIAL" not in repr(receipts)
+    assert "0.77" not in repr(receipts)
+
+
+def test_validation_code_capture_does_not_record_unsafe_or_unstructured_details():
+    from v17.action_invocation_telemetry import _safe_validation_code
+    assert _safe_validation_code(b'{"detail":{"code":"VALID_CODE"}}') == "VALID_CODE"
+    assert _safe_validation_code(b'{"detail":{"code":"a secret"}}') is None
+    assert _safe_validation_code(b'{"detail":[{"loc":["body"],"msg":"secret"}]}') is None
+    assert _safe_validation_code(b'{"detail":{"code":"TOKEN_123\\nSECRET"}}') is None
+    assert _safe_validation_code(b'not json') is None
+    # Pydantic/FastAPI 422 includes field locations and possibly rejected input:
+    # no such values may be copied to the invocation ledger.
+    schema_failure = json.dumps({
+        "detail": [{
+            "type": "missing",
+            "loc": ["body", "PRIVATE_PLAYER"],
+            "msg": "PRIVATE_REASON",
+            "input": "PRIVATE_CREDENTIAL",
+        }]
+    }).encode()
+    assert _safe_validation_code(schema_failure) == "REQUEST_SCHEMA_VALIDATION_FAILED"
+    assert _safe_validation_code(b'{"detail":[{"msg":"no type or loc"}]}') is None
+    assert _safe_validation_code(b'{"detail":[]}') is None
+

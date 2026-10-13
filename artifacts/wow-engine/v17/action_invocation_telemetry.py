@@ -158,6 +158,70 @@ def _request_id(headers: Any) -> str | None:
     return value[:256] or None
 
 
+def _safe_validation_code(data: bytes) -> str | None:
+    """Allowlist only a machine code; never persist validation body or detail."""
+    try:
+        import re
+        payload = json.loads(data)
+        if not isinstance(payload, dict):
+            return None
+        detail = payload.get("detail", payload)
+        if isinstance(detail, list):
+            # FastAPI/Pydantic request-schema failures have no application
+            # error code. Record only a fixed category, never loc/msg/input.
+            if detail and all(
+                isinstance(item, dict)
+                and isinstance(item.get("type"), str)
+                and isinstance(item.get("loc"), list)
+                for item in detail
+            ):
+                return "REQUEST_SCHEMA_VALIDATION_FAILED"
+            return None
+        if not isinstance(detail, dict):
+            return None
+        candidate = detail.get("code") or detail.get("blocker_code")
+        if not isinstance(candidate, str):
+            return None
+        return candidate if re.fullmatch(r"[A-Z][A-Z0-9_]{1,79}", candidate) else None
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return None
+
+
+async def _capture_validation_code(response: Any) -> str | None:
+    """Replay an unchanged 422 response, examining no more than 8 KiB.
+
+    Responses lacking a safe structured code remain unclassified. This never
+    examines requests or persists response bodies, player data or probabilities.
+    """
+    if getattr(response, "status_code", None) != 422:
+        return None
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is None:
+        body = getattr(response, "body", b"")
+        return _safe_validation_code(body) if len(body) <= 8192 else None
+
+    buffered = []
+    total = 0
+    completed = False
+    async for chunk in iterator:
+        buffered.append(chunk)
+        total += len(chunk)
+        if total > 8192:
+            break
+    else:
+        completed = True
+
+    async def replay():
+        for chunk in buffered:
+            yield chunk
+        if not completed:
+            async for chunk in iterator:
+                yield chunk
+
+    response.body_iterator = replay()
+    return _safe_validation_code(b"".join(buffered)) if completed else None
+
+
 def _configure_transport_timeouts(db: Any) -> Any:
     """Apply deadlines to the synchronous PostgREST HTTP transport.
 
@@ -374,9 +438,11 @@ def install_action_invocation_middleware(
         normalized_route, operation_id, path_request_id = metadata
         started = perf_counter()
         status_code = 500
+        validation_code = None
         try:
             response = await call_next(request)
             status_code = int(getattr(response, "status_code", 500))
+            validation_code = await _capture_validation_code(response)
             return response
         finally:
             duration_ms = (perf_counter() - started) * 1000.0
@@ -387,6 +453,7 @@ def install_action_invocation_middleware(
                 "action_operation_id": operation_id,
                 "http_method": str(getattr(request, "method", "UNKNOWN")).upper(),
                 "http_status": status_code,
+                "validation_code": validation_code,
                 "auth_scheme": _auth_scheme(headers.get("authorization")),
                 "caller_class": _caller_class(headers, status_code),
                 "caller_user_agent": str(headers.get("user-agent") or "")[:256] or None,
