@@ -126,3 +126,43 @@ def test_p0_requires_stream_and_lease_metadata():
     manifest["restoration"][0].pop("rapid_stream")
     with pytest.raises(ValueError, match="requires rapid_stream and lease_group"):
         build_queue(manifest, [])
+
+
+
+def test_release_recovery_1701_is_explicitly_admitted_only_while_open():
+    # Regression for 38337620976: TARGET_INCIDENT_NOT_ACTIONABLE:1701.
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    entry = next(x for x in manifest["restoration"] if x["issue_number"] == 1701)
+    assert entry["severity"] == "P1"
+    assert entry["execution_lane"] == "STANDARD"
+    assert entry["lease_group"] == "GLOBAL"
+    assert entry["priority_rank"] == 4
+    assert set(entry["conflict_keys"]) == {
+        "ENGINEERING_RELEASE_GOVERNANCE",
+        "PROTECTED_PR_REPROPOSAL",
+        "SINGLE_WRITER_GLOBAL",
+    }
+    live = build_queue(
+        manifest,
+        [{"number": 1701, "state": "OPEN", "title": "Independent release repair"}],
+    )
+    assert live["queue_depth"] == 1
+    assert live["records"][0]["incident_id"] == "1701"
+    assert live["records"][0]["lease_group"] == "GLOBAL"
+    assert live["records"][0]["can_execute"] is False
+    assert live["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    closed = build_queue(
+        manifest,
+        [{"number": 1701, "state": "CLOSED", "title": "Independent release repair"}],
+    )
+    assert closed["records"] == []
+
+
+def test_release_recovery_1701_does_not_override_p0_priority():
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    by_issue = {entry["issue_number"]: entry for entry in manifest["restoration"]}
+    assert max(by_issue[n]["priority_rank"] for n in (1388, 1313, 502)) < by_issue[1701]["priority_rank"]
+    assert by_issue[1701]["priority_rank"] < by_issue[823]["priority_rank"]
+    assert len({entry["priority_rank"] for entry in manifest["restoration"]}) == len(manifest["restoration"])
