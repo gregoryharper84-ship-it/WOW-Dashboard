@@ -1,0 +1,76 @@
+"""Fail-closed nonpublishing multi-date NFL acceptance preflight (#1689).
+Trusted caller must independently authenticate inventory digest and selected cohort.
+Does not invoke Actions, certify or publish scores, or modify release controls.
+"""
+from __future__ import annotations
+from collections import defaultdict
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from typing import Mapping, Any
+from v17.cross_sport_acceptance_factory import SourceInventory
+
+TERMINAL = "V17_TERMINAL_REDUCER"
+
+def hold(reason: str) -> dict[str, Any]:
+    return {"status":"PREFLIGHT_HELD","blockers":[reason],"can_execute":False,"probability_publishable":False,"global_terminal_authority":TERMINAL}
+
+def plan_nfl_week_dates(selection: Mapping[str,Any], inventory: SourceInventory, *, independently_authenticated_source_sha256: str, minimum_events: int=13) -> dict[str,Any]:
+    if type(minimum_events) is not int or minimum_events < 13:
+        return hold("NFL_WEEK_THRESHOLD_INVALID")
+    if not isinstance(selection, Mapping) or selection.get("status") != "COHORT_ELIGIBLE_FOR_TEST":
+        return hold("NFL_WEEK_NOT_ELIGIBLE")
+    cohort=selection.get("cohort")
+    week=selection.get("selected_week")
+    if not isinstance(cohort,Mapping) or not isinstance(week,Mapping) or week.get("sport")!="NFL" or cohort.get("status")!="COHORT_ELIGIBLE_FOR_TEST":
+        return hold("NFL_WEEK_IDENTITY_UNVERIFIED")
+    if not independently_authenticated_source_sha256 or inventory.payload_sha256!=independently_authenticated_source_sha256 or cohort.get("source_payload_sha256")!=independently_authenticated_source_sha256 or not inventory.source_id or inventory.source_id!=cohort.get("source_id"):
+        return hold("NFL_WEEK_SOURCE_UNVERIFIED")
+    ids=cohort.get("canonical_event_ids")
+    if not isinstance(ids,list) or len(ids)<minimum_events or any(not isinstance(i,str) or not i.strip() for i in ids) or len(set(ids))!=len(ids):
+        return hold("NFL_WEEK_EVENT_IDS_INVALID")
+    by_id=defaultdict(list)
+    for f in inventory.fixtures:
+        if f.official_event_id in ids:
+            by_id[f.official_event_id].append(f)
+    if set(by_id)!=set(ids) or any(len(v)!=1 for v in by_id.values()):
+        return hold("NFL_WEEK_FIXTURE_MISMATCH")
+    dates=defaultdict(list)
+    for eid in ids:
+        f=by_id[eid][0]
+        if f.sport!="NFL" or f.status not in ("SCHEDULED","PRE_GAME") or not isinstance(f.start_utc,datetime) or f.start_utc.tzinfo is None or f.start_utc.utcoffset() is None:
+            return hold("NFL_WEEK_FIXTURE_NOT_VERIFIED_PREGAME")
+        dates[f.start_utc.astimezone(ZoneInfo("America/Chicago")).date().isoformat()].append(eid)
+    if len(dates)>9 or any(len(v)>32 for v in dates.values()):
+        return hold("NFL_WEEK_BATCH_LIMIT")
+    return {"status":"DATE_PLAN_READY_NOT_ACTION_ACCEPTED","dates":[{"requested_slate_date":d,"expected_event_ids":sorted(v)} for d,v in sorted(dates.items())],"expected_event_ids":sorted(ids),"source_payload_sha256":inventory.payload_sha256,"can_execute":False,"probability_publishable":False,"global_terminal_authority":TERMINAL}
+
+def reconcile_nfl_week_snapshots(plan: Mapping[str,Any], results: Mapping[str,Mapping[str,Any]]) -> dict[str,Any]:
+    if plan.get("status")!="DATE_PLAN_READY_NOT_ACTION_ACCEPTED":
+        return hold("NFL_WEEK_PLAN_NOT_READY")
+    batches=plan.get("dates") or []
+    if not isinstance(results,Mapping) or set(results)!={b["requested_slate_date"] for b in batches}:
+        return hold("NFL_WEEK_DATE_COVERAGE_MISMATCH")
+    observed=[]
+    for b in batches:
+        day=b["requested_slate_date"]
+        r=results[day]
+        if not isinstance(r,Mapping) or r.get("requested_slate_date")!=day or r.get("can_execute") is not False or r.get("global_terminal_authority")!=TERMINAL or r.get("automation_auth")!="GITHUB_ACTIONS_OIDC" or r.get("run_status")!="COMPLETE":
+            return hold("NFL_WEEK_DAILY_AUTH_OR_TERMINAL_INVALID")
+        rec=r.get("reconciliation") or {}
+        audit=(r.get("cross_sport_discovery_audit") or {}).get("reconciliation") or {}
+        if rec.get("balanced") is not True or audit.get("row_reconciliation")!="PASS" or audit.get("events_accounted")!=audit.get("events_discovered"):
+            return hold("NFL_WEEK_RECONCILIATION_FAILED")
+        day_ids=[]
+        for row in r.get("rows") or []:
+            if row.get("lane")!="MONEYLINE" or (row.get("identity") or {}).get("sport")!="NFL":
+                continue
+            eid=(row.get("identity") or {}).get("official_event_id")
+            if not eid or row.get("can_execute") is not False or "MODEL_INVOCATION_BUDGET_REACHED" in str(row.get("result") or {}):
+                return hold("NFL_WEEK_ROW_INVALID_OR_EXHAUSTED")
+            day_ids.append(eid)
+        if len(day_ids)!=len(set(day_ids)) or set(day_ids)!=set(b["expected_event_ids"]):
+            return hold("NFL_WEEK_DAILY_EVENT_MISMATCH")
+        observed.extend(day_ids)
+    if len(observed)!=len(set(observed)) or set(observed)!=set(plan["expected_event_ids"]):
+        return hold("NFL_WEEK_EXACT_ONCE_MISMATCH")
+    return {"status":"WEEK_SNAPSHOT_RECONCILED_NOT_ACTION_OR_MODEL_CERTIFIED","nfl_rows":len(observed),"can_execute":False,"probability_publishable":False,"global_terminal_authority":TERMINAL}
