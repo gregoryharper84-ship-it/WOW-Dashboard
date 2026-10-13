@@ -84,7 +84,7 @@ def test_batch_rejects_unbounded_sizes(size):
 
 def test_batch_preserves_unbound_events_as_blockers(monkeypatch):
     def unavailable(*, identities, test_event_ids, summary_loader):
-        return {}, {"blocker_counts": {"SPREAD_ESPN_SUMMARY_NOT_FINAL": len(test_event_ids)}}
+        return {}, {"blocker_counts": {"SPREAD_ESPN_SUMMARY_NOT_FINAL": len(test_event_ids)}, "blockers_by_event": {event_id: "SPREAD_ESPN_SUMMARY_NOT_FINAL" for event_id in test_event_ids}}
 
     monkeypatch.setattr(batch, "acquire_wnba_close_proxies", unavailable)
     result = batch.advance_wnba_historical_batch(
@@ -92,5 +92,5 @@ def test_batch_preserves_unbound_events_as_blockers(monkeypatch):
     )
     assert result["bound_event_n"] == 0
     assert result["blocked_event_n"] == 1
-    assert result["blockers_by_event"]["A"] == "WNBA_HISTORICAL_BATCH_EVENT_UNBOUND"
+    assert result["blockers_by_event"]["A"] == "SPREAD_ESPN_SUMMARY_NOT_FINAL"
     assert result["probability_publishable"] is False
