@@ -153,6 +153,17 @@ def classify(
     return Verdict("RETRY_ALLOWED", "CI_INFRA_IMAGE_PULL_RATE_LIMIT", rid, sha, tuple(image_ids))
 
 
+def verify_live_run(event_run: dict[str, Any], live: dict[str, Any]) -> None:
+    """Reject racey reruns, changed revisions and mismatched GitHub evidence."""
+    if not isinstance(live, dict):
+        raise RetryBlocked("CURRENT_RUN_UNREADABLE")
+    for key in ("id", "head_sha", "run_attempt", "status", "conclusion", "path", "event"):
+        if live.get(key) != event_run.get(key):
+            raise RetryBlocked("RUN_MOVED_OR_RETRIED:" + key)
+    if live.get("status") != "completed" or live.get("run_attempt") != 1:
+        raise RetryBlocked("RUN_NOT_SINGLE_COMPLETED_ATTEMPT")
+
+
 def gh(*args: str) -> str:
     result = subprocess.run(["gh", *args], check=False, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=35)
@@ -179,11 +190,7 @@ def main() -> int:
         rid = run["id"]
         def require_current_run() -> None:
             live = json.loads(gh("api", f"repos/{REPO}/actions/runs/{rid}"))
-            for key in ("id", "head_sha", "run_attempt", "status", "conclusion", "path", "event"):
-                if live.get(key) != run.get(key):
-                    raise RetryBlocked("RUN_MOVED_OR_RETRIED:" + key)
-            if live.get("status") != "completed" or live.get("run_attempt") != 1:
-                raise RetryBlocked("RUN_NOT_SINGLE_COMPLETED_ATTEMPT")
+            verify_live_run(run, live)
         require_current_run()
         raw = gh("api", f"repos/{REPO}/actions/runs/{rid}/jobs?per_page=100&filter=latest")
         jobs = json.loads(raw)
