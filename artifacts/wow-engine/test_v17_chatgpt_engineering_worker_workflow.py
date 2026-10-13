@@ -84,3 +84,11 @@ def test_auto_repair_escapes_untrusted_multiline_hold_summary():
     assert 'HOLD_SUMMARY_B64: ${{ steps.resolve.outputs.summary_b64 }}' in text
     assert 'summary=$(printf %s "$HOLD_SUMMARY_B64" | base64 --decode)' in text
     assert 'summary<<WOW_HOLD_SUMMARY' not in text
+
+
+def test_ci_postgres_images_avoid_public_ecr_data_limit():
+    # Public ECR returned toomanyrequests during protected CI container initialization.
+    for workflow in ('wow-verify.yml', 'wow-engine-verify.yml'):
+        text = (WORKFLOW.parent / workflow).read_text()
+        assert 'image: public.ecr.aws/docker/library/postgres:16' not in text
+        assert 'image: postgres:16' in text
