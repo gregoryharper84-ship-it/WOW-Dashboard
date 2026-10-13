@@ -199,10 +199,10 @@ def test_unreviewed_owner_source_must_not_reenter_privileged_reproposal():
 
 def test_unreviewed_owner_is_skipped_and_audited_source_is_reachable():
     unreviewed = dict(pr(author=REPO.split("/")[0], draft=True), number=1573)
-    allowed = dict(pr(author=REPO.split("/")[0], draft=True), number=1702)
+    allowed = dict(pr(author=REPO.split("/")[0], draft=True), number=1683)
     selected = discover(pulls=[unreviewed, allowed])
     assert selected["eligible"] is True
-    assert selected["pr_number"] == 1702
+    assert selected["pr_number"] == 1683
     assert selected["can_execute"] is False
 
 
@@ -219,7 +219,7 @@ def test_open_pr_inventory_pages_include_second_page_audited_owner(monkeypatch):
     from v17 import engineering_hold_reconciler as module
 
     first_page = [dict(pr(author="someone-else"), number=i + 3000) for i in range(100)]
-    approved_owner = dict(pr(author=REPO.split("/")[0], draft=True), number=1702)
+    approved_owner = dict(pr(author=REPO.split("/")[0], draft=True), number=1683)
     requested = []
 
     def fake_fetch(repo, endpoint, token):
@@ -234,7 +234,7 @@ def test_open_pr_inventory_pages_include_second_page_audited_owner(monkeypatch):
     monkeypatch.setattr(module, "fetch_json", fake_fetch)
     result = module.discover(REPO, "read-only-token", QA, RELEASE)
     assert result["eligible"] is True
-    assert result["pr_number"] == 1702
+    assert result["pr_number"] == 1683
     assert sum(x.startswith("commits/") for x in requested) == 1
     assert any("page=2" in x for x in requested)
 
@@ -315,9 +315,19 @@ def test_workflow_reproposal_allowlist_matches_pinned_sources_exactly():
 
 
 
-def test_new_1717_owner_ci_source_routes_under_narrow_exact_identity():
-    owner = dict(pr(author=REPO.split("/")[0], draft=True), number=1717)
-    chosen = discover(pulls=[owner])
-    assert chosen["eligible"] is True
-    assert chosen["pr_number"] == 1717
-    assert chosen["can_execute"] is False
+@pytest.mark.parametrize("source", [1702, 1717])
+def test_unpinned_owner_sources_never_enter_privileged_app_copy(source):
+    # These are legitimate engineering drafts, but this narrowly governed
+    # re-proposal lane has no approved head pin or path allowlist for either.
+    from v17.engineering_app_reproposal import SOURCE_ALLOWLIST, SOURCE_PINNED_HEADS
+    owner = dict(pr(author=REPO.split("/")[0], draft=True), number=source)
+    assert source not in SOURCE_ALLOWLIST
+    assert source not in SOURCE_PINNED_HEADS
+    assert discover(pulls=[owner])["eligible"] is False
+
+
+def test_resolver_allowlist_is_exactly_pinned_reproposal_implementation():
+    from v17.engineering_hold_reconciler import OWNER_REPROPOSAL_SOURCES
+    from v17.engineering_app_reproposal import SOURCE_ALLOWLIST, SOURCE_PINNED_HEADS
+    assert OWNER_REPROPOSAL_SOURCES == frozenset(SOURCE_ALLOWLIST) == frozenset(SOURCE_PINNED_HEADS)
+    assert OWNER_REPROPOSAL_SOURCES == frozenset({1683, 1716})
