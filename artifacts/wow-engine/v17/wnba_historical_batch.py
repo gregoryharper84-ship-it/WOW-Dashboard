@@ -86,12 +86,10 @@ def advance_wnba_historical_batch(
         if len(newly_complete) + sum(audit["blocker_counts"].values()) != len(selected):
             raise ValueError("WNBA_BATCH_ACQUISITION_RECONCILIATION_FAILED")
         completed.update(newly_complete)
+        source_blockers = audit.get("blockers_by_event") or {}
         for event_id in selected:
             if event_id not in newly_complete:
-                # Acquire uses row-scoped blockers; recover exact codes by isolated
-                # evaluation of missing rows without an additional provider call?
-                # No: avoid replaying network side effects or fabricating a code.
-                failures[event_id] = "WNBA_HISTORICAL_BATCH_EVENT_UNBOUND"
+                failures[event_id] = str(source_blockers.get(event_id) or "WNBA_HISTORICAL_BATCH_EVENT_UNBOUND")
         attempted.extend(selected)
 
     integrity = {
