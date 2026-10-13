@@ -76,3 +76,11 @@ def test_autonomy_p0_is_registered_with_exclusive_manifest_lease():
     assert entry['rapid_stream'] == 'AUTONOMY_RESTORE'
     assert entry['lease_group'] == 'P0_AUTONOMY_RESTORE'
     assert 'WORKFLOW_TRUST_ROOT' in entry['conflict_keys']
+
+
+def test_auto_repair_escapes_untrusted_multiline_hold_summary():
+    text = (WORKFLOW.parent / 'wow-v17-engineering-auto-repair.yml').read_text()
+    assert 'summary_b64=$(printf %s "$summary" | base64 -w0)' in text
+    assert 'HOLD_SUMMARY_B64: ${{ steps.resolve.outputs.summary_b64 }}' in text
+    assert 'summary=$(printf %s "$HOLD_SUMMARY_B64" | base64 --decode)' in text
+    assert 'summary<<WOW_HOLD_SUMMARY' not in text
