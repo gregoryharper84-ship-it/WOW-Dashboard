@@ -103,11 +103,9 @@ jobs:
             echo "PR #$pr_number: no failing QA/Release exact-head check found; nothing to route." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          {
-            echo "summary<<WOW_HOLD_SUMMARY_${GITHUB_RUN_ID}"
-            echo "$summary"
-            echo "WOW_HOLD_SUMMARY_${GITHUB_RUN_ID}"
-          } >> "$GITHUB_OUTPUT"
+          # Check summaries are external text; encode before writing GITHUB_OUTPUT
+          # so a crafted multiline delimiter cannot inject other step outputs.
+          echo "summary_b64=$(printf %s "$summary" | base64 -w0)" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
 
       - name: Read and increment the PR's recovery-attempt marker
@@ -133,13 +131,14 @@ jobs:
         shell: bash
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
-          HOLD_SUMMARY: ${{ steps.resolve.outputs.summary }}
+          HOLD_SUMMARY_B64: ${{ steps.resolve.outputs.summary_b64 }}
           ATTEMPTS: ${{ steps.attempts.outputs.attempts }}
         run: |
           set -euo pipefail
+          summary=$(printf %s "$HOLD_SUMMARY_B64" | base64 --decode)
           python artifacts/wow-engine/v17/engineering_recovery_planner.py \
             --pr-number "$PR_NUMBER" \
-            --summary "$HOLD_SUMMARY" \
+            --summary "$summary" \
             --attempts "$ATTEMPTS" \
             --is-wow-engineering-pr \
             | tee "$RUNNER_TEMP/recovery-plan.json"
