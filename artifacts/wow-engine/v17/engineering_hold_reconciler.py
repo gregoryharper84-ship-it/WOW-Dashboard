@@ -22,7 +22,7 @@ ROLES = {
 
 # Only source PRs explicitly reviewed by the App re-proposal implementation.
 # Never route arbitrary owner-authored protected code into privileged copy flows.
-OWNER_REPROPOSAL_SOURCES = frozenset({1683, 1702, 1716})
+OWNER_REPROPOSAL_SOURCES = frozenset({1683, 1702, 1716, 1717})
 
 
 class HoldDiscoveryError(ValueError):
