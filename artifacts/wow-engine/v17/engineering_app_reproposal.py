@@ -28,12 +28,6 @@ SOURCE_ALLOWLIST = {
         ".github/workflows/wow-engine-verify.yml",
         "artifacts/wow-engine/v17/test_render_interactive_prop_memory_budget.py",
     }),
-    1717: frozenset({
-        ".github/workflows/wow-v17-ci-postgres-throttle-retry.yml",
-        "artifacts/wow-engine/v17/ci_registry_retry.py",
-        "artifacts/wow-engine/test_v17_ci_registry_retry.py",
-        "artifacts/wow-engine/docs/failure_codes.md",
-    }),
     1716: frozenset({
         "artifacts/wow-engine/v17/engineering_dispatch_manifest.json",
         "artifacts/wow-engine/tests/test_v17_engineering_dispatch_queue.py",
@@ -46,7 +40,6 @@ SOURCE_ALLOWLIST = {
 SOURCE_PINNED_HEADS = {
     1683: "4e63cedcf4d4005b9a9f4326a6ad447a6e13b079",
     1716: "de943398cdd847c06c6a353f5764325f43f81850",
-    1717: "5fb6e179c8593ed792e3a893413fc175bfd7fc46",
 }
 MAX_FILE_BYTES = 1_048_576
 MAX_TOTAL_BYTES = 4_194_304
