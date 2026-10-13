@@ -20,6 +20,10 @@ ROLES = {
     "WOW Release Authority exact-head": "release",
 }
 
+# Only source PRs explicitly reviewed by the App re-proposal implementation.
+# Never route arbitrary owner-authored protected code into privileged copy flows.
+OWNER_REPROPOSAL_SOURCES = frozenset({1683, 1702})
+
 
 class HoldDiscoveryError(ValueError):
     pass
@@ -81,9 +85,10 @@ def select_hold(
         # Never automatically repair owner-user or fork-authored PR code. Only
         # route an owner-authored protected-root PR to Engineering App re-proposal.
         if author != "wow-engineering[bot]":
-            if author != repository.split("/")[0] or not any(
-                f.endswith("TRUST_ROOT_OWNER_AUTHORED") for f in findings
-            ):
+            if (author != repository.split("/")[0]
+                    or type(pr.get("number")) is not int
+                    or pr["number"] not in OWNER_REPROPOSAL_SOURCES
+                    or not any(f.endswith("TRUST_ROOT_OWNER_AUTHORED") for f in findings)):
                 continue
         return {
             "eligible": True, "pr_number": pr["number"], "head_sha": sha,
