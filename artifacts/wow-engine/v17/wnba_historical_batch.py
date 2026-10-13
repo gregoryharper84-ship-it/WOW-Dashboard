@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import os
+from pathlib import Path
+import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
 from v17.spread_espn_close_proxy_source import acquire_wnba_close_proxies
@@ -121,3 +124,57 @@ def advance_wnba_historical_batch(
         "can_execute": False,
         "global_terminal_reducer": "V17_TERMINAL_REDUCER",
     }
+
+
+def write_checkpoint_atomic(path: str | Path, checkpoint: Mapping[str, Any]) -> None:
+    """Durably replace one checkpoint under an external single-writer lease.
+
+    The caller must enforce one writer per run/holdout, and must use a persistent
+    volume or CI artifact upload to retain the file beyond worker lifetime.
+    """
+    target = Path(path)
+    if not target.parent.is_dir():
+        raise ValueError("WNBA_CHECKPOINT_DIRECTORY_MISSING")
+    if target.is_symlink():
+        raise ValueError("WNBA_CHECKPOINT_SYMLINK_FORBIDDEN")
+    if _digest({
+        "attempted_event_ids": checkpoint.get("attempted_event_ids"),
+        "evidence_by_event": checkpoint.get("evidence_by_event"),
+        "blockers_by_event": checkpoint.get("blockers_by_event"),
+    }) != checkpoint.get("checkpoint_sha256"):
+        raise ValueError("WNBA_BATCH_CHECKPOINT_INTEGRITY_MISMATCH")
+    data = (json.dumps(dict(checkpoint), sort_keys=True, allow_nan=False) + "\\n").encode()
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=target.parent, prefix=".wnba-", delete=False) as output:
+            tmp = Path(output.name)
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(tmp, target)
+        tmp = None
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+
+
+def read_checkpoint(path: str | Path) -> dict[str, Any]:
+    target = Path(path)
+    if target.is_symlink():
+        raise ValueError("WNBA_CHECKPOINT_SYMLINK_FORBIDDEN")
+    payload = json.loads(target.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError("WNBA_BATCH_CHECKPOINT_INVALID")
+    integrity = {
+        "attempted_event_ids": payload.get("attempted_event_ids"),
+        "evidence_by_event": payload.get("evidence_by_event"),
+        "blockers_by_event": payload.get("blockers_by_event"),
+    }
+    if _digest(integrity) != payload.get("checkpoint_sha256"):
+        raise ValueError("WNBA_BATCH_CHECKPOINT_INTEGRITY_MISMATCH")
+    return payload
