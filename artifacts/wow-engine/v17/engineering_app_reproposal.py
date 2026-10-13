@@ -215,6 +215,25 @@ def create_draft(api: GitHub, source_pr: int, source_head: str,
     latest = api.get("/git/ref/heads/main")
     if (latest.get("object") or {}).get("sha") != main_sha:
         raise ReproposalBlocked("MAIN_HEAD_MOVED_REEVALUATE")
+    branch = f"engineering/repropose-{source_pr}-{source_head[:12]}-{main_sha[:12]}"
+    existing = api.get("/git/ref/heads/" + branch, allow_404=True)
+    if existing is not None:
+        from urllib.parse import quote
+        refs = api.get("/pulls?state=open&head=" + quote(REPO.split("/")[0] + ":" + branch, safe=""))
+        matches = [p for p in refs if isinstance(p, dict)
+                   and p.get("draft") is True
+                   and (p.get("user") or {}).get("login") == APP_LOGIN
+                   and (p.get("head") or {}).get("sha") == (existing.get("object") or {}).get("sha")
+                   and f"Source head: {source_head}" in (p.get("body") or "")]
+        if len(matches) != 1:
+            raise ReproposalBlocked("EXISTING_BRANCH_UNVERIFIED_MANUAL_RECONCILIATION")
+        return {
+            "state": "DUPLICATE", "number": matches[0]["number"],
+            "sha": (existing.get("object") or {}).get("sha"),
+            "source": source_pr, "source_head": source_head, "base": main_sha,
+            "owner_approval_required": True, "independent_qa_required": True,
+            "release_authority_required": True, "can_execute": False,
+        }
     base_commit = api.get("/git/commits/" + main_sha)
     base_tree = (base_commit.get("tree") or {}).get("sha")
     if not isinstance(base_tree, str) or not SHA.fullmatch(base_tree):
@@ -238,7 +257,6 @@ def create_draft(api: GitHub, source_pr: int, source_head: str,
     new_sha = commit.get("sha")
     if not isinstance(new_sha, str) or not SHA.fullmatch(new_sha):
         raise ReproposalBlocked("COMMIT_CREATION_UNVERIFIED")
-    branch = f"engineering/repropose-{source_pr}-{source_head[:12]}-{main_sha[:12]}"
     new_ref = api.post("/git/refs", {"ref": "refs/heads/" + branch, "sha": new_sha})
     if (new_ref.get("ref") != "refs/heads/" + branch
             or (new_ref.get("object") or {}).get("sha") != new_sha):
