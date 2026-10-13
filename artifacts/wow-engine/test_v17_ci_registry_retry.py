@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from v17.ci_registry_retry import REPO, RetryBlocked, classify
+from v17.ci_registry_retry import REPO, RetryBlocked, classify, verify_live_run
 
 SHA = "f" * 40
 POSTGRES_JOB = "WOW governed backend shard / 0"
@@ -158,3 +158,41 @@ def test_quota_can_never_trigger_more_than_four_image_job_retries():
 def test_non_failure_no_status_fabrication():
     assert check().receipt()["can_execute"] is False
     assert "success" not in check().receipt().values()
+
+
+def test_changed_exact_head_and_attempt_never_retry():
+    prior = event()["workflow_run"]
+    verified = dict(prior)
+    verify_live_run(prior, verified)
+    for key, altered in (("run_attempt", 2), ("head_sha", "e" * 40),
+                         ("status", "in_progress"), ("path", "foreign.yml")):
+        changed = dict(verified, **{key: altered})
+        with pytest.raises(RetryBlocked, match="RUN_MOVED_OR_RETRIED:" + key):
+            verify_live_run(prior, changed)
+
+
+def test_missing_current_run_evidence_fails_closed():
+    with pytest.raises(RetryBlocked, match="CURRENT_RUN_UNREADABLE"):
+        verify_live_run(event()["workflow_run"], None)
+
+
+def test_watchdog_runs_only_on_protected_main_and_preserves_mandatory_gates():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/wow-v17-ci-postgres-throttle-retry.yml").read_text()
+    assert "ref: main" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "workflow_run:" in workflow
+    assert "types: [completed]" in workflow
+    assert "--event \"$GITHUB_EVENT_PATH\" --execute" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "actions: write" in workflow
+    assert "gh pr merge" not in workflow
+    assert "deployment" not in workflow.lower()
+    assert "issue_comment" not in workflow
+    assert "can_execute == false" in workflow
+    assert "V17_TERMINAL_REDUCER" in workflow
+    backend = (root / ".github/workflows/wow-engine-verify.yml").read_text()
+    required = (root / ".github/workflows/wow-verify.yml").read_text()
+    assert "WOW governed probability backend" in backend
+    assert "WOW required-three regression" in required
