@@ -166,6 +166,17 @@ def _safe_validation_code(data: bytes) -> str | None:
         if not isinstance(payload, dict):
             return None
         detail = payload.get("detail", payload)
+        if isinstance(detail, list):
+            # FastAPI/Pydantic request-schema failures have no application
+            # error code. Record only a fixed category, never loc/msg/input.
+            if detail and all(
+                isinstance(item, dict)
+                and isinstance(item.get("type"), str)
+                and isinstance(item.get("loc"), list)
+                for item in detail
+            ):
+                return "REQUEST_SCHEMA_VALIDATION_FAILED"
+            return None
         if not isinstance(detail, dict):
             return None
         candidate = detail.get("code") or detail.get("blocker_code")
