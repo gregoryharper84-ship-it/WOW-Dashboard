@@ -306,5 +306,14 @@ def test_new_1716_owner_manifest_source_routes_only_with_exact_approved_identity
 
 def test_workflow_reproposal_allowlist_includes_only_three_reviewed_sources():
     workflow = WORKFLOW.read_text()
-    assert 'if [ "$PR_NUMBER" != "1683" ] && [ "$PR_NUMBER" != "1702" ] && [ "$PR_NUMBER" != "1716" ]; then' in workflow
+    assert 'if [ "$PR_NUMBER" != "1683" ] && [ "$PR_NUMBER" != "1702" ] && [ "$PR_NUMBER" != "1716" ] && [ "$PR_NUMBER" != "1717" ]; then' in workflow
     assert 'UNREVIEWED_REPROPOSAL_SOURCE' in workflow
+
+
+
+def test_new_1717_owner_ci_source_routes_under_narrow_exact_identity():
+    owner = dict(pr(author=REPO.split("/")[0], draft=True), number=1717)
+    chosen = discover(pulls=[owner])
+    assert chosen["eligible"] is True
+    assert chosen["pr_number"] == 1717
+    assert chosen["can_execute"] is False
