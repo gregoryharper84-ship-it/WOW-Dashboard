@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import json
 import os
 import re
@@ -96,7 +97,7 @@ def decode_content(payload: dict | None, *, may_be_absent: bool = False) -> byte
         raise ReproposalBlocked("CONTENTS_ENCODING_INVALID")
     try:
         blob = base64.b64decode(payload["content"], validate=False)
-    except (TypeError, ValueError, KeyError) as exc:
+    except (TypeError, ValueError, KeyError, binascii.Error) as exc:
         raise ReproposalBlocked("CONTENTS_DECODE_INVALID") from exc
     if len(blob) > MAX_FILE_BYTES or not blob:
         raise ReproposalBlocked("CONTENTS_SIZE_INVALID")
@@ -225,6 +226,8 @@ def create_draft(api: GitHub, source_pr: int, source_head: str,
             raise ReproposalBlocked("BLOB_CREATION_UNVERIFIED")
         entries.append({"path": item.path, "mode": "100644", "type": "blob", "sha": sha})
     tree = api.post("/git/trees", {"base_tree": base_tree, "tree": entries})
+    if not isinstance(tree.get("sha"), str) or not SHA.fullmatch(tree["sha"]):
+        raise ReproposalBlocked("TREE_CREATION_UNVERIFIED")
     commit = api.post("/git/commits", {
         "message": f"fix(governance): app re-proposal of reviewed PR #{source_pr} at {source_head}",
         "tree": tree["sha"], "parents": [main_sha],
@@ -233,7 +236,10 @@ def create_draft(api: GitHub, source_pr: int, source_head: str,
     if not isinstance(new_sha, str) or not SHA.fullmatch(new_sha):
         raise ReproposalBlocked("COMMIT_CREATION_UNVERIFIED")
     branch = f"engineering/repropose-{source_pr}-{source_head[:12]}-{main_sha[:12]}"
-    api.post("/git/refs", {"ref": "refs/heads/" + branch, "sha": new_sha})
+    new_ref = api.post("/git/refs", {"ref": "refs/heads/" + branch, "sha": new_sha})
+    if (new_ref.get("ref") != "refs/heads/" + branch
+            or (new_ref.get("object") or {}).get("sha") != new_sha):
+        raise ReproposalBlocked("BRANCH_REF_UNVERIFIED_DRAFT_HOLD")
     opened = api.post("/pulls", {
         "title": f"fix(governance): Engineering App re-proposal of #{source_pr}",
         "head": branch, "base": "main", "draft": True,
