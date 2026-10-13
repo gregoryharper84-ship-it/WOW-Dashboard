@@ -5,7 +5,7 @@ import pytest
 
 from v17.engineering_app_reproposal import (
     APP_LOGIN, MAX_TOTAL_BYTES, ProposedFile, REPO, ReproposalBlocked,
-    SOURCE_ALLOWLIST, compare_source_and_main, create_draft, decode_content,
+    SOURCE_ALLOWLIST, build_plan, compare_source_and_main, create_draft, decode_content,
     require_engineering_installation, validate_changes, validate_pr_metadata,
 )
 
@@ -207,4 +207,71 @@ def test_existing_untrusted_branch_fails_closed_without_writes():
     with pytest.raises(ReproposalBlocked, match="EXISTING_BRANCH_UNVERIFIED"):
         create_draft(api, 1683, HEAD, MAIN,
                      [ProposedFile("render.yaml", b"after", "modified")])
+    api.post.assert_not_called()
+
+
+def _merge_base_api(*, merge_base=BASE, drifted_path=None):
+    # GitHub's current PR base can be newer than the source's true fork base.
+    # The merge-base comparison must supply the ancestor used for all file
+    # drift comparisons, rather than trusting source["base"]["sha"].
+    api = MagicMock()
+    changed = [{"filename": path, "status": "modified"}
+               for path in sorted(SOURCE_ALLOWLIST[1683])]
+    original = b"verified-old-source"
+    current = b"main-updated-after-branch" if drifted_path else original
+
+    def reply(path, **kwargs):
+        if path == "/pulls/1683":
+            source = source_pr()
+            source["base"]["sha"] = MAIN   # moving PR base: NOT the merge base
+            return source
+        if path == "/pulls/1683/files?per_page=100":
+            return changed
+        if path == "/git/ref/heads/main":
+            return {"object": {"sha": MAIN}}
+        if path == f"/compare/{MAIN}...{HEAD}":
+            return {"merge_base_commit": {"sha": merge_base}} if merge_base else {}
+        if path.startswith("/contents/"):
+            ref = path.rsplit("?ref=", 1)[-1]
+            data = (b"reviewed-new-source" if ref == HEAD
+                    else current if ref == MAIN
+                    else original if ref == BASE
+                    else None)
+            if data is None:
+                raise AssertionError("UNEXPECTED_CONTENT_REF:" + ref)
+            return {"type": "file", "encoding": "base64",
+                    "content": base64.b64encode(data).decode()}
+        raise AssertionError("UNEXPECTED_ENDPOINT:" + path)
+
+    api.get.side_effect = reply
+    return api
+
+
+def test_build_plan_uses_verified_merge_base_not_movable_pr_base_sha():
+    api = _merge_base_api()
+    main, proposed = build_plan(api, 1683, HEAD)
+    assert main == MAIN
+    assert len(proposed) == len(SOURCE_ALLOWLIST[1683])
+    assert all(p.content == b"reviewed-new-source" for p in proposed)
+    assert any(x.args[0] == f"/compare/{MAIN}...{HEAD}"
+               for x in api.get.call_args_list)
+    assert all("?ref=" + BASE in x.args[0] for x in api.get.call_args_list
+               if "?ref=" in x.args[0] and "?ref=" + MAIN not in x.args[0]
+               and "?ref=" + HEAD not in x.args[0])
+    api.post.assert_not_called()
+
+
+def test_build_plan_rejects_main_drift_even_if_pr_base_points_to_current_main():
+    api = _merge_base_api(drifted_path="render.yaml")
+    with pytest.raises(ReproposalBlocked, match="BASE_FILE_DRIFT"):
+        build_plan(api, 1683, HEAD)
+    api.post.assert_not_called()
+
+
+@pytest.mark.parametrize("merge_base", [None, "malformed", "f" * 39])
+def test_build_plan_rejects_unknown_merge_base_before_reading_or_writing_files(merge_base):
+    api = _merge_base_api(merge_base=merge_base)
+    with pytest.raises(ReproposalBlocked, match="SOURCE_MERGE_BASE_UNVERIFIED"):
+        build_plan(api, 1683, HEAD)
+    assert not any("/contents/" in x.args[0] for x in api.get.call_args_list)
     api.post.assert_not_called()
