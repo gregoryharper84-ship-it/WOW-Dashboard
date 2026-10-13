@@ -39,8 +39,15 @@ class _Query:
                 return SimpleNamespace(data=[row])
             return SimpleNamespace(data=[])
         if self.name == "wow_prop_action_canary_receipts" and self.mode == "upsert":
-            self.db.receipts.append(dict(self.payload))
+            if not getattr(self.db, "drop_writes", False):
+                self.db.receipts.append(dict(self.payload))
             return SimpleNamespace(data=[dict(self.payload)])
+        if self.name == "wow_prop_action_canary_receipts" and self.mode == "select":
+            rows = [dict(row) for row in self.db.receipts
+                    if row["immutable_receipt_hash"] == self.filters.get("immutable_receipt_hash")]
+            if rows and getattr(self.db, "corrupt_readback", False):
+                rows[0]["certification_id"] = "WRONG_CERTIFICATION"
+            return SimpleNamespace(data=rows)
         raise AssertionError((self.name, self.mode))
 
 
@@ -178,3 +185,30 @@ def test_identity_mismatch_cannot_write_canary(monkeypatch):
     assert audit["persisted_rows"] == 0
     assert "CANARY_REVIEWED_RELEASE_IDENTITY_MISMATCH" in audit["blockers"]
     assert db.receipts == []
+
+
+def test_canary_upsert_without_durable_readback_must_not_count_success(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    db = _DB(_prediction())
+    db.drop_writes = True
+
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["persisted_rows"] == 0
+    assert audit["status"] == "COMPLETED_WITH_BLOCKERS"
+    assert "CANARY_RECEIPT_READBACK_MISSING" in audit["blockers"]
+    assert db.receipts == []
+
+
+def test_canary_readback_wrong_certification_must_not_count_success(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    db = _DB(_prediction())
+    db.corrupt_readback = True
+
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["persisted_rows"] == 0
+    assert audit["status"] == "COMPLETED_WITH_BLOCKERS"
+    assert "CANARY_RECEIPT_READBACK_MISMATCH" in audit["blockers"]
