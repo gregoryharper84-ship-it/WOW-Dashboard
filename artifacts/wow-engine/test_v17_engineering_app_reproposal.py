@@ -116,7 +116,8 @@ def _allowed_app():
         {"sha": "e" * 40},  # git blob
         {"sha": "f" * 40},  # git tree
         {"sha": "1" * 40},  # git commit
-        {"ref": "refs/heads/engineering/repropose"},
+        {"ref": "refs/heads/engineering/repropose-1683-aaaaaaaaaaaa-cccccccccccc",
+         "object": {"sha": "1" * 40}},
         {
             "number": 999, "draft": True,
             "user": {"login": APP_LOGIN},
@@ -158,3 +159,19 @@ def test_main_moved_prevents_any_mutations():
         create_draft(api, 1683, HEAD, MAIN,
                      [ProposedFile("render.yaml", b"after", "modified")])
     api.post.assert_not_called()
+
+
+def test_malformed_base64_payload_is_typed_failure():
+    with pytest.raises(ReproposalBlocked, match="CONTENTS_DECODE_INVALID"):
+        decode_content({"type": "file", "encoding": "base64", "content": "!!!==x"})
+
+
+def test_unverifiable_branch_ref_cannot_open_pr():
+    api = _allowed_app()
+    responses = list(api.post.side_effect)
+    responses[3] = {"ref": "refs/heads/wrong-branch", "object": {"sha": "1" * 40}}
+    api.post.side_effect = responses
+    with pytest.raises(ReproposalBlocked, match="BRANCH_REF_UNVERIFIED_DRAFT_HOLD"):
+        create_draft(api, 1683, HEAD, MAIN,
+                     [ProposedFile("render.yaml", b"after", "modified")])
+    assert api.post.call_count == 4
