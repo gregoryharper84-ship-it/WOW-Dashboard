@@ -554,3 +554,26 @@ def test_new_agent_skill_requires_owner_coverage():
     findings = m.evaluate(owner, principals=[principal(r) for r in m.AI_RUNTIMES], live_acceptance=live(),
                           trust_roots=TRUST_ROOTS + m.governance_trust_roots(ROOT), now=NOW)["findings"]
     assert "PROTECTION_CODEOWNERS_UNCOVERED:.agents/skills/__new_skill__/SKILL.md" in findings
+
+
+def test_scripts_run_with_control_plane_credentials_are_trust_roots():
+    # #1663: a script executed by a workflow holding an App key, the Render deploy
+    # key or the secret-sync token must never be changeable by an ordinary,
+    # auto-mergeable PR.
+    gov = set(m.governance_trust_roots(ROOT))
+    for path in ("artifacts/wow-engine/v17/render_deployment_pointer.py",
+                 "artifacts/wow-engine/v17/secret_sync.py",
+                 "artifacts/wow-engine/v17/secret_sync_manifest.json",
+                 "artifacts/wow-engine/v17/engineering_recovery_planner.py"):
+        assert path in gov, path
+    for wf in m.control_plane_workflows(ROOT):
+        assert m.is_trust_root(wf, frozenset(gov)) or wf.startswith(m.TRUST_ROOT_PREFIXES), wf
+
+
+def test_control_plane_workflow_detection_fails_closed_on_new_credential_holder(tmp_path):
+    wf = tmp_path / ".github/workflows"
+    wf.mkdir(parents=True)
+    (wf / "holder.yml").write_text("env:\n  K: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}\n")
+    (wf / "reader.yml").write_text("env:\n  K: ${{ secrets.OPENAI_API_KEY }}\n")
+    (wf / "lookalike.yml").write_text("env:\n  K: ${{ secrets.RENDER_API_KEY_READONLY }}\n")
+    assert m.control_plane_workflows(tmp_path) == [".github/workflows/holder.yml"]
