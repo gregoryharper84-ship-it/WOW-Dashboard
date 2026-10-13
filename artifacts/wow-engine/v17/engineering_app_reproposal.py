@@ -32,6 +32,7 @@ SOURCE_ALLOWLIST = {
         ".github/workflows/wow-v17-ci-postgres-throttle-retry.yml",
         "artifacts/wow-engine/v17/ci_registry_retry.py",
         "artifacts/wow-engine/test_v17_ci_registry_retry.py",
+        "artifacts/wow-engine/docs/failure_codes.md",
     }),
     1716: frozenset({
         "artifacts/wow-engine/v17/engineering_dispatch_manifest.json",
