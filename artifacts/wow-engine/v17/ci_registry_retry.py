@@ -160,8 +160,9 @@ def verify_live_run(event_run: dict[str, Any], live: dict[str, Any]) -> None:
     for key in ("id", "head_sha", "run_attempt", "status", "conclusion", "path", "event"):
         if live.get(key) != event_run.get(key):
             raise RetryBlocked("RUN_MOVED_OR_RETRIED:" + key)
-    if live.get("status") != "completed" or live.get("run_attempt") != 1:
-        raise RetryBlocked("RUN_NOT_SINGLE_COMPLETED_ATTEMPT")
+    if (live.get("status") != "completed" or
+            type(live.get("run_attempt")) is not int or live["run_attempt"] < 1):
+        raise RetryBlocked("RUN_NOT_COMPLETED_OR_ATTEMPT_INVALID")
 
 
 def gh(*args: str) -> str:
