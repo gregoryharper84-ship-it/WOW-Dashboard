@@ -144,11 +144,11 @@ def test_newer_success_supersedes_stale_qa_failure():
 
 def test_bounded_scan_does_not_lose_existing_pr_identity():
     # Bounded WIP: no unbounded API scans or automated dispatch loops.
-    many = [dict(pr(), number=i) for i in range(25)]
+    many = [dict(pr(), number=i + 1) for i in range(25)]
     result = select_hold(many, {SHA: [check()]}, repository=REPO,
                          qa_app_id=QA, release_app_id=RELEASE, max_targets=1)
     assert result["eligible"] is True
-    assert result["pr_number"] == 0
+    assert result["pr_number"] == 1
     assert result["scanned"] == 1
 
 
@@ -167,3 +167,93 @@ def test_unreviewed_owner_is_skipped_and_audited_source_is_reachable():
     assert selected["eligible"] is True
     assert selected["pr_number"] == 1702
     assert selected["can_execute"] is False
+
+
+def test_unrelated_prs_do_not_consume_hold_selection_budget():
+    # 25 unrelated PRs ahead of one legitimate App-authored eligible PR.
+    unrelated = [dict(pr(author="other-user"), number=i + 1000) for i in range(25)]
+    selected = discover(pulls=unrelated + [dict(pr(), number=1702)])
+    assert selected["eligible"] is True
+    assert selected["pr_number"] == 1702
+    assert selected["scanned"] == 1
+
+
+def test_open_pr_inventory_pages_include_second_page_audited_owner(monkeypatch):
+    from v17 import engineering_hold_reconciler as module
+
+    first_page = [dict(pr(author="someone-else"), number=i + 3000) for i in range(100)]
+    approved_owner = dict(pr(author=REPO.split("/")[0], draft=True), number=1702)
+    requested = []
+
+    def fake_fetch(repo, endpoint, token):
+        requested.append(endpoint)
+        if "pulls?" in endpoint:
+            page = int(endpoint.rsplit("page=", 1)[1])
+            return first_page if page == 1 else [approved_owner] if page == 2 else []
+        if endpoint.startswith("commits/"):
+            return {"total_count": 1, "check_runs": [check()]}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(module, "fetch_json", fake_fetch)
+    result = module.discover(REPO, "read-only-token", QA, RELEASE)
+    assert result["eligible"] is True
+    assert result["pr_number"] == 1702
+    assert sum(x.startswith("commits/") for x in requested) == 1
+    assert any("page=2" in x for x in requested)
+
+
+@pytest.mark.parametrize("defect,expected", [
+    ("duplicate", "PR_INVENTORY_DUPLICATE"),
+    ("invalid_number", "PR_IDENTITY_INVALID"),
+    ("nonlist", "PR_INVENTORY_INVALID"),
+    ("page_limit", "PR_INVENTORY_PAGE_LIMIT"),
+])
+def test_discover_fails_closed_on_untrusted_paginated_inventory(monkeypatch, defect, expected):
+    from v17 import engineering_hold_reconciler as module
+
+    def fake_fetch(repo, endpoint, token):
+        assert "pulls?" in endpoint
+        page = int(endpoint.rsplit("page=", 1)[1])
+        if defect == "nonlist":
+            return {"error": "api_failure"}
+        if defect == "page_limit":
+            return [dict(pr(author="external"), number=page * 1000 + i + 1) for i in range(100)]
+        if page == 1:
+            return [dict(pr(author="external"), number=i + 1) for i in range(100)]
+        if defect == "duplicate":
+            return [dict(pr(author="external"), number=1)]
+        if defect == "invalid_number":
+            return [dict(pr(author="external"), number="101")]
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(module, "fetch_json", fake_fetch)
+    with pytest.raises(HoldDiscoveryError, match=expected):
+        module.discover(REPO, "read-only-token", QA, RELEASE)
+
+
+def test_discover_holds_on_eligible_target_over_budget(monkeypatch):
+    from v17 import engineering_hold_reconciler as module
+
+    def fake_fetch(repo, endpoint, token):
+        if "pulls?" in endpoint:
+            return [dict(pr(), number=i + 1) for i in range(21)]
+        raise AssertionError("no unbounded check-run scans")
+
+    monkeypatch.setattr(module, "fetch_json", fake_fetch)
+    with pytest.raises(HoldDiscoveryError, match="ELIGIBLE_PR_POOL_OVER_BUDGET"):
+        module.discover(REPO, "read-only-token", QA, RELEASE)
+
+
+def test_discover_holds_on_truncated_source_check_runs(monkeypatch):
+    from v17 import engineering_hold_reconciler as module
+
+    def fake_fetch(repo, endpoint, token):
+        if "pulls?" in endpoint:
+            return [dict(pr(), number=1702)]
+        if endpoint.startswith("commits/"):
+            return {"total_count": 2, "check_runs": [check()]}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(module, "fetch_json", fake_fetch)
+    with pytest.raises(HoldDiscoveryError, match="CHECKS_TRUNCATED"):
+        module.discover(REPO, "read-only-token", QA, RELEASE)
