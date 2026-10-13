@@ -13,7 +13,7 @@ def example():
     return selection,inv
 
 def responses(plan):
-    return {b["requested_slate_date"]:{"requested_slate_date":b["requested_slate_date"],"can_execute":False,"global_terminal_authority":"V17_TERMINAL_REDUCER","automation_auth":"GITHUB_ACTIONS_OIDC","run_status":"COMPLETE","reconciliation":{"balanced":True},"cross_sport_discovery_audit":{"reconciliation":{"row_reconciliation":"PASS","events_accounted":len(b["expected_event_ids"]),"events_discovered":len(b["expected_event_ids"])}},"rows":[{"lane":"MONEYLINE","identity":{"sport":"NFL","official_event_id":e},"can_execute":False,"result":{}} for e in b["expected_event_ids"]]} for b in plan["dates"]}
+    return {b["requested_slate_date"]:{"requested_slate_date":b["requested_slate_date"],"can_execute":False,"global_terminal_authority":"V17_TERMINAL_REDUCER","automation_auth":"GITHUB_ACTIONS_OIDC","run_status":"COMPLETED","terminal":True,"requested_timezone":"America/Chicago","reconciliation":{"balanced":True},"cross_sport_discovery_audit":{"reconciliation":{"row_reconciliation":"PASS","events_accounted":len(b["expected_event_ids"]),"events_discovered":len(b["expected_event_ids"])}},"rows":[{"lane":"MONEYLINE","identity":{"sport":"NFL","official_event_id":e},"can_execute":False,"result":{}} for e in b["expected_event_ids"]]} for b in plan["dates"]}
 
 def test_week_partition_all_events():
     s,inv=example();p=plan_nfl_week_dates(s,inv,independently_authenticated_source_sha256=SHA)
@@ -62,3 +62,40 @@ def test_model_budget_held():
     s,inv=example();p=plan_nfl_week_dates(s,inv,independently_authenticated_source_sha256=SHA)
     r=responses(p);r[next(iter(r))]["rows"][0]["result"]={"blocker":"MODEL_INVOCATION_BUDGET_REACHED"}
     assert reconcile_nfl_week_snapshots(p,r)["status"]=="PREFLIGHT_HELD"
+
+def test_actual_daily_runtime_terminal_contract_accepts():
+    s, inv = example()
+    plan = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA)
+    receipts = responses(plan)
+    assert all(item["run_status"] == "COMPLETED" for item in receipts.values())
+    assert reconcile_nfl_week_snapshots(plan, receipts)["status"] == "WEEK_SNAPSHOT_RECONCILED_NOT_ACTION_OR_MODEL_CERTIFIED"
+
+def test_nonterminal_result_is_held():
+    s, inv = example()
+    plan = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA)
+    receipts = responses(plan)
+    receipts[next(iter(receipts))]["terminal"] = False
+    assert reconcile_nfl_week_snapshots(plan, receipts)["status"] == "PREFLIGHT_HELD"
+
+def test_incomplete_acquisition_run_is_held():
+    s, inv = example()
+    plan = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA)
+    receipts = responses(plan)
+    receipts[next(iter(receipts))]["run_status"] = "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert reconcile_nfl_week_snapshots(plan, receipts)["status"] == "PREFLIGHT_HELD"
+
+def test_current_runtime_event_id_fallback():
+    s, inv = example()
+    plan = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA)
+    receipts = responses(plan)
+    day = next(iter(receipts))
+    identity = receipts[day]["rows"][0]["identity"]
+    identity["event_id"] = identity.pop("official_event_id")
+    assert reconcile_nfl_week_snapshots(plan, receipts)["status"] == "WEEK_SNAPSHOT_RECONCILED_NOT_ACTION_OR_MODEL_CERTIFIED"
+
+def test_wrong_timezone_is_held():
+    s, inv = example()
+    plan = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA)
+    receipts = responses(plan)
+    receipts[next(iter(receipts))]["requested_timezone"] = "UTC"
+    assert reconcile_nfl_week_snapshots(plan, receipts)["status"] == "PREFLIGHT_HELD"
