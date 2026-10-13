@@ -71,6 +71,7 @@ def test_repo_manifest_prioritizes_current_llp_restoration_incidents():
     path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
     manifest = json.loads(path.read_text())
     issues = [
+        {"number": 1646, "title": "restore canonical LLP Action transport", "state": "OPEN", "updatedAt": "2026-10-13T22:00:00Z"},
         {"number": 1388, "title": "runtime memory stability", "state": "OPEN", "updatedAt": "2026-10-07T02:00:00Z"},
         {"number": 1313, "title": "full slate acceptance", "state": "OPEN", "updatedAt": "2026-10-07T01:30:00Z"},
         {"number": 502, "title": "interactive user journey", "state": "OPEN", "updatedAt": "2026-10-07T01:00:00Z"},
@@ -78,13 +79,15 @@ def test_repo_manifest_prioritizes_current_llp_restoration_incidents():
     ]
     queue = build_queue(manifest, issues)
     decision = select_dual_stream_work(queue["records"])
-    assert decision.restoration.incident_id == "1388"
+    assert decision.restoration.incident_id == "1646"
     assert decision.acceleration.incident_id is None
     by_id = {row["incident_id"]: row for row in queue["records"]}
     assert by_id["1388"]["severity"] == "P0"
-    assert by_id["1388"]["priority_rank"] == 1
+    assert by_id["1646"]["priority_rank"] == 1
+    assert by_id["1646"]["lease_group"] == "P0_LLP_RESTORE"
+    assert by_id["1388"]["priority_rank"] == 2
     assert by_id["1313"]["severity"] == "P0"
-    assert by_id["1313"]["priority_rank"] == 2
+    assert by_id["1313"]["priority_rank"] == 3
     assert "1247" not in by_id
     assert queue["can_execute"] is False
     assert queue["terminal_authority"] == "V17_TERMINAL_REDUCER"
@@ -100,7 +103,7 @@ def test_p0_outside_rapid_lane_fails_closed():
 def test_all_manifested_active_p0_incidents_are_in_rapid_lane():
     path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
     manifest = json.loads(path.read_text())
-    active = {1388, 1313, 502}
+    active = {1646, 1388, 1313, 502}
     by_id = {int(row["issue_number"]): row for row in manifest["restoration"]}
     assert active <= set(by_id)
     for issue_id in active:
@@ -117,7 +120,7 @@ def test_all_manifested_active_p0_incidents_are_in_rapid_lane():
     assert queue["rapid_p0_count"] == len(active)
     assert all(row["execution_lane"] == "RAPID" for row in queue["records"])
     decision = select_dual_stream_work(queue["records"])
-    assert decision.restoration.incident_id == "1388"
+    assert decision.restoration.incident_id == "1646"
     assert decision.acceleration.incident_id is None
 
 
