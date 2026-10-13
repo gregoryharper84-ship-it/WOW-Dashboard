@@ -150,7 +150,7 @@ def test_failure_from_both_workflow_families_is_supported():
 
 
 def test_quota_can_never_trigger_more_than_four_image_job_retries():
-    jobs = inventory(*(job("WOW governed backend shard / 0", id=i) for i in range(5)))
+    jobs = inventory(*(job("WOW governed backend shard / 0", id=i + 1) for i in range(5)))
     with pytest.raises(RetryBlocked, match="IMAGE_FAILURE_COUNT_INVALID"):
         check(jobs=jobs)
 
