@@ -13,10 +13,17 @@ import pytest
 
 
 def test_safe_422_validation_migration_on_ephemeral_postgres():
-    if os.getenv("WOW_CI") != "1":
-        pytest.skip("Ephemeral Postgres contract runs only in WOW CI")
-    dsn = os.getenv("DATABASE_URL")
-    assert dsn, "WOW CI must provide an ephemeral DATABASE_URL"
+    # The guarded wow-engine-verify workflow provisions this public CI-only
+    # localhost Postgres service, but does not define WOW_CI/DATABASE_URL.
+    if (
+        os.getenv("GITHUB_ACTIONS") != "true"
+        or os.getenv("GITHUB_WORKFLOW") != "wow-engine-verify"
+        or os.getenv("GITHUB_REPOSITORY") != "gregoryharper84-ship-it/WOW-Dashboard"
+    ):
+        pytest.skip("Run only in the designated localhost Postgres CI workflow")
+    dsn = os.getenv("DATABASE_URL") or (
+        "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+    )
     assert urlparse(dsn).hostname in {"localhost", "127.0.0.1"}, (
         "Refuse DB migration contract on any nonlocal host"
     )
