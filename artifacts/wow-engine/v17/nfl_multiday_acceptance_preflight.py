@@ -54,7 +54,7 @@ def reconcile_nfl_week_snapshots(plan: Mapping[str,Any], results: Mapping[str,Ma
     for b in batches:
         day=b["requested_slate_date"]
         r=results[day]
-        if not isinstance(r,Mapping) or r.get("requested_slate_date")!=day or r.get("can_execute") is not False or r.get("global_terminal_authority")!=TERMINAL or r.get("automation_auth")!="GITHUB_ACTIONS_OIDC" or r.get("run_status")!="COMPLETE":
+        if not isinstance(r,Mapping) or r.get("requested_slate_date")!=day or r.get("can_execute") is not False or r.get("global_terminal_authority")!=TERMINAL or r.get("automation_auth")!="GITHUB_ACTIONS_OIDC" or r.get("terminal") is not True or r.get("run_status")!="COMPLETED" or r.get("requested_timezone")!="America/Chicago":
             return hold("NFL_WEEK_DAILY_AUTH_OR_TERMINAL_INVALID")
         rec=r.get("reconciliation") or {}
         audit=(r.get("cross_sport_discovery_audit") or {}).get("reconciliation") or {}
@@ -64,7 +64,8 @@ def reconcile_nfl_week_snapshots(plan: Mapping[str,Any], results: Mapping[str,Ma
         for row in r.get("rows") or []:
             if row.get("lane")!="MONEYLINE" or (row.get("identity") or {}).get("sport")!="NFL":
                 continue
-            eid=(row.get("identity") or {}).get("official_event_id")
+            identity=row.get("identity") or {}
+            eid=identity.get("official_event_id") or identity.get("event_id") or identity.get("id")
             if not eid or row.get("can_execute") is not False or "MODEL_INVOCATION_BUDGET_REACHED" in str(row.get("result") or {}):
                 return hold("NFL_WEEK_ROW_INVALID_OR_EXHAUSTED")
             day_ids.append(eid)
