@@ -330,7 +330,14 @@ def test_worker_reclaims_process_memory_when_specialist_job_raises(monkeypatch):
 def test_worker_memory_pressure_defers_before_durable_claim(monkeypatch):
     stop = asyncio.Event()
 
-    def pressure(_operation):
+    seen_reclaim_flags = []
+
+    async def no_reclaim(_operation):
+        return None
+
+    def pressure(_operation, *, reclaim=True):
+        # The async worker must never run gc/malloc_trim on the event loop.
+        seen_reclaim_flags.append(reclaim)
         stop.set()
         raise queue.memory_admission.HeavyJobDeferred(
             code="MEMORY_PRESSURE",
@@ -339,6 +346,7 @@ def test_worker_memory_pressure_defers_before_durable_claim(monkeypatch):
         )
 
     monkeypatch.setattr(queue.memory_admission, "try_acquire_heavy_job", pressure)
+    monkeypatch.setattr(queue.memory_admission, "reclaim_under_pressure_async", no_reclaim)
     monkeypatch.setattr(queue.memory_admission, "pressure_retry_seconds", lambda: 1.0)
     monkeypatch.setattr(
         queue,
@@ -357,3 +365,4 @@ def test_worker_memory_pressure_defers_before_durable_claim(monkeypatch):
     ))
 
     assert stop.is_set()
+    assert seen_reclaim_flags == [False]
