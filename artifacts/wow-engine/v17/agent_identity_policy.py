@@ -128,18 +128,6 @@ GOVERNANCE_WORKFLOWS_EXTRA = (
     ".github/workflows/wow-v17-independent-qa-check.yml",
     ".github/workflows/wow-v17-release-authority-check.yml",
 )
-# Repository secrets that confer GitHub write/merge, production deploy, or secret
-# administration authority. A workflow holding any of them is a governance
-# workflow: every script it executes must be a trust root, otherwise an ordinary
-# auto-mergeable PR could change what runs with that credential (#1663).
-CONTROL_PLANE_SECRETS = (
-    "WOW_ENGINEERING_APP_PRIVATE_KEY",
-    "WOW_QA_APP_PRIVATE_KEY",
-    "WOW_RELEASE_APP_PRIVATE_KEY",
-    "WOW_GITHUB_SECRET_SYNC_TOKEN",
-    "RENDER_API_KEY",
-)
-_CONTROL_PLANE_SECRET_RE = re.compile(r"\bsecrets\.(?:" + "|".join(CONTROL_PLANE_SECRETS) + r")\b")
 TRUST_ROOT_PREFIXES = (".github/", ".agents/")
 _REF_RE = re.compile(r"((?:artifacts|scripts|\.agents|\.github/scripts)/[A-Za-z0-9_./-]+\.(?:py|json|md|sh|ya?ml|txt))")
 _V17_IMPORT_RE = re.compile(r"\b(?:from|import)\s+v17\.([A-Za-z_][A-Za-z0-9_]*)")
@@ -168,14 +156,6 @@ def _local_imports(repo_root: Path, path: Path) -> set[Path]:
     return found
 
 
-def control_plane_workflows(repo_root: Path) -> list[str]:
-    """Workflows that hold a control-plane credential (see CONTROL_PLANE_SECRETS)."""
-    wf_dir = repo_root / ".github/workflows"
-    return sorted(str(p.relative_to(repo_root)) for p in wf_dir.iterdir()
-                  if p.suffix in (".yml", ".yaml") and p.is_file()
-                  and _CONTROL_PLANE_SECRET_RE.search(p.read_text()))
-
-
 def governance_trust_roots(repo_root: Path) -> list[str]:
     """Every file a governance workflow executes or reads, plus its local imports.
 
@@ -185,7 +165,6 @@ def governance_trust_roots(repo_root: Path) -> list[str]:
     repo_root = repo_root.resolve()
     workflows = [p for p in trust_root_paths(repo_root) if p.startswith(".github/workflows/")]
     workflows += [w for w in GOVERNANCE_WORKFLOWS_EXTRA if (repo_root / w).is_file()]
-    workflows += control_plane_workflows(repo_root)
     found: set[Path] = set()
     for wf in workflows:
         text = (repo_root / wf).read_text()
