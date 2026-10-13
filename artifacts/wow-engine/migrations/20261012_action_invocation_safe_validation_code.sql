@@ -1,9 +1,8 @@
--- Class A: nullable, sanitized validation code only. Historical receipts stay null.
+-- Class A: nullable safe validation code; pre-existing receipt rows remain NULL.
+-- Preserve immutable primary receipt, advisory lock, recovery clearing, and RLS.
 alter table public.wow_action_invocation_receipts
   add column if not exists validation_code text
   check (validation_code is null or validation_code ~ '^[A-Z][A-Z0-9_]{1,79}$');
-revoke all on public.wow_action_invocation_receipts from public, anon, authenticated;
-grant select, insert on public.wow_action_invocation_receipts to service_role;
 
 -- PM-2026-09-27-003: serialize immutable Action receipts and recovery state.
 --
@@ -56,31 +55,8 @@ begin
         p_receipt ->> 'action_operation_id',
         p_receipt ->> 'http_method',
         (p_receipt ->> 'http_status')::integer,
-        case when (p_receipt ->> 'validation_code') ~ '^[A-Z][A-Z0-9_]{1,79}        coalesce(nullif(p_receipt ->> 'auth_scheme', ''), 'NONE'),
-        coalesce(nullif(p_receipt ->> 'caller_class', ''), 'UNKNOWN'),
-        nullif(p_receipt ->> 'caller_user_agent', ''),
-        nullif(p_receipt ->> 'request_id', ''),
-        nullif(p_receipt ->> 'rows_in', '')::integer,
-        nullif(p_receipt ->> 'duration_ms', '')::numeric,
-        false
-    )
-    on conflict (invocation_id) do nothing;
-
-    get diagnostics v_inserted = row_count;
-
-    delete from public.wow_action_invocation_receipt_recovery
-    where invocation_id = v_invocation_id;
-
-    return pg_catalog.jsonb_build_object(
-        'status', case when v_inserted = 1 then 'INSERTED' else 'ALREADY_PRESENT' end,
-        'invocation_id', v_invocation_id,
-        'recovery_cleared', true,
-        'can_execute', false
-    );
-end;
-$$;
-
- then p_receipt ->> 'validation_code' else null end,
+        case when (p_receipt ->> 'validation_code') ~ '^[A-Z][A-Z0-9_]{1,79}$'
+            then p_receipt ->> 'validation_code' else null end,
         coalesce(nullif(p_receipt ->> 'auth_scheme', ''), 'NONE'),
         coalesce(nullif(p_receipt ->> 'caller_class', ''), 'UNKNOWN'),
         nullif(p_receipt ->> 'caller_user_agent', ''),
@@ -106,5 +82,8 @@ end;
 $$;
 
 
+-- No table grant changes: existing service-role-only RLS/grants remain intact.
+-- Recovery RPC carries the original JSON receipt unchanged; the primary RPC
+-- serializes its validation_code when a recovered receipt is retried.
 revoke all on function public.wow_record_action_invocation_receipt(jsonb) from public, anon, authenticated;
 grant execute on function public.wow_record_action_invocation_receipt(jsonb) to service_role;
