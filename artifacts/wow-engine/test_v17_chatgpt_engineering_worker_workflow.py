@@ -92,3 +92,11 @@ def test_ci_postgres_images_avoid_public_ecr_data_limit():
         text = (WORKFLOW.parent / workflow).read_text()
         assert 'image: public.ecr.aws/docker/library/postgres:16' not in text
         assert 'image: postgres:16' in text
+
+
+def test_attempt_marker_has_authenticated_writer_and_invalid_state_fails_closed():
+    text = (WORKFLOW.parent / 'wow-v17-engineering-auto-repair.yml').read_text()
+    assert '.user.login == "wow-engineering[bot]"' in text
+    assert 'RECOVERY_ATTEMPT_MARKER_INVALID' in text
+    assert 'sort_by(.updated_at // .created_at, .id)' in text
+    assert 'attempts=0' in text
