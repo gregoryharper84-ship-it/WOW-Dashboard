@@ -81,11 +81,19 @@ def select_hold(
                 role_latest.append((int(latest.get("id") or 0), name, latest))
         if not role_latest:
             continue
-        _, name, latest = max(role_latest, key=lambda x: x[0])
-        # A newer pending or successful role check supersedes an older failure;
-        # otherwise an obsolete HOLD could trigger redundant repair work.
-        if latest.get("status") != "completed" or latest.get("conclusion") != "failure":
+        # QA and Release are separate independent authorities. A successful
+        # newer QA run cannot clear a failed Release run (and vice versa).
+        # A pending current run from either present role defers work; only a
+        # newer successful run from the SAME role supersedes its old failure.
+        if any(run.get("status") != "completed" for _, _, run in role_latest):
             continue
+        failed_roles = [
+            (cid, name, run) for cid, name, run in role_latest
+            if run.get("conclusion") == "failure"
+        ]
+        if not failed_roles:
+            continue
+        _, name, latest = max(failed_roles, key=lambda x: x[0])
         summary = (latest.get("output") or {}).get("summary") or ""
         findings = CODE.findall(summary)
         if not findings:
