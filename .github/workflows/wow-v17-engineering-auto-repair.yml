@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           prs=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
-            --jq --arg sha "$HEAD_SHA" '[.[] | select(.head.sha == $sha)]')
+            | jq -s --arg sha "$HEAD_SHA" '[.[][] | select(.head.sha == $sha)]')
           pr_number=$(jq -r '.[0].number // empty' <<<"$prs")
           author=$(jq -r '.[0].user.login // empty' <<<"$prs")
           if [ -z "$pr_number" ] || [ "$author" != "wow-engineering[bot]" ]; then
@@ -84,7 +84,7 @@ jobs:
           fi
 
           checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
-            -H 'Accept: application/vnd.github+json' --jq '.check_runs')
+            -H 'Accept: application/vnd.github+json' | jq -s '[.[].check_runs[]]')
           summary=$(jq -r '
             [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")
                  | select(.conclusion == "failure")]
@@ -125,12 +125,16 @@ jobs:
         id: plan
         if: steps.resolve.outputs.eligible == 'true'
         shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HOLD_SUMMARY: ${{ steps.resolve.outputs.summary }}
+          ATTEMPTS: ${{ steps.attempts.outputs.attempts }}
         run: |
           set -euo pipefail
           python artifacts/wow-engine/v17/engineering_recovery_planner.py \
-            --pr-number "${{ steps.resolve.outputs.pr_number }}" \
-            --summary "${{ steps.resolve.outputs.summary }}" \
-            --attempts "${{ steps.attempts.outputs.attempts }}" \
+            --pr-number "$PR_NUMBER" \
+            --summary "$HOLD_SUMMARY" \
+            --attempts "$ATTEMPTS" \
             --is-wow-engineering-pr \
             | tee "$RUNNER_TEMP/recovery-plan.json"
           echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
