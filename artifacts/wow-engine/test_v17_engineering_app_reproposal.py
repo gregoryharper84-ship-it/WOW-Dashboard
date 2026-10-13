@@ -311,20 +311,11 @@ def test_audited_manifest_source_1716_still_requires_app_identity():
     api.post.assert_not_called()
 
 
-def test_ci_throttle_source_1717_only_reproposes_three_audited_files():
-    required = {
-        ".github/workflows/wow-v17-ci-postgres-throttle-retry.yml",
-        "artifacts/wow-engine/v17/ci_registry_retry.py",
-        "artifacts/wow-engine/test_v17_ci_registry_retry.py",
-        "artifacts/wow-engine/docs/failure_codes.md",
-    }
-    assert SOURCE_ALLOWLIST[1717] == frozenset(required)
-    validate_pr_metadata(source_pr(number=1717), number=1717, expected_head=HEAD)
-    files = [{"filename": p, "status": "added"} for p in sorted(required)]
-    assert len(validate_changes(files, source_pr=1717)) == 4
-    files[0]["filename"] = ".github/workflows/wow-v17-release-authority-check.yml"
-    with pytest.raises(ReproposalBlocked, match="SOURCE_FILE_NOT_ALLOWLISTED"):
-        validate_changes(files, source_pr=1717)
+def test_unrelated_ci_throttle_source_is_not_authorized_for_render_recovery():
+    assert 1717 not in SOURCE_ALLOWLIST
+    assert 1717 not in m.SOURCE_PINNED_HEADS
+    with pytest.raises(ReproposalBlocked, match="SOURCE_NOT_ALLOWLISTED"):
+        validate_pr_metadata(source_pr(number=1717), number=1717, expected_head=HEAD)
 
 
 def test_pinned_every_allowlisted_source_has_exact_owner_pinned_head():
