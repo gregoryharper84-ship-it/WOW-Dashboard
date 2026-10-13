@@ -196,3 +196,10 @@ def test_watchdog_runs_only_on_protected_main_and_preserves_mandatory_gates():
     required = (root / ".github/workflows/wow-verify.yml").read_text()
     assert "WOW governed probability backend" in backend
     assert "WOW required-three regression" in required
+
+
+
+def test_matching_second_attempt_is_terminal_no_action_not_watchdog_failure():
+    rerun = event(attempt=2)["workflow_run"]
+    verify_live_run(rerun, dict(rerun))
+    assert check(ev=event(attempt=2)).receipt()["state"] == "RETRY_EXHAUSTED"
