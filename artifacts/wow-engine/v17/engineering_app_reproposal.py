@@ -28,6 +28,11 @@ SOURCE_ALLOWLIST = {
         ".github/workflows/wow-engine-verify.yml",
         "artifacts/wow-engine/v17/test_render_interactive_prop_memory_budget.py",
     }),
+    1717: frozenset({
+        ".github/workflows/wow-v17-ci-postgres-throttle-retry.yml",
+        "artifacts/wow-engine/v17/ci_registry_retry.py",
+        "artifacts/wow-engine/test_v17_ci_registry_retry.py",
+    }),
     1716: frozenset({
         "artifacts/wow-engine/v17/engineering_dispatch_manifest.json",
         "artifacts/wow-engine/tests/test_v17_engineering_dispatch_queue.py",
