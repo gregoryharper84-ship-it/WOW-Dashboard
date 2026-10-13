@@ -425,3 +425,17 @@ def test_validation_code_capture_does_not_record_unsafe_or_unstructured_details(
     assert _safe_validation_code(b'{"detail":[{"loc":["body"],"msg":"secret"}]}') is None
     assert _safe_validation_code(b'{"detail":{"code":"TOKEN_123\\nSECRET"}}') is None
     assert _safe_validation_code(b'not json') is None
+    # Pydantic/FastAPI 422 includes field locations and possibly rejected input:
+    # no such values may be copied to the invocation ledger.
+    schema_failure = json.dumps({
+        "detail": [{
+            "type": "missing",
+            "loc": ["body", "PRIVATE_PLAYER"],
+            "msg": "PRIVATE_REASON",
+            "input": "PRIVATE_CREDENTIAL",
+        }]
+    }).encode()
+    assert _safe_validation_code(schema_failure) == "REQUEST_SCHEMA_VALIDATION_FAILED"
+    assert _safe_validation_code(b'{"detail":[{"msg":"no type or loc"}]}') is None
+    assert _safe_validation_code(b'{"detail":[]}') is None
+
