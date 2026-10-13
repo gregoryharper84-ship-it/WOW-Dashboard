@@ -3,6 +3,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import v17.engineering_app_reproposal as m
+
 from v17.engineering_app_reproposal import (
     APP_LOGIN, MAX_TOTAL_BYTES, ProposedFile, REPO, ReproposalBlocked,
     SOURCE_ALLOWLIST, build_plan, compare_source_and_main, create_draft, decode_content,
@@ -12,6 +14,13 @@ from v17.engineering_app_reproposal import (
 HEAD = "a" * 40
 BASE = "b" * 40
 MAIN = "c" * 40
+
+
+@pytest.fixture(autouse=True)
+def _pin_fixture_heads(monkeypatch, request):
+    # Fixture PRs use synthetic HEAD; test_pinned_* tests exercise the shipped pins.
+    if not request.node.name.startswith("test_pinned_"):
+        monkeypatch.setattr(m, "SOURCE_PINNED_HEADS", {n: HEAD for n in SOURCE_ALLOWLIST})
 
 
 def source_pr(number=1683, head=HEAD, author="gregoryharper84-ship-it"):
@@ -316,3 +325,22 @@ def test_ci_throttle_source_1717_only_reproposes_three_audited_files():
     files[0]["filename"] = ".github/workflows/wow-v17-release-authority-check.yml"
     with pytest.raises(ReproposalBlocked, match="SOURCE_FILE_NOT_ALLOWLISTED"):
         validate_changes(files, source_pr=1717)
+
+
+def test_pinned_every_allowlisted_source_has_exact_owner_pinned_head():
+    assert set(m.SOURCE_PINNED_HEADS) == set(SOURCE_ALLOWLIST)
+    assert all(len(h) == 40 and int(h, 16) >= 0 for h in m.SOURCE_PINNED_HEADS.values())
+
+
+def test_pinned_moved_source_head_is_not_laundered_into_app_authorship():
+    moved = "d" * 40
+    with pytest.raises(ReproposalBlocked, match="SOURCE_HEAD_NOT_OWNER_PINNED"):
+        validate_pr_metadata(source_pr(number=1716, head=moved), number=1716, expected_head=moved)
+    pinned = m.SOURCE_PINNED_HEADS[1716]
+    validate_pr_metadata(source_pr(number=1716, head=pinned), number=1716, expected_head=pinned)
+
+
+def test_pinned_recovery_source_cannot_reallowlist_itself():
+    assert 1702 not in SOURCE_ALLOWLIST and 1702 not in m.SOURCE_PINNED_HEADS
+    with pytest.raises(ReproposalBlocked, match="SOURCE_NOT_ALLOWLISTED"):
+        validate_pr_metadata(source_pr(number=1702), number=1702, expected_head=HEAD)

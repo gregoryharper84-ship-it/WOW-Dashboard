@@ -304,9 +304,13 @@ def test_new_1716_owner_manifest_source_routes_only_with_exact_approved_identity
     assert candidate["can_execute"] is False
 
 
-def test_workflow_reproposal_allowlist_includes_only_three_reviewed_sources():
+def test_workflow_reproposal_allowlist_matches_pinned_sources_exactly():
+    import re
+    from v17.engineering_app_reproposal import SOURCE_ALLOWLIST, SOURCE_PINNED_HEADS
     workflow = WORKFLOW.read_text()
-    assert 'if [ "$PR_NUMBER" != "1683" ] && [ "$PR_NUMBER" != "1702" ] && [ "$PR_NUMBER" != "1716" ] && [ "$PR_NUMBER" != "1717" ]; then' in workflow
+    assert 'if [ "$PR_NUMBER" != "1683" ] && [ "$PR_NUMBER" != "1716" ] && [ "$PR_NUMBER" != "1717" ]; then' in workflow
+    gate = re.search(r'if (\[ "\$PR_NUMBER" != "\d+" \](?: && )?)+; then', workflow).group(0)
+    assert {int(n) for n in re.findall(r'!= "(\d+)"', gate)} == set(SOURCE_ALLOWLIST) == set(SOURCE_PINNED_HEADS)
     assert 'UNREVIEWED_REPROPOSAL_SOURCE' in workflow
 
 

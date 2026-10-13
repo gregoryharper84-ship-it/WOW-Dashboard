@@ -197,9 +197,9 @@ jobs:
           SOURCE_HEAD: ${{ steps.resolve.outputs.head_sha }}
         run: |
           set -euo pipefail
-          # Only two explicitly audited recovery sources may be copied.
+          # Only explicitly audited, head-pinned recovery sources may be copied.
           # Never replay arbitrary owner-authored PR code under an App token.
-          if [ "$PR_NUMBER" != "1683" ] && [ "$PR_NUMBER" != "1702" ] && [ "$PR_NUMBER" != "1716" ] && [ "$PR_NUMBER" != "1717" ]; then
+          if [ "$PR_NUMBER" != "1683" ] && [ "$PR_NUMBER" != "1716" ] && [ "$PR_NUMBER" != "1717" ]; then
             echo "::error::UNREVIEWED_REPROPOSAL_SOURCE"
             exit 1
           fi

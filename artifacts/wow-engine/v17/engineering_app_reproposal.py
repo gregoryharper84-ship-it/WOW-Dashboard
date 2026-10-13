@@ -38,15 +38,15 @@ SOURCE_ALLOWLIST = {
         "artifacts/wow-engine/v17/engineering_dispatch_manifest.json",
         "artifacts/wow-engine/tests/test_v17_engineering_dispatch_queue.py",
     }),
-    1702: frozenset({
-        ".github/workflows/wow-v17-engineering-auto-repair.yml",
-        "artifacts/wow-engine/test_v17_engineering_hold_reconciler.py",
-        "artifacts/wow-engine/test_v17_engineering_recovery_planner.py",
-        "artifacts/wow-engine/v17/engineering_hold_reconciler.py",
-        "artifacts/wow-engine/v17/engineering_recovery_planner.py",
-        "artifacts/wow-engine/v17/engineering_app_reproposal.py",
-        "artifacts/wow-engine/test_v17_engineering_app_reproposal.py",
-    }),
+}
+# Owner-reviewed exact source heads. The App may copy ONLY these bytes: a source
+# PR whose head moves after review (any owner-credential push, human or AI) fails
+# closed until a protected change re-pins it. PR number + path allowlists alone
+# would let the App launder unreviewed bytes into "wow-engineering[bot]" authorship.
+SOURCE_PINNED_HEADS = {
+    1683: "4e63cedcf4d4005b9a9f4326a6ad447a6e13b079",
+    1716: "de943398cdd847c06c6a353f5764325f43f81850",
+    1717: "5fb6e179c8593ed792e3a893413fc175bfd7fc46",
 }
 MAX_FILE_BYTES = 1_048_576
 MAX_TOTAL_BYTES = 4_194_304
@@ -66,6 +66,8 @@ class ProposedFile:
 def validate_pr_metadata(pr: dict, *, number: int, expected_head: str) -> None:
     if number not in SOURCE_ALLOWLIST or not SHA.fullmatch(expected_head):
         raise ReproposalBlocked("SOURCE_NOT_ALLOWLISTED")
+    if SOURCE_PINNED_HEADS.get(number) != expected_head:
+        raise ReproposalBlocked("SOURCE_HEAD_NOT_OWNER_PINNED")
     if pr.get("number") != number or pr.get("state") != "open" or not pr.get("draft"):
         raise ReproposalBlocked("SOURCE_PR_STATE_CHANGED")
     if (pr.get("user") or {}).get("login") != REPO.split("/")[0]:
