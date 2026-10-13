@@ -55,6 +55,24 @@ def test_exact_head_repair_target_is_fail_closed_and_branch_fenced():
 def test_auto_repair_requires_targeted_dispatch_before_retry_accounting():
     text = (WORKFLOW.parent / 'wow-v17-engineering-auto-repair.yml').read_text()
     assert '-f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"' in text
-    assert 'REPAIR_TARGET_NOT_APPROVED_P1_GLOBAL' in text
+    assert 'REPAIR_INCIDENT_NOT_IN_APPROVED_MANIFEST' in text
+    assert 'REPAIR_INCIDENT_SEVERITY_MISMATCH' in text
+    assert 'REPAIR_P0_DOMAIN_LEASE_MISSING' in text
+    assert 'REPAIR_P1_LEASE_MISMATCH' in text
+    assert '-f target_incident="$incident" -f lease_group="$lease_group"' in text
     assert "if: steps.targeted_dispatch.outputs.accepted == 'true'" in text
     assert 'AUTO_REPAIR_TARGET_HANDOFF_REQUIRED' not in text
+
+
+def test_autonomy_p0_is_registered_with_exclusive_manifest_lease():
+    import json
+
+    manifest = json.loads((WORKFLOW.parents[2] / 'artifacts/wow-engine/v17/engineering_dispatch_manifest.json').read_text())
+    entries = [entry for entry in manifest['restoration'] if entry['issue_number'] == 1688]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry['severity'] == 'P0'
+    assert entry['execution_lane'] == 'RAPID'
+    assert entry['rapid_stream'] == 'AUTONOMY_RESTORE'
+    assert entry['lease_group'] == 'P0_AUTONOMY_RESTORE'
+    assert 'WORKFLOW_TRUST_ROOT' in entry['conflict_keys']
