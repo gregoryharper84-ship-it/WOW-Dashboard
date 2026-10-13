@@ -162,14 +162,30 @@ jobs:
           incident=$(sed -nE 's/^Incident:[[:space:]]*\x60?([0-9]+)\x60?[[:space:]]*$/\1/p' <<<"$body" | head -1)
           [[ "$incident" =~ ^[1-9][0-9]*$ ]] || { echo "::error::REPAIR_INCIDENT_MISSING"; exit 1; }
           issue=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${incident}")
-          jq -e '.state == "open" and ([.labels[].name] | index("P1") != null)' <<<"$issue" >/dev/null || { echo "::error::REPAIR_TARGET_NOT_APPROVED_P1_GLOBAL"; exit 1; }
-          # Existing standard P1 queue uses the GLOBAL single-writer lease.
-          # P0/domain repairs require a separately validated exact domain lease.
+          jq -e '.state == "open"' <<<"$issue" >/dev/null || { echo "::error::REPAIR_INCIDENT_NOT_OPEN"; exit 1; }
+          # Route only an existing manifest-authorized incident. GitHub is the
+          # source of open/closed state, while the manifest owns lease identity.
+          record=$(jq -c --argjson issue "$incident" \
+            '[.restoration[], .acceleration[]] | map(select(.issue_number == $issue)) | first // empty' \
+            artifacts/wow-engine/v17/engineering_dispatch_manifest.json)
+          [ -n "$record" ] || { echo "::error::REPAIR_INCIDENT_NOT_IN_APPROVED_MANIFEST"; exit 1; }
+          severity=$(jq -r '.severity' <<<"$record")
+          lane=$(jq -r '.execution_lane // "STANDARD"' <<<"$record")
+          lease_group=$(jq -r '.lease_group // "GLOBAL"' <<<"$record")
+          label=$(jq -r --arg severity "$severity" '[.labels[].name] | index($severity) != null' <<<"$issue")
+          [ "$label" = "true" ] || { echo "::error::REPAIR_INCIDENT_SEVERITY_MISMATCH"; exit 1; }
+          if [ "$severity" = P0 ] && [ "$lane" = RAPID ]; then
+            [[ "$lease_group" =~ ^P0_[A-Z0-9_]+$ ]] || { echo "::error::REPAIR_P0_DOMAIN_LEASE_MISSING"; exit 1; }
+          elif [ "$severity" = P1 ] && [ "$lane" = STANDARD ]; then
+            [ "$lease_group" = GLOBAL ] || { echo "::error::REPAIR_P1_LEASE_MISMATCH"; exit 1; }
+          else
+            echo "::error::REPAIR_TARGET_UNSUPPORTED_CLASS" && exit 1
+          fi
           gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
-            -f target_incident="$incident" -f lease_group=GLOBAL \
+            -f target_incident="$incident" -f lease_group="$lease_group" \
             -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
           echo "accepted=true" >> "$GITHUB_OUTPUT"
-          echo "Targeted dispatch accepted: PR #$PR_NUMBER incident #$incident expected SHA $HEAD_SHA (P1/GLOBAL)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Targeted dispatch accepted: PR #$PR_NUMBER incident #$incident expected SHA $HEAD_SHA ($severity/$lease_group)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record recovery attempt after accepted dispatch
         if: steps.targeted_dispatch.outputs.accepted == 'true'
