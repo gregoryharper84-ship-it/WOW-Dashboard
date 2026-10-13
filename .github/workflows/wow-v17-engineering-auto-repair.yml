@@ -42,24 +42,6 @@ jobs:
           ref: main
           persist-credentials: false
 
-      - name: Mint wow-engineering App token
-        id: eng_token
-        uses: ./.github/actions/wow-engineering-token
-        with:
-          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
-          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
-
-      - name: Require Engineering App identity
-        shell: bash
-        env:
-          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
-        run: |
-          set -euo pipefail
-          if [ "${KEY_PRESENT:-false}" != "true" ]; then
-            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured."
-            exit 1
-          fi
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -98,6 +80,26 @@ jobs:
           echo "summary_b64=$summary_b64" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
           echo "Typed HOLD PR #$pr_number at $head from a pinned QA/Release App." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mint wow-engineering App token
+        if: steps.resolve.outputs.eligible == 'true'
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity
+        if: steps.resolve.outputs.eligible == 'true'
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured."
+            exit 1
+          fi
 
       - name: Read and increment the PR's recovery-attempt marker
         id: attempts
