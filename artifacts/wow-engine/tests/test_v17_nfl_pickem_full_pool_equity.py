@@ -169,3 +169,16 @@ def test_duplicate_ownership_receipt_and_wrong_audience_blocked():
     others[0]["audience"] = "ALL_ENTRIES"
     with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_OPPONENT_AUDIENCE_INVALID"):
         evaluate_full_pool_shadow(picks, others, lock_at=LOCK, pool_size=2)
+
+
+def test_full_pool_rejects_claimed_opponent_availability_before_submission():
+    picks, opponents = _inputs()
+    opponents[0]["available_to_user_at"] = "2026-10-10T12:59:59Z"
+    with pytest.raises(PoolEquityInputError, match="PICKEM_EQUITY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION"):
+        evaluate_full_pool_shadow(picks, opponents, lock_at=LOCK, pool_size=2)
+
+
+def test_research_does_not_modify_live_pickem_objective():
+    from v17.nfl_pickem_pool_optimizer import DECISION_OBJECTIVE, CAN_EXECUTE
+    assert DECISION_OBJECTIVE == "MAX_EXPECTED_CORRECT"
+    assert CAN_EXECUTE is False
