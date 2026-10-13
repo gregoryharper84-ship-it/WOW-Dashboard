@@ -276,3 +276,27 @@ def test_build_plan_rejects_unknown_merge_base_before_reading_or_writing_files(m
         build_plan(api, 1683, HEAD)
     assert not any("/contents/" in x.args[0] for x in api.get.call_args_list)
     api.post.assert_not_called()
+
+
+def test_audited_manifest_source_1716_is_narrowly_bounded():
+    source = source_pr(number=1716)
+    validate_pr_metadata(source, number=1716, expected_head=HEAD)
+    assert SOURCE_ALLOWLIST[1716] == frozenset({
+        "artifacts/wow-engine/v17/engineering_dispatch_manifest.json",
+        "artifacts/wow-engine/tests/test_v17_engineering_dispatch_queue.py",
+    })
+    allowed = [{"filename": p, "status": "modified"} for p in sorted(SOURCE_ALLOWLIST[1716])]
+    assert len(validate_changes(allowed, source_pr=1716)) == 2
+    allowed[0]["filename"] = ".github/workflows/wow-v17-independent-qa-check.yml"
+    with pytest.raises(ReproposalBlocked, match="SOURCE_FILE_NOT_ALLOWLISTED"):
+        validate_changes(allowed, source_pr=1716)
+
+
+def test_audited_manifest_source_1716_still_requires_app_identity():
+    api = MagicMock()
+    api.token = "ghu_owner_scope"
+    with pytest.raises(ReproposalBlocked, match="ENGINEERING_APP_INSTALLATION_TOKEN_REQUIRED"):
+        create_draft(api, 1716, HEAD, MAIN,
+                     [ProposedFile("artifacts/wow-engine/v17/engineering_dispatch_manifest.json",
+                                   b"changed", "modified")])
+    api.post.assert_not_called()
