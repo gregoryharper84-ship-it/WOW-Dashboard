@@ -63,7 +63,13 @@ jobs:
         run: |
           set -euo pipefail
           expected=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")
-          current=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+          # Recheck mutable draft, author, labels and file inventory immediately
+          # before arming, not only the SHA (label/draft changes do not move head).
+          gh api "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/pr-current.json"
+          gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" | jq -s 'add' > "$RUNNER_TEMP/files-current.json"
+          current=$(jq -r '.head.sha' "$RUNNER_TEMP/pr-current.json")
           [ "$current" = "$expected" ] || { echo "HEAD_MOVED_FAIL_CLOSED" >&2; exit 1; }
+          PYTHONPATH=artifacts/wow-engine python artifacts/wow-engine/v17/auto_merge_eligibility.py "$RUNNER_TEMP/pr-current.json" "$RUNNER_TEMP/files-current.json" > "$RUNNER_TEMP/decision-current.json" || { cat "$RUNNER_TEMP/decision-current.json"; exit 1; }
+          jq -e '.eligible == true' "$RUNNER_TEMP/decision-current.json" >/dev/null
           gh pr merge "$PR" --repo "$REPO" --auto --merge --match-head-commit "$expected"
           echo "AUTO_MERGE_ARMED pr=$PR sha=$expected (GitHub required gates remain authoritative)" >> "$GITHUB_STEP_SUMMARY"
