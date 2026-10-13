@@ -98,9 +98,9 @@ jobs:
             exit 0
           fi
           {
-            echo "summary<<EOF"
+            echo "summary<<WOW_HOLD_SUMMARY_${GITHUB_RUN_ID}"
             echo "$summary"
-            echo "EOF"
+            echo "WOW_HOLD_SUMMARY_${GITHUB_RUN_ID}"
           } >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
 
@@ -114,7 +114,7 @@ jobs:
         run: |
           set -euo pipefail
           marker='<!-- WOW_RECOVERY_ATTEMPTS -->'
-          comments=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")
+          comments=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | jq -s 'add')
           comment_id=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].id // empty' <<<"$comments")
           attempts=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments" \
             | grep -oE 'attempts: [0-9]+' | grep -oE '[0-9]+' || true)
@@ -159,16 +159,21 @@ jobs:
           else
             gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body" >/dev/null
           fi
-          echo "Dispatching worker to repair PR #${PR_NUMBER} (attempt ${NEW_ATTEMPTS}/3)." >> "$GITHUB_STEP_SUMMARY"
+          echo "Recovery attempt reserved for PR #${PR_NUMBER} (${NEW_ATTEMPTS}/3); worker dispatch requires verified incident/lease binding." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dispatch worker to repair the same branch
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
         run: |
           set -euo pipefail
-          gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main
+          # The worker accepts incident identifiers, not arbitrary PR numbers. Fail closed
+          # rather than dispatching an untargeted worker and claiming same-branch repair.
+          echo "::error::AUTO_REPAIR_TARGET_HANDOFF_REQUIRED: PR #${PR_NUMBER} has no verified incident/lease handoff to the worker. Do not dispatch an unrelated queue item."
+          echo "BLOCKED_WITH_EXACT_REASON: AUTO_REPAIR_TARGET_HANDOFF_REQUIRED PR #${PR_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Label needs-owner past the retry cap
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'NEEDS_OWNER_RETRY_CAP'
