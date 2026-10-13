@@ -107,6 +107,13 @@ WORKFLOW = ROOT / ".github/workflows/wow-v17-engineering-auto-repair.yml"
 def test_recovery_uses_pr_head_not_source_workflow_sha():
     workflow = WORKFLOW.read_text()
     assert "engineering_hold_reconciler.py" in workflow
+    # Read-only PR-head preflight must run before app-token minting. No
+    # credential acquisition for irrelevant or spoofed workflow_run events.
+    assert workflow.index("Resolve exact-head PR from App-published HOLD evidence") < workflow.index(
+        "Mint wow-engineering App token"
+    )
+    assert "if: steps.resolve.outputs.eligible == 'true'\n        id: eng_token" in workflow
+    assert "if: steps.resolve.outputs.eligible == 'true'\n        shell: bash\n        env:\n          KEY_PRESENT" in workflow
     assert '--qa-app-id "$QA_APP_ID"' in workflow
     assert '--release-app-id "$RELEASE_APP_ID"' in workflow
     assert "SOURCE_AUTHOR" in workflow
@@ -143,3 +150,20 @@ def test_bounded_scan_does_not_lose_existing_pr_identity():
     assert result["eligible"] is True
     assert result["pr_number"] == 0
     assert result["scanned"] == 1
+
+
+def test_unreviewed_owner_source_must_not_reenter_privileged_reproposal():
+    # Source #1573 has passed ordinary CI but is owner-authored and changes
+    # protected workflow paths. It cannot be copied by the narrow #1702 path
+    # without a separately reviewed source snapshot and explicit allowlist.
+    unreviewed = dict(pr(author=REPO.split("/")[0], draft=True), number=1573)
+    assert discover(pulls=[unreviewed])["eligible"] is False
+
+
+def test_unreviewed_owner_is_skipped_and_audited_source_is_reachable():
+    unreviewed = dict(pr(author=REPO.split("/")[0], draft=True), number=1573)
+    allowed = dict(pr(author=REPO.split("/")[0], draft=True), number=1702)
+    selected = discover(pulls=[unreviewed, allowed])
+    assert selected["eligible"] is True
+    assert selected["pr_number"] == 1702
+    assert selected["can_execute"] is False
