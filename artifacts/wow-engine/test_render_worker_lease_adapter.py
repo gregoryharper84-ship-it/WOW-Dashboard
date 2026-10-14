@@ -81,3 +81,43 @@ def test_failed_renewal_does_not_forge_success():
     with pytest.raises(module.DeploymentLeaseError, match="RENEW_NOT_ACKNOWLEDGED"):
         module.renew(db, service_id=module.ALLOWED_SERVICE,
                      target_sha="a" * 40, owner_run_id="run1", token=8)
+
+
+def test_committed_lease_renewal_durably_commits_before_next_poll():
+    class Tx(FakeConnection):
+        def __init__(self):
+            super().__init__([(True,)])
+            self.commits = 0
+            self.rollbacks = 0
+        def commit(self):
+            self.commits += 1
+        def rollback(self):
+            self.rollbacks += 1
+
+    db = Tx()
+    module.renew_committed(
+        db, service_id=module.ALLOWED_SERVICE,
+        target_sha="a" * 40, owner_run_id="run1", token=9,
+    )
+    assert db.commits == 1 and db.rollbacks == 0
+    assert "renew_render_worker_deploy" in db.obj.executed[0][0]
+
+
+def test_failed_committed_renewal_rolls_back_and_fails_closed():
+    class Tx(FakeConnection):
+        def __init__(self):
+            super().__init__([(False,)])
+            self.commits = 0
+            self.rollbacks = 0
+        def commit(self):
+            self.commits += 1
+        def rollback(self):
+            self.rollbacks += 1
+
+    db = Tx()
+    with pytest.raises(module.DeploymentLeaseError, match="RENEW_NOT_ACKNOWLEDGED"):
+        module.renew_committed(
+            db, service_id=module.ALLOWED_SERVICE,
+            target_sha="a" * 40, owner_run_id="run1", token=9,
+        )
+    assert db.commits == 0 and db.rollbacks == 1
