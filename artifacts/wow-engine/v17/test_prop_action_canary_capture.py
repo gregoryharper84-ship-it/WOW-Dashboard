@@ -271,3 +271,33 @@ def test_boolean_probability_fields_fail_closed_before_receipt_write(monkeypatch
             assert "CANARY_GOVERNED_PROBABILITY_PACKAGE_INVALID" in audit["blockers"]
             assert db.receipts == []
             assert audit["can_execute"] is False
+
+
+def test_empty_reconciled_action_does_not_false_pass_canary(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    result = _result()
+    result["rows"] = []
+    db = _DB(_prediction())
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=result)
+    assert audit["status"] == "NO_ELIGIBLE_CANARY_ROWS"
+    assert audit["eligible_rows"] == 0
+    assert audit["persisted_rows"] == 0
+    assert not db.receipts
+    assert audit["can_execute"] is False
+
+
+def test_completed_prediction_without_matching_certified_release_not_a_canary_pass(monkeypatch):
+    release = _release()
+    # A nonmatching exact artifact must not count as eligible or certified.
+    monkeypatch.setattr(
+        subject, "REVIEWED_CERTIFICATION_RELEASES",
+        {_release_key("NFL", "RECEIVING_YARDS", "OTHER", "sha256:other"): release},
+    )
+    db = _DB(_prediction())
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["status"] == "NO_ELIGIBLE_CANARY_ROWS"
+    assert audit["eligible_rows"] == 0
+    assert audit["persisted_rows"] == 0
+    assert not db.receipts
