@@ -26,3 +26,60 @@ def test_lease_fencing_rejects_stale_writer_and_unsafe_retries():
 
 def test_only_allowlisted_worker_service_is_claimable():
     assert "p_service_id <> 'srv-dapkbc0473hc73c1978g'" in LEDGER.read_text()
+
+
+
+def test_single_complete_record_rpc_and_immutable_deploy_identity():
+    """Do not let a conflict-resolution fragment corrupt the SQL migration."""
+    sql = LEDGER.read_text()
+    signature = "create or replace function wow_release_control.record_render_worker_deploy("
+    grant = "revoke all on function wow_release_control.record_render_worker_deploy("
+    assert sql.count(signature) == 1
+    assert sql.count(grant) == 1
+    assert "WORKER_DEPLOY_ACTIVE_RECEIPT_MISSING" in sql
+    assert "WORKER_DEPLOY_LIVE_RECEIPT_MISSING" in sql
+    assert "WORKER_DEPLOY_IDENTITY_CHANGED" in sql
+    assert "v.render_deploy_id <> p_render_deploy_id" in sql
+    assert "p_render_deploy_id !~ '^dep-[a-z0-9]+$'" in sql
+
+
+def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
+    """Real Postgres DDL validation, always executed by the backend CI shard.
+
+    The entire schema/function creation rolls back; no real deployment request
+    or production Supabase migration is performed.
+    """
+    import os
+
+    import pytest
+
+    if os.environ.get("GITHUB_WORKFLOW") != "wow-engine-verify":
+        pytest.skip("Dedicated backend CI workflow provides ephemeral Postgres")
+    import psycopg
+
+    dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+    with psycopg.connect(dsn, connect_timeout=5, autocommit=False) as connection:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DO $roles$ BEGIN "
+                    "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') "
+                    "THEN CREATE ROLE anon NOLOGIN; END IF; "
+                    "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') "
+                    "THEN CREATE ROLE authenticated NOLOGIN; END IF; "
+                    "END $roles$;"
+                )
+                cursor.execute(LEDGER.read_text(), prepare=False)
+                cursor.execute(
+                    "select state, lease_token, can_initiate "
+                    "from wow_release_control.claim_render_worker_deploy("
+                    "%s, %s, %s, %s)",
+                    ("srv-dapkbc0473hc73c1978g", "a" * 40, "ci-run-1", 300),
+                )
+                state, token, may_initiate = cursor.fetchone()
+                assert state == "INITIATING"
+                assert token == 1
+                assert may_initiate is True
+        finally:
+            # Staging-only proof; no schema/lease rows persist even on success.
+            connection.rollback()
