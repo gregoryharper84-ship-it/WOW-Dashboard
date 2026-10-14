@@ -239,3 +239,13 @@ def test_codex_wrapper_scopes_unprivileged_write_permissions():
     assert 'chmod -R g+rwX "$target"' in action
     assert 'chmod -R g+rwX "$GITHUB_WORKSPACE"' not in action
     assert 'working-directory: ${{ inputs.working_directory }}' in action
+
+
+def test_target_pr_cannot_change_agent_instructions_before_trusted_checkout():
+    text = WORKFLOW.read_text()
+    assert 'REPAIR_UNTRUSTED_PR_INSTRUCTION_OR_TRUST_ROOT_CHANGED' in text
+    assert 'REPAIR_PR_FILE_INVENTORY_INVALID' in text
+    assert 'all(.[];' in text
+    assert 'AGENTS[.]md|CODEOWNERS' in text
+    assert '^[.]github/|^[.]agents/|^[.]codex/|^scripts/' in text
+    assert text.index('REPAIR_UNTRUSTED_PR_INSTRUCTION_OR_TRUST_ROOT_CHANGED') < text.index('git worktree add --detach')
