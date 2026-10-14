@@ -52,3 +52,17 @@ def record(connection, *, service_id: str, target_sha: str, owner_run_id: str,
         rows = cursor.fetchall()
     if len(rows) != 1 or rows[0] != (True,):
         raise DeploymentLeaseError("WORKER_DEPLOY_RECORD_NOT_ACKNOWLEDGED")
+
+
+def renew(connection, *, service_id: str, target_sha: str, owner_run_id: str,
+          token: int, lease_seconds: int = 300) -> None:
+    if service_id != ALLOWED_SERVICE:
+        raise DeploymentLeaseError("WORKER_SERVICE_NOT_ALLOWLISTED")
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "select wow_release_control.renew_render_worker_deploy(%s,%s,%s,%s,%s)",
+            (service_id, target_sha, owner_run_id, token, lease_seconds),
+        )
+        rows = cursor.fetchall()
+    if len(rows) != 1 or rows[0] != (True,):
+        raise DeploymentLeaseError("WORKER_DEPLOY_LEASE_RENEW_NOT_ACKNOWLEDGED")
