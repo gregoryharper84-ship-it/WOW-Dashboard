@@ -226,3 +226,16 @@ These are **research feature preparation** failures, not certified model inferen
 | `NCAAF_FORWARD_PRIOR_FORM_INSUFFICIENT` | NCAAF research forward feature builder | One or both teams lack the model's minimum three source-eligible settled prior games; no baseline imputation. | No |
 | `NCAAF_FORWARD_FEATURE_SCHEMA_INVALID` | NCAAF research forward feature builder | Computed numeric features do not exactly match the candidate model schema or finite-number contract. | No |
 | `NCAAF_FORWARD_FEATURE_NOT_PREGAME` | NCAAF research forward feature builder | Latest evidence acquisition timestamp is not strictly before the target event start. | No |
+
+
+## CI PostgreSQL service provisioning (incident #1693)
+
+These are **CI infrastructure** events. They are never fitted-model failures,
+do not change model probability or rank, and never authorize a release or trade.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CI_INFRA_IMAGE_PULL_RATE_LIMIT` | GitHub Actions registry retry controller | The exact failed GitHub Actions job failed in `Initialize containers`; every test step was skipped, and job logs prove `docker pull public.ecr.aws/docker/library/postgres:16` returned `toomanyrequests` and exhausted Docker's own pull retry. Only one same-run, same-SHA failed-jobs-only retry is permissible. | No |
+| `RETRY_EXHAUSTED` | GitHub Actions registry retry controller | A second or later run attempt remains failed after the bounded retry; required checks stay RED. | No |
+| `RUN_MOVED_OR_RETRIED` | GitHub Actions registry retry controller | Current GitHub API run SHA, attempt, workflow provenance or terminal status disagrees with the signed workflow-run event; zero mutation. | No |
+| `NON_INFRA_FAILURE` | GitHub Actions registry retry controller | Any failed job outside the explicit Postgres service-provisioning set or expected required aggregate; no automated retry. | No |
