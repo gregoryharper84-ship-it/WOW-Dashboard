@@ -315,7 +315,6 @@ jobs:
       - name: Refuse stale or unverifiable exact-head verification
         env:
           WOW_EVENT_NAME: ${{ github.event_name }}
-          WOW_EVENT_PATH: ${{ github.event_path }}
           WOW_REPOSITORY: ${{ github.repository }}
           WOW_REF: ${{ github.ref }}
           WOW_SHA: ${{ github.sha }}
@@ -336,7 +335,7 @@ jobs:
           ref = os.environ.get("WOW_REF", "")
           sha = os.environ.get("WOW_SHA", "")
           token = os.environ.get("GH_TOKEN", "")
-          path = os.environ.get("WOW_EVENT_PATH", "")
+          path = os.environ.get("GITHUB_EVENT_PATH", "")
           if not re.fullmatch(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", repo):
               fail("REPOSITORY_INVALID")
           if not re.fullmatch(r"[0-9a-f]{40}", sha) or not token or not path:
