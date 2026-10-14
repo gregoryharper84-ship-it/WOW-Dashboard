@@ -62,3 +62,46 @@ def test_absent_deployment_fails_closed():
     source = SCRIPT.read_text()
     assert "WORKER_NO_EXACT_DEPLOY_REQUIRES_GOVERNED_INITIATION" in source
     assert "WORKER_DEPLOY_ENTRY_INVALID" in source
+
+
+def test_missing_worker_deploy_does_not_attempt_post(monkeypatch, tmp_path):
+    """Provider mock: absent exact SHA must not create a second deployment."""
+    import json
+    calls = []
+    sha = "a" * 40
+    def fake_request(url, token, method="GET", payload=None):
+        calls.append((url, method))
+        if url.endswith("/branches/main"):
+            return {"commit": {"sha": sha}}
+        if "/deploys?" in url:
+            return []
+        raise AssertionError("unexpected API call: " + url)
+    monkeypatch.setattr(module, "request_json", fake_request)
+    monkeypatch.setenv("GH_API_TOKEN", "mock")
+    monkeypatch.setenv("RENDER_API_KEY", "mock")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("TARGET_MAIN_SHA", sha)
+    monkeypatch.setenv("PRIMARY_RELEASE_RESULT", "success")
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    with pytest.raises(RuntimeError, match="WORKER_NO_EXACT_DEPLOY_REQUIRES_GOVERNED_INITIATION"):
+        module.run()
+    assert not any(method == "POST" for _, method in calls)
+
+
+def test_stale_main_rejects_before_any_render_request(monkeypatch, tmp_path):
+    sha = "a" * 40
+    calls = []
+    def fake_request(url, token, method="GET", payload=None):
+        calls.append(url)
+        assert url.endswith("/branches/main")
+        return {"commit": {"sha": "b" * 40}}
+    monkeypatch.setattr(module, "request_json", fake_request)
+    for key, value in {
+        "GH_API_TOKEN": "mock", "RENDER_API_KEY": "mock",
+        "GITHUB_REPOSITORY": "example/repo", "TARGET_MAIN_SHA": sha,
+        "PRIMARY_RELEASE_RESULT": "success", "RUNNER_TEMP": str(tmp_path),
+    }.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(RuntimeError, match="WORKER_RELEASE_SHA_STALE_OR_INVALID"):
+        module.run()
+    assert len(calls) == 1
