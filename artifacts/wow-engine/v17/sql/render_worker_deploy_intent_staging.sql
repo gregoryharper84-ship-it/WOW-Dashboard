@@ -60,3 +60,41 @@ begin
 end;
 $$;
 revoke all on function wow_release_control.claim_render_worker_deploy(text,text,text,integer) from public, anon, authenticated;
+
+-- Fenced state transitions require the original run and generation.
+-- No transition permits INITIATING/ACK_AMBIGUOUS to revert to PENDING.
+create or replace function wow_release_control.record_render_worker_deploy(
+  p_service_id text, p_target_sha text, p_owner_run_id text,
+  p_lease_token bigint, p_state text, p_render_deploy_id text default null
+) returns boolean
+language plpgsql security invoker
+set search_path = pg_catalog, wow_release_control
+as $$
+declare v wow_release_control.render_worker_deploy_intents%rowtype;
+begin
+  if p_state not in ('ACK_AMBIGUOUS','DEPLOYING','LIVE_VERIFIED','HOLD') then
+    raise exception 'WORKER_DEPLOY_TRANSITION_INVALID';
+  end if;
+  select * into v from wow_release_control.render_worker_deploy_intents
+    where service_id=p_service_id and target_sha=p_target_sha for update;
+  if not found or v.owner_run_id is distinct from p_owner_run_id
+     or v.lease_token is distinct from p_lease_token
+     or v.lease_expires_at <= clock_timestamp() then
+    raise exception 'WORKER_DEPLOY_FENCING_REJECTED';
+  end if;
+  if v.state not in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING') then
+    raise exception 'WORKER_DEPLOY_STATE_NOT_MUTABLE';
+  end if;
+  if p_state='LIVE_VERIFIED' and
+     (p_render_deploy_id is null or p_render_deploy_id !~ '^dep-[a-z0-9]+$') then
+    raise exception 'WORKER_DEPLOY_LIVE_RECEIPT_MISSING';
+  end if;
+  update wow_release_control.render_worker_deploy_intents
+     set state=p_state,
+         render_deploy_id=coalesce(p_render_deploy_id,v.render_deploy_id),
+         updated_at=clock_timestamp()
+   where service_id=p_service_id and target_sha=p_target_sha;
+  return true;
+end;
+$$;
+revoke all on function wow_release_control.record_render_worker_deploy(text,text,text,bigint,text,text) from public, anon, authenticated;
