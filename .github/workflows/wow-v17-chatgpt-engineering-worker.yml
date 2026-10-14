@@ -758,7 +758,8 @@ jobs:
           fi
           branch=""
           head_sha=""
-          rm -f artifacts/wow-engine/v17/.agent-handoff/lead.json \
+          rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json \
+            artifacts/wow-engine/v17/.agent-handoff/lead.json \
             artifacts/wow-engine/v17/.agent-handoff/triage.json \
             artifacts/wow-engine/v17/.agent-handoff/specialist.json \
             artifacts/wow-engine/v17/.agent-handoff/specialist-route.json \
