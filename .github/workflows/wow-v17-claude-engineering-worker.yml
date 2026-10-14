@@ -154,6 +154,29 @@ jobs:
           echo "queue_depth=$queue_depth" >> "$GITHUB_OUTPUT"
           echo "lease_group=$lease_group" >> "$GITHUB_OUTPUT"
 
+      # Temporary fail-closed containment for manual Claude writer on #823.
+      # This is not a distributed lease; #1739 will replace it with atomic fencing.
+      - name: Guard incident 823 manual single-writer ownership
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESTORATION: ${{ steps.dispatch.outputs.restoration }}
+          ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
+        run: |
+          set -euo pipefail
+          if [ "${RESTORATION:-}" = "823" ] || [ "${ACCELERATION:-}" = "823" ]; then
+            # API errors fail closed; never treat an unavailable PR lookup as release.
+            pr_state=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/1728" --jq '.state') || {
+              echo "::error::MANUAL_WRITER_STATE_UNAVAILABLE:823"; exit 1;
+            }
+            if [ "$pr_state" = "open" ]; then
+              echo "::error::INCIDENT_WRITER_RESERVED:823:PR_1728"
+              exit 1
+            fi
+            echo "::error::INCIDENT_823_MANUAL_HANDOFF_REQUIRES_EXPLICIT_RECONCILIATION"
+            exit 1
+          fi
+
       - name: Initialize persistent-worker safety state
         id: safety
         shell: bash
