@@ -15,6 +15,10 @@ inputs:
     description: OpenAI Codex permission profile
     required: false
     default: ":read-only"
+  working_directory:
+    description: Explicit Codex working directory; trusted workflow must validate this path.
+    required: false
+    default: ""
   codex_args:
     description: Additional safe Codex CLI arguments
     required: false
@@ -64,6 +68,7 @@ runs:
         prompt: ${{ inputs.prompt }}
         output-schema-file: ${{ steps.schema.outputs.schema_file }}
         permission-profile: ${{ inputs.permission_profile }}
+        working-directory: ${{ inputs.working_directory }}
         codex-args: ${{ inputs.codex_args }}
         safety-strategy: unprivileged-user
         codex-user: wow-codex
