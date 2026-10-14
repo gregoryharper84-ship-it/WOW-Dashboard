@@ -12,6 +12,7 @@ on:
       - "artifacts/wow-engine/v17/sql/20260911_add_scout_source_snapshots_identity.sql"
       - "artifacts/wow-engine/test_v17_research_source_adapters.py"
       - "artifacts/wow-engine/test_v17_source_snapshot_identity.py"
+      - "artifacts/wow-engine/test_v17_scout_source_refresh.py"
   push:
     branches: [main]
     paths:
@@ -23,6 +24,7 @@ on:
       - "artifacts/wow-engine/v17/scout_source_refresh.py"
       - "artifacts/wow-engine/test_v17_research_source_adapters.py"
       - "artifacts/wow-engine/test_v17_source_snapshot_identity.py"
+      - "artifacts/wow-engine/test_v17_scout_source_refresh.py"
 
 permissions:
   contents: read
@@ -52,6 +54,7 @@ jobs:
           python -m pytest -q
           test_v17_research_source_adapters.py
           test_v17_source_snapshot_identity.py
+          test_v17_scout_source_refresh.py
       - name: Verify direct refresh CLI imports fail closed without credentials
         env:
           WOW_SCOUT_DATABASE_URL: ""
