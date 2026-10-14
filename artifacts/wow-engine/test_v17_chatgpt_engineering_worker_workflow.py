@@ -140,7 +140,9 @@ def test_targeted_repair_keeps_protected_actions_and_uses_fast_forward():
     text = WORKFLOW.read_text()
     assert "git worktree add --detach" in text
     assert 'git switch --detach "$REPAIR_SHA"' not in text
-    assert 'codex_args: ${{ steps.repair_target.outputs.bound == \'true\' && \'-C .wow-repair-target\' || \'\' }}' in text
+    assert "working_directory: ${{ steps.repair_target.outputs.bound == 'true' && format('{0}/.wow-repair-target', github.workspace) || github.workspace }}" in text
+    action = (WORKFLOW.parent.parent / "actions/wow-chatgpt-agent/action.yml").read_text()
+    assert 'working-directory: ${{ inputs.working_directory }}' in action
     assert 'git -C "$target" push origin "HEAD:refs/heads/$branch"' in text
     assert "REPAIR_PARENT_SHA_MISMATCH" in text
     assert "REPAIR_REMOTE_HEAD_MOVED" in text
