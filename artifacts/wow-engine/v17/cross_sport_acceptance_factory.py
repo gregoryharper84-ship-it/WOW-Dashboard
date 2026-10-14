@@ -161,6 +161,10 @@ def evaluate_cohort(lane: Lane, inventory: SourceInventory, policy: CohortPolicy
             blockers.append("ACCEPTANCE_WEEK_PARTIALLY_ELAPSED")
             continue
         if event.status not in _PREGAME_STATES:
+            # A postponed/cancelled in-window fixture cannot silently disappear
+            # merely because the remaining fixture count still meets the floor.
+            # The original source-declared full cohort is no longer intact.
+            blockers.append("ACCEPTANCE_WEEK_NONPREGAME_EVENT")
             continue
         if event.official_event_id in eligible:
             blockers.append("ACCEPTANCE_CANONICAL_EVENT_DUPLICATE")
