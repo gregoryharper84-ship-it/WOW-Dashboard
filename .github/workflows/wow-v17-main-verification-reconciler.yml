@@ -1,0 +1,46 @@
+name: wow-v17-main-verification-reconciler
+
+# Recover a lost push -> wow-verify event; never deploy or approve releases.
+on:
+  schedule:
+    - cron: "19 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: wow-v17-main-verification-reconciler
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Reconcile exact-main verification workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = false
+          test "$WOW_DRY_RUN_ONLY" = true
+          main_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          # A previous failure is NOT silently retried. It requires investigation.
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/runs?per_page=100" --jq '.workflow_runs')
+          verdict=$(jq -r --arg sha "$main_sha" '[.[] | select(.head_sha == $sha and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$runs")
+          if [ "$verdict" != MISSING ]; then
+            echo "EXACT_MAIN_VERIFY_PRESENT:$verdict"
+            exit 0
+          fi
+          # Refuse to act against a superseded main commit.
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
+          [ "$main_sha" = "$current_sha" ] || { echo "MAIN_SUPERSEDED_HOLD"; exit 0; }
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/dispatches" -f ref=main
+          echo "MISSING_VERIFY_DISPATCHED_FOR_MAIN:$main_sha"
+          echo "CHECKS_AND_INDEPENDENT_RELEASE_PROVENANCE_STILL_REQUIRED"
