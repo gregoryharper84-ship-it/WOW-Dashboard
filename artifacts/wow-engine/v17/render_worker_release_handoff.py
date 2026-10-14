@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from render_worker_governed_initiator import initiate_once
+from render_worker_lease_adapter import ALLOWED_SERVICE, renew_committed, record_committed
 
 WORKER_SERVICE = "srv-dapkbc0473hc73c1978g"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -88,6 +89,9 @@ def run():
     check_main()
     current = list_deploys()
     state, deploy = choose_deploy(current, event_sha)
+    fence_token = None
+    fence_dsn = None
+    fence_owner = None
     if state == "ABSENT":
         dsn = os.environ.get("WOW_RELEASE_CONTROL_DSN", "")
         if not dsn:
@@ -108,16 +112,46 @@ def run():
             )
         if handoff.state != "DEPLOYING" or not handoff.deploy_id:
             raise RuntimeError("WORKER_DEPLOY_RECONCILIATION_REQUIRED")
+        # Keep the issuance identity for subsequent renewal and durable LIVE
+        # reconciliation. Without it, a 900-second poll can outlive a
+        # 300-second database lease and falsely claim closure in a local file.
+        if type(handoff.lease_token) is not int or handoff.lease_token < 1:
+            raise RuntimeError("WORKER_DEPLOY_FENCING_TOKEN_MISSING")
+        fence_token = handoff.lease_token
+        fence_dsn = dsn
+        fence_owner = os.environ["GITHUB_RUN_ID"]
         deploy_id = handoff.deploy_id
     else:
         deploy_id = str((deploy or {}).get("id") or "")
     if not deploy_id.startswith("dep-"):
         raise RuntimeError("WORKER_DEPLOY_ID_MISSING")
     until = time.monotonic() + 900
+    last_lease_renew = time.monotonic()
     while True:
+        # The database owns authorization. Renew before TTL expiry rather
+        # than pretending a provider-side poll preserves the fenced claim.
+        if fence_token is not None and time.monotonic() - last_lease_renew >= 90:
+            import psycopg
+            with psycopg.connect(fence_dsn, connect_timeout=10, autocommit=False) as conn:
+                renew_committed(
+                    connection=conn, service_id=ALLOWED_SERVICE,
+                    target_sha=event_sha, owner_run_id=fence_owner,
+                    token=fence_token, lease_seconds=300,
+                )
+            last_lease_renew = time.monotonic()
         check_main()
         state, latest = choose_deploy(list_deploys(), event_sha)
         if state == "LIVE" and latest.get("id") == deploy_id:
+            if fence_token is not None:
+                # Never call a transient runner-file receipt durable evidence.
+                # Persist the exact provider ID using the original fenced token.
+                import psycopg
+                with psycopg.connect(fence_dsn, connect_timeout=10, autocommit=False) as conn:
+                    record_committed(
+                        connection=conn, service_id=ALLOWED_SERVICE,
+                        target_sha=event_sha, owner_run_id=fence_owner,
+                        token=fence_token, state="LIVE_VERIFIED", deploy_id=deploy_id,
+                    )
             result = {
                 "status": "WORKER_EXACT_SHA_LIVE",
                 "service_id": WORKER_SERVICE,
