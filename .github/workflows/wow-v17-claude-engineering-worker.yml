@@ -238,6 +238,21 @@ jobs:
           git switch --detach "$REPAIR_SHA"
           echo "Same-branch Claude repair bound to ${REPAIR_BRANCH}@${REPAIR_SHA}" >> "$GITHUB_STEP_SUMMARY"
 
+      # Temporary containment: #823 is reserved for supervised Claude PR #1728.
+      # Never interpret a failed lookup or a closed PR as permission to take ownership.
+      # Replace with authoritative Supabase fencing under #1739.
+      - name: Guard incident 823 manual single-writer ownership
+        shell: bash
+        env:
+          RESTORATION: ${{ steps.dispatch.outputs.restoration }}
+          ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
+        run: |
+          set -euo pipefail
+          if [ "${RESTORATION:-}" = "823" ] || [ "${ACCELERATION:-}" = "823" ]; then
+            echo "::error::INCIDENT_823_MANUAL_HANDOFF_REQUIRES_ATOMIC_LEASE"
+            exit 1
+          fi
+
       - name: Initialize persistent-worker safety state
         id: safety
         shell: bash
