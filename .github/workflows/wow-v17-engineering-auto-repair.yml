@@ -198,8 +198,10 @@ jobs:
           # consume another attempt. A later new head can consume the next slot.
           already_dispatched=false
           if [ -n "$comment_id" ]; then
-            recorded_head=$(jq -r '.body | capture("(?m)^- head_sha: (?<sha>[0-9a-f]{40})$").sha // ""' \
-              <<<"$marker_comment" 2>/dev/null || true)
+            recorded_head=$(jq -er '.body | capture("(?m)^- head_sha: (?<sha>[0-9a-f]{40})$").sha' \
+              <<<"$marker_comment") || {
+              echo "::error::RECOVERY_MARKER_HEAD_INVALID_OR_LEGACY"; exit 1;
+            }
             if [ "$recorded_head" = "$HEAD_SHA" ]; then
               already_dispatched=true
             fi
@@ -228,14 +230,56 @@ jobs:
           echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
           echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
 
+      - name: Reserve exact-head recovery before dispatch (fail closed on ambiguous outcome)
+        id: reservation
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
+          NEW_ATTEMPTS: ${{ steps.plan.outputs.new_attempts }}
+          COMMENT_ID: ${{ steps.attempts.outputs.comment_id }}
+        run: |
+          set -euo pipefail
+          # Reserve before the non-idempotent workflow_dispatch POST. An HTTP
+          # timeout after dispatch but before receiving its response must not
+          # cause another dispatch of the same head on the next cycle.
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ "$NEW_ATTEMPTS" =~ ^[1-3]$ ]] || {
+            echo "::error::RECOVERY_RESERVATION_INVALID"; exit 1;
+          }
+          body="<!-- WOW_RECOVERY_ATTEMPTS -->
+          ### WOW V17 auto-repair
+          - attempts: ${NEW_ATTEMPTS}
+          - head_sha: ${HEAD_SHA}
+          - source_check_id: ${SOURCE_CHECK_ID}
+          - accepted: false
+          - state: DISPATCH_RESERVED
+          - can_execute: false"
+          if [ -n "${COMMENT_ID:-}" ]; then
+            response=$(gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -f body="$body")
+          else
+            response=$(gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body")
+          fi
+          new_id=$(jq -er '.id | select(type == "number" and . > 0)' <<<"$response") || {
+            echo "::error::RECOVERY_RESERVATION_ACK_UNREADABLE"; exit 1;
+          }
+          echo "comment_id=$new_id" >> "$GITHUB_OUTPUT"
+          echo "claimed=true" >> "$GITHUB_OUTPUT"
+          echo "Recovery reserved PR #$PR_NUMBER SHA $HEAD_SHA; ambiguous dispatch MUST be reconciled, not repeated." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Dispatch exact-head repair to Engineering App worker
         id: targeted_dispatch
-        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR' && steps.reservation.outputs.claimed == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
+          SOURCE_APP_ID: ${{ matrix.source_app_id }}
+          SOURCE_ROLE: ${{ matrix.source_role }}
         run: |
           set -euo pipefail
           pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
@@ -263,6 +307,27 @@ jobs:
           else
             echo "::error::REPAIR_TARGET_UNSUPPORTED_CLASS" && exit 1
           fi
+          # QA/Release may have replaced a failing check with PASS while we
+          # planned the attempt. Re-read right before dispatch; never route a
+          # superseded HOLD even though its SHA and incident remain unchanged.
+          [[ "$SOURCE_CHECK_ID" =~ ^[1-9][0-9]*$ ]] && [[ "$SOURCE_APP_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::DISPATCH_CHECK_ID_INVALID"; exit 1;
+          }
+          case "$SOURCE_ROLE" in
+            qa) source_check_name="WOW Independent QA exact-head" ;;
+            release) source_check_name="WOW Release Authority exact-head" ;;
+            *) echo "::error::DISPATCH_ROLE_INVALID"; exit 1 ;;
+          esac
+          recent_checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+            -H 'Accept: application/vnd.github+json' | jq -s '[.[].check_runs[]]')
+          latest_authored=$(jq -c --arg sha "$HEAD_SHA" --arg name "$source_check_name" --argjson app "$SOURCE_APP_ID" \
+            '[.[] | select(.head_sha == $sha and .name == $name and .app.id == $app)]
+             | sort_by(.id) | last // null' <<<"$recent_checks")
+          jq -e --argjson id "$SOURCE_CHECK_ID" \
+            '.id == $id and .status == "completed" and .conclusion == "failure"' \
+            <<<"$latest_authored" >/dev/null || {
+            echo "::error::DISPATCH_HOLD_SUPERSEDED_REQUIRES_RECONCILIATION"; exit 1;
+          }
           gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
             -f target_incident="$incident" -f lease_group="$lease_group" \
             -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
@@ -275,7 +340,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
-          COMMENT_ID: ${{ steps.attempts.outputs.comment_id }}
+          COMMENT_ID: ${{ steps.reservation.outputs.comment_id }}
           NEW_ATTEMPTS: ${{ steps.plan.outputs.new_attempts }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
           SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
@@ -287,6 +352,7 @@ jobs:
           - head_sha: ${HEAD_SHA}
           - source_check_id: ${SOURCE_CHECK_ID}
           - accepted: true
+          - state: DISPATCH_ACCEPTED
           - can_execute: false"
           if [ -n "${COMMENT_ID:-}" ]; then
             gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -f body="$body" >/dev/null

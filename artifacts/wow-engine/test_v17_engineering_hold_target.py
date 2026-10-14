@@ -202,3 +202,40 @@ def test_actual_planner_does_not_repair_while_ci_or_qa_evidence_missing():
                                         is_wow_engineering_pr=True)
         assert verdict['action'] == 'WAITING_ON_EVIDENCE'
         assert verdict['attempts'] == 2
+
+
+def test_recovery_reservation_precedes_non_idempotent_dispatch():
+    from pathlib import Path
+    flow = Path(__file__).resolve().parents[2] / ".github/workflows/wow-v17-engineering-auto-repair.yml"
+    text = flow.read_text()
+    assert "- name: Reserve exact-head recovery before dispatch" in text
+    assert text.index("- name: Reserve exact-head recovery before dispatch") < text.index(
+        "- name: Dispatch exact-head repair to Engineering App worker")
+    assert "steps.reservation.outputs.claimed == 'true'" in text
+    assert "state: DISPATCH_RESERVED" in text
+    assert "state: DISPATCH_ACCEPTED" in text
+    assert "COMMENT_ID: ${{ steps.reservation.outputs.comment_id }}" in text
+    assert "RECOVERY_RESERVATION_ACK_UNREADABLE" in text
+
+
+def test_legacy_attempt_marker_cannot_reissue_ambiguous_head():
+    from pathlib import Path
+    flow = Path(__file__).resolve().parents[2] / ".github/workflows/wow-v17-engineering-auto-repair.yml"
+    text = flow.read_text()
+    assert "RECOVERY_MARKER_HEAD_INVALID_OR_LEGACY" in text
+    assert 'recorded_head=$(jq -er' in text
+    assert '<<<"$marker_comment" 2>/dev/null || true' not in text
+
+
+def test_latest_independent_hold_revalidated_just_before_dispatch():
+    from pathlib import Path
+    flow = Path(__file__).resolve().parents[2] / ".github/workflows/wow-v17-engineering-auto-repair.yml"
+    text = flow.read_text()
+    start = text.index("- name: Dispatch exact-head repair to Engineering App worker")
+    end = text.index("- name: Record recovery attempt after accepted dispatch", start)
+    section = text[start:end]
+    assert 'DISPATCH_HOLD_SUPERSEDED_REQUIRES_RECONCILIATION' in section
+    assert 'source_check_name="WOW Independent QA exact-head"' in section
+    assert 'source_check_name="WOW Release Authority exact-head"' in section
+    assert section.index('latest_authored=') < section.index('gh workflow run wow-v17-chatgpt-engineering-worker.yml')
+    assert 'SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}' in section
