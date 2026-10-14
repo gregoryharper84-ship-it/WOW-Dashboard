@@ -105,3 +105,28 @@ def test_stale_main_rejects_before_any_render_request(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="WORKER_RELEASE_SHA_STALE_OR_INVALID"):
         module.run()
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("state", ["INITIATING", "ACK_AMBIGUOUS", "DEPLOYING", "LIVE_VERIFIED", "HOLD"])
+def test_ambiguous_intent_does_not_reset_to_pending(state):
+    row = {"service_id": module.WORKER_SERVICE, "target_sha": "a" * 40, "state": state}
+    result, candidate = module.reconcile_intent(row, [], "a" * 40)
+    assert result == "RECONCILIATION_REQUIRED"
+    assert candidate is None
+
+
+def test_intent_reconciles_observed_deployment():
+    sha = "a" * 40
+    row = {"service_id": module.WORKER_SERVICE, "target_sha": sha, "state": "ACK_AMBIGUOUS"}
+    active = {"id": "dep-live", "commit": {"id": sha}, "status": "live"}
+    assert module.reconcile_intent(row, [active], sha) == ("LIVE_VERIFIED", active)
+
+
+def test_intent_rejects_cross_service_and_cross_revision():
+    sha = "a" * 40
+    for row in [
+        {"service_id": "srv-other", "target_sha": sha, "state": "PENDING"},
+        {"service_id": module.WORKER_SERVICE, "target_sha": "b" * 40, "state": "PENDING"},
+    ]:
+        with pytest.raises(RuntimeError, match="WORKER_DEPLOY_INTENT_IDENTITY_MISMATCH"):
+            module.reconcile_intent(row, [], sha)
