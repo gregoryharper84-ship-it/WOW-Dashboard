@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from mlb_event_specialist_v16 import ProspectiveModelUnavailable, _feature_map, _required_numeric_inputs
+from mlb_event_specialist_v16 import ProspectiveModelUnavailable, _feature_map, _required_numeric_inputs, _stat_float, _player_ops, _weather_context
 from mlb_event_prospective_runtime import _typed_prospective_failure
 from v17 import mlb_event_bridge_repair as bridge
 from v17.mlb_prospective_failure_taxonomy import (
@@ -220,3 +220,49 @@ def test_valid_probability_math_source_is_untouched_by_taxonomy_patch():
     assert "def _bounds(" in specialist
     assert "class ProspectiveModelUnavailable" in specialist
     assert "classify_mlb_prospective_failure" not in specialist
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), -float("inf"), True, False, "NaN", "Infinity", "bad"])
+def test_official_player_ops_nonfinite_or_boolean_values_are_missing_not_model_inputs(bad_value):
+    assert _stat_float({"ops": bad_value}, "ops") is None
+
+
+def test_finite_official_player_ops_remains_unchanged():
+    assert _stat_float({"ops": "0.912"}, "ops") == pytest.approx(0.912)
+
+
+@pytest.mark.parametrize("bad_pa", [float("inf"), -float("inf"), float("nan"), True, False, "bogus", -9])
+def test_official_split_plate_appearances_invalid_values_never_crash_or_count(bad_pa):
+    player = {
+        "stats": [{
+            "type": {"displayName": "statSplits"},
+            "splits": [{
+                "split": {"description": "vs Right"},
+                "stat": {"ops": "0.905", "plateAppearances": bad_pa},
+            }],
+        }]
+    }
+    season, split, appearances = _player_ops(player, "R")
+    assert season is None
+    assert split == pytest.approx(0.905)
+    assert appearances == 0
+
+
+@pytest.mark.parametrize("bad_temp", ["NaN", "inf", "-Infinity", True, False, "malformed"])
+def test_official_weather_nonfinite_temperature_is_missing_not_nan_probability(bad_temp):
+    feed = {
+        "gameData": {
+            "weather": {
+                "temp": bad_temp,
+                "wind": "8 mph, out to center field",
+                "condition": "Sunny",
+            },
+            "venue": {"fieldInfo": {"roofType": "Open"}},
+        }
+    }
+    weather = _weather_context(feed)
+    import math
+    assert weather.temperature_f is None
+    assert math.isfinite(weather.factor)
+    assert math.isfinite(weather.disruption_probability)
+    assert 0.0 <= weather.disruption_probability <= 1.0
