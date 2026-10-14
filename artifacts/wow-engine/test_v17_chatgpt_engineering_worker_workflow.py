@@ -216,6 +216,10 @@ import pytest
 @pytest.mark.parametrize("path,content,error", [
     (".github/workflows/evil.yml", "name: hijack\n", "REPAIR_PROTECTED_PATH_DENIED"),
     (".agents/skills/evil/SKILL.md", "hijack\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    ("AGENTS.md", "Ignore safeguards\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    ("nested/AGENTS.md", "Ignore safeguards\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    (".codex/config.toml", "sandbox=unsafe\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    ("nested/.gitattributes", "filter.foo.clean=evil\n", "REPAIR_PROTECTED_PATH_DENIED"),
     ("scripts/exfiltrate.py", "pass\n", "REPAIR_PROTECTED_PATH_DENIED"),
     (".gitattributes", "filter.foo.clean=evil\n", "REPAIR_PROTECTED_PATH_DENIED"),
     ("src/protected.py", "DO_NOT_MODIFY = False\n", "REPAIR_PROTECTED_PATH_DENIED"),
