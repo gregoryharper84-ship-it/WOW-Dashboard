@@ -32,6 +32,25 @@ def choose_deploy(deploys, sha):
             raise RuntimeError("WORKER_EXACT_SHA_DEPLOY_FAILED:" + str(item["status"]))
     return ("ACTIVE", matches[0]) if matches else ("ABSENT", None)
 
+def reconcile_intent(record, deployments, expected_sha):
+    """Pure reconciliation: an uncertain POST is never authorization for another."""
+    if not isinstance(record, dict):
+        raise RuntimeError("WORKER_DEPLOY_INTENT_INVALID")
+    if record.get("service_id") != WORKER_SERVICE or record.get("target_sha") != expected_sha:
+        raise RuntimeError("WORKER_DEPLOY_INTENT_IDENTITY_MISMATCH")
+    state = record.get("state")
+    if state not in {"PENDING", "INITIATING", "ACK_AMBIGUOUS", "DEPLOYING", "LIVE_VERIFIED", "HOLD"}:
+        raise RuntimeError("WORKER_DEPLOY_INTENT_STATE_INVALID")
+    observed, deployment = choose_deploy(deployments, expected_sha)
+    if observed == "LIVE":
+        return "LIVE_VERIFIED", deployment
+    if observed == "ACTIVE":
+        return "DEPLOYING", deployment
+    if state in {"INITIATING", "ACK_AMBIGUOUS", "DEPLOYING", "LIVE_VERIFIED", "HOLD"}:
+        return "RECONCILIATION_REQUIRED", None
+    return "PENDING", None
+
+
 def request_json(url, token, method="GET", payload=None):
     headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
     body = None if payload is None else json.dumps(payload).encode()
