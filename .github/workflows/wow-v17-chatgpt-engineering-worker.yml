@@ -195,10 +195,28 @@ jobs:
         if: steps.repair_target.outputs.bound == 'true'
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.repair_pr }}
           REPAIR_SHA: ${{ steps.repair_target.outputs.head_sha }}
           REPAIR_BRANCH: ${{ steps.repair_target.outputs.branch }}
         run: |
           set -euo pipefail
+          # A PR carrying arbitrary action/agent instruction files is never eligible
+          # for automatic repair. Verify complete GitHub inventory before checkout.
+          metadata=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          files=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" | jq -s 'add')
+          expected=$(jq -er '.changed_files | select(type == "number" and . >= 1 and . <= 1000)' <<<"$metadata") || {
+            echo "::error::REPAIR_PR_FILE_INVENTORY_INVALID"; exit 1;
+          }
+          jq -e --argjson count "$expected" '
+            length == $count and
+            all(.[]; (.filename | type) == "string" and
+              (.filename | test("(^|/)(AGENTS[.]md|CODEOWNERS|[.]gitmodules|[.]gitattributes)$|^[.]github/|^[.]agents/|^[.]codex/|^scripts/") | not) and
+              (.previous_filename == null or
+                (.previous_filename | test("(^|/)(AGENTS[.]md|CODEOWNERS|[.]gitmodules|[.]gitattributes)$|^[.]github/|^[.]agents/|^[.]codex/|^scripts/") | not)))
+          ' <<<"$files" >/dev/null || {
+            echo "::error::REPAIR_UNTRUSTED_PR_INSTRUCTION_OR_TRUST_ROOT_CHANGED"; exit 1;
+          }
           git fetch origin "refs/heads/${REPAIR_BRANCH}:refs/remotes/origin/${REPAIR_BRANCH}"
           [ "$(git rev-parse "refs/remotes/origin/${REPAIR_BRANCH}")" = "$REPAIR_SHA" ] || { echo "::error::REPAIR_HEAD_MOVED"; exit 1; }
           # Keep the trusted protected-main checkout in GITHUB_WORKSPACE. GitHub
