@@ -13,6 +13,7 @@ from typing import Any
 
 from v17 import market_evidence_native_live as live
 from v17 import market_evidence_sources as sources
+from v17 import rundown_paid_scope as paid_scope
 from v17.market_evidence_snapshot import snapshot_dates
 from v17.sep15_runtime_contract_repairs import install_rundown_v2_auth_repair
 
@@ -75,6 +76,10 @@ def _collect_rundown(sport_key: str, *, opener: Any = None) -> tuple[list[dict[s
     # fall back to the stale query-key/v1-catalog provider definition.
     install_rundown_v2_auth_repair()
 
+    scope = paid_scope.winner_paid_scope()
+    if scope is None:
+        return [], [paid_scope.SCOPE_BLOCKER]
+    market_ids, affiliate_ids = scope
     rows: list[dict[str, Any]] = []
     codes: list[str] = []
     for slate_date in snapshot_dates():
@@ -83,6 +88,10 @@ def _collect_rundown(sport_key: str, *, opener: Any = None) -> tuple[list[dict[s
             slate_date,
             capability="events",
             opener=opener,
+            market_ids=market_ids,
+            affiliate_ids=affiliate_ids,
+            main_line=True,
+            hide_closed=True,
         )
         if result.ok:
             rows.extend(result.data or [])
