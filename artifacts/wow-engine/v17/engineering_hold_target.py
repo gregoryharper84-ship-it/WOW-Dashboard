@@ -26,7 +26,8 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 MAX_PAGES = 5
 MAX_TARGETS = 16
 MAX_SUMMARY = 8000
-SWEEP_WINDOW = timedelta(hours=24)
+# Scheduled sweeps retain unresolved latest-check HOLDs even after 24h.
+# The durable per-PR/head App marker suppresses already-dispatched retries.
 
 
 class Blocked(ValueError):
@@ -108,7 +109,7 @@ def discover(fetch, event, event_name, repo, qa_id, release_id, now=None):
             raise Blocked("UPSTREAM_RUN_WINDOW_INVALID")
     else:
         now = now or datetime.now(timezone.utc)
-        lower, upper = now - SWEEP_WINDOW, now + timedelta(minutes=2)
+        lower, upper = None, now + timedelta(minutes=2)
 
     prs = paginate(fetch, f"/repos/{repo}/pulls?state=open&base=main")
     targets, deferred = [], []
@@ -137,7 +138,7 @@ def discover(fetch, event, event_name, repo, qa_id, release_id, now=None):
             if current is None or current.get("status") != "completed" or current.get("conclusion") != "failure":
                 continue
             completed = stamp(current.get("completed_at"))
-            if not lower <= completed <= upper:
+            if completed > upper or (lower is not None and completed < lower):
                 deferred.append({"pr": num, "finding": "HOLD_OUTSIDE_EVENT_WINDOW", "role": cur_role})
                 continue
             summary = (current.get("output") or {}).get("summary")
@@ -154,9 +155,24 @@ def discover(fetch, event, event_name, repo, qa_id, release_id, now=None):
         targets.append({"pr_number": num, "head_sha": sha, "source_check_id": check_id,
                         "source_app_id": int(qa_id if cur_role == "qa" else release_id),
                         "source_role": cur_role})
-        if len(targets) > MAX_TARGETS:
-            raise Blocked("TOO_MANY_HOLD_TARGETS")
     targets.sort(key=lambda x: x["pr_number"])
+    if len(targets) > MAX_TARGETS:
+        # Bounded and fair: never globally fail a healthy inventory merely
+        # because more than 16 eligible repairs are awaiting attention.
+        # Workflow events take a bounded initial slice; the hourly reentry
+        # rotates across the entire authentic latest-check population.
+        if role:
+            offset = 0
+        else:
+            hour_slot = int(now.timestamp() // 3600)
+            offset = (hour_slot * MAX_TARGETS) % len(targets)
+        chosen = (targets[offset:] + targets[:offset])[:MAX_TARGETS]
+        selected_ids = {x["pr_number"] for x in chosen}
+        for item in targets:
+            if item["pr_number"] not in selected_ids and len(deferred) < 32:
+                deferred.append({"pr": item["pr_number"],
+                                 "finding": "BOUNDED_HOLD_BATCH_DEFERRED"})
+        targets = chosen
     return {"targets": targets, "deferred": deferred[:32], "can_execute": False}
 
 

@@ -61,10 +61,10 @@ def fetcher(prs=None, checks=None, truncated=False):
     return fetch
 
 
-def select(fetch=None, event=None, event_name='workflow_run'):
+def select(fetch=None, event=None, event_name='workflow_run', now=None):
     return h.discover(fetch or fetcher(), event if event is not None else run(), event_name,
                       h.REPO, QA, RELEASE,
-                      now=datetime(2026, 10, 14, 4, 31, tzinfo=timezone.utc))
+                      now=now or datetime(2026, 10, 14, 4, 31, tzinfo=timezone.utc))
 
 
 def test_event_main_sha_resolves_only_app_pr_head():
@@ -149,16 +149,38 @@ def test_scheduled_reentry_picks_undispatched_valid_head():
     assert target['head_sha'] == S1
 
 
-def test_aged_out_sweep_does_not_replay_stale_hold():
+def test_old_unresolved_hold_stays_schedulable_until_acknowledged():
     f=fetcher(checks={S1: [check(completed='2026-10-11T04:30:30Z')]})
+    result = select(fetch=f,event={},event_name='schedule')
+    assert [t['pr_number'] for t in result['targets']] == [101]
+
+
+def test_future_dated_independent_check_fails_closed():
+    f=fetcher(checks={S1: [check(completed='2026-10-15T04:30:30Z')]})
     assert select(fetch=f,event={},event_name='schedule')['targets'] == []
 
 
-def test_ambiguous_large_batch_fails_closed():
+def test_bounded_event_batch_does_not_fail_entire_queue():
     prs=[pr(i+1, f'{i+1:040x}') for i in range(h.MAX_TARGETS+1)]
     cs={p['head']['sha']:[check(777+i,p['head']['sha'])] for i,p in enumerate(prs)}
-    with pytest.raises(h.Blocked,match='TOO_MANY_HOLD_TARGETS'):
-        select(fetch=fetcher(prs,cs))
+    result=select(fetch=fetcher(prs,cs))
+    assert len(result['targets']) == h.MAX_TARGETS
+    assert result['can_execute'] is False
+    assert any(x['finding']=='BOUNDED_HOLD_BATCH_DEFERRED' for x in result['deferred'])
+
+
+def test_hourly_rotation_visits_all_57_outstanding_holds():
+    n=57
+    prs=[pr(i+1, f'{i+1:040x}') for i in range(n)]
+    cs={p['head']['sha']:[check(777+i,p['head']['sha'],
+         completed='2026-10-11T04:30:30Z')] for i,p in enumerate(prs)}
+    seen=set()
+    for hour in range(8):
+        now=datetime(2026,10,14,5+hour,tzinfo=timezone.utc)
+        result=select(fetch=fetcher(prs,cs),event={},event_name='schedule',now=now)
+        assert len(result['targets']) <= h.MAX_TARGETS
+        seen.update(t['pr_number'] for t in result['targets'])
+    assert seen == set(range(1,n+1))
 
 
 def test_workflow_template_enforces_protected_pr_and_same_head_marker():
