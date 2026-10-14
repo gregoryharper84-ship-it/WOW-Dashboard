@@ -718,8 +718,8 @@ jobs:
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":workspace"
-          # Confine the CodeX agent's writable workspace to the isolated PR tree.
-          codex_args: ${{ steps.repair_target.outputs.bound == 'true' && '-C .wow-repair-target' || '' }}
+          # The action resolves on trusted main; only the agent writable workspace changes.
+          working_directory: ${{ steps.repair_target.outputs.bound == 'true' && format('{0}/.wow-repair-target', github.workspace) || github.workspace }}
           prompt: |
             You are the WOW V17 ENGINEERING_AGENT running on OpenAI/ChatGPT tooling only and hold the single implementation lease for domain group ${{ steps.dispatch.outputs.lease_group }}.
             Read .agents/skills/wow-engineering-implementation-agent/SKILL.md,
