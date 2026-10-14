@@ -781,9 +781,9 @@ jobs:
             artifacts/wow-engine/v17/.agent-handoff/specialist-route.json \
             artifacts/wow-engine/v17/.agent-handoff/claude-peer-diagnosis.json
           if [ "$changed" = "true" ]; then
-            branch="chatgpt/engineering/\${GITHUB_RUN_ID}-\${GITHUB_RUN_ATTEMPT}"
+            branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             target="$GITHUB_WORKSPACE"
-            if [ -n "\${REPAIR_BRANCH:-}" ]; then
+            if [ -n "${REPAIR_BRANCH:-}" ]; then
               branch="$REPAIR_BRANCH"
               target="$GITHUB_WORKSPACE/.wow-repair-target"
               [ "$(git -C "$target" rev-parse HEAD)" = "$REPAIR_SHA" ] || {
@@ -837,19 +837,19 @@ jobs:
           PY
             git -C "$target" config user.name "github-actions[bot]"
             git -C "$target" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            if [ -z "\${REPAIR_BRANCH:-}" ]; then
+            if [ -z "${REPAIR_BRANCH:-}" ]; then
               git -C "$target" switch -c "$branch"
             fi
-            git -C "$target" commit -m "ChatGPT Engineering: \${incident:-nightly-repair}"
-            if [ -n "\${REPAIR_BRANCH:-}" ]; then
+            git -C "$target" commit -m "ChatGPT Engineering: ${incident:-nightly-repair}"
+            if [ -n "${REPAIR_BRANCH:-}" ]; then
               [ "$(git -C "$target" rev-parse HEAD^)" = "$REPAIR_SHA" ] || {
                 echo "::error::REPAIR_PARENT_SHA_MISMATCH"; exit 1;
               }
             fi
             # A ref fence plus ordinary push prevents non-fast-forward replacement.
-            git -C "$target" remote set-url origin "https://x-access-token:\${GITHUB_TOKEN}@github.com/\${GITHUB_REPOSITORY}.git"
-            trap 'git -C "$target" remote set-url origin "https://github.com/\${GITHUB_REPOSITORY}.git"' EXIT
-            if [ -n "\${REPAIR_BRANCH:-}" ]; then
+            git -C "$target" remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            trap 'git -C "$target" remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"' EXIT
+            if [ -n "${REPAIR_BRANCH:-}" ]; then
               remote_sha=$(git -C "$target" ls-remote origin "refs/heads/$branch" | awk '{print $1}')
               [ "$remote_sha" = "$REPAIR_SHA" ] || {
                 echo "::error::REPAIR_REMOTE_HEAD_MOVED"; exit 1;
@@ -859,7 +859,7 @@ jobs:
               git -C "$target" push --set-upstream origin "$branch"
             fi
             head_sha=$(git -C "$target" rev-parse HEAD)
-            git -C "$target" remote set-url origin "https://github.com/\${GITHUB_REPOSITORY}.git"
+            git -C "$target" remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
             trap - EXIT
           fi
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
