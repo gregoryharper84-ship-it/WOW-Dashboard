@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from mlb_event_specialist_v16 import ProspectiveModelUnavailable, _feature_map, _required_numeric_inputs, _stat_float, _player_ops, _weather_context
+from mlb_event_specialist_v16 import ProspectiveModelUnavailable, _feature_map, _required_numeric_inputs, _stat_float, _player_ops, _weather_context, _lineup_adjustment
 from mlb_event_prospective_runtime import _typed_prospective_failure
 from v17 import mlb_event_bridge_repair as bridge
 from v17.mlb_prospective_failure_taxonomy import (
@@ -266,3 +266,22 @@ def test_official_weather_nonfinite_temperature_is_missing_not_nan_probability(b
     assert math.isfinite(weather.factor)
     assert math.isfinite(weather.disruption_probability)
     assert 0.0 <= weather.disruption_probability <= 1.0
+
+
+def test_nan_official_ops_is_excluded_from_lineup_instead_of_poisoning_ratio():
+    import math
+    players = {}
+    for pid in range(1, 10):
+        players[pid] = {
+            "stats": [{
+                "type": {"displayName": "season"},
+                "splits": [{"stat": {"ops": "NaN" if pid == 9 else "0.850"}}],
+            }],
+        }
+    adj = _lineup_adjustment(list(range(1, 10)), "R", players)
+    assert adj.valid_hitters == 8
+    assert adj.missing_ids == (9,)
+    assert math.isfinite(adj.ratio)
+    assert math.isfinite(adj.season_ops)
+    assert math.isfinite(adj.platoon_ops)
+    assert 0.93 <= adj.ratio <= 1.07
