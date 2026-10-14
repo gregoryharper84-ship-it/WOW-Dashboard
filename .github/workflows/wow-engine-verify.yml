@@ -308,7 +308,90 @@ jobs:
     needs: [regression-shards, agent-runtime-integration, release-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
+      - name: Refuse stale or unverifiable exact-head verification
+        env:
+          WOW_EVENT_NAME: ${{ github.event_name }}
+          WOW_EVENT_PATH: ${{ github.event_path }}
+          WOW_REPOSITORY: ${{ github.repository }}
+          WOW_REF: ${{ github.ref }}
+          WOW_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          def fail(reason):
+              print(f"::error::EXACT_HEAD_GATE_{reason}")
+              raise SystemExit(1)
+
+          repo = os.environ.get("WOW_REPOSITORY", "")
+          event = os.environ.get("WOW_EVENT_NAME", "")
+          ref = os.environ.get("WOW_REF", "")
+          sha = os.environ.get("WOW_SHA", "")
+          token = os.environ.get("GH_TOKEN", "")
+          path = os.environ.get("WOW_EVENT_PATH", "")
+          if not re.fullmatch(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", repo):
+              fail("REPOSITORY_INVALID")
+          if not re.fullmatch(r"[0-9a-f]{40}", sha) or not token or not path:
+              fail("IDENTITY_MISSING")
+          try:
+              with open(path, encoding="utf-8") as f:
+                  payload = json.load(f)
+              if payload.get("repository", {}).get("full_name") != repo:
+                  fail("EVENT_REPOSITORY_MISMATCH")
+              if event == "pull_request":
+                  pr = payload["pull_request"]
+                  number = int(pr["number"])
+                  if number < 1 or ref != f"refs/pull/{number}/merge":
+                      fail("PR_REF_INVALID")
+                  expected = str(pr["head"]["sha"])
+                  expected_repo = str(pr["head"]["repo"]["full_name"])
+                  if not re.fullmatch(r"[0-9a-f]{40}", expected):
+                      fail("EVENT_HEAD_INVALID")
+                  endpoint = f"pulls/{number}"
+              elif event in ("push", "workflow_dispatch"):
+                  if ref != "refs/heads/main":
+                      fail("PROTECTED_REF_REQUIRED")
+                  expected = sha
+                  expected_repo = repo
+                  endpoint = "branches/main"
+              else:
+                  fail("EVENT_UNSUPPORTED")
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/{endpoint}",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=8) as response:
+                  current = json.load(response)
+              if event == "pull_request":
+                  actual = str(current["head"]["sha"])
+                  actual_repo = str(current["head"]["repo"]["full_name"])
+                  if current.get("state") != "open" or current["base"]["ref"] != "main":
+                      fail("PR_TARGET_CHANGED")
+                  if actual_repo != expected_repo:
+                      fail("HEAD_REPOSITORY_CHANGED")
+              else:
+                  actual = str(current["commit"]["sha"])
+              if not re.fullmatch(r"[0-9a-f]{40}", actual) or actual != expected:
+                  fail("HEAD_STALE_OR_UNKNOWN")
+          except (KeyError, TypeError, ValueError, OSError, Exception) as exc:
+              # Only type names are emitted; never print URL, token or body.
+              if isinstance(exc, SystemExit):
+                  raise
+              fail(f"VERIFICATION_UNAVAILABLE_{type(exc).__name__}")
+          print("EXACT_HEAD_GATE_PASS")
+          PY
       - name: Aggregate protected governed-backend result
         env:
           REGRESSION_RESULT: ${{ needs.regression-shards.result }}
