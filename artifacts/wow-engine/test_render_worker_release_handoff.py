@@ -157,12 +157,18 @@ def test_governed_live_receipt_requires_fenced_db_commit(monkeypatch, tmp_path):
     def fake_initiate(**kwargs):
         timeline.append("claim-before-post")
         assert kwargs["target_sha"] == sha
+        reply = kwargs["post_deploy"]()
+        assert reply["id"] == "dep-receipt"
         return Handoff("DEPLOYING", "dep-receipt", 17)
     monkeypatch.setattr(module, "initiate_once", fake_initiate)
 
     def fake_request(url, token, method="GET", payload=None):
         if url.endswith("/branches/main"):
             return {"commit": {"sha": sha}}
+        if url.endswith("/deploys") and method == "POST":
+            assert payload == {"clearCache": "do_not_clear", "commitId": sha}
+            timeline.append("exact-commit-post")
+            return {"id": "dep-receipt"}
         if "/deploys?" in url:
             timeline.append("provider-read")
             # Initial inventory is empty; subsequent read is verified LIVE.
@@ -198,6 +204,7 @@ def test_governed_live_receipt_requires_fenced_db_commit(monkeypatch, tmp_path):
     assert receipt["commit_sha"] == sha
     assert receipt["can_execute"] is False
     assert timeline.count("claim-before-post") == 1
+    assert timeline.count("exact-commit-post") == 1
     assert timeline.count("lease-renew-committed") == 1
     assert timeline.index("lease-renew-committed") < timeline.index("live-fence-committed")
 
@@ -240,4 +247,51 @@ def test_failed_durable_live_receipt_never_reports_worker_green(monkeypatch, tmp
         monkeypatch.setenv(key, value)
     with pytest.raises(ConnectionError):
         module.run()
+    assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
+
+
+
+def test_worker_deploy_refuses_main_revision_move_between_claim_and_post(monkeypatch, tmp_path):
+    """A newer main revision must prevent the sole authorized Render POST."""
+    import types
+
+    sha = "a" * 40
+    github_reads = []
+    render_posts = []
+    class Connection:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(
+        connect=lambda *args, **kwargs: Connection()
+    ))
+
+    def fake_request(url, token, method="GET", payload=None):
+        if url.endswith("/branches/main"):
+            github_reads.append(1)
+            return {"commit": {"sha": sha if len(github_reads) < 3 else "b" * 40}}
+        if "/deploys?" in url:
+            return []
+        if method == "POST":
+            render_posts.append(payload)
+            return {"id": "dep-unsafe"}
+        raise AssertionError(url)
+
+    monkeypatch.setattr(module, "request_json", fake_request)
+    def fake_initiate(**kwargs):
+        # Existing lease claim is simulated; initiation invokes the supplied
+        # safeguarded callback exactly once, just before provider creation.
+        return kwargs["post_deploy"]()
+    monkeypatch.setattr(module, "initiate_once", fake_initiate)
+    for key, value in {
+        "GH_API_TOKEN": "test-gh", "RENDER_API_KEY": "test-render",
+        "GITHUB_REPOSITORY": "example/repo", "TARGET_MAIN_SHA": sha,
+        "PRIMARY_RELEASE_RESULT": "success", "RUNNER_TEMP": str(tmp_path),
+        "WOW_RELEASE_CONTROL_DSN": "postgresql://ci-only/mock",
+        "GITHUB_RUN_ID": "ci-stale",
+    }.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(RuntimeError, match="WORKER_RELEASE_SHA_STALE_OR_INVALID"):
+        module.run()
+    assert len(github_reads) == 3
+    assert render_posts == []
     assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
