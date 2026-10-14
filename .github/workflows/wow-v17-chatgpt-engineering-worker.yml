@@ -823,7 +823,7 @@ jobs:
           sys.path.insert(0, str(root / "artifacts/wow-engine/v17"))
           from agent_identity_policy import governance_trust_roots
           protected = set(governance_trust_roots(root))
-          blocked_prefixes = (".github/", ".agents/", ".git/", ".wow-repair-target/",
+          blocked_prefixes = (".github/", ".agents/", ".codex/", ".git/", ".wow-repair-target/",
                               "artifacts/wow-engine/v17/.agent-handoff/")
           blocked_exact = {".gitmodules", ".gitattributes", ".gitignore", "CODEOWNERS"}
           def git(*args):
@@ -842,7 +842,7 @@ jobs:
           for path in paths:
               pure = pathlib.PurePosixPath(path)
               if (not path or path.startswith("/") or ".." in pure.parts or
-                      path in blocked_exact or pure.name == "CODEOWNERS" or
+                      path in blocked_exact or pure.name in {"CODEOWNERS", "AGENTS.md", ".gitattributes", ".gitmodules"} or
                       path in protected or path.startswith(blocked_prefixes) or
                       path.startswith("scripts/")):
                   raise SystemExit("REPAIR_PROTECTED_PATH_DENIED:" + path)
