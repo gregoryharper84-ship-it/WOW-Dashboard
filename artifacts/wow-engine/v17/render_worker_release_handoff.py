@@ -10,6 +10,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from render_worker_governed_initiator import initiate_once
 
 WORKER_SERVICE = "srv-dapkbc0473hc73c1978g"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -88,10 +89,28 @@ def run():
     current = list_deploys()
     state, deploy = choose_deploy(current, event_sha)
     if state == "ABSENT":
-        # Do not auto-POST: an ambiguous acknowledgement from an earlier run
-        # might still be processing, creating a duplicate deployment.
-        raise RuntimeError("WORKER_NO_EXACT_DEPLOY_REQUIRES_GOVERNED_INITIATION")
-    deploy_id = str((deploy or {}).get("id") or "")
+        dsn = os.environ.get("WOW_RELEASE_CONTROL_DSN", "")
+        if not dsn:
+            raise RuntimeError("WORKER_RELEASE_CONTROL_DSN_NOT_PROVISIONED")
+        # Only the independently authorized protected workflow may supply this
+        # private DB credential; connection must not be inferred or logged.
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise RuntimeError("WORKER_PSYCO_PG_DRIVER_UNAVAILABLE") from exc
+        with psycopg.connect(dsn, connect_timeout=10, autocommit=False) as conn:
+            handoff = initiate_once(
+                connection=conn, target_sha=event_sha,
+                current_main_sha=check_main(), owner_run_id=os.environ["GITHUB_RUN_ID"],
+                primary_release_result=os.environ["PRIMARY_RELEASE_RESULT"],
+                list_deploys=list_deploys,
+                post_deploy=lambda: request_json(base, render_token, method="POST", payload={"clearCache":"do_not_clear"}),
+            )
+        if handoff.state != "DEPLOYING" or not handoff.deploy_id:
+            raise RuntimeError("WORKER_DEPLOY_RECONCILIATION_REQUIRED")
+        deploy_id = handoff.deploy_id
+    else:
+        deploy_id = str((deploy or {}).get("id") or "")
     if not deploy_id.startswith("dep-"):
         raise RuntimeError("WORKER_DEPLOY_ID_MISSING")
     until = time.monotonic() + 900
