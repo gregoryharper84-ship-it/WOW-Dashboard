@@ -68,14 +68,14 @@ def sandbox(tmp_path: Path):
     gate = work / "artifacts/wow-engine/v17/incident_writer_lease.py"
     gate.parent.mkdir(parents=True)
     gate.write_text(
-        "import json,sys\\n"
-        "from pathlib import Path\\n"
-        "p=Path(sys.argv[sys.argv.index('--receipt')+1])\\n"
-        "try:\\n"
-        " rows=json.loads(p.read_text())\\n"
-        " assert len(rows)==1 and rows[0]['incident_id']==823\\n"
-        " assert rows[0]['epoch']==1 and rows[0]['owner_id']=='github-actions:99:1:fixture'\\n"
-        "except (OSError,ValueError,KeyError,AssertionError): sys.exit(3)\\n"
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        "p=Path(sys.argv[sys.argv.index('--receipt')+1])\n"
+        "try:\n"
+        " rows=json.loads(p.read_text())\n"
+        " assert len(rows)==1 and rows[0]['incident_id']==823\n"
+        " assert rows[0]['epoch']==1 and rows[0]['owner_id']=='github-actions:99:1:fixture'\n"
+        "except (OSError,ValueError,KeyError,AssertionError): sys.exit(3)\n"
     )
     _git(work, "init", "-q", env=env)
     (work / ".gitignore").write_text("__pycache__/\n/artifacts/wow-engine/v17/.agent-handoff/\n")
@@ -176,7 +176,7 @@ def test_reported_no_change_does_not_push(provider, sandbox):
 @pytest.mark.parametrize("provider", sorted(WORKFLOWS))
 def test_missing_writer_lease_blocks_git_push(provider, sandbox):
     work, bare, env = sandbox
-    (work / "module.py").write_text("x = 99\\n")
+    (work / "module.py").write_text("x = 99\n")
     proc, _, branch = _run(provider, work, env, changed=True, valid_lease=False)
     assert proc.returncode != 0
     assert "No such file" in proc.stderr or "Traceback" in proc.stderr
