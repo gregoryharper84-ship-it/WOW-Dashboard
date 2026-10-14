@@ -34,6 +34,8 @@ class _Query:
 
     def execute(self):
         if self.name == "wow_predictions" and self.mode == "select":
+            if getattr(self.db, "prediction_error", False):
+                raise ConnectionError("simulated prediction-store read outage")
             row = dict(self.db.prediction)
             if self.filters.get("prediction_id") == row["prediction_id"]:
                 return SimpleNamespace(data=[row])
@@ -301,3 +303,33 @@ def test_completed_prediction_without_matching_certified_release_not_a_canary_pa
     assert audit["eligible_rows"] == 0
     assert audit["persisted_rows"] == 0
     assert not db.receipts
+
+
+def test_prediction_store_outage_is_typed_not_reported_as_missing_prediction(monkeypatch):
+    """Follow-up to #1713: a wow_predictions read outage must not masquerade as NOT_FOUND."""
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    db = _DB(_prediction())
+    db.prediction_error = True
+
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert "CANARY_PREDICTION_STORE_UNAVAILABLE:ConnectionError" in audit["blockers"]
+    assert "CANARY_PERSISTED_PREDICTION_NOT_FOUND" not in audit["blockers"]
+    assert audit["status"] == "COMPLETED_WITH_BLOCKERS"
+    assert audit["persisted_rows"] == 0
+    assert db.receipts == []
+    assert audit["can_execute"] is False
+
+
+def test_genuinely_missing_prediction_stays_not_found(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    prediction = _prediction()
+    prediction["prediction_id"] = "22222222-2222-2222-2222-222222222222"
+    db = _DB(prediction)
+
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["blockers"] == ["CANARY_PERSISTED_PREDICTION_NOT_FOUND"]
+    assert audit["persisted_rows"] == 0 and db.receipts == []

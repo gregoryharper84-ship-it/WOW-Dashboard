@@ -53,6 +53,10 @@ def _finite_probability(value: Any) -> float | None:
     return number if math.isfinite(number) and 0.0 <= number <= 1.0 else None
 
 
+class _PredictionStoreUnavailable(RuntimeError):
+    """wow_predictions read failed; distinct from an authentically missing row."""
+
+
 def _persisted_prediction(db: Any, prediction_id: str) -> dict[str, Any] | None:
     try:
         rows = (
@@ -67,8 +71,9 @@ def _persisted_prediction(db: Any, prediction_id: str) -> dict[str, Any] | None:
             .limit(1)
             .execute().data or []
         )
-    except Exception:
-        return None
+    except Exception as exc:
+        # Never collapse a store outage into "prediction not found".
+        raise _PredictionStoreUnavailable(type(exc).__name__) from exc
     return dict(rows[0]) if rows else None
 
 
@@ -138,7 +143,11 @@ def capture_action_canary_receipts(
         if not prediction_id:
             blockers.append("CANARY_PREDICTION_ID_NOT_RETURNED")
             continue
-        prediction = _persisted_prediction(db, prediction_id)
+        try:
+            prediction = _persisted_prediction(db, prediction_id)
+        except _PredictionStoreUnavailable as exc:
+            blockers.append(f"CANARY_PREDICTION_STORE_UNAVAILABLE:{exc}")
+            continue
         if prediction is None:
             blockers.append("CANARY_PERSISTED_PREDICTION_NOT_FOUND")
             continue
