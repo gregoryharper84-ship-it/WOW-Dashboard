@@ -385,10 +385,8 @@ jobs:
                   actual = str(current["commit"]["sha"])
               if not re.fullmatch(r"[0-9a-f]{40}", actual) or actual != expected:
                   fail("HEAD_STALE_OR_UNKNOWN")
-          except (KeyError, TypeError, ValueError, OSError, Exception) as exc:
+          except Exception as exc:
               # Only type names are emitted; never print URL, token or body.
-              if isinstance(exc, SystemExit):
-                  raise
               fail(f"VERIFICATION_UNAVAILABLE_{type(exc).__name__}")
           print("EXACT_HEAD_GATE_PASS")
           PY
