@@ -272,6 +272,9 @@ def _weather_context(feed: dict[str, Any]) -> WeatherContext:
 def _feature_map(row: dict[str, Any]) -> dict[str, float]:
     names = row.get("feature_names") or []; vals = row.get("feature_vector") or []
     if len(names) != len(vals): raise ProspectiveModelUnavailable("feature_vector_mismatch")
+    # bool subclasses int; reject before float(True) silently becomes 1.0.
+    if any(isinstance(value, bool) for value in vals):
+        raise ProspectiveModelUnavailable("feature_vector_invalid")
     try:
         parsed = {str(n): float(v) for n, v in zip(names, vals)}
     except (TypeError, ValueError) as exc:
