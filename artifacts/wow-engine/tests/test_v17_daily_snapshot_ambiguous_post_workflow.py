@@ -1,7 +1,7 @@
 """Protected workflow regression: ambiguous POST must never silently retry scoring."""
 from pathlib import Path
 
-WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "wow-v17-daily-snapshot.yml"
+WORKFLOW = Path(__file__).resolve().parents[3] / ".github" / "workflows" / "wow-v17-daily-snapshot.yml"
 
 
 def test_snapshot_write_like_post_not_blind_retried():
