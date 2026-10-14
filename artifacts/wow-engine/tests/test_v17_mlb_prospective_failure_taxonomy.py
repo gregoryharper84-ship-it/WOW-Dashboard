@@ -108,6 +108,15 @@ def test_nonfinite_feature_vector_fails_closed_as_input(bad_value):
     assert failure.can_execute is False
 
 
+@pytest.mark.parametrize("boolean", [True, False])
+def test_boolean_feature_vector_is_invalid_model_input(boolean):
+    with pytest.raises(ProspectiveModelUnavailable, match="feature_vector_invalid") as caught:
+        _feature_map({"feature_names": ["opp_starter_era"], "feature_vector": [boolean]})
+    failure = classify_mlb_prospective_failure(caught.value)
+    assert failure.code == MODEL_INPUTS_INSUFFICIENT
+    assert failure.can_execute is False
+
+
 def test_calibration_training_count_has_required_numeric_preflight():
     source = (Path(__file__).resolve().parents[1] / "mlb_event_specialist_v16.py").read_text()
     assert '("intercept_shift", "prior_games"), source="calibration"' in source
