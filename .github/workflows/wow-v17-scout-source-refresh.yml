@@ -36,22 +36,62 @@ jobs:
         id: credentials
         shell: bash
         run: |
-          if [ -n "$WOW_SCOUT_DATABASE_URL" ] && [ -n "$WOW_SPORTSDATAIO_API_KEY" ]; then
+          mkdir -p "$RUNNER_TEMP/scout-source-refresh"
+          database_configured=false
+          provider_configured=false
+          [ -n "$WOW_SCOUT_DATABASE_URL" ] && database_configured=true
+          [ -n "$WOW_SPORTSDATAIO_API_KEY" ] && provider_configured=true
+
+          echo "database_configured=$database_configured" >> "$GITHUB_OUTPUT"
+          echo "provider_configured=$provider_configured" >> "$GITHUB_OUTPUT"
+
+          if [ "$database_configured" = "true" ] && [ "$provider_configured" = "true" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "Scout source refresh skipped fail-closed: database and/or SportsDataIO credential is unconfigured." >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Scout structured-source refresh is blocked by missing runtime configuration."
           fi
+
+      - name: Write blocked source refresh receipt
+        if: steps.credentials.outputs.configured != 'true'
+        shell: bash
+        env:
+          DATABASE_CONFIGURED: ${{ steps.credentials.outputs.database_configured }}
+          PROVIDER_CONFIGURED: ${{ steps.credentials.outputs.provider_configured }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "schema_version": "wow.v17.scout_source_refresh.v2",
+              "status": "BLOCKED_SOURCE_CONFIGURATION",
+              "configuration": {
+                  "database_configured": os.environ.get("DATABASE_CONFIGURED") == "true",
+                  "sportsdataio_configured": os.environ.get("PROVIDER_CONFIGURED") == "true",
+              },
+              "successful_snapshots": [],
+              "blocked_snapshots": [],
+              "prediction_authority": False,
+              "can_execute": False,
+          }
+          path = Path(os.environ["RUNNER_TEMP"]) / "scout-source-refresh" / "receipt.json"
+          path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, sort_keys=True))
+          PY
+          cat "$RUNNER_TEMP/scout-source-refresh/receipt.json" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Refresh raw structured source snapshots
         if: steps.credentials.outputs.configured == 'true'
         run: |
-          mkdir -p "$RUNNER_TEMP/scout-source-refresh"
           python v17/scout_source_refresh.py --output "$RUNNER_TEMP/scout-source-refresh/receipt.json"
           cat "$RUNNER_TEMP/scout-source-refresh/receipt.json" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload source refresh receipt
-        if: steps.credentials.outputs.configured == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-scout-source-refresh-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/scout-source-refresh/receipt.json
+          if-no-files-found: error
           retention-days: 90
