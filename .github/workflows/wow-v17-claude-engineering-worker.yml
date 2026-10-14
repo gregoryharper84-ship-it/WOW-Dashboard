@@ -154,6 +154,36 @@ jobs:
           echo "queue_depth=$queue_depth" >> "$GITHUB_OUTPUT"
           echo "lease_group=$lease_group" >> "$GITHUB_OUTPUT"
 
+      - name: Claim authoritative incident writer lease
+        if: steps.dispatch.outputs.restoration != '' || steps.dispatch.outputs.acceleration != ''
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESTORATION: ${{ steps.dispatch.outputs.restoration }}
+          ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
+          LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
+        run: |
+          set -euo pipefail
+          incidents="${RESTORATION},${ACCELERATION}"
+          if [[ ",${incidents}," == *",823,"* ]]; then
+            echo "::error::MANUAL_WRITER_RESERVED:823:PR_1728"
+            exit 1
+          fi
+          python artifacts/wow-engine/v17/incident_writer_lease.py claim --receipt "$RUNNER_TEMP/wow-incident-lease.json" --incidents "$incidents" --owner "github-actions:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:${{ github.workflow }}" --group "${LEASE_GROUP:-GLOBAL}"
+
+      - name: Start lease renewal heartbeat
+        if: steps.dispatch.outputs.restoration != '' || steps.dispatch.outputs.acceleration != ''
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/wow-incident-lease.json" || { echo "::error::LEASE_RECEIPT_MISSING"; exit 1; }
+          nohup python artifacts/wow-engine/v17/incident_writer_lease.py heartbeat --receipt "$RUNNER_TEMP/wow-incident-lease.json" > "$RUNNER_TEMP/wow-lease-heartbeat.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/wow-lease-heartbeat.pid"
+
       - name: Initialize persistent-worker safety state
         id: safety
         shell: bash
@@ -552,6 +582,8 @@ jobs:
         if: steps.implementation_agent.outcome == 'success'
         shell: bash
         env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           RESULT: ${{ steps.implementation_agent.outputs.structured_output }}
           GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}
           EXPECTED_INCIDENT: ${{ steps.triage.outputs.incident }}
@@ -584,6 +616,7 @@ jobs:
             git switch -c "$branch"
             git add --all
             git commit -m "Claude Engineering: ${incident:-fallback-repair}"
+            python artifacts/wow-engine/v17/incident_writer_lease.py gate --receipt "$RUNNER_TEMP/wow-incident-lease.json"
             git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             git push --set-upstream origin "$branch"
             head_sha=$(git rev-parse HEAD)
@@ -804,6 +837,8 @@ jobs:
         if: steps.impl.outputs.changed == 'true'
         shell: bash
         env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           BRANCH: ${{ steps.impl.outputs.branch }}
           INCIDENT: ${{ steps.impl.outputs.incident }}
@@ -863,6 +898,7 @@ jobs:
             fi
           } > "$body"
           title="Claude Engineering: ${INCIDENT:-fallback-repair}"
+          python artifacts/wow-engine/v17/incident_writer_lease.py gate --receipt "$RUNNER_TEMP/wow-incident-lease.json"
           if [ "$gates" = "PASS" ]; then
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --title "$title" --body-file "$body"
           else
@@ -1240,3 +1276,16 @@ jobs:
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Release authoritative incident writer lease
+        if: always()
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/wow-lease-heartbeat.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/wow-lease-heartbeat.pid")" 2>/dev/null || true
+          fi
+          python artifacts/wow-engine/v17/incident_writer_lease.py release --receipt "$RUNNER_TEMP/wow-incident-lease.json"
+
