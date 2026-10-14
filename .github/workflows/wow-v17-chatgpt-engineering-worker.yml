@@ -781,22 +781,86 @@ jobs:
             artifacts/wow-engine/v17/.agent-handoff/specialist-route.json \
             artifacts/wow-engine/v17/.agent-handoff/claude-peer-diagnosis.json
           if [ "$changed" = "true" ]; then
-            # git diff ignores untracked files; a repair that only adds files is a real change (#1021).
-            [ -z "$(git status --porcelain)" ] && { echo "::error::ChatGPT reported changes but returned no working-tree diff."; exit 1; }
-            branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            if [ -n "${REPAIR_BRANCH:-}" ]; then branch="$REPAIR_BRANCH"; fi
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            if [ -z "${REPAIR_BRANCH:-}" ]; then git switch -c "$branch"; fi
-            git add --all
-            git commit -m "ChatGPT Engineering: ${incident:-nightly-repair}"
-            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-            if [ -n "${REPAIR_BRANCH:-}" ]; then
-              git push origin "HEAD:refs/heads/$branch" --force-with-lease="refs/heads/$branch:$REPAIR_SHA"
-            else
-              git push --set-upstream origin "$branch"
+            branch="chatgpt/engineering/\${GITHUB_RUN_ID}-\${GITHUB_RUN_ATTEMPT}"
+            target="$GITHUB_WORKSPACE"
+            if [ -n "\${REPAIR_BRANCH:-}" ]; then
+              branch="$REPAIR_BRANCH"
+              target="$GITHUB_WORKSPACE/.wow-repair-target"
+              [ "$(git -C "$target" rev-parse HEAD)" = "$REPAIR_SHA" ] || {
+                echo "::error::REPAIR_WORKTREE_HEAD_MOVED"; exit 1;
+              }
+              [ "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$GITHUB_SHA" ] || {
+                echo "::error::TRUSTED_CHECKOUT_HEAD_MOVED"; exit 1;
+              }
             fi
-            head_sha=$(git rev-parse HEAD)
+            [ -n "$(git -C "$target" status --porcelain)" ] || {
+              echo "::error::ENGINEERING_CHANGED_BUT_NO_DIFF"; exit 1;
+            }
+            git -C "$target" add --all
+            # Enforce changed-file policy using ONLY trusted protected-main code.
+            WOW_PATCH_TARGET="$target" python - <<'PY'
+          import os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          target = pathlib.Path(os.environ["WOW_PATCH_TARGET"])
+          sys.path.insert(0, str(root / "artifacts/wow-engine/v17"))
+          from agent_identity_policy import governance_trust_roots
+          protected = set(governance_trust_roots(root))
+          blocked_prefixes = (".github/", ".agents/", ".git/", ".wow-repair-target/",
+                              "artifacts/wow-engine/v17/.agent-handoff/")
+          blocked_exact = {".gitmodules", ".gitattributes", ".gitignore", "CODEOWNERS"}
+          def git(*args):
+              return subprocess.run(["git", "-C", str(target), *args], check=True,
+                                    stdout=subprocess.PIPE).stdout
+          paths = [p.decode("utf-8", errors="strict")
+                   for p in git("diff", "--cached", "--name-only", "--no-renames", "-z").split(b"\0") if p]
+          if not paths or len(paths) > 24:
+              raise SystemExit("REPAIR_STAGED_FILE_COUNT_INVALID")
+          modes = {}
+          for item in git("ls-files", "-s", "-z").split(b"\0"):
+              if not item:
+                  continue
+              metadata, name = item.split(b"\t", 1)
+              modes[name.decode("utf-8", errors="strict")] = metadata.split()[0].decode()
+          for path in paths:
+              pure = pathlib.PurePosixPath(path)
+              if (not path or path.startswith("/") or ".." in pure.parts or
+                      path in blocked_exact or pure.name == "CODEOWNERS" or
+                      path in protected or path.startswith(blocked_prefixes) or
+                      path.startswith("scripts/")):
+                  raise SystemExit("REPAIR_PROTECTED_PATH_DENIED:" + path)
+              if path in modes and modes[path] != "100644":
+                  raise SystemExit("REPAIR_UNSAFE_FILE_MODE:" + path)
+          if len(git("diff", "--cached", "--binary")) > 1024 * 1024:
+              raise SystemExit("REPAIR_DIFF_SIZE_EXCEEDED")
+          git("diff", "--cached", "--check")
+          print("REPAIR_STAGED_DIFF_GUARD_PASS", len(paths))
+          PY
+            git -C "$target" config user.name "github-actions[bot]"
+            git -C "$target" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            if [ -z "\${REPAIR_BRANCH:-}" ]; then
+              git -C "$target" switch -c "$branch"
+            fi
+            git -C "$target" commit -m "ChatGPT Engineering: \${incident:-nightly-repair}"
+            if [ -n "\${REPAIR_BRANCH:-}" ]; then
+              [ "$(git -C "$target" rev-parse HEAD^)" = "$REPAIR_SHA" ] || {
+                echo "::error::REPAIR_PARENT_SHA_MISMATCH"; exit 1;
+              }
+            fi
+            # A ref fence plus ordinary push prevents non-fast-forward replacement.
+            git -C "$target" remote set-url origin "https://x-access-token:\${GITHUB_TOKEN}@github.com/\${GITHUB_REPOSITORY}.git"
+            trap 'git -C "$target" remote set-url origin "https://github.com/\${GITHUB_REPOSITORY}.git"' EXIT
+            if [ -n "\${REPAIR_BRANCH:-}" ]; then
+              remote_sha=$(git -C "$target" ls-remote origin "refs/heads/$branch" | awk '{print $1}')
+              [ "$remote_sha" = "$REPAIR_SHA" ] || {
+                echo "::error::REPAIR_REMOTE_HEAD_MOVED"; exit 1;
+              }
+              git -C "$target" push origin "HEAD:refs/heads/$branch"
+            else
+              git -C "$target" push --set-upstream origin "$branch"
+            fi
+            head_sha=$(git -C "$target" rev-parse HEAD)
+            git -C "$target" remote set-url origin "https://github.com/\${GITHUB_REPOSITORY}.git"
+            trap - EXIT
           fi
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
           echo "risk=$risk" >> "$GITHUB_OUTPUT"
