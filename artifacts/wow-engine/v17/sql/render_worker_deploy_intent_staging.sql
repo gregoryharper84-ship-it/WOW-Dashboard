@@ -90,25 +90,16 @@ begin
     raise exception 'WORKER_DEPLOY_TRANSITION_INVALID_FROM_STATE';
   end if;
   if p_state='DEPLOYING' and
-     (p_render_deploy_id is null or p_render_deploy_id !~ '^dep-[a-z0-9]+
      (p_render_deploy_id is null or p_render_deploy_id !~ '^dep-[a-z0-9]+$') then
-    raise exception 'WORKER_DEPLOY_LIVE_RECEIPT_MISSING';
-  end if;
-  update wow_release_control.render_worker_deploy_intents
-     set state=p_state,
-         render_deploy_id=coalesce(p_render_deploy_id,v.render_deploy_id),
-         updated_at=clock_timestamp()
-   where service_id=p_service_id and target_sha=p_target_sha;
-  return true;
-end;
-$$;
-revoke all on function wow_release_control.record_render_worker_deploy(text,text,text,bigint,text,text) from public, anon, authenticated;
-) then
     raise exception 'WORKER_DEPLOY_ACTIVE_RECEIPT_MISSING';
   end if;
   if p_state='LIVE_VERIFIED' and
      (p_render_deploy_id is null or p_render_deploy_id !~ '^dep-[a-z0-9]+$') then
     raise exception 'WORKER_DEPLOY_LIVE_RECEIPT_MISSING';
+  end if;
+  if v.render_deploy_id is not null and p_render_deploy_id is not null
+     and v.render_deploy_id <> p_render_deploy_id then
+    raise exception 'WORKER_DEPLOY_IDENTITY_CHANGED';
   end if;
   update wow_release_control.render_worker_deploy_intents
      set state=p_state,
