@@ -8,8 +8,8 @@ def test_worker_preserves_edits_when_openai_agent_returns_working_tree_changes()
     text = WORKFLOW.read_text()
     assert 'ChatGPT reported changes but returned no working-tree diff.' in text
     assert 'branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"' in text
-    assert 'git switch -c "$branch"' in text
-    assert 'git add --all' in text
+    assert 'git -C "$target" switch -c "$branch"' in text
+    assert 'git -C "$target" add --all' in text
     assert 'git commit -m "ChatGPT Engineering: ${incident:-nightly-repair}"' in text
     assert 'git push --set-upstream origin "$branch"' in text
     # Push authors as wow-engineering[bot] via the minted App token, not the ambient
@@ -46,7 +46,7 @@ def test_exact_head_repair_target_is_fail_closed_and_branch_fenced():
         'REPAIR_INCIDENT_MISMATCH',
         'REPAIR_HEAD_MOVED',
         'REPAIR_BRANCH_INVALID',
-        '--force-with-lease="refs/heads/$branch:$REPAIR_SHA"',
+        'REPAIR_REMOTE_HEAD_MOVED',
         'steps.repair_target.outputs.bound != \'true\'',
     ):
         assert signal in text
@@ -130,7 +130,7 @@ def test_bound_repair_context_reaches_independent_agents_and_same_branch_writer(
     assert "exclusively binds your repair to the existing Engineering App PR" in text
     assert "Fix that PR's reproduced regression" in text
     assert 'if [ -n "${REPAIR_BRANCH:-}" ]; then branch="$REPAIR_BRANCH"; fi' in text
-    assert '--force-with-lease="refs/heads/$branch:$REPAIR_SHA"' in text
+    assert '--force-with-lease="refs/heads/$branch:$REPAIR_SHA"' not in text
     assert "          rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json" in text
-    assert text.index("rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json") < text.index("git add --all")
+    assert text.index("rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json") < text.index('git -C "$target" add --all')
     assert "steps.repair_target.outputs.bound != 'true'" in text
