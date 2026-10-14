@@ -153,3 +153,36 @@ def test_kickoff_exactly_now_not_future():
     inv = replace(inv, fixtures=(replace(inv.fixtures[0], start_utc=BASE-timedelta(minutes=30)),) + inv.fixtures[1:])
     r = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA, trusted_now=BASE-timedelta(minutes=30))
     assert "NFL_WEEK_KICKOFF_NOT_FUTURE" in r["blockers"]
+
+
+def test_forged_thin_ready_plan_cannot_pass_full_week_reconciliation():
+    s, inv = example()
+    plan = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA, trusted_now=BASE-timedelta(minutes=30))
+    # Simulate a downstream caller bypassing the authenticated plan builder.
+    thin = {**plan, "expected_event_ids": ["g0"], "dates": [{"requested_slate_date": plan["dates"][0]["requested_slate_date"], "expected_event_ids": ["g0"]}]}
+    result = reconcile_nfl_week_snapshots(thin, responses(thin))
+    assert result["status"] == "PREFLIGHT_HELD"
+    assert "NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID" in result["blockers"]
+    assert result["probability_publishable"] is False
+
+
+def test_truncated_ready_plan_date_bucket_fails_closed():
+    s, inv = example()
+    plan = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA, trusted_now=BASE-timedelta(minutes=30))
+    partial = {**plan, "dates": plan["dates"][:-1]}
+    result = reconcile_nfl_week_snapshots(partial, responses(partial))
+    assert "NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID" in result["blockers"]
+
+
+def test_duplicate_or_malformed_date_bucket_fails_closed():
+    s, inv = example()
+    plan = plan_nfl_week_dates(s, inv, independently_authenticated_source_sha256=SHA, trusted_now=BASE-timedelta(minutes=30))
+    duplicate = {**plan, "dates": plan["dates"] + [plan["dates"][0]]}
+    assert "NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID" in reconcile_nfl_week_snapshots(duplicate, responses(plan))["blockers"]
+    malformed = {**plan, "dates": [{"requested_slate_date": "not-a-date", "expected_event_ids": plan["expected_event_ids"]}]}
+    assert "NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID" in reconcile_nfl_week_snapshots(malformed, {})["blockers"]
+
+
+def test_malformed_ready_plan_never_raises_or_approves():
+    assert reconcile_nfl_week_snapshots(None, {})["status"] == "PREFLIGHT_HELD"
+    assert "NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID" in reconcile_nfl_week_snapshots({"status": "DATE_PLAN_READY_NOT_ACTION_ACCEPTED"}, {})["blockers"]
