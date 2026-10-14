@@ -17,6 +17,8 @@ def test_ml_discovery_repairs_stale_rundown_transport_before_snapshot(monkeypatc
         endpoints=stale_endpoints,
     )
 
+    monkeypatch.setenv("WOW_RUNDOWN_WINNER_MARKET_IDS", "1")
+    monkeypatch.setenv("WOW_RUNDOWN_WINNER_AFFILIATE_IDS", "2")
     monkeypatch.setattr(board, "snapshot_dates", lambda: ["2026-09-20"])
     observed: dict[str, object] = {}
 
