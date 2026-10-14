@@ -53,7 +53,15 @@ def run():
         data = request_json(base + "?limit=20", render_token)
         if not isinstance(data, list):
             raise RuntimeError("WORKER_DEPLOYS_RESPONSE_INVALID")
-        return [v.get("deploy", v) for v in data]
+        results = []
+        for row in data:
+            if not isinstance(row, dict):
+                raise RuntimeError("WORKER_DEPLOY_ENTRY_INVALID")
+            item = row.get("deploy", row)
+            if not isinstance(item, dict):
+                raise RuntimeError("WORKER_DEPLOY_ENTRY_INVALID")
+            results.append(item)
+        return results
     def check_main():
         actual = gh("/branches/main")["commit"]["sha"]
         return validated_target(actual, event_sha, os.environ["PRIMARY_RELEASE_RESULT"])
@@ -61,21 +69,9 @@ def run():
     current = list_deploys()
     state, deploy = choose_deploy(current, event_sha)
     if state == "ABSENT":
-        check_main()
-        result = request_json(base, render_token, "POST", {"clearCache": "do_not_clear"})
-        if not isinstance(result, dict):
-            raise RuntimeError("WORKER_DEPLOY_ACK_INVALID")
-        deploy = result.get("deploy", result)
-        if not isinstance(deploy, dict):
-            raise RuntimeError("WORKER_DEPLOY_ACK_INVALID")
-        if (deploy.get("commit") or {}).get("id") not in (None, event_sha):
-            raise RuntimeError("WORKER_DEPLOY_CREATED_WRONG_SHA")
-        if not deploy.get("id"):
-            check_main()
-            _, reconciled = choose_deploy(list_deploys(), event_sha)
-            if reconciled is None:
-                raise RuntimeError("WORKER_POST_ACK_UNRECONCILED_NO_RETRY")
-            deploy = reconciled
+        # Do not auto-POST: an ambiguous acknowledgement from an earlier run
+        # might still be processing, creating a duplicate deployment.
+        raise RuntimeError("WORKER_NO_EXACT_DEPLOY_REQUIRES_GOVERNED_INITIATION")
     deploy_id = str((deploy or {}).get("id") or "")
     if not deploy_id.startswith("dep-"):
         raise RuntimeError("WORKER_DEPLOY_ID_MISSING")
