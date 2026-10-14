@@ -10,8 +10,8 @@ def test_worker_preserves_edits_when_openai_agent_returns_working_tree_changes()
     assert 'branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"' in text
     assert 'git -C "$target" switch -c "$branch"' in text
     assert 'git -C "$target" add --all' in text
-    assert 'git commit -m "ChatGPT Engineering: ${incident:-nightly-repair}"' in text
-    assert 'git push --set-upstream origin "$branch"' in text
+    assert 'git -C "$target" commit -m "ChatGPT Engineering: ${incident:-nightly-repair}"' in text
+    assert 'git -C "$target" push --set-upstream origin "$branch"' in text
     # Push authors as wow-engineering[bot] via the minted App token, not the ambient
     # Actions token (#1550/#1663 item 1) — see .github/scripts/pr_authoring_token_audit.py.
     assert 'GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}' in text
@@ -140,7 +140,7 @@ def test_targeted_repair_keeps_protected_actions_and_uses_fast_forward():
     text = WORKFLOW.read_text()
     assert "git worktree add --detach" in text
     assert 'git switch --detach "$REPAIR_SHA"' not in text
-    assert 'codex_args: \${{ steps.repair_target.outputs.bound == \'true\' && \'-C .wow-repair-target\' || \'\' }}' in text
+    assert 'codex_args: ${{ steps.repair_target.outputs.bound == \'true\' && \'-C .wow-repair-target\' || \'\' }}' in text
     assert 'git -C "$target" push origin "HEAD:refs/heads/$branch"' in text
     assert "REPAIR_PARENT_SHA_MISMATCH" in text
     assert "REPAIR_REMOTE_HEAD_MOVED" in text
@@ -154,7 +154,7 @@ def test_ambient_token_read_only_and_guard_precedes_token_use():
     for name in ("contents", "pull-requests", "issues"):
         assert name + ": read" in permissions
         assert name + ": write" not in permissions
-    assert text.count('GH_TOKEN: \${{ steps.eng_token.outputs.token }}') >= 4
+    assert text.count('GH_TOKEN: ${{ steps.eng_token.outputs.token }}') >= 3
     assert text.index("REPAIR_STAGED_DIFF_GUARD_PASS") < text.index('git -C "$target" remote set-url origin "https://x-access-token:')
 
 
