@@ -886,11 +886,19 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout implementation branch
-        if: steps.impl.outputs.changed == 'true'
+      - name: Checkout implementation branch (ordinary newly authored PR only)
+        if: steps.impl.outputs.changed == 'true' && steps.repair_target.outputs.bound != 'true'
         run: |
           git fetch origin "${{ steps.impl.outputs.branch }}"
           git switch "${{ steps.impl.outputs.branch }}"
+      # Existing PR repair never switches the trusted action/source checkout.
+      # Independent new-head CI on the PR is the only executable test of the
+      # untrusted repair; this job must not run candidate pytest with App secrets.
+      - name: Targeted repair awaits independent PR verification
+        if: steps.impl.outputs.changed == 'true' && steps.repair_target.outputs.bound == 'true'
+        run: |
+          echo "::warning::TARGETED_REPAIR_PR_CI_REQUIRED: same-branch patch pushed but not independently accepted"
+          echo "Repair is NOT verified; require latest exact-head protected CI and QA/Release App PASS." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Independent Review agent
         id: review_agent
@@ -899,6 +907,7 @@ jobs:
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
+          working_directory: ${{ steps.repair_target.outputs.bound == 'true' && format('{0}/.wow-repair-target', github.workspace) || github.workspace }}
           prompt: |
             You are the independent WOW V17 INDEPENDENT_REVIEW_AGENT running on OpenAI/ChatGPT tooling only.
             Read .agents/skills/wow-engineering-independent-review-agent/SKILL.md.
@@ -981,7 +990,8 @@ jobs:
 
       - name: Deterministic QA regression
         id: regression
-        if: steps.review.outputs.decision == 'PASS' && steps.claude_review.outputs.decision != 'REJECT' && (steps.architect.outputs.decision == 'PASS' || steps.architect.outputs.decision == 'NOT_APPLICABLE')
+        # Candidate PR code runs in isolated GitHub PR CI, never here with App secrets.
+        if: steps.repair_target.outputs.bound != 'true' && steps.review.outputs.decision == 'PASS' && steps.claude_review.outputs.decision != 'REJECT' && (steps.architect.outputs.decision == 'PASS' || steps.architect.outputs.decision == 'NOT_APPLICABLE')
         shell: bash
         working-directory: artifacts/wow-engine
         run: |
@@ -1076,6 +1086,7 @@ jobs:
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
+          working_directory: ${{ steps.repair_target.outputs.bound == 'true' && format('{0}/.wow-repair-target', github.workspace) || github.workspace }}
           prompt: |
             You are the independent WOW V17 QA_VERIFICATION_AGENT running on OpenAI/ChatGPT tooling only.
             Read .agents/skills/wow-engineering-qa-verification-agent/SKILL.md.
