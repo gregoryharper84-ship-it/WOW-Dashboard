@@ -6,7 +6,7 @@ WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/wow-v17-chat
 
 def test_worker_preserves_edits_when_openai_agent_returns_working_tree_changes():
     text = WORKFLOW.read_text()
-    assert 'ChatGPT reported changes but returned no working-tree diff.' in text
+    assert 'ENGINEERING_CHANGED_BUT_NO_DIFF' in text
     assert 'branch="chatgpt/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"' in text
     assert 'git -C "$target" switch -c "$branch"' in text
     assert 'git -C "$target" add --all' in text
@@ -129,7 +129,8 @@ def test_bound_repair_context_reaches_independent_agents_and_same_branch_writer(
     assert text.count(".agent-handoff/repair-context.json") >= 5
     assert "exclusively binds your repair to the existing Engineering App PR" in text
     assert "Fix that PR's reproduced regression" in text
-    assert 'if [ -n "${REPAIR_BRANCH:-}" ]; then branch="$REPAIR_BRANCH"; fi' in text
+    assert 'if [ -n "${REPAIR_BRANCH:-}" ]; then' in text
+    assert 'branch="$REPAIR_BRANCH"' in text
     assert '--force-with-lease="refs/heads/$branch:$REPAIR_SHA"' not in text
     assert "          rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json" in text
     assert text.index("rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json") < text.index('git -C "$target" add --all')
