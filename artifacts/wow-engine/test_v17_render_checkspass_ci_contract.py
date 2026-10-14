@@ -17,7 +17,18 @@ def test_render_checkspass_verifiers_run_on_main_and_never_cancel_main_runs():
             f"group: {workflow_name}-${{{{ github.event_name }}}}-${{{{ github.ref }}}}"
             in text
         ), workflow_name
-        assert (
-            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in text
-        ), workflow_name
+
+        # For wow-engine-verify we accept the intentional change in PR #1736
+        # to use `cancel-in-progress: false` (queue PR verifier runs) while
+        # retaining the stricter contract for other verifier workflows.
+        if workflow_name == "wow-engine-verify":
+            assert (
+                "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in text
+                or "cancel-in-progress: false" in text
+            ), workflow_name
+        else:
+            assert (
+                "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in text
+            ), workflow_name
+
         assert "cancel-in-progress: true" not in text, workflow_name
