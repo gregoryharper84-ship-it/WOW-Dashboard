@@ -229,3 +229,13 @@ def test_staged_guard_rejects_giant_patch(tmp_path):
     result = _guard_repo(tmp_path, changes={"src/ok.py": "z" * (1024 * 1024 + 1)})
     assert result.returncode != 0
     assert "REPAIR_DIFF_SIZE_EXCEEDED" in result.stderr + result.stdout
+
+
+def test_codex_wrapper_scopes_unprivileged_write_permissions():
+    action = (WORKFLOW.parent.parent / 'actions/wow-chatgpt-agent/action.yml').read_text()
+    assert 'CODEX_WORKSPACE_OUTSIDE_TRUSTED_REPOSITORY' in action
+    assert 'candidate.resolve(strict=True)' in action
+    assert 'if candidate != root and root not in candidate.parents:' in action
+    assert 'chmod -R g+rwX "$target"' in action
+    assert 'chmod -R g+rwX "$GITHUB_WORKSPACE"' not in action
+    assert 'working-directory: ${{ inputs.working_directory }}' in action
