@@ -222,6 +222,18 @@ jobs:
           fi
           python artifacts/wow-engine/v17/incident_writer_lease.py claim --receipt "$RUNNER_TEMP/wow-incident-lease.json" --incidents "$incidents" --owner "github-actions:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:${{ github.workflow }}" --group "${LEASE_GROUP:-GLOBAL}"
 
+      - name: Start lease renewal heartbeat
+        if: steps.dispatch.outputs.restoration != '' || steps.dispatch.outputs.acceleration != ''
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/wow-incident-lease.json" || { echo "::error::LEASE_RECEIPT_MISSING"; exit 1; }
+          nohup python artifacts/wow-engine/v17/incident_writer_lease.py heartbeat --receipt "$RUNNER_TEMP/wow-incident-lease.json" > "$RUNNER_TEMP/wow-lease-heartbeat.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/wow-lease-heartbeat.pid"
+
       - name: Initialize persistent-worker safety state
         id: safety
         shell: bash
@@ -1273,5 +1285,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -euo pipefail
+          if [ -f "$RUNNER_TEMP/wow-lease-heartbeat.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/wow-lease-heartbeat.pid")" 2>/dev/null || true
+          fi
           python artifacts/wow-engine/v17/incident_writer_lease.py release --receipt "$RUNNER_TEMP/wow-incident-lease.json"
 
