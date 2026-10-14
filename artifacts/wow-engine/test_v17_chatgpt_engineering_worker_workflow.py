@@ -134,3 +134,96 @@ def test_bound_repair_context_reaches_independent_agents_and_same_branch_writer(
     assert "          rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json" in text
     assert text.index("rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json") < text.index('git -C "$target" add --all')
     assert "steps.repair_target.outputs.bound != 'true'" in text
+
+
+def test_targeted_repair_keeps_protected_actions_and_uses_fast_forward():
+    text = WORKFLOW.read_text()
+    assert "git worktree add --detach" in text
+    assert 'git switch --detach "$REPAIR_SHA"' not in text
+    assert 'codex_args: \${{ steps.repair_target.outputs.bound == \'true\' && \'-C .wow-repair-target\' || \'\' }}' in text
+    assert 'git -C "$target" push origin "HEAD:refs/heads/$branch"' in text
+    assert "REPAIR_PARENT_SHA_MISMATCH" in text
+    assert "REPAIR_REMOTE_HEAD_MOVED" in text
+    assert "--force-with-lease" not in text
+    assert "git -C \"$target\" remote set-url origin \"https://github.com/" in text
+
+
+def test_ambient_token_read_only_and_guard_precedes_token_use():
+    text = WORKFLOW.read_text()
+    permissions = text.split("permissions:\n", 1)[1].split("\njobs:", 1)[0]
+    for name in ("contents", "pull-requests", "issues"):
+        assert name + ": read" in permissions
+        assert name + ": write" not in permissions
+    assert text.count('GH_TOKEN: \${{ steps.eng_token.outputs.token }}') >= 4
+    assert text.index("REPAIR_STAGED_DIFF_GUARD_PASS") < text.index('git -C "$target" remote set-url origin "https://x-access-token:')
+
+
+def _trusted_staged_guard():
+    """Extract the real production guard from workflow; do not duplicate logic."""
+    import textwrap
+    text = WORKFLOW.read_text()
+    marker = """WOW_PATCH_TARGET="$target" python - <<'PY'\n"""
+    assert text.count(marker) == 1
+    return textwrap.dedent(text.split(marker, 1)[1].split("\n          PY", 1)[0])
+
+
+def _guard_repo(tmp_path, *, changes):
+    import os
+    import subprocess
+    import sys
+    root = tmp_path / "trusted"
+    policy = root / "artifacts/wow-engine/v17"
+    policy.mkdir(parents=True)
+    (policy / "agent_identity_policy.py").write_text(
+        "def governance_trust_roots(root):\n"
+        "    return ['artifacts/wow-engine/v17/agent_identity_policy.py']\n")
+    (root / "src").mkdir()
+    (root / "src/ok.py").write_text("value = 1\n")
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args],
+                              check=True, capture_output=True, text=True)
+    git("init", "-q")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.com")
+    git("add", ".")
+    git("commit", "-qm", "baseline")
+    for name, content in changes.items():
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if content == "SYMLINK":
+            target.symlink_to("/tmp/untrusted")
+        else:
+            target.write_text(content)
+    git("add", "-A")
+    env = dict(os.environ, GITHUB_WORKSPACE=str(root), WOW_PATCH_TARGET=str(root))
+    return subprocess.run([sys.executable, "-c", _trusted_staged_guard()],
+                          cwd=root, capture_output=True, text=True, env=env)
+
+
+def test_staged_guard_accepts_plain_source_patch(tmp_path):
+    result = _guard_repo(tmp_path, changes={"src/ok.py": "value = 2\n"})
+    assert result.returncode == 0, result.stderr
+    assert "REPAIR_STAGED_DIFF_GUARD_PASS" in result.stdout
+
+
+import pytest
+
+
+@pytest.mark.parametrize("path,content,error", [
+    (".github/workflows/evil.yml", "name: hijack\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    (".agents/skills/evil/SKILL.md", "hijack\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    ("scripts/exfiltrate.py", "pass\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    (".gitattributes", "filter.foo.clean=evil\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    ("artifacts/wow-engine/v17/agent_identity_policy.py", "pass\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    ("src/evil_link", "SYMLINK", "REPAIR_UNSAFE_FILE_MODE"),
+])
+def test_staged_guard_rejects_untrusted_changes(tmp_path, path, content, error):
+    result = _guard_repo(tmp_path, changes={path: content})
+    assert result.returncode != 0
+    assert error in result.stderr + result.stdout
+
+
+def test_staged_guard_rejects_giant_patch(tmp_path):
+    result = _guard_repo(tmp_path, changes={"src/ok.py": "z" * (1024 * 1024 + 1)})
+    assert result.returncode != 0
+    assert "REPAIR_DIFF_SIZE_EXCEEDED" in result.stderr + result.stdout
