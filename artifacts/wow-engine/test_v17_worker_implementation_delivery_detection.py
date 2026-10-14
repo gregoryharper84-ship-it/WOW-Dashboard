@@ -129,7 +129,12 @@ def test_claimed_change_without_any_change_fails_closed(provider, sandbox):
     work, bare, env = sandbox
     proc, outputs, branch = _run(provider, work, env, changed=True)
     assert proc.returncode != 0
-    assert "ENGINEERING_CHANGED_BUT_NO_DIFF" in proc.stderr + proc.stdout
+    # Both providers must reject a false change; their typed failure codes differ.
+    expected_error = (
+        "ENGINEERING_CHANGED_BUT_NO_DIFF" if provider == "openai"
+        else "Claude reported changes but returned no working-tree diff."
+    )
+    assert expected_error in proc.stderr + proc.stdout
     assert "branch" not in outputs
     assert _git(bare, "branch", "--list", branch, env=env).strip() == ""
 
@@ -144,7 +149,12 @@ def test_ignored_files_only_are_not_a_change(provider, sandbox):
     (handoff / "implementation.json").write_text("{}")
     proc, _, branch = _run(provider, work, env, changed=True)
     assert proc.returncode != 0
-    assert "ENGINEERING_CHANGED_BUT_NO_DIFF" in proc.stderr + proc.stdout
+    # Both providers must reject a false change; their typed failure codes differ.
+    expected_error = (
+        "ENGINEERING_CHANGED_BUT_NO_DIFF" if provider == "openai"
+        else "Claude reported changes but returned no working-tree diff."
+    )
+    assert expected_error in proc.stderr + proc.stdout
     assert _git(bare, "branch", "--list", branch, env=env).strip() == ""
 
 
