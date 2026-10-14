@@ -1,10 +1,12 @@
 """Negative and regression coverage for gated worker deployment."""
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
 SCRIPT = Path(__file__).parent / "v17" / "render_worker_release_handoff.py"
+sys.path.insert(0, str(SCRIPT.parent))
 spec = importlib.util.spec_from_file_location("render_worker_release_handoff", SCRIPT)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -60,7 +62,7 @@ def test_protected_workflow_chains_worker_after_primary():
 
 def test_absent_deployment_fails_closed():
     source = SCRIPT.read_text()
-    assert "WORKER_NO_EXACT_DEPLOY_REQUIRES_GOVERNED_INITIATION" in source
+    assert "WORKER_RELEASE_CONTROL_DSN_NOT_PROVISIONED" in source
     assert "WORKER_DEPLOY_ENTRY_INVALID" in source
 
 
@@ -83,6 +85,7 @@ def test_missing_worker_deploy_does_not_attempt_post(monkeypatch, tmp_path):
     monkeypatch.setenv("TARGET_MAIN_SHA", sha)
     monkeypatch.setenv("PRIMARY_RELEASE_RESULT", "success")
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.delenv("WOW_RELEASE_CONTROL_DSN", raising=False)
     with pytest.raises(RuntimeError, match="WORKER_NO_EXACT_DEPLOY_REQUIRES_GOVERNED_INITIATION"):
         module.run()
     assert not any(method == "POST" for _, method in calls)
