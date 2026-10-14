@@ -184,12 +184,15 @@ def _fetch_player_stats(player_ids: list[int], season: int) -> dict[int, dict[st
 
 def _stat_float(stat: dict[str, Any], key: str) -> float | None:
     value = stat.get(key)
-    if value in (None, "", "-.--"):
+    # The official player feed is not trusted numerical evidence until finite:
+    # bool, NaN and Inf can silently poison lineup-adjusted run distributions.
+    if value in (None, "", "-.--") or isinstance(value, bool):
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _player_ops(player: dict[str, Any], starter_hand: str) -> tuple[float | None, float | None, int]:
@@ -206,8 +209,11 @@ def _player_ops(player: dict[str, Any], starter_hand: str) -> tuple[float | None
             elif display == "statSplits" and str((split.get("split") or {}).get("description") or "") == target:
                 split_ops = _stat_float(stat, "ops")
                 try:
-                    split_pa = int(stat.get("plateAppearances") or 0)
-                except (TypeError, ValueError):
+                    raw_pa = stat.get("plateAppearances")
+                    split_pa = 0 if isinstance(raw_pa, bool) else int(raw_pa or 0)
+                    if split_pa < 0:
+                        split_pa = 0
+                except (TypeError, ValueError, OverflowError):
                     split_pa = 0
     return season_ops, split_ops, split_pa
 
@@ -248,8 +254,11 @@ def _weather_context(feed: dict[str, Any]) -> WeatherContext:
     roof = str(field.get("roofType") or "UNKNOWN")
     condition = str(weather.get("condition") or "UNKNOWN")
     try:
-        temp = float(weather.get("temp")) if weather.get("temp") is not None else None
-    except (TypeError, ValueError):
+        raw_temp = weather.get("temp")
+        temp = float(raw_temp) if raw_temp is not None and not isinstance(raw_temp, bool) else None
+    except (TypeError, ValueError, OverflowError):
+        temp = None
+    if temp is not None and not math.isfinite(temp):
         temp = None
     wind_text = str(weather.get("wind") or "")
     match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*mph(?:,\s*(.*))?", wind_text, re.I)
