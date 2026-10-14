@@ -287,11 +287,24 @@ def install_prop_action_canary_capture(
     ):
         result = original_endpoint(batch, x_wow_model_identity=x_wow_model_identity)
         if isinstance(result, dict):
-            audit = capture_action_canary_receipts(
-                db=db_client_fn(),
-                batch=batch,
-                result=result,
-            )
+            # Advisory capture must never turn a canonical scoring response into
+            # an unrelated HTTP 500. Failure remains explicit, never a canary PASS.
+            try:
+                audit = capture_action_canary_receipts(
+                    db=db_client_fn(),
+                    batch=batch,
+                    result=result,
+                )
+            except Exception as exc:
+                audit = {
+                    "status": "BLOCKED_CAPTURE_UNAVAILABLE",
+                    "eligible_rows": 0,
+                    "persisted_rows": 0,
+                    "blockers": [f"CANARY_CAPTURE_UNAVAILABLE:{type(exc).__name__}"],
+                    "automatic_certification": False,
+                    "automatic_promotion": False,
+                    "can_execute": False,
+                }
             result["production_action_canary_capture"] = audit
             result["can_execute"] = False
         return result

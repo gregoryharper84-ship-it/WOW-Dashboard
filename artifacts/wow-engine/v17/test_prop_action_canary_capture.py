@@ -333,3 +333,114 @@ def test_genuinely_missing_prediction_stays_not_found(monkeypatch):
     audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
     assert audit["blockers"] == ["CANARY_PERSISTED_PREDICTION_NOT_FOUND"]
     assert audit["persisted_rows"] == 0 and db.receipts == []
+
+
+def test_wrapper_db_factory_failure_preserves_canonical_scoring(monkeypatch):
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    calls = []
+
+    @app.post("/score-pick-request")
+    def original(batch: DetailedPickRequestBatch, x_wow_model_identity=None):
+        calls.append(batch.request_id)
+        return _result()
+
+    def broken_db_factory():
+        raise ConnectionError("sensitive simulated connection detail")
+
+    assert subject.install_prop_action_canary_capture(app, db_client_fn=broken_db_factory)
+    endpoint = next(route.endpoint for route in app.routes
+                    if getattr(route, "path", None) == "/score-pick-request")
+    output = endpoint(_batch())
+    assert calls == ["canary-request-1"]
+    assert output["reconciliation_pass"] is True
+    assert output["rows"] == _result()["rows"]
+    audit = output["production_action_canary_capture"]
+    assert audit["status"] == "BLOCKED_CAPTURE_UNAVAILABLE"
+    assert audit["persisted_rows"] == 0
+    assert audit["blockers"] == ["CANARY_CAPTURE_UNAVAILABLE:ConnectionError"]
+    assert audit["can_execute"] is False
+    assert output["can_execute"] is False
+    assert "sensitive simulated" not in repr(audit)
+
+
+def test_wrapper_capture_failure_does_not_reinvoke_scorer(monkeypatch):
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    calls = []
+
+    @app.post("/score-pick-request")
+    def original(batch: DetailedPickRequestBatch, x_wow_model_identity=None):
+        calls.append("score")
+        return _result()
+
+    def failed_capture(**kwargs):
+        raise TimeoutError("private store timeout")
+
+    monkeypatch.setattr(subject, "capture_action_canary_receipts", failed_capture)
+    assert subject.install_prop_action_canary_capture(app, db_client_fn=lambda: object())
+    endpoint = next(route.endpoint for route in app.routes
+                    if getattr(route, "path", None) == "/score-pick-request")
+    output = endpoint(_batch())
+    assert calls == ["score"]
+    assert output["production_action_canary_capture"]["blockers"] == [
+        "CANARY_CAPTURE_UNAVAILABLE:TimeoutError"
+    ]
+    assert output["production_action_canary_capture"]["persisted_rows"] == 0
+    assert output["can_execute"] is False
+
+
+def test_wrapper_does_not_mask_scorer_failure():
+    from fastapi import FastAPI
+    import pytest
+
+    app = FastAPI()
+
+    @app.post("/score-pick-request")
+    def original(batch: DetailedPickRequestBatch, x_wow_model_identity=None):
+        raise ValueError("scorer failed")
+
+    assert subject.install_prop_action_canary_capture(app, db_client_fn=lambda: object())
+    endpoint = next(route.endpoint for route in app.routes
+                    if getattr(route, "path", None) == "/score-pick-request")
+    with pytest.raises(ValueError, match="scorer failed"):
+        endpoint(_batch())
+
+
+def test_http_action_canary_factory_failure_preserves_successful_score(monkeypatch):
+    """HTTP-level reproduction: capture setup must not turn a scored 200 into 500."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    scorer_calls = []
+
+    @app.post("/score-pick-request")
+    def real_scoring_boundary(batch: DetailedPickRequestBatch, x_wow_model_identity=None):
+        scorer_calls.append(batch.request_id)
+        return _result()
+
+    def failing_factory():
+        raise ConnectionError("private provider connection details")
+
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {})
+    assert subject.install_prop_action_canary_capture(app, db_client_fn=failing_factory)
+
+    response = TestClient(app).post(
+        "/score-pick-request",
+        json=_batch().model_dump(mode="json", exclude_none=True),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert scorer_calls == ["canary-request-1"]
+    assert body["rows"] == _result()["rows"]
+    assert body["reconciliation_pass"] is True
+    assert body["can_execute"] is False
+    assert body["production_action_canary_capture"]["status"] == "BLOCKED_CAPTURE_UNAVAILABLE"
+    assert body["production_action_canary_capture"]["persisted_rows"] == 0
+    assert body["production_action_canary_capture"]["blockers"] == [
+        "CANARY_CAPTURE_UNAVAILABLE:ConnectionError"
+    ]
+    assert "private provider" not in response.text
