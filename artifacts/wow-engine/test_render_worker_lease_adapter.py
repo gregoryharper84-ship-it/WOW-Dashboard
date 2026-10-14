@@ -64,3 +64,20 @@ def test_fenced_receipt_requires_db_true():
     with pytest.raises(module.DeploymentLeaseError, match="NOT_ACKNOWLEDGED"):
         module.record(denied, service_id=module.ALLOWED_SERVICE, target_sha="a" * 40,
                       owner_run_id="run1", token=4, state="HOLD")
+
+
+def test_fenced_lease_renewal_calls_only_privileged_rpc():
+    db = FakeConnection([(True,)])
+    module.renew(db, service_id=module.ALLOWED_SERVICE,
+                 target_sha="a" * 40, owner_run_id="run1",
+                 token=9, lease_seconds=300)
+    sql, params = db.obj.executed[0]
+    assert "renew_render_worker_deploy" in sql
+    assert params[3] == 9
+
+
+def test_failed_renewal_does_not_forge_success():
+    db = FakeConnection([(False,)])
+    with pytest.raises(module.DeploymentLeaseError, match="RENEW_NOT_ACKNOWLEDGED"):
+        module.renew(db, service_id=module.ALLOWED_SERVICE,
+                     target_sha="a" * 40, owner_run_id="run1", token=8)
