@@ -75,13 +75,22 @@ def reconcile_nfl_week_snapshots(plan: Mapping[str,Any], results: Mapping[str,Ma
         audit=(r.get("cross_sport_discovery_audit") or {}).get("reconciliation") or {}
         if rec.get("balanced") is not True or audit.get("row_reconciliation")!="PASS" or type(audit.get("events_discovered")) is not int or type(audit.get("events_accounted")) is not int or audit.get("events_accounted")<0 or audit.get("events_accounted")!=audit.get("events_discovered"):
             return hold("NFL_WEEK_RECONCILIATION_FAILED")
+        rows = r.get("rows")
+        # External daily receipts are untrusted until shape and identity validate.
+        # Malformed payloads must produce a typed hold, never an exception or pass.
+        if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+            return hold("NFL_WEEK_DAILY_ROWS_INVALID")
         day_ids=[]
-        for row in r.get("rows") or []:
-            if row.get("lane")!="MONEYLINE" or (row.get("identity") or {}).get("sport")!="NFL":
+        for row in rows:
+            if row.get("lane")!="MONEYLINE":
                 continue
-            identity=row.get("identity") or {}
+            identity = row.get("identity")
+            if not isinstance(identity, Mapping):
+                return hold("NFL_WEEK_DAILY_ROW_IDENTITY_INVALID")
+            if identity.get("sport")!="NFL":
+                continue
             eid=identity.get("official_event_id") or identity.get("event_id") or identity.get("id")
-            if not eid or row.get("can_execute") is not False or "MODEL_INVOCATION_BUDGET_REACHED" in str(row.get("result") or {}):
+            if not isinstance(eid, str) or not eid.strip() or row.get("can_execute") is not False or "MODEL_INVOCATION_BUDGET_REACHED" in str(row.get("result") or {}):
                 return hold("NFL_WEEK_ROW_INVALID_OR_EXHAUSTED")
             day_ids.append(eid)
         if len(day_ids)!=len(set(day_ids)) or set(day_ids)!=set(b["expected_event_ids"]):
