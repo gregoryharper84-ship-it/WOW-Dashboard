@@ -133,3 +133,111 @@ def test_intent_rejects_cross_service_and_cross_revision():
     ]:
         with pytest.raises(RuntimeError, match="WORKER_DEPLOY_INTENT_IDENTITY_MISMATCH"):
             module.reconcile_intent(row, [], sha)
+
+
+def test_governed_live_receipt_requires_fenced_db_commit(monkeypatch, tmp_path):
+    """One authorized POST leads to committed LIVE_VERIFIED before file receipt."""
+    import json
+    import types
+    from render_worker_governed_initiator import Handoff
+
+    sha = "a" * 40
+    timeline = []
+    class Connection:
+        def __enter__(self):
+            timeline.append("db-open")
+            return self
+        def __exit__(self, *args):
+            timeline.append("db-close")
+            return False
+
+    fake_psycopg = types.SimpleNamespace(connect=lambda *args, **kwargs: Connection())
+    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
+
+    def fake_initiate(**kwargs):
+        timeline.append("claim-before-post")
+        assert kwargs["target_sha"] == sha
+        return Handoff("DEPLOYING", "dep-receipt", 17)
+    monkeypatch.setattr(module, "initiate_once", fake_initiate)
+
+    def fake_request(url, token, method="GET", payload=None):
+        if url.endswith("/branches/main"):
+            return {"commit": {"sha": sha}}
+        if "/deploys?" in url:
+            timeline.append("provider-read")
+            # Initial inventory is empty; subsequent read is verified LIVE.
+            if timeline.count("provider-read") == 1:
+                return []
+            return [{"deploy": {
+                "id": "dep-receipt", "commit": {"id": sha}, "status": "live"
+            }}]
+        raise AssertionError(("unexpected request", url, method))
+    monkeypatch.setattr(module, "request_json", fake_request)
+    monkeypatch.setattr(module, "renew_committed", lambda **kwargs: timeline.append("lease-renew-committed"))
+    def committed(**kwargs):
+        assert kwargs["state"] == "LIVE_VERIFIED"
+        assert kwargs["deploy_id"] == "dep-receipt"
+        assert kwargs["token"] == 17
+        timeline.append("live-fence-committed")
+    monkeypatch.setattr(module, "record_committed", committed)
+
+    # Advance beyond the renewal interval without waiting.
+    times = iter([0, 0, 100, 101])
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(times))
+    for key, value in {
+        "GH_API_TOKEN": "test-gh", "RENDER_API_KEY": "test-render",
+        "GITHUB_REPOSITORY": "example/repo", "TARGET_MAIN_SHA": sha,
+        "PRIMARY_RELEASE_RESULT": "success", "RUNNER_TEMP": str(tmp_path),
+        "WOW_RELEASE_CONTROL_DSN": "postgresql://ci-only/mock",
+        "GITHUB_RUN_ID": "ci-123",
+    }.items():
+        monkeypatch.setenv(key, value)
+    module.run()
+    receipt = json.loads((tmp_path / "wow-render-worker-deploy-receipt.json").read_text())
+    assert receipt["render_deploy_id"] == "dep-receipt"
+    assert receipt["commit_sha"] == sha
+    assert receipt["can_execute"] is False
+    assert timeline.count("claim-before-post") == 1
+    assert timeline.count("lease-renew-committed") == 1
+    assert timeline.index("lease-renew-committed") < timeline.index("live-fence-committed")
+
+
+def test_failed_durable_live_receipt_never_reports_worker_green(monkeypatch, tmp_path):
+    """Provider can be live while the DB acknowledgement is unavailable: HOLD."""
+    import types
+    from render_worker_governed_initiator import Handoff
+
+    sha = "a" * 40
+    class Connection:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(
+        connect=lambda *args, **kwargs: Connection()
+    ))
+    monkeypatch.setattr(module, "initiate_once", lambda **kwargs: Handoff("DEPLOYING", "dep-receipt", 8))
+    calls = []
+    def fake_request(url, token, method="GET", payload=None):
+        if url.endswith("/branches/main"):
+            return {"commit": {"sha": sha}}
+        if "/deploys?" in url:
+            calls.append("read")
+            return [] if len(calls) == 1 else [{"deploy": {
+                "id": "dep-receipt", "commit": {"id": sha}, "status": "live"
+            }}]
+        raise AssertionError(url)
+    monkeypatch.setattr(module, "request_json", fake_request)
+    def fails_commit(**kwargs):
+        raise ConnectionError("hidden private database details")
+    monkeypatch.setattr(module, "record_committed", fails_commit)
+    monkeypatch.setattr(module.time, "monotonic", lambda: 0)
+    for key, value in {
+        "GH_API_TOKEN": "mock", "RENDER_API_KEY": "mock",
+        "GITHUB_REPOSITORY": "example/repo", "TARGET_MAIN_SHA": sha,
+        "PRIMARY_RELEASE_RESULT": "success", "RUNNER_TEMP": str(tmp_path),
+        "WOW_RELEASE_CONTROL_DSN": "postgresql://ci-only/mock",
+        "GITHUB_RUN_ID": "ci-124",
+    }.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(ConnectionError):
+        module.run()
+    assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
