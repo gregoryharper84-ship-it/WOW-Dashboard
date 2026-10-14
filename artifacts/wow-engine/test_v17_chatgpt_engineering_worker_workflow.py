@@ -179,9 +179,10 @@ def _guard_repo(tmp_path, *, changes):
     policy.mkdir(parents=True)
     (policy / "agent_identity_policy.py").write_text(
         "def governance_trust_roots(root):\n"
-        "    return ['artifacts/wow-engine/v17/agent_identity_policy.py']\n")
+        "    return ['artifacts/wow-engine/v17/agent_identity_policy.py', 'src/protected.py']\n")
     (root / "src").mkdir()
     (root / "src/ok.py").write_text("value = 1\n")
+    (root / "src/protected.py").write_text("DO_NOT_MODIFY = True\n")
     def git(*args):
         return subprocess.run(["git", "-C", str(root), *args],
                               check=True, capture_output=True, text=True)
@@ -217,7 +218,8 @@ import pytest
     (".agents/skills/evil/SKILL.md", "hijack\n", "REPAIR_PROTECTED_PATH_DENIED"),
     ("scripts/exfiltrate.py", "pass\n", "REPAIR_PROTECTED_PATH_DENIED"),
     (".gitattributes", "filter.foo.clean=evil\n", "REPAIR_PROTECTED_PATH_DENIED"),
-    ("artifacts/wow-engine/v17/agent_identity_policy.py", "pass\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    ("src/protected.py", "DO_NOT_MODIFY = False\n", "REPAIR_PROTECTED_PATH_DENIED"),
+    ("artifacts/wow-engine/v17/agent_identity_policy.py", "pass\n", "ImportError"),
     ("src/evil_link", "SYMLINK", "REPAIR_UNSAFE_FILE_MODE"),
 ])
 def test_staged_guard_rejects_untrusted_changes(tmp_path, path, content, error):
