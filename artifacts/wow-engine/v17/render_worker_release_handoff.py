@@ -108,7 +108,13 @@ def run():
                 current_main_sha=check_main(), owner_run_id=os.environ["GITHUB_RUN_ID"],
                 primary_release_result=os.environ["PRIMARY_RELEASE_RESULT"],
                 list_deploys=list_deploys,
-                post_deploy=lambda: request_json(base, render_token, method="POST", payload={"clearCache":"do_not_clear"}),
+                post_deploy=lambda: (
+                    check_main(),
+                    request_json(
+                        base, render_token, method="POST",
+                        payload={"clearCache": "do_not_clear", "commitId": event_sha},
+                    ),
+                )[1],
             )
         if handoff.state != "DEPLOYING" or not handoff.deploy_id:
             raise RuntimeError("WORKER_DEPLOY_RECONCILIATION_REQUIRED")
