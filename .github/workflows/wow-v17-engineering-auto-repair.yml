@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           prs=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
-            --jq --arg sha "$HEAD_SHA" '[.[] | select(.head.sha == $sha)]')
+            | jq -s --arg sha "$HEAD_SHA" '[.[][] | select(.head.sha == $sha)]')
           pr_number=$(jq -r '.[0].number // empty' <<<"$prs")
           author=$(jq -r '.[0].user.login // empty' <<<"$prs")
           if [ -z "$pr_number" ] || [ "$author" != "wow-engineering[bot]" ]; then
@@ -84,24 +84,28 @@ jobs:
           fi
 
           checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
-            -H 'Accept: application/vnd.github+json' --jq '.check_runs')
+            -H 'Accept: application/vnd.github+json' | jq -s '[.[].check_runs[]]')
+          # Consider the latest check per authority, not any historical failure.
+          # A newer passing check supersedes a stale HOLD on the same SHA.
           summary=$(jq -r '
-            [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")
-                 | select(.conclusion == "failure")]
-            | sort_by(.started_at // .created_at) | last // {} | .output.summary // ""
+            [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")]
+            | group_by(.name)
+            | map(sort_by(.completed_at // .started_at // .created_at, .id) | last)
+            | map(select(.conclusion == "failure") | .output.summary // "")
+            | map(select(length > 0))
+            | join("\n")
           ' <<<"$checks")
 
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           if [ -z "$summary" ]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
             echo "PR #$pr_number: no failing QA/Release exact-head check found; nothing to route." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          {
-            echo "summary<<EOF"
-            echo "$summary"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          # Check summaries are external text; encode before writing GITHUB_OUTPUT
+          # so a crafted multiline delimiter cannot inject other step outputs.
+          echo "summary_b64=$(printf %s "$summary" | base64 -w0)" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
 
       - name: Read and increment the PR's recovery-attempt marker
@@ -114,30 +118,85 @@ jobs:
         run: |
           set -euo pipefail
           marker='<!-- WOW_RECOVERY_ATTEMPTS -->'
-          comments=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")
-          comment_id=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].id // empty' <<<"$comments")
-          attempts=$(jq -r --arg marker "$marker" '[.[] | select(.body | contains($marker))][0].body // ""' <<<"$comments" \
-            | grep -oE 'attempts: [0-9]+' | grep -oE '[0-9]+' || true)
+          comments=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | jq -s 'add')
+          # Only the authenticated Engineering App may own recovery budget state.
+          # An owner/user/bot lookalike marker must never consume or reset retries.
+          marker_comment=$(jq -c --arg marker "$marker" \
+            '[.[] | select(.user.login == "wow-engineering[bot]" and (.body | contains($marker)))] | sort_by(.updated_at // .created_at, .id) | last // null' <<<"$comments")
+          comment_id=$(jq -r '.id // empty' <<<"$marker_comment")
+          if [ -n "$comment_id" ]; then
+            attempts=$(jq -er '.body | capture("(?m)^- attempts: (?<n>[0-9]+)$").n' <<<"$marker_comment") || {
+              echo "::error::RECOVERY_ATTEMPT_MARKER_INVALID"; exit 1;
+            }
+          else
+            attempts=0
+          fi
           echo "comment_id=${comment_id:-}" >> "$GITHUB_OUTPUT"
-          echo "attempts=${attempts:-0}" >> "$GITHUB_OUTPUT"
+          echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
 
       - name: Plan recovery
         id: plan
         if: steps.resolve.outputs.eligible == 'true'
         shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HOLD_SUMMARY_B64: ${{ steps.resolve.outputs.summary_b64 }}
+          ATTEMPTS: ${{ steps.attempts.outputs.attempts }}
         run: |
           set -euo pipefail
+          summary=$(printf %s "$HOLD_SUMMARY_B64" | base64 --decode)
           python artifacts/wow-engine/v17/engineering_recovery_planner.py \
-            --pr-number "${{ steps.resolve.outputs.pr_number }}" \
-            --summary "${{ steps.resolve.outputs.summary }}" \
-            --attempts "${{ steps.attempts.outputs.attempts }}" \
+            --pr-number "$PR_NUMBER" \
+            --summary "$summary" \
+            --attempts "$ATTEMPTS" \
             --is-wow-engineering-pr \
             | tee "$RUNNER_TEMP/recovery-plan.json"
           echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
           echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
 
-      - name: Record recovery-attempt marker
+      - name: Dispatch exact-head repair to Engineering App worker
+        id: targeted_dispatch
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          jq -e --arg sha "$HEAD_SHA" '.head.sha == $sha and .state == "open" and .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || { echo "::error::REPAIR_HEAD_STALE"; exit 1; }
+          body=$(jq -r '.body // ""' <<<"$pr")
+          incident=$(sed -nE 's/^Incident:[[:space:]]*\x60?([0-9]+)\x60?[[:space:]]*$/\1/p' <<<"$body" | head -1)
+          [[ "$incident" =~ ^[1-9][0-9]*$ ]] || { echo "::error::REPAIR_INCIDENT_MISSING"; exit 1; }
+          issue=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${incident}")
+          jq -e '.state == "open"' <<<"$issue" >/dev/null || { echo "::error::REPAIR_INCIDENT_NOT_OPEN"; exit 1; }
+          # Route only an existing manifest-authorized incident. GitHub is the
+          # source of open/closed state, while the manifest owns lease identity.
+          record=$(jq -c --argjson issue "$incident" \
+            '[.restoration[], .acceleration[]] | map(select(.issue_number == $issue)) | first // empty' \
+            artifacts/wow-engine/v17/engineering_dispatch_manifest.json)
+          [ -n "$record" ] || { echo "::error::REPAIR_INCIDENT_NOT_IN_APPROVED_MANIFEST"; exit 1; }
+          severity=$(jq -r '.severity' <<<"$record")
+          lane=$(jq -r '.execution_lane // "STANDARD"' <<<"$record")
+          lease_group=$(jq -r '.lease_group // "GLOBAL"' <<<"$record")
+          label=$(jq -r --arg severity "$severity" '[.labels[].name] | index($severity) != null' <<<"$issue")
+          [ "$label" = "true" ] || { echo "::error::REPAIR_INCIDENT_SEVERITY_MISMATCH"; exit 1; }
+          if [ "$severity" = P0 ] && [ "$lane" = RAPID ]; then
+            [[ "$lease_group" =~ ^P0_[A-Z0-9_]+$ ]] || { echo "::error::REPAIR_P0_DOMAIN_LEASE_MISSING"; exit 1; }
+          elif [ "$severity" = P1 ] && [ "$lane" = STANDARD ]; then
+            [ "$lease_group" = GLOBAL ] || { echo "::error::REPAIR_P1_LEASE_MISMATCH"; exit 1; }
+          else
+            echo "::error::REPAIR_TARGET_UNSUPPORTED_CLASS" && exit 1
+          fi
+          gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f target_incident="$incident" -f lease_group="$lease_group" \
+            -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
+          echo "accepted=true" >> "$GITHUB_OUTPUT"
+          echo "Targeted dispatch accepted: PR #$PR_NUMBER incident #$incident expected SHA $HEAD_SHA ($severity/$lease_group)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record recovery attempt after accepted dispatch
+        if: steps.targeted_dispatch.outputs.accepted == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
@@ -155,16 +214,6 @@ jobs:
           else
             gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body" >/dev/null
           fi
-          echo "Dispatching worker to repair PR #${PR_NUMBER} (attempt ${NEW_ATTEMPTS}/3)." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Dispatch worker to repair the same branch
-        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
-        run: |
-          set -euo pipefail
-          gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main
 
       - name: Label needs-owner past the retry cap
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'NEEDS_OWNER_RETRY_CAP'
