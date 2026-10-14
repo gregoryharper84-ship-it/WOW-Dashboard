@@ -42,12 +42,24 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          receipt="$RUNNER_TEMP/wow-ci-registry-retry-receipt.json"
+          rc=0
           python artifacts/wow-engine/v17/ci_registry_retry.py \
-            --event "$GITHUB_EVENT_PATH" --execute \
-            | tee "$RUNNER_TEMP/wow-ci-registry-retry-receipt.json"
+            --event "$GITHUB_EVENT_PATH" --execute > "$receipt" || rc=$?
+          cat "$receipt"
           jq -e '.can_execute == false and .terminal_authority == "V17_TERMINAL_REDUCER"' \
-            "$RUNNER_TEMP/wow-ci-registry-retry-receipt.json" >/dev/null
+            "$receipt" >/dev/null || rc=1
           echo "Retry controller receipt for exact workflow-run: " >> "$GITHUB_STEP_SUMMARY"
           jq -c '{state, reason, run_id, head_sha, failed_job_ids, can_execute}' \
-            "$RUNNER_TEMP/wow-ci-registry-retry-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+            "$receipt" >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"
+
+      - name: Upload retry controller receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-ci-registry-retry-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/wow-ci-registry-retry-receipt.json
+          if-no-files-found: error
+          retention-days: 90

@@ -38,8 +38,19 @@ POSTGRES_JOBS = frozenset({
     "WOW governed backend shard / 3",
 })
 SHA = re.compile(r"^[a-f0-9]{40}$")
-RATE_LIMIT = re.compile(r"\btoomanyrequests:\s*(?:Data limit exceeded|Rate exceeded)\b", re.I)
-PULL = "docker pull public.ecr.aws/docker/library/postgres:16"
+# (runner pull line, registry-specific throttle wording). Both must appear in
+# the same job log. Covers the ECR mirror AND Docker Hub, because main's
+# required workflows moved back to Docker Hub `postgres:16` in ed00153a; an
+# ECR-only matcher silently stopped recovering any throttle.
+ECR_RATE_LIMIT = re.compile(r"\btoomanyrequests:\s*(?:Data limit exceeded|Rate exceeded)\b", re.I)
+DOCKERHUB_RATE_LIMIT = re.compile(r"\btoomanyrequests:\s*You have reached your pull rate limit\b", re.I)
+PULL_EVIDENCE = (
+    ("docker pull public.ecr.aws/docker/library/postgres:16", ECR_RATE_LIMIT),
+    ("docker pull postgres:16", DOCKERHUB_RATE_LIMIT),
+)
+# Backward-compatible aliases.
+RATE_LIMIT = ECR_RATE_LIMIT
+PULL = PULL_EVIDENCE[0][0]
 MAX_LOG_BYTES = 2_000_000
 MAX_JOBS = 60
 MAX_IMAGE_FAILURES = 4
@@ -47,6 +58,15 @@ MAX_IMAGE_FAILURES = 4
 
 class RetryBlocked(RuntimeError):
     """Bounded, typed refusal; required workflow remains red."""
+
+
+class NotEligible(RetryBlocked):
+    """Run is authentically not a registry throttle (e.g. a real test failure).
+
+    Typed NO_ACTION_NOT_ELIGIBLE and exits 0 so the controller does not raise
+    a red incident for every genuine test failure. Evidence/API/identity
+    problems remain RetryBlocked (exit 1).
+    """
 
 
 @dataclass(frozen=True)
@@ -115,7 +135,7 @@ def classify(
         if job_name in AGGREGATES:
             continue
         if job_name not in POSTGRES_JOBS:
-            raise RetryBlocked("NON_INFRA_FAILURE:" + str(job_name)[:80])
+            raise NotEligible("NON_INFRA_FAILURE:" + str(job_name)[:80])
         # Infrastructure service startup occurs BEFORE any executable user
         # step. A test failure, even if it prints a matching string, is never
         # an eligible registry throttle.
@@ -128,25 +148,27 @@ def classify(
             and step.get("status") == "completed" and step.get("conclusion") == "failure"
         ]
         if len(infra_failure) != 1:
-            raise RetryBlocked("CONTAINER_INITIALIZATION_FAILURE_MISSING:" + job_name)
+            raise NotEligible("CONTAINER_INITIALIZATION_FAILURE_MISSING:" + job_name)
         runner_steps = {"Set up job", "Initialize containers",
                         "Stop containers", "Complete job"}
         if any(
             not isinstance(step, dict)
-            or (step.get("name") not in runner_steps
-                and step.get("conclusion") != "skipped")
             or (step.get("name") in runner_steps
                 and step.get("conclusion") not in ("success", "failure", "skipped"))
             for step in steps
         ):
             raise RetryBlocked("EXECUTED_TEST_OR_MALFORMED_STEPS:" + job_name)
+        if any(step.get("name") not in runner_steps and step.get("conclusion") != "skipped"
+               for step in steps):
+            # Well-formed record proving user steps executed: a real test run.
+            raise NotEligible("EXECUTED_TEST_OR_MALFORMED_STEPS:" + job_name)
         log = fetch_job_log(job_id)
         if not isinstance(log, str) or len(log.encode("utf-8")) > MAX_LOG_BYTES:
             raise RetryBlocked("JOB_LOG_MISSING_OR_OVERSIZED")
-        if PULL not in log or not RATE_LIMIT.search(log):
-            raise RetryBlocked("THROTTLE_EVIDENCE_MISSING:" + job_name)
+        if not any(pull in log and throttle.search(log) for pull, throttle in PULL_EVIDENCE):
+            raise NotEligible("THROTTLE_EVIDENCE_MISSING:" + job_name)
         if "Docker pull failed with exit code 1" not in log:
-            raise RetryBlocked("DOCKER_SERVICE_START_FAILURE_UNVERIFIED")
+            raise NotEligible("DOCKER_SERVICE_START_FAILURE_UNVERIFIED")
         image_ids.append(job_id)
     if not image_ids or len(image_ids) > MAX_IMAGE_FAILURES:
         raise RetryBlocked("IMAGE_FAILURE_COUNT_INVALID")
@@ -206,6 +228,12 @@ def main() -> int:
                f"repos/{REPO}/actions/runs/{rid}/rerun-failed-jobs")
             receipt["state"] = "RETRY_DISPATCHED"
         print(json.dumps(receipt, sort_keys=True))
+        return 0
+    except NotEligible as exc:
+        print(json.dumps({
+            "state": "NO_ACTION_NOT_ELIGIBLE", "reason": str(exc), "can_execute": False,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+        }, sort_keys=True))
         return 0
     except (RetryBlocked, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         why = str(exc) if isinstance(exc, RetryBlocked) else "EVIDENCE_UNAVAILABLE"

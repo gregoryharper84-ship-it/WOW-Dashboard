@@ -203,3 +203,150 @@ def test_matching_second_attempt_is_terminal_no_action_not_watchdog_failure():
     rerun = event(attempt=2)["workflow_run"]
     verify_live_run(rerun, dict(rerun))
     assert check(ev=event(attempt=2)).receipt()["state"] == "RETRY_EXHAUSTED"
+
+
+# --- Claude adversarial-review additions (proposal on top of 5fb6e17) -------------------
+
+import json as _json
+import subprocess as _subprocess
+from pathlib import Path as _Path
+
+import yaml as _yaml
+
+from v17 import ci_registry_retry as _crr
+from v17.ci_registry_retry import NotEligible, PULL_EVIDENCE
+
+_ROOT = _Path(__file__).resolve().parents[2]
+DOCKERHUB_LOG = (
+    "Starting postgres service container\n"
+    "/usr/bin/docker pull postgres:16\n"
+    "Error response from daemon: toomanyrequests: You have reached your pull rate limit. "
+    "You may increase the limit by authenticating and upgrading\n"
+    "Docker pull failed with exit code 1\n"
+)
+
+
+def test_dockerhub_postgres_throttle_on_current_main_image_is_recovered():
+    """Counterexample: main moved to Docker Hub postgres:16 (ed00153a); 5fb6e17 never retried it."""
+    verdict = check(log=DOCKERHUB_LOG)
+    assert verdict.state == "RETRY_ALLOWED"
+    assert verdict.reason == "CI_INFRA_IMAGE_PULL_RATE_LIMIT"
+
+
+def test_throttle_wording_must_match_registry_of_pulled_image():
+    mixed = LOG.replace("toomanyrequests: Data limit exceeded",
+                        "something else failed")
+    with pytest.raises(NotEligible, match="THROTTLE_EVIDENCE_MISSING"):
+        check(log=mixed)
+
+
+@pytest.mark.parametrize("workflow", ["wow-verify.yml", "wow-engine-verify.yml"])
+def test_required_workflow_postgres_images_are_covered_by_pull_evidence(workflow):
+    """Drift guard: changing the service image without updating the matcher must fail CI."""
+    wf = _yaml.safe_load((_ROOT / ".github/workflows" / workflow).read_text())
+    images = {svc["image"] for job in wf["jobs"].values()
+              for svc in (job.get("services") or {}).values()
+              if svc.get("image", "").rsplit("/", 1)[-1].split(":", 1)[0] == "postgres"}
+    assert images, workflow
+    covered = {pull.removeprefix("docker pull ") for pull, _ in PULL_EVIDENCE}
+    assert images <= covered, f"uncovered postgres images {images - covered}"
+
+
+def test_real_test_failure_is_typed_not_eligible_not_blocked():
+    jobs = inventory(job(steps=[dict(s, conclusion="failure") if s["name"] == "Run full-coverage shard"
+                                else dict(s, conclusion="success") if s["name"] in ("Initialize containers", "Checkout")
+                                else s for s in infra_steps()]))
+    with pytest.raises(NotEligible):
+        check(jobs=jobs)
+
+
+def test_malformed_step_record_stays_blocked_not_not_eligible():
+    steps = infra_steps() + [{"name": "Set up job", "status": "completed", "conclusion": "weird"}]
+    with pytest.raises(RetryBlocked) as exc:
+        check(jobs=inventory(job(steps=steps)))
+    assert not isinstance(exc.value, NotEligible)
+
+
+def _main_with(monkeypatch, tmp_path, jobs, log=LOG):
+    ev = event()
+    path = tmp_path / "event.json"
+    path.write_text(_json.dumps(ev))
+    calls = []
+
+    def fake_gh(*args):
+        calls.append(args)
+        if args[:2] == ("api", f"repos/{REPO}/actions/runs/{ev['workflow_run']['id']}"):
+            return _json.dumps(ev["workflow_run"])
+        if args[0] == "api" and "/jobs?" in args[1]:
+            return _json.dumps(jobs)
+        if args[:2] == ("run", "view"):
+            return log
+        if "--method" in args:
+            return "{}"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(_crr, "gh", fake_gh)
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    monkeypatch.setattr("sys.argv", ["ci_registry_retry.py", "--event", str(path), "--execute"])
+    return _crr.main(), calls
+
+
+def test_main_real_test_failure_exits_zero_with_no_action_not_eligible(monkeypatch, tmp_path, capsys):
+    failed = job(steps=[dict(s, conclusion="failure") if s["name"] == "Run full-coverage shard"
+                        else dict(s, conclusion="success") if s["name"] == "Checkout" else s
+                        for s in infra_steps()])
+    rc, calls = _main_with(monkeypatch, tmp_path, inventory(failed))
+    receipt = _json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert receipt["state"] == "NO_ACTION_NOT_ELIGIBLE"
+    assert receipt["reason"].startswith("EXECUTED_TEST_OR_MALFORMED_STEPS")
+    assert not any("--method" in c for c in calls), "must never rerun a real test failure"
+
+
+def test_main_dockerhub_throttle_dispatches_exactly_one_rerun(monkeypatch, tmp_path, capsys):
+    rc, calls = _main_with(monkeypatch, tmp_path, inventory(job()), log=DOCKERHUB_LOG)
+    assert rc == 0 and _json.loads(capsys.readouterr().out)["state"] == "RETRY_DISPATCHED"
+    assert sum("--method" in c for c in calls) == 1
+
+
+def _run_step(tmp_path, stub_stdout: str, stub_rc: int):
+    wf = _yaml.safe_load((_ROOT / ".github/workflows/wow-v17-ci-postgres-throttle-retry.yml").read_text())
+    steps = wf["jobs"]["retry-provisioning-only"]["steps"]
+    script = next(s for s in steps if s.get("id") == "retry")["run"]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "python"
+    stub.write_text(f"#!/bin/sh\ncat <<'EOF'\n{stub_stdout}\nEOF\nexit {stub_rc}\n")
+    stub.chmod(0o755)
+    env = {"PATH": f"{bindir}:/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path),
+           "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"), "GITHUB_EVENT_PATH": "/dev/null"}
+    proc = _subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, cwd=tmp_path)
+    return proc, tmp_path / "wow-ci-registry-retry-receipt.json", tmp_path / "summary.md"
+
+
+@pytest.mark.skipif(_subprocess.run(["which", "jq"], capture_output=True).returncode, reason="jq required")
+def test_workflow_blocked_path_still_writes_receipt_and_summary_and_stays_red(tmp_path):
+    blocked = '{"can_execute": false, "reason": "GITHUB_API_OPERATION_FAILED", "state": "BLOCKED_WITH_EXACT_REASON", "terminal_authority": "V17_TERMINAL_REDUCER"}'
+    proc, receipt, summary = _run_step(tmp_path, blocked, 1)
+    assert proc.returncode == 1
+    assert _json.loads(receipt.read_text())["state"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "BLOCKED_WITH_EXACT_REASON" in summary.read_text()
+
+
+@pytest.mark.skipif(_subprocess.run(["which", "jq"], capture_output=True).returncode, reason="jq required")
+def test_workflow_not_eligible_is_green_and_can_execute_true_is_red(tmp_path):
+    ok = '{"can_execute": false, "reason": "NON_INFRA_FAILURE:x", "state": "NO_ACTION_NOT_ELIGIBLE", "terminal_authority": "V17_TERMINAL_REDUCER"}'
+    (tmp_path / "ok").mkdir(); (tmp_path / "bad").mkdir()
+    proc, _, _ = _run_step(tmp_path / "ok", ok, 0)
+    assert proc.returncode == 0
+    bad = ok.replace('"can_execute": false', '"can_execute": true')
+    proc, _, _ = _run_step(tmp_path / "bad", bad, 0)
+    assert proc.returncode == 1
+
+
+def test_receipt_upload_always_runs_with_error_on_missing_file():
+    wf = _yaml.safe_load((_ROOT / ".github/workflows/wow-v17-ci-postgres-throttle-retry.yml").read_text())
+    upload = next(s for s in wf["jobs"]["retry-provisioning-only"]["steps"]
+                  if str(s.get("uses", "")).startswith("actions/upload-artifact@"))
+    assert upload["if"] == "always()"
+    assert upload["with"]["if-no-files-found"] == "error"
