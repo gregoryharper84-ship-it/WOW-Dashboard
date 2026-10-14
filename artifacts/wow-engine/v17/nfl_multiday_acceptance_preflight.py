@@ -55,10 +55,42 @@ def plan_nfl_week_dates(selection: Mapping[str,Any], inventory: SourceInventory,
     return {"status":"DATE_PLAN_READY_NOT_ACTION_ACCEPTED","dates":[{"requested_slate_date":d,"expected_event_ids":sorted(v)} for d,v in sorted(dates.items())],"expected_event_ids":sorted(ids),"source_payload_sha256":inventory.payload_sha256,"can_execute":False,"probability_publishable":False,"global_terminal_authority":TERMINAL}
 
 def reconcile_nfl_week_snapshots(plan: Mapping[str,Any], results: Mapping[str,Mapping[str,Any]]) -> dict[str,Any]:
-    if plan.get("status")!="DATE_PLAN_READY_NOT_ACTION_ACCEPTED":
+    if not isinstance(plan, Mapping) or plan.get("status")!="DATE_PLAN_READY_NOT_ACTION_ACCEPTED":
         return hold("NFL_WEEK_PLAN_NOT_READY")
-    batches=plan.get("dates") or []
-    if not isinstance(results,Mapping) or set(results)!={b["requested_slate_date"] for b in batches}:
+    # A callback may invoke reconciliation independently of the authenticated
+    # preflight. Never let a forged or truncated DATE_PLAN_READY envelope
+    # manufacture a 13+ full-week acceptance from one event or one date.
+    batches=plan.get("dates")
+    expected=plan.get("expected_event_ids")
+    if (not isinstance(batches,list) or not 1<=len(batches)<=9
+            or not isinstance(expected,list) or len(expected)<13
+            or any(not isinstance(e,str) or not e.strip() for e in expected)
+            or len(expected)!=len(set(expected))):
+        return hold("NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID")
+    dates=[]
+    allocated=[]
+    for batch in batches:
+        if not isinstance(batch,Mapping):
+            return hold("NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID")
+        day=batch.get("requested_slate_date")
+        ids=batch.get("expected_event_ids")
+        if (not isinstance(day,str) or len(day)!=10
+                or not isinstance(ids,list) or not 1<=len(ids)<=32
+                or any(not isinstance(e,str) or not e.strip() for e in ids)
+                or len(ids)!=len(set(ids))):
+            return hold("NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID")
+        try:
+            from datetime import date
+            if date.fromisoformat(day).isoformat()!=day:
+                return hold("NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID")
+        except ValueError:
+            return hold("NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID")
+        dates.append(day)
+        allocated.extend(ids)
+    if (len(set(dates))!=len(dates) or len(set(allocated))!=len(allocated)
+            or set(allocated)!=set(expected)):
+        return hold("NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID")
+    if not isinstance(results,Mapping) or set(results)!=set(dates):
         return hold("NFL_WEEK_DATE_COVERAGE_MISMATCH")
     observed=[]
     run_ids=set()
