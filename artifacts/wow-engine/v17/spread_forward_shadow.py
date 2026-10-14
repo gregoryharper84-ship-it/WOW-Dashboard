@@ -295,6 +295,17 @@ for _school_norm, _aliases in _VERIFIED_SHORT_SCHOOL_MASCOTS.items():
     for _alias in _aliases:
         _VERIFIED_HISTORY_ALIASES[_alias] = _school_norm
 
+# Incident #1636/#1651 (Oct 14): the slate-specific list above missed every
+# other FBS school. Merge the complete explicit FBS table; any alias that would
+# name two different schools raises at import instead of borrowing history.
+from v17.ncaaf_fbs_school_aliases import (
+    FBS_DISPLAY_ALIASES as _FBS_DISPLAY_ALIASES,
+    merge_verified_aliases as _merge_verified_aliases,
+    school_spellings as _school_spellings,
+)
+
+_VERIFIED_HISTORY_ALIASES = _merge_verified_aliases(_VERIFIED_HISTORY_ALIASES, _FBS_DISPLAY_ALIASES)
+
 
 def _resolve_history_team(requested: str, known_teams: Sequence[str]) -> str:
     """Resolve only exact school identities or explicitly verified mascot aliases.
@@ -314,7 +325,11 @@ def _resolve_history_team(requested: str, known_teams: Sequence[str]) -> str:
     canonical = _VERIFIED_HISTORY_ALIASES.get(normalized)
     if canonical is None:
         return requested
-    matches = [team for team in known_teams if _identity_norm(team) == _identity_norm(canonical)]
+    # A renamed school may appear under one of several CFBD spellings. Exactly
+    # one history key must match; a split or duplicated history fails closed.
+    targets = {_identity_norm(name) for name in _school_spellings(canonical)}
+    targets.add(_identity_norm(canonical))
+    matches = [team for team in known_teams if _identity_norm(team) in targets]
     return matches[0] if len(matches) == 1 else requested
 
 
