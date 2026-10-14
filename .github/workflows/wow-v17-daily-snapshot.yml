@@ -112,33 +112,27 @@ jobs:
           body = json.dumps(payload).encode("utf-8")
           endpoint = os.environ["WOW_ACTION_ORIGIN"].rstrip("/") + "/internal/v17/daily-snapshot"
 
-          result = None
-          transient_statuses = {404, 502, 503, 504}
-          max_attempts = 90
-          retry_delay_seconds = 20
-          for attempt in range(1, max_attempts + 1):
-              oidc_token = fresh_oidc_token()
-              request = urllib.request.Request(
-                  endpoint,
-                  data=body,
-                  method="POST",
-                  headers={
-                      "Authorization": f"Bearer {oidc_token}",
-                      "Content-Type": "application/json",
-                  },
-              )
-              try:
-                  with urllib.request.urlopen(request, timeout=240) as response:
-                      result = json.load(response)
-                  break
-              except urllib.error.HTTPError as exc:
-                  if exc.code not in transient_statuses or attempt == max_attempts:
-                      raise
-                  time.sleep(retry_delay_seconds)
-              except (urllib.error.URLError, TimeoutError):
-                  if attempt == max_attempts:
-                      raise
-                  time.sleep(retry_delay_seconds)
+          # Snapshot POST may already have started durable scorer work when
+          # transport becomes ambiguous. Never blind-retry a write-like POST:
+          # first reconcile the persisted invocation/run receipt separately.
+          oidc_token = fresh_oidc_token()
+          request = urllib.request.Request(
+              endpoint,
+              data=body,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {oidc_token}",
+                  "Content-Type": "application/json",
+              },
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=240) as response:
+                  result = json.load(response)
+          except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+              # Retrying 404/502/503/504 or network timeouts can invoke the
+              # same model again. An authenticated exact-once lookup must
+              # establish whether the earlier invocation persisted first.
+              raise RuntimeError("DAILY_SNAPSHOT_AMBIGUOUS_POST_HOLD_RECONCILE_RECEIPT") from None
 
           if not isinstance(result, dict):
               raise RuntimeError("DAILY_SNAPSHOT_RESPONSE_MISSING")
