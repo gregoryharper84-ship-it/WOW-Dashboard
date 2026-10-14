@@ -50,7 +50,7 @@ def _execute(monkeypatch, tmp_path, *, event="pull_request", current=HEAD,
     event_file.write_text(json.dumps(payload))
     for key, value in {
         "WOW_EVENT_NAME": event,
-        "WOW_EVENT_PATH": str(event_file),
+        "GITHUB_EVENT_PATH": str(event_file),
         "WOW_REPOSITORY": REPO,
         "WOW_REF": ref,
         "WOW_SHA": MERGE_REF if event == "pull_request" else HEAD,
@@ -123,3 +123,9 @@ def test_exact_head_gate_rejects_non_main_dispatch(monkeypatch, tmp_path):
 def test_exact_head_gate_cannot_pass_unknown_event(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         _execute(monkeypatch, tmp_path, event="workflow_run")
+
+
+def test_exact_head_gate_reads_builtin_runner_event_path():
+    workflow = WORKFLOW.read_text()
+    assert "WOW_EVENT_PATH: ${{ github.event_path }}" not in workflow
+    assert 'os.environ.get("GITHUB_EVENT_PATH", "")' in workflow
