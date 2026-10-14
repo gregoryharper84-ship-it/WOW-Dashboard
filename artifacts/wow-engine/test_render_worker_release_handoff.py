@@ -56,3 +56,10 @@ def test_protected_workflow_chains_worker_after_primary():
     assert "TARGET_MAIN_SHA:" in workflow
     assert "render_worker_release_handoff.py" in workflow
     assert 'WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"' in workflow
+
+
+def test_acknowledgement_without_id_is_reconciled_without_reposting():
+    source = SCRIPT.read_text()
+    assert "WORKER_POST_ACK_UNRECONCILED_NO_RETRY" in source
+    assert "_, reconciled = choose_deploy(list_deploys(), event_sha)" in source
+    assert "if not isinstance(result, dict):" in source
