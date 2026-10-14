@@ -120,7 +120,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.action == "claim":
-            ids = [int(i) for i in args.incidents.split(",") if i]
+            ids = [int(i) for i in args.incidents.split(",") if i and i != "null" and i != "NONE"]
             claim(ids, args.owner, args.group, args.receipt)
         elif args.action == "gate":
             gate(args.receipt)
