@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -97,6 +98,15 @@ def gate(path: Path):
             raise LeaseError("LEASE_LOST:" + str(lease["incident_id"]))
 
 
+def heartbeat(path: Path, interval: int = 300):
+    """Renew periodically. Exit nonzero on lost ownership; mutation gates still fence."""
+    if interval < 60 or interval > 600:
+        raise LeaseError("INVALID_RENEW_INTERVAL")
+    while True:
+        gate(path)
+        time.sleep(interval)
+
+
 def release(path: Path):
     if not path.exists():
         return
@@ -112,7 +122,7 @@ def release(path: Path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["claim", "gate", "release"])
+    parser.add_argument("action", choices=["claim", "gate", "release", "heartbeat"])
     parser.add_argument("--receipt", required=True, type=Path)
     parser.add_argument("--incidents", default="")
     parser.add_argument("--owner", default="")
@@ -124,6 +134,8 @@ def main():
             claim(ids, args.owner, args.group, args.receipt)
         elif args.action == "gate":
             gate(args.receipt)
+        elif args.action == "heartbeat":
+            heartbeat(args.receipt)
         else:
             release(args.receipt)
     except (LeaseError, ValueError) as error:
