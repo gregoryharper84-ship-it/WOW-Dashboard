@@ -84,3 +84,40 @@ grant execute on function public.wow_engineering_claim_writer_lease(bigint,text,
 grant execute on function public.wow_engineering_check_writer_lease(bigint,text,bigint) to service_role;
 grant execute on function public.wow_engineering_renew_writer_lease(bigint,text,bigint,integer) to service_role;
 grant execute on function public.wow_engineering_release_writer_lease(bigint,text,bigint) to service_role;
+
+-- Append-only audit of ownership transitions; never treat telemetry as a lock.
+create table if not exists public.wow_engineering_writer_lease_events (
+ event_id bigint generated always as identity primary key,
+ incident_id bigint not null,
+ owner_id text not null,
+ epoch bigint not null,
+ lease_group text not null,
+ branch text not null,
+ pr_number bigint,
+ state text not null,
+ event_kind text not null,
+ recorded_at timestamptz not null default clock_timestamp()
+);
+alter table public.wow_engineering_writer_lease_events enable row level security;
+revoke all on public.wow_engineering_writer_lease_events from public,anon,authenticated;
+grant select, insert on public.wow_engineering_writer_lease_events to service_role;
+
+create or replace function public.wow_engineering_record_lease_transition()
+returns trigger language plpgsql security invoker set search_path = pg_catalog, public as $$
+begin
+ insert into public.wow_engineering_writer_lease_events
+  (incident_id,owner_id,epoch,lease_group,branch,pr_number,state,event_kind)
+ values (new.incident_id,new.owner_id,new.epoch,new.lease_group,new.branch,
+         new.pr_number,new.state,
+         case when TG_OP='INSERT' then 'CLAIM'
+              when new.state='RELEASED' then 'RELEASE'
+              when old.epoch <> new.epoch then 'RECLAIM'
+              else 'RENEW' end);
+ return new;
+end $$;
+revoke all on function public.wow_engineering_record_lease_transition() from public,anon,authenticated;
+grant execute on function public.wow_engineering_record_lease_transition() to service_role;
+drop trigger if exists wow_engineering_writer_lease_audit on public.wow_engineering_incident_writer_leases;
+create trigger wow_engineering_writer_lease_audit
+after insert or update on public.wow_engineering_incident_writer_leases
+for each row execute function public.wow_engineering_record_lease_transition();
