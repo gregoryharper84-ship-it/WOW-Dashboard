@@ -67,7 +67,7 @@ def test_absent_deployment_fails_closed():
 
 
 def test_missing_worker_deploy_does_not_attempt_post(monkeypatch, tmp_path):
-    """Provider mock: absent exact SHA must not create a second deployment."""
+    """Missing authorized DB credential must HOLD before any Render POST."""
     import json
     calls = []
     sha = "a" * 40
@@ -86,7 +86,7 @@ def test_missing_worker_deploy_does_not_attempt_post(monkeypatch, tmp_path):
     monkeypatch.setenv("PRIMARY_RELEASE_RESULT", "success")
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.delenv("WOW_RELEASE_CONTROL_DSN", raising=False)
-    with pytest.raises(RuntimeError, match="WORKER_NO_EXACT_DEPLOY_REQUIRES_GOVERNED_INITIATION"):
+    with pytest.raises(RuntimeError, match="WORKER_RELEASE_CONTROL_DSN_NOT_PROVISIONED"):
         module.run()
     assert not any(method == "POST" for _, method in calls)
 
