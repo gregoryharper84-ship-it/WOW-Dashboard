@@ -82,8 +82,12 @@ begin
      or v.lease_expires_at <= clock_timestamp() then
     raise exception 'WORKER_DEPLOY_FENCING_REJECTED';
   end if;
-  if v.state not in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING') then
-    raise exception 'WORKER_DEPLOY_STATE_NOT_MUTABLE';
+  if not (
+    (v.state='INITIATING' and p_state in ('ACK_AMBIGUOUS','DEPLOYING','LIVE_VERIFIED','HOLD'))
+    or (v.state='ACK_AMBIGUOUS' and p_state in ('DEPLOYING','LIVE_VERIFIED','HOLD'))
+    or (v.state='DEPLOYING' and p_state in ('LIVE_VERIFIED','HOLD'))
+  ) then
+    raise exception 'WORKER_DEPLOY_TRANSITION_INVALID_FROM_STATE';
   end if;
   if p_state='DEPLOYING' and
      (p_render_deploy_id is null or p_render_deploy_id !~ '^dep-[a-z0-9]+
@@ -115,3 +119,30 @@ revoke all on function wow_release_control.record_render_worker_deploy(text,text
 end;
 $$;
 revoke all on function wow_release_control.record_render_worker_deploy(text,text,text,bigint,text,text) from public, anon, authenticated;
+
+-- Renewal cannot resurrect an expired owner or overwrite a newer generation.
+create or replace function wow_release_control.renew_render_worker_deploy(
+  p_service_id text, p_target_sha text, p_owner_run_id text,
+  p_lease_token bigint, p_lease_seconds integer default 300
+) returns boolean
+language plpgsql security invoker
+set search_path=pg_catalog,wow_release_control
+as $$
+begin
+  if p_lease_seconds not between 30 and 900 then
+    raise exception 'WORKER_DEPLOY_RENEW_DURATION_INVALID';
+  end if;
+  update wow_release_control.render_worker_deploy_intents
+    set lease_expires_at=clock_timestamp()+make_interval(secs=>p_lease_seconds),
+        updated_at=clock_timestamp()
+    where service_id=p_service_id and target_sha=p_target_sha
+      and owner_run_id=p_owner_run_id and lease_token=p_lease_token
+      and lease_expires_at > clock_timestamp()
+      and state in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING');
+  if not found then
+    raise exception 'WORKER_DEPLOY_RENEW_FENCING_REJECTED';
+  end if;
+  return true;
+end;
+$$;
+revoke all on function wow_release_control.renew_render_worker_deploy(text,text,text,bigint,integer) from public,anon,authenticated;
