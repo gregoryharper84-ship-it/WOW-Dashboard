@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping, Sequence
 import requests
 
 from v17.team_state_challenger_training import train_binary_challenger, train_multiclass_challenger
+from v17.team_state_intelligence import NCAAF_EXPECTED_SEASON_GAMES
 
 CAN_EXECUTE = False
 PROGRAM = "LLP_DYNAMIC_TEAM_STATE_CHALLENGER_V1"
@@ -154,7 +155,7 @@ def run_all_team_state_challengers(client: Any, *, training_code_sha: str|None=N
         ("MLB",lambda:train_binary_challenger(client,sport="MLB",league="MLB",events=_mlb_official_events(),expected_season_games=162,training_code_sha=code,min_rows=500)),
         ("NBA",lambda:train_binary_challenger(client,sport="NBA",league="NBA",events=_basketball_events(client,"NBA"),expected_season_games=82,training_code_sha=code,min_rows=300)),
         ("WNBA",lambda:train_binary_challenger(client,sport="WNBA",league="WNBA",events=_basketball_events(client,"WNBA"),expected_season_games=44,training_code_sha=code,min_rows=250)),
-        ("NCAAF",lambda:train_binary_challenger(client,sport="NCAAF",league="NCAAF",events=_ncaaf_events(client),expected_season_games=13,training_code_sha=code,min_rows=300)),
+        ("NCAAF",lambda:train_binary_challenger(client,sport="NCAAF",league="NCAAF",events=_ncaaf_events(client),expected_season_games=NCAAF_EXPECTED_SEASON_GAMES,training_code_sha=code,min_rows=300)),
         ("NCAAB",lambda:train_binary_challenger(client,sport="NCAAB",league="NCAAB",events=_ncaab_events(),expected_season_games=31,training_code_sha=code,min_rows=500)),
     ]
     from v17.soccer_openfootball_candidate import COMPETITIONS

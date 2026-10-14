@@ -185,6 +185,44 @@ def test_ncaaf_freshness_blocks_when_latest_feature_eligible_row_is_missing():
     assert exc.value.code != "MODEL_UNAVAILABLE"
 
 
+
+def test_ncaaf_shadow_reference_features_match_persisted_team_state_builder():
+    """Guard candidate-maintenance/replay feature parity at the regime cutoff.
+
+    The NCAAF challenger maintenance corpus is built at 13 expected games.
+    A spread reference silently configured for 12 changes late-season regime
+    features while retaining the same nominal feature family/version.
+    """
+    from v17.spread_margin_challenger import SPORT_CONFIG
+    from v17.spread_margin_replay import _ncaaf_events_from_games
+    from v17.team_state_challenger_training import build_dynamic_binary_rows
+    from v17.team_state_intelligence import NCAAF_EXPECTED_SEASON_GAMES
+
+    assert NCAAF_EXPECTED_SEASON_GAMES == 13
+    assert SPORT_CONFIG["NCAAF"]["expected_season_games"] == NCAAF_EXPECTED_SEASON_GAMES
+    games = _ncaaf_games()
+    events = _ncaaf_events_from_games(games)
+    candidate_rows, metadata, names = build_dynamic_binary_rows(
+        events, expected_season_games=NCAAF_EXPECTED_SEASON_GAMES, min_prior_games=2,
+    )
+    spread_rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    assert len(candidate_rows) == len(spread_rows) > 0
+    assert {row.event_id for row in candidate_rows} == {row.event_id for row in spread_rows}
+    candidate_by_event = {row.event_id: row for row in candidate_rows}
+    for spread in spread_rows:
+        candidate = candidate_by_event[spread.event_id]
+        assert spread.features == candidate.features
+        assert spread.feature_as_of == candidate.feature_as_of
+        assert spread.event_start_time == candidate.event_start_time
+        assert "spread" not in " ".join(spread.features).lower()
+        assert "moneyline" not in " ".join(spread.features).lower()
+
+    # The regime uses season_games_prior + 1 (the upcoming game index).
+    # Game nine has eight prior results: 9/12 is LATE, 9/13 is MID.
+    ninth_game = next(row for row in spread_rows if row.event_id == "ncaaf-8")
+    assert ninth_game.features["home_season_regime_mid"] == 1.0
+    assert ninth_game.features["away_season_regime_mid"] == 1.0
+
 def test_ncaab_replay_is_typed_dataset_unavailable():
     class NeverUsedClient:
         pass
@@ -288,3 +326,64 @@ def test_ncaaf_persisted_adapter_rejects_conflicting_duplicate_rows():
         adapt_ncaaf_persisted_rows([base, conflicting], games)
     assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_DUPLICATE"
     assert exc.value.code != "MODEL_UNAVAILABLE"
+
+
+def test_ncaaf_freshness_blocks_missing_interior_eligible_event_even_if_latest_present():
+    """The old latest-row-only check incorrectly passed this incomplete corpus."""
+    games = _ncaaf_games()
+    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    assert len(rows) >= 3
+    missing_middle = rows[:1] + rows[2:]
+    assert missing_middle[-1].event_id == rows[-1].event_id
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        _assert_ncaaf_persisted_feature_freshness(
+            missing_middle, games, min_prior_games=2,
+        )
+    assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE"
+
+
+def test_ncaaf_freshness_blocks_extra_ineligible_event_row():
+    games = _ncaaf_games()
+    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    from dataclasses import replace
+    wrong = replace(rows[0], event_id="ncaaf-0")
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        _assert_ncaaf_persisted_feature_freshness(
+            rows + [wrong], games, min_prior_games=2,
+        )
+    assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE"
+
+
+def test_ncaaf_freshness_blocks_kickoff_drift_with_complete_event_ids():
+    games = _ncaaf_games()
+    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    from dataclasses import replace
+    altered = list(rows)
+    altered[0] = replace(
+        altered[0],
+        event_start_time=(
+            datetime.fromisoformat(altered[0].event_start_time)
+            + timedelta(minutes=1)
+        ).isoformat(),
+    )
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        _assert_ncaaf_persisted_feature_freshness(
+            altered, games, min_prior_games=2,
+        )
+    assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE"
+
+
+def test_ncaaf_freshness_complete_eligible_corpus_passes():
+    games = _ncaaf_games()
+    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    _assert_ncaaf_persisted_feature_freshness(rows, games, min_prior_games=2)
+
+
+def test_ncaaf_freshness_duplicate_settled_eligible_identity_held():
+    games = _ncaaf_games()
+    rows = adapt_ncaaf_rows(games, min_prior_games=2)
+    with pytest.raises(SpreadChallengerUnavailable) as exc:
+        _assert_ncaaf_persisted_feature_freshness(
+            rows, games + [dict(games[-1])], min_prior_games=2,
+        )
+    assert exc.value.code == "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_DUPLICATE"
