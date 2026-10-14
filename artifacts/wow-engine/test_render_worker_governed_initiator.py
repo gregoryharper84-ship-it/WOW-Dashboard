@@ -48,7 +48,9 @@ def test_claim_must_commit_before_post():
         assert db.commits == 1
         db.operations.append(("post",))
         return {"deploy": {"id": "dep-example"}}
-    assert call(db, post).state == "DEPLOYING"
+    receipt = call(db, post)
+    assert receipt.state == "DEPLOYING"
+    assert receipt.lease_token == 1
     assert db.commits == 2
     assert [o[0] for o in db.operations].count("post") == 1
 
