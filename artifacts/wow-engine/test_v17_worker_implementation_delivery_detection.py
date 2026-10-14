@@ -63,6 +63,20 @@ def sandbox(tmp_path: Path):
         f'[url "{bare}"]\n\tinsteadOf = https://x-access-token:{TOKEN}@github.com/{REPO}.git\n'
     )
     work.mkdir()
+    # The production gate is network-backed. This throwaway git fixture supplies
+    # a deterministic test-only lease verifier, never a bypass in deployed code.
+    gate = work / "artifacts/wow-engine/v17/incident_writer_lease.py"
+    gate.parent.mkdir(parents=True)
+    gate.write_text(
+        "import json,sys\\n"
+        "from pathlib import Path\\n"
+        "p=Path(sys.argv[sys.argv.index('--receipt')+1])\\n"
+        "try:\\n"
+        " rows=json.loads(p.read_text())\\n"
+        " assert len(rows)==1 and rows[0]['incident_id']==823\\n"
+        " assert rows[0]['epoch']==1 and rows[0]['owner_id']=='github-actions:99:1:fixture'\\n"
+        "except (OSError,ValueError,KeyError,AssertionError): sys.exit(3)\\n"
+    )
     _git(work, "init", "-q", env=env)
     (work / ".gitignore").write_text("__pycache__/\n/artifacts/wow-engine/v17/.agent-handoff/\n")
     (work / "module.py").write_text("x = 1\n")
@@ -72,8 +86,13 @@ def sandbox(tmp_path: Path):
     return work, bare, env
 
 
-def _run(provider: str, work: Path, env: dict, changed: bool):
+def _run(provider: str, work: Path, env: dict, changed: bool, *, valid_lease: bool = True):
     workflow, prefix = WORKFLOWS[provider]
+    lease_path = work.parent / "wow-incident-lease.json"
+    if valid_lease:
+        lease_path.write_text(json.dumps([{"incident_id": 823, "owner_id": "github-actions:99:1:fixture", "epoch": 1}]))
+    else:
+        lease_path.unlink(missing_ok=True)
     out = work.parent / "github_output"
     out.write_text("")
     step_env = dict(env)
@@ -87,6 +106,7 @@ def _run(provider: str, work: Path, env: dict, changed: bool):
             "GITHUB_RUN_ID": "99",
             "GITHUB_RUN_ATTEMPT": "1",
             "GITHUB_OUTPUT": str(out),
+            "RUNNER_TEMP": str(work.parent),
         }
     )
     proc = subprocess.run(
@@ -151,4 +171,13 @@ def test_reported_no_change_does_not_push(provider, sandbox):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert outputs["changed"] == "false"
     assert outputs["branch"] == ""
+    assert _git(bare, "branch", "--list", branch, env=env).strip() == ""
+
+@pytest.mark.parametrize("provider", sorted(WORKFLOWS))
+def test_missing_writer_lease_blocks_git_push(provider, sandbox):
+    work, bare, env = sandbox
+    (work / "module.py").write_text("x = 99\\n")
+    proc, _, branch = _run(provider, work, env, changed=True, valid_lease=False)
+    assert proc.returncode != 0
+    assert "No such file" in proc.stderr or "Traceback" in proc.stderr
     assert _git(bare, "branch", "--list", branch, env=env).strip() == ""
