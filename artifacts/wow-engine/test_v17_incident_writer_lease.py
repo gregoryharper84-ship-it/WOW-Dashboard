@@ -69,3 +69,19 @@ def test_failed_second_claim_releases_first(tmp_path):
             lease.claim([40, 41], owner, "GLOBAL", path)
     assert actions == ["claim", "claim", "release"]
     assert not path.exists()
+
+
+def test_heartbeat_renews_then_stops_on_lost_lease(tmp_path):
+    path = tmp_path / "lease.json"
+    path.write_text(json.dumps([{"incident_id": 823, "owner_id": "github-actions:123:1:anthropic", "epoch": 3}]))
+    with patch.object(lease, "rpc", side_effect=[True, False]) as rpc_mock:
+        with patch.object(lease.time, "sleep", return_value=None) as sleeper:
+            with pytest.raises(lease.LeaseError, match="LEASE_LOST:823"):
+                lease.heartbeat(path, interval=60)
+    assert rpc_mock.call_count == 2
+    assert sleeper.call_count == 1
+
+
+def test_heartbeat_rejects_unsafe_interval(tmp_path):
+    with pytest.raises(lease.LeaseError, match="INVALID_RENEW_INTERVAL"):
+        lease.heartbeat(tmp_path / "missing", interval=30)
