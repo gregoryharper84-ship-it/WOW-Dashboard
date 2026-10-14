@@ -286,8 +286,11 @@ jobs:
           pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
           jq -e --arg sha "$HEAD_SHA" '.head.sha == $sha and .state == "open" and .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || { echo "::error::REPAIR_HEAD_STALE"; exit 1; }
           body=$(jq -r '.body // ""' <<<"$pr")
-          incident=$(sed -nE 's/^Incident:[[:space:]]*\x60?([0-9]+)\x60?[[:space:]]*$/\1/p' <<<"$body" | head -1)
-          [[ "$incident" =~ ^[1-9][0-9]*$ ]] || { echo "::error::REPAIR_INCIDENT_MISSING"; exit 1; }
+          # Same strict incident parser in both OpenAI and Claude recovery paths.
+          # Accept #1688 / `1688` / 1688, never missing or conflicting fields.
+          incident=$(printf '%s\n' "$body" | python artifacts/wow-engine/v17/engineering_incident_identity.py) || {
+            echo "::error::REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1;
+          }
           issue=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${incident}")
           jq -e '.state == "open"' <<<"$issue" >/dev/null || { echo "::error::REPAIR_INCIDENT_NOT_OPEN"; exit 1; }
           # Route only an existing manifest-authorized incident. GitHub is the

@@ -116,7 +116,11 @@ jobs:
             echo "::error::CLAUDE_REPAIR_TARGET_STALE_OR_UNTRUSTED"; exit 1;
           }
           body=$(jq -r '.body // ""' <<<"$pr")
-          printf '%s\n' "$body" | grep -Eq "^Incident:[[:space:]]*#?${TARGET_INCIDENT}[[:space:]]*$" || {
+          # Require exactly one same incident in the original bot PR body.
+          incident=$(printf '%s\n' "$body" | python artifacts/wow-engine/v17/engineering_incident_identity.py) || {
+            echo "::error::CLAUDE_REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1;
+          }
+          [ "$incident" = "$TARGET_INCIDENT" ] || {
             echo "::error::CLAUDE_REPAIR_INCIDENT_MISMATCH"; exit 1;
           }
           # Fail closed before checkout: never source new trusted workflows/actions

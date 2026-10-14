@@ -57,3 +57,36 @@ def test_no_model_or_execution_authority_added():
     assert 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true' in s
     assert 'can_execute=false' in a
     assert 'V17_TERMINAL_REDUCER' in s
+
+
+# Real extraction contract; static string checks alone would not expose the
+# formerly incompatible "Incident: #1688" and "Incident: `1688`" formats.
+import pytest
+from v17.engineering_incident_identity import exact_incident_id
+
+@pytest.mark.parametrize("body", [
+    "Incident: #1688", "Incident: `1688`", "Incident: 1688",
+    "## P0 repair\nIncident: #1688\nChange-Class: B",
+    "## Historical PR\nIncident: `1688`\nSafety: false",
+])
+def test_repair_ingress_accepts_all_valid_incident_formats(body):
+    assert exact_incident_id(body) == "1688"
+
+@pytest.mark.parametrize("body", [
+    "", "Incident: #0", "Incident: #01688", "Incident: `#1688`",
+    "Incident: #1688\nIncident: `823`", "Incident: 1688\nIncident: 1688",
+    "Incident: #1688 injected", "Incident: 1688 #823",
+    "Incidents: #1688", "Incident: #1688\rgarbage",
+])
+def test_repair_ingress_rejects_ambiguous_or_malformed_incident(body):
+    with pytest.raises(ValueError):
+        exact_incident_id(body)
+
+def test_both_recovery_workflows_use_identical_strict_parser():
+    auto = AUTO.read_text()
+    claude = CLAUDE.read_text()
+    executable = "python artifacts/wow-engine/v17/engineering_incident_identity.py"
+    assert executable in auto and executable in claude
+    assert "REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS" in auto
+    assert "CLAUDE_REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS" in claude
+    assert '"$incident" = "$TARGET_INCIDENT"' in claude
