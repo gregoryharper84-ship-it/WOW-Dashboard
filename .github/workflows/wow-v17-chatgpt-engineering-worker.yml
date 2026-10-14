@@ -215,7 +215,14 @@ jobs:
           LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
         run: |
           set -euo pipefail
-          incidents=$(printf '%s\\n%s\\n' "$RESTORATION" "$ACCELERATION" | grep -E '^[0-9]+
+          incidents="${RESTORATION},${ACCELERATION}"
+          if [[ ",${incidents}," == *",823,"* ]]; then
+            echo "::error::MANUAL_WRITER_RESERVED:823:PR_1728"
+            exit 1
+          fi
+          python artifacts/wow-engine/v17/incident_writer_lease.py claim --receipt "$RUNNER_TEMP/wow-incident-lease.json" --incidents "$incidents" --owner "github-actions:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:${{ github.workflow }}" --group "${LEASE_GROUP:-GLOBAL}"
+
+      - name: Initialize persistent-worker safety state
         id: safety
         shell: bash
         env:
