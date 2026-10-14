@@ -100,3 +100,37 @@ def test_attempt_marker_has_authenticated_writer_and_invalid_state_fails_closed(
     assert 'RECOVERY_ATTEMPT_MARKER_INVALID' in text
     assert 'sort_by(.updated_at // .created_at, .id)' in text
     assert 'attempts=0' in text
+
+
+def test_bound_repair_packet_is_source_pinned_and_excludes_untrusted_instructions():
+    text = WORKFLOW.read_text()
+    assert "Bind independent HOLD evidence to exact repair branch" in text
+    assert "if: steps.repair_target.outputs.bound == 'true'" in text
+    assert "REPAIR_INDEPENDENT_APP_IDENTITY_INVALID" in text
+    assert 'QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}' in text
+    assert 'RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}' in text
+    assert 'current.get("status") != "completed"' in text
+    assert 'current.get("conclusion") != "failure"' in text
+    assert 'v.get("head_sha") == sha' in text
+    assert 'v.get("name") == name' in text
+    assert 'v.get("app") or {}' in text
+    assert 'max(matched, key=lambda v: int(v.get("id") or 0))' in text
+    assert "REPAIR_HOLD_SUPERSEDED_OR_UNAVAILABLE" in text
+    assert "REPAIR_HOLD_CODES_MISSING" in text
+    assert '"schema": "WOW_REPAIR_TARGET_V1"' in text
+    assert '"can_execute": False' in text
+    assert '"independent_failed_checks": checks' in text
+    assert '"output.summary"' not in text
+    assert text.index("Bind independent HOLD evidence to exact repair branch") < text.index("Engineering Lead agent")
+
+
+def test_bound_repair_context_reaches_independent_agents_and_same_branch_writer():
+    text = WORKFLOW.read_text()
+    assert text.count(".agent-handoff/repair-context.json") >= 5
+    assert "exclusively binds your repair to the existing Engineering App PR" in text
+    assert "Fix that PR's reproduced regression" in text
+    assert 'if [ -n "${REPAIR_BRANCH:-}" ]; then branch="$REPAIR_BRANCH"; fi' in text
+    assert '--force-with-lease="refs/heads/$branch:$REPAIR_SHA"' in text
+    assert "          rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json" in text
+    assert text.index("rm -f artifacts/wow-engine/v17/.agent-handoff/repair-context.json") < text.index("git add --all")
+    assert "steps.repair_target.outputs.bound != 'true'" in text
