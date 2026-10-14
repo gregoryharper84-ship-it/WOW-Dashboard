@@ -100,6 +100,7 @@ Emitted by the protected Claude engineering worker (`wow-v17-claude-engineering-
 | `ACTIONABLE_REPAIR_PR_MISSING` | engineering delivery | No open PR to `main` exists for the implementation branch. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_PR_AMBIGUOUS` | engineering delivery | More than one open PR matches the implementation branch. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_PR_HEAD_MISMATCH` | engineering delivery | The PR head differs from the implementation head SHA. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_WRONG_PR` | engineering delivery | Bound same-branch repair resolved a different open PR number than the original Engine-App target. No substitute PR is authorized. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_DELIVERY_UNVERIFIED` | engineering persistence | `REPAIR` run whose delivery gate produced no code (cancelled/skipped); suffixed with the gate outcome. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_RECEIPT_INCIDENT_INVALID` | engineering persistence | Incident identity is not a numeric issue number; receipt not written. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED` | engineering persistence | Incident issue lookup or append-only receipt write failed. | `UNRESOLVED_TYPED_FAILURE` |

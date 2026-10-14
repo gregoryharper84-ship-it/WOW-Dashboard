@@ -10,6 +10,7 @@
 /artifacts/wow-engine/v17/engineering_agent_team.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_dispatch_manifest.json @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_dispatch_queue.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_incident_identity.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_effectiveness.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_provider_failover.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/independent_release_checks.py @gregoryharper84-ship-it
