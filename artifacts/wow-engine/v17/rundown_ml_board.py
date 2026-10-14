@@ -76,13 +76,16 @@ def _collect_rundown(sport_key: str, *, opener: Any = None) -> tuple[list[dict[s
     # fall back to the stale query-key/v1-catalog provider definition.
     install_rundown_v2_auth_repair()
 
+    dates = snapshot_dates()
+    if not dates:
+        return [], []
     scope = paid_scope.winner_paid_scope()
     if scope is None:
         return [], [paid_scope.SCOPE_BLOCKER]
     market_ids, affiliate_ids = scope
     rows: list[dict[str, Any]] = []
     codes: list[str] = []
-    for slate_date in snapshot_dates():
+    for slate_date in dates:
         result = live.get_sport_date_odds_snapshot(
             sport_key,
             slate_date,
