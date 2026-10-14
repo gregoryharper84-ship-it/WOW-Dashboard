@@ -39,8 +39,19 @@ class _Query:
                 return SimpleNamespace(data=[row])
             return SimpleNamespace(data=[])
         if self.name == "wow_prop_action_canary_receipts" and self.mode == "upsert":
-            self.db.receipts.append(dict(self.payload))
+            if not getattr(self.db, "drop_writes", False):
+                self.db.receipts.append(dict(self.payload))
             return SimpleNamespace(data=[dict(self.payload)])
+        if self.name == "wow_prop_action_canary_receipts" and self.mode == "select":
+            if getattr(self.db, "readback_error", False):
+                raise ConnectionError("simulated receipt-store read outage")
+            rows = [dict(row) for row in self.db.receipts
+                    if row["immutable_receipt_hash"] == self.filters.get("immutable_receipt_hash")]
+            if rows and getattr(self.db, "corrupt_readback", False):
+                rows[0]["certification_id"] = "WRONG_CERTIFICATION"
+            if rows and getattr(self.db, "corrupt_probability", False):
+                rows[0]["calibrated_lower_bound"] = 0.99
+            return SimpleNamespace(data=rows)
         raise AssertionError((self.name, self.mode))
 
 
@@ -178,3 +189,115 @@ def test_identity_mismatch_cannot_write_canary(monkeypatch):
     assert audit["persisted_rows"] == 0
     assert "CANARY_REVIEWED_RELEASE_IDENTITY_MISMATCH" in audit["blockers"]
     assert db.receipts == []
+
+
+def test_canary_upsert_without_durable_readback_must_not_count_success(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    db = _DB(_prediction())
+    db.drop_writes = True
+
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["persisted_rows"] == 0
+    assert audit["status"] == "COMPLETED_WITH_BLOCKERS"
+    assert "CANARY_RECEIPT_READBACK_MISSING" in audit["blockers"]
+    assert db.receipts == []
+
+
+def test_canary_readback_wrong_certification_must_not_count_success(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    db = _DB(_prediction())
+    db.corrupt_readback = True
+
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["persisted_rows"] == 0
+    assert audit["status"] == "COMPLETED_WITH_BLOCKERS"
+    assert "CANARY_RECEIPT_READBACK_MISMATCH" in audit["blockers"]
+
+
+def test_canary_readback_transport_exception_is_explicit_blocker(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    db = _DB(_prediction())
+    db.readback_error = True
+
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["eligible_rows"] == 1
+    assert audit["persisted_rows"] == 0
+    assert audit["status"] == "COMPLETED_WITH_BLOCKERS"
+    assert "CANARY_RECEIPT_READBACK_UNAVAILABLE:ConnectionError" in audit["blockers"]
+    assert db.receipts and db.receipts[0]["certification_id"] == "CERT-FORWARD-001"
+    assert audit["can_execute"] is False
+
+
+def test_canary_readback_corrupted_probability_package_is_rejected(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    db = _DB(_prediction())
+    db.corrupt_probability = True
+
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["eligible_rows"] == 1
+    assert audit["persisted_rows"] == 0
+    assert audit["status"] == "COMPLETED_WITH_BLOCKERS"
+    assert "CANARY_RECEIPT_READBACK_MISMATCH" in audit["blockers"]
+    assert audit["can_execute"] is False
+
+
+def test_boolean_values_never_become_probability_evidence():
+    assert subject._finite_probability(True) is None
+    assert subject._finite_probability(False) is None
+    assert subject._finite_probability(0.0) == 0.0
+    assert subject._finite_probability(1.0) == 1.0
+
+
+def test_boolean_probability_fields_fail_closed_before_receipt_write(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    for field in ("raw_model_probability", "calibrated_probability", "calibrated_probability_lower_bound"):
+        for boolean in (True, False):
+            prediction = _prediction()
+            prediction[field] = boolean
+            db = _DB(prediction)
+            audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+            assert audit["eligible_rows"] == 1, (field, boolean, audit)
+            assert audit["persisted_rows"] == 0, (field, boolean, audit)
+            assert "CANARY_GOVERNED_PROBABILITY_PACKAGE_INVALID" in audit["blockers"]
+            assert db.receipts == []
+            assert audit["can_execute"] is False
+
+
+def test_empty_reconciled_action_does_not_false_pass_canary(monkeypatch):
+    release = _release()
+    key = _release_key("MLB", "PITCHER_STRIKEOUTS", "SO_ARTIFACT_V1", "sha256:abc")
+    monkeypatch.setattr(subject, "REVIEWED_CERTIFICATION_RELEASES", {key: release})
+    result = _result()
+    result["rows"] = []
+    db = _DB(_prediction())
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=result)
+    assert audit["status"] == "NO_ELIGIBLE_CANARY_ROWS"
+    assert audit["eligible_rows"] == 0
+    assert audit["persisted_rows"] == 0
+    assert not db.receipts
+    assert audit["can_execute"] is False
+
+
+def test_completed_prediction_without_matching_certified_release_not_a_canary_pass(monkeypatch):
+    release = _release()
+    # A nonmatching exact artifact must not count as eligible or certified.
+    monkeypatch.setattr(
+        subject, "REVIEWED_CERTIFICATION_RELEASES",
+        {_release_key("NFL", "RECEIVING_YARDS", "OTHER", "sha256:other"): release},
+    )
+    db = _DB(_prediction())
+    audit = subject.capture_action_canary_receipts(db=db, batch=_batch(), result=_result())
+    assert audit["status"] == "NO_ELIGIBLE_CANARY_ROWS"
+    assert audit["eligible_rows"] == 0
+    assert audit["persisted_rows"] == 0
+    assert not db.receipts
