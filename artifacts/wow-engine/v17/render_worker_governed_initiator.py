@@ -13,6 +13,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 class Handoff:
     state: str
     deploy_id: str | None = None
+    lease_token: int | None = None
 
 
 def initiate_once(*, connection, target_sha: str, current_main_sha: str,
@@ -50,7 +51,7 @@ def initiate_once(*, connection, target_sha: str, current_main_sha: str,
         record_committed(connection, service_id=ALLOWED_SERVICE, target_sha=target_sha,
                          owner_run_id=owner_run_id, token=claim.token,
                          state="DEPLOYING", deploy_id=deploy_id)
-        return Handoff("DEPLOYING", deploy_id)
+        return Handoff("DEPLOYING", deploy_id, claim.token)
     except BaseException:
         try:
             record_committed(connection, service_id=ALLOWED_SERVICE, target_sha=target_sha,
