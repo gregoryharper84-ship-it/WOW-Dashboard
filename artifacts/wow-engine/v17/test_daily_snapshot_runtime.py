@@ -326,6 +326,25 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     monkeypatch.setattr(feed, "odds_proxy_feed", lambda **kwargs: slate)
     monkeypatch.setattr(feed, "rundown_board_feed", lambda **kwargs: slate)
 
+    # Any earlier test that imports an API module boots the app and installs the
+    # production discovery overlays, which canonicalize NHL aliases against the
+    # live first-party NHL schedule. That schedule is an upstream source too, so
+    # stub it deterministically; otherwise this test depends on suite order.
+    from v17 import nhl_event_identity
+
+    def _nhl_schedule_match(*, event_start_time, home_team, away_team, **_kwargs):
+        return {
+            "event_id": "nhl-1",
+            "event_start_time": event_start_time,
+            "home_team": home_team,
+            "away_team": away_team,
+            "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_verified_at": FUTURE,
+            "market_features_used": False,
+        }
+
+    monkeypatch.setattr(nhl_event_identity, "resolve_nhl_current_event_identity", _nhl_schedule_match)
+
     # No non-MLB bridge is registered, so every discovered non-MLB row must be
     # retained as MODEL_UNAVAILABLE rather than disappear from the board.
     for sport in ("NFL", "NHL", "SOCCER"):
