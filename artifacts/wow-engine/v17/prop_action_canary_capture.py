@@ -222,7 +222,12 @@ def capture_action_canary_receipts(
         persisted += 1
 
     return {
-        "status": "PASS" if not blockers else "COMPLETED_WITH_BLOCKERS",
+        # Empty eligible cohorts are NOT successful Action-canary acceptance.
+        "status": (
+            "COMPLETED_WITH_BLOCKERS" if blockers
+            else "NO_ELIGIBLE_CANARY_ROWS" if eligible == 0
+            else "PASS"
+        ),
         "eligible_rows": eligible,
         "persisted_rows": persisted,
         "blockers": list(dict.fromkeys(blockers)),
