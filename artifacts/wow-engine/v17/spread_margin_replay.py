@@ -435,33 +435,52 @@ def _load_ncaaf_persisted_feature_rows(client: Any) -> list[dict[str, Any]]:
 
 
 
-def _latest_ncaaf_feature_eligible_event(
+def _ncaaf_feature_eligible_events(
     game_rows: Sequence[Mapping[str, Any]],
     *,
     min_prior_games: int = 5,
-) -> tuple[str, datetime] | None:
-    """Return the latest settled event that should have a dynamic feature row.
+) -> dict[str, datetime]:
+    """Lightweight exact inventory of settled events eligible for persisted features.
 
-    Dynamic team-state rows are intentionally not created until both teams have
-    enough strictly prior games. Freshness must therefore compare the persisted
-    feature ledger with the latest *eligible* settled event, not blindly with
-    the newest settled game on the schedule.
+    Match the strictly-prior history threshold in build_dynamic_margin_rows
+    without reconstructing thousands of expensive feature vectors.
     """
     events = sorted(
         _ncaaf_events_from_games(game_rows),
         key=lambda row: (_dt(row["event_start_time"]), str(row["event_id"])),
     )
     prior_counts: dict[str, int] = {}
-    latest: tuple[str, datetime] | None = None
+    eligible: dict[str, datetime] = {}
     threshold = max(0, int(min_prior_games))
     for event in events:
         home = str(event.get("home_team") or "")
         away = str(event.get("away_team") or "")
+        event_id = str(event["event_id"])
+        kickoff = _dt(event["event_start_time"])
         if prior_counts.get(home, 0) >= threshold and prior_counts.get(away, 0) >= threshold:
-            latest = (str(event["event_id"]), _dt(event["event_start_time"]))
+            if event_id in eligible:
+                raise SpreadChallengerUnavailable(
+                    "SPREAD_REPLAY_PERSISTED_NCAAF_EVENT_DUPLICATE",
+                    "settled NCAAF inventory contains duplicate eligible event identity",
+                )
+            eligible[event_id] = kickoff
         prior_counts[home] = prior_counts.get(home, 0) + 1
         prior_counts[away] = prior_counts.get(away, 0) + 1
-    return latest
+    return eligible
+
+
+def _latest_ncaaf_feature_eligible_event(
+    game_rows: Sequence[Mapping[str, Any]],
+    *,
+    min_prior_games: int = 5,
+) -> tuple[str, datetime] | None:
+    """Return latest settled event with enough strictly prior games."""
+    eligible = _ncaaf_feature_eligible_events(
+        game_rows, min_prior_games=min_prior_games,
+    )
+    if not eligible:
+        return None
+    return max(eligible.items(), key=lambda item: (item[1], item[0]))
 
 
 def _assert_ncaaf_persisted_feature_freshness(
@@ -470,21 +489,25 @@ def _assert_ncaaf_persisted_feature_freshness(
     *,
     min_prior_games: int = 5,
 ) -> None:
-    expected = _latest_ncaaf_feature_eligible_event(
-        game_rows,
-        min_prior_games=min_prior_games,
+    """Require full eligible-event coverage, not merely a matching latest row.
+
+    Previously a missing *middle* eligible event could be silently excluded
+    from challenger training while the newest row made freshness appear green.
+    """
+    expected = _ncaaf_feature_eligible_events(
+        game_rows, min_prior_games=min_prior_games,
     )
-    if expected is None:
+    if not expected:
         return
-    latest = max(
-        replay_rows,
-        key=lambda row: (_dt(row.event_start_time), str(row.event_id)),
-    )
-    expected_event_id, expected_start = expected
-    if str(latest.event_id) != expected_event_id or _dt(latest.event_start_time) != expected_start:
+    observed = {str(row.event_id): _dt(row.event_start_time) for row in replay_rows}
+    if (
+        len(observed) != len(replay_rows)
+        or set(observed) != set(expected)
+        or any(observed[event_id] != kickoff for event_id, kickoff in expected.items())
+    ):
         raise SpreadChallengerUnavailable(
             "SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE",
-            "immutable NCAAF dynamic team-state rows lag the latest feature-eligible settled training game",
+            "immutable NCAAF dynamic team-state rows do not exactly cover settled feature-eligible events",
         )
 
 
