@@ -45,7 +45,7 @@ begin
   select * into v from wow_release_control.render_worker_deploy_intents
     where service_id=p_service_id and target_sha=p_target_sha
     for update;
-  if v.state = 'PENDING'
+  if v.state = 'PENDING' and v.attempts < 3
      and (v.lease_expires_at is null or v.lease_expires_at < clock_timestamp()) then
     update wow_release_control.render_worker_deploy_intents d
       set state='INITIATING', owner_run_id=p_owner_run_id,
@@ -84,6 +84,23 @@ begin
   end if;
   if v.state not in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING') then
     raise exception 'WORKER_DEPLOY_STATE_NOT_MUTABLE';
+  end if;
+  if p_state='DEPLOYING' and
+     (p_render_deploy_id is null or p_render_deploy_id !~ '^dep-[a-z0-9]+
+     (p_render_deploy_id is null or p_render_deploy_id !~ '^dep-[a-z0-9]+$') then
+    raise exception 'WORKER_DEPLOY_LIVE_RECEIPT_MISSING';
+  end if;
+  update wow_release_control.render_worker_deploy_intents
+     set state=p_state,
+         render_deploy_id=coalesce(p_render_deploy_id,v.render_deploy_id),
+         updated_at=clock_timestamp()
+   where service_id=p_service_id and target_sha=p_target_sha;
+  return true;
+end;
+$$;
+revoke all on function wow_release_control.record_render_worker_deploy(text,text,text,bigint,text,text) from public, anon, authenticated;
+) then
+    raise exception 'WORKER_DEPLOY_ACTIVE_RECEIPT_MISSING';
   end if;
   if p_state='LIVE_VERIFIED' and
      (p_render_deploy_id is null or p_render_deploy_id !~ '^dep-[a-z0-9]+$') then
