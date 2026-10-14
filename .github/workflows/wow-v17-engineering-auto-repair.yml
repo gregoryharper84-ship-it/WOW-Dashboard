@@ -17,6 +17,9 @@ on:
   workflow_run:
     workflows: ["wow-v17-independent-qa-check", "wow-v17-release-authority-check"]
     types: [completed]
+  schedule:
+    - cron: "23 * * * *"  # Recover dropped workflow_run events without duplicate repair.
+  workflow_dispatch:  # Authorized manual reconciliation; still bound to independent App checks.
 
 permissions:
   actions: write
@@ -26,12 +29,64 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-engineering-auto-repair-${{ github.event.workflow_run.head_sha }}
+  group: wow-v17-engineering-auto-repair-${{ github.event.workflow_run.head_sha || github.run_id }}
   cancel-in-progress: false
 
 jobs:
+  discover:
+    # Workflow-run HEAD is protected main. Resolve failed independent-App checks
+    # against open wow-engineering[bot] PR heads, bounded by upstream run time.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+      has_targets: ${{ steps.targets.outputs.has_targets }}
+    steps:
+      - name: Checkout protected main resolver
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Discover exact-head HOLD targets with source-pinned independent App IDs
+        id: targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
+          RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_hold_target.py \
+            --event-file "$GITHUB_EVENT_PATH" --event-name "$GITHUB_EVENT_NAME" \
+            --repository "$GITHUB_REPOSITORY" \
+            --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" \
+            > "$RUNNER_TEMP/hold-targets.json"
+          jq -e '.can_execute == false and (.targets | type == "array")' \
+            "$RUNNER_TEMP/hold-targets.json" >/dev/null
+          echo "targets=$(jq -c .targets "$RUNNER_TEMP/hold-targets.json")" >> "$GITHUB_OUTPUT"
+          count=$(jq -r '.targets | length' "$RUNNER_TEMP/hold-targets.json")
+          echo "has_targets=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "HOLD target count: $count" >> "$GITHUB_STEP_SUMMARY"
+          jq -c '{targets: [.targets[] | {pr_number, head_sha, source_role}], deferred, can_execute}' \
+            "$RUNNER_TEMP/hold-targets.json" >> "$GITHUB_STEP_SUMMARY"
+
   route-hold-findings:
-    if: github.event.workflow_run.conclusion == 'success'
+    needs: discover
+    if: needs.discover.outputs.has_targets == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.targets) }}
+    # A second QA/Release run can never race the same PR marker/lease writer.
+    concurrency:
+      group: wow-v17-hold-repair-pr-${{ matrix.pr_number }}
+      cancel-in-progress: false
     environment: wow-engineering
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -70,41 +125,48 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          HEAD_SHA: ${{ matrix.head_sha }}
+          CHECK_ID: ${{ matrix.source_check_id }}
+          APP_ID: ${{ matrix.source_app_id }}
+          SOURCE_ROLE: ${{ matrix.source_role }}
+          QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
+          RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
         run: |
           set -euo pipefail
-          prs=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
-            | jq -s --arg sha "$HEAD_SHA" '[.[][] | select(.head.sha == $sha)]')
-          pr_number=$(jq -r '.[0].number // empty' <<<"$prs")
-          author=$(jq -r '.[0].user.login // empty' <<<"$prs")
-          if [ -z "$pr_number" ] || [ "$author" != "wow-engineering[bot]" ]; then
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "No open wow-engineering[bot] PR at head ${HEAD_SHA}; nothing to route." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
+          # The upstream workflow's HEAD is main; only independent checks on
+          # a validated PR head bind a HOLD to an Engineering App repair target.
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::HOLD_TARGET_IDENTITY_INVALID"; exit 1;
+          }
+          case "$SOURCE_ROLE:$APP_ID" in
+            "qa:$QA_APP_ID") check_name="WOW Independent QA exact-head" ;;
+            "release:$RELEASE_APP_ID") check_name="WOW Release Authority exact-head" ;;
+            *) echo "::error::HOLD_APP_IDENTITY_MISMATCH"; exit 1 ;;
+          esac
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
+            '.head.sha == $sha and .state == "open" and .draft == false and
+             .base.ref == "main" and .head.repo.full_name == $repo and
+             .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || {
+            echo "::error::HOLD_PR_HEAD_STALE_OR_UNTRUSTED"; exit 1;
+          }
           checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
             -H 'Accept: application/vnd.github+json' | jq -s '[.[].check_runs[]]')
-          # Consider the latest check per authority, not any historical failure.
-          # A newer passing check supersedes a stale HOLD on the same SHA.
-          summary=$(jq -r '
-            [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")]
-            | group_by(.name)
-            | map(sort_by(.completed_at // .started_at // .created_at, .id) | last)
-            | map(select(.conclusion == "failure") | .output.summary // "")
-            | map(select(length > 0))
-            | join("\n")
-          ' <<<"$checks")
-
-          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          latest=$(jq -c --arg name "$check_name" --arg sha "$HEAD_SHA" --argjson app "$APP_ID" \
+            '[.[] | select(.name == $name and .head_sha == $sha and .app.id == $app)]
+             | sort_by(.id) | last // null' <<<"$checks")
+          jq -e --argjson id "$CHECK_ID" \
+            '.id == $id and .status == "completed" and .conclusion == "failure"' \
+            <<<"$latest" >/dev/null || { echo "::error::HOLD_SUPERSEDED_OR_UNTRUSTED"; exit 1; }
+          summary=$(jq -er '.output.summary | select(type == "string")' <<<"$latest")
+          grep -Fq 'Typed findings:' <<<"$summary" && grep -Fq 'can_execute=false' <<<"$summary" || {
+            echo "::error::HOLD_SUMMARY_INVALID"; exit 1;
+          }
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          if [ -z "$summary" ]; then
-            echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "PR #$pr_number: no failing QA/Release exact-head check found; nothing to route." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          # Check summaries are external text; encode before writing GITHUB_OUTPUT
-          # so a crafted multiline delimiter cannot inject other step outputs.
+          echo "source_check_id=$CHECK_ID" >> "$GITHUB_OUTPUT"
+          # Check summaries are external text. Never allow multiline output injection.
           echo "summary_b64=$(printf %s "$summary" | base64 -w0)" >> "$GITHUB_OUTPUT"
           echo "eligible=true" >> "$GITHUB_OUTPUT"
 
@@ -115,6 +177,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
         run: |
           set -euo pipefail
           marker='<!-- WOW_RECOVERY_ATTEMPTS -->'
@@ -131,12 +194,23 @@ jobs:
           else
             attempts=0
           fi
+          # A check that was already dispatched for this PR *head* cannot
+          # consume another attempt. A later new head can consume the next slot.
+          already_dispatched=false
+          if [ -n "$comment_id" ]; then
+            recorded_head=$(jq -r '.body | capture("(?m)^- head_sha: (?<sha>[0-9a-f]{40})$").sha // ""' \
+              <<<"$marker_comment" 2>/dev/null || true)
+            if [ "$recorded_head" = "$HEAD_SHA" ]; then
+              already_dispatched=true
+            fi
+          fi
           echo "comment_id=${comment_id:-}" >> "$GITHUB_OUTPUT"
           echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
+          echo "already_dispatched=$already_dispatched" >> "$GITHUB_OUTPUT"
 
       - name: Plan recovery
         id: plan
-        if: steps.resolve.outputs.eligible == 'true'
+        if: steps.resolve.outputs.eligible == 'true' && steps.attempts.outputs.already_dispatched != 'true'
         shell: bash
         env:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
@@ -159,7 +233,7 @@ jobs:
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
         shell: bash
         env:
-          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
         run: |
@@ -203,11 +277,16 @@ jobs:
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
           COMMENT_ID: ${{ steps.attempts.outputs.comment_id }}
           NEW_ATTEMPTS: ${{ steps.plan.outputs.new_attempts }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
         run: |
           set -euo pipefail
           body="<!-- WOW_RECOVERY_ATTEMPTS -->
           ### WOW V17 auto-repair
           - attempts: ${NEW_ATTEMPTS}
+          - head_sha: ${HEAD_SHA}
+          - source_check_id: ${SOURCE_CHECK_ID}
+          - accepted: true
           - can_execute: false"
           if [ -n "${COMMENT_ID:-}" ]; then
             gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -f body="$body" >/dev/null
@@ -227,6 +306,12 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --body "NEEDS_OWNER_RETRY_CAP: 3 automatic repair attempts exhausted. Stopping; this PR now requires a human. can_execute=false."
           echo "PR #${PR_NUMBER}: retry cap exhausted, labelled needs-owner." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record waiting on CI evidence (non-repairable yet)
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_EVIDENCE'
+        shell: bash
+        run: |
+          echo "PR #${{ matrix.pr_number }}: incomplete CI/QA evidence; no repair dispatched or retry consumed. Await fresh independent verdict." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record waiting-on-owner (non-repairable finding)
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_OWNER'
