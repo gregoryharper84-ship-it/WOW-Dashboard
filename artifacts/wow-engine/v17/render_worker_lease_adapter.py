@@ -66,3 +66,24 @@ def renew(connection, *, service_id: str, target_sha: str, owner_run_id: str,
         rows = cursor.fetchall()
     if len(rows) != 1 or rows[0] != (True,):
         raise DeploymentLeaseError("WORKER_DEPLOY_LEASE_RENEW_NOT_ACKNOWLEDGED")
+
+
+def claim_committed(connection, *, service_id: str, target_sha: str, owner_run_id: str) -> LeaseDecision:
+    """A Render POST must NEVER precede successful durable claim commit."""
+    try:
+        decision = claim(connection, service_id=service_id, target_sha=target_sha,
+                         owner_run_id=owner_run_id)
+        connection.commit()
+        return decision
+    except BaseException:
+        connection.rollback()
+        raise
+
+
+def record_committed(connection, **kwargs) -> None:
+    try:
+        record(connection, **kwargs)
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
