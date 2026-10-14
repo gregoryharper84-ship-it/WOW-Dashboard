@@ -66,6 +66,9 @@ def sandbox(tmp_path: Path):
     _git(work, "init", "-q", env=env)
     (work / ".gitignore").write_text("__pycache__/\n/artifacts/wow-engine/v17/.agent-handoff/\n")
     (work / "module.py").write_text("x = 1\n")
+    policy = work / "artifacts/wow-engine/v17/agent_identity_policy.py"
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text("def governance_trust_roots(root):\n    return [\'artifacts/wow-engine/v17/agent_identity_policy.py\']\n")
     _git(work, "add", "-A", env=env)
     _git(work, "commit", "-q", "-m", "init", env=env)
     _git(work, "remote", "add", "origin", str(bare), env=env)
@@ -87,6 +90,8 @@ def _run(provider: str, work: Path, env: dict, changed: bool):
             "GITHUB_RUN_ID": "99",
             "GITHUB_RUN_ATTEMPT": "1",
             "GITHUB_OUTPUT": str(out),
+            "GITHUB_WORKSPACE": str(work),
+            "GITHUB_SHA": _git(work, "rev-parse", "HEAD", env=env).strip(),
         }
     )
     proc = subprocess.run(
@@ -124,7 +129,12 @@ def test_claimed_change_without_any_change_fails_closed(provider, sandbox):
     work, bare, env = sandbox
     proc, outputs, branch = _run(provider, work, env, changed=True)
     assert proc.returncode != 0
-    assert "reported changes but returned no working-tree diff" in proc.stdout
+    # Both providers must reject a false change; their typed failure codes differ.
+    expected_error = (
+        "ENGINEERING_CHANGED_BUT_NO_DIFF" if provider == "openai"
+        else "Claude reported changes but returned no working-tree diff."
+    )
+    assert expected_error in proc.stderr + proc.stdout
     assert "branch" not in outputs
     assert _git(bare, "branch", "--list", branch, env=env).strip() == ""
 
@@ -139,7 +149,12 @@ def test_ignored_files_only_are_not_a_change(provider, sandbox):
     (handoff / "implementation.json").write_text("{}")
     proc, _, branch = _run(provider, work, env, changed=True)
     assert proc.returncode != 0
-    assert "reported changes but returned no working-tree diff" in proc.stdout
+    # Both providers must reject a false change; their typed failure codes differ.
+    expected_error = (
+        "ENGINEERING_CHANGED_BUT_NO_DIFF" if provider == "openai"
+        else "Claude reported changes but returned no working-tree diff."
+    )
+    assert expected_error in proc.stderr + proc.stdout
     assert _git(bare, "branch", "--list", branch, env=env).strip() == ""
 
 
