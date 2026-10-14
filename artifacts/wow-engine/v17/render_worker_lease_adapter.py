@@ -87,3 +87,13 @@ def record_committed(connection, **kwargs) -> None:
     except BaseException:
         connection.rollback()
         raise
+
+
+def renew_committed(connection, **kwargs) -> None:
+    """Every lease extension commits before another provider observation."""
+    try:
+        renew(connection, **kwargs)
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
