@@ -1,5 +1,6 @@
 """Local unit tests: python -m unittest discover -s . -p test_contracts.py"""
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
 from pydantic import ValidationError
@@ -32,6 +33,18 @@ class ContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             PilotTask.model_validate(data)
 
+    def test_future_retrieval_rejected(self):
+        data = self.task.model_dump()
+        data["evidence"][0]["retrieved_at"] = self.now + timedelta(minutes=1)
+        with self.assertRaises(ValidationError):
+            PilotTask.model_validate(data)
+
+    def test_timezone_naive_rejected(self):
+        data = self.task.model_dump()
+        data["decision_time"] = datetime(2026, 10, 14, 12, 0)
+        with self.assertRaises(ValidationError):
+            PilotTask.model_validate(data)
+
     def test_duplicate_evidence_rejected(self):
         data = self.task.model_dump()
         data["evidence"].append(data["evidence"][0])
@@ -50,7 +63,8 @@ class ContractTests(unittest.TestCase):
                          source_ids=["kalshi:rule:1"], assessment=assessment)
 
     def test_missing_model_returns_blocked(self):
-        result = analyze(self.task, model="")
+        with patch.dict("os.environ", {"GEMINI_MODEL": ""}):
+            result = analyze(self.task, model="")
         self.assertEqual(result.outcome, "BLOCKED")
         self.assertFalse(result.can_execute)
 
