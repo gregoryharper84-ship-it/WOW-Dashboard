@@ -23,7 +23,14 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             bin_dir = root / "bin"
             bin_dir.mkdir()
             gh = bin_dir / "gh"
-            gh.write_text("#!/bin/sh\nprintf 'fixture failed worker log\\n'\n")
+            gh.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = run ] && [ \"$2\" = list ]; then\n"
+                "  printf '[]\\n'\n"
+                "else\n"
+                "  printf 'fixture failed worker log\\n'\n"
+                "fi\n"
+            )
             gh.chmod(0o755)
             python = bin_dir / "python"
             classification = json.dumps({"code":code, "failover_eligible":eligible})
@@ -50,7 +57,8 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
 
     def auto_route(self, *, latest_conclusion="failure",
                    breaker=True, code="OPENAI_API_QUOTA_EXCEEDED",
-                   openai=True, anthropic=False):
+                   openai=True, anthropic=False,
+                   claude_latest_conclusion=None):
         """Execute the actual workflow's automatic dispatch path.
 
         Stub only provider/GitHub observations. The real route shell, jq, and
@@ -69,7 +77,10 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             gh.write_text(
                 '#!/bin/sh\n'
                 'if [ "$1" = run ] && [ "$2" = list ]; then\n'
-                '  printf \'%s\\n\' "$STUB_LAST_RUN"\n'
+                '  case "$*" in\n'
+                '    *wow-v17-claude-engineering-worker.yml*) printf \'%s\\n\' "$STUB_CLAUDE_RUN";;\n'
+                '    *) printf \'%s\\n\' "$STUB_LAST_RUN";;\n'
+                '  esac\n'
                 'elif [ "$1" = run ] && [ "$2" = view ]; then\n'
                 '  printf \'ERROR: quota exceeded\\n\'\n'
                 'else\n'
@@ -112,6 +123,13 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
                 ANTHROPIC_API_KEY="configured" if anthropic else "",
                 CLAUDE_CODE_OAUTH_TOKEN="",
                 STUB_LAST_RUN=json.dumps(fixture),
+                STUB_CLAUDE_RUN=json.dumps(
+                    [] if claude_latest_conclusion is None else [{
+                        "databaseId": 444,
+                        "conclusion": claude_latest_conclusion,
+                        "updatedAt": "2026-10-14T23:00:00Z",
+                    }]
+                ),
                 STUB_CLASSIFICATION=json.dumps({"code":code,"failover_eligible":True}),
                 STUB_BREAKER=json.dumps({"active":breaker}),
             )
@@ -139,6 +157,15 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
         self.assertEqual(route["action"], "DISPATCH")
         self.assertEqual(route["provider"], "anthropic")
         self.assertEqual(route["reason"], "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED")
+
+    def test_exhausted_secondary_credits_do_not_spawn_repeat_claude_runs(self):
+        route = self.auto_route(
+            breaker=True, openai=True, anthropic=True,
+            claude_latest_conclusion="failure",
+        )
+        self.assertEqual(route["action"], "SURVIVAL")
+        self.assertEqual(route["provider"], "deterministic")
+        self.assertIn("NO_APPROVED_ALTERNATE", route["reason"])
 
     def test_expired_transient_rate_limiter_allows_openai(self):
         route = self.auto_route(breaker=False, code="OPENAI_API_RATE_LIMITED")
