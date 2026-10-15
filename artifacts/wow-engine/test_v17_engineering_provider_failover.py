@@ -25,7 +25,8 @@ def test_openai_quota_is_failover_eligible() -> None:
     )
     assert result.code == "OPENAI_API_QUOTA_EXCEEDED"
     assert result.failover_eligible is True
-    assert result.circuit_breaker_minutes == 120
+    assert result.circuit_breaker_minutes == -1
+    assert result.manual_recovery_required is True
     assert result.can_execute is False
 
 
@@ -63,10 +64,31 @@ def test_circuit_breaker_only_applies_to_known_openai_provider_failures() -> Non
         age_minutes=30,
         cooldown_minutes=120,
     )
-    assert not module.circuit_breaker_active(
+    assert module.circuit_breaker_active(
         "OPENAI_API_QUOTA_EXCEEDED",
         age_minutes=121,
         cooldown_minutes=120,
+    )
+    assert module.circuit_breaker_active(
+        "OPENAI_API_QUOTA_EXCEEDED",
+        age_minutes=60 * 24 * 40,
+        cooldown_minutes=120,
+    )
+    assert not module.circuit_breaker_active(
+        "OPENAI_API_RATE_LIMITED",
+        age_minutes=121,
+        cooldown_minutes=120,
+    )
+    assert module.circuit_breaker_active(
+        "OPENAI_API_RATE_LIMITED",
+        age_minutes=119,
+        cooldown_minutes=120,
+    )
+    assert module.circuit_breaker_active(
+        "OPENAI_API_AUTH_FAILED", age_minutes=600,
+    )
+    assert not module.circuit_breaker_active(
+        "OPENAI_API_QUOTA_EXCEEDED", age_minutes=-1,
     )
     assert not module.circuit_breaker_active(
         "NON_PROVIDER_FAILURE",
@@ -102,5 +124,28 @@ def test_survival_receipt_preserves_v17_authority(tmp_path: Path) -> None:
     assert receipt["provider_generation_allowed"] is False
     assert receipt["deterministic_checks_allowed"] is True
     assert receipt["probability_authority"] is False
+    assert receipt["can_execute"] is False
+    assert receipt["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_credit_exhaustion_does_not_masquerade_as_throughput_limit() -> None:
+    module = _load_module()
+    credit = module.classify_provider_failure(
+        "anthropic", "billing error: credit balance exhausted"
+    )
+    rate = module.classify_provider_failure("openai", "HTTP 429 Too Many Requests")
+    assert credit.code == "ANTHROPIC_API_CREDIT_EXHAUSTED"
+    assert credit.manual_recovery_required
+    assert credit.circuit_breaker_minutes == -1
+    assert rate.code == "OPENAI_API_RATE_LIMITED"
+    assert not rate.manual_recovery_required
+    assert rate.circuit_breaker_minutes == 120
+
+
+def test_quota_failure_receipt_discloses_no_credential_or_execution() -> None:
+    module = _load_module()
+    value = module.classify_provider_failure("openai", "ERROR: Quota exceeded.")
+    receipt = value.as_dict()
+    assert receipt["manual_recovery_required"] is True
     assert receipt["can_execute"] is False
     assert receipt["terminal_authority"] == "V17_TERMINAL_REDUCER"
