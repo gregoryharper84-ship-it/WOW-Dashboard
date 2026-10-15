@@ -164,6 +164,7 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
         if not nonempty(code) or not re.fullmatch(r"[A-Z][A-Z0-9_]*(?::[A-Z0-9_-]+)?", code):
             blockers.append(f"{category}:FAILURE_CODE_MALFORMED")
             return
+        blockers.append(f"{category}:{code}")
         blockers.append(code)
 
     if receipt.get("host_identity") != HOST_IDENTITY:
@@ -256,7 +257,11 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
         governed_rows = 0
         blockers.append("FAIL_GOVERNED_SCORING:VALID_GOVERNED_ROW_COUNT_INVALID")
     explicit_empty = receipt.get("empty_slate_proven") is True
+    if counts[1] is not None and governed_rows > counts[1]:
+        blockers.append("FAIL_GOVERNED_SCORING:GOVERNED_COUNT_EXCEEDS_COMPLETED")
     if explicit_empty:
+        if governed_rows != 0:
+            blockers.append("FAIL_PROP_ACQUISITION:EMPTY_SLATE_INCONSISTENT")
         if (acquired != 0 or not isinstance(source, dict) or
                 source.get("empty_slate_verified") is not True or
                 counts[0] != 0):
