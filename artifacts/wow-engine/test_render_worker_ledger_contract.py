@@ -8,7 +8,7 @@ def test_ledger_is_private_and_row_locked():
     sql = LEDGER.read_text()
     assert "create schema if not exists wow_release_control" in sql
     assert "enable row level security" in sql
-    assert "security invoker" in sql
+    assert "security definer" in sql
     assert "for update" in sql
     assert "on conflict do nothing" in sql
     assert "revoke all on schema wow_release_control from public, anon, authenticated" in sql
@@ -98,6 +98,33 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
                 assert state == "INITIATING"
                 assert token == 1
                 assert may_initiate is True
+                # RLS visibility alone is NOT a state-machine security boundary:
+                # the release role must lack direct table UPDATE permission.
+                cursor.execute("SAVEPOINT unauthorized_update")
+                try:
+                    cursor.execute(
+                        "update wow_release_control.render_worker_deploy_intents "
+                        "set state='PENDING', attempts=0 "
+                        "where service_id=%s and target_sha=%s",
+                        ("srv-dapkbc0473hc73c1978g", "a" * 40),
+                    )
+                except psycopg.errors.InsufficientPrivilege:
+                    cursor.execute("ROLLBACK TO SAVEPOINT unauthorized_update")
+                else:
+                    raise AssertionError("Release login bypassed fenced worker RPC with UPDATE")
+                # A newer SHA may not pass while the older SHA is INITIATING.
+                cursor.execute("SAVEPOINT different_sha")
+                try:
+                    cursor.execute(
+                        "select * from wow_release_control.claim_render_worker_deploy("
+                        "%s, %s, %s, %s)",
+                        ("srv-dapkbc0473hc73c1978g", "b" * 40, "ci-run-2", 300),
+                    )
+                except psycopg.errors.RaiseException as exc:
+                    assert "WORKER_PREVIOUS_SHA_IN_FLIGHT_RECONCILE_ONLY" in str(exc)
+                    cursor.execute("ROLLBACK TO SAVEPOINT different_sha")
+                else:
+                    raise AssertionError("Different SHA claim bypassed in-flight service HOLD")
         finally:
             # Staging-only proof; no schema/lease rows persist even on success.
             connection.rollback()
@@ -114,7 +141,9 @@ def test_release_identity_is_dba_provisioned_and_never_auto_approved():
     assert "create role wow_release_controller" not in sql.lower()
     assert "grant usage on schema wow_release_control to wow_release_controller" in sql
     assert "grant select on wow_release_control.release_control_identity to wow_release_controller" in sql
-    assert "grant select, insert, update on wow_release_control.render_worker_deploy_intents" in sql
+    assert "revoke insert, update, delete, truncate, references, trigger" in sql
+    assert "grant select on wow_release_control.render_worker_deploy_intents" in sql
+    assert "grant select, insert, update on wow_release_control.render_worker_deploy_intents" not in sql
     assert "grant delete" not in sql.lower()
     assert "to service_role" not in sql.lower()
 
@@ -125,18 +154,19 @@ def test_release_identity_role_cannot_seed_or_modify_dba_attestation():
     assert "alter table wow_release_control.release_control_identity enable row level security" in sql
     assert "grant insert on wow_release_control.release_control_identity" not in sql
     assert "grant update on wow_release_control.release_control_identity" not in sql
-    assert "security invoker" in sql
+    assert "security definer" in sql
 
 
 
-def test_private_release_ledger_enforces_restricted_worker_row_policies():
+def test_release_controller_cannot_bypass_fenced_worker_rpc_with_table_dml():
     sql = LEDGER.read_text()
-    assert "wow_release_identity_select" in sql
+    assert "security definer" in sql.lower()
+    assert "WORKER_PREVIOUS_SHA_IN_FLIGHT_RECONCILE_ONLY" in sql
+    assert "pg_advisory_xact_lock" in sql
     assert "wow_release_intents_select" in sql
-    assert "wow_release_intents_insert" in sql
-    assert "wow_release_intents_update" in sql
-    assert "for select to wow_release_controller" in sql.lower()
-    assert "for update to wow_release_controller" in sql.lower()
-    assert "for insert to wow_release_controller" in sql.lower()
-    assert "with check (service_id" in sql.lower()
-    assert "using (service_id" in sql.lower()
+    assert "wow_release_intents_insert" not in sql
+    assert "wow_release_intents_update" not in sql
+    assert "revoke insert, update, delete, truncate, references, trigger" in sql
+    assert "grant select on wow_release_control.render_worker_deploy_intents" in sql
+    assert "WORKER_DEPLOY_RECORD_TARGET_INVALID" in sql
+    assert "WORKER_DEPLOY_RENEW_TARGET_INVALID" in sql
