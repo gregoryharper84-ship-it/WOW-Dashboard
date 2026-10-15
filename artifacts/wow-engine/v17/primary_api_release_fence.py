@@ -57,10 +57,21 @@ def post_render_exactly_once(
     remains a HOLD requiring independently authenticated provider readback.
     """
     reserve_single_post(connection, service_id=service_id, sha=sha, run_id=run_id)
-    try:
-        result = post_render({"commitId": sha, "clearCache": "do_not_clear"})
-    except Exception as exc:
-        raise PrimaryReleaseHold("PRIMARY_RELEASE_POST_ACK_UNKNOWN_RECONCILE_ONLY") from exc
+    # The first transaction has COMMITTED an irreversible one-shot token.
+    # During actual Render network I/O a second transaction holds the
+    # DBA authorization row locks, ordering a concurrent DBA revocation.
+    # If reauthorization fails the token stays burnt: never retry blindly.
+    with connection.transaction():
+        row = connection.execute(
+            "select wow_release_control.authorize_primary_api_post_io(%s,%s,%s)",
+            (service_id, sha, run_id),
+        ).fetchone()
+        if not row or row[0] != "PRIMARY_RELEASE_IO_WINDOW_ATTESTED":
+            raise PrimaryReleaseHold("PRIMARY_RELEASE_POST_IO_AUTHORIZATION_MISSING")
+        try:
+            result = post_render({"commitId": sha, "clearCache": "do_not_clear"})
+        except Exception as exc:
+            raise PrimaryReleaseHold("PRIMARY_RELEASE_POST_ACK_UNKNOWN_RECONCILE_ONLY") from exc
     deployment = result.get("deploy", result) if isinstance(result, dict) else None
     if not isinstance(deployment, dict):
         raise PrimaryReleaseHold("PRIMARY_RELEASE_PROVIDER_RESPONSE_UNVERIFIED")
