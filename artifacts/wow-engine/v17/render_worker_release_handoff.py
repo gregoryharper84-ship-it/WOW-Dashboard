@@ -163,6 +163,9 @@ def run():
         check_main()
         state, latest = choose_deploy(list_deploys(), event_sha)
         if state == "LIVE" and latest.get("id") == deploy_id:
+            # Provider reads are non-atomic with GitHub main. An advance during
+            # list_deploys must never be recorded as LIVE_VERIFIED.
+            check_main()
             if fence_token is not None:
                 # Never call a transient runner-file receipt durable evidence.
                 # Persist the exact provider ID using the original fenced token.
