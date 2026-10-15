@@ -38,7 +38,8 @@ def normalize_from_real_workflow(path: Path, name: str) -> str:
         check=True,
         timeout=5,
     )
-    # Preserve embedded CR bytes; text=True would normalize CR to LF.\n    return result.stdout.decode("utf-8").removesuffix("\n")
+    # Preserve embedded CR bytes; text=True would normalize CR to LF.
+    return result.stdout.decode("utf-8").removesuffix("\n")
 
 
 class TrustedRunNameRegression(unittest.TestCase):
