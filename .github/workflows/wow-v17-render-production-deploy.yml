@@ -540,3 +540,31 @@ jobs:
           python -m pip install 'psycopg[binary]==3.2.10'
       - name: Render worker handoff with separate exact-SHA receipt
         run: python artifacts/wow-engine/v17/render_worker_release_handoff.py
+
+  release-terminal-verdict:
+    name: Require verified non-skipped release jobs
+    needs: [deploy-production, deploy-background-worker]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail closed on absent, skipped, or failed release work
+        shell: bash
+        env:
+          VERIFY_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          VERIFY_STATUS: ${{ github.event.workflow_run.status }}
+          VERIFY_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          VERIFY_SHA: ${{ github.event.workflow_run.head_sha }}
+          API_JOB_RESULT: ${{ needs.deploy-production.result }}
+          WORKER_JOB_RESULT: ${{ needs.deploy-background-worker.result }}
+        run: |
+          set -euo pipefail
+          if [ "$VERIFY_BRANCH" != main ] || [ "$VERIFY_STATUS" != completed ] || [ "$VERIFY_CONCLUSION" != success ] || ! [[ "$VERIFY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::RELEASE_UPSTREAM_NON_GREEN_NO_SUCCESS_RECEIPT'
+            exit 1
+          fi
+          if [ "$API_JOB_RESULT" != success ] || [ "$WORKER_JOB_RESULT" != success ]; then
+            echo "::error::RELEASE_REQUIRED_JOB_NOT_SUCCESS:api=$API_JOB_RESULT worker=$WORKER_JOB_RESULT"
+            exit 1
+          fi
+          echo 'Both release jobs completed successfully; downstream consumers must still verify exact-SHA Render LIVE and durable Action receipts.'
