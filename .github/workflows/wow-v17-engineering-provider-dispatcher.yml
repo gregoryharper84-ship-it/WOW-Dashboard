@@ -177,11 +177,25 @@ jobs:
                   --cooldown-minutes 120 | jq -r '.active')
               fi
 
-              if [ "$breaker" = "true" ] &&
-                 { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; }; then
-                action=DISPATCH
-                provider=anthropic
-                reason="CIRCUIT_BREAKER:${breaker_code}"
+              if [ "$breaker" = "true" ]; then
+                # A configured OpenAI API key is not proof of remaining quota.
+                # Never fall through to OpenAI while its circuit is active.
+                if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+                  action=DISPATCH
+                  provider=anthropic
+                  reason="CIRCUIT_BREAKER:${breaker_code}"
+                else
+                  action=SURVIVAL
+                  provider=deterministic
+                  reason="CIRCUIT_BREAKER:${breaker_code}:NO_APPROVED_ALTERNATE"
+                fi
+              elif [ -n "$latest_id" ] && [ "$latest_conclusion" = "failure" ] &&
+                   { [ "$breaker_code" = "NON_PROVIDER_FAILURE" ] || [ "$breaker_code" = "UNCLASSIFIED_PROVIDER_OR_WORKFLOW_FAILURE" ]; }; then
+                # A failed test / malformed worker is not a provider quota
+                # fault. Do not relaunch the same broken worker indefinitely.
+                action=SURVIVAL
+                provider=deterministic
+                reason="WORKER_FAILURE_REQUIRES_REPAIR:${breaker_code}"
               elif [ -n "${OPENAI_API_KEY:-}" ]; then
                 action=DISPATCH
                 provider=openai
@@ -269,6 +283,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/wow-survival"
           python artifacts/wow-engine/v17/engineering_agent_team.py self-check \
             > "$RUNNER_TEMP/wow-survival/team-self-check.json"
+          # Keep independent, credential-free engineering work executing
+          # while model providers are over quota. No source mutation, release,
+          # scoring or other protected action occurs in degraded survival.
+          python -m compileall -q artifacts/wow-engine/v17/engineering_provider_failover.py
+          python -m unittest discover \
+            -s artifacts/wow-engine -p test_v17_provider_workflow_identity.py -q \
+            > "$RUNNER_TEMP/wow-survival/fallback-unit-tests.txt" 2>&1
           python artifacts/wow-engine/v17/engineering_agent_team.py priority \
             > "$RUNNER_TEMP/wow-survival/priority.json"
           gh pr list \
@@ -296,6 +317,7 @@ jobs:
           path: |
             ${{ steps.route.outputs.receipt }}
             ${{ runner.temp }}/wow-survival/*.json
+            ${{ runner.temp }}/wow-survival/*.txt
           retention-days: 14
 
       - name: Record provider-control summary
