@@ -95,6 +95,8 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
         "action_receipt": {
             "request_id": "synthetic-request-1",
             "action_operation_id": "scoreWowPickRequest",
+            "source_snapshot_id": "synthetic-source-1",
+            "invoked_at": "2026-10-15T16:01:00Z",
             "immutable_receipt_hash": "a" * 64,
             "readback_verified": True,
             "freshness_verified": True,
@@ -107,6 +109,8 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
         "source_inventory_evidence": {
             "source_snapshot_id": "synthetic-source-1",
             "source_observed_at": "2026-10-15T16:00:00Z",
+            "request_id": "synthetic-request-1",
+            "freshness_verified": True,
             "acquired_row_count": count,
             "source_accounted": True,
             "empty_slate_verified": empty,
@@ -123,6 +127,8 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
             "host_identity": "WOW_BETTING_ENGINE",
             "request_id": "synthetic-request-1",
             "canonical_result_displayed": True,
+            "displayed_at": "2026-10-15T16:02:00Z",
+            "immutable_receipt_hash": "a" * 64,
         },
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "probability_source": "GOVERNED_FITTED_SPECIALIST" if count else None,
@@ -131,7 +137,7 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
         "governed_row_receipts": [] if empty else [{
             "prediction_id": "synthetic-prediction-1",
             "controlling_specialist": "wow.synthetic-fitted-test-specialist",
-            "model_artifact_checksum": "sha256:synthetic-evidence",
+            "model_artifact_checksum": "sha256:" + "b" * 64,
             "terminal_authority": "V17_TERMINAL_REDUCER",
             "calibration_status": "PASS",
             "calibrated_probability": 0.64,
