@@ -99,6 +99,38 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
                     "values (true, %s, 'production', %s, true, 'CI-DBA', now())",
                     ("iczfhsmjrrafhvcpmqhr", "srv-dapkbc0473hc73c1978g"),
                 )
+                # The DBA identity marker alone does not establish a
+                # trusted expected project. Wrong-project approval fails
+                # until a separate restricted DBA anchor matches it.
+                cursor.execute(
+                    "insert into wow_release_control.release_control_project_anchor "
+                    "(singleton,expected_project_ref,certified_by,certified_at) "
+                    "values (true,%s,'CI-Independent-DBA',now())",
+                    ("z" * 20,),
+                )
+                cursor.execute("set local role wow_release_controller")
+                cursor.execute("SAVEPOINT wrong_project")
+                try:
+                    cursor.execute(
+                        "select * from wow_release_control.claim_render_worker_deploy("
+                        "%s,%s,%s,%s)",
+                        ("srv-dapkbc0473hc73c1978g", "a" * 40, "ci-wrong-project", 300),
+                    )
+                except psycopg.errors.RaiseException as exc:
+                    assert "WORKER_RELEASE_DB_AUTHORIZATION_MISSING" in str(exc)
+                    cursor.execute("ROLLBACK TO SAVEPOINT wrong_project")
+                else:
+                    raise AssertionError("Wrong-project DBA attestation acquired a lease")
+                cursor.execute("RESET ROLE")
+                cursor.execute(
+                    "select count(*) from wow_release_control.render_worker_deploy_intents"
+                )
+                assert cursor.fetchone() == (0,)
+                cursor.execute(
+                    "update wow_release_control.release_control_project_anchor "
+                    "set expected_project_ref=%s where singleton=true",
+                    ("iczfhsmjrrafhvcpmqhr",),
+                )
                 # Verify the actual non-superuser is subject to RLS while
                 # invoking the same SECURITY INVOKER lease function.
                 cursor.execute("set local role wow_release_controller")
@@ -156,7 +188,12 @@ def test_release_identity_is_dba_provisioned_and_never_auto_approved():
     assert "create table if not exists wow_release_control.release_control_identity" in sql
     assert "authorized boolean not null default false" in sql
     assert "WOW_RELEASE_CONTROLLER_ROLE_NOT_AUTHORIZED" in sql
-    assert sql.count("WORKER_RELEASE_DB_AUTHORIZATION_MISSING") == 3
+    assert sql.count("WORKER_RELEASE_DB_AUTHORIZATION_MISSING") == 1
+    assert sql.count("perform wow_release_control.assert_release_authority(p_service_id)") == 3
+    assert "for share of receipt, anchor" in sql
+    assert "anchor.expected_project_ref = receipt.project_ref" in sql
+    assert "revoke all on wow_release_control.release_control_project_anchor" in sql
+    assert "alter table wow_release_control.release_control_project_anchor enable row level security" in sql
     assert "rolname='wow_release_controller'" in sql
     assert "not rolsuper and not rolbypassrls and rolcanlogin" in sql
     assert "create role wow_release_controller" not in sql.lower()
