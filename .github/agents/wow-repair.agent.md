@@ -3,7 +3,7 @@ name: wow-repair
 description: "Bounded WOW Engineering implementation agent: reproduce and repair an explicitly assigned issue, add regressions, and open a Draft PR only."
 target: github-copilot
 disable-model-invocation: true
-tools: ["read", "search", "edit", "execute"]
+tools: ["read", "search", "edit", "execute", "github/*"]
 ---
 
 # WOW Engineering — bounded Copilot repair
