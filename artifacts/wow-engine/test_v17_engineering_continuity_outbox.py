@@ -17,6 +17,9 @@ class SharedAtomicStore:
         self.arm_error = False
         self.mark_error = False
         self.bad_reservation = False
+        self.aborted = []
+        self.abort_denied = False
+        self.abort_error = False
 
     def reserve(self, p):
         if self.fail:
@@ -30,6 +33,15 @@ class SharedAtomicStore:
         if self.bad_reservation:
             return "RESERVED", replace(self.reservation, main_sha=HEAD)
         return "RESERVED", self.reservation
+
+    def abort_unarmed(self, r, reason):
+        if self.abort_error:
+            raise RuntimeError("prearm cancel DB response unknown")
+        if self.abort_denied or self.armed or self.reservation != r:
+            return False
+        self.aborted.append((r.intent_id, reason))
+        self.reservation = None
+        return True
 
     def arm_once(self, r):
         if self.arm_error:
@@ -137,9 +149,10 @@ def test_stale_main_refuses_before_arming():
 
 def test_lease_fence_lost_prevents_post():
     db = SharedAtomicStore()
+    db.abort_denied = True  # expired lease also denies server-side cancel
     s = Sender()
     assert cycle(store=db, sender=s, fence=lambda r: False).code == (
-        "WRITER_FENCE_UNVERIFIED"
+        "WRITER_FENCE_UNVERIFIED_RESERVATION_HELD"
     )
     assert s.calls == 0 and not db.armed
 
@@ -226,3 +239,60 @@ def test_current_main_changes_after_arm_never_calls_provider():
         "MAIN_CHANGED_AFTER_ARM_RECONCILE"
     )
     assert db.armed and sender.calls == 0
+
+
+def test_prearm_stale_main_aborts_once_and_allows_new_intent():
+    db, sender = SharedAtomicStore(), Sender()
+    first = cycle(store=db, sender=sender, main=lambda: HEAD)
+    assert first.code == "MAIN_CHANGED_BEFORE_DISPATCH"
+    assert len(db.aborted) == 1 and db.reservation is None
+    assert sender.calls == 0
+    second = cycle(store=db, sender=sender)
+    assert second.attempted and sender.calls == 1
+
+
+def test_prearm_abort_denied_preserves_durable_hold():
+    db = SharedAtomicStore()
+    db.abort_denied = True
+    sender = Sender()
+    r = cycle(store=db, sender=sender, main=lambda: HEAD)
+    assert r.code == "MAIN_CHANGED_BEFORE_DISPATCH_RESERVATION_HELD"
+    assert db.reservation is not None and not db.armed
+    assert cycle(store=db, sender=sender).code == (
+        "PRIOR_DISPATCH_REQUIRES_RECONCILIATION"
+    )
+    assert sender.calls == 0
+
+
+def test_prearm_abort_rpc_timeout_holds_unknown_intent():
+    db = SharedAtomicStore()
+    db.abort_error = True
+    sender = Sender()
+    r = cycle(store=db, sender=sender, main=lambda: HEAD)
+    assert r.code == "MAIN_CHANGED_BEFORE_DISPATCH_RESERVATION_HELD"
+    assert db.reservation is not None and sender.calls == 0
+
+
+def test_armed_reservation_can_never_use_prearm_abort():
+    db = SharedAtomicStore()
+    db.reserve(P)
+    assert db.arm_once(db.reservation)
+    assert not db.abort_unarmed(db.reservation, "MAIN_CHANGED_BEFORE_DISPATCH")
+    assert db.reservation is not None
+    assert cycle(store=db).code == "PRIOR_DISPATCH_REQUIRES_RECONCILIATION"
+
+
+def test_exception_before_arm_can_be_cancelled_under_current_lease():
+    db, sender = SharedAtomicStore(), Sender()
+    def fail():
+        raise RuntimeError("github HEAD read failed")
+    r = cycle(store=db, sender=sender, main=fail)
+    assert r.code == "PREARM_RECHECK_UNAVAILABLE"
+    assert db.reservation is None and not db.armed and sender.calls == 0
+
+
+def test_unhashable_action_never_crashes_or_reserves():
+    db = SharedAtomicStore()
+    out = cycle(replace(P, action=["MERGE"]), store=db)
+    assert out.code == "PROPOSAL_INVALID"
+    assert db.reservation is None
