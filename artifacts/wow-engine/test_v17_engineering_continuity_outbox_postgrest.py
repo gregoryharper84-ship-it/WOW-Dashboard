@@ -159,6 +159,9 @@ def test_sql_candidate_has_rls_service_role_rpc_and_no_reset_procedure():
     assert "check_writer_lease" in sql
     assert "on conflict do nothing" in sql
     assert "wow_engineering_continuity_outbox_active_incident" in sql
+    assert "wow_engineering_continuity_outbox_active_group" in sql
+    assert "lease_group text not null" in sql
+    assert "select lease.lease_group into authoritative_group" in sql
     assert "where state <> 'PREARM_ABORTED'" in sql
     assert "state='RESERVED'" in sql
     assert "where incident_id=p_incident_id and intent_id=p_intent_id" in sql
@@ -316,6 +319,9 @@ def test_sql_restricts_direct_dml_and_requires_fixed_definer_rpc_boundary():
         assert "set search_path = pg_catalog, public" in body
         assert "check_writer_lease(" in body
         lock = body.find("perform 1 from public.wow_engineering_incident_writer_leases as lease")
+        if name == "reserve":
+            lock = body.find("select lease.lease_group into authoritative_group")
+            assert "from public.wow_engineering_incident_writer_leases as lease" in body
         assert lock >= 0, "RPC must lock authoritative lease row"
         assert body.find("for update;", lock) > lock
         assert "lease.owner_id=" in body and "lease.epoch=" in body
@@ -339,7 +345,8 @@ def test_all_outbox_mutations_serialize_against_real_lease_takeover():
     """Static invariant only; independent two-session DB test still required."""
     sql = (Path(__file__).parent.parent.parent / "docs/wow/engineering/"
            "proposals/WOW_CONTINUITY_OUTBOX_REVIEW_ONLY.sql").read_text()
-    assert sql.count("perform 1 from public.wow_engineering_incident_writer_leases as lease") == 5
+    assert sql.count("perform 1 from public.wow_engineering_incident_writer_leases as lease") == 4
+    assert sql.count("select lease.lease_group into authoritative_group") == 1
     assert sql.count("and lease.state='HELD'") == 5
     assert sql.count("and lease.expires_at > clock_timestamp()") == 5
     assert sql.count("for update;") == 6  # five lease locks plus reclaim's outbox lock
@@ -349,3 +356,21 @@ def test_all_outbox_mutations_serialize_against_real_lease_takeover():
     assert "lease.incident_id=p_incident_id" in sql
     assert "lease.owner_id=p_new_owner_id" in sql
     assert "lease.epoch=p_new_epoch" in sql
+
+
+def test_sql_conflict_group_is_db_derived_and_unique_among_active_intents():
+    """Two distinct incidents in the same lease_group may never dispatch together."""
+    sql = (Path(__file__).parent.parent.parent / "docs/wow/engineering/"
+           "proposals/WOW_CONTINUITY_OUTBOX_REVIEW_ONLY.sql").read_text()
+    assert sql.count("wow_engineering_continuity_outbox_active_group") == 1
+    assert "on public.wow_engineering_continuity_outbox (lease_group)" in sql
+    assert sql.count("where state <> 'PREARM_ABORTED'") == 2
+    reserve = sql.split("create or replace function public.wow_engineering_continuity_outbox_reserve(", 1)[1]
+    reserve = reserve.split("end $$;", 1)[0]
+    assert "select lease.lease_group into authoritative_group" in reserve
+    assert "for update;" in reserve
+    assert "(incident_id,lease_group,intent_id,main_sha" in reserve
+    assert "values (p_incident_id,authoritative_group,p_intent_id" in reserve
+    assert "'lease_group',row_record.lease_group" in reserve
+    assert "on conflict do nothing" in reserve
+    assert "p_lease_group" not in reserve  # no untrusted caller-supplied group
