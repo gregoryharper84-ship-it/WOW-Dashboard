@@ -92,7 +92,9 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
                     "%s, %s, %s, %s)",
                     ("srv-dapkbc0473hc73c1978g", "a" * 40, "ci-run-1", 300),
                 )
-                state, token, may_initiate = cursor.fetchone()
+                claim_rows = cursor.fetchall()
+                assert len(claim_rows) == 1, "Claim must emit exactly one decision row"
+                state, token, may_initiate = claim_rows[0]
                 assert state == "INITIATING"
                 assert token == 1
                 assert may_initiate is True
