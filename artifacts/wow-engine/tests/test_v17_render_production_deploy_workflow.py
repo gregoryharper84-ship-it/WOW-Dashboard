@@ -120,3 +120,93 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "except (urllib.error.URLError, TimeoutError):" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
+
+
+def _github_json_function(monkeypatch, error):
+    import email.message
+    import json
+    import textwrap
+    import urllib.error
+    import urllib.request
+
+    text = _workflow_text()
+    start = text.index("          def github_json(path):")
+    end = text.index("          def validate_release_provenance", start)
+    source = textwrap.dedent(text[start:end])
+    namespace = {
+        "json": json,
+        "urllib": urllib,
+        "repo": "owner/repo",
+        "github_headers": {"Authorization": "******"},
+    }
+    exec(source, namespace)
+
+    def _raise(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(urllib.request, "urlopen", _raise)
+    return namespace["github_json"]
+
+
+def _http_403(body: bytes):
+    import email.message
+    import io
+    import urllib.error
+
+    headers = email.message.Message()
+    headers["x-accepted-github-permissions"] = "checks=read"
+    headers["x-ratelimit-remaining"] = "4999"
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/owner/repo/commits/abc/check-runs?token=SECRET_TOKEN_VALUE",
+        403,
+        "Forbidden",
+        headers,
+        io.BytesIO(body),
+    )
+
+
+def test_github_json_403_json_body_is_sanitized_and_reraised(monkeypatch, capsys):
+    import json
+    import urllib.error
+
+    import pytest
+
+    body = json.dumps({"message": "Resource not accessible by integration", "secret": "SECRET_TOKEN_VALUE"})
+    error = _http_403(body.encode("utf-8"))
+    github_json = _github_json_function(monkeypatch, error)
+
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        github_json("/commits/abc/check-runs?per_page=100")
+
+    assert raised.value is error
+    out = capsys.readouterr().out
+    assert out.startswith("GITHUB_RELEASE_API_ERROR:")
+    payload = json.loads(out.split(":", 1)[1])
+    assert payload == {
+        "endpoint": "/commits/abc/check-runs",
+        "status": 403,
+        "message": "Resource not accessible by integration",
+        "accepted_permissions": "checks=read",
+        "rate_limit_remaining": "4999",
+    }
+    assert "SECRET_TOKEN_VALUE" not in out
+
+
+def test_github_json_403_invalid_body_is_sanitized_and_reraised(monkeypatch, capsys):
+    import json
+    import urllib.error
+
+    import pytest
+
+    error = _http_403(b"<html>SECRET_TOKEN_VALUE not json</html>")
+    github_json = _github_json_function(monkeypatch, error)
+
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        github_json("/commits/abc/check-runs")
+
+    assert raised.value is error
+    out = capsys.readouterr().out
+    payload = json.loads(out.split(":", 1)[1])
+    assert payload["status"] == 403
+    assert payload["message"] == ""
+    assert "SECRET_TOKEN_VALUE" not in out
