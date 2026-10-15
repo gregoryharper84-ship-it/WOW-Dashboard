@@ -315,6 +315,12 @@ def test_sql_restricts_direct_dml_and_requires_fixed_definer_rpc_boundary():
         assert "security definer" in body
         assert "set search_path = pg_catalog, public" in body
         assert "check_writer_lease(" in body
+        lock = body.find("perform 1 from public.wow_engineering_incident_writer_leases as lease")
+        assert lock >= 0, "RPC must lock authoritative lease row"
+        assert body.find("for update;", lock) > lock
+        assert "lease.owner_id=" in body and "lease.epoch=" in body
+        target = "insert into public.wow_engineering_continuity_outbox" if name == "reserve" else "update public.wow_engineering_continuity_outbox"
+        assert 0 <= lock < body.find(target), "lease row must lock before state mutation"
         assert "execute " not in body.lower()  # no dynamic SQL
     assert "revoke all on public.wow_engineering_continuity_outbox from service_role;" in sql
     assert "revoke all on public.wow_engineering_continuity_outbox from public, anon, authenticated;" in sql
@@ -327,3 +333,19 @@ def test_sql_restricts_direct_dml_and_requires_fixed_definer_rpc_boundary():
     assert "if not public.wow_engineering_check_writer_lease(" not in sql
     assert "or not public.wow_engineering_check_writer_lease(" not in sql
     assert "false) is not true" in sql
+
+
+def test_all_outbox_mutations_serialize_against_real_lease_takeover():
+    """Static invariant only; independent two-session DB test still required."""
+    sql = (Path(__file__).parent.parent.parent / "docs/wow/engineering/"
+           "proposals/WOW_CONTINUITY_OUTBOX_REVIEW_ONLY.sql").read_text()
+    assert sql.count("perform 1 from public.wow_engineering_incident_writer_leases as lease") == 5
+    assert sql.count("and lease.state='HELD'") == 5
+    assert sql.count("and lease.expires_at > clock_timestamp()") == 5
+    assert sql.count("for update;") == 6  # five lease locks plus reclaim's outbox lock
+    assert "if not found then return false; end if;" in sql
+    assert "if not found then return jsonb_build_object('status','LEASE_NOT_VERIFIED'); end if;" in sql
+    # Same incident PK is the row updated by the installed claim/takeover RPC.
+    assert "lease.incident_id=p_incident_id" in sql
+    assert "lease.owner_id=p_new_owner_id" in sql
+    assert "lease.epoch=p_new_epoch" in sql
