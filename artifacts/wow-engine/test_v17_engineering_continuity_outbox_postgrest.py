@@ -321,3 +321,9 @@ def test_sql_restricts_direct_dml_and_requires_fixed_definer_rpc_boundary():
     assert "grant execute on function public.wow_engineering_continuity_outbox_" in sql
     assert "grant select, insert" not in sql.lower()
     assert "grant update" not in sql.lower()
+    # PL/pgSQL IF treats NULL as neither TRUE nor a rejected FALSE.
+    # Every attestation is therefore explicitly coalesced and denied unless TRUE.
+    assert sql.count("coalesce(public.wow_engineering_check_writer_lease(") == 6
+    assert "if not public.wow_engineering_check_writer_lease(" not in sql
+    assert "or not public.wow_engineering_check_writer_lease(" not in sql
+    assert "false) is not true" in sql
