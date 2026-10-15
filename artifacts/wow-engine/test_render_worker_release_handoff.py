@@ -58,6 +58,16 @@ def test_protected_workflow_chains_worker_after_primary():
     assert "TARGET_MAIN_SHA:" in workflow
     assert "render_worker_release_handoff.py" in workflow
     assert 'WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"' in workflow
+    worker_job = workflow.split("  deploy-background-worker:", 1)[1]
+    assert "timeout-minutes: 110" in worker_job
+    assert "WOW_RELEASE_CONTROL_DSN" in worker_job
+    assert "WOW_RELEASE_CONTROL_PROJECT_REF" in worker_job
+    assert "timeout-minutes: 20" not in worker_job
+    worker_script = SCRIPT.read_text()
+    assert "until = time.monotonic() + 5400" in worker_script
+    assert "until = time.monotonic() + 900" not in worker_script
+    assert "renew_committed(" in worker_script
+
 
 
 def test_absent_deployment_fails_closed():
