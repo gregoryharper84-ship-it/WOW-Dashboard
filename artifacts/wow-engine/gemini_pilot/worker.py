@@ -55,6 +55,8 @@ def analyze(task: PilotTask, *, client: Any = None, model: str | None = None) ->
         "\nUNTRUSTED_SOURCE_MATERIAL_START\n" + task.source_material +
         "\nUNTRUSTED_SOURCE_MATERIAL_END\n"
     )
+    # Separate provider failures from schema/output failures so the durable
+    # controller can act on truthful typed blockers without exposing messages.
     try:
         from google.genai import types
         response = client.models.generate_content(
@@ -67,6 +69,11 @@ def analyze(task: PilotTask, *, client: Any = None, model: str | None = None) ->
                 temperature=0,
             ),
         )
+    except Exception:
+        # Never persist provider exception messages: they can include secrets.
+        return _blocked(task, "PROVIDER_CALL_FAILED_OR_OUTPUT_INVALID")
+
+    try:
         raw = response.parsed
         assessment = (raw if isinstance(raw, ModelAssessment)
                       else ModelAssessment.model_validate(raw))
@@ -78,12 +85,10 @@ def analyze(task: PilotTask, *, client: Any = None, model: str | None = None) ->
             prompt_tokens=getattr(usage, "prompt_token_count", None),
             output_tokens=getattr(usage, "candidates_token_count", None),
         )
-    except Exception as exc:
-        # Do not persist exceptions: provider errors may contain credentials or PII.
-        # The calling service should log sanitized error classes out of band.
-        if isinstance(exc, ValueError):
-            return _blocked(task, "MODEL_OUTPUT_REJECTED")
-        return _blocked(task, "PROVIDER_CALL_FAILED_OR_OUTPUT_INVALID")
+    except Exception:
+        # Response parsing, schema validation and receipt validation are
+        # not service transport failures; block malformed evidence strictly.
+        return _blocked(task, "MODEL_OUTPUT_REJECTED")
 
 
 def _blocked(task: PilotTask, reason: str) -> PilotReceipt:
