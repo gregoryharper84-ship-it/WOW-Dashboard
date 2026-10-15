@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from render_worker_governed_initiator import initiate_once
-from render_worker_lease_adapter import ALLOWED_SERVICE, renew_committed, record_committed
+from render_worker_lease_adapter import ALLOWED_SERVICE, attest_release_control_identity, renew_committed, record_committed
 
 WORKER_SERVICE = "srv-dapkbc0473hc73c1978g"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -110,6 +110,12 @@ def run():
         except ImportError as exc:
             raise RuntimeError("WORKER_PSYCO_PG_DRIVER_UNAVAILABLE") from exc
         with psycopg.connect(dsn, connect_timeout=10, autocommit=False) as conn:
+            # A DSN is not authority: verify the independent production DB
+            # identity and least-privilege approved login *before* any claim.
+            attest_release_control_identity(
+                conn,
+                expected_project_ref=os.environ.get("WOW_RELEASE_CONTROL_PROJECT_REF", ""),
+            )
             handoff = initiate_once(
                 connection=conn, target_sha=event_sha,
                 current_main_sha=check_main(), owner_run_id=os.environ["GITHUB_RUN_ID"],
