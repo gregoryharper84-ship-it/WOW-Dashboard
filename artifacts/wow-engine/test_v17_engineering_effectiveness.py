@@ -159,7 +159,7 @@ def test_golden_journey_rejects_false_green_component_health() -> None:
             "terminal_authority": "V17_TERMINAL_REDUCER",
         }
     )
-    assert result["status"] != "PASS"
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
     assert "FAIL_ACTION_INVOCATION:HOST_IDENTITY_NOT_PROVEN" in result["blockers"]
     assert "FAIL_GOVERNED_SCORING:NO_VALID_GOVERNED_ROW_OR_PROVEN_EMPTY_SLATE" in result["blockers"]
 
@@ -167,23 +167,23 @@ def test_golden_journey_rejects_false_green_component_health() -> None:
 def test_golden_journey_pass_requires_live_host_and_real_governed_result() -> None:
     evidence = _synthetic_golden_evidence()
     result = evaluate_golden_user_journey(evidence)
-    assert result["status"] == "PASS"
+    assert result["status"] == "STRUCTURAL_PASS_ONLY"
     assert result["blockers"] == []
     for missing in ("action_receipt", "source_inventory_evidence", "display_receipt"):
         no_evidence = dict(evidence)
         no_evidence.pop(missing)
-        assert evaluate_golden_user_journey(no_evidence)["status"] != "PASS"
+        assert evaluate_golden_user_journey(no_evidence)["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
 
 
 def test_golden_journey_accepts_only_explicitly_proven_empty_slate() -> None:
     valid = _synthetic_golden_evidence(empty=True)
-    assert evaluate_golden_user_journey(valid)["status"] == "PASS"
+    assert evaluate_golden_user_journey(valid)["status"] == "STRUCTURAL_PASS_ONLY"
     assert evaluate_golden_user_journey({
         **valid, "empty_slate_proven": False,
-    })["status"] != "PASS"
+    })["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
     invalid = dict(valid)
     invalid["source_inventory_evidence"] = None
-    assert evaluate_golden_user_journey(invalid)["status"] != "PASS"
+    assert evaluate_golden_user_journey(invalid)["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
 
 
 
@@ -204,7 +204,7 @@ def test_golden_journey_malformed_row_count_fails_closed_without_throwing() -> N
             "empty_slate_proven": False,
         }
     )
-    assert result["status"] != "PASS"
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
     assert "FAIL_GOVERNED_SCORING:VALID_GOVERNED_ROW_COUNT_INVALID" in result["blockers"]
     assert result["valid_governed_row_count"] == 0
 
