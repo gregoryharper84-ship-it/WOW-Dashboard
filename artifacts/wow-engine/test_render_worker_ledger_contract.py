@@ -170,3 +170,25 @@ def test_release_controller_cannot_bypass_fenced_worker_rpc_with_table_dml():
     assert "grant select on wow_release_control.render_worker_deploy_intents" in sql
     assert "WORKER_DEPLOY_RECORD_TARGET_INVALID" in sql
     assert "WORKER_DEPLOY_RENEW_TARGET_INVALID" in sql
+
+
+def test_claim_rpc_disambiguates_return_table_state_from_ledger_columns():
+    """Regression for psycopg.errors.AmbiguousColumn under real PostgreSQL.
+
+    The claim function RETURNS TABLE(state,...), so unqualified state inside
+    PL/pgSQL SQL statements resolves ambiguously and fails at runtime.
+    The disposable-Postgres integration test also exercises the same RPC.
+    """
+    sql = LEDGER.read_text()
+    start = sql.index(
+        "create or replace function wow_release_control.claim_render_worker_deploy("
+    )
+    end = sql.index(
+        "revoke all on function wow_release_control.claim_render_worker_deploy(",
+        start,
+    )
+    claim_rpc = sql[start:end]
+    assert "from wow_release_control.render_worker_deploy_intents intent" in claim_rpc
+    assert "intent.target_sha into v_in_flight_sha" in claim_rpc
+    assert "intent.state in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING','HOLD')" in claim_rpc
+    assert "limit 1 for update of intent" in claim_rpc
