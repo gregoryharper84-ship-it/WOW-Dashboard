@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from v17.engineering_agent_team import AGENT_ROLES
 from v17.engineering_effectiveness import (
@@ -86,6 +87,10 @@ def test_change_impact_database_and_probability_adjacent_paths_fail_safe() -> No
 def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
     """A fully correlated offline fixture, NOT a production GPT Action claim."""
     count = 0 if empty else 1
+    now = datetime.now(timezone.utc)
+    source_time = (now - timedelta(minutes=2)).isoformat()
+    action_time = (now - timedelta(minutes=1)).isoformat()
+    display_time = now.isoformat()
     return {
         "host_identity": "WOW_BETTING_ENGINE",
         "live_editor_verified": True,
@@ -96,7 +101,7 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
             "request_id": "synthetic-request-1",
             "action_operation_id": "scoreWowPickRequest",
             "source_snapshot_id": "synthetic-source-1",
-            "invoked_at": "2026-10-15T16:01:00Z",
+            "invoked_at": action_time,
             "immutable_receipt_hash": "a" * 64,
             "readback_verified": True,
             "freshness_verified": True,
@@ -108,7 +113,7 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
         "acquired_row_count": count,
         "source_inventory_evidence": {
             "source_snapshot_id": "synthetic-source-1",
-            "source_observed_at": "2026-10-15T16:00:00Z",
+            "source_observed_at": source_time,
             "request_id": "synthetic-request-1",
             "freshness_verified": True,
             "acquired_row_count": count,
@@ -127,7 +132,7 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
             "host_identity": "WOW_BETTING_ENGINE",
             "request_id": "synthetic-request-1",
             "canonical_result_displayed": True,
-            "displayed_at": "2026-10-15T16:02:00Z",
+            "displayed_at": display_time,
             "immutable_receipt_hash": "a" * 64,
         },
         "terminal_authority": "V17_TERMINAL_REDUCER",
