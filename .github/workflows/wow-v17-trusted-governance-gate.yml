@@ -77,7 +77,113 @@ jobs:
             canonical_name="$name"
             # Accept only the two protected workers' exact, bounded run-name
             # suffixes. Path/event/repository/branch are verified separately.
-            if [[ "$name" =~ ^(wow-v17-(chatgpt|claude)-engineering-worker)[ ]lease=(GLOBAL|[A-Z][A-Z0-9_]{0,47})[ ]incident=(AUTO|[0-9]{1,10})$ ]]; then
+            worker_run_name_pattern='^(wow-v17-(chatgpt|claude)-engineering-worker) lease=(GLOBAL|[A-Z][A-Z0-9_]{0,47}) incident=(AUTO|[0-9]{1,10})
+              canonical_name="${BASH_REMATCH[1]}"
+            fi
+            case "$canonical_name|$path" in
+              "wow-v17-chatgpt-engineering-worker|.github/workflows/wow-v17-chatgpt-engineering-worker.yml")
+                case "$event" in
+                  schedule|workflow_run|workflow_dispatch) ;;
+                  *)
+                    echo "GOVERNANCE_WORKFLOW_EVENT_MISMATCH: unexpected ChatGPT worker event $event" >&2
+                    exit 1
+                    ;;
+                esac
+                ;;
+              "wow-v17-claude-engineering-worker|.github/workflows/wow-v17-claude-engineering-worker.yml")
+                [ "$event" = "workflow_dispatch" ] || {
+                  echo "GOVERNANCE_WORKFLOW_EVENT_MISMATCH: unexpected Claude worker event $event" >&2
+                  exit 1
+                }
+                [ "$head_branch" = "main" ] || {
+                  echo "GOVERNANCE_WORKFLOW_REF_MISMATCH: Claude worker must run from protected main, got $head_branch" >&2
+                  exit 1
+                }
+                ;;
+              "wow-v17-existing-pr-governance-review|.github/workflows/wow-v17-existing-pr-governance-review.yml")
+                case "$event" in
+                  pull_request_target) ;;
+                  workflow_dispatch)
+                    [ "$head_branch" = "main" ] || {
+                      echo "GOVERNANCE_WORKFLOW_REF_MISMATCH: manual existing-PR certification must run from protected main, got $head_branch" >&2
+                      exit 1
+                    }
+                    ;;
+                  *)
+                    echo "GOVERNANCE_WORKFLOW_EVENT_MISMATCH: unexpected existing-PR certification event $event" >&2
+                    exit 1
+                    ;;
+                esac
+                ;;
+              *)
+                echo "GOVERNANCE_WORKFLOW_IDENTITY_MISMATCH: untrusted workflow $name at $path" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$canonical_name" = "wow-v17-chatgpt-engineering-worker" ]; then
+              [ "$head_branch" = "main" ] || {
+                echo "GOVERNANCE_WORKFLOW_REF_MISMATCH: ChatGPT worker must run from protected main, got $head_branch" >&2
+                exit 1
+              }
+            fi
+            [ "$head_repo" = "$GITHUB_REPOSITORY" ] || {
+              echo "GOVERNANCE_WORKFLOW_REPOSITORY_MISMATCH: trusted worker came from $head_repo" >&2
+              exit 1
+            }
+
+            if [ "$status" = "completed" ]; then
+              [ "$conclusion" = "success" ] || {
+                echo "GOVERNANCE_WORKFLOW_NOT_SUCCESSFUL: run ${RUN_ID} concluded $conclusion" >&2
+                exit 1
+              }
+              echo "name=$canonical_name" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "GOVERNANCE_WORKFLOW_INCOMPLETE: trusted worker run ${RUN_ID} did not complete within the bounded gate window." >&2
+          exit 1
+
+      - name: Download and verify exact-head receipt
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}
+          RUN_ID: ${{ steps.artifact.outputs.run_id }}
+          WORKFLOW_NAME: ${{ steps.workflow.outputs.name }}
+        run: |
+          set -euo pipefail
+          zip_path="$RUNNER_TEMP/governance.zip"
+          receipt="$RUNNER_TEMP/wow-engineering-governance-receipt.json"
+          checksum="$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
+
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$zip_path"
+          unzip -p "$zip_path" wow-engineering-governance-receipt.json > "$receipt"
+          unzip -p "$zip_path" wow-engineering-governance-receipt.sha256 > "$checksum"
+
+          expected=$(tr -d '[:space:]' < "$checksum")
+          actual=$(sha256sum "$receipt" | awk '{print $1}')
+          [ -n "$expected" ] && [ "$expected" = "$actual" ] || {
+            echo "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" >&2
+            exit 1
+          }
+
+          verifier=".github/scripts/verify_engineering_governance_receipt.py"
+          if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
+            verifier=".github/scripts/verify_existing_pr_governance_receipt.py"
+          fi
+
+          python "$verifier" \
+            --receipt "$receipt" \
+            --repository "$GITHUB_REPOSITORY" \
+            --head-sha "$PR_HEAD_SHA" \
+            --head-ref "$PR_HEAD_REF" \
+            --workflow-run-id "$RUN_ID" \
+            --workflow-name "$WORKFLOW_NAME"
+
+          echo "Trusted exact-head governance receipt verified. can_execute=false." >> "$GITHUB_STEP_SUMMARY"
+
+            if [[ "$name" =~ $worker_run_name_pattern ]]; then
               canonical_name="${BASH_REMATCH[1]}"
             fi
             case "$canonical_name|$path" in
