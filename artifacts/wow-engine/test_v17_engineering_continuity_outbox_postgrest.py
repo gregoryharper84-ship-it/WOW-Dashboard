@@ -171,7 +171,8 @@ def test_outbox_sql_is_single_nonduplicated_closed_contract():
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_arm(") == 1
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_mark(") == 1
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_abort(") == 1
-    assert sql.count("end $$;") == 4
+    assert sql.count("create or replace function public.wow_engineering_continuity_outbox_reclaim(") == 1
+    assert sql.count("end $;") == 5
     assert "and pr_head_sha ~ '^[0-9a-f]{40}$')" in sql
     assert "and p_pr_head_sha ~ '^[0-9a-f]{40}$')" in sql
     # Never allow regex literals to be split across lines, or a duplicate
@@ -222,3 +223,74 @@ def test_prearm_abort_server_denial_fails_closed():
     r = Reservation(1739, NONCE, SHA, "DISPATCH_NEW_REPAIR", None, None, 4)
     assert db.abort_unarmed(r, "MAIN_CHANGED_BEFORE_DISPATCH") is False
     assert len(t.urls) == 1
+
+
+def test_reclaim_abandoned_prearm_only_from_fresh_attested_epoch():
+    t = RPCTransport(True, True)
+    db = store(t)
+    assert db.reclaim_abandoned_prearm(incident=CLAIM.incident, old_intent_id=NONCE)
+    assert [u.rsplit("/", 1)[-1] for u in t.urls] == [
+        "wow_engineering_check_writer_lease",
+        "wow_engineering_continuity_outbox_reclaim",
+    ]
+    assert t.request_bodies[-1] == {
+        "p_incident_id": CLAIM.incident,
+        "p_old_intent_id": NONCE,
+        "p_new_owner_id": CLAIM.owner_id,
+        "p_new_epoch": CLAIM.epoch,
+    }
+
+
+def test_reclaim_denied_by_latest_writer_fence_does_not_call_sql_reclaim():
+    t = RPCTransport(False)
+    db = store(t)
+    with pytest.raises(OutboxProtocolError, match="OUTBOX_RECLAIM_WRITER_FENCE_FAILED"):
+        db.reclaim_abandoned_prearm(incident=CLAIM.incident, old_intent_id=NONCE)
+    assert len(t.urls) == 1
+    assert t.urls[0].endswith("wow_engineering_check_writer_lease")
+
+
+def test_reclaim_server_denial_preserves_unarmed_intent():
+    t = RPCTransport(True, False)
+    db = store(t)
+    assert db.reclaim_abandoned_prearm(incident=CLAIM.incident, old_intent_id=NONCE) is False
+
+
+def test_reclaim_denies_wrong_incident_epoch_and_nonce_without_network():
+    from dataclasses import replace
+    bad = [
+        (CLAIM, 823, NONCE, "OUTBOX_RECLAIM_INCIDENT_MISMATCH"),
+        (CLAIM, True, NONCE, "OUTBOX_RECLAIM_INCIDENT_MISMATCH"),
+        (replace(CLAIM, epoch=1), CLAIM.incident, NONCE, "OUTBOX_RECLAIM_NEW_EPOCH_REQUIRED"),
+        (CLAIM, CLAIM.incident, "anything", "OUTBOX_RECLAIM_INTENT_INVALID"),
+        (CLAIM, CLAIM.incident, NONCE.upper(), "OUTBOX_RECLAIM_INTENT_INVALID"),
+    ]
+    for claim, incident, nonce, code in bad:
+        t = RPCTransport()
+        db = store(t)
+        db.claim = claim
+        with pytest.raises(OutboxProtocolError, match=code):
+            db.reclaim_abandoned_prearm(incident=incident, old_intent_id=nonce)
+        assert t.urls == []
+
+
+def test_reclaim_missing_database_ack_is_not_interpreted_as_false_or_success():
+    from v17.engineering_continuity_outbox_postgrest import OutboxProtocolError
+    t = RPCTransport(True, None)
+    db = store(t)
+    with pytest.raises(OutboxProtocolError, match="OUTBOX_RECLAIM_PROTOCOL_INVALID"):
+        db.reclaim_abandoned_prearm(incident=CLAIM.incident, old_intent_id=NONCE)
+
+
+def test_reclaim_sql_cannot_reset_armed_or_unknown_dispatch():
+    sql = (Path(__file__).parent.parent.parent / "docs/wow/engineering/"
+           "proposals/WOW_CONTINUITY_OUTBOX_REVIEW_ONLY.sql").read_text()
+    function = sql.split("create or replace function public.wow_engineering_continuity_outbox_reclaim(", 1)[1]
+    function = function.split("end $$;", 1)[0]
+    assert "and state='RESERVED'" in function
+    assert "for update;" in function
+    assert "old_epoch >= p_new_epoch" in function
+    assert "check_writer_lease(" in function
+    assert "state='PREARM_ABORTED'" in function
+    assert "workflow_run_id" not in function
+    assert "delete from" not in function.lower()
