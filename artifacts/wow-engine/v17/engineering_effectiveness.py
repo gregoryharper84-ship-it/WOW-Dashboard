@@ -113,6 +113,11 @@ def classify_change_impact(paths: Iterable[str]) -> dict[str, Any]:
             add(EXACT_SHA_RENDER_VERIFICATION, path, "production runtime artifact may change")
             add(GOLDEN_BACKEND_ACCEPTANCE, path, "backend user-journey boundary may change")
 
+        if path == "artifacts/wow-engine/v17/engineering_effectiveness.py":
+            add(GOLDEN_BACKEND_ACCEPTANCE, path, "GPT Action acceptance validator changed")
+            add(GOLDEN_LIVE_HOST_ACCEPTANCE, path, "real host result evidence must be reproven")
+            add(EXACT_SHA_RENDER_VERIFICATION, path, "acceptance runtime SHA must match production")
+
         if any(marker.lower() in lower for marker in _EDITOR_MARKERS):
             add(GPT_EDITOR_SYNC_ACCEPTANCE, path, "live host/editor contract changed")
             add(GOLDEN_LIVE_HOST_ACCEPTANCE, path, "live ChatGPT host parity must be reproven")
