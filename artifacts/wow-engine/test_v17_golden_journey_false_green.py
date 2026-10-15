@@ -124,3 +124,80 @@ def test_governed_row_count_without_numeric_receipt_cannot_pass():
     result = evaluate_golden_user_journey(evidence)
     assert "FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPTS_MISSING" in result["blockers"]
     assert result["status"] != "PASS"
+
+
+@pytest.mark.parametrize("flag,value", [
+    ("stale", "false"),
+    ("stale", None),
+    ("replayed", "unknown"),
+    ("replayed", None),
+    ("replayed", 0),
+])
+def test_malformed_or_missing_replay_attestations_are_not_false(flag, value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    if value is None:
+        evidence["action_receipt"].pop(flag)
+    else:
+        evidence["action_receipt"][flag] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] != "PASS"
+    assert any("ACTION_RECEIPT_" in blocker for blocker in result["blockers"])
+
+
+@pytest.mark.parametrize("value", [
+    "not-a-timestamp", "2026-10-15T16:00:00",
+    "2026-10-15T16:03:00Z", None,
+])
+def test_source_observation_requires_offset_and_precedes_action(value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["source_inventory_evidence"]["source_observed_at"] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert "FAIL_PROP_ACQUISITION:SOURCE_TIMESTAMP_NOT_ATTESTED" in result["blockers"]
+
+
+@pytest.mark.parametrize("key,value", [
+    ("source_snapshot_id", "other-snapshot"),
+    ("request_id", "other-request"),
+    ("freshness_verified", False),
+])
+def test_source_inventory_must_bind_to_the_current_request(key, value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["source_inventory_evidence"][key] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] != "PASS"
+    assert any(b.startswith("FAIL_PROP_ACQUISITION:") for b in result["blockers"])
+
+
+@pytest.mark.parametrize("value", [
+    "not-a-timestamp", "2026-10-15T15:59:00Z",
+    "2026-10-15T16:02:00", None,
+])
+def test_display_timestamp_must_follow_action_with_offset(value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["display_receipt"]["displayed_at"] = value
+    assert "FAIL_RESPONSE_HANDOFF:DISPLAY_TIMESTAMP_NOT_ATTESTED" in (
+        evaluate_golden_user_journey(evidence)["blockers"]
+    )
+
+
+def test_display_receipt_immutable_hash_must_match_action_receipt():
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["display_receipt"]["immutable_receipt_hash"] = "f" * 64
+    assert "FAIL_RESPONSE_HANDOFF:DISPLAY_RECEIPT_HASH_MISMATCH" in (
+        evaluate_golden_user_journey(evidence)["blockers"]
+    )
+
+
+@pytest.mark.parametrize("key,value", [
+    ("calibrated_probability", 0),
+    ("calibrated_probability", 1),
+    ("calibrated_probability", True),
+    ("model_artifact_checksum", "not-a-checksum"),
+    ("model_artifact_checksum", "sha256:abcd"),
+])
+def test_strict_model_package_domain_and_digest_identity(key, value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["governed_row_receipts"][0][key] = value
+    outcome = evaluate_golden_user_journey(evidence)
+    assert outcome["status"] == "FAIL_GOVERNED_SCORING"
+    assert "FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPT_INVALID" in outcome["blockers"]
