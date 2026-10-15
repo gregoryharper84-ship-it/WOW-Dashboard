@@ -250,3 +250,145 @@ def test_claim_rpc_disambiguates_return_table_state_from_ledger_columns():
     assert "intent.target_sha into v_in_flight_sha" in claim_rpc
     assert "intent.state in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING','HOLD')" in claim_rpc
     assert "limit 1 for update of intent" in claim_rpc
+
+
+
+def test_dba_revocation_and_competing_claims_are_transaction_serialized():
+    """Two-connection fault injection on disposable CI PostgreSQL only.
+
+    No production database is contacted. The uncommitted lease must block
+    a DBA revocation and competing same-service SHA until it commits.
+    """
+    import os
+
+    import pytest
+
+    if os.environ.get("GITHUB_WORKFLOW") != "wow-engine-verify":
+        pytest.skip("Only CI disposable PostgreSQL supports destructive setup")
+    import psycopg
+
+    dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+    a = psycopg.connect(dsn, connect_timeout=5, autocommit=False)
+    b = psycopg.connect(dsn, connect_timeout=5, autocommit=False)
+    service = "srv-dapkbc0473hc73c1978g"
+    try:
+        with a.cursor() as cur:
+            cur.execute(
+                "DO $roles$ BEGIN "
+                "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') "
+                "THEN CREATE ROLE anon NOLOGIN; END IF; "
+                "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='authenticated') "
+                "THEN CREATE ROLE authenticated NOLOGIN; END IF; "
+                "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='wow_release_controller') "
+                "THEN CREATE ROLE wow_release_controller LOGIN NOSUPERUSER NOBYPASSRLS; END IF; "
+                "END $roles$;"
+            )
+            cur.execute(LEDGER.read_text(), prepare=False)
+            cur.execute(
+                "insert into wow_release_control.release_control_project_anchor "
+                "(singleton,expected_project_ref,certified_by,certified_at) "
+                "values(true,%s,'CI-DBA-anchor',now())",
+                ("a" * 20,),
+            )
+            cur.execute(
+                "insert into wow_release_control.release_control_identity "
+                "(singleton,project_ref,environment,service_id,authorized,approved_by,approved_at) "
+                "values(true,%s,'production',%s,true,'CI-DBA-marker',now())",
+                ("a" * 20, service),
+            )
+        a.commit()  # Allow the second independent DB connection to see the schema.
+
+        with a.cursor() as cur:
+            cur.execute("set local role wow_release_controller")
+            cur.execute(
+                "select state,lease_token,can_initiate from "
+                "wow_release_control.claim_render_worker_deploy(%s,%s,%s,%s)",
+                (service, "a" * 40, "ci-lease-A", 300),
+            )
+            assert cur.fetchone() == ("INITIATING", 1, True)
+            # a's transaction deliberately remains open, holding both
+            # authorization row locks and the per-service advisory lock.
+
+        with b.cursor() as cur:
+            cur.execute("set local lock_timeout='350ms'")
+            try:
+                cur.execute(
+                    "update wow_release_control.release_control_identity "
+                    "set authorized=false where singleton=true"
+                )
+            except psycopg.errors.LockNotAvailable:
+                pass
+            else:
+                raise AssertionError("DBA revocation bypassed active RPC SHARE lock")
+        b.rollback()
+
+        with b.cursor() as cur:
+            cur.execute("set local role wow_release_controller")
+            cur.execute("set local lock_timeout='350ms'")
+            try:
+                cur.execute(
+                    "select * from wow_release_control.claim_render_worker_deploy("
+                    "%s,%s,%s,%s)",
+                    (service, "b" * 40, "ci-lease-B", 300),
+                )
+            except psycopg.errors.LockNotAvailable:
+                pass
+            else:
+                raise AssertionError("Competing SHA bypassed advisory transaction lock")
+        b.rollback()
+        a.commit()  # Releases row and advisory locks.
+
+        with b.cursor() as cur:
+            cur.execute("set local role wow_release_controller")
+            try:
+                cur.execute(
+                    "select * from wow_release_control.claim_render_worker_deploy("
+                    "%s,%s,%s,%s)",
+                    (service, "b" * 40, "ci-lease-B", 300),
+                )
+            except psycopg.errors.RaiseException as exc:
+                assert "WORKER_PREVIOUS_SHA_IN_FLIGHT_RECONCILE_ONLY" in str(exc)
+            else:
+                raise AssertionError("New SHA bypassed prior INITIATING fence")
+        b.rollback()
+
+        with b.cursor() as cur:
+            cur.execute("set local role wow_release_controller")
+            cur.execute(
+                "select state,lease_token,can_initiate from "
+                "wow_release_control.claim_render_worker_deploy(%s,%s,%s,%s)",
+                (service, "a" * 40, "ci-lease-B", 300),
+            )
+            assert cur.fetchone() == ("INITIATING", 1, False), (
+                "Duplicate same-SHA claim must never send a second Render POST"
+            )
+        b.commit()
+
+        with b.cursor() as cur:
+            cur.execute(
+                "update wow_release_control.release_control_identity "
+                "set authorized=false where singleton=true"
+            )
+        b.commit()
+
+        with a.cursor() as cur:
+            cur.execute("set local role wow_release_controller")
+            try:
+                cur.execute(
+                    "select wow_release_control.record_render_worker_deploy("
+                    "%s,%s,%s,%s,%s,%s)",
+                    (service, "a" * 40, "ci-lease-A", 1, "HOLD", None),
+                )
+            except psycopg.errors.RaiseException as exc:
+                assert "WORKER_RELEASE_DB_AUTHORIZATION_MISSING" in str(exc)
+            else:
+                raise AssertionError("Revoked authorization transitioned deployed state")
+        a.rollback()
+    finally:
+        a.rollback()
+        b.rollback()
+        with a.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS wow_release_control CASCADE")
+        a.commit()
+        a.close()
+        b.close()
