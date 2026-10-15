@@ -212,3 +212,20 @@ def test_restricted_db_preflight_accepts_only_independently_approved_role(monkey
     monkeypatch.setenv("WOW_RELEASE_CONTROL_DSN", "private://not-real")
     exec(compile(_restricted_db_preflight_script(), "<release-db-preflight>", "exec"), {"__name__": "__main__"})
     assert "RENDER_RELEASE_CONTROL_DB_PREFLIGHT_PASS" in capsys.readouterr().out
+
+
+
+def test_production_release_never_exposes_secrets_to_branch_dispatch():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    trigger = workflow.split("permissions:", 1)[0]
+    assert "workflow_run:" in trigger
+    assert "branches: [main]" in trigger
+    assert "workflow_dispatch:" not in trigger
+    assert "repository_dispatch:" not in trigger
+    assert workflow.count("environment: wow-release") == 2
+    deploy = workflow.split("  deploy-production:", 1)[1].split("  deploy-background-worker:", 1)[0]
+    assert "github.event_name == 'workflow_run'" in deploy
+    assert "github.event.workflow_run.head_branch == 'main'" in deploy
+    assert "github.event.workflow_run.conclusion == 'success'" in deploy
+    # Environment protection is configured independently by GitHub admins;
+    # this workflow must never be used as evidence of that setup by itself.
