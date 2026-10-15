@@ -95,3 +95,32 @@ def test_partial_acquisition_and_false_empty_slate_are_not_passes():
 def test_success_requires_every_correlated_receipt():
     assert evaluate_golden_user_journey(_synthetic_golden_evidence())["status"] == "PASS"
     assert evaluate_golden_user_journey(_synthetic_golden_evidence(empty=True))["status"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("calibrated_probability", float("nan")),
+        ("calibrated_probability_lower_bound", 0.99),
+        ("model_artifact_checksum", ""),
+        ("controlling_specialist", None),
+        ("terminal_authority", "CHATGPT"),
+        ("calibration_status", "UNKNOWN"),
+        ("probability_publishable", False),
+        ("can_execute", True),
+    ],
+)
+def test_invalid_governed_model_package_rejected(key, value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["governed_row_receipts"][0][key] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] == "FAIL_GOVERNED_SCORING" or result["status"] == "FAIL_GOVERNANCE"
+    assert "FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPT_INVALID" in result["blockers"]
+
+
+def test_governed_row_count_without_numeric_receipt_cannot_pass():
+    evidence = _synthetic_golden_evidence()
+    evidence["governed_row_receipts"] = []
+    result = evaluate_golden_user_journey(evidence)
+    assert "FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPTS_MISSING" in result["blockers"]
+    assert result["status"] != "PASS"
