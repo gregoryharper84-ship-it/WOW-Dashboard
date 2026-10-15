@@ -303,6 +303,29 @@ def test_primary_api_fence_disposable_postgres_two_connections_and_db_rights():
         conn2.rollback()
         conn1.commit()
 
+        # The second authorization gate stays locked over network I/O:
+        # a DBA revocation cannot slip between check and the provider POST.
+        with conn1.cursor() as cur:
+            cur.execute("SET LOCAL ROLE wow_primary_release_controller")
+            cur.execute(
+                "SELECT wow_release_control.authorize_primary_api_post_io(%s,%s,%s)",
+                (PRIMARY_SERVICE, "a" * 40, "ci-once"),
+            )
+            assert cur.fetchone() == ("PRIMARY_RELEASE_IO_WINDOW_ATTESTED",)
+        with conn2.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout='350ms'")
+            try:
+                cur.execute(
+                    "UPDATE wow_release_control.primary_api_release_identity "
+                    "SET authorized=false WHERE singleton=true"
+                )
+            except psycopg.errors.LockNotAvailable:
+                pass
+            else:
+                raise AssertionError("DBA revoked during an active post window")
+        conn2.rollback()
+        conn1.commit()
+
         # Durable burnt token rejects both same-SHA replay and another SHA.
         with conn2.cursor() as cur:
             cur.execute("SET LOCAL ROLE wow_primary_release_controller")
@@ -335,6 +358,17 @@ def test_primary_api_fence_disposable_postgres_two_connections_and_db_rights():
         conn1.commit()
         with conn2.cursor() as cur:
             cur.execute("SET LOCAL ROLE wow_primary_release_controller")
+            cur.execute("SAVEPOINT revoked_io")
+            try:
+                cur.execute(
+                    "SELECT wow_release_control.authorize_primary_api_post_io(%s,%s,%s)",
+                    (PRIMARY_SERVICE, "a" * 40, "ci-once"),
+                )
+            except psycopg.errors.RaiseException as exc:
+                assert "PRIMARY_RELEASE_DBA_AUTHORIZATION_MISSING" in str(exc)
+                cur.execute("ROLLBACK TO SAVEPOINT revoked_io")
+            else:
+                raise AssertionError("Revoked DBA authority still permitted a POST")
             cur.execute("SAVEPOINT revoked")
             try:
                 cur.execute(
