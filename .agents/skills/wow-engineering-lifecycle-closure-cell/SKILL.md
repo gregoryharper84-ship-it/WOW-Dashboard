@@ -1,3 +1,8 @@
+---
+name: wow-engineering-lifecycle-closure-cell
+description: Coordinate governed V17 engineering incident closure while preserving independent QA, release authorization, and can_execute=false.
+---
+
 # WOW V17 Engineering Lifecycle Closure Cell
 
 Status: `ACTIVE_ON_MERGE`
