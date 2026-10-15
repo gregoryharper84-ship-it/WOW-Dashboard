@@ -133,8 +133,39 @@ jobs:
             return 0
           }
 
+          # The workflow_run event may be delivered long after a newer
+          # successful worker run. Never recover from an obsolete failure.
+          source_stale=false
+          source_unverified=false
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$SOURCE_CONCLUSION" != "success" ] &&
+             { [ "$source_workflow_id" = "wow-v17-chatgpt-engineering-worker" ] ||
+               [ "$source_workflow_id" = "wow-v17-claude-engineering-worker" ]; }; then
+            if source_runs=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow "${source_workflow_id}.yml" \
+              --status completed --limit 1 \
+              --json databaseId,conclusion,updatedAt 2>/dev/null); then
+              current_source_id=$(jq -r '.[0].databaseId // empty' <<<"$source_runs")
+              if [ -z "$current_source_id" ]; then
+                source_unverified=true
+              elif [ "$current_source_id" != "$SOURCE_RUN_ID" ]; then
+                source_stale=true
+              fi
+            else
+              source_unverified=true
+            fi
+          fi
+
           if [ "$EVENT_NAME" = "workflow_run" ]; then
-            if [ "$SOURCE_CONCLUSION" = "success" ]; then
+            if [ "$source_unverified" = "true" ]; then
+              action=SURVIVAL
+              provider=deterministic
+              reason=PROVIDER_SOURCE_IDENTITY_UNVERIFIED
+            elif [ "$source_stale" = "true" ]; then
+              action=NO_ACTION
+              provider=none
+              reason=STALE_WORKER_FAILURE_SUPERSEDED
+            elif [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
             elif [ "$source_workflow_id" = "wow-v17-chatgpt-engineering-worker" ]; then
               classification=$(classify_run "$SOURCE_RUN_ID" openai)
@@ -165,9 +196,40 @@ jobs:
           else
             force="${FORCE_PROVIDER:-auto}"
             if [ "$force" = "openai" ]; then
-              action=DISPATCH
-              provider=openai
-              reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+              # Explicit manual diagnostics do not defeat a confirmed
+              # billing hold; a later successful worker run or approved
+              # provider credential recovery is required first.
+              if recent=$(gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow wow-v17-chatgpt-engineering-worker.yml \
+                --status completed --limit 1 \
+                --json databaseId,conclusion,updatedAt 2>/dev/null); then
+                probe_id=$(jq -r '.[0].databaseId // empty' <<<"$recent")
+                probe_result=$(jq -r '.[0].conclusion // empty' <<<"$recent")
+                if [ -n "$probe_id" ] && [ "$probe_result" = "failure" ]; then
+                  probe_code=$(classify_run "$probe_id" openai | jq -r '.code')
+                  case "$probe_code" in
+                    OPENAI_API_QUOTA_EXCEEDED|OPENAI_API_AUTH_FAILED|OPENAI_API_KEY_MISSING)
+                      action=SURVIVAL
+                      provider=deterministic
+                      reason="FORCED_OPENAI_RECOVERY_NOT_VERIFIED:${probe_code}"
+                      ;;
+                    *)
+                      action=DISPATCH
+                      provider=openai
+                      reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+                      ;;
+                  esac
+                else
+                  action=DISPATCH
+                  provider=openai
+                  reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+                fi
+              else
+                action=SURVIVAL
+                provider=deterministic
+                reason=FORCED_OPENAI_SOURCE_EVIDENCE_UNAVAILABLE
+              fi
             elif [ "$force" = "anthropic" ]; then
               if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
                 action=DISPATCH
