@@ -460,6 +460,25 @@ def test_inherited_privilege_fails_closed_even_with_stale_acl():
                     cur.execute("ROLLBACK TO SAVEPOINT before_reverification")
                 else:
                     raise AssertionError("Inherited DBA UPDATE privilege was admitted")
+
+                # Clear the inherited table grant but retain membership, then
+                # prove that inherited schema CREATE is independently denied.
+                cur.execute(
+                    "REVOKE UPDATE ON wow_release_control.release_control_project_anchor "
+                    "FROM wow_ci_inherited_dba_priv"
+                )
+                cur.execute(
+                    "GRANT CREATE ON SCHEMA wow_release_control TO wow_ci_inherited_dba_priv"
+                )
+                cur.execute("SAVEPOINT before_inherited_schema_reverification")
+                try:
+                    cur.execute(LEDGER.read_text(), prepare=False)
+                except psycopg.errors.RaiseException as exc:
+                    assert "WOW_RELEASE_CONTROLLER_SCHEMA_PRIVILEGE_LEAK" in str(exc)
+                    cur.execute("ROLLBACK TO SAVEPOINT before_inherited_schema_reverification")
+                else:
+                    raise AssertionError("Inherited schema CREATE privilege was admitted")
+
         finally:
             connection.rollback()
 
@@ -471,3 +490,5 @@ def test_worker_trust_root_ownership_and_acl_guards_are_explicit():
     assert "WOW_RELEASE_CONTROLLER_INHERITED_TABLE_PRIVILEGE" in script
     assert "WOW_RELEASE_CONTROLLER_FUNCTION_OWNER_INHERITED" in script
     assert "WOW_RELEASE_CONTROLLER_INTERNAL_AUTH_FUNCTION_EXPOSED" in script
+    assert "WOW_RELEASE_CONTROLLER_SCHEMA_PRIVILEGE_LEAK" in script
+    assert "revoke all on schema wow_release_control from wow_release_controller" in script
