@@ -20,7 +20,12 @@ RELEASE_APP_ID = "222"
 
 def _gate():
     text = WORKFLOW.read_text(encoding="utf-8")
-    script = text.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    release_step = text.split(
+        "      - name: Verify protected-main gates and deploy exact SHA", 1
+    )[1].split(
+        "      - name: Reconcile exact Render receipt to durable deployment pointer", 1
+    )[0]
+    script = release_step.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
     tree = ast.parse(textwrap.dedent(script))
     func = next(
         n for n in tree.body
