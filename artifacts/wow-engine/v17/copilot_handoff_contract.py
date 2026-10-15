@@ -59,9 +59,9 @@ def validate_handoff(packet: Mapping[str, Any], *, repository: str, current_main
     if not isinstance(current_main_sha, str) or not SHA.fullmatch(current_main_sha) or source != current_main_sha:
         errors.append("MAIN_SHA_STALE")
     change_class = packet.get("change_class")
-    if change_class not in VALID_CLASSES:
+    if not isinstance(change_class, str) or change_class not in VALID_CLASSES:
         errors.append("CHANGE_CLASS_INVALID")
-    if packet.get("severity") not in VALID_SEVERITIES:
+    if not isinstance(packet.get("severity"), str) or packet.get("severity") not in VALID_SEVERITIES:
         errors.append("SEVERITY_INVALID")
     if packet.get("owner") != "WOW_ENGINEERING":
         errors.append("INCIDENT_OWNER_INVALID")
