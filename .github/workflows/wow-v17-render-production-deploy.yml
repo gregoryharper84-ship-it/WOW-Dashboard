@@ -97,10 +97,72 @@ jobs:
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
+          # GITHUB_TOKEN reads share one per-repository hourly budget with every
+          # other workflow. A workflow_run fan-out storm can exhaust it, and
+          # GitHub then answers 403/429. Wait only when GitHub's own headers or
+          # message prove a rate limit, inside a bounded budget that fits the
+          # job timeout; any other HTTP error is re-raised unchanged.
+          github_rate_limit = {
+              "budget_seconds": int(os.environ.get("WOW_GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS") or 1080),
+              "waited_seconds": 0,
+          }
+
+          def github_rate_limit_wait_seconds(status, headers, message):
+              if status not in (403, 429):
+                  return None
+              retry_after = str(headers.get("retry-after") or "").strip()
+              if retry_after.isdigit():
+                  return max(1, int(retry_after))
+              if str(headers.get("x-ratelimit-remaining") or "").strip() == "0":
+                  reset = str(headers.get("x-ratelimit-reset") or "").strip()
+                  if reset.isdigit():
+                      return max(1, int(reset) - int(time.time()) + 5)
+                  return 60
+              if "rate limit" in message.lower():
+                  return 60
+              return None
+
           def github_json(path):
-              request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return json.load(response)
+              endpoint = path.split("?")[0]
+              while True:
+                  request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          return json.load(response)
+                  except urllib.error.HTTPError as exc:
+                      # Never print credentials, response bodies, or sensitive headers.
+                      try:
+                          details = json.loads(exc.read().decode("utf-8", errors="replace"))
+                      except (ValueError, UnicodeError):
+                          details = {}
+                      if not isinstance(details, dict):
+                          details = {}
+                      message = str(details.get("message") or "")
+                      wait_seconds = github_rate_limit_wait_seconds(exc.code, exc.headers, message)
+                      remaining_budget = github_rate_limit["budget_seconds"] - github_rate_limit["waited_seconds"]
+                      print("GITHUB_RELEASE_API_ERROR:" + json.dumps({
+                          "endpoint": endpoint,
+                          "status": exc.code,
+                          "message_category": (
+                              "RATE_LIMIT" if wait_seconds is not None
+                              else "ACCESS_DENIED" if exc.code == 403
+                              else "HTTP_ERROR"
+                          ),
+                          "accepted_permissions": exc.headers.get("x-accepted-github-permissions"),
+                          "rate_limit_remaining": exc.headers.get("x-ratelimit-remaining"),
+                          "rate_limit_resource": exc.headers.get("x-ratelimit-resource"),
+                          "wait_seconds": wait_seconds,
+                          "wait_budget_remaining_seconds": remaining_budget,
+                      }, sort_keys=True), flush=True)
+                      if wait_seconds is None:
+                          raise
+                      if wait_seconds > remaining_budget:
+                          raise RuntimeError(
+                              "RENDER_DEPLOY_GITHUB_RATE_LIMIT_EXHAUSTED:"
+                              + endpoint + ":retry_after_seconds=" + str(wait_seconds)
+                          ) from exc
+                      github_rate_limit["waited_seconds"] += wait_seconds
+                      time.sleep(wait_seconds)
 
           def validate_release_provenance(*, target_sha, repository, pull_requests, merged_pr,
                                           check_runs, qa_app_id, release_app_id):
@@ -182,7 +244,7 @@ jobs:
                   raise RuntimeError("RENDER_DEPLOY_REQUIRED_CHECK_FAILED:" + ",".join(failed))
               if not missing and not pending:
                   break
-              if time.time() >= check_deadline:
+              if time.time() - github_rate_limit["waited_seconds"] >= check_deadline:
                   raise RuntimeError("RENDER_DEPLOY_REQUIRED_CHECK_TIMEOUT:" + ",".join(missing + pending))
               time.sleep(15)
 
