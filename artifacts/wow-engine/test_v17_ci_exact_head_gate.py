@@ -18,6 +18,7 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 HEAD = "a" * 40
 OTHER_HEAD = "b" * 40
 MERGE_REF = "c" * 40
+BASE_SHA = "d" * 40
 
 
 def _gate_script():
@@ -30,17 +31,21 @@ def _gate_script():
 
 
 def _execute(monkeypatch, tmp_path, *, event="pull_request", current=HEAD,
-             payload_head=HEAD, token="test-token", fail_api=False,
+             payload_head=HEAD, payload_base=BASE_SHA, current_base=BASE_SHA,
+             main_sha=BASE_SHA, current_merge=MERGE_REF,
+             token="test-token", fail_api=False,
              wrong_repo=False, ref=None):
     payload = {"repository": {"full_name": "untrusted/other" if wrong_repo else REPO}}
     if event == "pull_request":
         payload["pull_request"] = {
             "number": 73,
             "head": {"sha": payload_head, "repo": {"full_name": REPO}},
+            "base": {"sha": payload_base, "ref": "main"},
         }
         current_json = {
-            "state": "open", "base": {"ref": "main"},
+            "state": "open", "base": {"ref": "main", "sha": current_base},
             "head": {"sha": current, "repo": {"full_name": REPO}},
+            "merge_commit_sha": current_merge,
         }
         ref = ref or "refs/pull/73/merge"
     else:
@@ -64,6 +69,8 @@ def _execute(monkeypatch, tmp_path, *, event="pull_request", current=HEAD,
         assert request.get_header("Authorization") == "Bearer test-token"
         if fail_api:
             raise ConnectionError("private credential details must not leak")
+        if event == "pull_request" and request.full_url.endswith("/branches/main"):
+            return io.BytesIO(json.dumps({"commit": {"sha": main_sha}}).encode())
         return io.BytesIO(json.dumps(current_json).encode())
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
@@ -129,3 +136,41 @@ def test_exact_head_gate_reads_builtin_runner_event_path():
     workflow = WORKFLOW.read_text()
     assert "WOW_EVENT_PATH: ${{ github.event_path }}" not in workflow
     assert 'os.environ.get("GITHUB_EVENT_PATH", "")' in workflow
+
+
+def test_exact_head_gate_rejects_old_main_with_unchanged_pr_head(monkeypatch, tmp_path, capsys):
+    """Copilot's reproduced stale-base counterexample: head unchanged, main moves."""
+    with pytest.raises(SystemExit) as failure:
+        _execute(monkeypatch, tmp_path, current=HEAD, current_base=BASE_SHA,
+                 main_sha=OTHER_HEAD)
+    assert failure.value.code == 1
+    assert "EXACT_HEAD_GATE_PR_BASE_STALE_OR_UNKNOWN" in capsys.readouterr().out
+
+
+def test_exact_head_gate_rejects_old_event_base_after_main_move(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit):
+        _execute(monkeypatch, tmp_path, payload_base=OTHER_HEAD)
+
+
+def test_exact_head_gate_rejects_current_pr_base_not_equal_to_main(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit):
+        _execute(monkeypatch, tmp_path, current_base=OTHER_HEAD)
+
+
+def test_exact_head_gate_rejects_stale_synthetic_merge_commit(monkeypatch, tmp_path, capsys):
+    with pytest.raises(SystemExit) as failure:
+        _execute(monkeypatch, tmp_path, current_merge=OTHER_HEAD)
+    assert failure.value.code == 1
+    assert "EXACT_HEAD_GATE_PR_MERGE_REF_STALE_OR_UNKNOWN" in capsys.readouterr().out
+
+
+def test_exact_head_gate_rejects_invalid_event_base_identity(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit):
+        _execute(monkeypatch, tmp_path, payload_base="invalid")
+
+
+def test_exact_head_gate_checks_current_pr_merge_against_actual_ci_sha():
+    source = WORKFLOW.read_text()
+    assert 'merge_sha = str(current["merge_commit_sha"])' in source
+    assert 'merge_sha != sha' in source
+    assert 'current_main_sha = str(get_json("branches/main")["commit"]["sha"])' in source
