@@ -267,6 +267,22 @@ def test_primary_api_fence_disposable_postgres_two_connections_and_db_rights():
             )
             assert cur.fetchone() == ("PRIMARY_RELEASE_POST_AUTHORIZED_ONCE",)
 
+        # An independent DBA revocation cannot commit while a one-shot
+        # claim is being durably reserved. The SELECT FOR SHARE roots lock
+        # the approval row until that reservation transaction commits.
+        with conn2.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout='350ms'")
+            try:
+                cur.execute(
+                    "UPDATE wow_release_control.primary_api_release_identity "
+                    "SET authorized=false WHERE singleton=true"
+                )
+            except psycopg.errors.LockNotAvailable:
+                pass
+            else:
+                raise AssertionError("DBA revocation raced past active reservation")
+        conn2.rollback()
+
         with conn2.cursor() as cur:
             cur.execute("SET LOCAL ROLE wow_primary_release_controller")
             cur.execute("SET LOCAL lock_timeout='350ms'")
