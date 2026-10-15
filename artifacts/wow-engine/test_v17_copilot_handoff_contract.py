@@ -36,7 +36,8 @@ def pr():
         "merged": False,
         "user": {"login": "Copilot"},
         "head": {"sha": HEAD, "repo": {"full_name": REPO}},
-        "base": {"ref": "main", "sha": MAIN},
+        "base": {"ref": "main", "sha": MAIN, "repo": {"full_name": REPO}},
+        "changed_files": 1,
         "body": "Proposes a narrow test-only change for #1763.",
     }
 
@@ -207,6 +208,96 @@ class HandoffContractTests(unittest.TestCase):
         self.assertIn('tools: ["read", "search", "github/*"]', frontmatter)
         for disallowed in ('"edit"', '"execute"', '"agent"', '"*"'):
             self.assertNotIn(disallowed, frontmatter)
+
+    def test_malformed_allowed_path_types_do_not_crash(self):
+        for paths in ([{}, {}], [[], "a"], [1, True], ["README.md", {}],
+                      [None], [["docs"]]):
+            data = packet()
+            data["allowed_paths"] = paths
+            with self.subTest(paths=paths):
+                self.assertIn("UNSAFE_PATH", self.check(data)["reasons"])
+
+    def test_protected_glob_action_paths(self):
+        for path in (".github/actions/wow-claude-agent/action.yml",
+                     ".github/actions/wow-chatgpt-agent/invoke.py"):
+            data = packet()
+            data["allowed_paths"] = [path]
+            with self.subTest(path=path):
+                self.assertIn("PROTECTED_PATH_REQUIRES_GOVERNED_REVIEW",
+                              self.check(data)["reasons"])
+
+    def test_base_repository_attestation(self):
+        for repo_binding in ({}, {"full_name": "thirdparty/repo"}, None):
+            snapshot = pr()
+            if repo_binding is None:
+                snapshot["base"].pop("repo")
+            else:
+                snapshot["base"]["repo"] = repo_binding
+            with self.subTest(binding=repo_binding):
+                result = contract.verify_draft_pr(
+                    packet(), snapshot, packet()["allowed_paths"],
+                    repository=REPO, current_main_sha=MAIN)
+                self.assertIn("PR_BASE_REPOSITORY_MISMATCH", result["reasons"])
+
+    def test_exact_incident_link_formats(self):
+        valid = (
+            "#1763",
+            "gregoryharper84-ship-it/WOW-Dashboard#1763",
+            "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1763",
+        )
+        invalid = (
+            "other/repo#1763",
+            "https://github.com/other/repo/issues/1763",
+            "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/17630",
+            "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1763/other",
+            "#17630",
+        )
+        for link in valid:
+            snapshot = pr()
+            snapshot["body"] = "Fixes " + link
+            with self.subTest(valid=link):
+                result = contract.verify_draft_pr(
+                    packet(), snapshot, packet()["allowed_paths"],
+                    repository=REPO, current_main_sha=MAIN)
+                self.assertEqual("PR_CREATED_UNVERIFIED", result["decision"])
+        for link in invalid:
+            snapshot = pr()
+            snapshot["body"] = "Fixes " + link
+            with self.subTest(invalid=link):
+                result = contract.verify_draft_pr(
+                    packet(), snapshot, packet()["allowed_paths"],
+                    repository=REPO, current_main_sha=MAIN)
+                self.assertIn("PR_INCIDENT_LINK_MISSING", result["reasons"])
+
+    def test_incomplete_or_invalid_changed_file_inventory(self):
+        for count, files in ((2, packet()["allowed_paths"]),
+                             (0, packet()["allowed_paths"]),
+                             (True, packet()["allowed_paths"]),
+                             (None, packet()["allowed_paths"]),
+                             (1, [[], {}]), (1, [{}])):
+            snapshot = pr()
+            snapshot["changed_files"] = count
+            with self.subTest(count=count, files=files):
+                result = contract.verify_draft_pr(
+                    packet(), snapshot, files,
+                    repository=REPO, current_main_sha=MAIN)
+                self.assertEqual("HOLD", result["decision"])
+
+    def test_missing_changed_file_inventory_count(self):
+        snapshot = pr()
+        snapshot.pop("changed_files")
+        result = contract.verify_draft_pr(
+            packet(), snapshot, packet()["allowed_paths"],
+            repository=REPO, current_main_sha=MAIN)
+        self.assertIn("PR_CHANGED_FILE_COUNT_INVALID", result["reasons"])
+
+    def test_non_mapping_snapshot_is_hold(self):
+        for snapshot in (None, [], "invalid"):
+            with self.subTest(snapshot=snapshot):
+                result = contract.verify_draft_pr(
+                    packet(), snapshot, packet()["allowed_paths"],
+                    repository=REPO, current_main_sha=MAIN)
+                self.assertEqual("HOLD", result["decision"])
 
     def test_non_draft_is_not_accepted(self):
         snapshot = pr()
