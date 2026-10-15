@@ -42,3 +42,17 @@
 6. Conduct two unattended full issue cycles, including one failed-check same-branch repair and one restart/fencing-loss case; verify the user Action result after deployment. Closure authority stays independent. Report each gate separately.
 
 Every artifact must retain `custom_gpt_identity=WOW_BETTING_ENGINE`, `terminal_authority=V17_TERMINAL_REDUCER`, `can_execute=false`, and `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`. No wagers or model-probability substitution.
+
+## October 15 follow-up — actual installed database boundary and new outbox candidate
+
+Read-only project verification (not a production write) established:
+
+- The existing `wow_engineering_incident_writer_leases` and `wow_engineering_writer_lease_events` tables and four writer lease RPCs already exist; `anon` and `authenticated` lacked EXECUTE, `service_role` had EXECUTE, tables have RLS enabled. The inspected three incident lease rows were released and expired. This is **schema/evidence**, not an accepted two-agent concurrency test or worker authorization.
+- There was **no** installed `wow_engineering_continuity_outbox` / dispatch-intent table on the inspected live project.
+- PR #1743 remains a protected-workflow conflict/review and integration boundary; do not blindly reapply its proposed existing writer lease SQL. Reconcile live migration state and exact source first.
+
+The new proposed SQL at `docs/wow/engineering/proposals/WOW_CONTINUITY_OUTBOX_REVIEW_ONLY.sql` is a **design review packet only**, not a production migration and not executed. It stages an incident-unique immutable dispatch intent; a service-role-only atomic `reserve` / `arm` / `mark` CAS via Postgres; lease-bound writer epoch; RLS; no automatic reset or repeated POST on unknown 204. It is intentionally outside `migrations/`; the authorized DB owner must generate the canonical migration, review function signatures/security/grants with independent DBA/QA/Release, run real two-writer tests, and apply only through approved change control.
+
+The optional `engineering_continuity_outbox_postgrest.py` transport is **not configured or wired** into the resident worker. It requires the above RPCs before use. Tests use deterministic in-memory fake RPC responses only; a local positive test, if passed, cannot establish installed SQL, production fencing, or GitHub/Render Action acceptance.
+
+**Implementation milestone:** staging controller, existing lease read-only verifier, reviewed PostgREST outbox port, negative/positive regression tests and source-aware runbook. **Activation milestone still absent:** integrated certified DB, restricted App identity, independently approved workflows, exact-SHA deployment, two unattended issue-to-Action success receipts. Preserve `can_execute=false`.
