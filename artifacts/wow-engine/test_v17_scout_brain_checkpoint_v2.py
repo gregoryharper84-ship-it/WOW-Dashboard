@@ -32,13 +32,14 @@ def sample(tmp_path, *, candidates=2):
 
 
 class FakeCheckpoint:
-    def __init__(self, *, fail_once=False, invalid_chunk=False, unavailable=False):
+    def __init__(self, *, fail_once=False, invalid_chunk=False, unavailable=False, missing_schema=False):
         self.calls = []
         self.parts = {}
         self.fail_once = fail_once
         self.failed = False
         self.invalid_chunk = invalid_chunk
         self.unavailable = unavailable
+        self.missing_schema = missing_schema
         self.committed = Counter()
         self.finalized = False
 
@@ -48,7 +49,7 @@ class FakeCheckpoint:
         if phase == "CAPABILITIES":
             if self.unavailable:
                 raise RuntimeError("PERSIST_PHASE_INVALID")
-            return {"ok": True, "protocol_version": 2, "schema_version": 2, "can_execute": False}
+            return {"ok": True, "protocol_version": 2, "schema_version": None if self.missing_schema else 2, "can_execute": False}
         assert payload["protocol_version"] == 2
         base = {"ok": True, "protocol_version": 2, "persist_phase": phase, "can_execute": False}
         if phase == "BEGIN":
@@ -104,6 +105,16 @@ def test_unavailable_server_never_begins_or_uploads(tmp_path, monkeypatch):
     fake = FakeCheckpoint(unavailable=True)
     monkeypatch.setattr(old, "_post", fake)
     with pytest.raises(RuntimeError, match="PERSIST_PHASE_INVALID"):
+        sync_v2(str(p), str(receipt))
+    assert fake.calls == ["CAPABILITIES"]
+    assert not receipt.exists()
+
+
+def test_missing_database_schema_preflight_never_mutates(tmp_path, monkeypatch):
+    p, receipt = sample(tmp_path)
+    fake = FakeCheckpoint(missing_schema=True)
+    monkeypatch.setattr(old, "_post", fake)
+    with pytest.raises(RuntimeError, match="SCOUT_PERSIST_SCHEMA_ATTESTATION_MISSING"):
         sync_v2(str(p), str(receipt))
     assert fake.calls == ["CAPABILITIES"]
     assert not receipt.exists()
