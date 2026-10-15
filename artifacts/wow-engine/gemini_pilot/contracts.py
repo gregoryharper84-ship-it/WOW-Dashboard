@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
@@ -20,8 +20,8 @@ class EvidenceSource(StrictModel):
     uri: str = Field(min_length=1, max_length=2048)
     kind: Literal["KALSHI_RULE", "SETTLEMENT_SOURCE", "OFFICIAL_WEATHER",
                   "MODEL_GUIDANCE", "GITHUB", "CI", "OTHER"]
-    available_at: datetime
-    retrieved_at: datetime
+    available_at: AwareDatetime
+    retrieved_at: AwareDatetime
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -29,7 +29,7 @@ class PilotTask(StrictModel):
     contract_version: Literal["wow.gemini-pilot.task.v1"] = "wow.gemini-pilot.task.v1"
     task_id: str = Field(min_length=1, max_length=120)
     lane: Literal["KALSHI_CONTRACT_AUDIT", "WOW_DEFECT_DIAGNOSIS"]
-    decision_time: datetime
+    decision_time: AwareDatetime
     scope: str = Field(min_length=5, max_length=10000)
     source_material: str = Field(min_length=1, max_length=75000)
     evidence: list[EvidenceSource] = Field(min_length=1, max_length=30)
@@ -43,6 +43,10 @@ class PilotTask(StrictModel):
             raise ValueError("DUPLICATE_SOURCE_ID")
         if any(e.available_at > self.decision_time for e in self.evidence):
             raise ValueError("POST_DECISION_EVIDENCE")
+        if any(e.retrieved_at > self.decision_time for e in self.evidence):
+            raise ValueError("POST_DECISION_RETRIEVAL")
+        if any(e.available_at > e.retrieved_at for e in self.evidence):
+            raise ValueError("SOURCE_NOT_AVAILABLE_AT_RETRIEVAL")
         return self
 
 
