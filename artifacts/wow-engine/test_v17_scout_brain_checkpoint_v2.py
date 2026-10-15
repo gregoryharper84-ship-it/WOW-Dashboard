@@ -48,7 +48,7 @@ class FakeCheckpoint:
         if phase == "CAPABILITIES":
             if self.unavailable:
                 raise RuntimeError("PERSIST_PHASE_INVALID")
-            return {"ok": True, "protocol_version": 2, "can_execute": False}
+            return {"ok": True, "protocol_version": 2, "schema_version": 2, "can_execute": False}
         assert payload["protocol_version"] == 2
         base = {"ok": True, "protocol_version": 2, "persist_phase": phase, "can_execute": False}
         if phase == "BEGIN":
