@@ -147,7 +147,7 @@ def test_governance_invalid_never_mints_or_uploads(tmp_path, monkeypatch):
 
 
 def test_protocol_source_enforces_transactional_receipts_and_private_schema():
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parent
     edge = (root / "v17/supabase/functions/wow-v17-scout-brain-persist/index.ts").read_text()
     helper = (root / "v17/supabase/functions/wow-v17-scout-brain-persist/checkpoint.ts").read_text()
     sql = (root / "v17/sql/20261015_scout_persistence_checkpoint_receipts.sql").read_text()
