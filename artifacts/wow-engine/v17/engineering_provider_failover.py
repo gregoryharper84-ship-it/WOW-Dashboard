@@ -123,9 +123,9 @@ NON_PROVIDER_MARKERS = (
 # runtime error line, structured API error, or standalone provider code
 # can trip the persistent quota breaker.
 RUNTIME_QUOTA_RE = re.compile(
-    r"(?im)^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\\s]+\\s+)?"
-    r"(?:ERROR(?: code)?:|##\\[error\\]|::error::)"
-    r"[^\\n]*(?:quota exceeded|insufficient_quota|check your plan and billing details)"
+    r"(?im)^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\s]+\s+)?"
+    r"(?:ERROR(?: code)?:|##\[error\]|::error::)"
+    r"[^\n]*(?:quota exceeded|insufficient_quota|check your plan and billing details)"
 )
 
 
@@ -133,11 +133,11 @@ def _quota_evidence(log_text: str) -> bool:
     value = str(log_text or "")
     if RUNTIME_QUOTA_RE.search(value):
         return True
-    if re.search(r"(?im)^\\s*(?:insufficient_quota|quota exceeded)\\s*$", value):
+    if re.search(r"(?im)^\s*(?:insufficient_quota|quota exceeded)\s*$", value):
         return True
     return bool(re.search(
-        r'(?im)^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\\s]+\\s+)?\\{[^\\n]*'
-        r'"error"[^\\n]*"insufficient_quota"', value
+        r'(?im)^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\s]+\s+)?\{[^\n]*'
+        r'"error"[^\n]*"insufficient_quota"', value
     ))
 
 
