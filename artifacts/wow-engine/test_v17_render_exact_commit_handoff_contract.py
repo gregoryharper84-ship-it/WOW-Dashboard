@@ -117,6 +117,8 @@ def test_stale_render_live_bypasses_no_current_main_recheck():
         'if status == "live":\\n            require_current_main_for_live_receipt()',
         'if status == "live":',
     )
-    # We retain two guarded LIVE success paths, never only the pre-POST gate.
+    # Mutation removes one of the two call sites; it must be observable.
+    assert stale != script
     assert script.count("require_current_main_for_live_receipt()") == 3
+    assert stale.count("require_current_main_for_live_receipt()") == 2
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in script
