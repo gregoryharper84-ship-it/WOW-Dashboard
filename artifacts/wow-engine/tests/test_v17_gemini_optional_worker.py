@@ -83,7 +83,8 @@ def test_authorized_manual_evidence_is_unverified():
         return fixture(json.dumps({"summary":"fixture","findings":["review this"],
             "evidence_refs":["public:fixture"]}))
     result = worker.run_challenger("code_review", "public harmless fixture",
-        data_classification="PUBLIC", env=enabled(), opener=opener)
+        data_classification="PUBLIC", evidence_refs=["public:fixture"],
+        env=enabled(), opener=opener)
     assert result["verification_state"] == "UNVERIFIED_CHALLENGER_OUTPUT"
     assert result["can_execute"] is False and result["probability_authority"] is False
     assert calls[0][1] == 15
@@ -198,3 +199,98 @@ def test_cli_no_auth_is_typed_and_offline(monkeypatch, capsys, tmp_path):
                         "--data-classification", "PUBLIC"]) == 1
     printed = json.loads(capsys.readouterr().out)
     assert printed == {"status": "GEMINI_DISABLED", "can_execute": False}
+
+
+@pytest.mark.parametrize("refs", [
+    ["spoof:not-approved"],
+    ["public:fixture", "public:fixture"],
+    ["bad space"],
+    ["bad|pipe"],
+])
+def test_model_reference_spoofing_or_invalid_ids_blocked(refs):
+    answer = json.dumps({"summary": "reviewed", "findings": ["example finding"],
+                         "evidence_refs": refs})
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_EVIDENCE_REF_INVALID"):
+        worker.run_challenger(
+            "code_review", "public test fixture", data_classification="PUBLIC",
+            evidence_refs=["public:fixture"], env=enabled(),
+            opener=lambda *a, **k: fixture(answer))
+
+
+def test_model_findings_without_registered_evidence_blocked():
+    answer = json.dumps({"summary": "reviewed", "findings": ["unjustified finding"],
+                         "evidence_refs": []})
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_EVIDENCE_REF_INVALID"):
+        worker.run_challenger(
+            "code_review", "public test fixture", data_classification="PUBLIC",
+            evidence_refs=["public:fixture"], env=enabled(),
+            opener=lambda *a, **k: fixture(answer))
+
+
+def test_authorized_multi_source_references_pass_but_remain_unverified():
+    approved = ["public:fixture", "KALSHI_RULE:case-001"]
+    answer = json.dumps({"summary": "reviewed", "findings": ["needs confirmation"],
+                         "evidence_refs": approved})
+    seen = []
+    def opener(req, timeout):
+        seen.append(req)
+        return fixture(answer)
+    result = worker.run_challenger(
+        "code_review", "public test fixture", data_classification="PUBLIC",
+        evidence_refs=approved, env=enabled(), opener=opener)
+    assert result["evidence_refs"] == approved
+    assert result["verification_state"] == "UNVERIFIED_CHALLENGER_OUTPUT"
+    assert result["can_execute"] is False
+    assert len(seen) == 1
+    payload = json.loads(seen[0].data)
+    instruction = payload["contents"][0]["parts"][0]["text"]
+    assert "REGISTERED_EVIDENCE_IDS" in instruction
+    assert all(ref in instruction for ref in approved)
+
+
+@pytest.mark.parametrize("registered", [
+    ["public:fixture", "public:fixture"],
+    ["contains white space"],
+    [""],
+    ["x" * 201],
+    ["a|pipe"],
+])
+def test_invalid_registered_refs_blocked_before_http(registered):
+    sent = []
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_INPUT_INVALID"):
+        worker.run_challenger(
+            "code_review", "public test fixture", data_classification="PUBLIC",
+            evidence_refs=registered, env=enabled(),
+            opener=lambda *a, **k: sent.append(True))
+    assert not sent
+
+
+def test_entire_serialized_body_is_bounded_before_http():
+    sent = []
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_INPUT_INVALID"):
+        worker.run_challenger(
+            "code_review", "x" * (worker.MAX_INPUT_CHARS - 400),
+            data_classification="PUBLIC", evidence_refs=["public:fixture"],
+            env=enabled(), opener=lambda *a, **k: sent.append(True))
+    assert not sent
+
+
+def test_unicode_json_expansion_is_bounded_before_http():
+    sent = []
+    with pytest.raises(worker.GeminiWorkerError, match="GEMINI_INPUT_INVALID"):
+        worker.run_challenger(
+            "code_review", "\u2603" * 2100,
+            data_classification="PUBLIC", evidence_refs=["public:fixture"],
+            env=enabled(), opener=lambda *a, **k: sent.append(True))
+    assert not sent
+
+
+def test_valid_complete_request_size_does_not_exceed_limit():
+    def opener(req, timeout):
+        assert len(req.data) <= worker.MAX_INPUT_CHARS
+        return fixture(json.dumps({"summary": "no findings", "findings": [],
+                                   "evidence_refs": []}))
+    result = worker.run_challenger(
+        "code_review", "public test fixture", data_classification="PUBLIC",
+        evidence_refs=[], env=enabled(), opener=opener)
+    assert result["can_execute"] is False
