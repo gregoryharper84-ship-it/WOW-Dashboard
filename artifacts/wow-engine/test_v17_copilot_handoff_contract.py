@@ -148,6 +148,17 @@ class HandoffContractTests(unittest.TestCase):
                                            repository=REPO, current_main_sha=MAIN)
         self.assertIn("PR_AUTHOR_NOT_COPILOT", result["reasons"])
 
+    def test_malformed_pr_author_identity_fails_closed(self):
+        for login in ([], {}, 1, None):
+            snapshot = pr()
+            snapshot["user"]["login"] = login
+            with self.subTest(login=login):
+                result = contract.verify_draft_pr(
+                    packet(), snapshot, packet()["allowed_paths"],
+                    repository=REPO, current_main_sha=MAIN)
+                self.assertEqual("HOLD", result["decision"])
+                self.assertIn("PR_AUTHOR_NOT_COPILOT", result["reasons"])
+
     def test_wrong_or_stale_pr_rejected(self):
         for key, value in (("sha", "c" * 40), ("ref", "develop")):
             snapshot = pr()
