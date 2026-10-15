@@ -83,6 +83,55 @@ def test_change_impact_database_and_probability_adjacent_paths_fail_safe() -> No
     assert PROBABILITY_BEHAVIOR_REVIEW in gates
 
 
+def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
+    """A fully correlated offline fixture, NOT a production GPT Action claim."""
+    count = 0 if empty else 1
+    return {
+        "host_identity": "WOW_BETTING_ENGINE",
+        "live_editor_verified": True,
+        "action_invoked": True,
+        "action_operation_id": "scoreWowPickRequest",
+        "request_id": "synthetic-request-1",
+        "action_receipt": {
+            "request_id": "synthetic-request-1",
+            "action_operation_id": "scoreWowPickRequest",
+            "immutable_receipt_hash": "a" * 64,
+            "readback_verified": True,
+            "freshness_verified": True,
+            "replayed": False,
+            "stale": False,
+            "can_execute": False,
+        },
+        "inventory_accounted": True,
+        "acquired_row_count": count,
+        "source_inventory_evidence": {
+            "source_snapshot_id": "synthetic-source-1",
+            "source_observed_at": "2026-10-15T16:00:00Z",
+            "acquired_row_count": count,
+            "source_accounted": True,
+            "empty_slate_verified": empty,
+        },
+        "source_ingestion_complete": True,
+        "rows_in": count,
+        "rows_completed": count,
+        "rows_held": 0,
+        "rows_rejected": 0,
+        "all_rows_reconciled": True,
+        "governed_scoring_accounted": True,
+        "response_handoff_complete": True,
+        "display_receipt": {
+            "host_identity": "WOW_BETTING_ENGINE",
+            "request_id": "synthetic-request-1",
+            "canonical_result_displayed": True,
+        },
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "probability_source": "GOVERNED_FITTED_SPECIALIST" if count else None,
+        "can_execute": False,
+        "valid_governed_row_count": count,
+        "empty_slate_proven": empty,
+    }
+
+
 def test_golden_journey_rejects_false_green_component_health() -> None:
     result = evaluate_golden_user_journey(
         {
@@ -99,42 +148,26 @@ def test_golden_journey_rejects_false_green_component_health() -> None:
 
 
 def test_golden_journey_pass_requires_live_host_and_real_governed_result() -> None:
-    result = evaluate_golden_user_journey(
-        {
-            "host_identity": "WOW_BETTING_ENGINE",
-            "live_editor_verified": True,
-            "action_invoked": True,
-            "inventory_accounted": True,
-            "source_ingestion_complete": True,
-            "all_rows_reconciled": True,
-            "governed_scoring_accounted": True,
-            "response_handoff_complete": True,
-            "terminal_authority": "V17_TERMINAL_REDUCER",
-            "can_execute": False,
-            "valid_governed_row_count": 1,
-            "empty_slate_proven": False,
-        }
-    )
+    evidence = _synthetic_golden_evidence()
+    result = evaluate_golden_user_journey(evidence)
     assert result["status"] == "PASS"
     assert result["blockers"] == []
+    for missing in ("action_receipt", "source_inventory_evidence", "display_receipt"):
+        no_evidence = dict(evidence)
+        no_evidence.pop(missing)
+        assert evaluate_golden_user_journey(no_evidence)["status"] != "PASS"
 
 
 def test_golden_journey_accepts_only_explicitly_proven_empty_slate() -> None:
-    base = {
-        "host_identity": "WOW_BETTING_ENGINE",
-        "live_editor_verified": True,
-        "action_invoked": True,
-        "inventory_accounted": True,
-        "source_ingestion_complete": True,
-        "all_rows_reconciled": True,
-        "governed_scoring_accounted": True,
-        "response_handoff_complete": True,
-        "terminal_authority": "V17_TERMINAL_REDUCER",
-        "can_execute": False,
-        "valid_governed_row_count": 0,
-    }
-    assert evaluate_golden_user_journey({**base, "empty_slate_proven": True})["status"] == "PASS"
-    assert evaluate_golden_user_journey({**base, "empty_slate_proven": False})["status"] != "PASS"
+    valid = _synthetic_golden_evidence(empty=True)
+    assert evaluate_golden_user_journey(valid)["status"] == "PASS"
+    assert evaluate_golden_user_journey({
+        **valid, "empty_slate_proven": False,
+    })["status"] != "PASS"
+    invalid = dict(valid)
+    invalid["source_inventory_evidence"] = None
+    assert evaluate_golden_user_journey(invalid)["status"] != "PASS"
+
 
 
 def test_golden_journey_malformed_row_count_fails_closed_without_throwing() -> None:
