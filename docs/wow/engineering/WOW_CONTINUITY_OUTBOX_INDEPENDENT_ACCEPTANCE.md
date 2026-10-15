@@ -36,6 +36,13 @@ is the independent owner, QA App, Release App, or the governed terminal reducer.
    Actions, pull requests or logs. Production restricted identity remains a gate.
 ## Phase B — two-session serializable behavior
 
+The live lease table has one row per incident with a `lease_group` column
+but no unique active-group constraint. The staged outbox derives that group only
+from its row-locked lease record and adds a partial active-group unique index.
+This stops duplicate **dispatch intents**, but does not by itself authorize
+or serialize other GitHub code writers that bypass the outbox. All writer
+entrypoints need independent group-wide admission before production.
+
 Use **two independent database transactions and two independent trusted worker
 identities**, not an in-memory fake or sequential API requests. Report exact
 transaction/result IDs and successful/failing assertions:
@@ -43,6 +50,9 @@ transaction/result IDs and successful/failing assertions:
 | Case | Required observed behavior |
 |---|---|
 | Two concurrent reserve calls, same incident | Exactly one RESERVED active intent; loser IN_FLIGHT |
+| Two different incidents, same certified lease_group | Exactly one active outbox intent; loser IN_FLIGHT, with both group values DB-derived |
+| Different incidents, disjoint certified lease_group | Independent active outbox intents allowed |
+| Lease takeover racing reserve/arm/abort/reclaim/mark | Lease row FOR UPDATE serializes takeover with outbox mutation; stale epoch may never alter intent |
 | Two concurrent arm calls, same UUID | Exactly one true; second false; no duplicate provider POST |
 | Pre-arm stale main/PR | Exact active-owner/epoch abort succeeds only while state=RESERVED; history remains |
 | Abort vs arm racing | Exactly one wins the row; abort never changes ARMED into PREARM_ABORTED |
