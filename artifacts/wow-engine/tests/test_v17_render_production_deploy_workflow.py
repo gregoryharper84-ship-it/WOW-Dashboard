@@ -47,7 +47,7 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
 
     assert "/deploys?limit=20" in text
     assert "commit_sha(deploy) == target_sha" in text
-    assert "EXACT_SHA_ALREADY_LIVE" in text
+    assert "PRIMARY_RELEASE_LIVE_REQUIRES_CERTIFIED_LEDGER_READBACK" in text
     assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in text
     assert "PRIMARY_RELEASE_MAIN_SHA_CHANGED_BEFORE_POST" in text
     assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
