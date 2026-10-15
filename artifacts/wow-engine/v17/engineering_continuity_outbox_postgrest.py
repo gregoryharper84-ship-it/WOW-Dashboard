@@ -22,7 +22,7 @@ from v17.engineering_continuity_lease_attestation import (
 )
 
 _RPC_PREFIX = "/rest/v1/rpc/wow_engineering_continuity_outbox_"
-_ALLOWED = frozenset({"reserve", "abort", "arm", "mark"})
+_ALLOWED = frozenset({"reserve", "abort", "reclaim", "arm", "mark"})
 _PREARM_REASONS = frozenset({
     "MAIN_CHANGED_BEFORE_DISPATCH", "PR_HEAD_RECHECK_UNAVAILABLE",
     "PR_CHANGED_BEFORE_DISPATCH", "WRITER_FENCE_UNVERIFIED",
@@ -157,6 +157,40 @@ class PostgrestOutboxStore:
         })
         if type(response) is not bool:
             raise OutboxProtocolError("OUTBOX_ABORT_PROTOCOL_INVALID")
+        return response
+
+    def reclaim_abandoned_prearm(self, *, incident: int,
+                                 old_intent_id: str) -> bool:
+        """Separate recovery operation; never invoked by dispatch_once.
+
+        Caller must already possess a NEW authorized incident writer lease.
+        DB checks the newer epoch against the old still-RESERVED row and
+        serializes with a concurrent ARM. Absent/ambiguous responses HOLD.
+        A completed/unknown workflow must NEVER be reclaimed here.
+        """
+        from uuid import UUID
+        if type(incident) is not int or incident != self.claim.incident:
+            raise OutboxProtocolError("OUTBOX_RECLAIM_INCIDENT_MISMATCH")
+        if type(self.claim.epoch) is not int or self.claim.epoch <= 1:
+            raise OutboxProtocolError("OUTBOX_RECLAIM_NEW_EPOCH_REQUIRED")
+        if not isinstance(old_intent_id, str):
+            raise OutboxProtocolError("OUTBOX_RECLAIM_INTENT_INVALID")
+        try:
+            parsed = UUID(old_intent_id)
+        except (TypeError, ValueError):
+            raise OutboxProtocolError("OUTBOX_RECLAIM_INTENT_INVALID") from None
+        if str(parsed) != old_intent_id:
+            raise OutboxProtocolError("OUTBOX_RECLAIM_INTENT_INVALID")
+        if not self._attest():
+            raise OutboxProtocolError("OUTBOX_RECLAIM_WRITER_FENCE_FAILED")
+        response = self._rpc("reclaim", {
+            "p_incident_id": incident,
+            "p_old_intent_id": old_intent_id,
+            "p_new_owner_id": self.claim.owner_id,
+            "p_new_epoch": self.claim.epoch,
+        })
+        if type(response) is not bool:
+            raise OutboxProtocolError("OUTBOX_RECLAIM_PROTOCOL_INVALID")
         return response
 
     def arm_once(self, reservation: Reservation) -> bool:
