@@ -175,7 +175,13 @@ jobs:
           head_repo=$(jq -r '.head_repository.full_name // ""' <<<"$run_json")
 
           protected_main_source=false
-          case "$name|$path" in
+          canonical_name="$name"
+            # Accept only the two protected workers' exact, bounded run-name
+            # suffixes. Path/event/repository/branch are verified separately.
+            if [[ "$name" =~ ^(wow-v17-(chatgpt|claude)-engineering-worker)[[:space:]]lease=(GLOBAL|[A-Z][A-Z0-9_]{0,47})[[:space:]]incident=(AUTO|[0-9]{1,10})$ ]]; then
+              canonical_name="${BASH_REMATCH[1]}"
+            fi
+            case "$canonical_name|$path" in
             "wow-v17-chatgpt-engineering-worker|.github/workflows/wow-v17-chatgpt-engineering-worker.yml")
               case "$event" in schedule|workflow_run|workflow_dispatch) ;; *) exit 1 ;; esac
               [ "$head_branch" = "main" ] && protected_main_source=true
@@ -209,7 +215,7 @@ jobs:
             echo "RELEASE_GOVERNANCE_WORKFLOW_REPOSITORY_MISMATCH: $head_repo" >&2
             exit 1
           }
-          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "name=$canonical_name" >> "$GITHUB_OUTPUT"
       - name: Download and verify trusted governance receipt
         if: steps.pr.outputs.number != ''
         shell: bash
