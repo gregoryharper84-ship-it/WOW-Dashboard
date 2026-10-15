@@ -108,7 +108,7 @@ export async function checkpointedPersistence(
           where research_run_id=${id} and status='COMPLETE'`;
         if(prev.length!==1) invalid("SCOUT_PERSIST_RECEIPT_MISSING");
         const snapshot=prev[0].source_snapshot;
-        const stats=snapshot&&typeof snapshot==="object"?snapshot:{};
+        const stats:Row = snapshot&&typeof snapshot==="object" ? snapshot as Row : {};
         result={candidate_count:Number(prev[0].candidate_count),
           changed_candidate_count:Number(prev[0].changed_candidate_count),
           quarantined_count:Number(prev[0].quarantined_count),
