@@ -72,6 +72,26 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
                     "END $roles$;"
                 )
                 cursor.execute(LEDGER.read_text(), prepare=False)
+                # A provisioned login alone cannot mint any deployment
+                # intent without the independently approved DBA identity row.
+                cursor.execute("set local role wow_release_controller")
+                cursor.execute("SAVEPOINT no_dba_authorization")
+                try:
+                    cursor.execute(
+                        "select * from wow_release_control.claim_render_worker_deploy("
+                        "%s, %s, %s, %s)",
+                        ("srv-dapkbc0473hc73c1978g", "a" * 40, "ci-before-dba", 300),
+                    )
+                except psycopg.errors.RaiseException as exc:
+                    assert "WORKER_RELEASE_DB_AUTHORIZATION_MISSING" in str(exc)
+                    cursor.execute("ROLLBACK TO SAVEPOINT no_dba_authorization")
+                else:
+                    raise AssertionError("Unapproved DBA control identity minted a lease")
+                cursor.execute("RESET ROLE")
+                cursor.execute(
+                    "select count(*) from wow_release_control.render_worker_deploy_intents"
+                )
+                assert cursor.fetchone() == (0,)
                 # DBA is the only actor that can approve the marker.
                 cursor.execute(
                     "insert into wow_release_control.release_control_identity "
@@ -136,6 +156,7 @@ def test_release_identity_is_dba_provisioned_and_never_auto_approved():
     assert "create table if not exists wow_release_control.release_control_identity" in sql
     assert "authorized boolean not null default false" in sql
     assert "WOW_RELEASE_CONTROLLER_ROLE_NOT_AUTHORIZED" in sql
+    assert sql.count("WORKER_RELEASE_DB_AUTHORIZATION_MISSING") == 3
     assert "rolname='wow_release_controller'" in sql
     assert "not rolsuper and not rolbypassrls and rolcanlogin" in sql
     assert "create role wow_release_controller" not in sql.lower()
