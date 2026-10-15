@@ -103,7 +103,8 @@ def evaluate_reconciliation(
         return hold("RECONCILE_RUN_READBACK_UNAVAILABLE")
     if not isinstance(run, RunReceipt):
         return hold("RECONCILE_RUN_READBACK_INVALID")
-    if (run.run_id != intent.workflow_run_id or run.repository != repository
+    if (type(run.run_id) is not int or run.run_id != intent.workflow_run_id
+            or run.repository != repository
             or run.workflow_path not in _ALLOWED_WORKFLOWS
             or run.event != "workflow_dispatch" or run.head_branch != "main"
             or run.head_sha != intent.main_sha):
@@ -118,7 +119,9 @@ def evaluate_reconciliation(
         return hold("RECONCILE_ARTIFACT_UNAVAILABLE")
     if not isinstance(artifact, DispatchArtifact):
         return hold("RECONCILE_ARTIFACT_INVALID")
-    if (artifact.workflow_run_id != run.run_id or artifact.intent_id != intent.intent_id
+    if (type(artifact.workflow_run_id) is not int
+            or type(artifact.incident) is not int
+            or artifact.workflow_run_id != run.run_id or artifact.intent_id != intent.intent_id
             or artifact.incident != intent.incident or artifact.main_sha != intent.main_sha
             or artifact.action != intent.action or artifact.pr_number != intent.pr_number
             or artifact.pr_head_sha != intent.pr_head_sha):
