@@ -232,7 +232,7 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
         nonempty(source.get("source_snapshot_id")) and
         source.get("request_id") == request_id and
         whole(source.get("acquired_row_count")) == acquired and
-        type(source.get("acquired_row_count")) in (int, str) and
+        type(source.get("acquired_row_count")) is int and
         source.get("source_accounted") is True and
         source.get("freshness_verified") is True
     ):
