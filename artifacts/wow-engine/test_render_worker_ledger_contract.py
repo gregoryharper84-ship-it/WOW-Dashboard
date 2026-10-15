@@ -72,6 +72,20 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
                     "END $roles$;"
                 )
                 cursor.execute(LEDGER.read_text(), prepare=False)
+                # DBA is the only actor that can approve the marker.
+                cursor.execute(
+                    "insert into wow_release_control.release_control_identity "
+                    "(singleton, project_ref, environment, service_id, authorized, approved_by, approved_at) "
+                    "values (true, %s, 'production', %s, true, 'CI-DBA', now())",
+                    ("iczfhsmjrrafhvcpmqhr", "srv-dapkbc0473hc73c1978g"),
+                )
+                # Verify the actual non-superuser is subject to RLS while
+                # invoking the same SECURITY INVOKER lease function.
+                cursor.execute("set local role wow_release_controller")
+                cursor.execute(
+                    "select project_ref from wow_release_control.release_control_identity where singleton = true"
+                )
+                assert cursor.fetchone() == ("iczfhsmjrrafhvcpmqhr",)
                 cursor.execute(
                     "select state, lease_token, can_initiate "
                     "from wow_release_control.claim_render_worker_deploy("
@@ -110,3 +124,17 @@ def test_release_identity_role_cannot_seed_or_modify_dba_attestation():
     assert "grant insert on wow_release_control.release_control_identity" not in sql
     assert "grant update on wow_release_control.release_control_identity" not in sql
     assert "security invoker" in sql
+
+
+
+def test_private_release_ledger_enforces_restricted_worker_row_policies():
+    sql = LEDGER.read_text()
+    assert "wow_release_identity_select" in sql
+    assert "wow_release_intents_select" in sql
+    assert "wow_release_intents_insert" in sql
+    assert "wow_release_intents_update" in sql
+    assert "for select to wow_release_controller" in sql.lower()
+    assert "for update to wow_release_controller" in sql.lower()
+    assert "for insert to wow_release_controller" in sql.lower()
+    assert "with check (service_id" in sql.lower()
+    assert "using (service_id" in sql.lower()
