@@ -72,6 +72,31 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
                     "END $roles$;"
                 )
                 cursor.execute(LEDGER.read_text(), prepare=False)
+                # Stale ACLs on IF NOT EXISTS private tables must be revoked;
+                # a direct controller cannot mutate either DBA trust root.
+                cursor.execute("set local role wow_release_controller")
+                for relation in ("release_control_identity",
+                                 "release_control_project_anchor"):
+                    cursor.execute("SAVEPOINT denied_dba_root_update")
+                    try:
+                        cursor.execute(
+                            f"update wow_release_control.{relation} set singleton=true"
+                        )
+                    except psycopg.errors.InsufficientPrivilege:
+                        cursor.execute("ROLLBACK TO SAVEPOINT denied_dba_root_update")
+                    else:
+                        raise AssertionError(f"Controller may UPDATE independent DBA root: {relation}")
+                cursor.execute("SAVEPOINT denied_dba_root_function")
+                try:
+                    cursor.execute(
+                        "select wow_release_control.assert_release_authority(%s)",
+                        ("srv-dapkbc0473hc73c1978g",),
+                    )
+                except psycopg.errors.InsufficientPrivilege:
+                    cursor.execute("ROLLBACK TO SAVEPOINT denied_dba_root_function")
+                else:
+                    raise AssertionError("Internal authorization function exposed to controller")
+                cursor.execute("RESET ROLE")
                 # A provisioned login alone cannot mint any deployment
                 # intent without the independently approved DBA identity row.
                 cursor.execute("set local role wow_release_controller")
@@ -392,3 +417,57 @@ def test_dba_revocation_and_competing_claims_are_transaction_serialized():
         a.commit()
         a.close()
         b.close()
+
+
+
+def test_inherited_privilege_fails_closed_even_with_stale_acl():
+    """CI: a controller inheriting a privileged role must not pass admission."""
+    import os
+    import pytest
+
+    if os.environ.get("GITHUB_WORKFLOW") != "wow-engine-verify":
+        pytest.skip("requires disposable PostgreSQL CI database")
+    import psycopg
+
+    dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+    with psycopg.connect(dsn, connect_timeout=5, autocommit=False) as connection:
+        try:
+            with connection.cursor() as cur:
+                cur.execute(
+                    "DO $roles$ BEGIN "
+                    "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='anon') "
+                    "THEN CREATE ROLE anon NOLOGIN; END IF; "
+                    "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='authenticated') "
+                    "THEN CREATE ROLE authenticated NOLOGIN; END IF; "
+                    "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='wow_release_controller') "
+                    "THEN CREATE ROLE wow_release_controller LOGIN NOSUPERUSER NOBYPASSRLS; END IF; "
+                    "END $roles$;"
+                )
+                cur.execute(LEDGER.read_text(), prepare=False)
+                cur.execute("CREATE ROLE wow_ci_inherited_dba_priv NOLOGIN")
+                cur.execute(
+                    "GRANT UPDATE ON wow_release_control.release_control_project_anchor "
+                    "TO wow_ci_inherited_dba_priv"
+                )
+                cur.execute(
+                    "GRANT wow_ci_inherited_dba_priv TO wow_release_controller"
+                )
+                cur.execute("SAVEPOINT before_reverification")
+                try:
+                    cur.execute(LEDGER.read_text(), prepare=False)
+                except psycopg.errors.RaiseException as exc:
+                    assert "WOW_RELEASE_CONTROLLER_INHERITED_TABLE_PRIVILEGE" in str(exc)
+                    cur.execute("ROLLBACK TO SAVEPOINT before_reverification")
+                else:
+                    raise AssertionError("Inherited DBA UPDATE privilege was admitted")
+        finally:
+            connection.rollback()
+
+
+def test_worker_trust_root_ownership_and_acl_guards_are_explicit():
+    script = LEDGER.read_text()
+    assert script.count("revoke all on wow_release_control.release_control_identity from wow_release_controller") == 1
+    assert script.count("revoke all on wow_release_control.release_control_project_anchor from wow_release_controller") == 1
+    assert "WOW_RELEASE_CONTROLLER_INHERITED_TABLE_PRIVILEGE" in script
+    assert "WOW_RELEASE_CONTROLLER_FUNCTION_OWNER_INHERITED" in script
+    assert "WOW_RELEASE_CONTROLLER_INTERNAL_AUTH_FUNCTION_EXPOSED" in script
