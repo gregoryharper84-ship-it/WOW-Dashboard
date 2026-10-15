@@ -649,7 +649,18 @@ Deno.serve(async (req: Request) => {
 
   const sql = postgres(dbUrl, { max: 1, prepare: false });
   try {
-    if (phase === "CAPABILITIES") return response({ok:true,protocol_version:2,can_execute:false});
+    if (phase === "CAPABILITIES") {
+      // Never advertise a durable protocol unless both private receipt tables
+      // and their required v2 columns can be read by the credentialed DB role.
+      await sql.begin(async (tx) => {
+        await tx`select header_sha256,expected_candidates,expected_evidence,
+          next_chunk_index,uploaded_candidates,uploaded_evidence,upload_state
+          from wow_scout.persist_upload_sessions limit 0`;
+        await tx`select content_sha256,chunk_index,finalized_candidates,evidence_rows
+          from wow_scout.persist_chunk_receipts limit 0`;
+      });
+      return response({ok:true,protocol_version:2,schema_version:2,can_execute:false});
+    }
     if (body.protocol_version === 2 && ["BEGIN","APPEND","FINALIZE"].includes(phase)) {
       const result = await checkpointedPersistence(sql,phase,runId,body,
         {openRun,persistCandidates,accumulate,closeRun,candidateRows});
