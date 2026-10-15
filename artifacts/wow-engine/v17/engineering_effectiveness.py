@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -141,7 +140,7 @@ def classify_change_impact(paths: Iterable[str]) -> dict[str, Any]:
     }
 
 
-def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
+def evaluate_golden_user_journey(receipt: Any) -> dict[str, Any]:
     """Fail closed on actual Action, source, persistence and displayed receipt proof.
 
     Boolean stage summaries alone are NOT a production acceptance certificate.
@@ -152,6 +151,18 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
     this function validates its structure and consistency, not its issuer's
     credentials. Only authorized QA can attest that external origin.
     """
+    if not isinstance(receipt, dict):
+        return {
+            "status": "FAIL_ACTION_INVOCATION",
+            "blockers": ["FAIL_ACTION_INVOCATION:NON_OBJECT_RECEIPT"],
+            "evidence_scope": "STRUCTURAL_ONLY",
+            "production_verified": False,
+            "independent_qa_verified": False,
+            "valid_governed_row_count": 0,
+            "empty_slate_proven": False,
+            "can_execute": False,
+            "terminal_authority": TERMINAL_AUTHORITY,
+        }
     blockers: list[str] = []
     operation = "scoreWowPickRequest"
 
@@ -342,7 +353,8 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
                 lb = row.get("calibrated_probability_lower_bound")
                 valid_numbers = (
                     type(p) in (float, int) and type(lb) in (float, int) and
-                    math.isfinite(p) and math.isfinite(lb) and
+                    # Bound comparisons reject NaN, infinities and huge
+                    # integers without coercing an unbounded int to float.
                     0 <= lb <= p < 1 and p > 0
                 )
                 if not (
