@@ -178,7 +178,159 @@ jobs:
           canonical_name="$name"
             # Accept only the two protected workers' exact, bounded run-name
             # suffixes. Path/event/repository/branch are verified separately.
-            if [[ "$name" =~ ^(wow-v17-(chatgpt|claude)-engineering-worker)[ ]lease=(GLOBAL|[A-Z][A-Z0-9_]{0,47})[ ]incident=(AUTO|[0-9]{1,10})$ ]]; then
+            worker_run_name_pattern='^(wow-v17-(chatgpt|claude)-engineering-worker) lease=(GLOBAL|[A-Z][A-Z0-9_]{0,47}) incident=(AUTO|[0-9]{1,10})
+              canonical_name="${BASH_REMATCH[1]}"
+            fi
+            case "$canonical_name|$path" in
+            "wow-v17-chatgpt-engineering-worker|.github/workflows/wow-v17-chatgpt-engineering-worker.yml")
+              case "$event" in schedule|workflow_run|workflow_dispatch) ;; *) exit 1 ;; esac
+              [ "$head_branch" = "main" ] && protected_main_source=true
+              ;;
+            "wow-v17-claude-engineering-worker|.github/workflows/wow-v17-claude-engineering-worker.yml")
+              [ "$event" = "workflow_dispatch" ] || exit 1
+              [ "$head_branch" = "main" ] && protected_main_source=true
+              ;;
+            "wow-v17-existing-pr-governance-review|.github/workflows/wow-v17-existing-pr-governance-review.yml")
+              case "$event" in
+                pull_request_target) protected_main_source=true ;;
+                workflow_dispatch) [ "$head_branch" = "main" ] && protected_main_source=true ;;
+                *) exit 1 ;;
+              esac
+              ;;
+            *)
+              echo "RELEASE_GOVERNANCE_WORKFLOW_IDENTITY_MISMATCH: $name at $path" >&2
+              exit 1
+              ;;
+          esac
+
+          [ "$status" = "completed" ] && [ "$conclusion" = "success" ] || {
+            echo "RELEASE_GOVERNANCE_WORKFLOW_NOT_SUCCESSFUL" >&2
+            exit 1
+          }
+          [ "$protected_main_source" = "true" ] || {
+            echo "RELEASE_GOVERNANCE_WORKFLOW_REF_MISMATCH: $head_branch" >&2
+            exit 1
+          }
+          [ "$head_repo" = "$GITHUB_REPOSITORY" ] || {
+            echo "RELEASE_GOVERNANCE_WORKFLOW_REPOSITORY_MISMATCH: $head_repo" >&2
+            exit 1
+          }
+          echo "name=$canonical_name" >> "$GITHUB_OUTPUT"
+      - name: Download and verify trusted governance receipt
+        if: steps.pr.outputs.number != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}
+          RUN_ID: ${{ steps.artifact.outputs.run_id }}
+          WORKFLOW_NAME: ${{ steps.governance_workflow.outputs.name }}
+          HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
+          HEAD_REF: ${{ steps.merged.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/wow-engine/v17/.release-evidence
+          zip_path="$RUNNER_TEMP/governance.zip"
+          receipt="artifacts/wow-engine/v17/.release-evidence/governance-receipt.json"
+          checksum="$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
+
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$zip_path"
+          unzip -p "$zip_path" wow-engineering-governance-receipt.json > "$receipt"
+          unzip -p "$zip_path" wow-engineering-governance-receipt.sha256 > "$checksum"
+
+          expected=$(tr -d '[:space:]' < "$checksum")
+          actual=$(sha256sum "$receipt" | awk '{print $1}')
+          [ -n "$expected" ] && [ "$expected" = "$actual" ] || {
+            echo "RELEASE_GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" >&2
+            exit 1
+          }
+
+          verifier=".github/scripts/verify_engineering_governance_receipt.py"
+          if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
+            verifier=".github/scripts/verify_existing_pr_governance_receipt.py"
+          fi
+
+          python "$verifier" \
+            --receipt "$receipt" \
+            --repository "$GITHUB_REPOSITORY" \
+            --head-sha "$HEAD_SHA" \
+            --head-ref "$HEAD_REF" \
+            --workflow-run-id "$RUN_ID" \
+            --workflow-name "$WORKFLOW_NAME"
+
+      - name: Capture deterministic release evidence
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
+          MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/wow-engine/v17/.release-evidence
+          gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            > artifacts/wow-engine/v17/.release-evidence/pr.json
+          git rev-parse HEAD > artifacts/wow-engine/v17/.release-evidence/main-sha.txt
+          printf '%s\n' "$HEAD_SHA" > artifacts/wow-engine/v17/.release-evidence/pr-head-sha.txt
+          printf '%s\n' "$MERGE_SHA" > artifacts/wow-engine/v17/.release-evidence/merge-sha.txt
+          gh run list --repo "$GITHUB_REPOSITORY" --branch main --limit 30 \
+            --json databaseId,name,headSha,status,conclusion,url \
+            > artifacts/wow-engine/v17/.release-evidence/runs.json
+          curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 30 \
+            https://wow-governed-probability-engine.onrender.com/health/live \
+            > artifacts/wow-engine/v17/.release-evidence/health-live.json
+          curl --fail --show-error --silent --retry 3 --retry-all-errors --max-time 30 \
+            https://wow-governed-probability-engine.onrender.com/governance \
+            > artifacts/wow-engine/v17/.release-evidence/governance.json
+
+      - name: Release / Production Verification agent
+        if: steps.pr.outputs.number != ''
+        id: release_agent
+        uses: ./.github/actions/wow-chatgpt-agent
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          permission_profile: ":read-only"
+          prompt: |
+            You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on OpenAI/ChatGPT tooling only.
+            Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
+            the merged PR, and artifacts/wow-engine/v17/.release-evidence/**.
+            The deterministic workflow has already required exact-head CI plus a trusted
+            Lead/Triage/Engineering/Independent Review/QA governance receipt tied to the exact
+            pre-merge head and has proven the GitHub merge SHA is on protected main. Independently
+            verify production liveness/governance and exact deployed-SHA evidence. Do not edit, merge, deploy,
+            or change sporting probability behavior. If exact production SHA cannot
+            be independently proven, return PENDING. Preserve can_execute=false.
+          output_schema: '{"type":"object","properties":{"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
+
+      - name: Publish release verification receipt
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          RESULT: ${{ steps.release_agent.outputs.structured_output }}
+          HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
+          MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/release-comment.md"
+          {
+            echo "## Release / Production Verification Agent"
+            echo
+            echo "Provider: OpenAI/ChatGPT"
+            echo
+            echo "- governed_pr_head_sha: `$HEAD_SHA`"
+            echo "- protected_main_merge_sha: `$MERGE_SHA`"
+            echo "- trusted_handoff_receipt: VERIFIED"
+            echo
+            echo '~~~json'
+            echo "$RESULT"
+            echo '~~~'
+            echo
+            echo "`can_execute=false`"
+          } > "$body"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+          cat "$body" >> "$GITHUB_STEP_SUMMARY"
+
+            if [[ "$name" =~ $worker_run_name_pattern ]]; then
               canonical_name="${BASH_REMATCH[1]}"
             fi
             case "$canonical_name|$path" in
