@@ -34,11 +34,11 @@ def normalize_from_real_workflow(path: Path, name: str) -> str:
     result = subprocess.run(
         ["bash", "-c", command, "bash", name],
         capture_output=True,
-        text=True,
+        text=False,
         check=True,
         timeout=5,
     )
-    return result.stdout.removesuffix("\n")
+    # Preserve embedded CR bytes; text=True would normalize CR to LF.\n    return result.stdout.decode("utf-8").removesuffix("\n")
 
 
 class TrustedRunNameRegression(unittest.TestCase):
