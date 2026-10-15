@@ -149,3 +149,30 @@ def test_quota_failure_receipt_discloses_no_credential_or_execution() -> None:
     assert receipt["manual_recovery_required"] is True
     assert receipt["can_execute"] is False
     assert receipt["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+def test_echoed_shell_source_cannot_permanently_trip_quota_breaker() -> None:
+    module = _load_module()
+    source_only = (
+        f"2026-10-14T23:59:29Z {chr(27)}[36;1mecho "
+        "'ERROR: Quota exceeded. Check your plan and billing details.'"
+        f"{chr(27)}[0m\n"
+        "2026-10-14T23:59:31Z ##[error]Process completed with exit code 1."
+    )
+    result = module.classify_provider_failure("openai", source_only)
+    assert result.code != "OPENAI_API_QUOTA_EXCEEDED"
+    assert result.manual_recovery_required is False
+    real = module.classify_provider_failure(
+        "openai",
+        source_only + "\n2026-10-14T23:59:31Z ERROR: Quota exceeded. Check your plan and billing details."
+    )
+    assert real.code == "OPENAI_API_QUOTA_EXCEEDED"
+    assert real.manual_recovery_required is True
+
+
+def test_standalone_api_quota_signal_still_trips_breaker() -> None:
+    module = _load_module()
+    result = module.classify_provider_failure(
+        "openai", "##[error]provider failure\ninsufficient_quota"
+    )
+    assert result.code == "OPENAI_API_QUOTA_EXCEEDED"
