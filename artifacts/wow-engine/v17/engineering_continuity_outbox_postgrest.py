@@ -22,7 +22,12 @@ from v17.engineering_continuity_lease_attestation import (
 )
 
 _RPC_PREFIX = "/rest/v1/rpc/wow_engineering_continuity_outbox_"
-_ALLOWED = frozenset({"reserve", "arm", "mark"})
+_ALLOWED = frozenset({"reserve", "abort", "arm", "mark"})
+_PREARM_REASONS = frozenset({
+    "MAIN_CHANGED_BEFORE_DISPATCH", "PR_HEAD_RECHECK_UNAVAILABLE",
+    "PR_CHANGED_BEFORE_DISPATCH", "WRITER_FENCE_UNVERIFIED",
+    "PREARM_RECHECK_UNAVAILABLE",
+})
 
 
 class OutboxProtocolError(RuntimeError):
@@ -138,6 +143,21 @@ class PostgrestOutboxStore:
             type(r.epoch) is not int or r.epoch != self.claim.epoch
         ):
             raise OutboxProtocolError("OUTBOX_WRITER_EPOCH_MISMATCH")
+
+    def abort_unarmed(self, reservation: Reservation, reason: str) -> bool:
+        self._check_reservation(reservation)
+        if not isinstance(reason, str) or reason not in _PREARM_REASONS:
+            raise OutboxProtocolError("OUTBOX_ABORT_REASON_INVALID")
+        response = self._rpc("abort", {
+            "p_incident_id": reservation.incident,
+            "p_intent_id": reservation.intent_id,
+            "p_owner_id": self.claim.owner_id,
+            "p_epoch": self.claim.epoch,
+            "p_reason": reason,
+        })
+        if type(response) is not bool:
+            raise OutboxProtocolError("OUTBOX_ABORT_PROTOCOL_INVALID")
+        return response
 
     def arm_once(self, reservation: Reservation) -> bool:
         self._check_reservation(reservation)
