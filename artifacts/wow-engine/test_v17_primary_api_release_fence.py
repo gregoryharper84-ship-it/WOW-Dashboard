@@ -387,8 +387,14 @@ def test_primary_api_fence_disposable_postgres_two_connections_and_db_rights():
     finally:
         conn1.rollback()
         conn2.rollback()
-        conn1.close()
         conn2.close()
+        # CI-only fixture commits to test persistence across transactions,
+        # so it must explicitly drop all disposable objects on completion.
+        # Do not let this schema leak into the next isolated integration test.
+        with conn1.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS wow_release_control CASCADE")
+        conn1.commit()
+        conn1.close()
 
 
 def test_dba_revoked_after_reservation_prevents_network_post():
