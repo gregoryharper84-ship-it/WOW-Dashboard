@@ -151,6 +151,10 @@ def test_sql_candidate_has_rls_service_role_rpc_and_no_reset_procedure():
     assert "enable row level security" in sql
     assert "grant execute on function" in sql
     assert "to service_role" in sql
+    assert "revoke all on public.wow_engineering_continuity_outbox from service_role;" in sql
+    assert "grant select, insert, update on public.wow_engineering_continuity_outbox" not in sql
+    assert "grant all on public.wow_engineering_continuity_outbox" not in sql
+    assert sql.count("security definer") >= 5
     assert "from public, anon, authenticated" in sql
     assert "check_writer_lease" in sql
     assert "on conflict do nothing" in sql
@@ -294,3 +298,26 @@ def test_reclaim_sql_cannot_reset_armed_or_unknown_dispatch():
     assert "state='PREARM_ABORTED'" in function
     assert "workflow_run_id" not in function
     assert "delete from" not in function.lower()
+
+
+def test_sql_restricts_direct_dml_and_requires_fixed_definer_rpc_boundary():
+    """No broad service-role table write can bypass the server CAS contract."""
+    sql = (Path(__file__).parent.parent.parent / "docs/wow/engineering/"
+           "proposals/WOW_CONTINUITY_OUTBOX_REVIEW_ONLY.sql").read_text()
+    names = ("reserve", "abort", "reclaim", "arm", "mark")
+    for name in names:
+        needle = (
+            "create or replace function public."
+            "wow_engineering_continuity_outbox_" + name + "("
+        )
+        assert sql.count(needle) == 1
+        body = sql.split(needle, 1)[1].split("end $$;", 1)[0]
+        assert "security definer" in body
+        assert "set search_path = pg_catalog, public" in body
+        assert "check_writer_lease(" in body
+        assert "execute " not in body.lower()  # no dynamic SQL
+    assert "revoke all on public.wow_engineering_continuity_outbox from service_role;" in sql
+    assert "revoke all on public.wow_engineering_continuity_outbox from public, anon, authenticated;" in sql
+    assert "grant execute on function public.wow_engineering_continuity_outbox_" in sql
+    assert "grant select, insert" not in sql.lower()
+    assert "grant update" not in sql.lower()
