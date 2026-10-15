@@ -160,3 +160,175 @@ def test_private_primary_api_migration_has_single_burn_and_no_seeded_approval():
     assert "PRIMARY_RELEASE_CONTROLLER_PRIVILEGE_LEAK" in sql
     assert "commitId" not in sql  # provider interaction belongs outside PostgreSQL
     assert "insert into wow_release_control.primary_api_release_identity" not in sql
+
+
+
+def test_primary_api_fence_disposable_postgres_two_connections_and_db_rights():
+    """CI-only PostgreSQL lease, project proof and interrupted POST tests.
+
+    The entire fixture uses the temporary wow-engine-verify database. It
+    never reads or modifies a production Supabase project.
+    """
+    import os
+
+    if os.environ.get("GITHUB_WORKFLOW") != "wow-engine-verify":
+        pytest.skip("Requires disposable wow-engine-verify PostgreSQL")
+    import psycopg
+
+    dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+    ddl = (
+        Path(__file__).resolve().parent /
+        "v17/sql/primary_api_single_post_release_fence.sql"
+    ).read_text()
+    conn1 = psycopg.connect(dsn, connect_timeout=5, autocommit=False)
+    conn2 = psycopg.connect(dsn, connect_timeout=5, autocommit=False)
+    try:
+        with conn1.cursor() as cur:
+            cur.execute(
+                "DO $roles$ BEGIN "
+                "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='anon') "
+                "THEN CREATE ROLE anon NOLOGIN; END IF; "
+                "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='authenticated') "
+                "THEN CREATE ROLE authenticated NOLOGIN; END IF; "
+                "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='wow_primary_release_controller') "
+                "THEN CREATE ROLE wow_primary_release_controller LOGIN NOSUPERUSER NOBYPASSRLS; END IF; "
+                "END $roles$;"
+            )
+            cur.execute("CREATE SCHEMA IF NOT EXISTS wow_release_control")
+            cur.execute(
+                "CREATE TABLE wow_release_control.release_control_project_anchor "
+                "(singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),"
+                "expected_project_ref text NOT NULL,certified_by text NOT NULL,"
+                "certified_at timestamptz NOT NULL)"
+            )
+            cur.execute(ddl, prepare=False)
+            # Missing DBA approval MUST fail before any POST reservation is made.
+            cur.execute("SET LOCAL ROLE wow_primary_release_controller")
+            cur.execute("SAVEPOINT missing_approval")
+            try:
+                cur.execute(
+                    "SELECT wow_release_control.reserve_primary_api_post(%s,%s,%s)",
+                    (PRIMARY_SERVICE, "a" * 40, "ci-before-dba"),
+                )
+            except psycopg.errors.RaiseException as exc:
+                assert "PRIMARY_RELEASE_DBA_AUTHORIZATION_MISSING" in str(exc)
+                cur.execute("ROLLBACK TO SAVEPOINT missing_approval")
+            else:
+                raise AssertionError("DBA-unapproved primary deployment authorized")
+            cur.execute("RESET ROLE")
+            cur.execute(
+                "INSERT INTO wow_release_control.release_control_project_anchor "
+                "(singleton,expected_project_ref,certified_by,certified_at) "
+                "VALUES(true,%s,'CI-DBA',now())",
+                ("a" * 20,),
+            )
+            cur.execute(
+                "INSERT INTO wow_release_control.primary_api_release_identity "
+                "(singleton,project_ref,service_id,authorized,approved_by,approved_at) "
+                "VALUES(true,%s,%s,true,'CI-DBA',now())",
+                ("b" * 20, PRIMARY_SERVICE),
+            )
+            cur.execute("SET LOCAL ROLE wow_primary_release_controller")
+            cur.execute("SAVEPOINT wrong_project")
+            try:
+                cur.execute(
+                    "SELECT wow_release_control.reserve_primary_api_post(%s,%s,%s)",
+                    (PRIMARY_SERVICE, "a" * 40, "ci-wrong-project"),
+                )
+            except psycopg.errors.RaiseException as exc:
+                assert "PRIMARY_RELEASE_DBA_AUTHORIZATION_MISSING" in str(exc)
+                cur.execute("ROLLBACK TO SAVEPOINT wrong_project")
+            else:
+                raise AssertionError("Wrong-project anchor authorized deployment")
+            for name in ("primary_api_release_identity", "release_control_project_anchor"):
+                cur.execute("SAVEPOINT privileged_update")
+                try:
+                    cur.execute(
+                        f"UPDATE wow_release_control.{name} SET singleton=true"
+                    )
+                except psycopg.errors.InsufficientPrivilege:
+                    cur.execute("ROLLBACK TO SAVEPOINT privileged_update")
+                else:
+                    raise AssertionError(f"Controller may UPDATE {name}")
+            cur.execute("RESET ROLE")
+            cur.execute(
+                "UPDATE wow_release_control.primary_api_release_identity "
+                "SET project_ref=%s WHERE singleton=true",
+                ("a" * 20,),
+            )
+        conn1.commit()
+
+        # Start a reservation but retain the transaction's per-service lock.
+        with conn1.cursor() as cur:
+            cur.execute("SET LOCAL ROLE wow_primary_release_controller")
+            cur.execute(
+                "SELECT wow_release_control.reserve_primary_api_post(%s,%s,%s)",
+                (PRIMARY_SERVICE, "a" * 40, "ci-once"),
+            )
+            assert cur.fetchone() == ("PRIMARY_RELEASE_POST_AUTHORIZED_ONCE",)
+
+        with conn2.cursor() as cur:
+            cur.execute("SET LOCAL ROLE wow_primary_release_controller")
+            cur.execute("SET LOCAL lock_timeout='350ms'")
+            try:
+                cur.execute(
+                    "SELECT wow_release_control.reserve_primary_api_post(%s,%s,%s)",
+                    (PRIMARY_SERVICE, "b" * 40, "ci-contender"),
+                )
+            except psycopg.errors.LockNotAvailable:
+                pass
+            else:
+                raise AssertionError("Competing SHA bypassed transaction lock")
+        conn2.rollback()
+        conn1.commit()
+
+        # Durable burnt token rejects both same-SHA replay and another SHA.
+        with conn2.cursor() as cur:
+            cur.execute("SET LOCAL ROLE wow_primary_release_controller")
+            for commit, owner in (("a" * 40, "ci-once"), ("b" * 40, "ci-contender")):
+                cur.execute("SAVEPOINT duplicate_post")
+                try:
+                    cur.execute(
+                        "SELECT wow_release_control.reserve_primary_api_post(%s,%s,%s)",
+                        (PRIMARY_SERVICE, commit, owner),
+                    )
+                except psycopg.errors.RaiseException as exc:
+                    assert "PRIMARY_RELEASE_POST_ALREADY_RESERVED_RECONCILE_ONLY" in str(exc)
+                    cur.execute("ROLLBACK TO SAVEPOINT duplicate_post")
+                else:
+                    raise AssertionError("Second Render POST was authorized")
+        conn2.rollback()
+
+        with conn1.cursor() as cur:
+            cur.execute(
+                "SELECT target_sha,state,can_execute FROM "
+                "wow_release_control.primary_api_deploy_intents "
+                "WHERE service_id=%s",
+                (PRIMARY_SERVICE,),
+            )
+            assert cur.fetchone() == ("a" * 40, "POST_UNCERTAIN", False)
+            cur.execute(
+                "UPDATE wow_release_control.primary_api_release_identity "
+                "SET authorized=false WHERE singleton=true"
+            )
+        conn1.commit()
+        with conn2.cursor() as cur:
+            cur.execute("SET LOCAL ROLE wow_primary_release_controller")
+            cur.execute("SAVEPOINT revoked")
+            try:
+                cur.execute(
+                    "SELECT wow_release_control.observe_primary_api_deploy("
+                    "%s,%s,%s,%s,%s,%s)",
+                    (PRIMARY_SERVICE,"a" * 40,"ci-once","dep-ci123","a" * 40,True),
+                )
+            except psycopg.errors.RaiseException as exc:
+                assert "PRIMARY_RELEASE_DBA_AUTHORIZATION_MISSING" in str(exc)
+                cur.execute("ROLLBACK TO SAVEPOINT revoked")
+            else:
+                raise AssertionError("Revoked DBA authorization approved readback")
+        conn2.rollback()
+    finally:
+        conn1.rollback()
+        conn2.rollback()
+        conn1.close()
+        conn2.close()
