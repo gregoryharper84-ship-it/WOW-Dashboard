@@ -452,3 +452,39 @@ jobs:
               raise SystemExit(1)
           raise RuntimeError(f"RENDER_DEPLOY_RECEIPT_STATUS_UNRECOGNIZED:{status or 'MISSING'}")
           PY
+
+  deploy-background-worker:
+    name: Deploy independently attested exact SHA to wow-agent-worker
+    needs: [deploy-production]
+    if: needs.deploy-production.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      GH_API_TOKEN: ${{ github.token }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      WOW_RELEASE_CONTROL_DSN: ${{ secrets.WOW_RELEASE_CONTROL_DSN }}
+      WOW_RELEASE_CONTROL_PROJECT_REF: ${{ vars.WOW_RELEASE_CONTROL_PROJECT_REF }}
+      PRIMARY_RELEASE_RESULT: ${{ needs.deploy-production.result }}
+      TARGET_MAIN_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Checkout exact protected release code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Prepare restricted worker release adapter
+        shell: bash
+        run: |
+          if [ -z "$WOW_RELEASE_CONTROL_DSN" ]; then
+            echo "WORKER_RELEASE_CONTROL_DSN_NOT_PROVISIONED"
+            exit 1
+          fi
+          if ! [[ "${WOW_RELEASE_CONTROL_PROJECT_REF:-}" =~ ^[a-z]{20}$ ]]; then
+            echo "WORKER_RELEASE_PROJECT_IDENTITY_UNCONFIGURED"
+            exit 1
+          fi
+          python -m pip install 'psycopg[binary]==3.2.10'
+      - name: Render worker handoff with separate exact-SHA receipt
+        run: python artifacts/wow-engine/v17/render_worker_release_handoff.py
