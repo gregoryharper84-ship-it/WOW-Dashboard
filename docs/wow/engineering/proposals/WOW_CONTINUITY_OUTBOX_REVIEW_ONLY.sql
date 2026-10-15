@@ -8,6 +8,15 @@
 -- public.wow_engineering_check_writer_lease(bigint,text,bigint) exists,
 -- SECURITY INVOKER, EXECUTE service_role only.
 --
+-- PRIVILEGED MIGRATION WARNING: security-definer RPCs MUST be owned by a
+-- verified narrow migration role with no unrestricted search_path resolution.
+-- Public/anon/authenticated have no table DML or RPC EXECUTE; service_role
+-- can invoke only the fenced RPCs and has NO DIRECT OUTBOX TABLE DML.
+-- This reduces but does NOT eliminate danger of a broad service_role credential;
+-- production must use the separately approved trusted host/runtime boundary.
+-- A DBA must review existing grants, owner identities, and SECURITY DEFINER
+-- eligibility; this file is NOT automatically installable.
+--
 -- This outbox prevents duplicate external dispatch after restart/uncertain ACK.
 -- It deliberately cannot auto-release an ambiguous dispatch. Reconciliation
 -- requires a separate independent authenticated GitHub workflow-run proof.
@@ -48,7 +57,12 @@ on public.wow_engineering_continuity_outbox (incident_id)
 where state <> 'PREARM_ABORTED';
 alter table public.wow_engineering_continuity_outbox enable row level security;
 revoke all on public.wow_engineering_continuity_outbox from public, anon, authenticated;
-grant select, insert, update on public.wow_engineering_continuity_outbox to service_role;
+-- Deliberately DO NOT grant service_role direct table DML.
+-- RPCs run as an independently reviewed, restricted function owner.
+-- Direct INSERT/UPDATE would bypass atomic states even with RLS enabled
+-- because Supabase service_role has BYPASSRLS. Security-definer ownership
+-- and execution grants MUST be certified by the DB administrator before use.
+revoke all on public.wow_engineering_continuity_outbox from service_role;
 
 -- Always acquire the independent writer lease in the trusted worker first.
 -- INSERT conflict serialization is server-owned (never SELECT -> then INSERT).
@@ -59,6 +73,7 @@ create or replace function public.wow_engineering_continuity_outbox_reserve(
   p_pr_number bigint, p_pr_head_sha text, p_owner_id text, p_epoch bigint
 ) returns jsonb
 language plpgsql
+security definer
 set search_path = pg_catalog, public
 as $$
 declare row_record public.wow_engineering_continuity_outbox%rowtype;
@@ -111,6 +126,7 @@ create or replace function public.wow_engineering_continuity_outbox_abort(
   p_reason text
 ) returns boolean
 language plpgsql
+security definer
 set search_path = pg_catalog, public
 as $$
 begin
@@ -143,6 +159,7 @@ create or replace function public.wow_engineering_continuity_outbox_reclaim(
   p_new_owner_id text, p_new_epoch bigint
 ) returns boolean
 language plpgsql
+security definer
 set search_path = pg_catalog, public
 as $$
 declare old_epoch bigint;
@@ -183,6 +200,7 @@ create or replace function public.wow_engineering_continuity_outbox_arm(
   p_incident_id bigint, p_intent_id uuid, p_owner_id text, p_epoch bigint
 ) returns boolean
 language plpgsql
+security definer
 set search_path = pg_catalog, public
 as $$
 begin
@@ -203,6 +221,7 @@ create or replace function public.wow_engineering_continuity_outbox_mark(
   p_receipt_code text, p_run_id bigint
 ) returns boolean
 language plpgsql
+security definer
 set search_path = pg_catalog, public
 as $$
 begin
