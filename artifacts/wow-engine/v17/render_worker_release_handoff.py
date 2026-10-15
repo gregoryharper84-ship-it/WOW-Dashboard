@@ -135,7 +135,11 @@ def run():
         fence_owner = os.environ["GITHUB_RUN_ID"]
         deploy_id = handoff.deploy_id
     else:
-        deploy_id = str((deploy or {}).get("id") or "")
+        # Provider observation is not release authority. An existing exact-SHA
+        # deployment may have been created by another actor or previous run;
+        # without a currently fenced DB intent this runner must not certify
+        # it as LIVE_VERIFIED. Independent reconciler must adopt it first.
+        raise RuntimeError("WORKER_EXISTING_DEPLOY_REQUIRES_FENCED_RECONCILIATION")
     if not deploy_id.startswith("dep-"):
         raise RuntimeError("WORKER_DEPLOY_ID_MISSING")
     until = time.monotonic() + 900
