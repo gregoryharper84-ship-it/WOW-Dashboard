@@ -58,7 +58,11 @@ SECONDARY_VENDOR_FAILURE_CODES = {
     "ODDS_PROVIDER_NON_JSON",
     # Typed 429 formerly reported as ODDS_PROVIDER_NON_JSON (#823); same eligibility.
     "ODDS_PROVIDER_HTTP_429",
+    # Vendor entitlement state (#823). Keyed on the exact reason code only, so a
+    # generic 401/403 without it stays fail-closed.
+    "DEACTIVATED_KEY",
 }
+ENTITLEMENT_FAILURE_CODES = {"DEACTIVATED_KEY"}
 
 
 def _retry_attempts() -> int:
@@ -256,6 +260,8 @@ def install_refreshable_oidc_proxy_auth() -> None:
             "tertiary_http_status": tertiary.status,
             "primary_reason_code": final.code,
             "primary_http_status": final.status,
+            "secondary_entitlement_failure": str(secondary.code or "") in ENTITLEMENT_FAILURE_CODES,
+            "primary_entitlement_failure": str(final.code or "") in ENTITLEMENT_FAILURE_CODES,
         }
         return scout.FetchResult(
             False,
