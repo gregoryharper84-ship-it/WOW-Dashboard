@@ -429,6 +429,7 @@ jobs:
       GH_API_TOKEN: ${{ github.token }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       WOW_RELEASE_CONTROL_DSN: ${{ secrets.WOW_RELEASE_CONTROL_DSN }}
+      WOW_RELEASE_CONTROL_PROJECT_REF: ${{ vars.WOW_RELEASE_CONTROL_PROJECT_REF }}
       PRIMARY_RELEASE_RESULT: ${{ needs.deploy-production.result }}
       TARGET_MAIN_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
     steps:
@@ -442,6 +443,10 @@ jobs:
         run: |
           if [ -z "$WOW_RELEASE_CONTROL_DSN" ]; then
             echo "WORKER_RELEASE_CONTROL_DSN_NOT_PROVISIONED"
+            exit 1
+          fi
+          if ! [[ "${WOW_RELEASE_CONTROL_PROJECT_REF:-}" =~ ^[a-z]{20}$ ]]; then
+            echo "WORKER_RELEASE_PROJECT_IDENTITY_UNCONFIGURED"
             exit 1
           fi
           python -m pip install 'psycopg[binary]==3.2.10'
