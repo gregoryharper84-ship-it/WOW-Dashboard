@@ -50,6 +50,7 @@ class Outcome:
 
 class OutboxStore(Protocol):
     def reserve(self, proposal: Proposal) -> tuple[str, Reservation | None]: ...
+    def abort_unarmed(self, reservation: Reservation, reason: str) -> bool: ...
     def arm_once(self, reservation: Reservation) -> bool: ...
     def mark_result(self, reservation: Reservation, code: str,
                     workflow_run_id: int | None) -> bool: ...
@@ -60,6 +61,8 @@ class WorkflowSender(Protocol):
 
 
 def _valid_proposal(p: Proposal) -> bool:
+    if not isinstance(p, Proposal) or not isinstance(p.action, str):
+        return False
     if type(p.incident) is not int or p.incident <= 0 or not isinstance(p.main_sha, str):
         return False
     if not _SHA.fullmatch(p.main_sha) or p.action not in _ACTIONS:
@@ -71,7 +74,9 @@ def _valid_proposal(p: Proposal) -> bool:
 
 
 def _valid_reservation(r: Reservation, p: Proposal) -> bool:
-    return (r.incident == p.incident and r.main_sha == p.main_sha
+    return (type(r.incident) is int and r.incident == p.incident
+            and (r.pr_number is None or type(r.pr_number) is int)
+            and r.main_sha == p.main_sha
             and r.action == p.action and r.pr_number == p.pr_number
             and r.pr_head_sha == p.pr_head_sha and type(r.epoch) is int
             and r.epoch > 0 and isinstance(r.intent_id, str)
@@ -103,20 +108,35 @@ def dispatch_once(
         return Outcome("OUTBOX_RESERVATION_UNVERIFIED")
     if not _valid_reservation(reservation, proposal):
         return Outcome("OUTBOX_RESERVATION_CONTRADICTORY")
+    # Before arm there is irrefutable evidence that NO provider POST occurred.
+    # Abort such a reservation only through an exact-intent, lease-fenced DB CAS.
+    # Its immutable history remains for audit; a newer intent can then reserve.
+    def prearm_reject(reason: str) -> Outcome:
+        try:
+            if store.abort_unarmed(reservation, reason) is True:
+                return Outcome(reason)
+        except Exception:
+            pass
+        return Outcome(reason + "_RESERVATION_HELD")
+
     try:
         if current_main() != proposal.main_sha:
-            return Outcome("MAIN_CHANGED_BEFORE_DISPATCH")
+            return prearm_reject("MAIN_CHANGED_BEFORE_DISPATCH")
         if proposal.action == "REPAIR_SAME_BRANCH":
             if current_pr_head is None:
-                return Outcome("PR_HEAD_RECHECK_UNAVAILABLE")
+                return prearm_reject("PR_HEAD_RECHECK_UNAVAILABLE")
             if current_pr_head(proposal.pr_number) != proposal.pr_head_sha:
-                return Outcome("PR_CHANGED_BEFORE_DISPATCH")
+                return prearm_reject("PR_CHANGED_BEFORE_DISPATCH")
         if writer_fence(reservation) is not True:
-            return Outcome("WRITER_FENCE_UNVERIFIED")
+            return prearm_reject("WRITER_FENCE_UNVERIFIED")
+    except Exception:
+        return prearm_reject("PREARM_RECHECK_UNAVAILABLE")
+    try:
         # Database CAS: a losing concurrent controller MUST NOT send a POST.
         if store.arm_once(reservation) is not True:
             return Outcome("OUTBOX_ATTEMPT_ALREADY_ARMED")
     except Exception:
+        # Arm may have committed even when RPC response was lost. NEVER abort.
         return Outcome("OUTBOX_FENCE_OR_ARM_UNKNOWN")
     # Recheck after one-shot arm and just before the provider POST.
     # After a failed recheck the armed intent remains held for reconciliation;
