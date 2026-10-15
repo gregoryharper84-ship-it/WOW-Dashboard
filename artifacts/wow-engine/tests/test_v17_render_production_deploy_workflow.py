@@ -56,7 +56,7 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "RENDER_DEPLOY_WRONG_SHA" in text
     assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
-    assert "deploy_deadline = time.time() + 900" in text
+    assert "deploy_deadline = time.time() + 5400" in text
     assert "time.sleep(10)" in text
 
 
