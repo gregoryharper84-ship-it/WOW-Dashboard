@@ -59,13 +59,14 @@ class Sender:
         return self.run_id
 
 
-def cycle(p=P, *, store=None, sender=None, fence=None, main=None):
+def cycle(p=P, *, store=None, sender=None, fence=None, main=None, pr_head=None):
     store = store or SharedAtomicStore()
     sender = sender or Sender()
     return dispatch_once(
         p, store, sender,
         writer_fence=fence if fence is not None else lambda r: True,
-        current_main=main if main is not None else lambda: SHA
+        current_main=main if main is not None else lambda: SHA,
+        current_pr_head=pr_head
     )
 
 
@@ -175,7 +176,7 @@ def test_post_ack_mark_failure_is_not_retried():
 def test_repair_same_branch_requires_exact_pr_identity():
     db = SharedAtomicStore()
     p = Proposal(823, SHA, "REPAIR_SAME_BRANCH", pr_number=77, pr_head_sha=HEAD)
-    o = cycle(p, store=db)
+    o = cycle(p, store=db, pr_head=lambda _: HEAD)
     assert o.attempted is True
     assert db.reservation.pr_number == 77
     assert db.reservation.pr_head_sha == HEAD
@@ -198,3 +199,30 @@ def test_invalid_or_malformed_proposals_do_not_reserve():
 
 def test_boolean_run_id_is_not_valid_workflow_receipt():
     assert cycle(sender=Sender(run_id=True)).code == "ATTEMPT_AMBIGUOUS"
+
+def test_repair_head_must_be_independently_rechecked():
+    p = Proposal(823, SHA, "REPAIR_SAME_BRANCH", pr_number=77, pr_head_sha=HEAD)
+    assert cycle(p).code == "PR_HEAD_RECHECK_UNAVAILABLE"
+    assert cycle(p, pr_head=lambda _: SHA).code == "PR_CHANGED_BEFORE_DISPATCH"
+    assert cycle(p, pr_head=lambda _: HEAD).attempted is True
+
+
+def test_lease_lost_after_atomic_arm_never_calls_provider():
+    sequence = iter([True, False])
+    db, sender = SharedAtomicStore(), Sender()
+    assert cycle(store=db, sender=sender, fence=lambda _: next(sequence)).code == (
+        "FENCE_LOST_AFTER_ARM_RECONCILE"
+    )
+    assert db.armed and sender.calls == 0
+    assert cycle(store=db, sender=sender).code == (
+        "PRIOR_DISPATCH_REQUIRES_RECONCILIATION"
+    )
+
+
+def test_current_main_changes_after_arm_never_calls_provider():
+    main = iter([SHA, HEAD])
+    db, sender = SharedAtomicStore(), Sender()
+    assert cycle(store=db, sender=sender, main=lambda: next(main)).code == (
+        "MAIN_CHANGED_AFTER_ARM_RECONCILE"
+    )
+    assert db.armed and sender.calls == 0
