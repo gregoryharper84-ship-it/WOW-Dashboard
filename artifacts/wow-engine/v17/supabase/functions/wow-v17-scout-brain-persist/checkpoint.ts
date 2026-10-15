@@ -28,9 +28,11 @@ export async function checkpointedPersistence(
 ):Promise<Row> {
   const candidatesExpected=count(body.expected_candidates);
   const evidenceExpected=count(body.expected_evidence);
+  const headerHash=await digest([Object.fromEntries(Object.entries(body).filter(([key]) =>
+    !["persist_phase","chunk_index","candidates"].includes(key)))]);
   if(candidatesExpected<0||evidenceExpected<0) invalid("SCOUT_PERSIST_EXPECTED_TOTALS_INVALID");
   const totalsMatch=(s:Row)=> Number(s.expected_candidates)===candidatesExpected &&
-    Number(s.expected_evidence)===evidenceExpected;
+    Number(s.expected_evidence)===evidenceExpected && s.header_sha256===headerHash;
   if(phase==="BEGIN"){
     let next=0;
     await sql.begin(async(tx:any)=>{
@@ -45,8 +47,8 @@ export async function checkpointedPersistence(
         if(prev.length) invalid("SCOUT_PERSIST_LEGACY_PARTIAL_REQUIRES_RECONCILIATION");
         await ops.openRun(tx,id,body);
         await tx`insert into wow_scout.persist_upload_sessions
-          (research_run_id,expected_candidates,expected_evidence,can_execute)
-          values (${id},${candidatesExpected},${evidenceExpected},false)`;
+          (research_run_id,expected_candidates,expected_evidence,header_sha256,can_execute)
+          values (${id},${candidatesExpected},${evidenceExpected},${headerHash},false)`;
       }
     });
     return {ok:true,protocol_version:2,persist_phase:"BEGIN",next_chunk_index:next,can_execute:false};
