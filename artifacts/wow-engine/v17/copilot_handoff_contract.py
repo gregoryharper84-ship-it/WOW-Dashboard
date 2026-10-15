@@ -79,7 +79,7 @@ def validate_handoff(packet: Mapping[str, Any], *, repository: str, current_main
                 errors.append("UNSAFE_PATH")
             elif _protected(path):
                 errors.append("PROTECTED_PATH_REQUIRES_GOVERNED_REVIEW")
-    if change_class in {"B", "C"}:
+    if isinstance(change_class, str) and change_class in {"B", "C"}:
         errors.append("GOVERNED_CHANGE_REQUIRES_INDEPENDENT_APPROVAL")
     if errors:
         return {"decision": "HOLD", "reasons": sorted(set(errors)), "can_execute": False,
@@ -104,7 +104,7 @@ def verify_draft_pr(
     author = pr.get("user") if isinstance(pr.get("user"), dict) else {}
     if pr.get("state") != "open" or pr.get("draft") is not True or pr.get("merged") is True:
         errors.append("PR_NOT_OPEN_DRAFT")
-    if author.get("login") not in COPILOT_ACTORS:
+    if not isinstance(author.get("login"), str) or author.get("login") not in COPILOT_ACTORS:
         errors.append("PR_AUTHOR_NOT_COPILOT")
     if base.get("ref") != "main" or base.get("sha") != packet["source_main_sha"]:
         errors.append("PR_BASE_SHA_UNBOUND")
