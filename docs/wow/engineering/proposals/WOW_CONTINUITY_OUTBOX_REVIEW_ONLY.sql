@@ -17,6 +17,12 @@
 -- A DBA must review existing grants, owner identities, and SECURITY DEFINER
 -- eligibility; this file is NOT automatically installable.
 --
+-- All five state-changing RPCs lock the authoritative incident lease row
+-- FOR UPDATE before touching outbox state. Lease claim/takeover updates
+-- serialize on that same PK; a nonlocking lease-check SELECT is insufficient.
+-- All transactions must remain short and must not hold provider HTTP calls.
+-- Two-session claim/takeover-vs-arm tests are REQUIRED before migration.
+--
 -- This outbox prevents duplicate external dispatch after restart/uncertain ACK.
 -- It deliberately cannot auto-release an ambiguous dispatch. Reconciliation
 -- requires a separate independent authenticated GitHub workflow-run proof.
@@ -78,6 +84,18 @@ set search_path = pg_catalog, public
 as $$
 declare row_record public.wow_engineering_continuity_outbox%rowtype;
 begin
+  -- Lock the authoritative lease row BEFORE touching the outbox.
+  -- The installed claim/takeover RPC updates this exact incident row; row
+  -- locking serializes lease takeover with the outbox CAS in ONE transaction.
+  -- A nonlocking SELECT EXISTS lease check alone is a TOCTOU hazard.
+  perform 1 from public.wow_engineering_incident_writer_leases as lease
+  where lease.incident_id=p_incident_id
+    and lease.owner_id=p_owner_id
+    and lease.epoch=p_epoch
+    and lease.state='HELD'
+    and lease.expires_at > clock_timestamp()
+  for update;
+  if not found then return jsonb_build_object('status','LEASE_NOT_VERIFIED'); end if;
   if p_intent_id is null or p_incident_id is null or p_incident_id <= 0
     or p_main_sha is null or p_main_sha !~ '^[0-9a-f]{40}$'
     or p_action is null or p_owner_id is null
@@ -130,6 +148,18 @@ security definer
 set search_path = pg_catalog, public
 as $$
 begin
+  -- Lock the authoritative lease row BEFORE touching the outbox.
+  -- The installed claim/takeover RPC updates this exact incident row; row
+  -- locking serializes lease takeover with the outbox CAS in ONE transaction.
+  -- A nonlocking SELECT EXISTS lease check alone is a TOCTOU hazard.
+  perform 1 from public.wow_engineering_incident_writer_leases as lease
+  where lease.incident_id=p_incident_id
+    and lease.owner_id=p_owner_id
+    and lease.epoch=p_epoch
+    and lease.state='HELD'
+    and lease.expires_at > clock_timestamp()
+  for update;
+  if not found then return false; end if;
   if p_reason is null or p_reason not in (
       'MAIN_CHANGED_BEFORE_DISPATCH','PR_HEAD_RECHECK_UNAVAILABLE',
       'PR_CHANGED_BEFORE_DISPATCH','WRITER_FENCE_UNVERIFIED',
@@ -164,6 +194,18 @@ set search_path = pg_catalog, public
 as $$
 declare old_epoch bigint;
 begin
+  -- Lock the authoritative lease row BEFORE touching the outbox.
+  -- The installed claim/takeover RPC updates this exact incident row; row
+  -- locking serializes lease takeover with the outbox CAS in ONE transaction.
+  -- A nonlocking SELECT EXISTS lease check alone is a TOCTOU hazard.
+  perform 1 from public.wow_engineering_incident_writer_leases as lease
+  where lease.incident_id=p_incident_id
+    and lease.owner_id=p_new_owner_id
+    and lease.epoch=p_new_epoch
+    and lease.state='HELD'
+    and lease.expires_at > clock_timestamp()
+  for update;
+  if not found then return false; end if;
   if p_old_intent_id is null
       or p_new_epoch is null or p_new_epoch <= 1
       or coalesce(public.wow_engineering_check_writer_lease(
@@ -204,6 +246,18 @@ security definer
 set search_path = pg_catalog, public
 as $$
 begin
+  -- Lock the authoritative lease row BEFORE touching the outbox.
+  -- The installed claim/takeover RPC updates this exact incident row; row
+  -- locking serializes lease takeover with the outbox CAS in ONE transaction.
+  -- A nonlocking SELECT EXISTS lease check alone is a TOCTOU hazard.
+  perform 1 from public.wow_engineering_incident_writer_leases as lease
+  where lease.incident_id=p_incident_id
+    and lease.owner_id=p_owner_id
+    and lease.epoch=p_epoch
+    and lease.state='HELD'
+    and lease.expires_at > clock_timestamp()
+  for update;
+  if not found then return false; end if;
   if coalesce(public.wow_engineering_check_writer_lease(
      p_incident_id,p_owner_id,p_epoch
   ),false) is not true then return false; end if;
@@ -225,6 +279,18 @@ security definer
 set search_path = pg_catalog, public
 as $$
 begin
+  -- Lock the authoritative lease row BEFORE touching the outbox.
+  -- The installed claim/takeover RPC updates this exact incident row; row
+  -- locking serializes lease takeover with the outbox CAS in ONE transaction.
+  -- A nonlocking SELECT EXISTS lease check alone is a TOCTOU hazard.
+  perform 1 from public.wow_engineering_incident_writer_leases as lease
+  where lease.incident_id=p_incident_id
+    and lease.owner_id=p_owner_id
+    and lease.epoch=p_epoch
+    and lease.state='HELD'
+    and lease.expires_at > clock_timestamp()
+  for update;
+  if not found then return false; end if;
   if p_receipt_code is null
       or p_receipt_code not in ('ATTEMPT_ACK_UNCORRELATED',
        'ATTEMPT_ACK_CORRELATED_UNVERIFIED','ATTEMPT_AMBIGUOUS')
