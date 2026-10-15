@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any, Iterable
@@ -271,6 +272,32 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
             blockers.append("FAIL_GOVERNED_SCORING:NO_VALID_GOVERNED_ROW_OR_PROVEN_EMPTY_SLATE")
         if receipt.get("probability_source") != "GOVERNED_FITTED_SPECIALIST":
             blockers.append("FAIL_GOVERNANCE:FITTED_SPECIALIST_PROVENANCE_NOT_VERIFIED")
+        rows = receipt.get("governed_row_receipts")
+        if not isinstance(rows, list) or len(rows) != governed_rows:
+            blockers.append("FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPTS_MISSING")
+        else:
+            for row in rows:
+                if not isinstance(row, dict):
+                    blockers.append("FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPT_INVALID")
+                    continue
+                p = row.get("calibrated_probability")
+                lb = row.get("calibrated_probability_lower_bound")
+                valid_numbers = (
+                    type(p) in (float, int) and type(lb) in (float, int) and
+                    math.isfinite(p) and math.isfinite(lb) and
+                    0 <= lb <= p <= 1
+                )
+                if not (
+                    nonempty(row.get("prediction_id")) and
+                    nonempty(row.get("controlling_specialist")) and
+                    nonempty(row.get("model_artifact_checksum")) and
+                    row.get("terminal_authority") == TERMINAL_AUTHORITY and
+                    row.get("calibration_status") == "PASS" and
+                    row.get("probability_publishable") is True and
+                    row.get("can_execute") is False and
+                    valid_numbers
+                ):
+                    blockers.append("FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPT_INVALID")
 
     # CI, backend HTTP-200 and workflow success are never PASS evidence.
     # The first typed boundary remains the reported status.
