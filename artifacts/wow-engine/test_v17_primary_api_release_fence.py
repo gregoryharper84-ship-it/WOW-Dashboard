@@ -163,6 +163,8 @@ def test_private_primary_api_migration_has_single_burn_and_no_seeded_approval():
     assert "PRIMARY_RELEASE_POST_ALREADY_RESERVED_RECONCILE_ONLY" in sql
     assert "for share of ident,anchor" in sql
     assert "PRIMARY_RELEASE_CONTROLLER_PRIVILEGE_LEAK" in sql
+    assert "PRIMARY_RELEASE_FUNCTION_OWNER_PRIVILEGE_LEAK" in sql
+    assert "PRIMARY_RELEASE_CONTROLLER_SCHEMA_PRIVILEGE_LEAK" in sql
     assert "commitId" not in sql  # provider interaction belongs outside PostgreSQL
     assert "insert into wow_release_control.primary_api_release_identity" not in sql
 
@@ -405,3 +407,51 @@ def test_dba_revoked_after_reservation_prevents_network_post():
             service_id=PRIMARY_SERVICE, sha="a" * 40, run_id="ci-revoked",
         )
     assert not calls, "Revocation after reserve must never allow a second attempt"
+
+
+
+def test_primary_api_inherited_schema_create_fails_release_admission():
+    """CI-only: prior ACLs and inherited DDL permission cannot escape private root."""
+    import os
+
+    if os.environ.get("GITHUB_WORKFLOW") != "wow-engine-verify":
+        pytest.skip("Requires isolated PostgreSQL service")
+    import psycopg
+
+    ddl = (Path(__file__).resolve().parent /
+           "v17/sql/primary_api_single_post_release_fence.sql").read_text()
+    dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+    with psycopg.connect(dsn, connect_timeout=5, autocommit=False) as conn:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DO $roles$ BEGIN "
+                    "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='anon') "
+                    "THEN CREATE ROLE anon NOLOGIN; END IF; "
+                    "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='authenticated') "
+                    "THEN CREATE ROLE authenticated NOLOGIN; END IF; "
+                    "IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='wow_primary_release_controller') "
+                    "THEN CREATE ROLE wow_primary_release_controller LOGIN NOSUPERUSER NOBYPASSRLS; END IF; "
+                    "END $roles$;"
+                )
+                cur.execute("CREATE SCHEMA IF NOT EXISTS wow_release_control")
+                cur.execute(
+                    "CREATE TABLE wow_release_control.release_control_project_anchor "
+                    "(singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),"
+                    "expected_project_ref text NOT NULL,certified_by text NOT NULL,"
+                    "certified_at timestamptz NOT NULL)"
+                )
+                cur.execute(ddl, prepare=False)
+                cur.execute("CREATE ROLE wow_ci_primary_inherited NOLOGIN")
+                cur.execute("GRANT CREATE ON SCHEMA wow_release_control TO wow_ci_primary_inherited")
+                cur.execute("GRANT wow_ci_primary_inherited TO wow_primary_release_controller")
+                cur.execute("SAVEPOINT inherited_schema_admission")
+                try:
+                    cur.execute(ddl, prepare=False)
+                except psycopg.errors.RaiseException as exc:
+                    assert "PRIMARY_RELEASE_CONTROLLER_SCHEMA_PRIVILEGE_LEAK" in str(exc)
+                    cur.execute("ROLLBACK TO SAVEPOINT inherited_schema_admission")
+                else:
+                    raise AssertionError("Inherited primary API schema CREATE was admitted")
+        finally:
+            conn.rollback()
