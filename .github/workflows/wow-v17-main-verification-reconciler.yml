@@ -36,6 +36,27 @@ jobs:
           verdict=$(jq -r --arg sha "$main_sha" '[.[] | select(.head_sha == $sha and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$runs")
           if [ "$verdict" != MISSING ]; then
             echo "EXACT_MAIN_VERIFY_PRESENT:$verdict"
+            # A completed green verifier is not a deployed release. Do not
+            # report reconciler success if the governed release handoff is
+            # missing or has failed. This watchdog cannot trigger deployment.
+            if [ "$verdict" != "completed|success" ]; then
+              echo "EXACT_MAIN_VERIFY_NON_GREEN_NO_RELEASE_INFERENCE:$verdict"
+              exit 0
+            fi
+            if ! releases=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/wow-v17-render-production-deploy.yml/runs?per_page=100" --jq '.workflow_runs'); then
+              echo "::error::EXACT_MAIN_RELEASE_HANDOFF_EVIDENCE_UNAVAILABLE"
+              exit 1
+            fi
+            release_verdict=$(jq -r --arg sha "$main_sha" '[.[] | select(.head_sha == $sha and (.event == "workflow_run" or .event == "workflow_dispatch"))] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$releases")
+            if [ "$release_verdict" = MISSING ]; then
+              echo "::error::EXACT_MAIN_RELEASE_HANDOFF_MISSING:$main_sha"
+              exit 1
+            fi
+            case "$release_verdict" in
+              completed\|success) echo "EXACT_MAIN_RELEASE_HANDOFF_COMPLETED:success" ;;
+              completed\|*) echo "::error::EXACT_MAIN_RELEASE_HANDOFF_FAILED:$release_verdict"; exit 1 ;;
+              *) echo "EXACT_MAIN_RELEASE_HANDOFF_PENDING:$release_verdict" ;;
+            esac
             exit 0
           fi
           # Refuse to act against a superseded main commit.
