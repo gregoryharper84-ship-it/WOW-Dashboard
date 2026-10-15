@@ -151,3 +151,14 @@ def test_nonmatching_artifact_object_type_not_accepted():
     source = Evidence(artifact={"incident": 823, "intent_id": UUID})
     r, _ = check(source=source)
     assert r.code == "RECONCILE_ARTIFACT_INVALID"
+
+
+def test_boolean_coercion_cannot_fake_run_or_artifact_id():
+    one = replace(INTENT, workflow_run_id=1)
+    run = replace(RUN, run_id=True)
+    artifact = replace(ART, workflow_run_id=True)
+    r, _ = check(intent=one, source=Evidence(run=run, artifact=artifact))
+    assert r.code == "RECONCILE_RUN_PROVENANCE_MISMATCH"
+    run = replace(RUN, run_id=1)
+    r, _ = check(intent=one, source=Evidence(run=run, artifact=artifact))
+    assert r.code == "RECONCILE_ARTIFACT_IDENTITY_MISMATCH"
