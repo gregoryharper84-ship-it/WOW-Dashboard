@@ -134,6 +134,23 @@ class ContractTests(unittest.TestCase):
         self.assertIn("UNTRUSTED_SOURCE_MATERIAL_START", observed["contents"])
         self.assertEqual(observed["model"], "gemini-test-model")
 
+    def test_provider_valueerror_is_provider_failure_not_model_output(self):
+        fake_google = types.ModuleType("google")
+        fake_genai = types.ModuleType("google.genai")
+        fake_genai.types = SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+        fake_google.genai = fake_genai
+
+        def failing_provider(**kwargs):
+            raise ValueError("temporary provider service exception")
+
+        client = SimpleNamespace(
+            models=SimpleNamespace(generate_content=failing_provider))
+        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}):
+            result = analyze(self.task, model="gemini-test-model", client=client)
+        self.assertEqual(result.outcome, "BLOCKED")
+        self.assertEqual(result.blocker, "PROVIDER_CALL_FAILED_OR_OUTPUT_INVALID")
+        self.assertFalse(result.can_execute)
+
     def test_invalid_provider_output_is_blocked(self):
         fake_google = types.ModuleType("google")
         fake_genai = types.ModuleType("google.genai")
