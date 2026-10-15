@@ -118,6 +118,28 @@ NON_PROVIDER_MARKERS = (
     "yaml",
 )
 
+# Actions --log-failed includes echoed shell source; a harmless quoted
+# "quota exceeded" string is not an actual exhausted account. Only a
+# runtime error line, structured API error, or standalone provider code
+# can trip the persistent quota breaker.
+RUNTIME_QUOTA_RE = re.compile(
+    r"(?im)^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\\s]+\\s+)?"
+    r"(?:ERROR(?: code)?:|##\\[error\\]|::error::)"
+    r"[^\\n]*(?:quota exceeded|insufficient_quota|check your plan and billing details)"
+)
+
+
+def _quota_evidence(log_text: str) -> bool:
+    value = str(log_text or "")
+    if RUNTIME_QUOTA_RE.search(value):
+        return True
+    if re.search(r"(?im)^\\s*(?:insufficient_quota|quota exceeded)\\s*$", value):
+        return True
+    return bool(re.search(
+        r'(?im)^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\\s]+\\s+)?\\{[^\\n]*'
+        r'"error"[^\\n]*"insufficient_quota"', value
+    ))
+
 
 @dataclass(frozen=True)
 class ProviderFailure:
@@ -156,7 +178,11 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
         else ()
     )
     provider_code = next(
-        (code for code, needles in patterns if any(needle in text for needle in needles)),
+        (
+            code for code, needles in patterns
+            if any(needle in text for needle in needles)
+            and (code != "OPENAI_API_QUOTA_EXCEEDED" or _quota_evidence(log_text))
+        ),
         None,
     )
     delivery = DELIVERY_ERROR_RE.search(str(log_text or ""))
@@ -184,7 +210,8 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
         )
 
     for code, needles in patterns:
-        if any(needle in text for needle in needles):
+        if (any(needle in text for needle in needles)
+                and (code != "OPENAI_API_QUOTA_EXCEEDED" or _quota_evidence(log_text))):
             eligible = code in OPENAI_FAILOVER_ELIGIBLE
             persistent = code in OPENAI_RECOVERY_REQUIRED or code == "ANTHROPIC_API_CREDIT_EXHAUSTED"
             cooldown = -1 if persistent else 120 if eligible else 0
