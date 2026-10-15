@@ -209,5 +209,18 @@ begin
        'wow_release_control.assert_primary_api_authority()'::regprocedure,
        'EXECUTE')
   then raise exception 'PRIMARY_RELEASE_INTERNAL_GUARD_EXPOSED'; end if;
+  if exists (
+    select 1 from pg_catalog.pg_proc p
+    join pg_catalog.pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='wow_release_control'
+      and p.proname in ('assert_primary_api_authority',
+                       'reserve_primary_api_post',
+                       'authorize_primary_api_post_io',
+                       'observe_primary_api_deploy')
+      and pg_catalog.pg_has_role('wow_primary_release_controller',
+                                 p.proowner,'MEMBER')
+  ) then
+    raise exception 'PRIMARY_RELEASE_FUNCTION_OWNER_PRIVILEGE_LEAK';
+  end if;
 end;
 $acl_gate$;
