@@ -379,3 +379,51 @@ def test_existing_provider_deploy_cannot_forge_fenced_live_receipt(monkeypatch, 
         module.run()
     assert not any(method == "POST" for method, _ in calls)
     assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
+
+
+def test_main_move_during_render_live_read_prevents_durable_adoption(monkeypatch, tmp_path):
+    """Provider LIVE is not authority if main advances during Render polling."""
+    import types
+    from render_worker_governed_initiator import Handoff
+
+    sha, next_sha = "a" * 40, "b" * 40
+    observations = []
+    main_moved = {"value": False}
+    class Connection:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(
+        connect=lambda *args, **kwargs: Connection()
+    ))
+    monkeypatch.setattr(module, "attest_release_control_identity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "initiate_once", lambda **kwargs: Handoff("DEPLOYING", "dep-receipt", 7))
+    monkeypatch.setattr(module, "record_committed", lambda **kwargs:
+                        observations.append("unsafe-live-commit"))
+    monkeypatch.setattr(module.time, "monotonic", lambda: 0)
+
+    def request(url, token, method="GET", payload=None):
+        assert method == "GET", "No Render POST in this read-only reconciliation test"
+        if url.endswith("/branches/main"):
+            return {"commit": {"sha": next_sha if main_moved["value"] else sha}}
+        if "/deploys?" in url:
+            observations.append("provider-read")
+            if observations.count("provider-read") == 1:
+                return []
+            main_moved["value"] = True
+            return [{"deploy": {"id": "dep-receipt", "commit": {"id": sha}, "status": "live"}}]
+        raise AssertionError(url)
+
+    monkeypatch.setattr(module, "request_json", request)
+    for name, value in {
+        "GH_API_TOKEN": "ci", "RENDER_API_KEY": "ci",
+        "GITHUB_REPOSITORY": "example/repo", "TARGET_MAIN_SHA": sha,
+        "PRIMARY_RELEASE_RESULT": "success", "RUNNER_TEMP": str(tmp_path),
+        "WOW_RELEASE_CONTROL_DSN": "postgresql://ci-only/mock", "GITHUB_RUN_ID": "ci-race",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(RuntimeError, match="WORKER_RELEASE_SHA_STALE_OR_INVALID"):
+        module.run()
+    assert observations.count("provider-read") == 2
+    assert "unsafe-live-commit" not in observations
+    assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
