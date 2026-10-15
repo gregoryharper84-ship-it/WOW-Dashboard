@@ -44,10 +44,11 @@ def reconcile_intent(record, deployments, expected_sha):
     if state not in {"PENDING", "INITIATING", "ACK_AMBIGUOUS", "DEPLOYING", "LIVE_VERIFIED", "HOLD"}:
         raise RuntimeError("WORKER_DEPLOY_INTENT_STATE_INVALID")
     observed, deployment = choose_deploy(deployments, expected_sha)
-    if observed == "LIVE":
-        return "LIVE_VERIFIED", deployment
-    if observed == "ACTIVE":
-        return "DEPLOYING", deployment
+    # These are provider observations, not permission to advance the
+    # database lease. A separate owner+fence-adjudicated reconciliation must
+    # persist the exact provider ID before calling anything LIVE_VERIFIED.
+    if observed in {"LIVE", "ACTIVE"}:
+        return "RECONCILIATION_REQUIRED", deployment
     if state in {"INITIATING", "ACK_AMBIGUOUS", "DEPLOYING", "LIVE_VERIFIED", "HOLD"}:
         return "RECONCILIATION_REQUIRED", None
     return "PENDING", None
