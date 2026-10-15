@@ -44,6 +44,53 @@ jobs:
           test -n "$RENDER_API_KEY"
           test -n "$WOW_RENDER_SERVICE_ID"
 
+      - name: Fail closed if restricted worker release-control database is not authorized
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success')
+        shell: bash
+        env:
+          WOW_RELEASE_CONTROL_DSN: ${{ secrets.WOW_RELEASE_CONTROL_DSN }}
+          WOW_RELEASE_CONTROL_PROJECT_REF: ${{ vars.WOW_RELEASE_CONTROL_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WOW_RELEASE_CONTROL_DSN:-}" ] || ! [[ "${WOW_RELEASE_CONTROL_PROJECT_REF:-}" =~ ^[a-z]{20}$ ]]; then
+            echo "::error::RENDER_RELEASE_CONTROL_DB_IDENTITY_NOT_CONFIGURED"
+            exit 1
+          fi
+          python -m pip install 'psycopg[binary]==3.2.10'
+          python - <<'PY'
+          import os
+          import sys
+
+          import psycopg
+
+          try:
+              with psycopg.connect(os.environ["WOW_RELEASE_CONTROL_DSN"], connect_timeout=10) as conn:
+                  with conn.cursor() as cursor:
+                      cursor.execute(
+                          "select current_user, project_ref, environment, service_id, "
+                          "authorized, approved_by, approved_at "
+                          "from wow_release_control.release_control_identity "
+                          "where singleton = true"
+                      )
+                      rows = cursor.fetchall()
+              if len(rows) != 1 or len(rows[0]) != 7:
+                  raise ValueError("UNRECOGNIZED_IDENTITY")
+              actor, project, environment, service, authorized, reviewer, approved_at = rows[0]
+              if (actor != "wow_release_controller"
+                  or project != os.environ["WOW_RELEASE_CONTROL_PROJECT_REF"]
+                  or environment != "production"
+                  or service != "srv-dapkbc0473hc73c1978g"
+                  or authorized is not True or not reviewer or approved_at is None):
+                  raise ValueError("UNAUTHORIZED_IDENTITY")
+          except Exception as exc:
+              # Never print connection strings, provider errors or private rows.
+              print(f"::error::RENDER_RELEASE_CONTROL_DB_PREFLIGHT_DENIED:{type(exc).__name__}")
+              sys.exit(1)
+          print("RENDER_RELEASE_CONTROL_DB_PREFLIGHT_PASS")
+          PY
+
       - name: Verify protected-main gates and deploy exact SHA
         shell: bash
         run: |
