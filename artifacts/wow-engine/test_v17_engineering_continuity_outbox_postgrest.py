@@ -172,7 +172,7 @@ def test_outbox_sql_is_single_nonduplicated_closed_contract():
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_mark(") == 1
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_abort(") == 1
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_reclaim(") == 1
-    assert sql.count("end $;") == 5
+    assert sql.count("end $$;") == 5
     assert "and pr_head_sha ~ '^[0-9a-f]{40}$')" in sql
     assert "and p_pr_head_sha ~ '^[0-9a-f]{40}$')" in sql
     # Never allow regex literals to be split across lines, or a duplicate
