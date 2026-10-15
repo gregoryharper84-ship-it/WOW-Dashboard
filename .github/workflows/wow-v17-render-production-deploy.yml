@@ -254,7 +254,9 @@ jobs:
           import sys
           sys.path.insert(0, os.path.abspath("artifacts/wow-engine"))
           import psycopg
-          from v17.primary_api_release_fence import PRIMARY_SERVICE, post_render_exactly_once
+          from v17.primary_api_release_fence import (
+              PRIMARY_SERVICE, post_render_exactly_once, record_authenticated_readback
+          )
           if render_service_id != PRIMARY_SERVICE:
               raise RuntimeError("PRIMARY_RELEASE_SERVICE_SCOPE_MISMATCH")
 
@@ -374,11 +376,31 @@ jobs:
               if target is not None:
                   status = str(target.get("status") or "")
                   if status == "live":
+                      # Provider GET is distinct from POST ACK; require a
+                      # durable, independently authorized DB record before
+                      # reporting live. This is NOT model/QA verification.
+                      observed_id = str(target.get("id") or "")
+                      observed_sha = commit_sha(target)
+                      if observed_id != deploy_id or observed_sha != target_sha:
+                          raise RuntimeError("PRIMARY_RELEASE_LIVE_IDENTITY_MISMATCH")
+                      with psycopg.connect(
+                          os.environ["WOW_RELEASE_CONTROL_DSN"],
+                          autocommit=True, connect_timeout=10
+                      ) as readback_db:
+                          accepted = record_authenticated_readback(
+                              readback_db, service_id=render_service_id,
+                              sha=target_sha, run_id=run_id,
+                              deploy_id=observed_id,
+                              observed_sha=observed_sha, live=True,
+                          )
+                      if accepted.get("status") != "LIVE_OBSERVED_NOT_QA_VERIFIED":
+                          raise RuntimeError("PRIMARY_RELEASE_DURABLE_LIVE_RECEIPT_MISSING")
                       emit_receipt({
                           "status":"EXACT_SHA_RENDER_DEPLOY_LIVE",
                           "commit_sha":target_sha,
-                          "deploy_id":str(target.get("id") or deploy_id),
-                          "deploy_authority":"GOVERNED_RENDER_API_HANDOFF",
+                          "deploy_id":observed_id,
+                          "deploy_authority":"DBA_FENCED_RENDER_READBACK_NOT_QA_VERIFIED",
+                          "durable_ledger_state":"LIVE_OBSERVED",
                           "required_checks":sorted(required),
                           "can_execute":False,
                       })
