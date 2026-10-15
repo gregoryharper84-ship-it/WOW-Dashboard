@@ -160,6 +160,7 @@ def test_governed_live_receipt_requires_fenced_db_commit(monkeypatch, tmp_path):
         reply = kwargs["post_deploy"]()
         assert reply["id"] == "dep-receipt"
         return Handoff("DEPLOYING", "dep-receipt", 17)
+    monkeypatch.setattr(module, "attest_release_control_identity", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "initiate_once", fake_initiate)
 
     def fake_request(url, token, method="GET", payload=None):
@@ -221,6 +222,7 @@ def test_failed_durable_live_receipt_never_reports_worker_green(monkeypatch, tmp
     monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(
         connect=lambda *args, **kwargs: Connection()
     ))
+    monkeypatch.setattr(module, "attest_release_control_identity", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "initiate_once", lambda **kwargs: Handoff("DEPLOYING", "dep-receipt", 8))
     calls = []
     def fake_request(url, token, method="GET", payload=None):
@@ -281,6 +283,7 @@ def test_worker_deploy_refuses_main_revision_move_between_claim_and_post(monkeyp
         # Existing lease claim is simulated; initiation invokes the supplied
         # safeguarded callback exactly once, just before provider creation.
         return kwargs["post_deploy"]()
+    monkeypatch.setattr(module, "attest_release_control_identity", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "initiate_once", fake_initiate)
     for key, value in {
         "GH_API_TOKEN": "test-gh", "RENDER_API_KEY": "test-render",
@@ -294,4 +297,45 @@ def test_worker_deploy_refuses_main_revision_move_between_claim_and_post(monkeyp
         module.run()
     assert len(github_reads) == 3
     assert render_posts == []
+    assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
+
+
+
+def test_missing_release_project_identity_does_not_call_render_post(monkeypatch, tmp_path):
+    """Fail closed before claim or provider POST on unconfigured DB identity."""
+    import types
+
+    sha = "a" * 40
+    class Connection:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(
+        connect=lambda *args, **kwargs: Connection()
+    ))
+    called = []
+    def disallow_initiate(**kwargs):
+        called.append("initiate")
+        raise AssertionError("never claim an unverified production DB")
+    monkeypatch.setattr(module, "initiate_once", disallow_initiate)
+    def reject_identity(connection, *, expected_project_ref):
+        assert expected_project_ref == ""
+        raise module.DeploymentLeaseError("WORKER_RELEASE_PROJECT_IDENTITY_UNCONFIGURED")
+    monkeypatch.setattr(module, "attest_release_control_identity", reject_identity)
+    def request(url, token, method="GET", payload=None):
+        if url.endswith("/branches/main"): return {"commit":{"sha":sha}}
+        if "/deploys?" in url: return []
+        if method == "POST": raise AssertionError("unsafe provider POST")
+        raise AssertionError(url)
+    monkeypatch.setattr(module, "request_json", request)
+    for key, value in {
+        "GH_API_TOKEN": "test", "RENDER_API_KEY": "test",
+        "GITHUB_REPOSITORY": "owner/repo",
+        "TARGET_MAIN_SHA": sha, "PRIMARY_RELEASE_RESULT": "success",
+        "WOW_RELEASE_CONTROL_DSN": "postgresql://ci-only/mock",
+        "RUNNER_TEMP": str(tmp_path), "GITHUB_RUN_ID": "ci-5",
+    }.items(): monkeypatch.setenv(key, value)
+    monkeypatch.delenv("WOW_RELEASE_CONTROL_PROJECT_REF", raising=False)
+    with pytest.raises(module.DeploymentLeaseError, match="PROJECT_IDENTITY_UNCONFIGURED"):
+        module.run()
+    assert called == []
     assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
