@@ -37,7 +37,7 @@ export async function checkpointedPersistence(
       await lock(tx,id);
       const sessions=await tx`select * from wow_scout.persist_upload_sessions where research_run_id=${id} for update`;
       if(sessions.length){
-        if(!totalsMatch(sessions[0])||sessions[0].upload_state!=="PERSISTING")
+        if(!totalsMatch(sessions[0])||!["PERSISTING","COMPLETE"].includes(String(sessions[0].upload_state)))
           invalid("SCOUT_PERSIST_REPLAY_CONFLICT");
         next=Number(sessions[0].next_chunk_index);
       }else{
@@ -61,9 +61,10 @@ export async function checkpointedPersistence(
       const sessions=await tx`select * from wow_scout.persist_upload_sessions where research_run_id=${id} for update`;
       if(!sessions.length) invalid("SCOUT_PERSIST_BEGIN_REQUIRED");
       const session=sessions[0];
-      if(!totalsMatch(session)||session.upload_state!=="PERSISTING") invalid("SCOUT_PERSIST_REPLAY_CONFLICT");
+      if(!totalsMatch(session)||!["PERSISTING","COMPLETE"].includes(String(session.upload_state))) invalid("SCOUT_PERSIST_REPLAY_CONFLICT");
       const next=Number(session.next_chunk_index);
       if(index>next) invalid("SCOUT_PERSIST_CHUNK_OUT_OF_ORDER");
+      if(index===next && session.upload_state==="COMPLETE") invalid("SCOUT_PERSIST_FINALIZED_APPEND_DENIED");
       if(index<next){
         const prev=await tx`select * from wow_scout.persist_chunk_receipts
           where research_run_id=${id} and chunk_index=${index}`;
