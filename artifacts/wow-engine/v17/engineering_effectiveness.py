@@ -162,8 +162,10 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
         if isinstance(value, bool):
             return None
         if isinstance(value, int):
-            return value if value >= 0 else None
-        if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+            return value if 0 <= value < 10**18 else None
+        # Bound parsing explicitly: Python 3.11+ raises ValueError on very
+        # large integer literals, which cannot become an untyped 500 response.
+        if isinstance(value, str) and re.fullmatch(r"[0-9]{1,18}", value):
             return int(value)
         return None
 
@@ -194,7 +196,7 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
         blockers.append("FAIL_ACTION_INVOCATION:ACTION_NOT_INVOKED")
     if receipt.get("action_operation_id") != operation:
         blockers.append("FAIL_ACTION_INVOCATION:CANONICAL_OPERATION_MISMATCH")
-    if receipt.get("verification_skipped") is True:
+    if receipt.get("verification_skipped") is not False:
         blockers.append("FAIL_ACTION_INVOCATION:VERIFICATION_SKIPPED")
     if receipt.get("action_receipt_status") not in (None, "PASS", "MODEL_QUALIFIED", "FINAL_APPROVED"):
         blockers.append("FAIL_ACTION_INVOCATION:ACTION_RECEIPT_INVALID")
@@ -229,7 +231,8 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(source, dict) or not (
         nonempty(source.get("source_snapshot_id")) and
         source.get("request_id") == request_id and
-        source.get("acquired_row_count") == acquired and
+        whole(source.get("acquired_row_count")) == acquired and
+        type(source.get("acquired_row_count")) in (int, str) and
         source.get("source_accounted") is True and
         source.get("freshness_verified") is True
     ):
