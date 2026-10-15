@@ -12,8 +12,11 @@ WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "wow-
 
 def _script(text=None):
     contents = WORKFLOW.read_text(encoding="utf-8") if text is None else text
+    release_step = contents.split(
+        "      - name: Verify protected-main gates and deploy exact SHA", 1
+    )[1].split("      - name: Reconcile exact Render receipt to durable deployment pointer", 1)[0]
     return textwrap.dedent(
-        contents.split("          python - <<'PY'\n", 1)[1]
+        release_step.split("          python - <<'PY'\n", 1)[1]
         .split("\n          PY", 1)[0]
     )
 
