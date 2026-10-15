@@ -166,6 +166,22 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
         self.assertEqual(route["action"], "DISPATCH")
         self.assertEqual(route["provider"], "openai")
 
+    def test_forced_claude_requires_usable_secondary_provider(self):
+        blocked = self.auto_route(
+            force_provider="anthropic", anthropic=True,
+            claude_latest_conclusion="failure",
+        )
+        self.assertEqual(blocked["action"], "SURVIVAL")
+        self.assertEqual(
+            blocked["reason"], "ANTHROPIC_AUTH_OR_RECOVERY_EVIDENCE_MISSING"
+        )
+        recovered = self.auto_route(
+            force_provider="anthropic", anthropic=True,
+            claude_latest_conclusion="success",
+        )
+        self.assertEqual(recovered["action"], "DISPATCH")
+        self.assertEqual(recovered["provider"], "anthropic")
+
     def test_configured_but_quota_exhausted_openai_key_is_not_retried(self):
         route = self.auto_route(breaker=True, openai=True, anthropic=False)
         self.assertEqual(route["action"], "SURVIVAL")
