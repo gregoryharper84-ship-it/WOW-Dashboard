@@ -1,6 +1,8 @@
 name: wow-v17-main-verification-reconciler
 
-# Recover a lost push -> wow-verify event; never deploy or approve releases.
+# Recovery for lost protected-main verification, with App-origin provenance.
+# GITHUB_TOKEN-created workflow_dispatch can run wow-verify but suppress
+# downstream workflow_run: never treat that as sufficient release handoff.
 on:
   schedule:
     - cron: "19 * * * *"
@@ -8,7 +10,7 @@ on:
 
 permissions:
   contents: read
-  actions: write
+  actions: read
 
 concurrency:
   group: wow-v17-main-verification-reconciler
@@ -16,31 +18,73 @@ concurrency:
 
 jobs:
   reconcile:
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      GH_TOKEN: ${{ github.token }}
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
-      - name: Reconcile exact-main verification workflow
+      - name: Classify exact-main verification trigger provenance (read-only)
+        id: decide
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$WOW_CAN_EXECUTE" = false
           test "$WOW_DRY_RUN_ONLY" = true
           main_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
-          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
-          # A previous failure is NOT silently retried. It requires investigation.
-          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/runs?per_page=100" --jq '.workflow_runs')
-          verdict=$(jq -r --arg sha "$main_sha" '[.[] | select(.head_sha == $sha and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$runs")
-          if [ "$verdict" != MISSING ]; then
-            echo "EXACT_MAIN_VERIFY_PRESENT:$verdict"
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::MAIN_SHA_INVALID"; exit 1; }
+          # A GitHub Actions-bot dispatch is not release-chain provenance.
+          # Include only protected-main push and verified Engineering-App dispatch.
+          history=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/runs?branch=main&per_page=100")
+          jq -e '(.workflow_runs | type == "array" and length < 100)' <<< "$history" >/dev/null || {
+            echo "::error::MAIN_VERIFY_INVENTORY_UNVERIFIABLE"; exit 1; }
+          trusted=$(jq -r --arg sha "$main_sha" '[.workflow_runs[] | select(.head_sha == $sha and (.event == "push" or (.event == "workflow_dispatch" and .actor.login == "wow-engineering[bot]")))] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$history")
+          if [ "$trusted" != MISSING ]; then
+            echo "EXACT_MAIN_TRUSTED_VERIFY_PRESENT:$trusted"
             exit 0
           fi
-          # Refuse to act against a superseded main commit.
+          # A previously failed exact-main run must not be hidden by retry.
+          legacy=$(jq -r --arg sha "$main_sha" '[.workflow_runs[] | select(.head_sha == $sha and .event == "workflow_dispatch" and .actor.login == "github-actions[bot]")] | length' <<< "$history")
+          echo "EXACT_MAIN_LEGACY_TOKEN_DISPATCHES:$legacy"
           current_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
           [ "$main_sha" = "$current_sha" ] || { echo "MAIN_SUPERSEDED_HOLD"; exit 0; }
+          echo "dispatch_sha=$main_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Mint scoped Engineering App token only for missing trusted verify
+        id: app_token
+        if: steps.decide.outputs.dispatch_sha != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+          repositories: WOW-Dashboard
+          permission-actions: write
+          permission-contents: read
+
+      - name: Dispatch protected verification under Engineering App identity
+        if: steps.decide.outputs.dispatch_sha != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          EXPECTED_SHA: ${{ steps.decide.outputs.dispatch_sha }}
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = false
+          test "$WOW_DRY_RUN_ONLY" = true
+          test -n "$GH_TOKEN"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
+          [ "$EXPECTED_SHA" = "$current_sha" ] || { echo "MAIN_SUPERSEDED_HOLD"; exit 0; }
+          # Second check protects against another App-dispatched verification
+          # becoming visible while the scoped token was minted.
+          history=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/runs?branch=main&per_page=100")
+          jq -e '(.workflow_runs | type == "array" and length < 100)' <<< "$history" >/dev/null || {
+            echo "::error::MAIN_VERIFY_INVENTORY_UNVERIFIABLE"; exit 1; }
+          observed=$(jq -r --arg sha "$EXPECTED_SHA" '[.workflow_runs[] | select(.head_sha == $sha and (.event == "push" or (.event == "workflow_dispatch" and .actor.login == "wow-engineering[bot]")))] | length' <<< "$history")
+          [ "$observed" = 0 ] || { echo "EXACT_MAIN_TRUSTED_VERIFY_ALREADY_REQUESTED"; exit 0; }
           gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/dispatches" -f ref=main
-          echo "MISSING_VERIFY_DISPATCHED_FOR_MAIN:$main_sha"
+          echo "EXACT_MAIN_APP_VERIFY_DISPATCH_REQUESTED:$EXPECTED_SHA"
           echo "CHECKS_AND_INDEPENDENT_RELEASE_PROVENANCE_STILL_REQUIRED"
