@@ -110,6 +110,29 @@ jobs:
               --log-file "$log_file"
           }
 
+          # A configured secondary key also does not prove remaining
+          # credits. Never repeatedly dispatch a known failed Claude worker.
+          # This probes only completed trusted workflow metadata, not secrets.
+          secondary_usable() {
+            [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || return 1
+            local recent latest_id latest_conclusion
+            if ! recent=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow wow-v17-claude-engineering-worker.yml \
+              --status completed --limit 1 \
+              --json databaseId,conclusion,updatedAt 2>/dev/null); then
+              return 1
+            fi
+            latest_id=$(jq -r '.[0].databaseId // empty' <<<"$recent") || return 1
+            latest_conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
+            if [ -n "$latest_id" ] && [ "$latest_conclusion" = "failure" ]; then
+              # Any unresolved latest failure (including exhausted credits)
+              # needs explicit provider recovery; do not launch in a loop.
+              return 1
+            fi
+            return 0
+          }
+
           if [ "$EVENT_NAME" = "workflow_run" ]; then
             if [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
@@ -118,8 +141,7 @@ jobs:
               code=$(jq -r '.code' <<<"$classification")
               eligible=$(jq -r '.failover_eligible' <<<"$classification")
               reason="$code"
-              if [ "$eligible" = "true" ] &&
-                 { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; }; then
+              if [ "$eligible" = "true" ] && secondary_usable; then
                 action=DISPATCH
                 provider=anthropic
               else
@@ -180,7 +202,7 @@ jobs:
               if [ "$breaker" = "true" ]; then
                 # A configured OpenAI API key is not proof of remaining quota.
                 # Never fall through to OpenAI while its circuit is active.
-                if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+                if secondary_usable; then
                   action=DISPATCH
                   provider=anthropic
                   reason="CIRCUIT_BREAKER:${breaker_code}"
@@ -200,7 +222,7 @@ jobs:
                 action=DISPATCH
                 provider=openai
                 reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
-              elif [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+              elif secondary_usable; then
                 action=DISPATCH
                 provider=anthropic
                 reason=OPENAI_API_KEY_MISSING
