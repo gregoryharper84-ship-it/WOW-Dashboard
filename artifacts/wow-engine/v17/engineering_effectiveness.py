@@ -11,7 +11,7 @@ import argparse
 import json
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -244,6 +244,23 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
     displayed_at = offset_timestamp(display.get("displayed_at")) if isinstance(display, dict) else None
     if invoked_at is None or observed_at is None or observed_at > invoked_at:
         blockers.append("FAIL_PROP_ACQUISITION:SOURCE_TIMESTAMP_NOT_ATTESTED")
+    # V17's existing cross-sport acceptance policy already bounds source
+    # inventory to six hours. The golden *current* host journey may not claim
+    # freshness from an old but correctly ordered source/Action pair.
+    now = datetime.now(timezone.utc)
+    source_age_cap = timedelta(hours=6)
+    if observed_at is not None and (
+        observed_at > now or now - observed_at > source_age_cap
+    ):
+        blockers.append("FAIL_PROP_ACQUISITION:SOURCE_STALE_OR_FUTURE")
+    if invoked_at is not None and (
+        invoked_at > now or now - invoked_at > source_age_cap
+    ):
+        blockers.append("FAIL_ACTION_INVOCATION:ACTION_STALE_OR_FUTURE")
+    if displayed_at is not None and (
+        displayed_at > now or now - displayed_at > source_age_cap
+    ):
+        blockers.append("FAIL_RESPONSE_HANDOFF:DISPLAY_STALE_OR_FUTURE")
     if displayed_at is None or invoked_at is None or displayed_at < invoked_at:
         blockers.append("FAIL_RESPONSE_HANDOFF:DISPLAY_TIMESTAMP_NOT_ATTESTED")
     if isinstance(action, dict) and isinstance(source, dict):
