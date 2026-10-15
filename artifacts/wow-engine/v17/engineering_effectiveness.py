@@ -135,14 +135,36 @@ def classify_change_impact(paths: Iterable[str]) -> dict[str, Any]:
 
 
 def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
-    """Strictly validate a production golden-user-journey receipt.
+    """Fail closed on actual Action, source, persistence and displayed receipt proof.
 
-    PASS is intentionally impossible to infer from CI, backend health, route
-    mounting, or a model registry alone. A real live-host handoff and a valid
-    governed row (or explicitly proven empty slate) are required.
+    Boolean stage summaries alone are NOT a production acceptance certificate.
+    Proof below must originate from independently checked production evidence;
+    this function validates its structure and consistency, not its issuer's
+    credentials. Only authorized QA can attest that external origin.
     """
-
     blockers: list[str] = []
+    operation = "scoreWowPickRequest"
+
+    def nonempty(value: Any) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    def whole(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value >= 0 else None
+        if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+            return int(value)
+        return None
+
+    def typed(key: str, category: str) -> None:
+        code = receipt.get(key)
+        if code is None or code == "":
+            return
+        if not nonempty(code) or not re.fullmatch(r"[A-Z][A-Z0-9_]*(?::[A-Z0-9_-]+)?", code):
+            blockers.append(f"{category}:FAILURE_CODE_MALFORMED")
+            return
+        blockers.append(code)
 
     if receipt.get("host_identity") != HOST_IDENTITY:
         blockers.append("FAIL_ACTION_INVOCATION:HOST_IDENTITY_NOT_PROVEN")
@@ -150,44 +172,111 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
         blockers.append("FAIL_ACTION_INVOCATION:LIVE_EDITOR_NOT_VERIFIED")
     if receipt.get("action_invoked") is not True:
         blockers.append("FAIL_ACTION_INVOCATION:ACTION_NOT_INVOKED")
+    if receipt.get("action_operation_id") != operation:
+        blockers.append("FAIL_ACTION_INVOCATION:CANONICAL_OPERATION_MISMATCH")
+    if receipt.get("verification_skipped") is True:
+        blockers.append("FAIL_ACTION_INVOCATION:VERIFICATION_SKIPPED")
+    if receipt.get("action_receipt_status") not in (None, "PASS", "MODEL_QUALIFIED", "FINAL_APPROVED"):
+        blockers.append("FAIL_ACTION_INVOCATION:ACTION_RECEIPT_INVALID")
+
+    action = receipt.get("action_receipt")
+    request_id = receipt.get("request_id")
+    if not isinstance(action, dict):
+        blockers.append("FAIL_ACTION_INVOCATION:ACTION_RECEIPT_MISSING")
+    else:
+        if not nonempty(request_id) or action.get("request_id") != request_id:
+            blockers.append("FAIL_ACTION_INVOCATION:ACTION_REQUEST_ID_MISMATCH")
+        if action.get("action_operation_id") != operation:
+            blockers.append("FAIL_ACTION_INVOCATION:ACTION_RECEIPT_OPERATION_MISMATCH")
+        if not (isinstance(action.get("immutable_receipt_hash"), str) and
+                re.fullmatch(r"[a-f0-9]{64}", action["immutable_receipt_hash"])):
+            blockers.append("FAIL_PERSISTENCE:IMMUTABLE_ACTION_RECEIPT_MISSING")
+        if action.get("readback_verified") is not True:
+            blockers.append("FAIL_PERSISTENCE:ACTION_RECEIPT_READBACK_UNVERIFIED")
+        if action.get("freshness_verified") is not True or action.get("stale") is True:
+            blockers.append("FAIL_ACTION_INVOCATION:ACTION_RECEIPT_STALE")
+        if action.get("replayed") is True:
+            blockers.append("FAIL_ACTION_INVOCATION:ACTION_RECEIPT_REPLAYED")
+        if action.get("can_execute") is not False:
+            blockers.append("FAIL_GOVERNANCE:ACTION_RECEIPT_EXECUTION_INVALID")
+
     if receipt.get("inventory_accounted") is not True:
         blockers.append("FAIL_PROP_ACQUISITION:INVENTORY_NOT_ACCOUNTED")
+    source = receipt.get("source_inventory_evidence")
+    acquired = whole(receipt.get("acquired_row_count"))
+    if acquired is None:
+        blockers.append("FAIL_PROP_ACQUISITION:ACQUIRED_COUNT_UNVERIFIED")
+    if not isinstance(source, dict) or not (
+        nonempty(source.get("source_snapshot_id")) and
+        nonempty(source.get("source_observed_at")) and
+        source.get("acquired_row_count") == acquired and
+        source.get("source_accounted") is True
+    ):
+        blockers.append("FAIL_PROP_ACQUISITION:SOURCE_INVENTORY_EVIDENCE_MISSING")
     if receipt.get("source_ingestion_complete") is not True:
         blockers.append("FAIL_SOURCE_INGESTION:SOURCE_NOT_FULLY_RECONCILED")
+    typed("source_ingestion_failure_code", "FAIL_SOURCE_INGESTION")
+
     if receipt.get("all_rows_reconciled") is not True:
         blockers.append("FAIL_GOVERNED_SCORING:ROW_RECONCILIATION_INCOMPLETE")
     if receipt.get("governed_scoring_accounted") is not True:
         blockers.append("FAIL_GOVERNED_SCORING:SCORING_NOT_ACCOUNTED")
+    typed("scorer_failure_code", "FAIL_GOVERNED_SCORING")
+    typed("persisted_receipt_failure_code", "FAIL_PERSISTENCE")
+
+    counts = [whole(receipt.get(k)) for k in
+              ("rows_in", "rows_completed", "rows_held", "rows_rejected")]
+    if any(n is None for n in counts) or counts[0] != sum(counts[1:]):
+        blockers.append("FAIL_GOVERNED_SCORING:ROW_RECONCILIATION_MISMATCH")
+    elif acquired is not None and counts[0] != acquired:
+        blockers.append("FAIL_GOVERNED_SCORING:ROW_SOURCE_COUNT_MISMATCH")
+
     if receipt.get("response_handoff_complete") is not True:
         blockers.append("FAIL_RESPONSE_HANDOFF:LIVE_HOST_RESULT_NOT_DISPLAYED")
+    typed("response_handoff_failure_code", "FAIL_RESPONSE_HANDOFF")
+    displayed = receipt.get("display_receipt")
+    if not isinstance(displayed, dict) or not (
+        nonempty(request_id) and displayed.get("request_id") == request_id and
+        displayed.get("host_identity") == HOST_IDENTITY and
+        displayed.get("canonical_result_displayed") is True
+    ):
+        blockers.append("FAIL_RESPONSE_HANDOFF:DISPLAY_RECEIPT_NOT_VERIFIED")
+
     if receipt.get("terminal_authority") != TERMINAL_AUTHORITY:
         blockers.append("FAIL_GOVERNANCE:TERMINAL_AUTHORITY_MISMATCH")
     if receipt.get("can_execute") is not False:
         blockers.append("FAIL_GOVERNANCE:CAN_EXECUTE_MUST_BE_FALSE")
+    if receipt.get("llm_substitution") is True or receipt.get("probability_source") in (
+        "SPORTSBOOK_IMPLIED", "LLM_ESTIMATE", "EXTERNAL_PREDICTION", "HIT_RATE"
+    ):
+        blockers.append("FAIL_GOVERNANCE:UNFITTED_PROBABILITY_SUBSTITUTION")
 
-    raw_governed_rows = receipt.get("valid_governed_row_count", 0)
-    try:
-        governed_rows = int(raw_governed_rows)
-    except (TypeError, ValueError):
+    governed_rows = whole(receipt.get("valid_governed_row_count"))
+    if governed_rows is None:
         governed_rows = 0
         blockers.append("FAIL_GOVERNED_SCORING:VALID_GOVERNED_ROW_COUNT_INVALID")
-    if governed_rows < 0:
-        governed_rows = 0
-        blockers.append("FAIL_GOVERNED_SCORING:VALID_GOVERNED_ROW_COUNT_INVALID")
-
     explicit_empty = receipt.get("empty_slate_proven") is True
-    if governed_rows < 1 and not explicit_empty:
-        blockers.append("FAIL_GOVERNED_SCORING:NO_VALID_GOVERNED_ROW_OR_PROVEN_EMPTY_SLATE")
+    if explicit_empty:
+        if (acquired != 0 or not isinstance(source, dict) or
+                source.get("empty_slate_verified") is not True or
+                counts[0] != 0):
+            blockers.append("FAIL_PROP_ACQUISITION:EMPTY_SLATE_SOURCE_NOT_PROVEN")
+    else:
+        if governed_rows < 1:
+            blockers.append("FAIL_GOVERNED_SCORING:NO_VALID_GOVERNED_ROW_OR_PROVEN_EMPTY_SLATE")
+        if receipt.get("probability_source") != "GOVERNED_FITTED_SPECIALIST":
+            blockers.append("FAIL_GOVERNANCE:FITTED_SPECIALIST_PROVENANCE_NOT_VERIFIED")
 
-    # These fields are deliberately ignored as PASS evidence. Keeping them in
-    # the receipt is useful diagnostics, but they may never satisfy a blocker.
-    _ = receipt.get("ci_success")
-    _ = receipt.get("backend_health_success")
-    _ = receipt.get("workflow_conclusion")
-
-    status = "PASS" if not blockers else blockers[0].split(":", 1)[0]
+    # CI, backend HTTP-200 and workflow success are never PASS evidence.
+    # The first typed boundary remains the reported status.
+    blockers = list(dict.fromkeys(blockers))
     return {
-        "status": status,
+        "status": "PASS" if not blockers else (
+            blockers[0].split(":", 1)[0]
+            if blockers[0].startswith("FAIL_") else
+            "FAIL_SOURCE_INGESTION" if blockers[0].startswith("SOURCE_PAGE_") else
+            "FAIL_GOVERNED_SCORING"
+        ),
         "blockers": blockers,
         "valid_governed_row_count": governed_rows,
         "empty_slate_proven": explicit_empty,
