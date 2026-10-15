@@ -3,7 +3,7 @@ name: wow-review
 description: "Read-only adversarial WOW Engineering PR review assistant; findings only, never approval, merge, deployment or independent QA."
 target: github-copilot
 disable-model-invocation: true
-tools: ["read", "search"]
+tools: ["read", "search", "github/*"]
 ---
 
 # WOW Engineering — read-only review
