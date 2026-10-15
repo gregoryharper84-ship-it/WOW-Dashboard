@@ -171,7 +171,7 @@ def test_github_json_403_json_body_is_sanitized_and_reraised(monkeypatch, capsys
 
     import pytest
 
-    body = json.dumps({"message_category": "ACCESS_DENIED", "secret": "SECRET_TOKEN_VALUE"})
+    body = json.dumps({"message": "SECRET_TOKEN_VALUE", "secret": "SECRET_TOKEN_VALUE"})
     error = _http_403(body.encode("utf-8"))
     github_json = _github_json_function(monkeypatch, error)
 
@@ -185,7 +185,7 @@ def test_github_json_403_json_body_is_sanitized_and_reraised(monkeypatch, capsys
     assert payload == {
         "endpoint": "/commits/abc/check-runs",
         "status": 403,
-        "message": "Resource not accessible by integration",
+        "message_category": "ACCESS_DENIED",
         "accepted_permissions": "checks=read",
         "rate_limit_remaining": "4999",
     }
