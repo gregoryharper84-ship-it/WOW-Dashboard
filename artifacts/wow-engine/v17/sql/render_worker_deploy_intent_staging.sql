@@ -61,11 +61,11 @@ begin
   end if;
   -- Serialize every target revision for this Render worker service.
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_service_id, 0));
-  select target_sha into v_in_flight_sha
-    from wow_release_control.render_worker_deploy_intents
-   where service_id=p_service_id and target_sha<>p_target_sha
-     and state in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING','HOLD')
-   limit 1 for update;
+  select intent.target_sha into v_in_flight_sha
+    from wow_release_control.render_worker_deploy_intents intent
+   where intent.service_id=p_service_id and intent.target_sha<>p_target_sha
+     and intent.state in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING','HOLD')
+   limit 1 for update of intent;
   if found then
     raise exception 'WORKER_PREVIOUS_SHA_IN_FLIGHT_RECONCILE_ONLY';
   end if;
