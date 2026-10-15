@@ -220,3 +220,105 @@ def test_private_ledger_sql_well_formed():
             assert depth >= 0, "unexpected closing parenthesis"
     assert depth == 0, "unclosed SQL parenthesis"
     assert "".join(clean).count(";") == 5, "unexpected SQL statement duplication"
+
+
+
+def test_private_checkpoint_schema_executes_in_disposable_ci_postgres():
+    """Exercise actual PostgreSQL DDL, FK, digest, unique and privacy guards.
+
+    CI service only; this entire transaction always rolls back. It neither
+    connects to production Supabase nor calls the live Edge function.
+    """
+    import os
+
+    if os.environ.get("GITHUB_WORKFLOW") != "wow-engine-verify":
+        pytest.skip("Disposable PostgreSQL is supplied by wow-engine-verify")
+    import psycopg
+
+    root = Path(__file__).resolve().parent
+    script = (root / "v17/sql/20261015_scout_persistence_checkpoint_receipts.sql").read_text()
+    dsn = "postgresql://wow_agent_ci:wow_agent_ci@localhost:5432/wow_agent_ci"
+    with psycopg.connect(dsn, connect_timeout=5, autocommit=False) as connection:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("CREATE SCHEMA IF NOT EXISTS wow_scout")
+                cursor.execute(
+                    "CREATE TABLE IF NOT EXISTS wow_scout.research_runs "
+                    "(research_run_id text PRIMARY KEY)"
+                )
+                cursor.execute(
+                    "DO $roles$ BEGIN "
+                    "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') "
+                    "THEN CREATE ROLE anon NOLOGIN; END IF; "
+                    "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') "
+                    "THEN CREATE ROLE authenticated NOLOGIN; END IF; "
+                    "END $roles$;"
+                )
+                cursor.execute(script, prepare=False)
+                cursor.execute(
+                    "INSERT INTO wow_scout.research_runs (research_run_id) "
+                    "VALUES ('ci-checkpoint-run')"
+                )
+                cursor.execute(
+                    "INSERT INTO wow_scout.persist_upload_sessions "
+                    "(research_run_id,expected_candidates,expected_evidence,header_sha256) "
+                    "VALUES ('ci-checkpoint-run',1,2,%s)",
+                    ("a" * 64,),
+                )
+                cursor.execute(
+                    "INSERT INTO wow_scout.persist_chunk_receipts "
+                    "(research_run_id,chunk_index,content_sha256,entries,"
+                    "finalized_candidates,evidence_rows) "
+                    "VALUES ('ci-checkpoint-run',0,%s,1,1,2)",
+                    ("b" * 64,),
+                )
+                cursor.execute(
+                    "SELECT COUNT(*) FROM wow_scout.persist_chunk_receipts "
+                    "WHERE research_run_id='ci-checkpoint-run'"
+                )
+                assert cursor.fetchone() == (1,)
+                cursor.execute(
+                    "SELECT has_table_privilege('anon',"
+                    "'wow_scout.persist_chunk_receipts','SELECT'), "
+                    "has_table_privilege('authenticated',"
+                    "'wow_scout.persist_upload_sessions','UPDATE')"
+                )
+                assert cursor.fetchone() == (False, False)
+                cursor.execute("SAVEPOINT conflicting_chunk")
+                try:
+                    cursor.execute(
+                        "INSERT INTO wow_scout.persist_chunk_receipts "
+                        "(research_run_id,chunk_index,content_sha256,entries,"
+                        "finalized_candidates,evidence_rows) "
+                        "VALUES ('ci-checkpoint-run',0,%s,1,1,2)",
+                        ("c" * 64,),
+                    )
+                except psycopg.errors.UniqueViolation:
+                    cursor.execute("ROLLBACK TO SAVEPOINT conflicting_chunk")
+                else:
+                    raise AssertionError("Duplicate sequence bypassed PRIMARY KEY")
+                cursor.execute("SAVEPOINT malformed_digest")
+                try:
+                    cursor.execute(
+                        "INSERT INTO wow_scout.persist_chunk_receipts "
+                        "(research_run_id,chunk_index,content_sha256,entries,"
+                        "finalized_candidates,evidence_rows) "
+                        "VALUES ('ci-checkpoint-run',1,'INVALID',1,0,0)"
+                    )
+                except psycopg.errors.CheckViolation:
+                    cursor.execute("ROLLBACK TO SAVEPOINT malformed_digest")
+                else:
+                    raise AssertionError("Invalid content hash bypassed CHECK")
+                cursor.execute("SAVEPOINT forbidden_execution")
+                try:
+                    cursor.execute(
+                        "UPDATE wow_scout.persist_upload_sessions "
+                        "SET can_execute=true "
+                        "WHERE research_run_id='ci-checkpoint-run'"
+                    )
+                except psycopg.errors.CheckViolation:
+                    cursor.execute("ROLLBACK TO SAVEPOINT forbidden_execution")
+                else:
+                    raise AssertionError("Execution flag bypassed CHECK")
+        finally:
+            connection.rollback()
