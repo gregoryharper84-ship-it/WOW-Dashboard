@@ -122,6 +122,12 @@ class PostgrestOutboxStore:
             return "IN_FLIGHT", None
         if status != "RESERVED":
             return "RESERVE_REJECTED", None
+        # Group membership is derived inside the atomic DB reserve RPC from
+        # the locked writer lease row, never caller-supplied.
+        group = response.get("lease_group")
+        if (not isinstance(group, str) or not group.strip()
+                or len(group) > 128):
+            raise OutboxProtocolError("OUTBOX_GROUP_ATTESTATION_MISSING")
         if (response.get("incident") != proposal.incident
                 or response.get("intent_id") != nonce
                 or response.get("main_sha") != proposal.main_sha
