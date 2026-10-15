@@ -75,6 +75,7 @@ begin
       where d.service_id=p_service_id and d.target_sha=p_target_sha
       returning * into v;
     return query select v.state,v.lease_token,true;
+    return; -- RETURN QUERY appends; stop before emitting a second denial row.
   end if;
   return query select v.state,v.lease_token,false;
 end;
