@@ -77,7 +77,7 @@ jobs:
             canonical_name="$name"
             # Accept only the two protected workers' exact, bounded run-name
             # suffixes. Path/event/repository/branch are verified separately.
-            if [[ "$name" =~ ^(wow-v17-(chatgpt|claude)-engineering-worker)[[:space:]]lease=(GLOBAL|[A-Z][A-Z0-9_]{0,47})[[:space:]]incident=(AUTO|[0-9]{1,10})$ ]]; then
+            if [[ "$name" =~ ^(wow-v17-(chatgpt|claude)-engineering-worker)[ ]lease=(GLOBAL|[A-Z][A-Z0-9_]{0,47})[ ]incident=(AUTO|[0-9]{1,10})$ ]]; then
               canonical_name="${BASH_REMATCH[1]}"
             fi
             case "$canonical_name|$path" in
