@@ -274,6 +274,7 @@ revoke all on wow_release_control.release_control_identity from wow_release_cont
 revoke all on wow_release_control.release_control_project_anchor from wow_release_controller;
 revoke all on wow_release_control.render_worker_deploy_intents from wow_release_controller;
 revoke all on function wow_release_control.assert_release_authority(text) from wow_release_controller;
+revoke all on schema wow_release_control from wow_release_controller;
 grant usage on schema wow_release_control to wow_release_controller;
 grant select on wow_release_control.release_control_identity to wow_release_controller;
 revoke insert, update, delete, truncate, references, trigger
@@ -290,6 +291,15 @@ grant execute on function wow_release_control.renew_render_worker_deploy(text,te
 do $acl_gate$
 declare r record;
 begin
+  if exists (
+    select 1 from pg_catalog.pg_namespace n
+     where n.nspname='wow_release_control'
+       and pg_catalog.pg_has_role('wow_release_controller', n.nspowner, 'MEMBER')
+  ) or pg_catalog.has_schema_privilege(
+    'wow_release_controller', 'wow_release_control', 'CREATE'
+  ) then
+    raise exception 'WOW_RELEASE_CONTROLLER_SCHEMA_PRIVILEGE_LEAK';
+  end if;
   for r in
     select c.oid as rel_oid, c.relname,
            c.relowner as owner_oid
