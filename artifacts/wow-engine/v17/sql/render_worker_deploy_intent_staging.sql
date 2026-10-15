@@ -239,7 +239,7 @@ end;
 $role_gate$;
 
 -- RLS remains enabled for both private relations. An unprivileged login
--- with ordinary GRANTs cannot use SECURITY INVOKER RPCs without explicit RLS
+-- with ordinary GRANTs has no direct authority to mutate SECURITY DEFINER state
 -- policies; limiting both privileges and row scope avoids a false-green ACL.
 do $policy_gate$
 begin
