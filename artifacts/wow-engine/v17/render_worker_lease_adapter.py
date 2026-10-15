@@ -6,6 +6,7 @@ This module does not infer an environment or grant itself credentials.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 ALLOWED_SERVICE = "srv-dapkbc0473hc73c1978g"
 
@@ -19,6 +20,37 @@ class LeaseDecision:
     state: str
     token: int
     can_initiate: bool
+
+
+def attest_release_control_identity(connection, *, expected_project_ref: str) -> None:
+    """Require an independently DBA-approved production ledger and limited role.
+
+    The protected workflow supplies the approved expected project reference.
+    The DB marker is a separate, non-seeded authorization established by the
+    control-plane DBA, not by an Engineering change or environment fallback.
+    """
+    if not isinstance(expected_project_ref, str) or not re.fullmatch(
+        r"[a-z]{20}", expected_project_ref
+    ):
+        raise DeploymentLeaseError("WORKER_RELEASE_PROJECT_IDENTITY_UNCONFIGURED")
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "select current_user, project_ref, environment, service_id, "
+            "authorized, approved_by, approved_at "
+            "from wow_release_control.release_control_identity "
+            "where singleton = true",
+            (),
+        )
+        rows = cursor.fetchall()
+    if len(rows) != 1 or len(rows[0]) != 7:
+        raise DeploymentLeaseError("WORKER_RELEASE_DB_IDENTITY_MISSING")
+    (actor, project, environment, service, authorized, reviewer, approved_at) = rows[0]
+    if actor != "wow_release_controller":
+        raise DeploymentLeaseError("WORKER_RELEASE_DB_ROLE_NOT_RESTRICTED")
+    if project != expected_project_ref or environment != "production" or service != ALLOWED_SERVICE:
+        raise DeploymentLeaseError("WORKER_RELEASE_DB_IDENTITY_MISMATCH")
+    if authorized is not True or not reviewer or approved_at is None:
+        raise DeploymentLeaseError("WORKER_RELEASE_DB_APPROVAL_MISSING")
 
 
 def claim(connection, *, service_id: str, target_sha: str, owner_run_id: str) -> LeaseDecision:
