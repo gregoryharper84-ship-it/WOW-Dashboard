@@ -27,6 +27,7 @@ class FakeDb:
         self.committed = False
         self.pending = False
         self.result = ()
+        self.io_authorized = True
 
     @contextmanager
     def transaction(self):
@@ -47,6 +48,10 @@ class FakeDb:
                 raise RuntimeError("PRIMARY_RELEASE_POST_ALREADY_RESERVED_RECONCILE_ONLY")
             self.used = True
             self.result = ("PRIMARY_RELEASE_POST_AUTHORIZED_ONCE",)
+        elif "authorize_primary_api_post_io" in sql:
+            if not self.io_authorized:
+                raise RuntimeError("PRIMARY_RELEASE_DBA_AUTHORIZATION_MISSING")
+            self.result = ("PRIMARY_RELEASE_IO_WINDOW_ATTESTED",)
         elif "observe_primary_api_deploy" in sql:
             self.result = ("PRIMARY_RELEASE_PROVIDER_READBACK_ONLY",)
         else:
@@ -62,7 +67,7 @@ def test_exact_sha_post_only_after_durable_commit():
     events = []
 
     def render(body):
-        assert db.committed and not db.pending
+        assert db.committed and db.pending
         events.append(body)
         return {"id": "dep-abc123", "commit": {"id": "a" * 40}}
 
@@ -348,3 +353,21 @@ def test_primary_api_fence_disposable_postgres_two_connections_and_db_rights():
         conn2.rollback()
         conn1.close()
         conn2.close()
+
+
+def test_dba_revoked_after_reservation_prevents_network_post():
+    db = FakeDb()
+    calls = []
+    db.io_authorized = False
+    with pytest.raises(RuntimeError, match="PRIMARY_RELEASE_DBA_AUTHORIZATION_MISSING"):
+        post_render_exactly_once(
+            db, lambda body: calls.append(body),
+            service_id=PRIMARY_SERVICE, sha="a" * 40, run_id="ci-revoked",
+        )
+    assert db.used and db.committed and not calls
+    with pytest.raises(RuntimeError, match="RECONCILE_ONLY"):
+        post_render_exactly_once(
+            db, lambda body: calls.append(body),
+            service_id=PRIMARY_SERVICE, sha="a" * 40, run_id="ci-revoked",
+        )
+    assert not calls, "Revocation after reserve must never allow a second attempt"
