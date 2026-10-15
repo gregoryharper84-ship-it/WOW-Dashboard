@@ -143,7 +143,10 @@ def run():
         raise RuntimeError("WORKER_EXISTING_DEPLOY_REQUIRES_FENCED_RECONCILIATION")
     if not deploy_id.startswith("dep-"):
         raise RuntimeError("WORKER_DEPLOY_ID_MISSING")
-    until = time.monotonic() + 900
+    # Production Render builds can exceed the original 15-minute budget.
+    # Renew the fenced DB claim during bounded long observation; this is
+    # strictly polling and never authorizes a repeated provider POST.
+    until = time.monotonic() + 5400
     last_lease_renew = time.monotonic()
     while True:
         # The database owns authorization. Renew before TTL expiry rather
