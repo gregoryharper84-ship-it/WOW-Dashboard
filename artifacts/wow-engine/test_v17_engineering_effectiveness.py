@@ -95,6 +95,7 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
         "host_identity": "WOW_BETTING_ENGINE",
         "live_editor_verified": True,
         "action_invoked": True,
+        "verification_skipped": False,
         "action_operation_id": "scoreWowPickRequest",
         "request_id": "synthetic-request-1",
         "action_receipt": {
