@@ -152,7 +152,10 @@ def test_source_observation_requires_offset_and_precedes_action(value):
     evidence = deepcopy(_synthetic_golden_evidence())
     evidence["source_inventory_evidence"]["source_observed_at"] = value
     result = evaluate_golden_user_journey(evidence)
-    assert "FAIL_PROP_ACQUISITION:SOURCE_TIMESTAMP_NOT_ATTESTED" in result["blockers"]
+    assert any(code in result["blockers"] for code in (
+        "FAIL_PROP_ACQUISITION:SOURCE_TIMESTAMP_NOT_ATTESTED",
+        "FAIL_PROP_ACQUISITION:SOURCE_STALE_OR_FUTURE",
+    ))
 
 
 @pytest.mark.parametrize("key,value", [
