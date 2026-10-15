@@ -91,9 +91,9 @@ begin
     or p_epoch is null or p_epoch <= 0 then
     return jsonb_build_object('status','INVALID_REQUEST');
   end if;
-  if not public.wow_engineering_check_writer_lease(
+  if coalesce(public.wow_engineering_check_writer_lease(
     p_incident_id,p_owner_id,p_epoch
-  ) then
+  ),false) is not true then
     return jsonb_build_object('status','LEASE_NOT_VERIFIED');
   end if;
   insert into public.wow_engineering_continuity_outbox
@@ -204,9 +204,9 @@ security definer
 set search_path = pg_catalog, public
 as $$
 begin
-  if not public.wow_engineering_check_writer_lease(
+  if coalesce(public.wow_engineering_check_writer_lease(
      p_incident_id,p_owner_id,p_epoch
-  ) then return false; end if;
+  ),false) is not true then return false; end if;
   update public.wow_engineering_continuity_outbox
   set state='ARMED',armed_at=clock_timestamp(),updated_at=clock_timestamp()
   where incident_id=p_incident_id and intent_id=p_intent_id
@@ -232,8 +232,8 @@ begin
           and (p_run_id is null or p_run_id <= 0))
       or (p_receipt_code<>'ATTEMPT_ACK_CORRELATED_UNVERIFIED'
           and p_run_id is not null)
-      or not public.wow_engineering_check_writer_lease(
-          p_incident_id,p_owner_id,p_epoch) then
+      or coalesce(public.wow_engineering_check_writer_lease(
+          p_incident_id,p_owner_id,p_epoch),false) is not true then
      return false;
   end if;
   update public.wow_engineering_continuity_outbox
