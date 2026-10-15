@@ -291,6 +291,46 @@ begin
 end;
 $role_gate$;
 
+-- RLS remains enabled for both private relations. An unprivileged login
+-- with ordinary GRANTs cannot use SECURITY INVOKER RPCs without explicit RLS
+-- policies; limiting both privileges and row scope avoids a false-green ACL.
+do $policy_gate$
+begin
+  if not exists (
+    select 1 from pg_catalog.pg_policies
+     where schemaname='wow_release_control'
+       and tablename='release_control_identity'
+       and policyname='wow_release_identity_select'
+  ) then
+    execute 'create policy wow_release_identity_select on wow_release_control.release_control_identity for select to wow_release_controller using (singleton = true)';
+  end if;
+  if not exists (
+    select 1 from pg_catalog.pg_policies
+     where schemaname='wow_release_control'
+       and tablename='render_worker_deploy_intents'
+       and policyname='wow_release_intents_select'
+  ) then
+    execute 'create policy wow_release_intents_select on wow_release_control.render_worker_deploy_intents for select to wow_release_controller using (service_id = ''srv-dapkbc0473hc73c1978g'')';
+  end if;
+  if not exists (
+    select 1 from pg_catalog.pg_policies
+     where schemaname='wow_release_control'
+       and tablename='render_worker_deploy_intents'
+       and policyname='wow_release_intents_insert'
+  ) then
+    execute 'create policy wow_release_intents_insert on wow_release_control.render_worker_deploy_intents for insert to wow_release_controller with check (service_id = ''srv-dapkbc0473hc73c1978g'')';
+  end if;
+  if not exists (
+    select 1 from pg_catalog.pg_policies
+     where schemaname='wow_release_control'
+       and tablename='render_worker_deploy_intents'
+       and policyname='wow_release_intents_update'
+  ) then
+    execute 'create policy wow_release_intents_update on wow_release_control.render_worker_deploy_intents for update to wow_release_controller using (service_id = ''srv-dapkbc0473hc73c1978g'') with check (service_id = ''srv-dapkbc0473hc73c1978g'')';
+  end if;
+end;
+$policy_gate$;
+
 grant usage on schema wow_release_control to wow_release_controller;
 grant select on wow_release_control.release_control_identity to wow_release_controller;
 grant select, insert, update on wow_release_control.render_worker_deploy_intents to wow_release_controller;
