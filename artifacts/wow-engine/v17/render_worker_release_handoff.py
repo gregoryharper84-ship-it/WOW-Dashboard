@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from render_worker_governed_initiator import initiate_once
-from render_worker_lease_adapter import ALLOWED_SERVICE, attest_release_control_identity, renew_committed, record_committed
+from render_worker_lease_adapter import ALLOWED_SERVICE, DeploymentLeaseError, attest_release_control_identity, renew_committed, record_committed
 
 WORKER_SERVICE = "srv-dapkbc0473hc73c1978g"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
