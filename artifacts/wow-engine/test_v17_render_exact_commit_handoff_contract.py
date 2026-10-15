@@ -94,3 +94,29 @@ def test_release_build_timeout_cannot_revert_to_pre_observed_build_duration():
     assert "RENDER_EXACT_SHA_DEPLOY_TIMEOUT" in workflow
     # A 65-minute Render build needs >65 minutes of bounded poll runway.
     assert "deploy_deadline = time.time() + 5400" in workflow
+
+
+def test_both_live_render_receipt_paths_recheck_current_main():
+    script = _script()
+    assert "def require_current_main_for_live_receipt():" in script
+    assert "current != target_sha" in script
+    assert '"status": "DEPLOY_SUPERSEDED_BY_NEW_MAIN"' in script
+    original_live = 'if str(deploy.get("status") or "") == "live":'
+    polled_live = 'if status == "live":'
+    assert original_live in script
+    assert polled_live in script
+    initial = script.split(original_live, 1)[1].split("emit_receipt({", 1)[0]
+    polled = script.split(polled_live, 1)[1].split("emit_receipt({", 1)[0]
+    assert "require_current_main_for_live_receipt()" in initial
+    assert "require_current_main_for_live_receipt()" in polled
+
+
+def test_stale_render_live_bypasses_no_current_main_recheck():
+    script = _script()
+    stale = script.replace(
+        'if status == "live":\\n            require_current_main_for_live_receipt()',
+        'if status == "live":',
+    )
+    # We retain two guarded LIVE success paths, never only the pre-POST gate.
+    assert script.count("require_current_main_for_live_receipt()") == 3
+    assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in script
