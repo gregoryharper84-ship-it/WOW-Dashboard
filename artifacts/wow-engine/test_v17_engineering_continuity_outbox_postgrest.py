@@ -17,7 +17,7 @@ CLAIM = WriterClaim(1739, "github-actions:38744867262:1:trusted-worker", 4)
 NONCE = "12345678-1234-4234-8234-123456789abc"
 PROPOSAL = Proposal(1739, SHA, "DISPATCH_NEW_REPAIR")
 RESERVED = {
-    "status": "RESERVED", "incident": 1739, "intent_id": NONCE,
+    "status": "RESERVED", "incident": 1739, "lease_group": "P0_AUTONOMY_RESTORE", "intent_id": NONCE,
     "main_sha": SHA, "action": "DISPATCH_NEW_REPAIR",
     "pr_number": None, "pr_head_sha": None, "epoch": 4,
 }
@@ -374,3 +374,11 @@ def test_sql_conflict_group_is_db_derived_and_unique_among_active_intents():
     assert "'lease_group',row_record.lease_group" in reserve
     assert "on conflict do nothing" in reserve
     assert "p_lease_group" not in reserve  # no untrusted caller-supplied group
+
+
+def test_missing_or_invalid_server_group_attestation_is_fail_closed():
+    for group in (None, "", "  ", True, 42, "x" * 129):
+        t = RPCTransport(True, {**RESERVED, "lease_group": group})
+        with pytest.raises(OutboxProtocolError, match="OUTBOX_GROUP_ATTESTATION_MISSING"):
+            store(t).reserve(PROPOSAL)
+        assert len(t.urls) == 2
