@@ -182,6 +182,32 @@ class HandoffContractTests(unittest.TestCase):
                                            repository=REPO, current_main_sha=MAIN)
         self.assertIn("PR_INCIDENT_LINK_MISSING", result["reasons"])
 
+    def test_profiles_are_explicitly_invoked_and_least_privileged(self):
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        expected = {
+            "wow-repair": 'tools: ["read", "search", "edit", "execute", "github/*"]',
+            "wow-regression": 'tools: ["read", "search", "edit", "execute", "github/*"]',
+            "wow-review": 'tools: ["read", "search", "github/*"]',
+        }
+        for role, tools_line in expected.items():
+            with self.subTest(role=role):
+                content = (repo_root / ".github" / "agents" / (role + ".agent.md")).read_text(
+                    encoding="utf-8")
+                frontmatter = content.split("---", 2)[1]
+                self.assertIn("target: github-copilot", frontmatter)
+                self.assertIn("disable-model-invocation: true", frontmatter)
+                self.assertIn(tools_line, frontmatter)
+                self.assertNotIn('tools: ["*"]', frontmatter)
+
+    def test_read_only_review_has_no_shell_or_edit_tools(self):
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        content = (repo_root / ".github" / "agents" / "wow-review.agent.md").read_text(
+            encoding="utf-8")
+        frontmatter = content.split("---", 2)[1]
+        self.assertIn('tools: ["read", "search", "github/*"]', frontmatter)
+        for disallowed in ('"edit"', '"execute"', '"agent"', '"*"'):
+            self.assertNotIn(disallowed, frontmatter)
+
     def test_non_draft_is_not_accepted(self):
         snapshot = pr()
         snapshot["draft"] = False
