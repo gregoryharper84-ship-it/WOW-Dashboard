@@ -132,6 +132,52 @@ begin
   return found;
 end $$;
 
+-- Recover a crash during the PRE-ARM interval ONLY after the old lease
+-- has been superseded and a newer exact incident lease is held by this caller.
+-- No timeout alone authorizes a new dispatch. State RESERVED proves no POST
+-- was permitted by compliant workers (all workers must use ARM before POST).
+-- Serialize with the competing ARM/ABORT by locking the immutable intent row.
+-- This cannot release ARMED / acknowledged / ambiguous attempts.
+create or replace function public.wow_engineering_continuity_outbox_reclaim(
+  p_incident_id bigint, p_old_intent_id uuid,
+  p_new_owner_id text, p_new_epoch bigint
+) returns boolean
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+declare old_epoch bigint;
+begin
+  if p_old_intent_id is null
+      or p_new_epoch is null or p_new_epoch <= 1
+      or coalesce(public.wow_engineering_check_writer_lease(
+        p_incident_id,p_new_owner_id,p_new_epoch
+      ),false) is not true then
+    return false;
+  end if;
+  -- The active-intent partial unique index prevents multiple RESERVED rows.
+  select writer_epoch into old_epoch
+  from public.wow_engineering_continuity_outbox
+  where incident_id=p_incident_id and intent_id=p_old_intent_id
+    and state='RESERVED'
+  for update;
+  if not found or old_epoch >= p_new_epoch then
+    return false;
+  end if;
+  -- Recheck while holding row lock: a stale/taken-over recovery must deny.
+  if coalesce(public.wow_engineering_check_writer_lease(
+      p_incident_id,p_new_owner_id,p_new_epoch
+    ),false) is not true then
+    return false;
+  end if;
+  update public.wow_engineering_continuity_outbox
+  set state='PREARM_ABORTED',
+      receipt_code='ABANDONED_PREARM_NEW_EPOCH',
+      updated_at=clock_timestamp()
+  where incident_id=p_incident_id and intent_id=p_old_intent_id
+    and state='RESERVED' and writer_epoch=old_epoch;
+  return found;
+end $$;
+
 -- Atomic one-shot arm; only one contender may transition RESERVED -> ARMED.
 create or replace function public.wow_engineering_continuity_outbox_arm(
   p_incident_id bigint, p_intent_id uuid, p_owner_id text, p_epoch bigint
@@ -190,6 +236,9 @@ revoke all on function public.wow_engineering_continuity_outbox_arm(
 revoke all on function public.wow_engineering_continuity_outbox_abort(
  bigint,uuid,text,bigint,text
 ) from public, anon, authenticated;
+revoke all on function public.wow_engineering_continuity_outbox_reclaim(
+ bigint,uuid,text,bigint
+) from public, anon, authenticated;
 revoke all on function public.wow_engineering_continuity_outbox_mark(
  bigint,uuid,text,bigint,text,bigint
 ) from public, anon, authenticated;
@@ -202,13 +251,18 @@ grant execute on function public.wow_engineering_continuity_outbox_arm(
 grant execute on function public.wow_engineering_continuity_outbox_abort(
  bigint,uuid,text,bigint,text
 ) to service_role;
+grant execute on function public.wow_engineering_continuity_outbox_reclaim(
+ bigint,uuid,text,bigint
+) to service_role;
 grant execute on function public.wow_engineering_continuity_outbox_mark(
  bigint,uuid,text,bigint,text,bigint
 ) to service_role;
 
 -- Production acceptance additionally needs actual DB race tests:
 -- two reserve callers, two arm callers, prearm-abort + new intent race,
--- immutable abort history, blocked arm-after-abort, stale epoch, lease expiry,
+-- immutable abort history, blocked arm-after-abort, two-writer epoch reclaim,
+-- stale lease cannot reclaim, wrong UUID cannot reclaim, arm/reclaim row race,
+-- stale epoch, lease expiry,
 -- ambiguous 204, restart after ARM, RLS/role denial and verified receipt replay.
 -- This staged SQL deliberately lacks any general reset/force-release function;
 -- a separate independently reviewed reconciliation design must be certified.
