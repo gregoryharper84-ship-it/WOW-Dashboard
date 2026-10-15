@@ -157,3 +157,24 @@ def test_sql_candidate_has_rls_service_role_rpc_and_no_reset_procedure():
     assert "state='RESERVED'" in sql
     assert "where incident_id=p_incident_id and intent_id=p_intent_id" in sql
     assert "truncate public.wow_engineering_continuity_outbox" not in sql.lower()
+
+
+def test_outbox_sql_is_single_nonduplicated_closed_contract():
+    """Protect against source-string substitution corrupting SQL and duplicating blocks."""
+    sql_path = (Path(__file__).parent.parent.parent / "docs/wow/engineering/"
+                "proposals/WOW_CONTINUITY_OUTBOX_REVIEW_ONLY.sql")
+    sql = sql_path.read_text()
+    assert sql.count("create table if not exists public.wow_engineering_continuity_outbox (") == 1
+    assert sql.count("create or replace function public.wow_engineering_continuity_outbox_reserve(") == 1
+    assert sql.count("create or replace function public.wow_engineering_continuity_outbox_arm(") == 1
+    assert sql.count("create or replace function public.wow_engineering_continuity_outbox_mark(") == 1
+    assert sql.count("end $$;") == 3
+    assert "and pr_head_sha ~ '^[0-9a-f]{40}$')" in sql
+    assert "and p_pr_head_sha ~ '^[0-9a-f]{40}$')" in sql
+    # Never allow regex literals to be split across lines, or a duplicate
+    # unintended SQL suffix to be appended after the explicit review footer.
+    assert "~ '^[0-9a-f]{40}\n" not in sql
+    assert sql.rstrip().endswith(
+        "-- a separate independently reviewed reconciliation design must be certified."
+    )
+    assert "TRUNCATE public.wow_engineering_continuity_outbox" not in sql
