@@ -67,6 +67,8 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
                     "THEN CREATE ROLE anon NOLOGIN; END IF; "
                     "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') "
                     "THEN CREATE ROLE authenticated NOLOGIN; END IF; "
+                    "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'wow_release_controller') "
+                    "THEN CREATE ROLE wow_release_controller LOGIN NOSUPERUSER NOBYPASSRLS; END IF; "
                     "END $roles$;"
                 )
                 cursor.execute(LEDGER.read_text(), prepare=False)
@@ -83,3 +85,28 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
         finally:
             # Staging-only proof; no schema/lease rows persist even on success.
             connection.rollback()
+
+
+
+def test_release_identity_is_dba_provisioned_and_never_auto_approved():
+    sql = LEDGER.read_text()
+    assert "create table if not exists wow_release_control.release_control_identity" in sql
+    assert "authorized boolean not null default false" in sql
+    assert "WOW_RELEASE_CONTROLLER_ROLE_NOT_AUTHORIZED" in sql
+    assert "rolname='wow_release_controller'" in sql
+    assert "not rolsuper and not rolbypassrls and rolcanlogin" in sql
+    assert "create role wow_release_controller" not in sql.lower()
+    assert "grant usage on schema wow_release_control to wow_release_controller" in sql
+    assert "grant select on wow_release_control.release_control_identity to wow_release_controller" in sql
+    assert "grant select, insert, update on wow_release_control.render_worker_deploy_intents" in sql
+    assert "grant delete" not in sql.lower()
+    assert "to service_role" not in sql.lower()
+
+
+def test_release_identity_role_cannot_seed_or_modify_dba_attestation():
+    sql = LEDGER.read_text().lower()
+    assert "revoke all on wow_release_control.release_control_identity from public, anon, authenticated" in sql
+    assert "alter table wow_release_control.release_control_identity enable row level security" in sql
+    assert "grant insert on wow_release_control.release_control_identity" not in sql
+    assert "grant update on wow_release_control.release_control_identity" not in sql
+    assert "security invoker" in sql
