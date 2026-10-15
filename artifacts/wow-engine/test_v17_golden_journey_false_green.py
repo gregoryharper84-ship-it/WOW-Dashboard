@@ -224,3 +224,32 @@ def test_fresh_synthetic_evidence_is_only_structurally_valid_not_production_veri
     assert result["status"] == "STRUCTURAL_PASS_ONLY"
     assert result["production_verified"] is False
     assert result["independent_qa_verified"] is False
+
+
+@pytest.mark.parametrize("value", [True, False, None, "1", "0001", "9" * 5000, -1])
+def test_untrusted_inventory_count_never_accepts_bool_or_unbounded_integer(value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["source_inventory_evidence"]["acquired_row_count"] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
+    assert any(s.startswith("FAIL_PROP_ACQUISITION") for s in result["blockers"])
+
+
+@pytest.mark.parametrize("value", [None, True, "false", 0, 1])
+def test_verification_skipped_must_be_explicit_false(value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    if value is None:
+        evidence.pop("verification_skipped")
+    else:
+        evidence["verification_skipped"] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
+    assert "FAIL_ACTION_INVOCATION:VERIFICATION_SKIPPED" in result["blockers"]
+
+
+def test_very_large_digit_string_is_typed_denial_not_exception():
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["rows_in"] = "9" * 5000
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
+    assert "FAIL_GOVERNED_SCORING:ROW_RECONCILIATION_MISMATCH" in result["blockers"]
