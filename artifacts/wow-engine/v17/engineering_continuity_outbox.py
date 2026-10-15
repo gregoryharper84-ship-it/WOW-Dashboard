@@ -83,6 +83,7 @@ def dispatch_once(
     proposal: Proposal, store: OutboxStore, sender: WorkflowSender,
     *, writer_fence: Callable[[Reservation], bool],
     current_main: Callable[[], str],
+    current_pr_head: Callable[[int], str] | None = None,
 ) -> Outcome:
     """Reserve -> verify current trusted main and fence -> arm ONCE -> dispatch.
 
@@ -105,6 +106,11 @@ def dispatch_once(
     try:
         if current_main() != proposal.main_sha:
             return Outcome("MAIN_CHANGED_BEFORE_DISPATCH")
+        if proposal.action == "REPAIR_SAME_BRANCH":
+            if current_pr_head is None:
+                return Outcome("PR_HEAD_RECHECK_UNAVAILABLE")
+            if current_pr_head(proposal.pr_number) != proposal.pr_head_sha:
+                return Outcome("PR_CHANGED_BEFORE_DISPATCH")
         if writer_fence(reservation) is not True:
             return Outcome("WRITER_FENCE_UNVERIFIED")
         # Database CAS: a losing concurrent controller MUST NOT send a POST.
@@ -112,6 +118,19 @@ def dispatch_once(
             return Outcome("OUTBOX_ATTEMPT_ALREADY_ARMED")
     except Exception:
         return Outcome("OUTBOX_FENCE_OR_ARM_UNKNOWN")
+    # Recheck after one-shot arm and just before the provider POST.
+    # After a failed recheck the armed intent remains held for reconciliation;
+    # another controller must never retry it blindly.
+    try:
+        if current_main() != proposal.main_sha:
+            return Outcome("MAIN_CHANGED_AFTER_ARM_RECONCILE")
+        if (proposal.action == "REPAIR_SAME_BRANCH"
+                and current_pr_head(proposal.pr_number) != proposal.pr_head_sha):
+            return Outcome("PR_CHANGED_AFTER_ARM_RECONCILE")
+        if writer_fence(reservation) is not True:
+            return Outcome("FENCE_LOST_AFTER_ARM_RECONCILE")
+    except Exception:
+        return Outcome("RECHECK_UNKNOWN_AFTER_ARM_RECONCILE")
     try:
         # A 204/empty workflow_dispatch response does not identify a run.
         # Sender returns None until a run ID is independently correlated.
