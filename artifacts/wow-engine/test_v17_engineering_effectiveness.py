@@ -128,6 +128,17 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
         "probability_source": "GOVERNED_FITTED_SPECIALIST" if count else None,
         "can_execute": False,
         "valid_governed_row_count": count,
+        "governed_row_receipts": [] if empty else [{
+            "prediction_id": "synthetic-prediction-1",
+            "controlling_specialist": "wow.synthetic-fitted-test-specialist",
+            "model_artifact_checksum": "sha256:synthetic-evidence",
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+            "calibration_status": "PASS",
+            "calibrated_probability": 0.64,
+            "calibrated_probability_lower_bound": 0.58,
+            "probability_publishable": True,
+            "can_execute": False,
+        }],
         "empty_slate_proven": empty,
     }
 
