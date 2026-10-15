@@ -339,3 +339,32 @@ def test_missing_release_project_identity_does_not_call_render_post(monkeypatch,
         module.run()
     assert called == []
     assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
+
+
+@pytest.mark.parametrize("render_status", ["live", "building", "pre_deploy"])
+def test_existing_provider_deploy_cannot_forge_fenced_live_receipt(monkeypatch, tmp_path, render_status):
+    """An exact SHA on Render is observation, not a DB-fenced release approval."""
+    sha = "a" * 40
+    calls = []
+    def request(url, token, method="GET", payload=None):
+        calls.append((method, url))
+        if url.endswith("/branches/main"):
+            return {"commit": {"sha": sha}}
+        if "/deploys?" in url:
+            return [{"deploy": {
+                "id": "dep-existing", "commit": {"id": sha}, "status": render_status
+            }}]
+        raise AssertionError("unauthorized provider mutation")
+    monkeypatch.setattr(module, "request_json", request)
+    for name, value in {
+        "GH_API_TOKEN": "mock", "RENDER_API_KEY": "mock",
+        "GITHUB_REPOSITORY": "example/repo",
+        "TARGET_MAIN_SHA": sha, "PRIMARY_RELEASE_RESULT": "success",
+        "RUNNER_TEMP": str(tmp_path),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("WOW_RELEASE_CONTROL_DSN", raising=False)
+    with pytest.raises(RuntimeError, match="WORKER_EXISTING_DEPLOY_REQUIRES_FENCED_RECONCILIATION"):
+        module.run()
+    assert not any(method == "POST" for method, _ in calls)
+    assert not (tmp_path / "wow-render-worker-deploy-receipt.json").exists()
