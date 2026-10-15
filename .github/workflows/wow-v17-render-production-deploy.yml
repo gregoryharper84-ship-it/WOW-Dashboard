@@ -316,17 +316,12 @@ jobs:
               return [deploy for deploy in list_deploys() if commit_sha(deploy) == target_sha]
 
           existing = exact_target_deploys()
-          for deploy in existing:
-              if str(deploy.get("status") or "") == "live":
-                  emit_receipt({
-                      "status":"EXACT_SHA_ALREADY_LIVE",
-                      "commit_sha":target_sha,
-                      "deploy_id":str(deploy.get("id") or ""),
-                      "deploy_authority":"GOVERNED_RENDER_API_HANDOFF",
-                      "required_checks":sorted(required),
-                      "can_execute":False,
-                  })
-                  raise SystemExit(0)
+          # An observed Render LIVE revision is not independently approved
+          # merely because its commit matches main. The protected release
+          # DB must reconcile a matching reservation and verified QA/Release
+          # acceptance before advancing durable deployment pointers.
+          if any(str(item.get("status") or "") == "live" for item in existing):
+              raise RuntimeError("PRIMARY_RELEASE_LIVE_REQUIRES_CERTIFIED_LEDGER_READBACK")
 
           terminal_failures = {
               "build_failed",
