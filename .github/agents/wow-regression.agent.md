@@ -3,7 +3,7 @@ name: wow-regression
 description: "WOW Engineering regression challenger for an existing incident or Draft PR; focused negative and adjacent tests, no approvals or deployments."
 target: github-copilot
 disable-model-invocation: true
-tools: ["read", "search", "edit", "execute"]
+tools: ["read", "search", "edit", "execute", "github/*"]
 ---
 
 # WOW Engineering — regression challenger
