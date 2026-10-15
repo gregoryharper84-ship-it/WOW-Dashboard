@@ -231,14 +231,14 @@ jobs:
                 reason=FORCED_OPENAI_SOURCE_EVIDENCE_UNAVAILABLE
               fi
             elif [ "$force" = "anthropic" ]; then
-              if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+              if secondary_usable; then
                 action=DISPATCH
                 provider=anthropic
                 reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
               else
                 action=SURVIVAL
                 provider=deterministic
-                reason=ANTHROPIC_AUTH_MISSING
+                reason=ANTHROPIC_AUTH_OR_RECOVERY_EVIDENCE_MISSING
               fi
             else
               latest=$(gh run list \
