@@ -11,6 +11,7 @@ class SharedAtomicStore:
     """Deterministic stand-in for the REQUIRED real DB-CAS store."""
     def __init__(self):
         self.reservation = None
+        self.counter = 0
         self.armed = False
         self.stored = []
         self.fail = False
@@ -26,8 +27,9 @@ class SharedAtomicStore:
             raise RuntimeError("database unavailable")
         if self.reservation is not None:
             return "IN_FLIGHT", None
+        self.counter += 1
         self.reservation = Reservation(
-            p.incident, "durable_intent_token_00000000001", p.main_sha,
+            p.incident, f"durable_intent_token_{self.counter:011d}", p.main_sha,
             p.action, p.pr_number, p.pr_head_sha, 5
         )
         if self.bad_reservation:
@@ -246,9 +248,12 @@ def test_prearm_stale_main_aborts_once_and_allows_new_intent():
     first = cycle(store=db, sender=sender, main=lambda: HEAD)
     assert first.code == "MAIN_CHANGED_BEFORE_DISPATCH"
     assert len(db.aborted) == 1 and db.reservation is None
+    first_token = db.aborted[0][0]
     assert sender.calls == 0
     second = cycle(store=db, sender=sender)
     assert second.attempted and sender.calls == 1
+    assert db.reservation.intent_id != first_token
+    assert db.aborted == [(first_token, "MAIN_CHANGED_BEFORE_DISPATCH")]
 
 
 def test_prearm_abort_denied_preserves_durable_hold():
