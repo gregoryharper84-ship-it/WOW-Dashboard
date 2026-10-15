@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -163,6 +164,15 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
             return int(value)
         return None
 
+    def offset_timestamp(value: Any) -> datetime | None:
+        if not nonempty(value):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None and parsed.utcoffset() is not None else None
+
     def typed(key: str, category: str) -> None:
         code = receipt.get(key)
         if code is None or code == "":
@@ -200,9 +210,9 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
             blockers.append("FAIL_PERSISTENCE:IMMUTABLE_ACTION_RECEIPT_MISSING")
         if action.get("readback_verified") is not True:
             blockers.append("FAIL_PERSISTENCE:ACTION_RECEIPT_READBACK_UNVERIFIED")
-        if action.get("freshness_verified") is not True or action.get("stale") is True:
+        if action.get("freshness_verified") is not True or action.get("stale") is not False:
             blockers.append("FAIL_ACTION_INVOCATION:ACTION_RECEIPT_STALE")
-        if action.get("replayed") is True:
+        if action.get("replayed") is not False:
             blockers.append("FAIL_ACTION_INVOCATION:ACTION_RECEIPT_REPLAYED")
         if action.get("can_execute") is not False:
             blockers.append("FAIL_GOVERNANCE:ACTION_RECEIPT_EXECUTION_INVALID")
@@ -215,11 +225,31 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
         blockers.append("FAIL_PROP_ACQUISITION:ACQUIRED_COUNT_UNVERIFIED")
     if not isinstance(source, dict) or not (
         nonempty(source.get("source_snapshot_id")) and
-        nonempty(source.get("source_observed_at")) and
+        source.get("request_id") == request_id and
         source.get("acquired_row_count") == acquired and
-        source.get("source_accounted") is True
+        source.get("source_accounted") is True and
+        source.get("freshness_verified") is True
     ):
         blockers.append("FAIL_PROP_ACQUISITION:SOURCE_INVENTORY_EVIDENCE_MISSING")
+    # Source observation must precede the invoked Action and the displayed
+    # result, and must be correlated to that same request and source snapshot.
+    # A separate trusted host/QA check must authenticate issuer and freshness;
+    # these structures alone never prove live-host origin.
+    invoked_at = offset_timestamp(action.get("invoked_at")) if isinstance(action, dict) else None
+    observed_at = offset_timestamp(source.get("source_observed_at")) if isinstance(source, dict) else None
+    display = receipt.get("display_receipt")
+    displayed_at = offset_timestamp(display.get("displayed_at")) if isinstance(display, dict) else None
+    if invoked_at is None or observed_at is None or observed_at > invoked_at:
+        blockers.append("FAIL_PROP_ACQUISITION:SOURCE_TIMESTAMP_NOT_ATTESTED")
+    if displayed_at is None or invoked_at is None or displayed_at < invoked_at:
+        blockers.append("FAIL_RESPONSE_HANDOFF:DISPLAY_TIMESTAMP_NOT_ATTESTED")
+    if isinstance(action, dict) and isinstance(source, dict):
+        if action.get("source_snapshot_id") != source.get("source_snapshot_id"):
+            blockers.append("FAIL_PROP_ACQUISITION:ACTION_SOURCE_SNAPSHOT_MISMATCH")
+    if isinstance(display, dict) and isinstance(action, dict):
+        if display.get("immutable_receipt_hash") != action.get("immutable_receipt_hash"):
+            blockers.append("FAIL_RESPONSE_HANDOFF:DISPLAY_RECEIPT_HASH_MISMATCH")
+
     if receipt.get("source_ingestion_complete") is not True:
         blockers.append("FAIL_SOURCE_INGESTION:SOURCE_NOT_FULLY_RECONCILED")
     typed("source_ingestion_failure_code", "FAIL_SOURCE_INGESTION")
@@ -290,12 +320,13 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
                 valid_numbers = (
                     type(p) in (float, int) and type(lb) in (float, int) and
                     math.isfinite(p) and math.isfinite(lb) and
-                    0 <= lb <= p <= 1
+                    0 <= lb <= p < 1 and p > 0
                 )
                 if not (
                     nonempty(row.get("prediction_id")) and
                     nonempty(row.get("controlling_specialist")) and
-                    nonempty(row.get("model_artifact_checksum")) and
+                    isinstance(row.get("model_artifact_checksum"), str) and
+                    re.fullmatch(r"sha256:[0-9a-f]{64}", row["model_artifact_checksum"]) is not None and
                     row.get("terminal_authority") == TERMINAL_AUTHORITY and
                     row.get("calibration_status") == "PASS" and
                     row.get("probability_publishable") is True and
