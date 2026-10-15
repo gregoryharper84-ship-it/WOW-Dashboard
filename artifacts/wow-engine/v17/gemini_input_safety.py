@@ -20,6 +20,13 @@ _PATTERNS = (
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"(?i)\b(?:postgres|postgresql|mysql)://[^\s/@:]+:[^\s/@]+@"),
     re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    # Conservative U.S. PII patterns; not comprehensive DLP certification.
+    # SSN-like formatting, including the exact synthetic forms in QA findings.
+    re.compile(r"(?<!\d)\d{3}[- ]\d{2}[- ]\d{4}(?!\d)"),
+    re.compile(r"(?i)\b(?:ssn|social security(?: number)?)\s*[:#-]?\s*\d{3}[- ]?\d{2}[- ]?\d{4}\b"),
+    # U.S. ten-digit phone numbers, with optional country code and delimiters.
+    re.compile(r"(?<![A-Za-z0-9])(?:\+?1[\s.()-]*)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)"),
+
 )
 
 
