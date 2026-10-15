@@ -153,7 +153,9 @@ def test_sql_candidate_has_rls_service_role_rpc_and_no_reset_procedure():
     assert "to service_role" in sql
     assert "from public, anon, authenticated" in sql
     assert "check_writer_lease" in sql
-    assert "on conflict (incident_id) do nothing" in sql
+    assert "on conflict do nothing" in sql
+    assert "wow_engineering_continuity_outbox_active_incident" in sql
+    assert "where state <> 'PREARM_ABORTED'" in sql
     assert "state='RESERVED'" in sql
     assert "where incident_id=p_incident_id and intent_id=p_intent_id" in sql
     assert "truncate public.wow_engineering_continuity_outbox" not in sql.lower()
@@ -168,7 +170,8 @@ def test_outbox_sql_is_single_nonduplicated_closed_contract():
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_reserve(") == 1
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_arm(") == 1
     assert sql.count("create or replace function public.wow_engineering_continuity_outbox_mark(") == 1
-    assert sql.count("end $$;") == 3
+    assert sql.count("create or replace function public.wow_engineering_continuity_outbox_abort(") == 1
+    assert sql.count("end $$;") == 4
     assert "and pr_head_sha ~ '^[0-9a-f]{40}$')" in sql
     assert "and p_pr_head_sha ~ '^[0-9a-f]{40}$')" in sql
     # Never allow regex literals to be split across lines, or a duplicate
@@ -178,3 +181,44 @@ def test_outbox_sql_is_single_nonduplicated_closed_contract():
         "-- a separate independently reviewed reconciliation design must be certified."
     )
     assert "TRUNCATE public.wow_engineering_continuity_outbox" not in sql
+
+
+def test_prearm_abort_routed_to_atomic_rpc_only():
+    t = RPCTransport(True, RESERVED, True)
+    db = store(t)
+    status, r = db.reserve(PROPOSAL)
+    assert status == "RESERVED"
+    assert db.abort_unarmed(r, "MAIN_CHANGED_BEFORE_DISPATCH") is True
+    assert [u.rsplit("/", 1)[-1] for u in t.urls] == [
+        "wow_engineering_check_writer_lease",
+        "wow_engineering_continuity_outbox_reserve",
+        "wow_engineering_continuity_outbox_abort",
+    ]
+    assert t.request_bodies[-1]["p_reason"] == "MAIN_CHANGED_BEFORE_DISPATCH"
+    assert t.request_bodies[-1]["p_epoch"] == CLAIM.epoch
+
+
+def test_invalid_prearm_abort_reason_never_calls_rpc():
+    db, t = store(RPCTransport()), RPCTransport()
+    db.transport = t
+    r = Reservation(1739, NONCE, SHA, "DISPATCH_NEW_REPAIR", None, None, 4)
+    with pytest.raises(OutboxProtocolError, match="OUTBOX_ABORT_REASON_INVALID"):
+        db.abort_unarmed(r, "ATTEMPT_AMBIGUOUS")
+    assert t.urls == []
+
+
+def test_prearm_abort_wrong_epoch_never_calls_rpc():
+    t = RPCTransport()
+    db = store(t)
+    r = Reservation(1739, NONCE, SHA, "DISPATCH_NEW_REPAIR", None, None, 5)
+    with pytest.raises(OutboxProtocolError, match="OUTBOX_WRITER_EPOCH_MISMATCH"):
+        db.abort_unarmed(r, "MAIN_CHANGED_BEFORE_DISPATCH")
+    assert t.urls == []
+
+
+def test_prearm_abort_server_denial_fails_closed():
+    t = RPCTransport(False)
+    db = store(t)
+    r = Reservation(1739, NONCE, SHA, "DISPATCH_NEW_REPAIR", None, None, 4)
+    assert db.abort_unarmed(r, "MAIN_CHANGED_BEFORE_DISPATCH") is False
+    assert len(t.urls) == 1
