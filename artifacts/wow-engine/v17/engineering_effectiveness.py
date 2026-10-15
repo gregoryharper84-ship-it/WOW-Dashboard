@@ -317,7 +317,7 @@ def evaluate_golden_user_journey(receipt: Any) -> dict[str, Any]:
         blockers.append("FAIL_GOVERNANCE:TERMINAL_AUTHORITY_MISMATCH")
     if receipt.get("can_execute") is not False:
         blockers.append("FAIL_GOVERNANCE:CAN_EXECUTE_MUST_BE_FALSE")
-    if receipt.get("llm_substitution") is True or receipt.get("probability_source") in (
+    if receipt.get("llm_substitution") is not False or receipt.get("probability_source") in (
         "SPORTSBOOK_IMPLIED", "LLM_ESTIMATE", "EXTERNAL_PREDICTION", "HIT_RATE"
     ):
         blockers.append("FAIL_GOVERNANCE:UNFITTED_PROBABILITY_SUBSTITUTION")
@@ -326,6 +326,8 @@ def evaluate_golden_user_journey(receipt: Any) -> dict[str, Any]:
     if governed_rows is None:
         governed_rows = 0
         blockers.append("FAIL_GOVERNED_SCORING:VALID_GOVERNED_ROW_COUNT_INVALID")
+    if type(receipt.get("empty_slate_proven")) is not bool:
+        blockers.append("FAIL_PROP_ACQUISITION:EMPTY_SLATE_ATTESTATION_INVALID")
     explicit_empty = receipt.get("empty_slate_proven") is True
     if counts[1] is not None and governed_rows > counts[1]:
         blockers.append("FAIL_GOVERNED_SCORING:GOVERNED_COUNT_EXCEEDS_COMPLETED")
