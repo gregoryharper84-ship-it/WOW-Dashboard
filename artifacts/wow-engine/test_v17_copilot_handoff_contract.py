@@ -113,6 +113,16 @@ class HandoffContractTests(unittest.TestCase):
             with self.subTest(change_class=value):
                 self.assertIn("GOVERNED_CHANGE_REQUIRES_INDEPENDENT_APPROVAL", self.check(data)["reasons"])
 
+    def test_malformed_json_fields_fail_closed_without_type_errors(self):
+        for field in ("change_class", "severity"):
+            for value in ([], {}, 42, None):
+                data = packet()
+                data[field] = value
+                with self.subTest(field=field, value=value):
+                    result = self.check(data)
+                    self.assertIn("CHANGE_CLASS_INVALID" if field == "change_class" else "SEVERITY_INVALID",
+                                  result["reasons"])
+
     def test_duplicate_paths_rejected(self):
         data = packet()
         data["allowed_paths"] *= 2
