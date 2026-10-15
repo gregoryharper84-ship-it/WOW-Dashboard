@@ -30,7 +30,7 @@ def test_summary_flags_do_not_authorize_missing_or_forged_proof(path, value, cod
     receipt = deepcopy(_synthetic_golden_evidence())
     receipt[path] = value
     outcome = evaluate_golden_user_journey(receipt)
-    assert outcome["status"] != "PASS", path
+    assert outcome["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY"), path
     assert any(part.startswith(code) for part in outcome["blockers"]), outcome
 
 
@@ -51,7 +51,7 @@ def test_action_receipt_missing_provenance_rejects_pass(key, value):
     receipt = deepcopy(_synthetic_golden_evidence())
     receipt["action_receipt"][key] = value
     result = evaluate_golden_user_journey(receipt)
-    assert result["status"] != "PASS"
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
     assert result["can_execute"] is False
 
 
@@ -86,15 +86,15 @@ def test_each_producer_failure_retains_its_typed_code_and_stage(key, value, stag
 def test_partial_acquisition_and_false_empty_slate_are_not_passes():
     evidence = _synthetic_golden_evidence(empty=True)
     evidence["source_inventory_evidence"]["empty_slate_verified"] = False
-    assert evaluate_golden_user_journey(evidence)["status"] != "PASS"
+    assert evaluate_golden_user_journey(evidence)["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
     nonempty = _synthetic_golden_evidence()
     nonempty["acquired_row_count"] = 0
-    assert evaluate_golden_user_journey(nonempty)["status"] != "PASS"
+    assert evaluate_golden_user_journey(nonempty)["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
 
 
 def test_success_requires_every_correlated_receipt():
-    assert evaluate_golden_user_journey(_synthetic_golden_evidence())["status"] == "PASS"
-    assert evaluate_golden_user_journey(_synthetic_golden_evidence(empty=True))["status"] == "PASS"
+    assert evaluate_golden_user_journey(_synthetic_golden_evidence())["status"] == "STRUCTURAL_PASS_ONLY"
+    assert evaluate_golden_user_journey(_synthetic_golden_evidence(empty=True))["status"] == "STRUCTURAL_PASS_ONLY"
 
 
 @pytest.mark.parametrize(
@@ -123,7 +123,7 @@ def test_governed_row_count_without_numeric_receipt_cannot_pass():
     evidence["governed_row_receipts"] = []
     result = evaluate_golden_user_journey(evidence)
     assert "FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPTS_MISSING" in result["blockers"]
-    assert result["status"] != "PASS"
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
 
 
 @pytest.mark.parametrize("flag,value", [
@@ -140,7 +140,7 @@ def test_malformed_or_missing_replay_attestations_are_not_false(flag, value):
     else:
         evidence["action_receipt"][flag] = value
     result = evaluate_golden_user_journey(evidence)
-    assert result["status"] != "PASS"
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
     assert any("ACTION_RECEIPT_" in blocker for blocker in result["blockers"])
 
 
@@ -164,7 +164,7 @@ def test_source_inventory_must_bind_to_the_current_request(key, value):
     evidence = deepcopy(_synthetic_golden_evidence())
     evidence["source_inventory_evidence"][key] = value
     result = evaluate_golden_user_journey(evidence)
-    assert result["status"] != "PASS"
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
     assert any(b.startswith("FAIL_PROP_ACQUISITION:") for b in result["blockers"])
 
 
