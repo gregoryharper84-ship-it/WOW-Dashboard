@@ -122,3 +122,93 @@ def test_stale_render_live_bypasses_no_current_main_recheck():
     assert script.count("require_current_main_for_live_receipt()") == 3
     assert stale.count("require_current_main_for_live_receipt()") == 2
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in script
+
+
+
+def _restricted_db_preflight_script():
+    import textwrap
+
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    step = workflow.split(
+        "      - name: Fail closed if restricted worker release-control database is not authorized",
+        1,
+    )[1].split("      - name: Verify protected-main gates and deploy exact SHA", 1)[0]
+    return textwrap.dedent(
+        step.split("          python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    )
+
+
+def test_restricted_db_approval_runs_before_first_render_deploy():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    attest = workflow.index("      - name: Fail closed if restricted worker release-control database is not authorized")
+    render = workflow.index("      - name: Verify protected-main gates and deploy exact SHA")
+    assert attest < render
+    assert "WOW_RELEASE_CONTROL_DSN" in workflow[attest:render]
+    assert "WOW_RELEASE_CONTROL_PROJECT_REF" in workflow[attest:render]
+    assert "RENDER_RELEASE_CONTROL_DB_PREFLIGHT_DENIED" in workflow[attest:render]
+    assert "RENDER_RELEASE_CONTROL_DB_PREFLIGHT_PASS" in workflow[attest:render]
+    assert "python -m pip install 'psycopg[binary]==3.2.10'" in workflow[attest:render]
+    assert "/services/" not in workflow[attest:render]
+    assert "POST" not in workflow[attest:render]
+
+
+def test_restricted_db_preflight_matches_sql_declared_service():
+    import ast
+
+    script = _restricted_db_preflight_script()
+    assert "wow_release_control.release_control_identity" in script
+    assert "wow_release_controller" in script
+    assert "srv-dapkbc0473hc73c1978g" in script
+    assert "authorized is not True" in script
+    ast.parse(script)
+
+
+def test_restricted_db_preflight_denies_unapproved_identity_without_secrets(monkeypatch, capsys):
+    import sys
+    import types
+
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def cursor(self): return self
+        def execute(self, *args): pass
+        def fetchall(self):
+            return [(
+                "wow_release_controller", "iczfhsmjrrafhvcpmqhr",
+                "production", "srv-dapkbc0473hc73c1978g",
+                False, None, None,
+            )]
+
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(connect=lambda *args, **kwargs: Conn()))
+    monkeypatch.setenv("WOW_RELEASE_CONTROL_PROJECT_REF", "iczfhsmjrrafhvcpmqhr")
+    monkeypatch.setenv("WOW_RELEASE_CONTROL_DSN", "private://do-not-log-this-token")
+    import pytest
+    with pytest.raises(SystemExit) as raised:
+        exec(compile(_restricted_db_preflight_script(), "<release-db-preflight>", "exec"), {"__name__": "__main__"})
+    assert raised.value.code == 1
+    output = capsys.readouterr().out
+    assert "RENDER_RELEASE_CONTROL_DB_PREFLIGHT_DENIED:ValueError" in output
+    assert "do-not-log-this-token" not in output
+
+
+def test_restricted_db_preflight_accepts_only_independently_approved_role(monkeypatch, capsys):
+    import sys
+    import types
+
+    class Conn:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def cursor(self): return self
+        def execute(self, *args): pass
+        def fetchall(self):
+            return [(
+                "wow_release_controller", "iczfhsmjrrafhvcpmqhr",
+                "production", "srv-dapkbc0473hc73c1978g",
+                True, "independent-dba", "2026-10-14T23:00:00Z",
+            )]
+
+    monkeypatch.setitem(sys.modules, "psycopg", types.SimpleNamespace(connect=lambda *args, **kwargs: Conn()))
+    monkeypatch.setenv("WOW_RELEASE_CONTROL_PROJECT_REF", "iczfhsmjrrafhvcpmqhr")
+    monkeypatch.setenv("WOW_RELEASE_CONTROL_DSN", "private://not-real")
+    exec(compile(_restricted_db_preflight_script(), "<release-db-preflight>", "exec"), {"__name__": "__main__"})
+    assert "RENDER_RELEASE_CONTROL_DB_PREFLIGHT_PASS" in capsys.readouterr().out
