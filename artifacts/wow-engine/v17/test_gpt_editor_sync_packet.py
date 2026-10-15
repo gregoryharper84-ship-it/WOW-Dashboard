@@ -187,3 +187,40 @@ def test_packet_is_deterministic_for_same_repository_content():
     packet_b, manifest_b = module.build_packet()
     assert packet_a == packet_b
     assert manifest_a == manifest_b
+
+
+def test_exported_editor_packet_includes_exact_validated_schema(tmp_path, monkeypatch):
+    """Prevent false-complete artifacts that omit the Action import payload."""
+    import json
+
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--output-dir", str(tmp_path)])
+    module.main()
+
+    manifest = json.loads((tmp_path / "WOW_V17_GPT_EDITOR_SYNC_MANIFEST.json").read_text(encoding="utf-8"))
+    schema_name = manifest["action_schema_output_file"]
+    assert schema_name == "openapi.wow-betting-engine.v17.yaml"
+    schema_bytes = (tmp_path / schema_name).read_bytes()
+    assert schema_bytes == SCHEMA.read_bytes()
+    assert hashlib.sha256(schema_bytes).hexdigest() == manifest["action_schema_sha256"]
+    assert schema_bytes.count(b"operationId:") == manifest["action_operation_count"] == 27
+
+    instructions_bytes = (tmp_path / "WOW_V17_GPT_EDITOR_SYNC_PACKET.txt").read_bytes()
+    knowledge_bytes = (tmp_path / module.PRIZEPICKS_KNOWLEDGE_FILENAME).read_bytes()
+    assert instructions_bytes == module.INSTRUCTIONS.read_bytes().rstrip() + b"\\n"
+    assert knowledge_bytes == module.PRIZEPICKS_ADDENDUM.read_bytes()
+    assert manifest["editor_update_required"] is True
+    assert manifest["live_editor_verified"] is False
+    assert manifest["can_execute"] is False
+
+
+def test_editor_install_instructions_match_actual_action_count():
+    """Avoid instructing a user to import an incomplete stale operation set."""
+    sync_doc = (module.ENGINE / "V17_CUSTOM_GPT_EDITOR_SYNC.md").read_text(encoding="utf-8")
+    schema = SCHEMA.read_text(encoding="utf-8")
+    assert schema.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 27
+    assert "all **27** WOW operations" in sync_doc
+    assert "single canonical 27-operation Action schema" in sync_doc
+    assert "24-operation" not in sync_doc
+    assert "all **24**" not in sync_doc
+    assert "openapi.wow-betting-engine.v17.yaml" in sync_doc
+    assert "saved/reloaded" in sync_doc
