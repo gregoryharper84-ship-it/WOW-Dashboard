@@ -171,3 +171,52 @@ def test_protocol_source_enforces_transactional_receipts_and_private_schema():
     assert "SCOUT_PERSIST_LEGACY_PARTIAL_REQUIRES_RECONCILIATION" in helper
     assert "PRIMARY KEY (research_run_id,chunk_index)" in sql
     assert "REVOKE ALL" in sql
+
+
+def test_private_ledger_sql_well_formed():
+    """Guard against accidental JS string interpolation/duplicate SQL tails.
+
+    This checks structure; release also requires an independent PostgreSQL
+    DDL transaction in an isolated environment before migration approval.
+    """
+    root = Path(__file__).resolve().parent
+    script = (root / "v17/sql/20261015_scout_persistence_checkpoint_receipts.sql").read_text()
+    assert script.count("CREATE TABLE IF NOT EXISTS wow_scout.persist_upload_sessions") == 1
+    assert script.count("CREATE TABLE IF NOT EXISTS wow_scout.persist_chunk_receipts") == 1
+    assert script.count("REVOKE ALL ON TABLE") == 2
+    assert script.count("COMMENT ON TABLE") == 1
+    assert "header_sha256 text NOT NULL CHECK (header_sha256 ~ '^[a-f0-9]{64}$')," in script
+    assert "content_sha256 text NOT NULL CHECK (content_sha256 ~ '^[a-f0-9]{64}$')," in script
+    assert "\n),\n" not in script
+    assert script.rstrip().endswith("delivered.';")
+
+    # Exclude single quoted strings and SQL line comments; catch unterminated
+    # literals, unmatched parens and accidentally appended stray fragments.
+    clean = []
+    in_string = False
+    for line in script.splitlines():
+        if not in_string and line.lstrip().startswith("--"):
+            continue
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if ch == "'":
+                if in_string and i + 1 < len(line) and line[i + 1] == "'":
+                    i += 2
+                    continue
+                in_string = not in_string
+            elif not in_string:
+                if line[i:i+2] == "--":
+                    break
+                clean.append(ch)
+            i += 1
+    assert not in_string, "unterminated SQL literal"
+    depth = 0
+    for char in clean:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            assert depth >= 0, "unexpected closing parenthesis"
+    assert depth == 0, "unclosed SQL parenthesis"
+    assert "".join(clean).count(";") == 5, "unexpected SQL statement duplication"
