@@ -145,6 +145,9 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
     """Fail closed on actual Action, source, persistence and displayed receipt proof.
 
     Boolean stage summaries alone are NOT a production acceptance certificate.
+    Even complete-shaped receipts can only produce STRUCTURAL_PASS_ONLY; the
+    trusted production-host verifier must independently authenticate their
+    provenance before the product can be labeled healthy.
     Proof below must originate from independently checked production evidence;
     this function validates its structure and consistency, not its issuer's
     credentials. Only authorized QA can attest that external origin.
@@ -339,13 +342,19 @@ def evaluate_golden_user_journey(receipt: dict[str, Any]) -> dict[str, Any]:
     # The first typed boundary remains the reported status.
     blockers = list(dict.fromkeys(blockers))
     return {
-        "status": "PASS" if not blockers else (
+        "status": "STRUCTURAL_PASS_ONLY" if not blockers else (
             blockers[0].split(":", 1)[0]
             if blockers[0].startswith("FAIL_") else
             "FAIL_SOURCE_INGESTION" if blockers[0].startswith("SOURCE_PAGE_") else
             "FAIL_GOVERNED_SCORING"
         ),
         "blockers": blockers,
+        # Structural validation alone cannot authenticate an external issuer,
+        # production GPT editor, real scoring request, or independent QA.
+        # A live production acceptance authority must verify these separately.
+        "evidence_scope": "STRUCTURAL_ONLY",
+        "production_verified": False,
+        "independent_qa_verified": False,
         "valid_governed_row_count": governed_rows,
         "empty_slate_proven": explicit_empty,
         "can_execute": False,
