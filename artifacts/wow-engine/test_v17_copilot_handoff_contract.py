@@ -63,6 +63,21 @@ class HandoffContractTests(unittest.TestCase):
         data["incident_id"] = True
         self.assertIn("INCIDENT_ID_INVALID", self.check(data)["reasons"])
 
+    def test_missing_or_non_string_live_main_fails_closed(self):
+        for value in (None, 123, False):
+            with self.subTest(value=value):
+                self.assertIn("MAIN_SHA_STALE", self.check(packet(), sha=value)["reasons"])
+
+    def test_governance_codeowners_paths_rejected(self):
+        for path in ("artifacts/wow-engine/v17/agent_identity_policy.py",
+                     "artifacts/wow-engine/v17/engineering_dispatch_queue.py",
+                     "artifacts/wow-engine/requirements.txt",
+                     "artifacts/flask-scoring-api/requirements.txt"):
+            data = packet()
+            data["allowed_paths"] = [path]
+            with self.subTest(path=path):
+                self.assertIn("PROTECTED_PATH_REQUIRES_GOVERNED_REVIEW", self.check(data)["reasons"])
+
     def test_fails_closed_when_main_moves(self):
         self.assertIn("MAIN_SHA_STALE", self.check(packet(), sha="c" * 40)["reasons"])
 
