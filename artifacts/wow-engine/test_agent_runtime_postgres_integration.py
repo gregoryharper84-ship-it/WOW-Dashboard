@@ -505,15 +505,42 @@ def test_continuity_outbox_live_postgres_group_and_lease_fences():
             assert conn.execute(
                 rpc + "arm(%s,%s::uuid,%s,%s)", (a, iid_a, owner_a, 2)
             ).fetchone()[0] is False
-            assert conn.execute(
-                rpc + "arm(%s,%s::uuid,%s,%s)", (b, iid_b, owner_b, 5)
-            ).fetchone()[0] is True
+            # Real two-session interleaving: ARM holds the authoritative lease
+            # row lock until transaction commit; a competing takeover UPDATE
+            # must block. No local process mutex or mocked DB is involved.
+            from concurrent.futures import ThreadPoolExecutor
+            from threading import Event
+            from time import sleep
+            started = Event()
+
+            def take_over_lease():
+                with psycopg.connect(dsn, autocommit=True) as second_conn:
+                    second_conn.execute("set statement_timeout='5000ms'")
+                    started.set()
+                    second_conn.execute("""
+                        update public.wow_engineering_incident_writer_leases
+                        set epoch=6,owner_id='github-actions:987656:1:charlie'
+                        where incident_id=%s
+                    """, (b,))
+                    return second_conn.execute("""
+                        select epoch from public.wow_engineering_incident_writer_leases
+                        where incident_id=%s
+                    """, (b,)).fetchone()[0]
+
+            conn.execute("begin")
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                try:
+                    assert conn.execute(
+                        rpc + "arm(%s,%s::uuid,%s,%s)", (b, iid_b, owner_b, 5)
+                    ).fetchone()[0] is True
+                    future = pool.submit(take_over_lease)
+                    assert started.wait(2)
+                    sleep(0.15)
+                    assert not future.done(), "lease takeover bypassed held RPC row lock"
+                finally:
+                    conn.execute("commit")  # release lease lock even on assertion failure
+                assert future.result(timeout=5) == 6
             # Once armed, the old attempt stays held and cannot be reclaimed.
-            conn.execute("""
-                update public.wow_engineering_incident_writer_leases
-                set epoch=6,owner_id='github-actions:987656:1:charlie'
-                where incident_id=%s
-            """, (b,))
             assert conn.execute(
                 rpc + "reclaim(%s,%s::uuid,%s,%s)",
                 (b,iid_b,"github-actions:987656:1:charlie",6),
