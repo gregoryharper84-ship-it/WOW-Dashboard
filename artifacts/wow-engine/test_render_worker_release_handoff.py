@@ -122,7 +122,8 @@ def test_intent_reconciles_observed_deployment():
     sha = "a" * 40
     row = {"service_id": module.WORKER_SERVICE, "target_sha": sha, "state": "ACK_AMBIGUOUS"}
     active = {"id": "dep-live", "commit": {"id": sha}, "status": "live"}
-    assert module.reconcile_intent(row, [active], sha) == ("LIVE_VERIFIED", active)
+    # Replaying a provider LIVE response is not a durable DB-fenced approval.
+    assert module.reconcile_intent(row, [active], sha) == ("RECONCILIATION_REQUIRED", active)
 
 
 def test_intent_rejects_cross_service_and_cross_revision():
