@@ -321,10 +321,24 @@ jobs:
                   break
 
           if active is None:
+              # Fail closed if protected main moved during the provider-list
+              # inspection. A branch-default Render POST is not an exact-SHA
+              # release and must never be substituted for the verified commit.
+              latest_main_before_post = str(
+                  ((github_json("/branches/main").get("commit") or {}).get("sha")) or ""
+              )
+              if latest_main_before_post != target_sha:
+                  emit_receipt({
+                      "status": "STALE_SHA_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "current_main_sha": latest_main_before_post,
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
               created = render_json(
                   "POST",
                   f"/services/{service_path}/deploys",
-                  {"clearCache":"do_not_clear"},
+                  {"clearCache":"do_not_clear", "commitId":target_sha},
               )
               created_deploy = created
               if isinstance(created, dict) and isinstance(created.get("deploy"), dict):
