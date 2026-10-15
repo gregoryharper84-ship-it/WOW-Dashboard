@@ -102,6 +102,8 @@ def test_success_requires_every_correlated_receipt():
     [
         ("calibrated_probability", float("nan")),
         ("calibrated_probability_lower_bound", 0.99),
+    ("calibrated_probability_lower_bound", 0),
+    ("calibrated_probability_lower_bound", -0.00001),
         ("model_artifact_checksum", ""),
         ("controlling_specialist", None),
         ("terminal_authority", "CHATGPT"),
