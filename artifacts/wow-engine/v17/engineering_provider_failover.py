@@ -170,10 +170,17 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
             provider=provider_key or "unknown",
             code=delivery_code,
             failover_eligible=eligible,
-            circuit_breaker_minutes=-1 if provider_code in OPENAI_RECOVERY_REQUIRED else 120 if eligible else 0,
+            # Explicit governance HOLD is authoritative even if the same
+            # log also includes a provider quota symptom.
+            circuit_breaker_minutes=(
+                0 if blocked else -1 if provider_code in OPENAI_RECOVERY_REQUIRED
+                else 120 if eligible else 0
+            ),
             disposition="BLOCKED_WITH_EXACT_REASON" if blocked else "UNRESOLVED_TYPED_FAILURE",
             provider_signal=provider_code,
-            manual_recovery_required=provider_code in OPENAI_RECOVERY_REQUIRED,
+            manual_recovery_required=(
+                not blocked and provider_code in OPENAI_RECOVERY_REQUIRED
+            ),
         )
 
     for code, needles in patterns:
