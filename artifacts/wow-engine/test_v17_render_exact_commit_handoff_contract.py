@@ -114,7 +114,7 @@ def test_both_live_render_receipt_paths_recheck_current_main():
 def test_stale_render_live_bypasses_no_current_main_recheck():
     script = _script()
     stale = script.replace(
-        'if status == "live":\\n            require_current_main_for_live_receipt()',
+        'if status == "live":\n            require_current_main_for_live_receipt()',
         'if status == "live":',
     )
     # Mutation removes one of the two call sites; it must be observable.
