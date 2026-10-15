@@ -357,7 +357,7 @@ def evaluate_golden_user_journey(receipt: Any) -> dict[str, Any]:
                     type(p) in (float, int) and type(lb) in (float, int) and
                     # Bound comparisons reject NaN, infinities and huge
                     # integers without coercing an unbounded int to float.
-                    0 <= lb <= p < 1 and p > 0
+                    0 < lb <= p < 1
                 )
                 if not (
                     nonempty(row.get("prediction_id")) and
