@@ -47,16 +47,27 @@ create or replace function wow_release_control.claim_render_worker_deploy(
   p_service_id text, p_target_sha text, p_owner_run_id text,
   p_lease_seconds integer default 300
 ) returns table(state text, lease_token bigint, can_initiate boolean)
-language plpgsql security invoker
+language plpgsql security definer
 set search_path = pg_catalog, wow_release_control
 as $$
 declare v wow_release_control.render_worker_deploy_intents%rowtype;
+        v_in_flight_sha text;
 begin
   if p_service_id <> 'srv-dapkbc0473hc73c1978g'
      or p_target_sha !~ '^[0-9a-f]{40}$'
      or nullif(p_owner_run_id,'') is null
      or p_lease_seconds not between 30 and 900 then
     raise exception 'WORKER_DEPLOY_CLAIM_INPUT_INVALID';
+  end if;
+  -- Serialize every target revision for this Render worker service.
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_service_id, 0));
+  select target_sha into v_in_flight_sha
+    from wow_release_control.render_worker_deploy_intents
+   where service_id=p_service_id and target_sha<>p_target_sha
+     and state in ('INITIATING','ACK_AMBIGUOUS','DEPLOYING','HOLD')
+   limit 1 for update;
+  if found then
+    raise exception 'WORKER_PREVIOUS_SHA_IN_FLIGHT_RECONCILE_ONLY';
   end if;
   insert into wow_release_control.render_worker_deploy_intents
       (service_id,target_sha,state)
@@ -88,11 +99,15 @@ create or replace function wow_release_control.record_render_worker_deploy(
   p_service_id text, p_target_sha text, p_owner_run_id text,
   p_lease_token bigint, p_state text, p_render_deploy_id text default null
 ) returns boolean
-language plpgsql security invoker
+language plpgsql security definer
 set search_path = pg_catalog, wow_release_control
 as $$
 declare v wow_release_control.render_worker_deploy_intents%rowtype;
 begin
+  if p_service_id <> 'srv-dapkbc0473hc73c1978g'
+     or p_target_sha !~ '^[0-9a-f]{40}$' then
+    raise exception 'WORKER_DEPLOY_RECORD_TARGET_INVALID';
+  end if;
   if p_state not in ('ACK_AMBIGUOUS','DEPLOYING','LIVE_VERIFIED','HOLD') then
     raise exception 'WORKER_DEPLOY_TRANSITION_INVALID';
   end if;
@@ -137,10 +152,14 @@ create or replace function wow_release_control.renew_render_worker_deploy(
   p_service_id text, p_target_sha text, p_owner_run_id text,
   p_lease_token bigint, p_lease_seconds integer default 300
 ) returns boolean
-language plpgsql security invoker
+language plpgsql security definer
 set search_path=pg_catalog,wow_release_control
 as $$
 begin
+  if p_service_id <> 'srv-dapkbc0473hc73c1978g'
+     or p_target_sha !~ '^[0-9a-f]{40}$' then
+    raise exception 'WORKER_DEPLOY_RENEW_TARGET_INVALID';
+  end if;
   if p_lease_seconds not between 30 and 900 then
     raise exception 'WORKER_DEPLOY_RENEW_DURATION_INVALID';
   end if;
@@ -194,28 +213,19 @@ begin
   ) then
     execute 'create policy wow_release_intents_select on wow_release_control.render_worker_deploy_intents for select to wow_release_controller using (service_id = ''srv-dapkbc0473hc73c1978g'')';
   end if;
-  if not exists (
-    select 1 from pg_catalog.pg_policies
-     where schemaname='wow_release_control'
-       and tablename='render_worker_deploy_intents'
-       and policyname='wow_release_intents_insert'
-  ) then
-    execute 'create policy wow_release_intents_insert on wow_release_control.render_worker_deploy_intents for insert to wow_release_controller with check (service_id = ''srv-dapkbc0473hc73c1978g'')';
-  end if;
-  if not exists (
-    select 1 from pg_catalog.pg_policies
-     where schemaname='wow_release_control'
-       and tablename='render_worker_deploy_intents'
-       and policyname='wow_release_intents_update'
-  ) then
-    execute 'create policy wow_release_intents_update on wow_release_control.render_worker_deploy_intents for update to wow_release_controller using (service_id = ''srv-dapkbc0473hc73c1978g'') with check (service_id = ''srv-dapkbc0473hc73c1978g'')';
-  end if;
+  -- Direct table mutation is forbidden to the release controller.
+  -- State transitions are only available through trusted-definer RPCs.
+
 end;
 $policy_gate$;
 
+-- Independent DBA must certify function ownership and privilege chain.
+-- SECURITY DEFINER functions must not be owned by the release login.
 grant usage on schema wow_release_control to wow_release_controller;
 grant select on wow_release_control.release_control_identity to wow_release_controller;
-grant select, insert, update on wow_release_control.render_worker_deploy_intents to wow_release_controller;
+revoke insert, update, delete, truncate, references, trigger
+  on wow_release_control.render_worker_deploy_intents from wow_release_controller;
+grant select on wow_release_control.render_worker_deploy_intents to wow_release_controller;
 grant execute on function wow_release_control.claim_render_worker_deploy(text,text,text,integer) to wow_release_controller;
 grant execute on function wow_release_control.record_render_worker_deploy(text,text,text,bigint,text,text) to wow_release_controller;
 grant execute on function wow_release_control.renew_render_worker_deploy(text,text,text,bigint,integer) to wow_release_controller;
