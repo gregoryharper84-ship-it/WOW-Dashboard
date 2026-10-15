@@ -29,6 +29,8 @@
 
 create table if not exists public.wow_engineering_continuity_outbox (
   incident_id bigint not null check (incident_id > 0),
+  -- Certified membership comes ONLY from the locked incident lease record.
+  lease_group text not null check (length(btrim(lease_group)) > 0),
   intent_id uuid primary key,
   main_sha text not null check (main_sha ~ '^[0-9a-f]{40}$'),
   action text not null check (action in ('DISPATCH_NEW_REPAIR','REPAIR_SAME_BRANCH')),
@@ -61,6 +63,11 @@ create table if not exists public.wow_engineering_continuity_outbox (
 create unique index if not exists wow_engineering_continuity_outbox_active_incident
 on public.wow_engineering_continuity_outbox (incident_id)
 where state <> 'PREARM_ABORTED';
+-- Two distinct incidents sharing the same verified conflict domain may not
+-- both have active dispatch intents. Partial UNIQUE serializes both reserves.
+create unique index if not exists wow_engineering_continuity_outbox_active_group
+on public.wow_engineering_continuity_outbox (lease_group)
+where state <> 'PREARM_ABORTED';
 alter table public.wow_engineering_continuity_outbox enable row level security;
 revoke all on public.wow_engineering_continuity_outbox from public, anon, authenticated;
 -- Deliberately DO NOT grant service_role direct table DML.
@@ -82,20 +89,26 @@ language plpgsql
 security definer
 set search_path = pg_catalog, public
 as $$
-declare row_record public.wow_engineering_continuity_outbox%rowtype;
+declare
+  row_record public.wow_engineering_continuity_outbox%rowtype;
+  authoritative_group text;
 begin
   -- Lock the authoritative lease row BEFORE touching the outbox.
   -- The installed claim/takeover RPC updates this exact incident row; row
   -- locking serializes lease takeover with the outbox CAS in ONE transaction.
   -- A nonlocking SELECT EXISTS lease check alone is a TOCTOU hazard.
-  perform 1 from public.wow_engineering_incident_writer_leases as lease
+  select lease.lease_group into authoritative_group
+  from public.wow_engineering_incident_writer_leases as lease
   where lease.incident_id=p_incident_id
     and lease.owner_id=p_owner_id
     and lease.epoch=p_epoch
     and lease.state='HELD'
     and lease.expires_at > clock_timestamp()
   for update;
-  if not found then return jsonb_build_object('status','LEASE_NOT_VERIFIED'); end if;
+  if not found or authoritative_group is null
+    or length(btrim(authoritative_group)) = 0 then
+    return jsonb_build_object('status','LEASE_NOT_VERIFIED');
+  end if;
   if p_intent_id is null or p_incident_id is null or p_incident_id <= 0
     or p_main_sha is null or p_main_sha !~ '^[0-9a-f]{40}$'
     or p_action is null or p_owner_id is null
@@ -115,10 +128,10 @@ begin
     return jsonb_build_object('status','LEASE_NOT_VERIFIED');
   end if;
   insert into public.wow_engineering_continuity_outbox
-    (incident_id,intent_id,main_sha,action,pr_number,pr_head_sha,
+    (incident_id,lease_group,intent_id,main_sha,action,pr_number,pr_head_sha,
      writer_owner_id,writer_epoch,state)
-  values (p_incident_id,p_intent_id,p_main_sha,p_action,p_pr_number,p_pr_head_sha,
-          p_owner_id,p_epoch,'RESERVED')
+  values (p_incident_id,authoritative_group,p_intent_id,p_main_sha,p_action,
+          p_pr_number,p_pr_head_sha,p_owner_id,p_epoch,'RESERVED')
   on conflict do nothing
   returning * into row_record;
   if not found then
@@ -127,6 +140,7 @@ begin
   return jsonb_build_object(
     'status','RESERVED',
     'incident',row_record.incident_id,
+    'lease_group',row_record.lease_group,
     'intent_id',row_record.intent_id,
     'main_sha',row_record.main_sha,
     'action',row_record.action,
