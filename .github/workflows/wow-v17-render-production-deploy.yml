@@ -113,7 +113,7 @@ jobs:
                   print("GITHUB_RELEASE_API_ERROR:" + json.dumps({
                       "endpoint": path.split("?")[0],
                       "status": exc.code,
-                      "message": str(details.get("message") or "")[:250],
+                      "message_category": ("RATE_LIMIT" if exc.code == 403 and exc.headers.get("x-ratelimit-remaining") == "0" else "ACCESS_DENIED" if exc.code == 403 else "HTTP_ERROR"),
                       "accepted_permissions": exc.headers.get("x-accepted-github-permissions"),
                       "rate_limit_remaining": exc.headers.get("x-ratelimit-remaining"),
                   }, sort_keys=True), flush=True)
