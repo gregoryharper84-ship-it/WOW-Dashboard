@@ -26,6 +26,9 @@ def test_allows_public_fixture():
     "SANITIZED record: SSN 123-45-6789",
     "SANITIZED record: (415) 555-0132",
     "SSN 123456789",
+    "person record: 123456789",
+    "123456789",
+    "unlabeled value 987654321 in sanitized notes",
     "social security number 123456789",
     "phone 4155550132",
     "+1 (415) 555-0132",
@@ -59,6 +62,8 @@ def test_social_security_or_phone_like_material_blocks_without_http(private_fixt
     "public:fixture",
     "sha256 " + "a" * 64,
     "API docs v1.4 release 2026",
+    "NWS observation date 20261015",
+    "METAR wind 01010KT vis 10SM",
 ])
 def test_public_weather_and_source_identifiers_still_pass_preflight(public_fixture):
     ensure_no_obvious_sensitive_material(public_fixture)
