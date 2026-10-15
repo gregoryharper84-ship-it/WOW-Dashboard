@@ -273,3 +273,27 @@ def test_non_object_receipts_fail_closed_before_any_field_access(value):
     assert result["production_verified"] is False
     assert result["independent_qa_verified"] is False
     assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, 0, None, {}, []])
+def test_malformed_llm_substitution_attestation_never_structurally_passes(value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    if value is None:
+        evidence.pop("llm_substitution", None)
+    else:
+        evidence["llm_substitution"] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
+    assert "FAIL_GOVERNANCE:UNFITTED_PROBABILITY_SUBSTITUTION" in result["blockers"]
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1, 0, None, []])
+def test_empty_slate_claim_requires_real_boolean(value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    if value is None:
+        evidence.pop("empty_slate_proven", None)
+    else:
+        evidence["empty_slate_proven"] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
+    assert "FAIL_PROP_ACQUISITION:EMPTY_SLATE_ATTESTATION_INVALID" in result["blockers"]
