@@ -28,6 +28,8 @@ conflict-group admission. **Research can be parallel read-only.**
 - Gemini Handoff: https://docs.google.com/document/d/1-9S8h5U98rDqurPZt-R8aEJFZRgaWfaALeZyT2U-BAI/edit
 - Notebook Source & Verification Index: https://docs.google.com/document/d/121j7EI5lEwvvvGesAEEDMURGCyj7eEnrwrYn3LJZAZM/edit
 - Activation tracking: https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1761
+- **Gemini Notebook (user-confirmed created):** https://gemini.google.com/notebook/1c561cad-82ee-416b-a43c-368e58daf11d
+  - Notebook identity registered; source imports, private sharing and citation-grounding are not yet independently verified.
 
 Google Gemini Apps can manage a Gemini Notebook through the
 `@Gemini Notebook` connected app where available. This PR cannot activate
