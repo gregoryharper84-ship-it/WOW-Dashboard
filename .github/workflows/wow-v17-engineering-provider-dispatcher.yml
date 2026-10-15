@@ -207,19 +207,20 @@ jobs:
                 probe_id=$(jq -r '.[0].databaseId // empty' <<<"$recent")
                 probe_result=$(jq -r '.[0].conclusion // empty' <<<"$recent")
                 if [ -n "$probe_id" ] && [ "$probe_result" = "failure" ]; then
-                  probe_code=$(classify_run "$probe_id" openai | jq -r '.code')
-                  case "$probe_code" in
-                    OPENAI_API_QUOTA_EXCEEDED|OPENAI_API_AUTH_FAILED|OPENAI_API_KEY_MISSING)
-                      action=SURVIVAL
-                      provider=deterministic
-                      reason="FORCED_OPENAI_RECOVERY_NOT_VERIFIED:${probe_code}"
-                      ;;
-                    *)
-                      action=DISPATCH
-                      provider=openai
-                      reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
-                      ;;
-                  esac
+                  # Use classifier's typed recovery contract. The workflow
+                  # must not duplicate provider-specific failure patterns.
+                  probe_classification=$(classify_run "$probe_id" openai)
+                  probe_code=$(jq -r '.code' <<<"$probe_classification")
+                  probe_manual_recovery=$(jq -r '.manual_recovery_required // false' <<<"$probe_classification")
+                  if [ "$probe_manual_recovery" = "true" ]; then
+                    action=SURVIVAL
+                    provider=deterministic
+                    reason="FORCED_OPENAI_RECOVERY_NOT_VERIFIED:${probe_code}"
+                  else
+                    action=DISPATCH
+                    provider=openai
+                    reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+                  fi
                 else
                   action=DISPATCH
                   provider=openai
