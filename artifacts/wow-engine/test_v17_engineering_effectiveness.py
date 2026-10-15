@@ -138,6 +138,7 @@ def _synthetic_golden_evidence(*, empty: bool = False) -> dict:
         },
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "probability_source": "GOVERNED_FITTED_SPECIALIST" if count else None,
+        "llm_substitution": False,
         "can_execute": False,
         "valid_governed_row_count": count,
         "governed_row_receipts": [] if empty else [{
