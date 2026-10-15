@@ -61,7 +61,20 @@ class ModelAssessment(StrictModel):
     findings: list[Finding] = Field(default_factory=list, max_length=40)
     contradictions: list[str] = Field(default_factory=list, max_length=20)
     missing_evidence: list[str] = Field(default_factory=list, max_length=30)
-    narrative: str = Field(max_length=5000)
+    narrative: str = Field(min_length=12, max_length=5000)
+
+    @model_validator(mode="after")
+    def explanation_required(self):
+        if not self.narrative.strip():
+            raise ValueError("EMPTY_ASSESSMENT_EXPLANATION")
+        return self
+
+
+class ReceiptEvidence(StrictModel):
+    source_id: str = Field(min_length=1, max_length=200)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    available_at: AwareDatetime
+    retrieved_at: AwareDatetime
 
 
 class PilotReceipt(StrictModel):
@@ -72,7 +85,12 @@ class PilotReceipt(StrictModel):
     outcome: Literal["CHALLENGER_FINDINGS_UNVERIFIED", "BLOCKED"]
     assessment: ModelAssessment | None = None
     blocker: str | None = None
-    source_ids: list[str]
+    source_ids: list[str] = Field(min_length=1, max_length=30)
+    evidence_provenance: list[ReceiptEvidence] = Field(min_length=1, max_length=30)
+    decision_time: AwareDatetime
+    task_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_id: str | None = None
+    sdk_version: str | None = None
     prompt_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     can_execute: Literal[False] = False
@@ -82,8 +100,19 @@ class PilotReceipt(StrictModel):
     def coherent_state(self):
         if self.outcome == "BLOCKED" and not self.blocker:
             raise ValueError("BLOCKER_REQUIRED")
-        if self.outcome == "CHALLENGER_FINDINGS_UNVERIFIED" and self.assessment is None:
-            raise ValueError("ASSESSMENT_REQUIRED")
+        if self.outcome == "CHALLENGER_FINDINGS_UNVERIFIED":
+            if self.assessment is None:
+                raise ValueError("ASSESSMENT_REQUIRED")
+            if not self.model_id:
+                raise ValueError("MODEL_ID_REQUIRED")
+        provenance_ids = [item.source_id for item in self.evidence_provenance]
+        if (len(set(self.source_ids)) != len(self.source_ids)
+                or len(set(provenance_ids)) != len(provenance_ids)
+                or set(self.source_ids) != set(provenance_ids)):
+            raise ValueError("RECEIPT_SOURCE_PROVENANCE_MISMATCH")
+        if any(item.available_at > self.decision_time or item.retrieved_at > self.decision_time
+               or item.available_at > item.retrieved_at for item in self.evidence_provenance):
+            raise ValueError("RECEIPT_POINT_IN_TIME_INVALID")
         if self.assessment:
             allowed = set(self.source_ids)
             for item in self.assessment.findings:
