@@ -60,6 +60,14 @@ class TrustedRunNameRegression(unittest.TestCase):
                     f"{bare} lease={'Z'*49} incident=823",
                     f"{bare} lease=GLOBAL;echo-unsafe incident=823",
                     f"{bare} lease=GLOBAL incident=823\nuntrusted",
+                    f"{bare}\nlease=GLOBAL incident=AUTO",
+                    f"{bare} lease=GLOBAL\nincident=AUTO",
+                    f"{bare}\tlease=GLOBAL incident=AUTO",
+                    f"{bare} lease=GLOBAL\tincident=AUTO",
+                    f"{bare}  lease=GLOBAL incident=AUTO",
+                    f"{bare} lease=GLOBAL  incident=AUTO",
+                    f"{bare} lease=GLOBAL\rincident=AUTO",
+                    f"{bare}\rlease=GLOBAL incident=AUTO",
                     f"evil-{bare} lease=GLOBAL incident=823",
                 )
                 for value in allowed:
