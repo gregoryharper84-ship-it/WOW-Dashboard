@@ -1,0 +1,157 @@
+"""Fail-closed non-authorizing packet and PR-shape validation for a WOW Copilot pilot.
+
+This module does NOT mint leases, assign an issue to Copilot, approve code, merge
+a PR, dispatch a workflow or produce a production verification receipt.
+All evidence comes from untrusted JSON until separately checked against GitHub
+and the authoritative incident lease store by an independent controller.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from pathlib import PurePosixPath
+from typing import Any, Mapping
+
+SCHEMA = "WOW_COPILOT_HANDOFF_V1"
+SHA = re.compile(r"^[0-9a-f]{40}$")
+REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+LEASE = re.compile(r"^[A-Z0-9_]{1,72}$")
+PROTECTED_PREFIXES = (".github/", ".agents/")
+PROTECTED_FILES = {"render.yaml", ".github/CODEOWNERS"}
+VALID_CLASSES = {"A", "B", "C"}
+VALID_SEVERITIES = {"P0", "P1", "P2", "P3"}
+COPILOT_ACTORS = {"Copilot", "copilot-swe-agent[bot]"}
+
+
+def _valid_path(path: Any) -> bool:
+    if not isinstance(path, str) or not path or path.startswith("/") or "\\" in path:
+        return False
+    if any(ord(char) < 33 or ord(char) == 127 for char in path):
+        return False
+    parts = path.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    if PurePosixPath(path).as_posix() != path:
+        return False
+    return True
+
+
+def _protected(path: str) -> bool:
+    return path in PROTECTED_FILES or any(path.startswith(prefix) for prefix in PROTECTED_PREFIXES)
+
+
+def validate_handoff(packet: Mapping[str, Any], *, repository: str, current_main_sha: str) -> dict:
+    """Validate a proposal, not an authorization or proof of a lease."""
+    errors: list[str] = []
+    if packet.get("schema") != SCHEMA:
+        errors.append("SCHEMA_UNRECOGNIZED")
+    if not REPO.fullmatch(repository) or packet.get("repository") != repository:
+        errors.append("REPOSITORY_MISMATCH")
+    incident = packet.get("incident_id")
+    if type(incident) is not int or incident <= 0:
+        errors.append("INCIDENT_ID_INVALID")
+    if packet.get("mode") != "PROPOSE_ONLY" or packet.get("can_execute") is not False:
+        errors.append("EXECUTION_AUTHORITY_FORBIDDEN")
+    source = packet.get("source_main_sha")
+    if not isinstance(source, str) or not SHA.fullmatch(source):
+        errors.append("SOURCE_SHA_INVALID")
+    if not SHA.fullmatch(current_main_sha) or source != current_main_sha:
+        errors.append("MAIN_SHA_STALE")
+    change_class = packet.get("change_class")
+    if change_class not in VALID_CLASSES:
+        errors.append("CHANGE_CLASS_INVALID")
+    if packet.get("severity") not in VALID_SEVERITIES:
+        errors.append("SEVERITY_INVALID")
+    if packet.get("owner") != "WOW_ENGINEERING":
+        errors.append("INCIDENT_OWNER_INVALID")
+    lease_group = packet.get("lease_group")
+    if not isinstance(lease_group, str) or not LEASE.fullmatch(lease_group):
+        errors.append("LEASE_GROUP_INVALID")
+    paths = packet.get("allowed_paths")
+    if not isinstance(paths, list) or not paths or len(paths) > 20:
+        errors.append("ALLOWED_PATHS_INVALID")
+    else:
+        if len(paths) != len(set(str(path) for path in paths)):
+            errors.append("ALLOWED_PATHS_DUPLICATE")
+        for path in paths:
+            if not _valid_path(path):
+                errors.append("UNSAFE_PATH")
+            elif _protected(path):
+                errors.append("PROTECTED_PATH_REQUIRES_GOVERNED_REVIEW")
+    if change_class in {"B", "C"}:
+        errors.append("GOVERNED_CHANGE_REQUIRES_INDEPENDENT_APPROVAL")
+    if errors:
+        return {"decision": "HOLD", "reasons": sorted(set(errors)), "can_execute": False,
+                "assignment_authorized": False}
+    return {"decision": "PACKET_VALID_NON_AUTHORIZING", "reasons": [],
+            "can_execute": False, "assignment_authorized": False,
+            "required_next_evidence": ["authoritative_lease_and_conflict_inventory",
+                                       "trusted_handoff_actor", "copilot_session_start"]}
+
+
+def verify_draft_pr(
+    packet: Mapping[str, Any], pr: Mapping[str, Any], changed_files: list[str],
+    *, repository: str, current_main_sha: str
+) -> dict:
+    """Shape-check a purported Copilot PR. This NEVER certifies CI or deployment."""
+    result = validate_handoff(packet, repository=repository, current_main_sha=current_main_sha)
+    if result["decision"] != "PACKET_VALID_NON_AUTHORIZING":
+        return result
+    errors: list[str] = []
+    head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+    base = pr.get("base") if isinstance(pr.get("base"), dict) else {}
+    author = pr.get("user") if isinstance(pr.get("user"), dict) else {}
+    if pr.get("state") != "open" or pr.get("draft") is not True or pr.get("merged") is True:
+        errors.append("PR_NOT_OPEN_DRAFT")
+    if author.get("login") not in COPILOT_ACTORS:
+        errors.append("PR_AUTHOR_NOT_COPILOT")
+    if base.get("ref") != "main" or base.get("sha") != packet["source_main_sha"]:
+        errors.append("PR_BASE_SHA_UNBOUND")
+    if not isinstance(head.get("sha"), str) or not SHA.fullmatch(head["sha"]):
+        errors.append("PR_HEAD_SHA_INVALID")
+    if head.get("sha") == packet["source_main_sha"]:
+        errors.append("PR_HAS_NO_DISTINCT_HEAD")
+    head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+    if head_repo.get("full_name") != repository:
+        errors.append("PR_REPOSITORY_MISMATCH")
+    body = pr.get("body") or ""
+    incident = packet["incident_id"]
+    if not isinstance(body, str) or not re.search(r"(?<!\d)#" + str(incident) + r"(?!\d)", body):
+        errors.append("PR_INCIDENT_LINK_MISSING")
+    if not isinstance(changed_files, list) or not changed_files:
+        errors.append("PR_FILES_UNVERIFIED")
+    elif len(changed_files) != len(set(changed_files)) or any(
+        not _valid_path(p) or p not in packet["allowed_paths"] for p in changed_files
+    ):
+        errors.append("PR_SCOPE_VIOLATION")
+    if errors:
+        return {"decision": "HOLD", "reasons": sorted(set(errors)),
+                "can_execute": False, "assignment_authorized": False}
+    return {"decision": "PR_CREATED_UNVERIFIED", "reasons": [],
+            "can_execute": False, "assignment_authorized": False,
+            "head_sha": head["sha"],
+            "required_next_evidence": ["exact_head_ci", "independent_code_review",
+                                       "CODEOWNER_if_applicable", "release_authority",
+                                       "authorized_merge", "live_sha_and_acceptance",
+                                       "independent_production_QA"]}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("packet", help="Path to JSON handoff packet")
+    parser.add_argument("--repository", required=True)
+    parser.add_argument("--current-main-sha", required=True)
+    args = parser.parse_args()
+    with open(args.packet, encoding="utf-8") as source:
+        packet = json.load(source)
+    if not isinstance(packet, dict):
+        raise SystemExit("PACKET_NOT_OBJECT")
+    decision = validate_handoff(packet, repository=args.repository,
+                                current_main_sha=args.current_main_sha)
+    print(json.dumps(decision, sort_keys=True))
+    return 0 if decision["decision"] == "PACKET_VALID_NON_AUTHORIZING" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
