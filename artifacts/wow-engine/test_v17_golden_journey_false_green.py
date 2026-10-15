@@ -146,7 +146,7 @@ def test_malformed_or_missing_replay_attestations_are_not_false(flag, value):
 
 @pytest.mark.parametrize("value", [
     "not-a-timestamp", "2026-10-15T16:00:00",
-    "2026-10-15T16:03:00Z", None,
+    "2100-01-01T00:00:00Z", "2000-01-01T00:00:00Z", None,
 ])
 def test_source_observation_requires_offset_and_precedes_action(value):
     evidence = deepcopy(_synthetic_golden_evidence())
@@ -201,3 +201,23 @@ def test_strict_model_package_domain_and_digest_identity(key, value):
     outcome = evaluate_golden_user_journey(evidence)
     assert outcome["status"] == "FAIL_GOVERNED_SCORING"
     assert "FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPT_INVALID" in outcome["blockers"]
+
+
+def test_old_but_ordered_source_and_action_receipts_cannot_claim_current_health():
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["source_inventory_evidence"]["source_observed_at"] = "2000-01-01T00:00:00Z"
+    evidence["action_receipt"]["invoked_at"] = "2000-01-01T00:01:00Z"
+    evidence["display_receipt"]["displayed_at"] = "2000-01-01T00:02:00Z"
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
+    assert "FAIL_PROP_ACQUISITION:SOURCE_STALE_OR_FUTURE" in result["blockers"]
+    assert "FAIL_ACTION_INVOCATION:ACTION_STALE_OR_FUTURE" in result["blockers"]
+    assert "FAIL_RESPONSE_HANDOFF:DISPLAY_STALE_OR_FUTURE" in result["blockers"]
+
+
+def test_fresh_synthetic_evidence_is_only_structurally_valid_not_production_verified():
+    evidence = deepcopy(_synthetic_golden_evidence())
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] == "STRUCTURAL_PASS_ONLY"
+    assert result["production_verified"] is False
+    assert result["independent_qa_verified"] is False
