@@ -145,6 +145,7 @@ def build_packet() -> tuple[bytes, dict]:
         "action_schema_path": str(ACTION_SCHEMA.relative_to(ROOT)),
         "action_schema_sha256": _sha256(schema),
         "action_schema_installation_surface": "SINGLE_CUSTOM_ACTION_DOMAIN",
+        "action_schema_output_file": ACTION_SCHEMA.name,
         "action_schema_domain": "wow-governed-probability-engine.onrender.com",
         "action_operation_count": operation_count,
         "run_control_installation_surface": "MERGED_INTO_CANONICAL_ACTION_SCHEMA",
@@ -187,9 +188,11 @@ def main() -> None:
     packet, manifest = build_packet()
     packet_path = args.output_dir / "WOW_V17_GPT_EDITOR_SYNC_PACKET.txt"
     knowledge_path = args.output_dir / PRIZEPICKS_KNOWLEDGE_FILENAME
+    schema_path = args.output_dir / ACTION_SCHEMA.name
     manifest_path = args.output_dir / "WOW_V17_GPT_EDITOR_SYNC_MANIFEST.json"
     packet_path.write_bytes(packet)
     knowledge_path.write_bytes(PRIZEPICKS_ADDENDUM.read_bytes())
+    schema_path.write_bytes(ACTION_SCHEMA.read_bytes())
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(manifest, sort_keys=True))
 
