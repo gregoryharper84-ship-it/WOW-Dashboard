@@ -157,7 +157,7 @@ def test_staging_ledger_migration_executes_against_disposable_ci_postgres():
                     ("iczfhsmjrrafhvcpmqhr",),
                 )
                 # Verify the actual non-superuser is subject to RLS while
-                # invoking the same SECURITY INVOKER lease function.
+                # invoking the same SECURITY DEFINER lease function.
                 cursor.execute("set local role wow_release_controller")
                 cursor.execute(
                     "select project_ref from wow_release_control.release_control_identity where singleton = true"
