@@ -23,6 +23,17 @@ conflict-group admission. **Research can be parallel read-only.**
 * In both lanes, return **unverified findings**, not an independent release
   pass. SIRT / governed release remains independent.
 
+## Actual Google Drive source documents created (Oct 14, 2026)
+
+- Gemini Handoff: https://docs.google.com/document/d/1-9S8h5U98rDqurPZt-R8aEJFZRgaWfaALeZyT2U-BAI/edit
+- Notebook Source & Verification Index: https://docs.google.com/document/d/121j7EI5lEwvvvGesAEEDMURGCyj7eEnrwrYn3LJZAZM/edit
+- Activation tracking: https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1761
+
+Google Gemini Apps can manage a Gemini Notebook through the
+`@Gemini Notebook` connected app where available. This PR cannot activate
+that separate Google account integration. Notebook URL and import/citation
+verification remain pending until the authorized account completes them.
+
 ## Setup (not provisioned by this PR)
 
 1. Provision Gemini API access using Google AI Studio or approved Google Cloud
@@ -66,6 +77,9 @@ From this directory with Pydantic v2 available:
 
 Google SDK only required for a live call:
   pip install google-genai
+
+Run `routing.plan_readonly(...)` to validate admission without side effects;
+it defaults to PILOT_DISABLED and enforces bounded task/context budgets.
 
 Worker analyze(...) is deliberately not wired to production. Integration
 requires an approved data-flow threat model and a separate PR.
