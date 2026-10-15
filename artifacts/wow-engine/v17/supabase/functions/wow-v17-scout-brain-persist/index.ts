@@ -644,6 +644,9 @@ Deno.serve(async (req: Request) => {
   const runId = str(body.research_run_id || body.run_id);
   if (!runId) return response({ ok: false, code: "RESEARCH_RUN_ID_MISSING", can_execute: false }, 422);
 
+  if (body.protocol_version != null && body.protocol_version !== 2)
+    return response({ok:false,code:"SCOUT_PERSIST_VERSION_UNSUPPORTED",can_execute:false},422);
+
   const sql = postgres(dbUrl, { max: 1, prepare: false });
   try {
     if (phase === "CAPABILITIES") return response({ok:true,protocol_version:2,can_execute:false});
