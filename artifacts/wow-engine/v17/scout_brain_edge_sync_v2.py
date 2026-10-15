@@ -53,7 +53,9 @@ def sync_v2(input_path: str, receipt_path: str) -> dict:
             "expected_candidates": len(rows), "expected_evidence": expected_evidence}
     # Preflight is essential to rolling out Edge before the GitHub caller:
     # a legacy Edge denies CAPABILITIES without touching research_runs.
-    _checked_post(url, {**header, "persist_phase": "CAPABILITIES"})
+    capability = _checked_post(url, {**header, "persist_phase": "CAPABILITIES"})
+    if capability.get("schema_version") != 2:
+        raise RuntimeError("SCOUT_PERSIST_SCHEMA_ATTESTATION_MISSING")
     begin = _checked_post(url, {**meta, "persist_phase": "BEGIN"}, retryable=True)
     if begin.get("persist_phase") != "BEGIN":
         raise RuntimeError("SCOUT_PERSIST_BEGIN_ACK_INVALID")
