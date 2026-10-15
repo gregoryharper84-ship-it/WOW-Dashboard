@@ -38,7 +38,13 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             )
             gh.chmod(0o755)
             python = bin_dir / "python"
-            classification = json.dumps({"code":code, "failover_eligible":eligible})
+            classification = json.dumps({
+                "code": code, "failover_eligible": eligible,
+                "manual_recovery_required": code in {
+                    "OPENAI_API_QUOTA_EXCEEDED", "OPENAI_API_AUTH_FAILED",
+                    "OPENAI_API_KEY_MISSING",
+                },
+            })
             python.write_text("#!/bin/sh\nprintf '%s\\n' '" + classification + "'\n")
             python.chmod(0o755)
             output = root / "outputs"
@@ -135,7 +141,13 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
                         "updatedAt": "2026-10-14T23:00:00Z",
                     }]
                 ),
-                STUB_CLASSIFICATION=json.dumps({"code":code,"failover_eligible":True}),
+                STUB_CLASSIFICATION=json.dumps({
+                    "code": code, "failover_eligible": True,
+                    "manual_recovery_required": code in {
+                        "OPENAI_API_QUOTA_EXCEEDED", "OPENAI_API_AUTH_FAILED",
+                        "OPENAI_API_KEY_MISSING",
+                    },
+                }),
                 STUB_BREAKER=json.dumps({"active":breaker}),
             )
             result = subprocess.run(
