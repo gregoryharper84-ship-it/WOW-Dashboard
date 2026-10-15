@@ -13,8 +13,8 @@
 -- requires a separate independent authenticated GitHub workflow-run proof.
 
 create table if not exists public.wow_engineering_continuity_outbox (
-  incident_id bigint primary key check (incident_id > 0),
-  intent_id uuid not null unique,
+  incident_id bigint not null check (incident_id > 0),
+  intent_id uuid primary key,
   main_sha text not null check (main_sha ~ '^[0-9a-f]{40}$'),
   action text not null check (action in ('DISPATCH_NEW_REPAIR','REPAIR_SAME_BRANCH')),
   pr_number bigint,
@@ -23,7 +23,8 @@ create table if not exists public.wow_engineering_continuity_outbox (
   writer_epoch bigint not null check (writer_epoch > 0),
   state text not null check (state in (
     'RESERVED','ARMED','ATTEMPT_ACK_UNCORRELATED',
-    'ATTEMPT_ACK_CORRELATED_UNVERIFIED','ATTEMPT_AMBIGUOUS'
+    'ATTEMPT_ACK_CORRELATED_UNVERIFIED','ATTEMPT_AMBIGUOUS',
+    'PREARM_ABORTED'
   )),
   workflow_run_id bigint,
   receipt_code text,
@@ -40,6 +41,11 @@ create table if not exists public.wow_engineering_continuity_outbox (
     workflow_run_id is null or workflow_run_id > 0
   )
 );
+-- Immutable aborted rows remain as history; only one active incident intent.
+-- An aborted intent can never be ARMED.
+create unique index if not exists wow_engineering_continuity_outbox_active_incident
+on public.wow_engineering_continuity_outbox (incident_id)
+where state <> 'PREARM_ABORTED';
 alter table public.wow_engineering_continuity_outbox enable row level security;
 revoke all on public.wow_engineering_continuity_outbox from public, anon, authenticated;
 grant select, insert, update on public.wow_engineering_continuity_outbox to service_role;
@@ -58,7 +64,8 @@ as $$
 declare row_record public.wow_engineering_continuity_outbox%rowtype;
 begin
   if p_intent_id is null or p_incident_id is null or p_incident_id <= 0
-    or p_main_sha !~ '^[0-9a-f]{40}$'
+    or p_main_sha is null or p_main_sha !~ '^[0-9a-f]{40}$'
+    or p_action is null or p_owner_id is null
     or p_action not in ('DISPATCH_NEW_REPAIR','REPAIR_SAME_BRANCH')
     or not (
       (p_action='DISPATCH_NEW_REPAIR' and p_pr_number is null and p_pr_head_sha is null)
@@ -79,7 +86,7 @@ begin
      writer_owner_id,writer_epoch,state)
   values (p_incident_id,p_intent_id,p_main_sha,p_action,p_pr_number,p_pr_head_sha,
           p_owner_id,p_epoch,'RESERVED')
-  on conflict (incident_id) do nothing
+  on conflict do nothing
   returning * into row_record;
   if not found then
     return jsonb_build_object('status','IN_FLIGHT');
@@ -94,6 +101,35 @@ begin
     'pr_head_sha',row_record.pr_head_sha,
     'epoch',row_record.writer_epoch
   );
+end $$;
+
+-- Before provider dispatch, the still-authorized exact writer may abort a
+-- NEVER-ARMED intent. This preserves durable audit history and unblocks
+-- the incident without permitting retries of any ARMED or ambiguous dispatch.
+create or replace function public.wow_engineering_continuity_outbox_abort(
+  p_incident_id bigint, p_intent_id uuid, p_owner_id text, p_epoch bigint,
+  p_reason text
+) returns boolean
+language plpgsql
+set search_path = pg_catalog, public
+as $$
+begin
+  if p_reason is null or p_reason not in (
+      'MAIN_CHANGED_BEFORE_DISPATCH','PR_HEAD_RECHECK_UNAVAILABLE',
+      'PR_CHANGED_BEFORE_DISPATCH','WRITER_FENCE_UNVERIFIED',
+      'PREARM_RECHECK_UNAVAILABLE'
+    ) or coalesce(public.wow_engineering_check_writer_lease(
+      p_incident_id,p_owner_id,p_epoch
+    ),false) is not true then
+      return false;
+  end if;
+  update public.wow_engineering_continuity_outbox
+  set state='PREARM_ABORTED',receipt_code=p_reason,
+      updated_at=clock_timestamp()
+  where incident_id=p_incident_id and intent_id=p_intent_id
+    and writer_owner_id=p_owner_id and writer_epoch=p_epoch
+    and state='RESERVED';
+  return found;
 end $$;
 
 -- Atomic one-shot arm; only one contender may transition RESERVED -> ARMED.
@@ -124,7 +160,8 @@ language plpgsql
 set search_path = pg_catalog, public
 as $$
 begin
-  if p_receipt_code not in ('ATTEMPT_ACK_UNCORRELATED',
+  if p_receipt_code is null
+      or p_receipt_code not in ('ATTEMPT_ACK_UNCORRELATED',
        'ATTEMPT_ACK_CORRELATED_UNVERIFIED','ATTEMPT_AMBIGUOUS')
       or (p_receipt_code='ATTEMPT_ACK_CORRELATED_UNVERIFIED'
           and (p_run_id is null or p_run_id <= 0))
@@ -150,6 +187,9 @@ revoke all on function public.wow_engineering_continuity_outbox_reserve(
 revoke all on function public.wow_engineering_continuity_outbox_arm(
  bigint,uuid,text,bigint
 ) from public, anon, authenticated;
+revoke all on function public.wow_engineering_continuity_outbox_abort(
+ bigint,uuid,text,bigint,text
+) from public, anon, authenticated;
 revoke all on function public.wow_engineering_continuity_outbox_mark(
  bigint,uuid,text,bigint,text,bigint
 ) from public, anon, authenticated;
@@ -159,12 +199,16 @@ grant execute on function public.wow_engineering_continuity_outbox_reserve(
 grant execute on function public.wow_engineering_continuity_outbox_arm(
  bigint,uuid,text,bigint
 ) to service_role;
+grant execute on function public.wow_engineering_continuity_outbox_abort(
+ bigint,uuid,text,bigint,text
+) to service_role;
 grant execute on function public.wow_engineering_continuity_outbox_mark(
  bigint,uuid,text,bigint,text,bigint
 ) to service_role;
 
 -- Production acceptance additionally needs actual DB race tests:
--- two reserve callers, two arm callers, stale epoch, lease expiry mid-handoff,
+-- two reserve callers, two arm callers, prearm-abort + new intent race,
+-- immutable abort history, blocked arm-after-abort, stale epoch, lease expiry,
 -- ambiguous 204, restart after ARM, RLS/role denial and verified receipt replay.
 -- This staged SQL deliberately lacks any general reset/force-release function;
 -- a separate independently reviewed reconciliation design must be certified.
