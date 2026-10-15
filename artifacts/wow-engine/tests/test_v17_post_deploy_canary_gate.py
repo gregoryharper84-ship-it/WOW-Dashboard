@@ -12,9 +12,9 @@ DAILY_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-daily-snapshot.yml"
 
 def test_deploy_controller_filters_non_main_upstream_runs_before_creation():
     text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
-    workflow_run = text.index("workflow_run:")
-    workflow_dispatch = text.index("workflow_dispatch:")
-    trigger = text[workflow_run:workflow_dispatch]
+    trigger = text.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert "workflow_dispatch:" not in trigger
+    assert "repository_dispatch:" not in trigger
 
     assert 'workflows: ["wow-verify"]' in trigger
     assert "types: [completed]" in trigger
