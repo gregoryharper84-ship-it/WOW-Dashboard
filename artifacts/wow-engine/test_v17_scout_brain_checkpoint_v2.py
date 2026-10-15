@@ -154,6 +154,7 @@ def test_protocol_source_enforces_transactional_receipts_and_private_schema():
     assert 'phase === "CAPABILITIES"' in edge
     assert "checkpointedPersistence(sql,phase,runId,body" in edge
     assert "pg_advisory_xact_lock" in helper
+    assert "headerHash" in helper and "header_sha256" in helper
     assert "for update" in helper
     assert "SCOUT_PERSIST_CHUNK_DIGEST_MISMATCH" in helper
     assert "SCOUT_PERSIST_LEGACY_PARTIAL_REQUIRES_RECONCILIATION" in helper
