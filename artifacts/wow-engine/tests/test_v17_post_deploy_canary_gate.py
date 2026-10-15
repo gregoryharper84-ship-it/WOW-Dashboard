@@ -44,7 +44,7 @@ def test_exact_live_deploy_receipts_still_authorize_successful_controller():
     gated = text[final_gate:]
 
     assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in gated
-    assert "EXACT_SHA_ALREADY_LIVE" in gated
+    assert "PRIMARY_RELEASE_LIVE_REQUIRES_CERTIFIED_LEDGER_READBACK" in gated
     assert '"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES"' in gated
     assert "raise SystemExit(0)" in gated
 
