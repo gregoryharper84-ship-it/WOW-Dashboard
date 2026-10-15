@@ -458,7 +458,7 @@ jobs:
     needs: [deploy-production]
     if: needs.deploy-production.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 110
     permissions:
       contents: read
     env:
