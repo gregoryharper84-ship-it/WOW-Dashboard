@@ -206,7 +206,7 @@ def test_exported_editor_packet_includes_exact_validated_schema(tmp_path, monkey
 
     instructions_bytes = (tmp_path / "WOW_V17_GPT_EDITOR_SYNC_PACKET.txt").read_bytes()
     knowledge_bytes = (tmp_path / module.PRIZEPICKS_KNOWLEDGE_FILENAME).read_bytes()
-    assert instructions_bytes == module.INSTRUCTIONS.read_bytes().rstrip() + b"\\n"
+    assert instructions_bytes == module.INSTRUCTIONS.read_bytes().rstrip() + b"\n"
     assert knowledge_bytes == module.PRIZEPICKS_ADDENDUM.read_bytes()
     assert manifest["editor_update_required"] is True
     assert manifest["live_editor_verified"] is False
