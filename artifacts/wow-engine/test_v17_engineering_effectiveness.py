@@ -218,3 +218,13 @@ def test_repository_user_journey_health_fail_closed_and_blocks_model_research() 
     assert product_health_allows_model_improvement(status) is False
     assert product_health_allows_model_improvement("UNKNOWN") is False
     assert product_health_allows_model_improvement("PASS") is True
+
+
+def test_golden_acceptance_validator_change_requires_live_host_and_sha_evidence():
+    gates = set(classify_change_impact([
+        "artifacts/wow-engine/v17/engineering_effectiveness.py"
+    ])["required_gates"])
+    assert BASE_REGRESSION in gates
+    assert GOLDEN_BACKEND_ACCEPTANCE in gates
+    assert GOLDEN_LIVE_HOST_ACCEPTANCE in gates
+    assert EXACT_SHA_RENDER_VERIFICATION in gates
