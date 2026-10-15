@@ -121,3 +121,45 @@ def test_failed_committed_renewal_rolls_back_and_fails_closed():
             target_sha="a" * 40, owner_run_id="run1", token=9,
         )
     assert db.commits == 0 and db.rollbacks == 1
+
+
+
+def test_db_identity_attested_with_approved_project_and_limited_role():
+    from datetime import datetime, timezone
+    approved = datetime(2026, 10, 14, tzinfo=timezone.utc)
+    ref = "iczfhsmjrrafhvcpmqhr"
+    db = FakeConnection([(
+        "wow_release_controller", ref, "production",
+        module.ALLOWED_SERVICE, True, "independent-release-authority", approved,
+    )])
+    module.attest_release_control_identity(db, expected_project_ref=ref)
+    sql, params = db.obj.executed[0]
+    assert "release_control_identity" in sql
+    assert params == ()
+
+
+@pytest.mark.parametrize("expected,row,reason", [
+    ("", None, "PROJECT_IDENTITY_UNCONFIGURED"),
+    ("wrong", None, "PROJECT_IDENTITY_UNCONFIGURED"),
+    ("iczfhsmjrrafhvcpmqhr", [], "DB_IDENTITY_MISSING"),
+    ("iczfhsmjrrafhvcpmqhr", [(
+        "postgres", "iczfhsmjrrafhvcpmqhr", "production",
+        module.ALLOWED_SERVICE, True, "independent", "2026-10-14",
+    )], "DB_ROLE_NOT_RESTRICTED"),
+    ("iczfhsmjrrafhvcpmqhr", [(
+        "wow_release_controller", "zchzcveqqemuwypifqyx", "production",
+        module.ALLOWED_SERVICE, True, "independent", "2026-10-14",
+    )], "DB_IDENTITY_MISMATCH"),
+    ("iczfhsmjrrafhvcpmqhr", [(
+        "wow_release_controller", "iczfhsmjrrafhvcpmqhr", "staging",
+        module.ALLOWED_SERVICE, True, "independent", "2026-10-14",
+    )], "DB_IDENTITY_MISMATCH"),
+    ("iczfhsmjrrafhvcpmqhr", [(
+        "wow_release_controller", "iczfhsmjrrafhvcpmqhr", "production",
+        module.ALLOWED_SERVICE, False, None, None,
+    )], "DB_APPROVAL_MISSING"),
+])
+def test_db_identity_denies_unapproved_unknown_or_wrong_control_plane(expected, row, reason):
+    db = FakeConnection(row or [])
+    with pytest.raises(module.DeploymentLeaseError, match=reason):
+        module.attest_release_control_identity(db, expected_project_ref=expected)
