@@ -42,8 +42,10 @@ jobs:
           jq -e '(.workflow_runs | type == "array" and length < 100)' <<< "$history" >/dev/null || {
             echo "::error::MAIN_VERIFY_INVENTORY_UNVERIFIABLE"; exit 1; }
           trusted=$(jq -r --arg sha "$main_sha" '[.workflow_runs[] | select(.head_sha == $sha and (.event == "push" or (.event == "workflow_dispatch" and .actor.login == "wow-engineering[bot]")))] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$history")
-          if [ "$trusted" != MISSING ]; then
-            echo "EXACT_MAIN_TRUSTED_VERIFY_PRESENT:$trusted"
+          # Preserve the existing fail-closed verdict contract.
+          verdict="$trusted"
+          if [ "$verdict" != MISSING ]; then
+            echo "EXACT_MAIN_TRUSTED_VERIFY_PRESENT:$verdict"
             exit 0
           fi
           # A previously failed exact-main run must not be hidden by retry.
