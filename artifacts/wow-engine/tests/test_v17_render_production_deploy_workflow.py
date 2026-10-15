@@ -127,5 +127,15 @@ def test_protected_workflow_requires_independent_env_before_db_post():
     assert 'github_json("/environments/wow-release")' in text
     assert "PRIMARY_RELEASE_ENV_INDEPENDENT_REVIEWERS_MISSING" in text
     assert "PRIMARY_RELEASE_ENV_PROTECTED_MAIN_ONLY_MISSING" in text
-    assert "primary_api_release_fence import PRIMARY_SERVICE, post_render_exactly_once" in text
+    assert "PRIMARY_SERVICE, post_render_exactly_once, record_authenticated_readback" in text
     assert text.index("authorized_pr_head = validate_release_provenance(") < text.index("post_receipt = post_render_exactly_once(")
+
+
+def test_render_live_receipt_requires_durable_independent_db_readback():
+    text = _workflow_text()
+    assert "record_authenticated_readback(" in text
+    assert "PRIMARY_RELEASE_LIVE_IDENTITY_MISMATCH" in text
+    assert "PRIMARY_RELEASE_DURABLE_LIVE_RECEIPT_MISSING" in text
+    assert '"durable_ledger_state":"LIVE_OBSERVED"' in text
+    assert text.index("accepted = record_authenticated_readback(") < text.index('"status":"EXACT_SHA_RENDER_DEPLOY_LIVE"')
+    assert "LIVE_OBSERVED_NOT_QA_VERIFIED" in text
