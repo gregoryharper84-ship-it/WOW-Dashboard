@@ -24,9 +24,16 @@ is the independent owner, QA App, Release App, or the governed terminal reducer.
    active-incident index, and no public/anon/authenticated EXECUTE or table
    mutation. A fresh service-role identity is required. Audit all data changes.
 4. Verify claim/check/renew/release RPC signatures against the installed
-   writer lease implementation. All outbox RPC operations must run with
-   **SECURITY INVOKER**, restricted privileges and a fixed \`search_path\`.
-
+   writer lease implementation. The EXISTING lease RPCs are SECURITY INVOKER.
+   NEW outbox RPCs must instead be SECURITY DEFINER owned by a separately
+   DB-admin-certified restricted principal, with fixed search_path and
+   exclusively allowlisted EXECUTE grants. No default PUBLIC execute and
+   no direct service_role DML grants for the outbox table.
+5. As negative tests verify direct INSERT/UPDATE/DELETE are denied for anon,
+   authenticated and service_role, while independently authenticated trusted
+   calls to reserve/abort/reclaim/arm/mark have the intended fenced behavior.
+   Never put broad service-role credentials in AI worker prompts, Custom GPT
+   Actions, pull requests or logs. Production restricted identity remains a gate.
 ## Phase B — two-session serializable behavior
 
 Use **two independent database transactions and two independent trusted worker
@@ -45,7 +52,9 @@ transaction/result IDs and successful/failing assertions:
 | Attempt after arm / 204 / transport timeout | Outbox remains held; never automatically reclaim, reset or POST again |
 | Lease takeover after arm | No new active intent until independently certified terminal transition |
 | Crash between POST and database mark | No retry from uncertainty; preserve existing ARMED row |
-| anon / authenticated direct RPC & table write | Denied; service role credential never in AI context |
+| anon / authenticated direct RPC & table write | Denied; no direct outbox table writes |
+| service_role direct outbox table UPDATE or INSERT | Denied; only vetted SECURITY DEFINER RPCs perform transitions |
+| function owner / search_path / EXECUTE permission drift | Fail closed; no unreviewed role or PUBLIC access |
 | Duplicate migration / corrupt SQL | Reject or cleanly no-op by reviewed idempotency contract; no duplicate functions or grants |
 
 **Disqualifiers:** test-only DB, skipped race assertions, unit mocks called real DB
