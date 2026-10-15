@@ -38,8 +38,8 @@ def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert '"can_execute":False' in text or '"can_execute": False' in text
     assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
-    assert 'render_json(\n                  "POST"' in text
-    assert '{"clearCache":"do_not_clear"}' in text
+    assert 'lambda payload: render_json("POST", f"/services/{service_path}/deploys", payload)' in text
+    assert 'post_render_exactly_once(' in text
 
 
 def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
@@ -49,20 +49,20 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "commit_sha(deploy) == target_sha" in text
     assert "EXACT_SHA_ALREADY_LIVE" in text
     assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in text
-    assert "RENDER_DEPLOY_WRONG_SHA" in text
+    assert "PRIMARY_RELEASE_MAIN_SHA_CHANGED_BEFORE_POST" in text
     assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
-    assert "deploy_deadline = time.time() + 900" in text
+    assert "deploy_deadline = time.time() + 4200" in text
     assert "time.sleep(10)" in text
 
 
-def test_render_deploy_handoff_reconciles_successful_create_without_top_level_id():
+def test_render_deploy_denies_ambiguous_post_without_db_fence():
     text = _workflow_text()
-
-    assert 'isinstance(created.get("deploy"), dict)' in text
-    assert 'created_deploy = created["deploy"]' in text
-    assert 'deploy_id = ""' in text
-    assert "RENDER_DEPLOY_CREATE_INVALID" not in text
+    assert "post_render_exactly_once(" in text
+    assert 'post_receipt["deploy_id"]' in text
+    assert "PRIMARY_RELEASE_EXISTING_ACTIVE_DEPLOY_RECONCILE_ONLY" in text
+    assert "PRIMARY_RELEASE_RENDER_AUTODEPLOY_OFF_NOT_CERTIFIED" in text
+    assert "PRIMARY_RELEASE_CONTROL_DSN_NOT_CERTIFIED" in text
     assert "if target is None and matching:" in text
     assert "target = matching[0]" in text
 
@@ -120,3 +120,12 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "except (urllib.error.URLError, TimeoutError):" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
+
+def test_protected_workflow_requires_independent_env_before_db_post():
+    text = _workflow_text()
+    assert "environment: wow-release" in text
+    assert 'github_json("/environments/wow-release")' in text
+    assert "PRIMARY_RELEASE_ENV_INDEPENDENT_REVIEWERS_MISSING" in text
+    assert "PRIMARY_RELEASE_ENV_PROTECTED_MAIN_ONLY_MISSING" in text
+    assert "primary_api_release_fence import PRIMARY_SERVICE, post_render_exactly_once" in text
+    assert text.index("authorized_pr_head = validate_release_provenance(") < text.index("post_receipt = post_render_exactly_once(")
