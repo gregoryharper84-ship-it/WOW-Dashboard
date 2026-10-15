@@ -253,3 +253,23 @@ def test_very_large_digit_string_is_typed_denial_not_exception():
     result = evaluate_golden_user_journey(evidence)
     assert result["status"] not in ("PASS", "STRUCTURAL_PASS_ONLY")
     assert "FAIL_GOVERNED_SCORING:ROW_RECONCILIATION_MISMATCH" in result["blockers"]
+
+
+@pytest.mark.parametrize("value", [10**1000, -(10**1000)])
+@pytest.mark.parametrize("key", ["calibrated_probability", "calibrated_probability_lower_bound"])
+def test_unbounded_probability_integers_are_typed_holds_not_overflows(key, value):
+    evidence = deepcopy(_synthetic_golden_evidence())
+    evidence["governed_row_receipts"][0][key] = value
+    result = evaluate_golden_user_journey(evidence)
+    assert result["status"] == "FAIL_GOVERNED_SCORING"
+    assert "FAIL_GOVERNED_SCORING:GOVERNED_ROW_RECEIPT_INVALID" in result["blockers"]
+
+
+@pytest.mark.parametrize("value", [None, [], "string", 7, False])
+def test_non_object_receipts_fail_closed_before_any_field_access(value):
+    result = evaluate_golden_user_journey(value)
+    assert result["status"] == "FAIL_ACTION_INVOCATION"
+    assert result["blockers"] == ["FAIL_ACTION_INVOCATION:NON_OBJECT_RECEIPT"]
+    assert result["production_verified"] is False
+    assert result["independent_qa_verified"] is False
+    assert result["can_execute"] is False
