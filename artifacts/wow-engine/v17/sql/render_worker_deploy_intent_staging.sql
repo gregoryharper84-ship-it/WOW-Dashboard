@@ -267,6 +267,13 @@ $policy_gate$;
 
 -- Independent DBA must certify function ownership and privilege chain.
 -- SECURITY DEFINER functions must not be owned by the release login.
+-- CREATE TABLE IF NOT EXISTS can retain stale ACLs from a previous install.
+-- Deny every direct mutation even if old grants were installed by an older
+-- migration. Read access only to the approved singleton identity receipt.
+revoke all on wow_release_control.release_control_identity from wow_release_controller;
+revoke all on wow_release_control.release_control_project_anchor from wow_release_controller;
+revoke all on wow_release_control.render_worker_deploy_intents from wow_release_controller;
+revoke all on function wow_release_control.assert_release_authority(text) from wow_release_controller;
 grant usage on schema wow_release_control to wow_release_controller;
 grant select on wow_release_control.release_control_identity to wow_release_controller;
 revoke insert, update, delete, truncate, references, trigger
@@ -275,3 +282,49 @@ grant select on wow_release_control.render_worker_deploy_intents to wow_release_
 grant execute on function wow_release_control.claim_render_worker_deploy(text,text,text,integer) to wow_release_controller;
 grant execute on function wow_release_control.record_render_worker_deploy(text,text,text,bigint,text,text) to wow_release_controller;
 grant execute on function wow_release_control.renew_render_worker_deploy(text,text,text,bigint,integer) to wow_release_controller;
+
+
+-- Enforce effective privileges, not merely direct GRANT rows. Inherited
+-- memberships, previous ACLs and a controller-owned SECURITY DEFINER
+-- function must fail closed before any release may use this migration.
+do $acl_gate$
+declare r record;
+begin
+  for r in
+    select c.oid as rel_oid, c.relname,
+           c.relowner as owner_oid
+      from pg_catalog.pg_class c
+      join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+     where n.nspname='wow_release_control'
+       and c.relname in ('release_control_identity',
+                         'release_control_project_anchor',
+                         'render_worker_deploy_intents')
+  loop
+    if pg_catalog.pg_has_role('wow_release_controller', r.owner_oid, 'MEMBER')
+       or pg_catalog.has_table_privilege(
+            'wow_release_controller', r.rel_oid,
+            'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
+       ) then
+      raise exception 'WOW_RELEASE_CONTROLLER_INHERITED_TABLE_PRIVILEGE:%', r.relname;
+    end if;
+  end loop;
+  if pg_catalog.has_function_privilege(
+       'wow_release_controller',
+       'wow_release_control.assert_release_authority(text)'::regprocedure,
+       'EXECUTE'
+     ) then
+    raise exception 'WOW_RELEASE_CONTROLLER_INTERNAL_AUTH_FUNCTION_EXPOSED';
+  end if;
+  if exists (
+    select 1 from pg_catalog.pg_proc p
+    join pg_catalog.pg_namespace n on n.oid=p.pronamespace
+   where n.nspname='wow_release_control'
+     and p.proname in ('assert_release_authority','claim_render_worker_deploy',
+                       'record_render_worker_deploy','renew_render_worker_deploy')
+     and pg_catalog.pg_has_role('wow_release_controller',p.proowner,'MEMBER')
+  ) then
+    raise exception 'WOW_RELEASE_CONTROLLER_FUNCTION_OWNER_INHERITED';
+  end if;
+end;
+$acl_gate$;
+
