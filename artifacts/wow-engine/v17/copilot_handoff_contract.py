@@ -18,7 +18,7 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LEASE = re.compile(r"^[A-Z0-9_]{1,72}$")
 PROTECTED_PREFIXES = (".github/", ".agents/")
-PROTECTED_FILES = {"render.yaml", ".github/CODEOWNERS"}
+PROTECTED_FILES = ['.agents','.github','.github/CODEOWNERS','.github/actions/wow-chatgpt-agent/*','.github/actions/wow-claude-agent/*','.github/scripts/verify_engineering_governance_receipt.py','.github/scripts/verify_existing_pr_governance_receipt.py','.github/workflows/wow-engine-verify.yml','.github/workflows/wow-v17-change-impact-gate.yml','.github/workflows/wow-v17-chatgpt-engineering-worker.yml','.github/workflows/wow-v17-claude-engineering-worker.yml','.github/workflows/wow-v17-engineering-provider-dispatcher.yml','.github/workflows/wow-v17-existing-pr-governance-review.yml','.github/workflows/wow-v17-morning-green-continuation.yml','.github/workflows/wow-v17-rapid-repair.yml','.github/workflows/wow-v17-release-production-verification-agent.yml','.github/workflows/wow-v17-trusted-governance-gate.yml','.github/workflows/wow-verify.yml','artifacts/flask-scoring-api/requirements.txt','artifacts/wow-engine/requirements.txt','artifacts/wow-engine/v17/agent_identity_policy.py','artifacts/wow-engine/v17/engineering_agent_team.py','artifacts/wow-engine/v17/engineering_dispatch_manifest.json','artifacts/wow-engine/v17/engineering_dispatch_queue.py','artifacts/wow-engine/v17/engineering_effectiveness.py','artifacts/wow-engine/v17/engineering_incident_identity.py','artifacts/wow-engine/v17/engineering_provider_failover.py','artifacts/wow-engine/v17/independent_release_checks.py','artifacts/wow-engine/v17/persistent_worker_safety.py','render.yaml']
 VALID_CLASSES = {"A", "B", "C"}
 VALID_SEVERITIES = {"P0", "P1", "P2", "P3"}
 COPILOT_ACTORS = {"Copilot", "copilot-swe-agent[bot]"}
@@ -56,7 +56,7 @@ def validate_handoff(packet: Mapping[str, Any], *, repository: str, current_main
     source = packet.get("source_main_sha")
     if not isinstance(source, str) or not SHA.fullmatch(source):
         errors.append("SOURCE_SHA_INVALID")
-    if not SHA.fullmatch(current_main_sha) or source != current_main_sha:
+    if not isinstance(current_main_sha, str) or not SHA.fullmatch(current_main_sha) or source != current_main_sha:
         errors.append("MAIN_SHA_STALE")
     change_class = packet.get("change_class")
     if change_class not in VALID_CLASSES:
