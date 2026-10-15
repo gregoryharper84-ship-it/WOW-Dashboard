@@ -59,6 +59,19 @@ begin
      or p_lease_seconds not between 30 and 900 then
     raise exception 'WORKER_DEPLOY_CLAIM_INPUT_INVALID';
   end if;
+  -- A restricted login alone cannot authorize a real deployment intent.
+  -- An independent DBA must attest the actual control-plane identity.
+  if not exists (
+    select 1 from wow_release_control.release_control_identity receipt
+     where receipt.singleton = true
+       and receipt.authorized = true
+       and receipt.environment = 'production'
+       and receipt.service_id = p_service_id
+       and receipt.approved_at is not null
+       and nullif(pg_catalog.btrim(receipt.approved_by),'') is not null
+  ) then
+    raise exception 'WORKER_RELEASE_DB_AUTHORIZATION_MISSING';
+  end if;
   -- Serialize every target revision for this Render worker service.
   perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_service_id, 0));
   select intent.target_sha into v_in_flight_sha
@@ -107,6 +120,15 @@ begin
   if p_service_id <> 'srv-dapkbc0473hc73c1978g'
      or p_target_sha !~ '^[0-9a-f]{40}$' then
     raise exception 'WORKER_DEPLOY_RECORD_TARGET_INVALID';
+  end if;
+  if not exists (
+    select 1 from wow_release_control.release_control_identity receipt
+     where receipt.singleton = true and receipt.authorized = true
+       and receipt.environment = 'production' and receipt.service_id = p_service_id
+       and receipt.approved_at is not null
+       and nullif(pg_catalog.btrim(receipt.approved_by),'') is not null
+  ) then
+    raise exception 'WORKER_RELEASE_DB_AUTHORIZATION_MISSING';
   end if;
   if p_state not in ('ACK_AMBIGUOUS','DEPLOYING','LIVE_VERIFIED','HOLD') then
     raise exception 'WORKER_DEPLOY_TRANSITION_INVALID';
@@ -159,6 +181,15 @@ begin
   if p_service_id <> 'srv-dapkbc0473hc73c1978g'
      or p_target_sha !~ '^[0-9a-f]{40}$' then
     raise exception 'WORKER_DEPLOY_RENEW_TARGET_INVALID';
+  end if;
+  if not exists (
+    select 1 from wow_release_control.release_control_identity receipt
+     where receipt.singleton = true and receipt.authorized = true
+       and receipt.environment = 'production' and receipt.service_id = p_service_id
+       and receipt.approved_at is not null
+       and nullif(pg_catalog.btrim(receipt.approved_by),'') is not null
+  ) then
+    raise exception 'WORKER_RELEASE_DB_AUTHORIZATION_MISSING';
   end if;
   if p_lease_seconds not between 30 and 900 then
     raise exception 'WORKER_DEPLOY_RENEW_DURATION_INVALID';
