@@ -25,7 +25,7 @@ jobs:
     # verifies that the exact current-main SHA reaches live. This avoids the
     # native checksPass listener silently missing an otherwise valid release.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 110
     env:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
@@ -358,7 +358,12 @@ jobs:
               if not deploy_id:
                   raise RuntimeError("RENDER_ACTIVE_DEPLOY_ID_MISSING")
 
-          deploy_deadline = time.time() + 900
+          # A successful protected deploy can spend over an hour building on
+          # Render (observed ~65 min for e41beb2). Keep the watcher bounded,
+          # but allow enough runway after the 15-minute required-check gate.
+          # This is still NOT an authorization to issue a second Render POST
+          # after an ambiguous acknowledgement; durable ledger is separate.
+          deploy_deadline = time.time() + 5400
           while True:
               matching = exact_target_deploys()
               target = next((deploy for deploy in matching if str(deploy.get("id") or "") == deploy_id), None)
