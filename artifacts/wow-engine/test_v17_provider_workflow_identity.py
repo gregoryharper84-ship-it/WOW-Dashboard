@@ -48,6 +48,118 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             self.assertEqual(receipt["parent_run_id"],"123")
             return receipt
 
+    def auto_route(self, *, latest_conclusion="failure",
+                   breaker=True, code="OPENAI_API_QUOTA_EXCEEDED",
+                   openai=True, anthropic=False):
+        """Execute the actual workflow's automatic dispatch path.
+
+        Stub only provider/GitHub observations. The real route shell, jq, and
+        all GitHub output serialization/branching remain under test.
+        """
+        text = WORKFLOW.read_text(encoding="utf-8")
+        section = text.split("      - name: Resolve provider action", 1)[1]
+        script = textwrap.dedent(
+            section.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            gh = bin_dir / "gh"
+            gh.write_text(
+                '#!/bin/sh\n'
+                'if [ "$1" = run ] && [ "$2" = list ]; then\n'
+                '  printf \'%s\\n\' "$STUB_LAST_RUN"\n'
+                'elif [ "$1" = run ] && [ "$2" = view ]; then\n'
+                '  printf \'ERROR: quota exceeded\\n\'\n'
+                'else\n'
+                '  exit 12\n'
+                'fi\n'
+            )
+            gh.chmod(0o755)
+            py = bin_dir / "python"
+            py.write_text(
+                '#!/bin/sh\n'
+                'if [ "$1" = -c ]; then\n'
+                '  echo 20\n'
+                'elif [ "$2" = classify ]; then\n'
+                '  printf \'%s\\n\' "$STUB_CLASSIFICATION"\n'
+                'elif [ "$2" = circuit-breaker ]; then\n'
+                '  printf \'%s\\n\' "$STUB_BREAKER"\n'
+                'else\n'
+                '  exit 15\n'
+                'fi\n'
+            )
+            py.chmod(0o755)
+            output = root / "outputs"
+            output.touch()
+            fixture = [{
+                "databaseId": 321,
+                "conclusion": latest_conclusion,
+                "updatedAt": "2026-10-14T23:00:00Z",
+            }]
+            env = dict(
+                os.environ,
+                PATH=str(bin_dir)+":"+os.environ["PATH"],
+                RUNNER_TEMP=str(root), GITHUB_OUTPUT=str(output),
+                GITHUB_RUN_ID="901", GITHUB_REPOSITORY="fixture/repo",
+                EVENT_NAME="workflow_dispatch",
+                FORCE_PROVIDER="auto", MANUAL_REASON="CI_PROBE",
+                MANUAL_LEASE_GROUP="GLOBAL", MANUAL_TARGET_INCIDENT="",
+                SOURCE_WORKFLOW="", SOURCE_RUN_ID="",
+                SOURCE_CONCLUSION="", SOURCE_DISPLAY_TITLE="",
+                OPENAI_API_KEY="configured" if openai else "",
+                ANTHROPIC_API_KEY="configured" if anthropic else "",
+                CLAUDE_CODE_OAUTH_TOKEN="",
+                STUB_LAST_RUN=json.dumps(fixture),
+                STUB_CLASSIFICATION=json.dumps({"code":code,"failover_eligible":True}),
+                STUB_BREAKER=json.dumps({"active":breaker}),
+            )
+            result = subprocess.run(
+                ["bash", "-c", script], env=env, capture_output=True, text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = json.loads((root/"provider-route.json").read_text())
+            self.assertFalse(receipt["can_execute"])
+            self.assertEqual(receipt["terminal_authority"], "V17_TERMINAL_REDUCER")
+            return receipt
+
+    def test_configured_but_quota_exhausted_openai_key_is_not_retried(self):
+        route = self.auto_route(breaker=True, openai=True, anthropic=False)
+        self.assertEqual(route["action"], "SURVIVAL")
+        self.assertEqual(route["provider"], "deterministic")
+        self.assertEqual(
+            route["reason"],
+            "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED:NO_APPROVED_ALTERNATE",
+        )
+
+    def test_quota_breaker_uses_only_authorized_secondary_provider(self):
+        route = self.auto_route(breaker=True, openai=True, anthropic=True)
+        self.assertEqual(route["action"], "DISPATCH")
+        self.assertEqual(route["provider"], "anthropic")
+        self.assertEqual(route["reason"], "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED")
+
+    def test_expired_transient_rate_limiter_allows_openai(self):
+        route = self.auto_route(breaker=False, code="OPENAI_API_RATE_LIMITED")
+        self.assertEqual(route["action"], "DISPATCH")
+        self.assertEqual(route["provider"], "openai")
+
+    def test_non_provider_failure_does_not_repeat_a_broken_agent(self):
+        route = self.auto_route(
+            breaker=False, code="NON_PROVIDER_FAILURE", openai=True
+        )
+        self.assertEqual(route["action"], "SURVIVAL")
+        self.assertEqual(
+            route["reason"],
+            "WORKER_FAILURE_REQUIRES_REPAIR:NON_PROVIDER_FAILURE",
+        )
+
+    def test_no_recent_failed_openai_run_can_use_openai(self):
+        route = self.auto_route(latest_conclusion="success", breaker=True)
+        self.assertEqual(route["action"], "DISPATCH")
+        self.assertEqual(route["provider"], "openai")
+
     def test_static_and_observed_openai_identity_dispatch_claude(self):
         for source in ("wow-v17-chatgpt-engineering-worker",
                        "wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO"):
