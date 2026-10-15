@@ -168,6 +168,9 @@ def test_golden_journey_pass_requires_live_host_and_real_governed_result() -> No
     evidence = _synthetic_golden_evidence()
     result = evaluate_golden_user_journey(evidence)
     assert result["status"] == "STRUCTURAL_PASS_ONLY"
+    assert result["production_verified"] is False
+    assert result["independent_qa_verified"] is False
+    assert result["evidence_scope"] == "STRUCTURAL_ONLY"
     assert result["blockers"] == []
     for missing in ("action_receipt", "source_inventory_evidence", "display_receipt"):
         no_evidence = dict(evidence)
@@ -223,6 +226,7 @@ def test_repository_user_journey_health_fail_closed_and_blocks_model_research() 
     assert status == "FAIL"
     assert product_health_allows_model_improvement(status) is False
     assert product_health_allows_model_improvement("UNKNOWN") is False
+    assert product_health_allows_model_improvement("STRUCTURAL_PASS_ONLY") is False
     assert product_health_allows_model_improvement("PASS") is True
 
 
