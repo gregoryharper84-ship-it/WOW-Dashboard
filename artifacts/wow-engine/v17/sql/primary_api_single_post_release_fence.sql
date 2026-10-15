@@ -105,6 +105,36 @@ $$;
 revoke all on function wow_release_control.reserve_primary_api_post(text,text,text)
   from public,anon,authenticated,wow_primary_release_controller;
 
+-- Transaction-scoped second authorization check: callers MUST hold this
+-- transaction open during the one permitted provider POST. Independent DBA
+-- revocation then orders before or after the network request, never between
+-- the authorization check and provider invocation.
+create or replace function wow_release_control.authorize_primary_api_post_io(
+ p_service_id text,p_target_sha text,p_owner_run_id text
+) returns text language plpgsql security definer
+set search_path=pg_catalog,wow_release_control
+as $$
+declare v_state text;
+begin
+ if p_service_id is distinct from 'srv-da7sa9gu01pc73brt80g'
+    or p_target_sha is null or p_target_sha !~ '^[0-9a-f]{40}$'
+    or p_owner_run_id is null or length(p_owner_run_id) not between 1 and 128
+ then raise exception 'PRIMARY_RELEASE_IO_IDENTITY_INVALID'; end if;
+ perform wow_release_control.assert_primary_api_authority();
+ select intent.state into v_state
+   from wow_release_control.primary_api_deploy_intents intent
+  where intent.service_id=p_service_id and intent.target_sha=p_target_sha
+    and intent.owner_run_id=p_owner_run_id
+  for share of intent;
+ if not found or v_state <> 'POST_UNCERTAIN' then
+   raise exception 'PRIMARY_RELEASE_IO_RESERVATION_MISSING';
+ end if;
+ return 'PRIMARY_RELEASE_IO_WINDOW_ATTESTED';
+end;
+$$;
+revoke all on function wow_release_control.authorize_primary_api_post_io(
+ text,text,text) from public,anon,authenticated,wow_primary_release_controller;
+
 -- This operation records authenticated provider READBACK, never authorizes a
 -- second POST. The release caller must independently authenticate Render data.
 create or replace function wow_release_control.observe_primary_api_deploy(
@@ -137,8 +167,11 @@ revoke all on function wow_release_control.observe_primary_api_deploy(
   text,text,text,text,text,boolean)
   from public,anon,authenticated,wow_primary_release_controller;
 
+revoke all on schema wow_release_control from wow_primary_release_controller;
 grant usage on schema wow_release_control to wow_primary_release_controller;
 grant execute on function wow_release_control.reserve_primary_api_post(
+  text,text,text) to wow_primary_release_controller;
+grant execute on function wow_release_control.authorize_primary_api_post_io(
   text,text,text) to wow_primary_release_controller;
 grant execute on function wow_release_control.observe_primary_api_deploy(
   text,text,text,text,text,boolean) to wow_primary_release_controller;
@@ -148,6 +181,15 @@ grant execute on function wow_release_control.observe_primary_api_deploy(
 do $acl_gate$
 declare rec record;
 begin
+  if exists (
+    select 1 from pg_catalog.pg_namespace n
+    where n.nspname='wow_release_control'
+      and pg_catalog.pg_has_role('wow_primary_release_controller',n.nspowner,'MEMBER')
+  ) or pg_catalog.has_schema_privilege(
+      'wow_primary_release_controller','wow_release_control','CREATE'
+  ) then
+    raise exception 'PRIMARY_RELEASE_CONTROLLER_SCHEMA_PRIVILEGE_LEAK';
+  end if;
   for rec in
     select c.oid,c.relname,c.relowner
     from pg_catalog.pg_class c
