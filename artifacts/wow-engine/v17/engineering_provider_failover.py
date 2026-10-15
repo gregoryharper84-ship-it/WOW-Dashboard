@@ -93,6 +93,16 @@ OPENAI_FAILOVER_ELIGIBLE = {
     "OPENAI_API_UPSTREAM_UNAVAILABLE",
 }
 
+# These are account/credential problems, not short-lived throughput spikes.
+# No automatic OpenAI re-dispatch can clear a billing or invalid-key error.
+# An explicit authorized provider probe, with a fresh successful worker run,
+# is the only supported way to clear the automatic circuit breaker.
+OPENAI_RECOVERY_REQUIRED = frozenset({
+    "OPENAI_API_QUOTA_EXCEEDED",
+    "OPENAI_API_KEY_MISSING",
+    "OPENAI_API_AUTH_FAILED",
+})
+
 # Typed worker delivery outcomes (incidents #1021/#1527). Matched only on the emitted
 # workflow error command, never on the step's own script text echoed into the log.
 DELIVERY_ERROR_RE = re.compile(r"(?:::error::|##\[error\])(ACTIONABLE_REPAIR_[A-Z_]+):")
@@ -118,6 +128,7 @@ class ProviderFailure:
     can_execute: bool = False
     disposition: str | None = None
     provider_signal: str | None = None
+    manual_recovery_required: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -127,6 +138,7 @@ class ProviderFailure:
             "circuit_breaker_minutes": self.circuit_breaker_minutes,
             "disposition": self.disposition,
             "provider_signal": self.provider_signal,
+            "manual_recovery_required": self.manual_recovery_required,
             "can_execute": False,
             "terminal_authority": "V17_TERMINAL_REDUCER",
         }
@@ -158,20 +170,23 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
             provider=provider_key or "unknown",
             code=delivery_code,
             failover_eligible=eligible,
-            circuit_breaker_minutes=120 if eligible else 0,
+            circuit_breaker_minutes=-1 if provider_code in OPENAI_RECOVERY_REQUIRED else 120 if eligible else 0,
             disposition="BLOCKED_WITH_EXACT_REASON" if blocked else "UNRESOLVED_TYPED_FAILURE",
             provider_signal=provider_code,
+            manual_recovery_required=provider_code in OPENAI_RECOVERY_REQUIRED,
         )
 
     for code, needles in patterns:
         if any(needle in text for needle in needles):
             eligible = code in OPENAI_FAILOVER_ELIGIBLE
-            cooldown = 120 if eligible else 0
+            persistent = code in OPENAI_RECOVERY_REQUIRED or code == "ANTHROPIC_API_CREDIT_EXHAUSTED"
+            cooldown = -1 if persistent else 120 if eligible else 0
             return ProviderFailure(
                 provider=provider_key or "unknown",
                 code=code,
                 failover_eligible=eligible,
                 circuit_breaker_minutes=cooldown,
+                manual_recovery_required=persistent,
             )
 
     if any(marker in text for marker in NON_PROVIDER_MARKERS):
@@ -196,6 +211,11 @@ def circuit_breaker_active(
     age_minutes: float,
     cooldown_minutes: int = 120,
 ) -> bool:
+    # Billing exhaustion/invalid credentials do not recover on a timer.
+    # A successful, separately authorized provider probe resets the last-failed
+    # run observed by the dispatcher; never recycle an expired billing HOLD.
+    if failure_code in OPENAI_RECOVERY_REQUIRED:
+        return age_minutes >= 0
     return (
         failure_code in OPENAI_FAILOVER_ELIGIBLE
         and age_minutes >= 0
