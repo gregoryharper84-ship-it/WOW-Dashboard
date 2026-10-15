@@ -27,9 +27,9 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             gh.write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = run ] && [ \"$2\" = list ]; then\n"
-                "  name=\"\${SOURCE_WORKFLOW%% *}\"\n"
+                "  name=\"${SOURCE_WORKFLOW%% *}\"\n"
                 "  case \"$*\" in\n"
-                "    *\"\${name}.yml\"*) printf '[{\"databaseId\":123,\"conclusion\":\"failure\"}]\\n';;\n"
+                "    *\"${name}.yml\"*) printf '[{\"databaseId\":123,\"conclusion\":\"failure\"}]\\n';;\n"
                 "    *) printf '[]\\n';;\n"
                 "  esac\n"
                 "else\n"
