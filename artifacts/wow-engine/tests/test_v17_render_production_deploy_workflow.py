@@ -39,7 +39,11 @@ def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     assert '"can_execute":False' in text or '"can_execute": False' in text
     assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
     assert 'render_json(\n                  "POST"' in text
-    assert '{"clearCache":"do_not_clear"}' in text
+    # Protected deployments must be pinned to the certified exact SHA.
+    # A branch-default POST can silently deploy a newer, unreviewed main.
+    assert '{"clearCache":"do_not_clear", "commitId":target_sha}' in text
+    assert '{"clearCache":"do_not_clear"}' not in text
+    assert "latest_main_before_post != target_sha" in text
 
 
 def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
