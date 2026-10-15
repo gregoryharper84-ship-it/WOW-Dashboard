@@ -80,4 +80,17 @@ def test_release_no_unfenced_render_posts_remain():
     calls = _post_calls(_script())
     assert len(calls) == 1
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert 'timeout-minutes: 25' in workflow  # duration is an independent acceptance concern
+    assert 'timeout-minutes: 110' in workflow
+    assert "deploy_deadline = time.time() + 5400" in workflow
+    assert "check_deadline = time.time() + 900" in workflow
+    assert "concurrency:" in workflow
+    assert "cancel-in-progress: false" in workflow
+
+
+def test_release_build_timeout_cannot_revert_to_pre_observed_build_duration():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "timeout-minutes: 25" not in workflow
+    assert "deploy_deadline = time.time() + 900" not in workflow
+    assert "RENDER_EXACT_SHA_DEPLOY_TIMEOUT" in workflow
+    # A 65-minute Render build needs >65 minutes of bounded poll runway.
+    assert "deploy_deadline = time.time() + 5400" in workflow
