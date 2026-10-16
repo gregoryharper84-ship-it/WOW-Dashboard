@@ -7,6 +7,7 @@ import pytest
 
 from v17.engineering_dispatch_queue import build_queue
 from v17.engineering_agent_team import select_dual_stream_work
+from v17.p0_parallel_dispatch import select_parallel
 
 
 def _manifest():
@@ -119,6 +120,57 @@ def test_all_manifested_active_p0_incidents_are_in_rapid_lane():
     decision = select_dual_stream_work(queue["records"])
     assert decision.restoration.incident_id == "1388"
     assert decision.acceleration.incident_id is None
+
+
+def test_cross_sport_restoration_incidents_are_admitted_and_serialized():
+    """#823 and #1806 are the canonical incidents behind drafts #1812 and #1822.
+
+    Those draft numbers are pull requests. The live dispatcher builds queue
+    records only for manifest issues that `gh issue list` returns, so admitting
+    the pull-request numbers cannot select the work. Rapid selection only emits
+    streams GOVERNANCE, A, B, and C, so both incidents use stream B. They share
+    the LLP writer lease and cross-sport conflict keys. #823 stays behind the
+    existing higher-ranked restoration incidents and ahead of #1806.
+    """
+    path = Path(__file__).parents[1] / "v17" / "engineering_dispatch_manifest.json"
+    manifest = json.loads(path.read_text())
+    by_issue = {int(row["issue_number"]): row for row in manifest["restoration"]}
+    for draft_number in (1812, 1822, 1824):
+        assert draft_number not in by_issue
+    shared = {"ALL_SPORTS_MONEYLINE", "CROSS_SPORT_MONEYLINE", "LLP_USER_PATH"}
+    for issue_id in (823, 1806):
+        row = by_issue[issue_id]
+        assert row["severity"] == "P0"
+        assert row["execution_lane"] == "RAPID"
+        assert row["rapid_stream"] == "B"
+        assert row["lease_group"] == "P0_LLP_RESTORE"
+        assert shared <= {str(key).upper() for key in row["conflict_keys"]}
+    assert by_issue[1688]["priority_rank"] < by_issue[823]["priority_rank"] < by_issue[1806]["priority_rank"]
+    assert manifest["can_execute"] is False
+
+    issues = [
+        {"number": 1388, "title": "runtime memory", "state": "OPEN", "updatedAt": "2026-10-16T18:00:00Z"},
+        {"number": 823, "title": "full-slate moneyline", "state": "OPEN", "updatedAt": "2026-10-16T19:00:00Z"},
+        {"number": 1806, "title": "publication proof", "state": "OPEN", "updatedAt": "2026-10-16T20:00:00Z"},
+        {"number": 1812, "title": "owner identity draft", "state": "OPEN", "updatedAt": "2026-10-16T21:00:00Z"},
+        {"number": 1822, "title": "owner publication draft", "state": "OPEN", "updatedAt": "2026-10-16T22:00:00Z"},
+        {"number": 1824, "title": "owner combined test draft", "state": "OPEN", "updatedAt": "2026-10-16T23:00:00Z"},
+    ]
+    queue = build_queue(manifest, issues)
+    assert [row["incident_id"] for row in queue["records"]] == ["1388", "823", "1806"]
+    decision = select_dual_stream_work(queue["records"])
+    assert decision.restoration.incident_id == "1388"
+    assert decision.acceleration.incident_id is None
+    selected = select_parallel(queue["records"])
+    assert [row["incident_id"] for row in selected["selected"]] == ["823"]
+    assert selected["selected"][0]["lease_group"] == "P0_LLP_RESTORE"
+    assert selected["can_execute"] is False
+    assert all(row["incident_id"] != "1806" for row in selected["selected"])
+
+    publication_only = [row for row in issues if row["number"] == 1806]
+    publication = select_parallel(build_queue(manifest, publication_only)["records"])
+    assert [row["incident_id"] for row in publication["selected"]] == ["1806"]
+    assert publication["selected"][0]["lease_group"] == "P0_LLP_RESTORE"
 
 
 def test_p0_requires_stream_and_lease_metadata():
