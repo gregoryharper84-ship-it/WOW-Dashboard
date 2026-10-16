@@ -553,6 +553,15 @@ class DiscoveredEvent:
         return f"{self.sport}:{self.official_event_id or 'UNRESOLVED'}"
 
     def identity(self) -> dict[str, Any]:
+        # Provider aliases belong in private acquisition provenance, never in
+        # immutable terminal fields named "official". Even when a caller
+        # accidentally leaves official_event_id populated after a failed
+        # canonical lookup, held/output identity must not assert authenticity.
+        alias_only = (
+            isinstance(self.raw, Mapping)
+            and self.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
+        )
+        event_id = None if alias_only else self.official_event_id
         return {
             "sport": self.sport,
             "league": self.league,
@@ -560,8 +569,8 @@ class DiscoveredEvent:
             "regime": self.regime,
             "provider": self.provider,
             "provider_sport_id": self.provider_sport_id,
-            "event_key": self.event_key,
-            "official_event_id": self.official_event_id,
+            "event_key": f"{self.sport}:UNRESOLVED" if alias_only else self.event_key,
+            "official_event_id": event_id,
             "home_team": self.home_team,
             "away_team": self.away_team,
             "commence_time_utc": self.commence_time_utc,
