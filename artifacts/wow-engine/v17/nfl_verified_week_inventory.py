@@ -14,7 +14,12 @@ import io
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
+from v17.cross_sport_acceptance_factory import Lane, choose_current_pregame_cohort
+from v17.nfl_multiday_snapshot_adapter import (
+    AuthenticatedSnapshotResponse, execute_nfl_week_snapshot_preflight,
+)
+from v17.nfl_multiday_acceptance_preflight import hold
 from zoneinfo import ZoneInfo
 
 from v17.cross_sport_acceptance_factory import Fixture, SourceInventory, SourceWeekWindow
@@ -238,4 +243,49 @@ def build_verified_nfl_week_inventory(
     return (
         SourceInventory(capture.source_id, capture.content_sha256, capture.fetched_at, tuple(fixtures)),
         tuple(result_weeks),
+    )
+
+
+def execute_verified_nfl_week_preflight(
+    schedule_csv: bytes,
+    *,
+    capture: VerifiedScheduleCapture,
+    kickoff_evidence: Mapping[str, VerifiedKickoff],
+    declared_weeks: tuple[VerifiedWeek, ...],
+    trusted_now: datetime,
+    post_daily_snapshot: Callable[[dict[str, Any]], AuthenticatedSnapshotResponse],
+) -> dict[str, Any]:
+    """Join authenticated evidence to bounded, serial full-week OIDC preflight.
+
+    This runs only after the trusted calling boundary independently establishes
+    the source and kickoff attestations. It is not itself an authenticating
+    transport, production endpoint, model certification or publishing route.
+    Do not use on unverified request/user-supplied receipts.
+    """
+    try:
+        inventory, weeks = build_verified_nfl_week_inventory(
+            schedule_csv,
+            capture=capture,
+            kickoff_evidence=kickoff_evidence,
+            declared_weeks=declared_weeks,
+            trusted_now=trusted_now,
+        )
+    except NflWeekInventoryHold as exc:
+        return hold(exc.code)
+    selection = choose_current_pregame_cohort(
+        Lane("NFL", "MONEYLINE", "scoreWowTeamEventRequest", "NFL_GAME_WIN_V17"),
+        inventory,
+        weeks,
+        now=trusted_now,
+        minimum_unique_events=13,
+    )
+    if selection.get("status") != "COHORT_ELIGIBLE_FOR_TEST":
+        # Keep the source-window reason intact; do not invent a week/date.
+        return selection
+    return execute_nfl_week_snapshot_preflight(
+        selection,
+        inventory,
+        independently_authenticated_source_sha256=capture.content_sha256,
+        trusted_now=trusted_now,
+        post_daily_snapshot=post_daily_snapshot,
     )
