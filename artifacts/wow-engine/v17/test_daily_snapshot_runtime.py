@@ -77,6 +77,10 @@ def governed_team_result():
 
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
+    # Verify the canonical prop/MLB terminal contract without invoking unrelated
+    # live cross-sport source discovery. Feed failures belong in separate tests,
+    # and may legitimately change the run into ACQUISITION_BLOCKERS.
+    monkeypatch.setattr("v17.cross_sport_discovery_feed.enabled", lambda: False)
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
     # Keep this row/terminal contract test independent of the process-global
     # production installer that can force a fresh provider acquisition when the
@@ -166,7 +170,10 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     assert result["rows"][0]["row_status"]=="COMPLETED"
 
 
-def test_zero_row_query_failures_are_typed_as_data_unobtainable():
+def test_zero_row_query_failures_are_typed_as_data_unobtainable(monkeypatch):
+    # A failing canonical database can coexist with valid separate source
+    # discovery. Disable that other lane to prove the zero-row DB taxonomy.
+    monkeypatch.setattr("v17.cross_sport_discovery_feed.enabled", lambda: False)
     class BrokenQuery(Query):
         def execute(self): raise ConnectionError("boom")
     class BrokenDB:
@@ -315,6 +322,13 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     from v17.team_event_bridge_runtime import TEAM_EVENT_BRIDGES
 
     monkeypatch.setattr(runtime, "score_team_event_request", lambda *a, **k: governed_team_result())
+    monkeypatch.setattr(feed, "enabled", lambda: True)
+    # A full-suite Python process can be busy enough to exhaust production's
+    # 8-second sweep while processing dozens of mocked sport/provider targets.
+    # Here every source is synchronous/in-memory; test inventory completeness
+    # without unrelated host CPU contention. Budget-exhaustion policy has its
+    # own negative tests and remains unchanged in production.
+    monkeypatch.setattr(discovery, "discovery_budget_seconds", lambda: 120.0)
 
     slate = _cross_sport_feed(
         {
