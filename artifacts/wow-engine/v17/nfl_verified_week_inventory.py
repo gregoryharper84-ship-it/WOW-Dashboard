@@ -175,6 +175,17 @@ def build_verified_nfl_week_inventory(
         game_id = str(row.get("game_id") or "").strip()
         if not game_id or game_id in selected:
             raise NflWeekInventoryHold("NFL_WEEK_DUPLICATE_OR_MISSING_CANONICAL_ID")
+        # The NFLVERSE canonical ID binds season + numeric week + away/home
+        # codes. A provider alias or a forged cross-team ID is not a
+        # canonical fixture, even when present in an authenticated CSV.
+        home_team = str(row.get("home_team") or "").strip().upper()
+        away_team = str(row.get("away_team") or "").strip().upper()
+        if (
+            re.fullmatch(r"[A-Z]{2,3}", home_team) is None
+            or re.fullmatch(r"[A-Z]{2,3}", away_team) is None
+            or game_id != f"{year}_{number:02d}_{away_team}_{home_team}"
+        ):
+            raise NflWeekInventoryHold("NFL_WEEK_CANONICAL_GAME_ID_FORMAT_INVALID")
         selected[game_id] = row
     if not selected:
         raise NflWeekInventoryHold("NFL_WEEK_CANONICAL_SCHEDULE_EMPTY")
