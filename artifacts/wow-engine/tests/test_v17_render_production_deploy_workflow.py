@@ -104,19 +104,39 @@ def test_render_deploy_no_deploy_paths_emit_typed_receipts_before_exit():
         assert text.index("emit_receipt({", text.index(marker) - 40) < text.index("raise SystemExit(0)", text.index(marker))
 
 
-def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
+def test_daily_snapshot_handoff_never_repeats_ambiguous_synchronous_scoring_post():
     repo_root = Path(__file__).resolve().parents[3]
     text = (repo_root / ".github" / "workflows" / "wow-v17-daily-snapshot.yml").read_text(
         encoding="utf-8"
     )
+    daily = text.split("  daily-snapshot:", 1)[1].split(
+        "  nfl-full-slate-exact-once-acceptance:", 1
+    )[0]
 
     assert "timeout-minutes: 40" in text
     assert "workflow_call:" in text
     assert "post_deploy_acceptance:" in text
     assert "\n  push:\n" not in text
     assert "if: inputs.post_deploy_acceptance == true" in text
-    assert "max_attempts = 90" in text
-    assert "retry_delay_seconds = 20" in text
-    assert "except (urllib.error.URLError, TimeoutError):" in text
+    assert "max_attempts = 90" not in daily
+    assert "retry_delay_seconds = 20" not in daily
+    assert "for attempt in range" not in daily
+    assert daily.count("with urllib.request.urlopen(request, timeout=240)") == 1
+    assert "DAILY_SNAPSHOT_POST_OUTCOME_UNVERIFIED_HTTP_" in daily
+    assert "DAILY_SNAPSHOT_POST_OUTCOME_UNVERIFIED_RECONCILE_ONLY" in daily
+    assert "except (urllib.error.URLError, TimeoutError) as exc:" in daily
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
+
+
+def test_daily_snapshot_ambiguous_http_status_remains_typed_hold_not_retry():
+    repo_root = Path(__file__).resolve().parents[3]
+    text = (repo_root / ".github" / "workflows" / "wow-v17-daily-snapshot.yml").read_text()
+    daily = text.split("  daily-snapshot:", 1)[1].split(
+        "  nfl-full-slate-exact-once-acceptance:", 1
+    )[0]
+    for code in (404, 502, 503, 504):
+        assert "transient_statuses = {" not in daily
+        assert f"DAILY_SNAPSHOT_POST_OUTCOME_UNVERIFIED_HTTP_{code}" not in daily
+    assert "except urllib.error.HTTPError as exc:" in daily
+    assert "RECONCILE_ONLY" in daily
