@@ -294,7 +294,7 @@ def test_joined_week_authenticates_daily_receipts_and_reconciles_all_13_without_
     assert len(calls) == 2
     assert len({p["requested_slate_date"] for p in calls}) == 2
     assert all(x["lanes"] == ["MONEYLINE"] and x["max_props"] == 0 for x in calls)
-    assert all(x["max_team_events"] == 32 for x in calls)
+    assert all(x["max_team_events"] == 12 for x in calls)
     assert result["can_execute"] is False and result["probability_publishable"] is False
 
 
