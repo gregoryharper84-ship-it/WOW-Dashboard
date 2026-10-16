@@ -64,6 +64,15 @@ runs:
         claude_args: ${{ steps.config.outputs.claude_args }}
         show_full_output: "false"
 
+    - name: Classify API-key provider failure without provider text
+      # Observation only. Never manufacture structured_output or approval.
+      if: always() && steps.claude_api.outcome == 'failure'
+      shell: bash
+      env:
+        CLAUDE_EXECUTION_FILE: ${{ steps.claude_api.outputs.execution_file }}
+        CLAUDE_ATTEMPT: API_KEY
+      run: python3 artifacts/wow-engine/v17/claude_execution_outcome_diagnostic.py
+
     - name: Run governed Claude agent with OAuth
       id: claude_oauth
       # A provider step may exit successfully without required structured_output.
@@ -79,6 +88,14 @@ runs:
         prompt: ${{ inputs.prompt }}
         claude_args: ${{ steps.config.outputs.claude_args }}
         show_full_output: "false"
+
+    - name: Classify OAuth provider failure without provider text
+      if: always() && steps.claude_oauth.outcome == 'failure'
+      shell: bash
+      env:
+        CLAUDE_EXECUTION_FILE: ${{ steps.claude_oauth.outputs.execution_file }}
+        CLAUDE_ATTEMPT: OAUTH
+      run: python3 artifacts/wow-engine/v17/claude_execution_outcome_diagnostic.py
 
     - name: Verify provider result exists
       if: always()
