@@ -470,7 +470,12 @@ def test_installed_sport_parity_wrapper_retains_nhl_id_colliding_with_mlb(monkey
                    lambda event: event)
         mp.delitem(TEAM_EVENT_BRIDGES, "NHL", raising=False)
 
+        queried_targets = []
+
         def provider(sport, sport_key=None, *, target=None, **_kwargs):
+            # Discovery passes the verified registry target as argument 2.
+            actual_target = target or sport_key
+            queried_targets.append((sport, getattr(actual_target, "sport_id", None)))
             return {
                 "MLB": [_cross_sport_event("1")],
                 "NHL": [_cross_sport_event("1")],
@@ -502,6 +507,13 @@ def test_installed_sport_parity_wrapper_retains_nhl_id_colliding_with_mlb(monkey
         for row in rows:
             sport = row["identity"].get("sport") or "MLB"
             by_sport.setdefault(sport, []).append(row)
+
+        # NFL/NBA/NHL regime variants must be inventoried on the installed
+        # path as on the base Daily path, even if no fitted regime model exists.
+        assert ("NBA", 23) in queried_targets  # NBA preseason
+        assert ("NHL", 27) in queried_targets  # NHL preseason
+        assert ("NFL", 25) in queried_targets  # NFL preseason
+        assert ("MLB", 31) in queried_targets  # MLB playoffs
 
         assert len(by_sport["MLB"]) == 1, "canonical MLB duplicate remains suppressed"
         for sport in ("NHL", "NBA", "WNBA"):
