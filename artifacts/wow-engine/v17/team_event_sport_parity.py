@@ -581,11 +581,11 @@ def canonicalize_wnba_discovery_identity(event: Any) -> Any:
     if not provider_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "WNBA_PROVIDER_EVENT_ID_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
     if not home_alias or not away_alias:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "WNBA_PROVIDER_TEAM_ALIAS_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     event_alias = (
         provider_event_id
@@ -609,13 +609,13 @@ def canonicalize_wnba_discovery_identity(event: Any) -> Any:
         raw["canonical_identity_blocker"] = str(
             getattr(exc, "code", None) or type(exc).__name__
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     canonical_event_id = str(resolution.get("event_id") or "").strip()
     if not canonical_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "WNBA_CANONICAL_EVENT_ID_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
