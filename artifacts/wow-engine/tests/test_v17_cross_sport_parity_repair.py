@@ -353,6 +353,100 @@ def test_mlb_daily_discovery_alias_stays_unresolved_without_canonical_proof(monk
     )
 
 
+
+@pytest.mark.parametrize("sport,failure", [
+    ("NFL", "db_client_unavailable"),
+    ("NFL", "canonical_resolver_exception"),
+    ("NFL", "canonical_match_rejected"),
+    ("MLB", "canonical_resolver_exception"),
+    ("MLB", "canonical_match_rejected"),
+    ("MLB", "canonical_match_empty_game_id"),
+])
+def test_failed_nfl_or_mlb_canonical_proof_never_allows_model_routing(
+    monkeypatch, sport, failure,
+):
+    """Provider event-id aliases must not become official fitted-scorer IDs."""
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory, IDENTITY_UNRESOLVED, route_discovered_slate,
+    )
+    from v17 import nfl_team_event_specialist as nfl
+    from v17 import mlb_team_event_hydration as mlb
+
+    if sport == "NFL":
+        event = replace(_nfl_alias_event(), official_event_id="espn-401872972")
+        api = SimpleNamespace(get_client=lambda: None) if failure == "db_client_unavailable" else _EventApi()
+        if failure == "canonical_resolver_exception":
+            def fail(*_args, **_kwargs):
+                raise RuntimeError("upstream canonical provider unavailable")
+            monkeypatch.setattr(nfl, "resolve_nfl_team_event_evidence", fail)
+        elif failure == "canonical_match_rejected":
+            monkeypatch.setattr(
+                nfl, "resolve_nfl_team_event_evidence",
+                lambda *_args, **_kwargs: {
+                    "ok": False, "code": "NFL_TEAM_EVENT_CANONICAL_IDENTITY_UNVERIFIED",
+                },
+            )
+        resolved = canonicalize_nfl_discovery_identity(
+            event,
+            req=SimpleNamespace(
+                requested_slate_date="2026-10-04",
+                requested_timezone="America/Chicago",
+            ),
+            event_api=api,
+            settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        )
+        slate_date = "2026-10-04"
+    else:
+        event = replace(_mlb_alias_event(), official_event_id="espn-849826")
+        if failure == "canonical_resolver_exception":
+            def fail(*_args, **_kwargs):
+                raise RuntimeError("upstream canonical provider unavailable")
+            monkeypatch.setattr(mlb, "resolve_mlb_team_event_evidence", fail)
+        elif failure == "canonical_match_rejected":
+            monkeypatch.setattr(
+                mlb, "resolve_mlb_team_event_evidence",
+                lambda *_args, **_kwargs: {
+                    "ok": False, "code": "MLB_TEAM_EVENT_CANONICAL_IDENTITY_AMBIGUOUS",
+                },
+            )
+        else:
+            monkeypatch.setattr(
+                mlb, "resolve_mlb_team_event_evidence",
+                lambda *_args, **_kwargs: {"ok": True, "canonical_official_event_id": None},
+            )
+        resolved = canonicalize_mlb_discovery_identity(
+            event,
+            req=SimpleNamespace(
+                requested_slate_date="2026-10-07",
+                requested_timezone="America/Chicago",
+            ),
+            event_api=_EventApi(),
+        )
+        slate_date = "2026-10-07"
+
+    assert resolved.official_event_id is None
+    assert resolved.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert resolved.raw["canonical_identity_blocker"]
+    inv = DiscoveryInventory(
+        requested_slate_date=slate_date,
+        requested_timezone="America/Chicago",
+        events=[resolved],
+    )
+    invoked = []
+    rows = route_discovered_slate(
+        inv,
+        resolve_model=lambda _event: invoked.append("model") or object(),
+        score_row=lambda *_args: invoked.append("scorer") or {
+            "probability_publishable": True, "rank_eligible": True,
+        },
+    )
+    assert invoked == []
+    assert len(rows) == 1
+    assert rows[0].bucket == IDENTITY_UNRESOLVED
+    assert rows[0].rank_eligible is False
+    assert rows[0].probability_publishable is False
+
+
 def test_model_coverage_separates_accounted_rows_from_identity_and_model_routing():
     coverage = cross_sport_model_coverage(
         [
