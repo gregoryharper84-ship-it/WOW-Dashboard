@@ -94,7 +94,7 @@ def _held(code, **overrides):
 
 
 
-def test_october_week6_frozen_public_schedule_shape_and_12_plus_1_partition():
+def test_october_week6_has_thirteen_future_games_but_full_week_must_hold():
     """Research fixture ONLY: no authenticated network capture or publication.
 
     NFL.com Week 6 and nflverse games.csv as checked on 2026-10-16 show one
@@ -151,23 +151,19 @@ def test_october_week6_frozen_public_schedule_shape_and_12_plus_1_partition():
         Lane("NFL", "MONEYLINE", "scoreWowTeamEventRequest", "NFL_GAME_WIN_V17"),
         inventory, windows, now=NOW, minimum_unique_events=13,
     )
-    assert selected["status"] == "COHORT_ELIGIBLE_FOR_TEST"
-    plan = plan_nfl_week_dates(
-        selected, inventory,
-        independently_authenticated_source_sha256=inventory.payload_sha256,
-        trusted_now=NOW,
-    )
-    assert plan["status"] == "DATE_PLAN_READY_NOT_ACTION_ACCEPTED"
-    assert [d["requested_slate_date"] for d in plan["dates"]] == [
-        "2026-10-18", "2026-10-19",
+    # #1690 is deliberately strict: an in-week FINAL means that the
+    # remaining thirteen games cannot masquerade as a COMPLETE weekly slate.
+    assert selected["status"] == "COHORT_HELD"
+    assert selected["selected_week"] is None
+    assert selected["blockers"] == ["ACCEPTANCE_NO_FULL_VERIFIED_WEEK"]
+    assert selected["attempted_week_receipts"][0]["week_key"] == "REG:06"
+    assert selected["attempted_week_receipts"][0]["eligible_count"] == 13
+    assert selected["attempted_week_receipts"][0]["required_count"] == 13
+    assert selected["attempted_week_receipts"][0]["blockers"] == [
+        "ACCEPTANCE_WEEK_PARTIALLY_ELAPSED",
     ]
-    assert [len(d["expected_event_ids"]) for d in plan["dates"]] == [12, 1]
-    assert len(plan["expected_event_ids"]) == 13
-    assert "2026_06_SEA_DEN" not in plan["expected_event_ids"]
-    assert "2026_06_DAL_GB" in plan["dates"][0]["expected_event_ids"]
-    assert "2026_06_WAS_SF" in plan["dates"][1]["expected_event_ids"]
-    assert plan["can_execute"] is False
-    assert plan["probability_publishable"] is False
+    assert selected["can_execute"] is False
+    assert selected["probability_publishable"] is False
 
     with pytest.raises(NflWeekInventoryHold, match="NFL_WEEK_CANONICAL_SCHEDULE_EMPTY"):
         build_verified_nfl_week_inventory(
