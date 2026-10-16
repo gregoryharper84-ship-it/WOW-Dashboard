@@ -182,6 +182,22 @@ def test_provider_alias_or_wrong_week_team_id_is_not_canonical_nflverse():
               capture=replace(capture, content_sha256=hashlib.sha256(raw).hexdigest()))
 
 
+def test_syntactically_valid_but_non_nfl_team_code_is_rejected():
+    _, rows, capture, att = _inputs()
+    original = rows[0]["game_id"]
+    invalid_code = "XYZ"
+    rows[0]["home_team"] = invalid_code
+    rows[0]["game_id"] = f'2026_07_{rows[0]["away_team"]}_{invalid_code}'
+    new_id = rows[0]["game_id"]
+    raw = _csv_bytes(rows)
+    old = att.pop(original)
+    att[new_id] = replace(old, game_id=new_id, home_team=invalid_code)
+    _held("NFL_WEEK_CANONICAL_GAME_ID_FORMAT_INVALID", raw=raw,
+          attestations=att, capture=replace(
+              capture, content_sha256=hashlib.sha256(raw).hexdigest(),
+          ))
+
+
 def test_scored_game_cannot_be_labeled_pregame():
     _, rows, capture, _ = _inputs()
     rows[0]["home_score"] = "21"
