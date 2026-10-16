@@ -366,6 +366,52 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     assert payload["can_execute"] is False
 
 
+def test_cross_sport_id_collision_never_drops_non_mlb_rows(monkeypatch):
+    """MLB's official id '1' must not eat an NHL alias with the same raw id."""
+    from v17 import cross_sport_discovery_feed as feed
+    from v17 import daily_snapshot_runtime as runtime
+    from v17.team_event_bridge_runtime import TEAM_EVENT_BRIDGES
+
+    monkeypatch.setattr(feed, "enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime, "score_team_event_request",
+        lambda *args, **kwargs: governed_team_result(),
+    )
+    # Event DB fixture has canonical MLB official_event_id='1'. The event
+    # discovery board independently returns MLB+NHL id '1' for this slate.
+    slate = _cross_sport_feed({
+        "MLB": [_cross_sport_event("1")],
+        "NHL": [_cross_sport_event("1")],
+    })
+    monkeypatch.setattr(feed, "odds_proxy_feed", lambda **_: slate)
+    monkeypatch.setattr(feed, "rundown_board_feed", lambda **_: slate)
+    monkeypatch.delitem(TEAM_EVENT_BRIDGES, "NHL", raising=False)
+
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            response_mode="FULL",
+        ),
+        db=DB(), market_api=Market(), event_api=Event(),
+    )
+
+    rows = result["rows"]
+    mlb = [r for r in rows if r["identity"].get("official_event_id") == "1"
+           and r["identity"].get("sport") in ("MLB", None)]
+    nhl = [r for r in rows if r["identity"].get("sport") == "NHL"]
+    assert len(mlb) == 1, "true MLB canonical duplicate must remain deduplicated"
+    assert len(nhl) == 1, "NHL id collision must not be silently lost"
+    assert nhl[0]["identity"]["official_event_id"] == "1"
+    assert nhl[0]["row_status"] == "HELD"
+    assert nhl[0]["result"]["bucket"] == "MODEL_UNAVAILABLE"
+    assert nhl[0]["probability_publishable"] is False
+    assert result["reconciliation"]["balanced"] is True
+    assert result["cross_sport_discovery_audit"]["reconciliation"]["row_reconciliation"] == "PASS"
+    assert result["can_execute"] is False
+
+
 def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(monkeypatch):
     from v17 import cross_sport_discovery_feed as feed
 
