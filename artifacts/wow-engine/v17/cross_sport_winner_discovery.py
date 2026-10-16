@@ -24,6 +24,7 @@ price, a public projection or generic reasoning for an absent fitted model, and
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
@@ -1115,6 +1116,15 @@ def _purge_bucket(event: DiscoveredEvent, *, slate_date: str, tz_name: str) -> s
         event.commence_time_utc, slate_date, tz_name
     ):
         return WRONG_DATE
+    # This is a second, independent trust fence: upstream canonicalizers
+    # may accidentally leave a provider alias in official_event_id on error.
+    # A verified 'ALIAS_ONLY_UNRESOLVED' hold always takes precedence over
+    # a nonempty ID and cannot invoke a fitted specialist.
+    if (
+        isinstance(event.raw, Mapping)
+        and event.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
+    ):
+        return IDENTITY_UNRESOLVED
     if not event.official_event_id or not event.home_team or not event.away_team:
         return IDENTITY_UNRESOLVED
     if event.event_status != REQUIRED_EVENT_STATE:
@@ -1168,12 +1178,24 @@ def route_discovered_slate(
             event, slate_date=inventory.requested_slate_date, tz_name=inventory.requested_timezone
         )
         if purge is not None:
+            detail = {"reason": purge, "model_invoked": False}
+            # Preserve one safe typed source blocker for actual restoration
+            # diagnosis. Never serialize the provider row, exception text,
+            # URL, credentials, aliases, names or odds into this receipt.
+            if purge == IDENTITY_UNRESOLVED and isinstance(event.raw, Mapping):
+                blocker = event.raw.get("canonical_identity_blocker")
+                if (
+                    isinstance(blocker, str)
+                    and len(blocker) <= 96
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]{2,95}", blocker)
+                ):
+                    detail["canonical_identity_blocker"] = blocker
             rows.append(
                 RoutedRow(
                     identity=event.identity(),
                     bucket=purge,
                     model_status=None,
-                    detail={"reason": purge, "model_invoked": False},
+                    detail=detail,
                 )
             )
             continue
