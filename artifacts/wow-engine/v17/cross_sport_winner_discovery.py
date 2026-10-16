@@ -23,6 +23,8 @@ price, a public projection or generic reasoning for an absent fitted model, and
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -562,6 +564,21 @@ class DiscoveredEvent:
             and self.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
         )
         event_id = None if alias_only else self.official_event_id
+        event_key = self.event_key
+        if alias_only:
+            # Keep multiple held events distinct without presenting public
+            # provider IDs as official ids. A canonical JSON digest binds the
+            # *unverified* source identity + fixture evidence for reconciliation.
+            # It is neither an official game id nor model-scoring authority.
+            binding = [
+                self.sport, self.league, self.regime, self.provider,
+                self.official_event_id, self.home_team, self.away_team,
+                self.commence_time_utc,
+            ]
+            fingerprint = hashlib.sha256(
+                json.dumps(binding, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+            ).hexdigest()[:24]
+            event_key = f"{self.sport}:UNRESOLVED:{fingerprint}"
         return {
             "sport": self.sport,
             "league": self.league,
@@ -569,7 +586,7 @@ class DiscoveredEvent:
             "regime": self.regime,
             "provider": self.provider,
             "provider_sport_id": self.provider_sport_id,
-            "event_key": f"{self.sport}:UNRESOLVED" if alias_only else self.event_key,
+            "event_key": event_key,
             "official_event_id": event_id,
             "home_team": self.home_team,
             "away_team": self.away_team,
