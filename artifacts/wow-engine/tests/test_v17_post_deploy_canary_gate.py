@@ -44,7 +44,9 @@ def test_exact_live_deploy_receipts_still_authorize_successful_controller():
     gated = text[final_gate:]
 
     assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in gated
-    assert "PRIMARY_RELEASE_LIVE_REQUIRES_CERTIFIED_LEDGER_READBACK" in gated
+    # The ledger readback fence occurs before the final consumer decision.
+    assert "PRIMARY_RELEASE_LIVE_REQUIRES_CERTIFIED_LEDGER_READBACK" in text[:final_gate]
+    assert "record_authenticated_readback(" in text[:final_gate]
     assert '"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES"' in gated
     assert "raise SystemExit(0)" in gated
 
