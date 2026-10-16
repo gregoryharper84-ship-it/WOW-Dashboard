@@ -93,6 +93,89 @@ def _held(code, **overrides):
     assert exc.value.code == code
 
 
+
+def test_october_week6_frozen_public_schedule_shape_and_12_plus_1_partition():
+    """Research fixture ONLY: no authenticated network capture or publication.
+
+    NFL.com Week 6 and nflverse games.csv as checked on 2026-10-16 show one
+    completed Thursday game plus 12 Sunday and one Monday still pregame.
+    A production caller must independently attest source bytes/kickoff/status.
+    """
+    games = (
+        ("2026_06_SEA_DEN", "2026-10-16T00:15:00+00:00", (17, 14)),
+        ("2026_06_HOU_JAX", "2026-10-18T13:30:00+00:00", None),
+        ("2026_06_CHI_ATL", "2026-10-18T17:00:00+00:00", None),
+        ("2026_06_BAL_CLE", "2026-10-18T17:00:00+00:00", None),
+        ("2026_06_TEN_IND", "2026-10-18T17:00:00+00:00", None),
+        ("2026_06_NYJ_NE", "2026-10-18T17:00:00+00:00", None),
+        ("2026_06_NO_NYG", "2026-10-18T17:00:00+00:00", None),
+        ("2026_06_CAR_PHI", "2026-10-18T17:00:00+00:00", None),
+        ("2026_06_PIT_TB", "2026-10-18T17:00:00+00:00", None),
+        ("2026_06_ARI_LA", "2026-10-18T20:05:00+00:00", None),
+        ("2026_06_LAC_KC", "2026-10-18T20:25:00+00:00", None),
+        ("2026_06_BUF_LV", "2026-10-18T20:25:00+00:00", None),
+        ("2026_06_DAL_GB", "2026-10-19T00:20:00+00:00", None),
+        ("2026_06_WAS_SF", "2026-10-20T00:15:00+00:00", None),
+    )
+    rows, kicks = [], {}
+    for game_id, kickoff_utc, score in games:
+        _, _, away, home = game_id.split("_")
+        start = datetime.fromisoformat(kickoff_utc)
+        rows.append({
+            "game_id": game_id, "season": "2026", "game_type": "REG", "week": "6",
+            "gameday": start.astimezone(ZoneInfo("America/New_York")).date().isoformat(),
+            "home_team": home, "away_team": away,
+            "home_score": "" if score is None else str(score[0]),
+            "away_score": "" if score is None else str(score[1]),
+        })
+        kicks[game_id] = VerifiedKickoff(
+            game_id, 2026, 6, "REG", start,
+            "SCHEDULED" if score is None else "FINAL", home, away,
+        )
+    raw = _csv_bytes(rows)
+    capture = VerifiedScheduleCapture(
+        "nflverse:unit-test-only", SCHEDULE_URL,
+        hashlib.sha256(raw).hexdigest(), NOW - timedelta(minutes=20), True,
+    )
+    wk6 = VerifiedWeek(
+        2026, 6, "REG",
+        datetime(2026, 10, 15, tzinfo=timezone.utc),
+        datetime(2026, 10, 21, tzinfo=timezone.utc),
+    )
+    inventory, windows = build_verified_nfl_week_inventory(
+        raw, capture=capture, kickoff_evidence=kicks,
+        declared_weeks=(wk6,), trusted_now=NOW,
+    )
+    assert len(inventory.fixtures) == 14
+    selected = choose_current_pregame_cohort(
+        Lane("NFL", "MONEYLINE", "scoreWowTeamEventRequest", "NFL_GAME_WIN_V17"),
+        inventory, windows, now=NOW, minimum_unique_events=13,
+    )
+    assert selected["status"] == "COHORT_ELIGIBLE_FOR_TEST"
+    plan = plan_nfl_week_dates(
+        selected, inventory,
+        independently_authenticated_source_sha256=inventory.payload_sha256,
+        trusted_now=NOW,
+    )
+    assert plan["status"] == "DATE_PLAN_READY_NOT_ACTION_ACCEPTED"
+    assert [d["requested_slate_date"] for d in plan["dates"]] == [
+        "2026-10-18", "2026-10-19",
+    ]
+    assert [len(d["expected_event_ids"]) for d in plan["dates"]] == [12, 1]
+    assert len(plan["expected_event_ids"]) == 13
+    assert "2026_06_SEA_DEN" not in plan["expected_event_ids"]
+    assert "2026_06_DAL_GB" in plan["dates"][0]["expected_event_ids"]
+    assert "2026_06_WAS_SF" in plan["dates"][1]["expected_event_ids"]
+    assert plan["can_execute"] is False
+    assert plan["probability_publishable"] is False
+
+    with pytest.raises(NflWeekInventoryHold, match="NFL_WEEK_CANONICAL_SCHEDULE_EMPTY"):
+        build_verified_nfl_week_inventory(
+            raw, capture=capture, kickoff_evidence=kicks,
+            declared_weeks=(replace(wk6, week=7),), trusted_now=NOW,
+        )
+
+
 def test_real_week_preflight_wiring_uses_thirteen_canonical_ids_without_scoring():
     inv, weeks = _build()
     assert len(inv.fixtures) == 13 and len(weeks) == 1
