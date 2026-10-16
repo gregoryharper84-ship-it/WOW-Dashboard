@@ -54,10 +54,11 @@ class ParlayCashoutAuditTests(unittest.TestCase):
                          cashout="374028.51", leg_results=["WIN"] * 6 + ["PENDING"],
                          externally_verified_receipt=True,
                          authenticated_receipt_ref="authenticated:test-case-only")
-        self.assertAlmostEqual(float(x["conditional_remaining_leg_break_even"]),
+        self.assertIsNone(x["conditional_remaining_leg_break_even"])
+        self.assertAlmostEqual(float(x["attested_conditional_break_even"]),
                                0.460752406, places=6)
         self.assertEqual(x["conditional_evidence_status"],
-                         "EXTERNALLY_VERIFIED_RECEIPT_ATTESTED")
+                         "CALLER_ATTESTED_NOT_AUTHENTICATED")
         self.assertIsNone(x["governed_joint_probability"])
 
     def test_without_attestation_outcomes_remain_scenarios(self):
