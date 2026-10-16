@@ -14,8 +14,9 @@ from v17.cross_sport_acceptance_factory import Lane, choose_current_pregame_coho
 from v17.nfl_multiday_acceptance_preflight import plan_nfl_week_dates
 from v17.nfl_verified_week_inventory import (
     NflWeekInventoryHold, SCHEDULE_URL, VerifiedKickoff, VerifiedScheduleCapture,
-    VerifiedWeek, build_verified_nfl_week_inventory,
+    VerifiedWeek, build_verified_nfl_week_inventory, execute_verified_nfl_week_preflight,
 )
+from v17.nfl_multiday_snapshot_adapter import AUDIENCE, AuthenticatedSnapshotResponse
 
 NOW = datetime(2026, 10, 16, 13, 0, tzinfo=timezone.utc)
 TEAM_CODES = (
@@ -232,3 +233,94 @@ def test_correctly_holds_thin_12_game_cohort_without_loosening_governance():
         selection["attempted_week_receipts"][0]["blockers"]
     )
     assert selection["can_execute"] is False
+
+
+def _combined(raw, capture, attest, post):
+    return execute_verified_nfl_week_preflight(
+        raw,
+        capture=capture,
+        kickoff_evidence=attest,
+        declared_weeks=(WINDOW,),
+        trusted_now=NOW,
+        post_daily_snapshot=post,
+    )
+
+
+def test_joined_week_authenticates_daily_receipts_and_reconciles_all_13_without_publishing():
+    raw, _, capture, attest = _inputs()
+    calls = []
+
+    def post(payload):
+        day = payload["requested_slate_date"]
+        calls.append(dict(payload))
+        event_ids = [
+            x.game_id for x in attest.values()
+            if x.start_utc.astimezone(ZoneInfo("America/Chicago")).date().isoformat() == day
+        ]
+        return AuthenticatedSnapshotResponse(200, AUDIENCE, True, {
+            "requested_slate_date": day, "requested_timezone": "America/Chicago",
+            "run_id": "synthetic-" + day, "run_status": "COMPLETED",
+            "terminal": True, "automation_auth": "GITHUB_ACTIONS_OIDC",
+            "can_execute": False, "global_terminal_authority": "V17_TERMINAL_REDUCER",
+            "reconciliation": {"balanced": True},
+            "cross_sport_discovery_audit": {"reconciliation": {
+                "row_reconciliation": "PASS", "events_discovered": len(event_ids),
+                "events_accounted": len(event_ids),
+            }},
+            "rows": [{"lane": "MONEYLINE", "can_execute": False,
+                      "identity": {"sport": "NFL", "official_event_id": eid},
+                      "result": {}} for eid in event_ids],
+        })
+
+    result = _combined(raw, capture, attest, post)
+    assert result["status"] == "WEEK_SNAPSHOT_RECONCILED_NOT_ACTION_OR_MODEL_CERTIFIED"
+    assert result["nfl_rows"] == 13
+    assert len(calls) == 2
+    assert len({p["requested_slate_date"] for p in calls}) == 2
+    assert all(x["lanes"] == ["MONEYLINE"] and x["max_props"] == 0 for x in calls)
+    assert all(x["max_team_events"] == 32 for x in calls)
+    assert result["can_execute"] is False and result["probability_publishable"] is False
+
+
+def test_joined_stale_sha_blocks_every_scoring_post():
+    raw, _, capture, attest = _inputs()
+    calls = []
+    result = _combined(raw, replace(capture, content_sha256="0" * 64),
+                       attest, lambda payload: calls.append(payload))
+    assert result["status"] == "PREFLIGHT_HELD"
+    assert result["blockers"] == ["NFL_WEEK_SOURCE_DIGEST_UNVERIFIED"]
+    assert calls == []
+
+
+def test_joined_thin_verified_week_cannot_dispatch_or_reduce_threshold():
+    raw, _, capture, attest = _inputs(count=12)
+    calls = []
+    result = _combined(raw, capture, attest, lambda payload: calls.append(payload))
+    assert result["status"] == "COHORT_HELD"
+    assert result["can_execute"] is False and result["probability_publishable"] is False
+    assert result["attempted_week_receipts"][0]["eligible_count"] == 12
+    assert calls == []
+
+
+def test_joined_ambiguous_scoring_post_never_retries_second_day():
+    raw, _, capture, attest = _inputs()
+    calls = []
+    def post(payload):
+        calls.append(dict(payload))
+        raise TimeoutError("synthetic lost acknowledgment")
+    result = _combined(raw, capture, attest, post)
+    assert result["status"] == "PREFLIGHT_HELD"
+    assert result["blockers"] == ["NFL_WEEK_SNAPSHOT_TRANSPORT_UNVERIFIED"]
+    assert len(calls) == 1
+
+
+def test_joined_untrusted_plain_dictionary_cannot_pass_https_gate():
+    raw, _, capture, attest = _inputs()
+    calls = []
+    def post(payload):
+        calls.append(payload)
+        return {"requested_slate_date": payload["requested_slate_date"], "run_status": "COMPLETED"}
+    result = _combined(raw, capture, attest, post)
+    assert result["status"] == "PREFLIGHT_HELD"
+    assert result["blockers"] == ["NFL_WEEK_AUTHENTICATED_TRANSPORT_REQUIRED"]
+    assert len(calls) == 1
