@@ -80,6 +80,7 @@ def audit_parlay(
         "cashout_evaluation": "NO_CERTIFIED_CONDITIONAL_MODEL_PROBABILITY",
         "book_price_reconciliation": "NOT_EVALUATED",
         "conditional_remaining_leg_break_even": None,
+        "attested_conditional_break_even": None,
         "hypothetical_single_remaining_leg_break_even": None,
         "conditional_evidence_status": "NOT_EVALUATED",
         "cashout_quote_integrity": (
@@ -102,8 +103,10 @@ def audit_parlay(
         if leg_results is None:
             out["conditional_evidence_status"] = "VERIFIED_RECEIPT_MISSING_EXACT_LEG_RESULTS"
         elif scenario_ready:
-            out["conditional_remaining_leg_break_even"] = str(c / gross)
-            out["conditional_evidence_status"] = "EXTERNALLY_VERIFIED_RECEIPT_ATTESTED"
+            # No independent verifier lives in this arithmetic-only module.
+            # Caller attestation cannot upgrade a scenario to verified fact.
+            out["attested_conditional_break_even"] = str(c / gross)
+            out["conditional_evidence_status"] = "CALLER_ATTESTED_NOT_AUTHENTICATED"
         else:
             out["conditional_evidence_status"] = "NONWIN_VOID_OR_MULTIPLE_UNRESOLVED"
     if leg_american_odds is not None:
