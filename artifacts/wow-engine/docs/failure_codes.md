@@ -217,3 +217,4 @@ A new code requires, in the same change: code name, owning lane/stage, exact con
 | `GEMINI_RATE_LIMITED` | Gemini evidence adapter | Google returned 429; typed hold, no fallback. | No |
 | `GEMINI_TRANSPORT_FAILED` | Gemini evidence adapter | Provider transport failure; typed hold, no fallback. | No |
 | `GEMINI_RESPONSE_INVALID` | Gemini evidence adapter | Invalid or unfinished JSON evidence; no authority. | No |
+| `GEMINI_EVIDENCE_REF_INVALID` | Gemini evidence adapter | Provider cited unregistered, malformed or duplicate evidence IDs, or emitted findings without registered citation. Reject before accepting an unverified receipt; membership does not prove semantic grounding. | No |
