@@ -18,10 +18,22 @@ services:
     region: oregon
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT
+    startCommand: DD_VERSION=$RENDER_GIT_COMMIT ddtrace-run uvicorn api_ncaaf_acceptance:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health/live
     autoDeployTrigger: "checksPass"
     envVars:
+      - key: DD_SERVICE
+        value: "wow-governed-probability-engine"
+      - key: DD_ENV
+        value: "production"
+      - key: DD_AGENT_HOST
+        value: "datadog-agent-f7g4"
+      - key: DD_TRACE_AGENT_PORT
+        value: "8126"
+      - key: DD_LOGS_INJECTION
+        value: "true"
+      - key: DD_TRACE_SAMPLE_RATE
+        value: "1.0"
       - key: PYTHON_VERSION
         value: 3.11.11
       - key: SUPABASE_URL
