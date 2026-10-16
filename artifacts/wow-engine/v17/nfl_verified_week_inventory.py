@@ -181,6 +181,10 @@ def build_verified_nfl_week_inventory(
     if set(kickoff_evidence) != set(selected):
         raise NflWeekInventoryHold("NFL_WEEK_KICKOFF_INVENTORY_INCOMPLETE_OR_EXTRA")
     fixtures: list[Fixture] = []
+    # NFL fixtures may have byes, but no team plays twice within one
+    # source-declared week. Enforce this separately from unique game IDs:
+    # duplicated matchups under different IDs must not inflate 13+ coverage.
+    teams_per_week: dict[tuple[int, int, str], set[str]] = {}
     for game_id, row in selected.items():
         verified = kickoff_evidence[game_id]
         key = (_int(row.get("season"), "NFL_WEEK_SCHEDULE_SEASON_INVALID"),
@@ -194,6 +198,17 @@ def build_verified_nfl_week_inventory(
             or verified.home_team == verified.away_team
         ):
             raise NflWeekInventoryHold("NFL_WEEK_KICKOFF_CANONICAL_IDENTITY_CONFLICT")
+        home, away = verified.home_team, verified.away_team
+        if (
+            not isinstance(home, str) or not isinstance(away, str)
+            or re.fullmatch(r"[A-Z]{2,3}", home) is None
+            or re.fullmatch(r"[A-Z]{2,3}", away) is None
+        ):
+            raise NflWeekInventoryHold("NFL_WEEK_CANONICAL_TEAM_INVALID")
+        seen_teams = teams_per_week.setdefault(key, set())
+        if home in seen_teams or away in seen_teams:
+            raise NflWeekInventoryHold("NFL_WEEK_DUPLICATE_TEAM_WITHIN_WEEK")
+        seen_teams.update((home, away))
         if not _aware(verified.start_utc) or verified.status not in STATES:
             raise NflWeekInventoryHold("NFL_WEEK_KICKOFF_TIME_OR_STATUS_UNVERIFIED")
         if not keyed_weeks[key].start_utc <= verified.start_utc < keyed_weeks[key].end_utc:
