@@ -493,9 +493,25 @@ def test_common_fence_cannot_score_identity_unresolved_alias_or_log_provider_tex
     assert outcome.rank_eligible is False
     assert outcome.probability_publishable is False
     assert outcome.detail["model_invoked"] is False
+    assert outcome.identity["official_event_id"] is None
+    assert outcome.identity["event_key"] == "NBA:UNRESOLVED"
+    assert outcome.as_dict()["official_event_id"] is None
     assert outcome.detail.get("canonical_identity_blocker") == visible
     assert "NEVER_LOG" not in str(outcome.as_dict())
     assert "provider_payload" not in str(outcome.as_dict())
+
+
+def test_verified_canonical_identity_still_persists_official_id():
+    event = DiscoveredEvent(
+        sport="NBA", league="NBA", sport_key="basketball_nba",
+        official_event_id="nba-official-0025",
+        home_team="Miami Heat", away_team="Orlando Magic",
+        commence_time_utc="2026-10-16T23:00:00Z",
+        event_status="PREGAME", source="CANONICAL_SCHEDULE",
+        raw={"canonical_identity_status": "CANONICAL_RESOLVED"},
+    )
+    assert event.identity()["official_event_id"] == "nba-official-0025"
+    assert event.identity()["event_key"] == "NBA:nba-official-0025"
 
 
 def test_common_fence_keeps_wrong_date_precedence_before_identity_failure():
@@ -526,6 +542,10 @@ def test_common_fence_keeps_wrong_date_precedence_before_identity_failure():
     assert calls == []
     assert len(routed) == 1
     assert routed[0].bucket == WRONG_DATE
+    # Terminal precedence stays WRONG_DATE, but the false official-ID field
+    # is never persisted even for a row outside this slate.
+    assert routed[0].identity["official_event_id"] is None
+    assert routed[0].identity["event_key"] == "NBA:UNRESOLVED"
     assert "canonical_identity_blocker" not in routed[0].detail
     assert routed[0].probability_publishable is False
 
