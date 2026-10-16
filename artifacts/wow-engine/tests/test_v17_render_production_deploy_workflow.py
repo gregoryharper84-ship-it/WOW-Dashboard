@@ -37,7 +37,10 @@ def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert '"can_execute":False' in text or '"can_execute": False' in text
-    assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
+    # Acceptance authority is the independent DBA-fenced live readback, not the prior API handoff.
+    assert '"deploy_authority":"DBA_FENCED_RENDER_READBACK_NOT_QA_VERIFIED"' in text
+    assert '"durable_ledger_state":"LIVE_OBSERVED"' in text
+    assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' not in text
     assert 'lambda payload: render_json("POST", f"/services/{service_path}/deploys", payload)' in text
     assert 'post_render_exactly_once(' in text
 
