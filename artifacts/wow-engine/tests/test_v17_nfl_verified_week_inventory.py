@@ -18,6 +18,11 @@ from v17.nfl_verified_week_inventory import (
 )
 
 NOW = datetime(2026, 10, 16, 13, 0, tzinfo=timezone.utc)
+TEAM_CODES = (
+    "DAL", "NYG", "NYJ", "PHI", "WAS", "GB", "CHI", "DET", "MIN",
+    "ATL", "CAR", "NO", "TB", "BUF", "MIA", "NE", "BAL", "CIN",
+    "CLE", "PIT", "JAX", "HOU", "TEN", "IND", "KC", "LV",
+)
 START = datetime(2026, 10, 18, 18, 0, tzinfo=timezone.utc)
 WINDOW = VerifiedWeek(
     season=2026, game_type="REG", week=7,
@@ -44,7 +49,7 @@ def _inputs(*, count=13):
     attested = {}
     for i in range(count):
         start = START + timedelta(hours=2 * i)
-        home, away = "DAL", "NYG"
+        home, away = TEAM_CODES[2 * i], TEAM_CODES[2 * i + 1]
         game_id = f"2026_07_{away}_{home}_{i}"
         rows.append({
             "game_id": game_id, "season": "2026", "game_type": "REG",
@@ -145,6 +150,17 @@ def test_canonical_schedule_identity_conflict_and_wrong_kickoff_block():
     _held("NFL_WEEK_KICKOFF_OUTSIDE_DECLARED_WEEK",
           attestations={**att, first: replace(att[first],
               start_utc=WINDOW.end_utc + timedelta(hours=2))})
+
+
+def test_duplicate_team_with_distinct_game_ids_never_qualifies_as_full_week():
+    raw, rows, capture, att = _inputs()
+    first_id, second_id = rows[0]["game_id"], rows[1]["game_id"]
+    duplicated_home_team = rows[0]["home_team"]
+    rows[1]["home_team"] = duplicated_home_team
+    raw = _csv_bytes(rows)
+    att[second_id] = replace(att[second_id], home_team=duplicated_home_team)
+    _held("NFL_WEEK_DUPLICATE_TEAM_WITHIN_WEEK", raw=raw, attestations=att,
+          capture=replace(capture, content_sha256=hashlib.sha256(raw).hexdigest()))
 
 
 def test_scored_game_cannot_be_labeled_pregame():
