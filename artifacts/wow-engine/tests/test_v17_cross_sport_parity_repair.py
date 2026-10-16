@@ -447,6 +447,89 @@ def test_failed_nfl_or_mlb_canonical_proof_never_allows_model_routing(
     assert rows[0].probability_publishable is False
 
 
+
+@pytest.mark.parametrize("blocker,visible", [
+    ("NBA_CANONICAL_EVENT_NOT_FOUND", "NBA_CANONICAL_EVENT_NOT_FOUND"),
+    ("NBA_SCHEDULE_SOURCE_UNAVAILABLE", "NBA_SCHEDULE_SOURCE_UNAVAILABLE"),
+    ("sensitive provider message / api-key=NEVER_LOG", None),
+    ("A" * 120, None),
+])
+def test_common_fence_cannot_score_identity_unresolved_alias_or_log_provider_text(
+    blocker, visible,
+):
+    """Even a future buggy canonicalizer must not promote an ESPN alias."""
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory, IDENTITY_UNRESOLVED, route_discovered_slate,
+    )
+    event = DiscoveredEvent(
+        sport="NBA", league="NBA", sport_key="basketball_nba",
+        official_event_id="espn-401999999",
+        home_team="Miami Heat", away_team="Orlando Magic",
+        commence_time_utc="2026-10-16T23:00:00Z",
+        event_status="PREGAME", source="DISCOVERY_FEED",
+        raw={
+            "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+            "canonical_identity_blocker": blocker,
+            "provider_event_id": "espn-401999999",
+            "provider_payload": "sensitive provider message / api-key=NEVER_LOG",
+        },
+    )
+    inv = DiscoveryInventory(
+        requested_slate_date="2026-10-16",
+        requested_timezone="America/Chicago", events=[event],
+    )
+    calls = []
+    routed = route_discovered_slate(
+        inv,
+        resolve_model=lambda _event: calls.append("model") or object(),
+        score_row=lambda *_args: calls.append("scorer") or {
+            "probability_publishable": True, "rank_eligible": True,
+        },
+    )
+    assert calls == []
+    assert len(routed) == 1
+    outcome = routed[0]
+    assert outcome.bucket == IDENTITY_UNRESOLVED
+    assert outcome.rank_eligible is False
+    assert outcome.probability_publishable is False
+    assert outcome.detail["model_invoked"] is False
+    assert outcome.detail.get("canonical_identity_blocker") == visible
+    assert "NEVER_LOG" not in str(outcome.as_dict())
+    assert "provider_payload" not in str(outcome.as_dict())
+
+
+def test_common_fence_keeps_wrong_date_precedence_before_identity_failure():
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory, WRONG_DATE, route_discovered_slate,
+    )
+    event = DiscoveredEvent(
+        sport="NBA", league="NBA", sport_key="basketball_nba",
+        official_event_id="espn-401999999",
+        home_team="Miami Heat", away_team="Orlando Magic",
+        commence_time_utc="2026-10-17T23:00:00Z",
+        event_status="PREGAME", source="DISCOVERY_FEED",
+        raw={
+            "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+            "canonical_identity_blocker": "NBA_CANONICAL_EVENT_NOT_FOUND",
+        },
+    )
+    inv = DiscoveryInventory(
+        requested_slate_date="2026-10-16",
+        requested_timezone="America/Chicago", events=[event],
+    )
+    calls = []
+    routed = route_discovered_slate(
+        inv,
+        resolve_model=lambda _event: calls.append("model") or object(),
+        score_row=lambda *_args: calls.append("score") or {},
+    )
+    assert calls == []
+    assert len(routed) == 1
+    assert routed[0].bucket == WRONG_DATE
+    assert "canonical_identity_blocker" not in routed[0].detail
+    assert routed[0].probability_publishable is False
+
+
 def test_model_coverage_separates_accounted_rows_from_identity_and_model_routing():
     coverage = cross_sport_model_coverage(
         [
