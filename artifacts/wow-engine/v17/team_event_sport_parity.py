@@ -287,7 +287,7 @@ def canonicalize_nfl_discovery_identity(
             if not provider_event_id
             else "NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE"
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence
 
@@ -307,14 +307,14 @@ def canonicalize_nfl_discovery_identity(
         raw["canonical_identity_blocker"] = str(
             getattr(exc, "code", None) or type(exc).__name__
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     if resolution.get("ok") is not True:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = str(
             resolution.get("code") or "NFL_CANONICAL_IDENTITY_UNRESOLVED"
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
@@ -355,7 +355,7 @@ def canonicalize_mlb_discovery_identity(
     if not provider_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "MLB_PROVIDER_EVENT_ID_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
 
@@ -377,14 +377,14 @@ def canonicalize_mlb_discovery_identity(
         raw["canonical_identity_blocker"] = str(
             getattr(exc, "code", None) or type(exc).__name__
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     if resolution.get("ok") is not True:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = str(
             resolution.get("code") or "MLB_CANONICAL_IDENTITY_UNRESOLVED"
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     canonical_event_id = str(
         resolution.get("canonical_official_event_id") or ""
@@ -392,7 +392,7 @@ def canonicalize_mlb_discovery_identity(
     if not canonical_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "MLB_CANONICAL_EVENT_ID_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
