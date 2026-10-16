@@ -25,7 +25,9 @@ _PATTERNS = (
     re.compile(r"(?<!\d)\d{3}[- ]\d{2}[- ]\d{4}(?!\d)"),
     re.compile(r"(?i)\b(?:ssn|social security(?: number)?)\s*[:#-]?\s*\d{3}[- ]?\d{2}[- ]?\d{4}\b"),
     # Fail closed for bare nine-digit tokens: may also reject non-SSN identifiers.
-    re.compile(r"\b[0-9]{9}\b"),
+    # Explicit digit adjacency, not \b: underscore/letters are word characters.
+    # Reject any isolated nine-digit run including record_123456789 and 123456789_record.
+    re.compile(r"(?<![0-9])[0-9]{9}(?![0-9])"),
     # U.S. ten-digit phone numbers, with optional country code and delimiters.
     re.compile(r"(?<![A-Za-z0-9])(?:\+?1[\s.()-]*)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)"),
 
