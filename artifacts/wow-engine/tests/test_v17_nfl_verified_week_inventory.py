@@ -50,7 +50,7 @@ def _inputs(*, count=13):
     for i in range(count):
         start = START + timedelta(hours=2 * i)
         home, away = TEAM_CODES[2 * i], TEAM_CODES[2 * i + 1]
-        game_id = f"2026_07_{away}_{home}_{i}"
+        game_id = f"2026_07_{away}_{home}"
         rows.append({
             "game_id": game_id, "season": "2026", "game_type": "REG",
             "week": "7", "gameday": start.astimezone(
@@ -154,13 +154,31 @@ def test_canonical_schedule_identity_conflict_and_wrong_kickoff_block():
 
 def test_duplicate_team_with_distinct_game_ids_never_qualifies_as_full_week():
     raw, rows, capture, att = _inputs()
-    first_id, second_id = rows[0]["game_id"], rows[1]["game_id"]
+    second_id = rows[1]["game_id"]
     duplicated_home_team = rows[0]["home_team"]
+    new_id = f'2026_07_{rows[1]["away_team"]}_{duplicated_home_team}'
     rows[1]["home_team"] = duplicated_home_team
+    rows[1]["game_id"] = new_id
     raw = _csv_bytes(rows)
-    att[second_id] = replace(att[second_id], home_team=duplicated_home_team)
+    second = att.pop(second_id)
+    att[new_id] = replace(second, game_id=new_id, home_team=duplicated_home_team)
     _held("NFL_WEEK_DUPLICATE_TEAM_WITHIN_WEEK", raw=raw, attestations=att,
           capture=replace(capture, content_sha256=hashlib.sha256(raw).hexdigest()))
+
+
+def test_provider_alias_or_wrong_week_team_id_is_not_canonical_nflverse():
+    _, rows, capture, att = _inputs()
+    first_id = rows[0]["game_id"]
+    for forged_id in ("espn-401999001", "2026_06_NYG_DAL", "2026_07_XYZ_DAL"):
+        forged = [dict(row) for row in rows]
+        forged[0]["game_id"] = forged_id
+        raw = _csv_bytes(forged)
+        forged_att = dict(att)
+        fixture = forged_att.pop(first_id)
+        forged_att[forged_id] = replace(fixture, game_id=forged_id)
+        _held("NFL_WEEK_CANONICAL_GAME_ID_FORMAT_INVALID",
+              raw=raw, attestations=forged_att,
+              capture=replace(capture, content_sha256=hashlib.sha256(raw).hexdigest()))
 
 
 def test_scored_game_cannot_be_labeled_pregame():
