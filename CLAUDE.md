@@ -1,5 +1,15 @@
 # WOW Dashboard — Engineering Contract
 
+## V25 operational overlay — execution first (2026-10-15)
+
+Read and follow [`AGENTS.md`](AGENTS.md) for the shared Codex/Claude execution loop and typed outcomes. **This overlay supplements, never supersedes**, the authority hierarchy and all safety, reviewer, and release rules below.
+
+For authorized Class A incidents, proceed without another operator prompt through evidence inspection, reproduction, focused branch repair, negative/regression/adjacent tests, bounded three-attempt rework, commit/push and incident PR. Continue into merge/deployment **only after independently authorized exact-SHA protected gates**, never through self-approval or use of the owner's credentials as an independent reviewer. `DIAGNOSED_NOT_FIXED` is non-success; do not stop at a report or ask “Want me to proceed?” while an authorized step remains.
+
+Stage Class B trust-root/probability-adjacent changes and Class C experiments for governed review; never silently adopt or promote. No production closure without an independently verified live SHA, behavioral acceptance, persistence/reconciliation and QA receipt. Record exact blocker, owner, branch/PR/SHA and re-entry when external authority is missing. The existing V17 invariants, including `can_execute=false`, remain binding.
+
+---
+
 ## 0. Current authority and phase — 2026-09-02
 
 This repository implements the active WOW V17 governed generation. V17 was
