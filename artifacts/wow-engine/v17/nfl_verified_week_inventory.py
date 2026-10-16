@@ -20,6 +20,7 @@ from v17.nfl_multiday_snapshot_adapter import (
     AuthenticatedSnapshotResponse, execute_nfl_week_snapshot_preflight,
 )
 from v17.nfl_multiday_acceptance_preflight import hold
+from v17.nfl_team_event_specialist import NFL_CANONICAL_TEAM_CODES
 from zoneinfo import ZoneInfo
 
 from v17.cross_sport_acceptance_factory import Fixture, SourceInventory, SourceWeekWindow
@@ -188,6 +189,8 @@ def build_verified_nfl_week_inventory(
         if (
             re.fullmatch(r"[A-Z]{2,3}", home_team) is None
             or re.fullmatch(r"[A-Z]{2,3}", away_team) is None
+            or home_team not in NFL_CANONICAL_TEAM_CODES
+            or away_team not in NFL_CANONICAL_TEAM_CODES
             or game_id != f"{year}_{number:02d}_{away_team}_{home_team}"
         ):
             raise NflWeekInventoryHold("NFL_WEEK_CANONICAL_GAME_ID_FORMAT_INVALID")
