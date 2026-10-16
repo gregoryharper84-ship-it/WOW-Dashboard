@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -230,3 +231,101 @@ def test_idle_worker_uses_slow_poll_and_bounded_db_failure_backoff():
     assert pickem_async_runtime._idle_wait_seconds(30, 1, 120) == 60.0
     assert pickem_async_runtime._idle_wait_seconds(30, 2, 120) == 120.0
     assert pickem_async_runtime._idle_wait_seconds(30, 5, 120) == 120.0
+
+
+class _SyntheticPostgrestError(Exception):
+    """Simulates a provider's non-JSON 521 response without network access."""
+
+    def __init__(self, code, *, details="HTML SECRET_TOKEN_NEVER_LOG"):
+        super().__init__(details)
+        self.code = code
+        self.details = details
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        (521, "NFL_PICKEM_DB_ORIGIN_HTTP_521"),
+        ("522", "NFL_PICKEM_DB_ORIGIN_HTTP_522"),
+        (523, "NFL_PICKEM_DB_ORIGIN_HTTP_523"),
+        (524, "NFL_PICKEM_DB_ORIGIN_HTTP_524"),
+        (500, "NFL_PICKEM_DB_UPSTREAM_HTTP_5XX"),
+        (503, "NFL_PICKEM_DB_UPSTREAM_HTTP_5XX"),
+        (401, "NFL_PICKEM_DB_CLAIM_RPC_ERROR"),
+        ("PGRST116", "NFL_PICKEM_DB_CLAIM_RPC_ERROR"),
+        (True, "NFL_PICKEM_DB_CLAIM_RPC_ERROR"),
+    ],
+)
+def test_nfl_pickem_claim_failure_classifies_known_http_codes_without_sensitive_content(
+    status, expected,
+):
+    exc = _SyntheticPostgrestError(status)
+    code = pickem_async_runtime._claim_failure_code(exc)
+    assert code == expected
+    assert "SECRET" not in code
+    assert "HTML" not in code
+
+
+def test_nfl_pickem_claim_failure_classifies_transport_timeouts_and_unknown_rpc():
+    assert (
+        pickem_async_runtime._claim_failure_code(TimeoutError("secret"))
+        == "NFL_PICKEM_DB_TRANSPORT_UNAVAILABLE"
+    )
+    assert (
+        pickem_async_runtime._claim_failure_code(ConnectionError("secret"))
+        == "NFL_PICKEM_DB_TRANSPORT_UNAVAILABLE"
+    )
+    assert (
+        pickem_async_runtime._claim_failure_code(ValueError("secret"))
+        == "NFL_PICKEM_DB_CLAIM_RPC_ERROR"
+    )
+
+
+def test_claim_http_521_failure_is_redacted_and_worker_recovers_without_scoring(
+    monkeypatch, caplog,
+):
+    app = FastAPI()
+    app.state.wow_v17_nfl_pickem_async_wake = asyncio.Event()
+    monkeypatch.setenv("WOW_V17_NFL_PICKEM_ASYNC_INITIAL_DELAY_SECONDS", "0")
+    claims = []
+    waited = []
+    called = []
+
+    async def fake_to_thread(_claim_fn, _db_client_fn, _lease_seconds):
+        claims.append("claim")
+        if len(claims) == 1:
+            raise _SyntheticPostgrestError(521)
+        return None
+
+    async def fake_wait_for(coroutine, *, timeout):
+        # Avoid leaking an unawaited asyncio.Event.wait coroutine in the test.
+        coroutine.close()
+        waited.append(timeout)
+        if len(waited) == 2:
+            raise asyncio.CancelledError
+        return None
+
+    monkeypatch.setattr(pickem_async_runtime.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(pickem_async_runtime.asyncio, "wait_for", fake_wait_for)
+
+    async def exercise():
+        with pytest.raises(asyncio.CancelledError):
+            await pickem_async_runtime._worker_loop(
+                app,
+                db_client_fn=lambda: called.append("db") or object(),
+                event_api=object(),
+            )
+
+    with caplog.at_level(logging.WARNING, logger="wow.v17.nfl_pickem_async"):
+        asyncio.run(exercise())
+
+    assert claims == ["claim", "claim"]
+    assert waited == [60.0, 30.0]
+    assert called == []
+    assert "failure_code=NFL_PICKEM_DB_ORIGIN_HTTP_521" in caplog.text
+    assert "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_RECOVERED prior_failures=1" in caplog.text
+    assert "SECRET_TOKEN_NEVER_LOG" not in caplog.text
+    assert "HTML" not in caplog.text
+    assert "can_execute=false" in caplog.text
+
+
