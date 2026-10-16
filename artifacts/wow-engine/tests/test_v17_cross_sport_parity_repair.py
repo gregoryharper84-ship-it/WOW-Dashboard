@@ -494,11 +494,33 @@ def test_common_fence_cannot_score_identity_unresolved_alias_or_log_provider_tex
     assert outcome.probability_publishable is False
     assert outcome.detail["model_invoked"] is False
     assert outcome.identity["official_event_id"] is None
-    assert outcome.identity["event_key"] == "NBA:UNRESOLVED"
+    assert outcome.identity["event_key"].startswith("NBA:UNRESOLVED:")
+    assert "espn-401999999" not in outcome.identity["event_key"]
     assert outcome.as_dict()["official_event_id"] is None
     assert outcome.detail.get("canonical_identity_blocker") == visible
     assert "NEVER_LOG" not in str(outcome.as_dict())
     assert "provider_payload" not in str(outcome.as_dict())
+
+
+def test_unverified_event_key_retains_distinct_opaque_reconciliation_identity():
+    def build(alias):
+        return DiscoveredEvent(
+            sport="NBA", league="NBA", sport_key="basketball_nba",
+            official_event_id=alias,
+            home_team="Miami Heat", away_team="Orlando Magic",
+            commence_time_utc="2026-10-16T23:00:00Z",
+            event_status="PREGAME", source="DISCOVERY_FEED",
+            raw={"canonical_identity_status": "ALIAS_ONLY_UNRESOLVED"},
+        )
+    first, second = build("espn-401999999"), build("espn-401999998")
+    identity_a = first.identity()
+    identity_b = second.identity()
+    assert identity_a == first.identity(), "opaque alias identity must be deterministic"
+    assert identity_a["official_event_id"] is None
+    assert identity_b["official_event_id"] is None
+    assert identity_a["event_key"].startswith("NBA:UNRESOLVED:")
+    assert identity_a["event_key"] != identity_b["event_key"]
+    assert "espn-" not in identity_a["event_key"] + identity_b["event_key"]
 
 
 def test_verified_canonical_identity_still_persists_official_id():
@@ -545,7 +567,8 @@ def test_common_fence_keeps_wrong_date_precedence_before_identity_failure():
     # Terminal precedence stays WRONG_DATE, but the false official-ID field
     # is never persisted even for a row outside this slate.
     assert routed[0].identity["official_event_id"] is None
-    assert routed[0].identity["event_key"] == "NBA:UNRESOLVED"
+    assert routed[0].identity["event_key"].startswith("NBA:UNRESOLVED:")
+    assert "espn-401999999" not in routed[0].identity["event_key"]
     assert "canonical_identity_blocker" not in routed[0].detail
     assert routed[0].probability_publishable is False
 
