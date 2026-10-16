@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+from dataclasses import replace
+
+import pytest
 
 from v17.mlb_team_event_hydration import _same_mlb_team, _team_match_strength
 from v17.sep16_evidence_handoff_rank_fix import (
@@ -454,6 +457,70 @@ def test_wnba_daily_discovery_alias_stays_unresolved_when_official_match_fails(m
         out.raw["canonical_identity_blocker"]
         == "WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND"
     )
+
+
+
+@pytest.mark.parametrize("failure", [
+    "missing_team_alias",
+    "official_lookup_raises",
+    "official_lookup_missing_id",
+])
+def test_wnba_unverified_espn_alias_can_never_be_promoted_to_official_id_or_scored(
+    monkeypatch, failure,
+):
+    """An ESPN raw event id cannot bypass the WNBA schedule-identity gate."""
+    from v17 import wnba_spread_event_identity as identity
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory, IDENTITY_UNRESOLVED, route_discovered_slate,
+    )
+
+    original = _wnba_alias_event()
+    event = replace(original, official_event_id="espn-401900001")
+    if failure == "missing_team_alias":
+        event = replace(
+            event, raw={"provider_event_id": "401900001"},
+        )
+    elif failure == "official_lookup_raises":
+        class OfficialScheduleHold(RuntimeError):
+            code = "WNBA_SPREAD_FORWARD_CANONICAL_EVENT_NOT_FOUND"
+
+        def failed_match(**_kwargs):
+            raise OfficialScheduleHold("no official WNBA schedule match")
+
+        monkeypatch.setattr(
+            identity, "resolve_wnba_current_event_identity", failed_match,
+        )
+    else:
+        monkeypatch.setattr(
+            identity, "resolve_wnba_current_event_identity",
+            lambda **_kwargs: {"event_id": "", "can_execute": False},
+        )
+
+    resolved = canonicalize_wnba_discovery_identity(event)
+    assert resolved.official_event_id is None
+    assert resolved.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+    assert resolved.raw["provider_event_id"] == "401900001"
+    assert resolved.raw["canonical_identity_blocker"].startswith("WNBA_")
+
+    inv = DiscoveryInventory(
+        requested_slate_date="2026-10-07",
+        requested_timezone="America/Chicago",
+        events=[resolved],
+    )
+    invoked = []
+    rows = route_discovered_slate(
+        inv,
+        resolve_model=lambda _event: invoked.append("model") or object(),
+        score_row=lambda *_args: invoked.append("score") or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+    )
+    assert invoked == [], "identity-unresolved WNBA must not reach a scorer"
+    assert len(rows) == 1
+    assert rows[0].bucket == IDENTITY_UNRESOLVED
+    assert rows[0].rank_eligible is False
+    assert rows[0].probability_publishable is False
 
 
 def test_wnba_daily_discovery_requires_team_aliases_before_official_lookup():
