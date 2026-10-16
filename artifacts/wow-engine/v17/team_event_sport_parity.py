@@ -812,6 +812,11 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             resolve_model=resolve_model,
             score_row=score,
             canonicalize_identity=canonicalize_identity,
+            # Same complete inventory as the non-installed Daily runtime.
+            # Variant regimes stay in distinct model eligibility buckets;
+            # discovery does not authorize regular-season fitted scorers for
+            # preseason, playoffs, spring training, or summer league.
+            include_regime_variants=True,
         ))
         scan["model_coverage"] = cross_sport_model_coverage(
             scan.get("rows"),
