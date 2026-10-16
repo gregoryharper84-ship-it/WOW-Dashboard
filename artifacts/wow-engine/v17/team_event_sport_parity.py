@@ -740,7 +740,10 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             return daily.bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
         def score(event: Any, model: Any) -> dict[str, Any]:
-            if str(event.official_event_id or "") in covered_event_ids:
+            # Covered IDs belong to the *canonical MLB* lane only.
+            # Sports may reuse provider IDs. Do not suppress NHL/NBA/NFL/etc
+            # whose raw ID happens to match an unrelated MLB official ID.
+            if event.sport == "MLB" and str(event.official_event_id or "") in covered_event_ids:
                 return {
                     "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
                     "probability_publishable": False,
@@ -839,7 +842,8 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                 ),
             )
             for row in scan["rows"]
-            if str(row.get("official_event_id") or "") not in covered_event_ids
+            if row.get("sport") != "MLB"
+            or str(row.get("official_event_id") or "") not in covered_event_ids
         ]
         return rows, scan
 
