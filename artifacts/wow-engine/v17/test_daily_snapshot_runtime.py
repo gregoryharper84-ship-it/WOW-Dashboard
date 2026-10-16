@@ -443,3 +443,75 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_installed_sport_parity_wrapper_retains_nhl_id_colliding_with_mlb(monkeypatch):
+    """Exercise the actual production-installed wrapper, not only its fallback."""
+    from v17 import cross_sport_discovery_feed as feed
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+    from v17 import team_event_sport_parity as parity
+    from v17.team_event_bridge_runtime import TEAM_EVENT_BRIDGES
+
+    # The app installs this wrapper once per process. Isolate its global
+    # activation so the test never permanently installs it into another test.
+    with monkeypatch.context() as mp:
+        mp.setattr(runtime, "_v17_cross_sport_discovery_evidence_handoff_installed",
+                   False, raising=False)
+        mp.setattr(runtime, "_cross_sport_moneyline_rows",
+                   runtime._cross_sport_moneyline_rows)
+        mp.setattr(feed, "enabled", lambda: True)
+        mp.setattr(discovery, "discovery_budget_seconds", lambda: 120.0)
+        mp.setattr(runtime, "score_team_event_request",
+                   lambda *a, **k: governed_team_result())
+        mp.setattr(parity, "canonicalize_mlb_discovery_identity",
+                   lambda event, **kwargs: event)
+        mp.setattr(parity, "canonicalize_nhl_discovery_identity",
+                   lambda event: event)
+        mp.delitem(TEAM_EVENT_BRIDGES, "NHL", raising=False)
+
+        def provider(sport, sport_key=None, *, target=None, **_kwargs):
+            return {
+                "MLB": [_cross_sport_event("1")],
+                "NHL": [_cross_sport_event("1")],
+                "NBA": [_cross_sport_event("1")],
+                "WNBA": [_cross_sport_event("1")],
+            }.get(sport, [])
+
+        mp.setattr(feed, "odds_proxy_feed", lambda **_: provider)
+        mp.setattr(feed, "rundown_board_feed", lambda **_: provider)
+        mp.setattr(parity, "canonicalize_nba_discovery_identity",
+                   lambda event: event)
+        mp.setattr(parity, "canonicalize_wnba_discovery_identity",
+                   lambda event: event)
+        for sport in ("NBA", "WNBA"):
+            mp.delitem(TEAM_EVENT_BRIDGES, sport, raising=False)
+
+        assert parity.install_cross_sport_discovery_evidence_handoff() is True
+        result = run_daily_snapshot(
+            DailySnapshotRequest(
+                requested_slate_date=SLATE_DATE,
+                requested_timezone="America/Chicago",
+                lanes=["MONEYLINE"],
+                response_mode="FULL",
+            ),
+            db=DB(), market_api=Market(), event_api=Event(),
+        )
+        rows = [r for r in result["rows"] if r["lane"] == "MONEYLINE"]
+        by_sport = {}
+        for row in rows:
+            sport = row["identity"].get("sport") or "MLB"
+            by_sport.setdefault(sport, []).append(row)
+
+        assert len(by_sport["MLB"]) == 1, "canonical MLB duplicate remains suppressed"
+        for sport in ("NHL", "NBA", "WNBA"):
+            assert len(by_sport[sport]) == 1, f"{sport} candidate lost to MLB ID"
+            row = by_sport[sport][0]
+            assert row["identity"]["official_event_id"] == "1"
+            assert row["row_status"] == "HELD"
+            assert row["result"]["bucket"] == "MODEL_UNAVAILABLE"
+            assert row["probability_publishable"] is False
+            assert row["can_execute"] is False
+        assert result["reconciliation"]["balanced"] is True
+        assert result["cross_sport_discovery_audit"]["reconciliation"]["row_reconciliation"] == "PASS"
+        assert result["can_execute"] is False
