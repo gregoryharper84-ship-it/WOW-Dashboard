@@ -60,7 +60,15 @@ def test_bot_merge_explicitly_resumes_main_required_checks():
     assert "actions: write" in text
     assert "gh workflow run wow-engine-verify.yml" in text
     assert "gh workflow run wow-verify.yml" in text
-    assert "gh workflow run wow-v17-render-production-deploy.yml" in text
+    # A workflow_run-only release must not be dispatched manually by this job.
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in text
+    assert "RENDER_RELEASE_AWAITS_PROTECTED_MAIN_WOW_VERIFY_WORKFLOW_RUN" in text
+    release = (WORKFLOW.parent / "wow-v17-render-production-deploy.yml").read_text()
+    assert "  workflow_run:" in release
+    assert 'workflows: ["wow-verify"]' in release
+    assert "types: [completed]" in release
+    assert "    branches: [main]" in release
+    assert "  workflow_dispatch:" not in release
     assert "steps.merge.outcome == 'success'" in text
 
 

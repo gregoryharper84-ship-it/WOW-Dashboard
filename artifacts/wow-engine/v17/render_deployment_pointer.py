@@ -91,6 +91,24 @@ def _decode_payload(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _require_current_main_for_pointer(
+    github_api: Callable[[str, str, dict[str, Any] | None], Any],
+    target_sha: str,
+) -> None:
+    """A received LIVE receipt cannot advance a superseded revision's pointer.
+
+    GitHub main can still move after a read; independent protected release
+    governance and atomic authority remain required for global exclusivity.
+    """
+    branch = github_api("GET", "/branches/main", None)
+    if not isinstance(branch, dict):
+        raise DeploymentPointerContractError("DEPLOYMENT_POINTER_MAIN_IDENTITY_UNAVAILABLE")
+    commit = branch.get("commit")
+    current = str((commit or {}).get("sha") or "") if isinstance(commit, dict) else ""
+    if not _SHA_RE.fullmatch(current) or current != target_sha:
+        raise DeploymentPointerContractError("DEPLOYMENT_POINTER_MAIN_SHA_STALE_OR_UNKNOWN")
+
+
 def reconcile_deployment_pointer(
     receipt: Any,
     github_api: Callable[[str, str, dict[str, Any] | None], Any],
@@ -105,6 +123,7 @@ def reconcile_deployment_pointer(
         }
 
     pointer = normalized_advancing_receipt(receipt)
+    _require_current_main_for_pointer(github_api, pointer["commit_sha"])
     query = urllib.parse.urlencode(
         {
             "environment": POINTER_ENVIRONMENT,
@@ -132,6 +151,7 @@ def reconcile_deployment_pointer(
 
     created = False
     if deployment_id is None:
+        _require_current_main_for_pointer(github_api, pointer["commit_sha"])
         payload = {
             "ref": pointer["commit_sha"],
             "task": POINTER_TASK,
@@ -164,6 +184,7 @@ def reconcile_deployment_pointer(
         for item in statuses
     )
     if not status_exists:
+        _require_current_main_for_pointer(github_api, pointer["commit_sha"])
         github_api(
             "POST",
             f"/deployments/{deployment_id}/statuses",

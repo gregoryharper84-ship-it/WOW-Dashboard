@@ -5,7 +5,6 @@ on:
     workflows: ["wow-verify"]
     types: [completed]
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,12 +19,17 @@ concurrency:
 jobs:
   deploy-production:
     name: Deploy exact protected-main SHA to Render
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success'
+    environment: wow-release
     # The protected GitHub checks remain the release gate. After they pass,
     # this controller performs one explicit Render control-plane handoff and
     # verifies that the exact current-main SHA reaches live. This avoids the
     # native checksPass listener silently missing an otherwise valid release.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 110
     env:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
@@ -43,6 +47,53 @@ jobs:
           test -n "$GH_API_TOKEN"
           test -n "$RENDER_API_KEY"
           test -n "$WOW_RENDER_SERVICE_ID"
+
+      - name: Fail closed if restricted worker release-control database is not authorized
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success')
+        shell: bash
+        env:
+          WOW_RELEASE_CONTROL_DSN: ${{ secrets.WOW_RELEASE_CONTROL_DSN }}
+          WOW_RELEASE_CONTROL_PROJECT_REF: ${{ vars.WOW_RELEASE_CONTROL_PROJECT_REF }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WOW_RELEASE_CONTROL_DSN:-}" ] || ! [[ "${WOW_RELEASE_CONTROL_PROJECT_REF:-}" =~ ^[a-z]{20}$ ]]; then
+            echo "::error::RENDER_RELEASE_CONTROL_DB_IDENTITY_NOT_CONFIGURED"
+            exit 1
+          fi
+          python -m pip install 'psycopg[binary]==3.2.10'
+          python - <<'PY'
+          import os
+          import sys
+
+          import psycopg
+
+          try:
+              with psycopg.connect(os.environ["WOW_RELEASE_CONTROL_DSN"], connect_timeout=10) as conn:
+                  with conn.cursor() as cursor:
+                      cursor.execute(
+                          "select current_user, project_ref, environment, service_id, "
+                          "authorized, approved_by, approved_at "
+                          "from wow_release_control.release_control_identity "
+                          "where singleton = true"
+                      )
+                      rows = cursor.fetchall()
+              if len(rows) != 1 or len(rows[0]) != 7:
+                  raise ValueError("UNRECOGNIZED_IDENTITY")
+              actor, project, environment, service, authorized, reviewer, approved_at = rows[0]
+              if (actor != "wow_release_controller"
+                  or project != os.environ["WOW_RELEASE_CONTROL_PROJECT_REF"]
+                  or environment != "production"
+                  or service != "srv-dapkbc0473hc73c1978g"
+                  or authorized is not True or not reviewer or approved_at is None):
+                  raise ValueError("UNAUTHORIZED_IDENTITY")
+          except Exception as exc:
+              # Never print connection strings, provider errors or private rows.
+              print(f"::error::RENDER_RELEASE_CONTROL_DB_PREFLIGHT_DENIED:{type(exc).__name__}")
+              sys.exit(1)
+          print("RENDER_RELEASE_CONTROL_DB_PREFLIGHT_PASS")
+          PY
 
       - name: Verify protected-main gates and deploy exact SHA
         shell: bash
@@ -290,9 +341,25 @@ jobs:
           def exact_target_deploys():
               return [deploy for deploy in list_deploys() if commit_sha(deploy) == target_sha]
 
+          def require_current_main_for_live_receipt():
+              # Prevent a just-superseded provider LIVE result from advancing
+              # the durable GitHub deployment pointer for an obsolete SHA.
+              current = str(
+                  ((github_json("/branches/main").get("commit") or {}).get("sha")) or ""
+              )
+              if current != target_sha:
+                  emit_receipt({
+                      "status": "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+                      "target_sha": target_sha,
+                      "current_main_sha": current,
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
+
           existing = exact_target_deploys()
           for deploy in existing:
               if str(deploy.get("status") or "") == "live":
+                  require_current_main_for_live_receipt()
                   emit_receipt({
                       "status":"EXACT_SHA_ALREADY_LIVE",
                       "commit_sha":target_sha,
@@ -321,10 +388,24 @@ jobs:
                   break
 
           if active is None:
+              # Fail closed if protected main moved during the provider-list
+              # inspection. A branch-default Render POST is not an exact-SHA
+              # release and must never be substituted for the verified commit.
+              latest_main_before_post = str(
+                  ((github_json("/branches/main").get("commit") or {}).get("sha")) or ""
+              )
+              if latest_main_before_post != target_sha:
+                  emit_receipt({
+                      "status": "STALE_SHA_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "current_main_sha": latest_main_before_post,
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
               created = render_json(
                   "POST",
                   f"/services/{service_path}/deploys",
-                  {"clearCache":"do_not_clear"},
+                  {"clearCache":"do_not_clear", "commitId":target_sha},
               )
               created_deploy = created
               if isinstance(created, dict) and isinstance(created.get("deploy"), dict):
@@ -344,7 +425,12 @@ jobs:
               if not deploy_id:
                   raise RuntimeError("RENDER_ACTIVE_DEPLOY_ID_MISSING")
 
-          deploy_deadline = time.time() + 900
+          # A successful protected deploy can spend over an hour building on
+          # Render (observed ~65 min for e41beb2). Keep the watcher bounded,
+          # but allow enough runway after the 15-minute required-check gate.
+          # This is still NOT an authorization to issue a second Render POST
+          # after an ambiguous acknowledgement; durable ledger is separate.
+          deploy_deadline = time.time() + 5400
           while True:
               matching = exact_target_deploys()
               target = next((deploy for deploy in matching if str(deploy.get("id") or "") == deploy_id), None)
@@ -353,6 +439,7 @@ jobs:
               if target is not None:
                   status = str(target.get("status") or "")
                   if status == "live":
+                      require_current_main_for_live_receipt()
                       emit_receipt({
                           "status":"EXACT_SHA_RENDER_DEPLOY_LIVE",
                           "commit_sha":target_sha,
@@ -416,3 +503,68 @@ jobs:
               raise SystemExit(1)
           raise RuntimeError(f"RENDER_DEPLOY_RECEIPT_STATUS_UNRECOGNIZED:{status or 'MISSING'}")
           PY
+
+  deploy-background-worker:
+    name: Deploy independently attested exact SHA to wow-agent-worker
+    needs: [deploy-production]
+    if: needs.deploy-production.result == 'success'
+    environment: wow-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    permissions:
+      contents: read
+    env:
+      GH_API_TOKEN: ${{ github.token }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      WOW_RELEASE_CONTROL_DSN: ${{ secrets.WOW_RELEASE_CONTROL_DSN }}
+      WOW_RELEASE_CONTROL_PROJECT_REF: ${{ vars.WOW_RELEASE_CONTROL_PROJECT_REF }}
+      PRIMARY_RELEASE_RESULT: ${{ needs.deploy-production.result }}
+      TARGET_MAIN_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Checkout exact protected release code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Prepare restricted worker release adapter
+        shell: bash
+        run: |
+          if [ -z "$WOW_RELEASE_CONTROL_DSN" ]; then
+            echo "WORKER_RELEASE_CONTROL_DSN_NOT_PROVISIONED"
+            exit 1
+          fi
+          if ! [[ "${WOW_RELEASE_CONTROL_PROJECT_REF:-}" =~ ^[a-z]{20}$ ]]; then
+            echo "WORKER_RELEASE_PROJECT_IDENTITY_UNCONFIGURED"
+            exit 1
+          fi
+          python -m pip install 'psycopg[binary]==3.2.10'
+      - name: Render worker handoff with separate exact-SHA receipt
+        run: python artifacts/wow-engine/v17/render_worker_release_handoff.py
+
+  release-terminal-verdict:
+    name: Require verified non-skipped release jobs
+    needs: [deploy-production, deploy-background-worker]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail closed on absent, skipped, or failed release work
+        shell: bash
+        env:
+          VERIFY_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          VERIFY_STATUS: ${{ github.event.workflow_run.status }}
+          VERIFY_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          VERIFY_SHA: ${{ github.event.workflow_run.head_sha }}
+          API_JOB_RESULT: ${{ needs.deploy-production.result }}
+          WORKER_JOB_RESULT: ${{ needs.deploy-background-worker.result }}
+        run: |
+          set -euo pipefail
+          if [ "$VERIFY_BRANCH" != main ] || [ "$VERIFY_STATUS" != completed ] || [ "$VERIFY_CONCLUSION" != success ] || ! [[ "$VERIFY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::RELEASE_UPSTREAM_NON_GREEN_NO_SUCCESS_RECEIPT'
+            exit 1
+          fi
+          if [ "$API_JOB_RESULT" != success ] || [ "$WORKER_JOB_RESULT" != success ]; then
+            echo "::error::RELEASE_REQUIRED_JOB_NOT_SUCCESS:api=$API_JOB_RESULT worker=$WORKER_JOB_RESULT"
+            exit 1
+          fi
+          echo 'Both release jobs completed successfully; downstream consumers must still verify exact-SHA Render LIVE and durable Action receipts.'
