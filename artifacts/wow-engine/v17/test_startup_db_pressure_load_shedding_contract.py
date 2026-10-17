@@ -26,7 +26,13 @@ def test_idle_durable_workers_no_longer_poll_supabase_every_two_seconds():
     assert 'failure_streak += 1' in pickem
     assert 'timeout=wait_seconds' in daily
     assert 'timeout=wait_seconds' in pickem
-    assert 'loop.call_soon(wake.set)' in daily
+    # Daily submission now runs on the event loop and signals wake directly;
+    # the old sync handler silently swallowed RuntimeError in a threadpool.
+    assert 'async def submit_daily_snapshot' in daily
+    assert 'asyncio.to_thread(_submit_from_factory, db_client_fn, req)' in daily
+    assert 'wake.set()' in daily
+    assert 'loop.call_soon(wake.set)' not in daily
+    assert '_has_claimable_work' in daily
     assert 'loop.call_soon(wake.set)' in pickem
     assert 'can_execute=false' in daily.lower()
     assert 'can_execute=false' in pickem.lower()
