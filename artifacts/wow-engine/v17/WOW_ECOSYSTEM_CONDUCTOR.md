@@ -291,3 +291,7 @@ The Conductor is successful when the ecosystem can answer, from durable evidence
 12. Which team owns the next action?
 
 The answer must not depend on inference from prose or on one component claiming another component succeeded.
+
+## Global scoped blockers / mandatory continuation
+
+Follow `docs/wow/engineering/GLOBAL_SCOPED_BLOCKER_POLICY.md`. A blocker stops only dependent actions; release held does not mean development halted. Identify the prohibited operation, evidence, dependency and unblock condition; immediately continue authorized independent work within role, ownership, lease, isolation and baseline constraints. Keep development and release states separate. If no permitted action exists, record exact reasons and a revisit trigger. Preserve all safety, independent review and release gates. Policy changes are not proof of deployed worker enforcement.
