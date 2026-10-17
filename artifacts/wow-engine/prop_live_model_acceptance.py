@@ -164,26 +164,55 @@ def _bootstrap_request_id(row: dict[str, Any]) -> str:
     return f"wow-prop-live-e2e-acceptance-{digest}"
 
 
+BOOTSTRAP_REQUIRED_FIELDS = ("event_id", "event_start_time", "sport", "player", "stat_type", "line", "direction")
+
+
+class BootstrapConfigError(ValueError):
+    """Typed, value-free cause for an unusable self-acceptance bootstrap (#1715).
+
+    ``cause`` is a fixed code and ``missing_fields`` only ever contains names
+    from BOOTSTRAP_REQUIRED_FIELDS, so both are safe to log. Configured values
+    (player, event, line, timestamps) are never carried on the exception.
+    """
+
+    def __init__(self, cause: str, message: str, missing_fields: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.cause = cause
+        self.missing_fields = missing_fields
+
+
 def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
-    value = json.loads(raw)
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise BootstrapConfigError("BOOTSTRAP_JSON_UNPARSEABLE", "bootstrap JSON unparseable") from exc
     if not isinstance(value, dict):
-        raise ValueError("bootstrap JSON must be an object")
-    required = ("event_id", "event_start_time", "sport", "player", "stat_type", "line", "direction")
-    missing = [key for key in required if value.get(key) in (None, "")]
+        raise BootstrapConfigError("BOOTSTRAP_JSON_NOT_OBJECT", "bootstrap JSON must be an object")
+    missing = tuple(key for key in BOOTSTRAP_REQUIRED_FIELDS if value.get(key) in (None, ""))
     if missing:
-        raise ValueError("bootstrap JSON missing required fields: " + ",".join(missing))
+        raise BootstrapConfigError(
+            "BOOTSTRAP_FIELDS_MISSING",
+            "bootstrap JSON missing required fields: " + ",".join(missing),
+            missing,
+        )
     direction = str(value["direction"]).strip().upper()
     if direction not in {"MORE", "LESS"}:
-        raise ValueError("bootstrap direction must be MORE or LESS")
+        raise BootstrapConfigError("BOOTSTRAP_DIRECTION_INVALID", "bootstrap direction must be MORE or LESS")
     try:
         exact_line = float(value["line"])
     except (TypeError, ValueError) as exc:
-        raise ValueError("bootstrap exact line invalid") from exc
+        raise BootstrapConfigError("BOOTSTRAP_LINE_INVALID", "bootstrap exact line invalid") from exc
     if not math.isfinite(exact_line):
-        raise ValueError("bootstrap exact line must be finite")
-    event_start = _aware(value["event_start_time"])
+        raise BootstrapConfigError("BOOTSTRAP_LINE_NONFINITE", "bootstrap exact line must be finite")
+    try:
+        event_start = _aware(value["event_start_time"])
+    except (TypeError, ValueError) as exc:
+        raise BootstrapConfigError(
+            "BOOTSTRAP_EVENT_START_INVALID", "bootstrap event_start_time invalid or not timezone-aware"
+        ) from exc
     if event_start <= datetime.now(timezone.utc):
-        raise ValueError("bootstrap event already started")
+        # One-shot fixture is stale: the configured candidate is no longer pregame.
+        raise BootstrapConfigError("BOOTSTRAP_EVENT_ALREADY_STARTED", "bootstrap event already started")
     row = {
         "row_key": "prop-live-e2e-acceptance",
         "event_id": str(value["event_id"]),
@@ -269,9 +298,13 @@ async def _bootstrap_fresh_snapshot(key: str, port: str, raw: str, log: logging.
     try:
         payload = _bootstrap_pick_payload(raw)
     except Exception as exc:
+        # reason/error_type kept for log-query compatibility; cause/missing_fields
+        # are fixed codes and field names only, never configured values.
         log.error(
-            "WOW_PROP_MODEL_SELF_ACCEPTANCE result=FAIL mode=AUTO_HYDRATED_E2E reason=BOOTSTRAP_CONFIG_INVALID error_type=%s can_execute=false",
+            "WOW_PROP_MODEL_SELF_ACCEPTANCE result=FAIL mode=AUTO_HYDRATED_E2E reason=BOOTSTRAP_CONFIG_INVALID error_type=%s cause=%s missing_fields=%s can_execute=false",
             type(exc).__name__,
+            getattr(exc, "cause", "BOOTSTRAP_UNCLASSIFIED"),
+            ",".join(getattr(exc, "missing_fields", ())) or "NONE",
         )
         return None
 
