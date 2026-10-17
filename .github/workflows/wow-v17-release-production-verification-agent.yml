@@ -129,12 +129,82 @@ jobs:
               exit 1
             }
           done
-          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '.check_runs')
-          gate=$(jq -r '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$checks")
-          [ "$gate" = "completed|success" ] || {
-            echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN: ${gate:-MISSING}" >&2
+          # A merged-PR release observer can start before the independent
+          # trusted governance check finishes. Wait a *bounded* interval for
+          # exact-head evidence rather than permanently failing on in_progress.
+          # A final non-success verdict still fails closed immediately.
+          gate=""
+          ready=false
+          for attempt in $(seq 1 24); do
+            checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '.check_runs')
+            gate=$(jq -r '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$checks")
+            case "$gate" in
+              "completed|success") ready=true; break ;;
+              "completed|"*)
+                echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN: $gate" >&2
+                exit 1
+                ;;
+            esac
+            [ "$attempt" -eq 24 ] && break
+            sleep 10
+          done
+          [ "$ready" = "true" ] || {
+            echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_INCOMPLETE_AFTER_BOUNDED_WAIT: ${gate:-MISSING}" >&2
             exit 1
           }
+
+      - name: Record exact-head governance denial without approval
+        # Publish a typed diagnostic even when the deterministic gate denies.
+        # This NEVER turns a non-green governance check into an approval.
+        if: ${{ failure() && steps.pr.outputs.number != '' && steps.merged.outputs.head_sha != '' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
+          MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '.check_runs')
+          gate=$(jq -cr '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first // {}' <<<"$checks")
+          gate_status=$(jq -r '.status // "MISSING"' <<<"$gate")
+          gate_conclusion=$(jq -r '.conclusion // "NONE"' <<<"$gate")
+          gate_url=$(jq -r '.details_url // ""' <<<"$gate")
+          # The only ACCEPTABLE completed gate is success. Record every
+          # other state as a hold and preserve the original failing job.
+          [ "$gate_status" != "completed" ] || [ "$gate_conclusion" != "success" ] || {
+            echo "RELEASE_GOVERNANCE_DIAGNOSTIC_NO_DENIAL" >&2
+            exit 1
+          }
+          diagnostic=$(jq -nc \
+            --arg head "$HEAD_SHA" \
+            --arg merge "$MERGE_SHA" \
+            --arg status "$gate_status" \
+            --arg conclusion "$gate_conclusion" \
+            --arg url "$gate_url" \
+            '{
+              status: "BLOCKED_WITH_EXACT_REASON",
+              blocker: "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN",
+              governance_check_status: $status,
+              governance_check_conclusion: $conclusion,
+              governance_check_url: $url,
+              governed_pr_head_sha: $head,
+              protected_main_merge_sha: $merge,
+              acceptance: "NOT_VERIFIED",
+              probability_publishable: false,
+              can_execute: false,
+              next_action: "Inspect the exact-head trusted governance producer and independently resolve any QA/Release denial. Do not override or self-approve the gate."
+            }')
+          {
+            echo "## WOW V17 Post-Merge Governance Hold"
+            echo
+            echo '~~~json'
+            echo "$diagnostic"
+            echo '~~~'
+          } > "$RUNNER_TEMP/governance-hold.md"
+          cat "$RUNNER_TEMP/governance-hold.md" >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/governance-hold.md"
 
       - name: Resolve trusted exact-head governance artifact
         if: steps.pr.outputs.number != ''
@@ -279,6 +349,9 @@ jobs:
       - name: Release / Production Verification agent
         if: steps.pr.outputs.number != ''
         id: release_agent
+        # Preserve the failure as a typed receipt, then fail the job below.
+        # A provider outage must never count as completed production acceptance.
+        continue-on-error: true
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -296,30 +369,68 @@ jobs:
           output_schema: '{"type":"object","properties":{"status":{"type":"string","enum":["PRODUCTION_VERIFIED","PENDING","BLOCKED_WITH_EXACT_REASON"]},"main_sha":{"type":"string"},"production_sha":{"type":"string"},"acceptance":{"type":"string"},"reconciliation":{"type":"string"},"blocker":{"type":"string"},"next_action":{"type":"string"}},"required":["status","main_sha","production_sha","acceptance","reconciliation","blocker","next_action"],"additionalProperties":false}'
 
       - name: Publish release verification receipt
-        if: steps.pr.outputs.number != ''
+        if: ${{ always() && steps.pr.outputs.number != '' && (steps.release_agent.outcome == 'success' || steps.release_agent.outcome == 'failure') }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           RESULT: ${{ steps.release_agent.outputs.structured_output }}
+          AGENT_OUTCOME: ${{ steps.release_agent.outcome }}
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           MERGE_SHA: ${{ steps.merged.outputs.merge_sha }}
         run: |
           set -euo pipefail
+          if [ "$AGENT_OUTCOME" != "success" ]; then
+            # This is an observability failure, not a sporting-model score
+            # or a verified deployment. Do not guess the provider's error.
+            RESULT=$(jq -nc \
+              --arg main "$MERGE_SHA" \
+              '{status: "BLOCKED_WITH_EXACT_REASON",
+                main_sha: $main, production_sha: "",
+                acceptance: "NOT_VERIFIED",
+                reconciliation: "RELEASE_OBSERVABILITY_INCOMPLETE",
+                blocker: "RELEASE_OBSERVABILITY_AGENT_FAILED",
+                next_action: "Diagnose provider failure from the workflow job logs and rerun exact-head production verification; do not publish a success receipt.",
+                can_execute: false}')
+          else
+            # Typed JSON is required even when the model action reports success.
+            jq -e --arg merge "$MERGE_SHA" '
+              type == "object" and
+              (.status | IN("PRODUCTION_VERIFIED", "PENDING", "BLOCKED_WITH_EXACT_REASON")) and
+              (.main_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+              (.production_sha | type == "string") and
+              (.acceptance | type == "string") and
+              (.reconciliation | type == "string") and
+              (.blocker | type == "string") and
+              (.next_action | type == "string") and
+              # A model claim alone is not evidence of the deployed revision.
+              # Never publish PRODUCTION_VERIFIED for a wrong/absent merge SHA.
+              (if .status == "PRODUCTION_VERIFIED" then .production_sha == $merge else true end)
+            ' <<<"$RESULT" >/dev/null || {
+              echo "RELEASE_OBSERVABILITY_RESULT_SCHEMA_OR_EXACT_MERGE_INVALID" >&2
+              exit 1
+            }
+          fi
           body="$RUNNER_TEMP/release-comment.md"
           {
             echo "## Release / Production Verification Agent"
             echo
             echo "Provider: OpenAI/ChatGPT"
             echo
-            echo "- governed_pr_head_sha: `$HEAD_SHA`"
-            echo "- protected_main_merge_sha: `$MERGE_SHA`"
+            printf -- '- governed_pr_head_sha: `%s`\n' "$HEAD_SHA"
+            printf -- '- protected_main_merge_sha: `%s`\n' "$MERGE_SHA"
             echo "- trusted_handoff_receipt: VERIFIED"
             echo
             echo '~~~json'
             echo "$RESULT"
             echo '~~~'
             echo
-            echo "`can_execute=false`"
+            echo '`can_execute=false`'
           } > "$body"
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
           cat "$body" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail closed if release-observability agent failed
+        if: ${{ always() && steps.release_agent.outcome == 'failure' }}
+        run: |
+          echo "RELEASE_OBSERVABILITY_AGENT_FAILED: receipt attempted; independent production acceptance remains blocked." >&2
+          exit 1
