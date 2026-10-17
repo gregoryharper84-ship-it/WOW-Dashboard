@@ -157,6 +157,22 @@ def _safe_odds_diagnostics(payload: Any) -> dict[str, Any]:
 ROUTER_PASSTHROUGH_NON_JSON = "ODDS_PROVIDER_NON_JSON"
 PROXY_UPSTREAM_NON_JSON = "ODDS_API_UPSTREAM_NON_JSON"
 ODDS_PROVIDER_RATE_LIMITED_CODE = "ODDS_PROVIDER_HTTP_429"
+ODDS_PROVIDER_KEY_DEACTIVATED_CODE = "ODDS_PROVIDER_KEY_DEACTIVATED"
+
+
+def _is_deactivated_key(payload: Any, detail: Any) -> bool:
+    """True only when the provider body explicitly names DEACTIVATED_KEY.
+
+    A credential state, not a payload-shape problem and not model evidence. It
+    stays an acquisition-layer auth code; it is deliberately not secondary-
+    fallback eligible and never carries the key or request URL.
+    """
+    for source in (payload, detail):
+        if isinstance(source, dict):
+            for field in ("code", "error_code"):
+                if str(source.get(field) or "").upper() == "DEACTIVATED_KEY":
+                    return True
+    return False
 
 
 def _typed_non_json_code(code: Any, http_status: Any, diagnostics: dict[str, Any]) -> Any:
@@ -201,6 +217,8 @@ def proxy_get(path: str, params: dict[str, Any] | None = None) -> FetchResult:
         diagnostics_source = detail if isinstance(detail, dict) and detail else payload
         diagnostics = _safe_odds_diagnostics(diagnostics_source)
         code = _typed_non_json_code(code, exc.code, diagnostics)
+        if exc.code in (401, 403) and _is_deactivated_key(payload, detail):
+            code = ODDS_PROVIDER_KEY_DEACTIVATED_CODE
         return FetchResult(
             False,
             status=exc.code,

@@ -307,3 +307,27 @@ def test_daily_run_reports_incomplete_board_and_per_sport_receipt(monkeypatch, m
     if mode == "FULL":
         assert payload["rows"][0]["result"]["calibrated_probability"] == 0.62
     assert payload["can_execute"] is False
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error_code": "DEACTIVATED_KEY", "message": "usage plan deactivated"},
+        {"detail": {"code": "DEACTIVATED_KEY"}},
+        {"ok": False, "code": "ODDS_PROVIDER_NON_JSON", "error_code": "DEACTIVATED_KEY"},
+    ],
+)
+def test_deactivated_odds_key_is_distinct_typed_auth_code_not_fallback_eligible(monkeypatch, status, body) -> None:
+    result = _proxy_result(monkeypatch, status, body)
+    assert result.ok is False
+    assert result.code == "ODDS_PROVIDER_KEY_DEACTIVATED"
+    assert not result.code.startswith("MODEL_")
+    # Credential state must not be masked by routing to a secondary source.
+    assert scout_oidc._eligible_for_secondary(result) is False
+    assert "test-token-not-secret" not in repr(result)
+
+
+def test_plain_401_without_deactivated_marker_keeps_generic_code(monkeypatch) -> None:
+    result = _proxy_result(monkeypatch, 401, {"message": "unauthorized"})
+    assert result.code == "HTTP_401"
