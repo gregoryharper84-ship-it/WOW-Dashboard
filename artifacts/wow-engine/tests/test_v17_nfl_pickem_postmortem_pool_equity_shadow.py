@@ -266,3 +266,43 @@ def test_shadow_board_never_changes_production_strategy_or_probability():
     assert board["production_probability_changed"] is False
     assert board["automatic_promotion"] is False
     assert board["can_execute"] is False
+
+
+def test_nfl_regulation_overtime_tie_is_not_scored_as_wrong_pick():
+    picks = {
+        "GH": {"TB@DAL": "DAL", "NYG@WSH": "WSH"},
+        "Jay": {"TB@DAL": "TB", "NYG@WSH": "NYG"},
+    }
+    outcomes = {"TB@DAL": "TB", "NYG@WSH": "TIE"}
+    report = analyze_settled_pickem_week(
+        picks, outcomes, user_name="GH", tie_policy="NO_POINT",
+    )
+    assert report["user_wins"] == 0
+    assert report["user_losses"] == 1
+    assert report["user_ties"] == 1
+    assert report["tied_events"] == ["NYG@WSH"]
+    assert all(row["ties"] == 1 for row in report["standings"])
+    tie_event = next(x for x in report["events"] if x["event_id"] == "NYG@WSH")
+    assert tie_event["event_tied"] is True
+    assert tie_event["scored_for_pickem"] is False
+    assert tie_event["majority_side_lost"] is False
+    assert tie_event["unanimous_shared_loss"] is False
+    assert report["winner_comparisons"][0]["net_disagreement_swing"] == 1
+
+
+def test_tie_requires_explicit_contest_scoring_rule():
+    picks = {"GH": {"NYG@WSH": "WSH"}, "Jay": {"NYG@WSH": "NYG"}}
+    with pytest.raises(ValueError, match="PICKEM_POSTMORTEM_TIE_RULE_REQUIRED"):
+        analyze_settled_pickem_week(picks, {"NYG@WSH": "TIE"}, user_name="GH")
+    with pytest.raises(ValueError, match="PICKEM_POSTMORTEM_TIE_POLICY_UNSUPPORTED"):
+        analyze_settled_pickem_week(
+            picks, {"NYG@WSH": "TIE"}, user_name="GH", tie_policy="COUNT_AS_LOSS",
+        )
+
+
+def test_tie_token_cannot_be_submitted_as_team_pick():
+    picks = {"GH": {"NYG@WSH": "TIE"}, "Jay": {"NYG@WSH": "NYG"}}
+    with pytest.raises(ValueError, match="PICKEM_POSTMORTEM_TIE_NOT_A_PICKABLE_SIDE"):
+        analyze_settled_pickem_week(
+            picks, {"NYG@WSH": "TIE"}, user_name="GH", tie_policy="NO_POINT",
+        )
