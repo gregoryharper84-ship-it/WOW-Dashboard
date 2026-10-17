@@ -110,16 +110,69 @@ jobs:
               --log-file "$log_file"
           }
 
+          # A configured secondary key also does not prove remaining
+          # credits. Never repeatedly dispatch a known failed Claude worker.
+          # This probes only completed trusted workflow metadata, not secrets.
+          secondary_usable() {
+            [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || return 1
+            local recent latest_id latest_conclusion
+            if ! recent=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow wow-v17-claude-engineering-worker.yml \
+              --status completed --limit 1 \
+              --json databaseId,conclusion,updatedAt 2>/dev/null); then
+              return 1
+            fi
+            latest_id=$(jq -r '.[0].databaseId // empty' <<<"$recent") || return 1
+            latest_conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
+            if [ -n "$latest_id" ] && [ "$latest_conclusion" = "failure" ]; then
+              # Any unresolved latest failure (including exhausted credits)
+              # needs explicit provider recovery; do not launch in a loop.
+              return 1
+            fi
+            return 0
+          }
+
+          # The workflow_run event may be delivered long after a newer
+          # successful worker run. Never recover from an obsolete failure.
+          source_stale=false
+          source_unverified=false
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$SOURCE_CONCLUSION" != "success" ] &&
+             { [ "$source_workflow_id" = "wow-v17-chatgpt-engineering-worker" ] ||
+               [ "$source_workflow_id" = "wow-v17-claude-engineering-worker" ]; }; then
+            if source_runs=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow "${source_workflow_id}.yml" \
+              --status completed --limit 1 \
+              --json databaseId,conclusion,updatedAt 2>/dev/null); then
+              current_source_id=$(jq -r '.[0].databaseId // empty' <<<"$source_runs")
+              if [ -z "$current_source_id" ]; then
+                source_unverified=true
+              elif [ "$current_source_id" != "$SOURCE_RUN_ID" ]; then
+                source_stale=true
+              fi
+            else
+              source_unverified=true
+            fi
+          fi
+
           if [ "$EVENT_NAME" = "workflow_run" ]; then
-            if [ "$SOURCE_CONCLUSION" = "success" ]; then
+            if [ "$source_unverified" = "true" ]; then
+              action=SURVIVAL
+              provider=deterministic
+              reason=PROVIDER_SOURCE_IDENTITY_UNVERIFIED
+            elif [ "$source_stale" = "true" ]; then
+              action=NO_ACTION
+              provider=none
+              reason=STALE_WORKER_FAILURE_SUPERSEDED
+            elif [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
             elif [ "$source_workflow_id" = "wow-v17-chatgpt-engineering-worker" ]; then
               classification=$(classify_run "$SOURCE_RUN_ID" openai)
               code=$(jq -r '.code' <<<"$classification")
               eligible=$(jq -r '.failover_eligible' <<<"$classification")
               reason="$code"
-              if [ "$eligible" = "true" ] &&
-                 { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; }; then
+              if [ "$eligible" = "true" ] && secondary_usable; then
                 action=DISPATCH
                 provider=anthropic
               else
@@ -143,18 +196,50 @@ jobs:
           else
             force="${FORCE_PROVIDER:-auto}"
             if [ "$force" = "openai" ]; then
-              action=DISPATCH
-              provider=openai
-              reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+              # Explicit manual diagnostics do not defeat a confirmed
+              # billing hold; a later successful worker run or approved
+              # provider credential recovery is required first.
+              if recent=$(gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow wow-v17-chatgpt-engineering-worker.yml \
+                --status completed --limit 1 \
+                --json databaseId,conclusion,updatedAt 2>/dev/null); then
+                probe_id=$(jq -r '.[0].databaseId // empty' <<<"$recent")
+                probe_result=$(jq -r '.[0].conclusion // empty' <<<"$recent")
+                if [ -n "$probe_id" ] && [ "$probe_result" = "failure" ]; then
+                  # Use classifier's typed recovery contract. The workflow
+                  # must not duplicate provider-specific failure patterns.
+                  probe_classification=$(classify_run "$probe_id" openai)
+                  probe_code=$(jq -r '.code' <<<"$probe_classification")
+                  probe_manual_recovery=$(jq -r '.manual_recovery_required // false' <<<"$probe_classification")
+                  if [ "$probe_manual_recovery" = "true" ]; then
+                    action=SURVIVAL
+                    provider=deterministic
+                    reason="FORCED_OPENAI_RECOVERY_NOT_VERIFIED:${probe_code}"
+                  else
+                    action=DISPATCH
+                    provider=openai
+                    reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+                  fi
+                else
+                  action=DISPATCH
+                  provider=openai
+                  reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+                fi
+              else
+                action=SURVIVAL
+                provider=deterministic
+                reason=FORCED_OPENAI_SOURCE_EVIDENCE_UNAVAILABLE
+              fi
             elif [ "$force" = "anthropic" ]; then
-              if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+              if secondary_usable; then
                 action=DISPATCH
                 provider=anthropic
                 reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
               else
                 action=SURVIVAL
                 provider=deterministic
-                reason=ANTHROPIC_AUTH_MISSING
+                reason=ANTHROPIC_AUTH_OR_RECOVERY_EVIDENCE_MISSING
               fi
             else
               latest=$(gh run list \
@@ -177,16 +262,30 @@ jobs:
                   --cooldown-minutes 120 | jq -r '.active')
               fi
 
-              if [ "$breaker" = "true" ] &&
-                 { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; }; then
-                action=DISPATCH
-                provider=anthropic
-                reason="CIRCUIT_BREAKER:${breaker_code}"
+              if [ "$breaker" = "true" ]; then
+                # A configured OpenAI API key is not proof of remaining quota.
+                # Never fall through to OpenAI while its circuit is active.
+                if secondary_usable; then
+                  action=DISPATCH
+                  provider=anthropic
+                  reason="CIRCUIT_BREAKER:${breaker_code}"
+                else
+                  action=SURVIVAL
+                  provider=deterministic
+                  reason="CIRCUIT_BREAKER:${breaker_code}:NO_APPROVED_ALTERNATE"
+                fi
+              elif [ -n "$latest_id" ] && [ "$latest_conclusion" = "failure" ] &&
+                   { [ "$breaker_code" = "NON_PROVIDER_FAILURE" ] || [ "$breaker_code" = "UNCLASSIFIED_PROVIDER_OR_WORKFLOW_FAILURE" ]; }; then
+                # A failed test / malformed worker is not a provider quota
+                # fault. Do not relaunch the same broken worker indefinitely.
+                action=SURVIVAL
+                provider=deterministic
+                reason="WORKER_FAILURE_REQUIRES_REPAIR:${breaker_code}"
               elif [ -n "${OPENAI_API_KEY:-}" ]; then
                 action=DISPATCH
                 provider=openai
                 reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
-              elif [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+              elif secondary_usable; then
                 action=DISPATCH
                 provider=anthropic
                 reason=OPENAI_API_KEY_MISSING
@@ -269,6 +368,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/wow-survival"
           python artifacts/wow-engine/v17/engineering_agent_team.py self-check \
             > "$RUNNER_TEMP/wow-survival/team-self-check.json"
+          # Keep independent, credential-free engineering work executing
+          # while model providers are over quota. No source mutation, release,
+          # scoring or other protected action occurs in degraded survival.
+          python -m compileall -q artifacts/wow-engine/v17/engineering_provider_failover.py
+          python -m unittest discover \
+            -s artifacts/wow-engine -p test_v17_provider_workflow_identity.py -q \
+            > "$RUNNER_TEMP/wow-survival/fallback-unit-tests.txt" 2>&1
           python artifacts/wow-engine/v17/engineering_agent_team.py priority \
             > "$RUNNER_TEMP/wow-survival/priority.json"
           gh pr list \
@@ -296,6 +402,7 @@ jobs:
           path: |
             ${{ steps.route.outputs.receipt }}
             ${{ runner.temp }}/wow-survival/*.json
+            ${{ runner.temp }}/wow-survival/*.txt
           retention-days: 14
 
       - name: Record provider-control summary
