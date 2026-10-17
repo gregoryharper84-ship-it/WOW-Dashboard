@@ -77,6 +77,10 @@ def governed_team_result():
 
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
+    # Verify the canonical prop/MLB terminal contract without invoking unrelated
+    # live cross-sport source discovery. Feed failures belong in separate tests,
+    # and may legitimately change the run into ACQUISITION_BLOCKERS.
+    monkeypatch.setattr("v17.cross_sport_discovery_feed.enabled", lambda: False)
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
     # Keep this row/terminal contract test independent of the process-global
     # production installer that can force a fresh provider acquisition when the
@@ -166,7 +170,10 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     assert result["rows"][0]["row_status"]=="COMPLETED"
 
 
-def test_zero_row_query_failures_are_typed_as_data_unobtainable():
+def test_zero_row_query_failures_are_typed_as_data_unobtainable(monkeypatch):
+    # A failing canonical database can coexist with valid separate source
+    # discovery. Disable that other lane to prove the zero-row DB taxonomy.
+    monkeypatch.setattr("v17.cross_sport_discovery_feed.enabled", lambda: False)
     class BrokenQuery(Query):
         def execute(self): raise ConnectionError("boom")
     class BrokenDB:
@@ -315,6 +322,13 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     from v17.team_event_bridge_runtime import TEAM_EVENT_BRIDGES
 
     monkeypatch.setattr(runtime, "score_team_event_request", lambda *a, **k: governed_team_result())
+    monkeypatch.setattr(feed, "enabled", lambda: True)
+    # A full-suite Python process can be busy enough to exhaust production's
+    # 8-second sweep while processing dozens of mocked sport/provider targets.
+    # Here every source is synchronous/in-memory; test inventory completeness
+    # without unrelated host CPU contention. Budget-exhaustion policy has its
+    # own negative tests and remains unchanged in production.
+    monkeypatch.setattr(discovery, "discovery_budget_seconds", lambda: 120.0)
 
     slate = _cross_sport_feed(
         {
@@ -366,6 +380,52 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     assert payload["can_execute"] is False
 
 
+def test_cross_sport_id_collision_never_drops_non_mlb_rows(monkeypatch):
+    """MLB's official id '1' must not eat an NHL alias with the same raw id."""
+    from v17 import cross_sport_discovery_feed as feed
+    from v17 import daily_snapshot_runtime as runtime
+    from v17.team_event_bridge_runtime import TEAM_EVENT_BRIDGES
+
+    monkeypatch.setattr(feed, "enabled", lambda: True)
+    monkeypatch.setattr(
+        runtime, "score_team_event_request",
+        lambda *args, **kwargs: governed_team_result(),
+    )
+    # Event DB fixture has canonical MLB official_event_id='1'. The event
+    # discovery board independently returns MLB+NHL id '1' for this slate.
+    slate = _cross_sport_feed({
+        "MLB": [_cross_sport_event("1")],
+        "NHL": [_cross_sport_event("1")],
+    })
+    monkeypatch.setattr(feed, "odds_proxy_feed", lambda **_: slate)
+    monkeypatch.setattr(feed, "rundown_board_feed", lambda **_: slate)
+    monkeypatch.delitem(TEAM_EVENT_BRIDGES, "NHL", raising=False)
+
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            response_mode="FULL",
+        ),
+        db=DB(), market_api=Market(), event_api=Event(),
+    )
+
+    rows = result["rows"]
+    mlb = [r for r in rows if r["identity"].get("official_event_id") == "1"
+           and r["identity"].get("sport") in ("MLB", None)]
+    nhl = [r for r in rows if r["identity"].get("sport") == "NHL"]
+    assert len(mlb) == 1, "true MLB canonical duplicate must remain deduplicated"
+    assert len(nhl) == 1, "NHL id collision must not be silently lost"
+    assert nhl[0]["identity"]["official_event_id"] == "1"
+    assert nhl[0]["row_status"] == "HELD"
+    assert nhl[0]["result"]["bucket"] == "MODEL_UNAVAILABLE"
+    assert nhl[0]["probability_publishable"] is False
+    assert result["reconciliation"]["balanced"] is True
+    assert result["cross_sport_discovery_audit"]["reconciliation"]["row_reconciliation"] == "PASS"
+    assert result["can_execute"] is False
+
+
 def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(monkeypatch):
     from v17 import cross_sport_discovery_feed as feed
 
@@ -383,3 +443,87 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_installed_sport_parity_wrapper_retains_nhl_id_colliding_with_mlb(monkeypatch):
+    """Exercise the actual production-installed wrapper, not only its fallback."""
+    from v17 import cross_sport_discovery_feed as feed
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import daily_snapshot_runtime as runtime
+    from v17 import team_event_sport_parity as parity
+    from v17.team_event_bridge_runtime import TEAM_EVENT_BRIDGES
+
+    # The app installs this wrapper once per process. Isolate its global
+    # activation so the test never permanently installs it into another test.
+    with monkeypatch.context() as mp:
+        mp.setattr(runtime, "_v17_cross_sport_discovery_evidence_handoff_installed",
+                   False, raising=False)
+        mp.setattr(runtime, "_cross_sport_moneyline_rows",
+                   runtime._cross_sport_moneyline_rows)
+        mp.setattr(feed, "enabled", lambda: True)
+        mp.setattr(discovery, "discovery_budget_seconds", lambda: 120.0)
+        mp.setattr(runtime, "score_team_event_request",
+                   lambda *a, **k: governed_team_result())
+        mp.setattr(parity, "canonicalize_mlb_discovery_identity",
+                   lambda event, **kwargs: event)
+        mp.setattr(parity, "canonicalize_nhl_discovery_identity",
+                   lambda event: event)
+        mp.delitem(TEAM_EVENT_BRIDGES, "NHL", raising=False)
+
+        queried_targets = []
+
+        def provider(sport, sport_key=None, *, target=None, **_kwargs):
+            # Discovery passes the verified registry target as argument 2.
+            actual_target = target or sport_key
+            queried_targets.append((sport, getattr(actual_target, "sport_id", None)))
+            return {
+                "MLB": [_cross_sport_event("1")],
+                "NHL": [_cross_sport_event("1")],
+                "NBA": [_cross_sport_event("1")],
+                "WNBA": [_cross_sport_event("1")],
+            }.get(sport, [])
+
+        mp.setattr(feed, "odds_proxy_feed", lambda **_: provider)
+        mp.setattr(feed, "rundown_board_feed", lambda **_: provider)
+        mp.setattr(parity, "canonicalize_nba_discovery_identity",
+                   lambda event: event)
+        mp.setattr(parity, "canonicalize_wnba_discovery_identity",
+                   lambda event: event)
+        for sport in ("NBA", "WNBA"):
+            mp.delitem(TEAM_EVENT_BRIDGES, sport, raising=False)
+
+        assert parity.install_cross_sport_discovery_evidence_handoff() is True
+        result = run_daily_snapshot(
+            DailySnapshotRequest(
+                requested_slate_date=SLATE_DATE,
+                requested_timezone="America/Chicago",
+                lanes=["MONEYLINE"],
+                response_mode="FULL",
+            ),
+            db=DB(), market_api=Market(), event_api=Event(),
+        )
+        rows = [r for r in result["rows"] if r["lane"] == "MONEYLINE"]
+        by_sport = {}
+        for row in rows:
+            sport = row["identity"].get("sport") or "MLB"
+            by_sport.setdefault(sport, []).append(row)
+
+        # NFL/NBA/NHL regime variants must be inventoried on the installed
+        # path as on the base Daily path, even if no fitted regime model exists.
+        assert ("NBA", 23) in queried_targets  # NBA preseason
+        assert ("NHL", 27) in queried_targets  # NHL preseason
+        assert ("NFL", 25) in queried_targets  # NFL preseason
+        assert ("MLB", 31) in queried_targets  # MLB playoffs
+
+        assert len(by_sport["MLB"]) == 1, "canonical MLB duplicate remains suppressed"
+        for sport in ("NHL", "NBA", "WNBA"):
+            assert len(by_sport[sport]) == 1, f"{sport} candidate lost to MLB ID"
+            row = by_sport[sport][0]
+            assert row["identity"]["official_event_id"] == "1"
+            assert row["row_status"] == "HELD"
+            assert row["result"]["bucket"] == "MODEL_UNAVAILABLE"
+            assert row["probability_publishable"] is False
+            assert row["can_execute"] is False
+        assert result["reconciliation"]["balanced"] is True
+        assert result["cross_sport_discovery_audit"]["reconciliation"]["row_reconciliation"] == "PASS"
+        assert result["can_execute"] is False

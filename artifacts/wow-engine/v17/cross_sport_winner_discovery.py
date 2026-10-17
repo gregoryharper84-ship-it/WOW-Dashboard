@@ -23,7 +23,10 @@ price, a public projection or generic reasoning for an absent fitted model, and
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
@@ -552,6 +555,30 @@ class DiscoveredEvent:
         return f"{self.sport}:{self.official_event_id or 'UNRESOLVED'}"
 
     def identity(self) -> dict[str, Any]:
+        # Provider aliases belong in private acquisition provenance, never in
+        # immutable terminal fields named "official". Even when a caller
+        # accidentally leaves official_event_id populated after a failed
+        # canonical lookup, held/output identity must not assert authenticity.
+        alias_only = (
+            isinstance(self.raw, Mapping)
+            and self.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
+        )
+        event_id = None if alias_only else self.official_event_id
+        event_key = self.event_key
+        if alias_only:
+            # Keep multiple held events distinct without presenting public
+            # provider IDs as official ids. A canonical JSON digest binds the
+            # *unverified* source identity + fixture evidence for reconciliation.
+            # It is neither an official game id nor model-scoring authority.
+            binding = [
+                self.sport, self.league, self.regime, self.provider,
+                self.official_event_id, self.home_team, self.away_team,
+                self.commence_time_utc,
+            ]
+            fingerprint = hashlib.sha256(
+                json.dumps(binding, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+            ).hexdigest()[:24]
+            event_key = f"{self.sport}:UNRESOLVED:{fingerprint}"
         return {
             "sport": self.sport,
             "league": self.league,
@@ -559,8 +586,8 @@ class DiscoveredEvent:
             "regime": self.regime,
             "provider": self.provider,
             "provider_sport_id": self.provider_sport_id,
-            "event_key": self.event_key,
-            "official_event_id": self.official_event_id,
+            "event_key": event_key,
+            "official_event_id": event_id,
             "home_team": self.home_team,
             "away_team": self.away_team,
             "commence_time_utc": self.commence_time_utc,
@@ -1115,6 +1142,15 @@ def _purge_bucket(event: DiscoveredEvent, *, slate_date: str, tz_name: str) -> s
         event.commence_time_utc, slate_date, tz_name
     ):
         return WRONG_DATE
+    # This is a second, independent trust fence: upstream canonicalizers
+    # may accidentally leave a provider alias in official_event_id on error.
+    # A verified 'ALIAS_ONLY_UNRESOLVED' hold always takes precedence over
+    # a nonempty ID and cannot invoke a fitted specialist.
+    if (
+        isinstance(event.raw, Mapping)
+        and event.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
+    ):
+        return IDENTITY_UNRESOLVED
     if not event.official_event_id or not event.home_team or not event.away_team:
         return IDENTITY_UNRESOLVED
     if event.event_status != REQUIRED_EVENT_STATE:
@@ -1168,12 +1204,24 @@ def route_discovered_slate(
             event, slate_date=inventory.requested_slate_date, tz_name=inventory.requested_timezone
         )
         if purge is not None:
+            detail = {"reason": purge, "model_invoked": False}
+            # Preserve one safe typed source blocker for actual restoration
+            # diagnosis. Never serialize the provider row, exception text,
+            # URL, credentials, aliases, names or odds into this receipt.
+            if purge == IDENTITY_UNRESOLVED and isinstance(event.raw, Mapping):
+                blocker = event.raw.get("canonical_identity_blocker")
+                if (
+                    isinstance(blocker, str)
+                    and len(blocker) <= 96
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]{2,95}", blocker)
+                ):
+                    detail["canonical_identity_blocker"] = blocker
             rows.append(
                 RoutedRow(
                     identity=event.identity(),
                     bucket=purge,
                     model_status=None,
-                    detail={"reason": purge, "model_invoked": False},
+                    detail=detail,
                 )
             )
             continue
