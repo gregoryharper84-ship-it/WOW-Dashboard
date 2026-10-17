@@ -156,7 +156,7 @@ jobs:
               python artifacts/wow-engine/v17/engineering_dispatch_queue.py check-standard \
                 --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
                 --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
-                --incident "$TARGET_INCIDENT" || {
+                --incident "$TARGET_INCIDENT" > /dev/null || {
                 echo "::error::STANDARD_TARGET_CONFLICTS_WITH_OPEN_RAPID_P0:$TARGET_INCIDENT"
                 exit 1
               }
