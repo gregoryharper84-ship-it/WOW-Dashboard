@@ -30,6 +30,7 @@ from v17 import free_core_source_policy as source_policy
 from v17 import market_evidence_native_live as live
 from v17 import market_optional_qualification as market_optional
 from v17 import market_evidence_sources as sources
+from v17 import rundown_paid_scope as paid_scope
 
 CAN_EXECUTE = False
 BRIDGE_SOURCE = "RUNDOWN_MARKET_EVIDENCE"
@@ -291,13 +292,32 @@ def _resolve_rundown_market_context_impl(req: Any, *, opener: Any = None) -> dic
             "can_execute": False,
         }
 
+    scope = paid_scope.winner_paid_scope()
+    if scope is None:
+        return {
+            "status": "MARKET_DATA_UNOBTAINABLE",
+            "provider": BRIDGE_SOURCE,
+            "reason_code": paid_scope.SCOPE_BLOCKER,
+            "provider_attempts": [{
+                "provider": BRIDGE_SOURCE,
+                "ok": False,
+                "code": paid_scope.SCOPE_BLOCKER,
+                "blocked_before_provider": True,
+            }],
+            "prediction_authority": False,
+            "market_role_evidence_only": True,
+            "global_slate_failure": False,
+            "can_execute": False,
+        }
+    market_ids, affiliate_ids = scope
     attempts: list[dict[str, Any]] = []
     rundown = live.get_sport_date_odds_snapshot(
         sport_key,
         str(getattr(req, "requested_slate_date", "")),
         capability="events",
         opener=opener,
-        market_ids=sources.rundown_winner_market_ids() or None,
+        market_ids=market_ids,
+        affiliate_ids=affiliate_ids,
         main_line=True,
         hide_closed=True,
         paid_call_stage=source_policy.STAGE_INITIAL_ENRICHMENT,

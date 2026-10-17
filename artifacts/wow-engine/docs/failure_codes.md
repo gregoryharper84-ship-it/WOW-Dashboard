@@ -63,7 +63,7 @@ This file is the repository source of truth for governed typed failure/status co
 | `LATEST_MATERIAL_UPDATE_TIMESTAMP_INVALID` | common fitted-specialist freshness | Latest-material-update timestamp is missing, malformed, or timezone-naive. | No |
 | `MODEL_STALE_AFTER_MATERIAL_UPDATE` | common fitted-specialist freshness | `model_timestamp < latest_material_update_timestamp`; exact rerun required before publication. | No |
 | `CAN_EXECUTE_MUST_BE_FALSE` | global safety | Certification/package attempted to set `can_execute` to anything other than false. | No |
-| `RUNDOWN_SPORT_ID_UNRESOLVED` | TheRundown acquisition | Catalog access succeeded but the target sport could not be resolved to the provider sport ID. | Does not decide sporting rank |
+| `RUNDOWN_PAID_SCOPE_UNRESOLVED` | TheRundown paid winner market acquisition | Missing or malformed operator-verified numeric winner market IDs or affiliate IDs; the LLP market bridge and additive ML board make zero paid provider requests. Sporting probability is preserved; only optional market evidence is blocked. | Does not decide sporting rank |\n| `RUNDOWN_SPORT_ID_UNRESOLVED` | TheRundown acquisition | Catalog access succeeded but the target sport could not be resolved to the provider sport ID. | Does not decide sporting rank |
 | `CATALOG_ACCESS_REQUIRED_FIRST` | TheRundown health | Strict provider health did not attempt event access because catalog authentication/access failed first. | Does not decide sporting rank |
 | `DATE_MUST_BE_YYYY_MM_DD` | diagnostic API | Invalid date supplied to a bounded health/discovery diagnostic route. | N/A |
 | `INVALID_PAGINATION` | diagnostic API | Page/page-size request is invalid. | N/A |
