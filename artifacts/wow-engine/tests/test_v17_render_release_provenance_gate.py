@@ -136,6 +136,6 @@ def test_live_control_plane_invokes_guard_before_render_deploy_post():
     assert 'validate_release_provenance(' in text
     assert '/pulls?per_page=100' in text
     assert "RENDER_RELEASE_PROVENANCE_VERIFIED" in text
-    assert text.index("authorized_pr_head = validate_release_provenance(") < text.index('render_json(\n                  "POST"')
+    assert text.index("authorized_pr_head = validate_release_provenance(") < text.index("post_receipt = post_render_exactly_once(")
     assert 'WOW_ACTION_API_KEY' not in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
