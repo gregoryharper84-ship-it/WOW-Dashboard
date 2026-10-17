@@ -127,8 +127,7 @@ def test_cross_sport_restoration_incidents_are_admitted_and_serialized():
 
     Those draft numbers are pull requests. The live dispatcher builds queue
     records only for manifest issues that `gh issue list` returns, so admitting
-    the pull-request numbers cannot select the work. Rapid selection only emits
-    streams GOVERNANCE, A, B, and C, so both incidents use stream B. They share
+    the pull-request numbers cannot select the work. Rapid selection now honors existing LLP_RESTORE priority before stream B; both fixes use stream B. They share
     the LLP writer lease and cross-sport conflict keys. #823 stays behind the
     existing higher-ranked restoration incidents and ahead of #1806.
     """
@@ -162,10 +161,15 @@ def test_cross_sport_restoration_incidents_are_admitted_and_serialized():
     assert decision.restoration.incident_id == "1388"
     assert decision.acceleration.incident_id is None
     selected = select_parallel(queue["records"])
-    assert [row["incident_id"] for row in selected["selected"]] == ["823"]
+    assert [row["incident_id"] for row in selected["selected"]] == ["1388"]
     assert selected["selected"][0]["lease_group"] == "P0_LLP_RESTORE"
     assert selected["can_execute"] is False
     assert all(row["incident_id"] != "1806" for row in selected["selected"])
+
+    # When higher-priority runtime work completes, cross-sport identity becomes runnable.
+    identity_only = [row for row in issues if row["number"] == 823]
+    identity = select_parallel(build_queue(manifest, identity_only)["records"])
+    assert [row["incident_id"] for row in identity["selected"]] == ["823"]
 
     publication_only = [row for row in issues if row["number"] == 1806]
     publication = select_parallel(build_queue(manifest, publication_only)["records"])

@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-STREAM_ORDER = ("GOVERNANCE", "A", "B", "C")
+STREAM_ORDER = ("LLP_RESTORE", "AUTONOMY_RESTORE", "GOVERNANCE", "A", "B", "C")
 MAX_PARALLEL_WRITERS = 3
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 
