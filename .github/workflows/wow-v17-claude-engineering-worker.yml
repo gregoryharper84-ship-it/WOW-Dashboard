@@ -223,6 +223,21 @@ jobs:
           echo "queue_depth=$queue_depth" >> "$GITHUB_OUTPUT"
           echo "lease_group=$lease_group" >> "$GITHUB_OUTPUT"
 
+      # Temporary containment: #823 is reserved for supervised Claude PR #1728.
+      # Never interpret a failed lookup or a closed PR as permission to take ownership.
+      # Replace with authoritative Supabase fencing under #1739.
+      - name: Guard incident 823 manual single-writer ownership
+        shell: bash
+        env:
+          RESTORATION: ${{ steps.dispatch.outputs.restoration }}
+          ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
+        run: |
+          set -euo pipefail
+          if [ "${RESTORATION:-}" = "823" ] || [ "${ACCELERATION:-}" = "823" ]; then
+            echo "::error::INCIDENT_823_MANUAL_HANDOFF_REQUIRES_ATOMIC_LEASE"
+            exit 1
+          fi
+
       - name: Checkout exact existing repair head under fence
         if: steps.repair_target.outputs.bound == 'true'
         shell: bash
