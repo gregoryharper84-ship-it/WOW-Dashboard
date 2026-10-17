@@ -32,5 +32,9 @@
 /.github/actions/wow-chatgpt-agent/* @gregoryharper84-ship-it
 /.github/actions/wow-claude-agent/* @gregoryharper84-ship-it
 /.github/CODEOWNERS @gregoryharper84-ship-it
+# P0 #1663 — privileged executable scripts must require owner review.
+/artifacts/wow-engine/v17/render_deployment_pointer.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/secret_sync.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_recovery_planner.py @gregoryharper84-ship-it
 # Render production config (autoDeploy/checksPass): changing it can re-open the deploy path (#1663).
 /render.yaml @gregoryharper84-ship-it
