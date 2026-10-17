@@ -38,3 +38,20 @@ terminal_authority=V17_TERMINAL_REDUCER
 can_execute=false
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
 ```
+
+## Class A extension: expected correct and uncertainty reporting
+
+The canonical `audit_governed_pickem_week` adds descriptive metrics from **the same immutable, calibrated selected-side probabilities**, after it validates every scheduled game and independent final settlement:
+
+```text
+expected_correct = sum(selected_probability for every scheduled game)
+expected_accuracy = expected_correct / scheduled_game_count
+P(K = k) = Poisson-binomial recurrence over selected probabilities
+P(K >= 15) = sum(P(K = 15), ..., P(K = N))
+```
+
+The full correct-count distribution **assumes independent game results**. Shared league/weather/injury/news uncertainty can violate this assumption. Treat the distribution as a descriptive conditional scenario, not a separately fitted correlated slate model or guaranteed week-level forecast. Accuracy, Brier, log loss, and target-achievement remain factual post-settlement grades.
+
+If a material input update is timestamped after the immutable model timestamp, the entire scorecard fails with `PICKEM_ACCURACY_PREDICTION_STALE`; do not silently replace the frozen pick. No card, market, ownership, popularity, bettor-pool leverage, tiebreaker, fitted coefficient, calibration or serving-state change is part of this extension.
+
+**Release gate:** exact-head protected CI, independent SIRT (#1521) and QA evidence, protected merge, and current-revision verification. **User-facing automatic weekly reports are not delivered by this passive module**: a separate scheduled receipt-gathering/settlement integration and end-to-end live acceptance are still required.
