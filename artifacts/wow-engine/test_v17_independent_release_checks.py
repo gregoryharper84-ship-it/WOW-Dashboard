@@ -490,9 +490,18 @@ def test_each_app_secret_is_isolated_by_main_only_environment():
 
 
 @pytest.mark.parametrize("wf, var", [(QA_WF, "WOW_QA_APP_ID"), (REL_WF, "WOW_RELEASE_APP_ID")])
-def test_unactivated_role_is_skipped_not_red(wf, var):
+def test_unconfigured_role_runs_credential_probe_and_fails(wf, var):
     job_if = re.search(r"^    if: (.+)$", wf.read_text(), re.M).group(1)
-    assert f"vars.{var} != ''" in job_if and "github.repository ==" in job_if
+    assert job_if == "github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'"
+    assert f"vars.{var}" not in job_if
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(wf, "Require this role's App identity")],
+        env=dict(os.environ, APP_ID="", KEY_PRESENT="false"),
+        capture_output=True, text=True, timeout=5,
+    )
+    assert proc.returncode != 0
+    code = "QA_APP_CREDENTIAL_MISSING" if var == "WOW_QA_APP_ID" else "RELEASE_APP_CREDENTIAL_MISSING"
+    assert f"::error::{code}:" in proc.stdout
 
 
 # Adversarial governance: the *source* path of a rename is also a changed path.
