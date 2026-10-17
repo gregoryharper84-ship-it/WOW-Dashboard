@@ -115,11 +115,25 @@ def test_worker_route_shell_execution_is_fail_closed(
     source = step["run"]
     begin = source.index('if [ -n "${TARGET_INCIDENT:-}" ]; then')
     rest = source[begin:]
-    branch = re.search(r"\n\s*else\n\s+jq '\.records \|=", rest)
+    branch = re.search(r"\n\s*else\n\s+python artifacts/wow-engine/v17/engineering_dispatch_queue[.]py standard ", rest)
     assert branch is not None, "Exact target branch must remain structurally identifiable"
-    actual_shell = rest[:branch.start()] + '\nfi\nprintf "%s\\n" "$decision"\n'
+    assert 'engineering_dispatch_queue.py check-standard' in rest[:branch.start()]
+    actual_shell = rest[:branch.start()] + '\nfi\nprintf "%s\\n" "$decision"\n' 
     queue = tmp_path / "wow-dispatch-queue.json"
-    queue.write_text(json.dumps({"records": records}))
+    # Keep the original test's exact-target cases and result-code assertions,
+    # but supply the complete governed live-queue schema required by the new
+    # production STANDARD fence. P0 and P1 keys are disjoint for the legacy
+    # routing cases, so the new fence must not mask pre-existing lease errors.
+    governed = [
+        {**row, "state": "OPEN",
+         "conflict_keys": (["TEST_P0_PRODUCTION"] if row["severity"] == "P0"
+                           else ["TEST_P1_STANDARD"])}
+        for row in records
+    ]
+    queue.write_text(json.dumps({
+        "records": governed, "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+    }))
     output = tmp_path / "github-output"
     output.write_text("")
     environment = {
@@ -132,6 +146,7 @@ def test_worker_route_shell_execution_is_fail_closed(
     result = subprocess.run(
         ["bash", "-euo", "pipefail", "-c", actual_shell],
         text=True, capture_output=True, env=environment, check=False,
+        cwd=WORKFLOW_DIR.parents[1],
         timeout=10,
     )
     if expected_reason:

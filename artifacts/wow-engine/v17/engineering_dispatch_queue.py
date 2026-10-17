@@ -99,11 +99,78 @@ def build_queue(manifest: dict[str, Any], issues: list[dict[str, Any]]) -> dict[
     }
 
 
+
+
+def standard_conflicts_with_rapid(queue: dict[str, Any], incident_id: str) -> tuple[str, ...]:
+    """Return overlap or fail closed if an active P0/standard record is malformed.
+
+    This protects *selection*; shared GitHub Actions concurrency separately
+    fences any overlap between jobs started before and after a queue update.
+    """
+    if queue.get("can_execute") is not False or queue.get("terminal_authority") != "V17_TERMINAL_REDUCER":
+        raise ValueError("STANDARD_QUEUE_GOVERNANCE_INVALID")
+    records = queue.get("records")
+    if not isinstance(records, list):
+        raise ValueError("STANDARD_QUEUE_RECORDS_INVALID")
+    selected = [r for r in records if isinstance(r, dict) and str(r.get("incident_id")) == str(incident_id)]
+    if len(selected) != 1:
+        raise ValueError("STANDARD_INCIDENT_NOT_UNIQUE_OR_MISSING")
+    row = selected[0]
+    if row.get("state") != "OPEN" or row.get("execution_lane") != "STANDARD":
+        raise ValueError("STANDARD_INCIDENT_NOT_OPEN_STANDARD")
+    keys = row.get("conflict_keys")
+    if not isinstance(keys, list) or not keys or any(not isinstance(k, str) or not k.strip() for k in keys):
+        raise ValueError("STANDARD_CONFLICT_KEYS_MISSING")
+    standard_keys = {k.strip().upper() for k in keys}
+    rapid_keys: set[str] = set()
+    for p0 in records:
+        if not isinstance(p0, dict):
+            raise ValueError("STANDARD_QUEUE_ROW_MALFORMED")
+        if p0.get("state") != "OPEN" or p0.get("severity") != "P0":
+            continue
+        if p0.get("execution_lane") != "RAPID":
+            raise ValueError("STANDARD_P0_LANE_INVALID")
+        p0_keys = p0.get("conflict_keys")
+        if not isinstance(p0_keys, list) or not p0_keys or any(not isinstance(k, str) or not k.strip() for k in p0_keys):
+            raise ValueError("STANDARD_P0_CONFLICT_KEYS_MISSING")
+        rapid_keys.update(k.strip().upper() for k in p0_keys)
+    return tuple(sorted(standard_keys & rapid_keys))
+
+
+def standard_queue_excluding_rapid_conflicts(queue: dict[str, Any]) -> dict[str, Any]:
+    """Preserve live inventory but do not dispatch STANDARD over open P0 keys."""
+    records = queue.get("records")
+    if not isinstance(records, list):
+        raise ValueError("STANDARD_QUEUE_RECORDS_INVALID")
+    allowed = []
+    deferred = []
+    for item in records:
+        if not isinstance(item, dict):
+            raise ValueError("STANDARD_QUEUE_ROW_MALFORMED")
+        if item.get("state") != "OPEN":
+            raise ValueError("STANDARD_QUEUE_NONOPEN_RECORD")
+        if item.get("severity") == "P0":
+            if item.get("execution_lane") != "RAPID":
+                raise ValueError("STANDARD_P0_LANE_INVALID")
+            continue
+        if item.get("execution_lane") != "STANDARD":
+            raise ValueError("STANDARD_NON_P0_LANE_INVALID")
+        overlap = standard_conflicts_with_rapid(queue, str(item.get("incident_id")))
+        if overlap:
+            deferred.append({"incident_id": item["incident_id"], "reason": "OPEN_P0_CONFLICT_KEYS", "keys": list(overlap)})
+        else:
+            allowed.append(item)
+    return {**queue, "records": allowed, "queue_depth": len(allowed), "rapid_p0_count": 0,
+            "deferred_standard": deferred, "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER"}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["build", "validate"])
+    parser.add_argument("command", choices=["build", "validate", "standard", "check-standard"])
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--issues")
+    parser.add_argument("--queue")
+    parser.add_argument("--incident")
     parser.add_argument("--output")
     args = parser.parse_args()
 
@@ -111,6 +178,25 @@ def main() -> None:
     _validate_manifest(manifest)
     if args.command == "validate":
         print(json.dumps({"valid": True, "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER"}, sort_keys=True))
+        return
+
+    if args.command in {"standard", "check-standard"}:
+        if not args.queue:
+            raise SystemExit("--queue required for standard safety")
+        queue = json.loads(Path(args.queue).read_text())
+        if args.command == "check-standard":
+            if not args.incident:
+                raise SystemExit("--incident required for exact STANDARD target")
+            overlap = standard_conflicts_with_rapid(queue, args.incident)
+            if overlap:
+                raise SystemExit("OPEN_P0_CONFLICT_KEYS:" + ",".join(overlap))
+            print(json.dumps({"safe": True, "can_execute": False}))
+            return
+        result = standard_queue_excluding_rapid_conflicts(queue)
+        payload = json.dumps(result, indent=2, sort_keys=True)
+        if args.output:
+            Path(args.output).write_text(payload + "\n")
+        print(payload)
         return
 
     if not args.issues:
