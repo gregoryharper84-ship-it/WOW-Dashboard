@@ -1,24 +1,13 @@
 name: wow-v17-enable-auto-merge
 
-# Arms GitHub auto-merge on ordinary same-repo PRs so they merge themselves
-# once every REQUIRED check on main passes (3 regression checks +
-# WOW Independent QA exact-head + WOW Release Authority exact-head).
-#
-# Safety:
-# - pull_request_target, but PR code is NEVER checked out or executed.
-# - Fork PRs and drafts are ignored.
-# - Same-repo PRs are armed regardless of which paths they touch,
-#   INCLUDING trust roots (.github/**, .agents/**). This workflow does
-#   NOT enforce a trust-root exclusion (removed in #1675 so restoration
-#   repairs can merge). Trust-root authorization must be enforced
-#   independently (branch protection / rulesets / required reviewers),
-#   not by this workflow.
-# - Arming auto-merge grants nothing by itself: branch protection still
-#   requires QA + Release Authority from their own GitHub Apps.
+# Only verified, ordinary Engineering-App-authored Class A PRs are armed.
+# Required exact-head QA, Release, regression checks and branch rules are never bypassed.
+# Protected paths (including CODEOWNERS paths), drafts, foreign forks,
+# unclassified/Class B/Class C PRs and owner-authored proposals remain unarmed.
 
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize]
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
     branches: [main]
 
 permissions: {}
@@ -35,15 +24,52 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
     steps:
-      - name: Enable auto-merge
+      - name: Checkout trusted main only
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Collect current PR and complete file inventory
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          gh pr merge "$PR" --repo "$REPO" --auto --merge
-          echo "AUTO_MERGE_ARMED pr=$PR (merges only when all required checks pass)"
+          gh api "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/pr.json"
+          gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" | jq -s 'add' > "$RUNNER_TEMP/files.json"
+          jq -e 'type=="array" and length>0 and length<3000' "$RUNNER_TEMP/files.json" >/dev/null
+
+      - name: Verify ordinary Class A eligibility
+        id: policy
+        env:
+          PYTHONPATH: artifacts/wow-engine
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/auto_merge_eligibility.py "$RUNNER_TEMP/pr.json" "$RUNNER_TEMP/files.json" > "$RUNNER_TEMP/decision.json" || true
+          jq -r '"AUTO_MERGE_POLICY: " + .reason' "$RUNNER_TEMP/decision.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "eligible=$(jq -r .eligible "$RUNNER_TEMP/decision.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Recheck exact head and arm auto-merge
+        if: steps.policy.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          expected=$(jq -r '.head.sha' "$RUNNER_TEMP/pr.json")
+          # Recheck mutable draft, author, labels and file inventory immediately
+          # before arming, not only the SHA (label/draft changes do not move head).
+          gh api "repos/$REPO/pulls/$PR" > "$RUNNER_TEMP/pr-current.json"
+          gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" | jq -s 'add' > "$RUNNER_TEMP/files-current.json"
+          current=$(jq -r '.head.sha' "$RUNNER_TEMP/pr-current.json")
+          [ "$current" = "$expected" ] || { echo "HEAD_MOVED_FAIL_CLOSED" >&2; exit 1; }
+          PYTHONPATH=artifacts/wow-engine python artifacts/wow-engine/v17/auto_merge_eligibility.py "$RUNNER_TEMP/pr-current.json" "$RUNNER_TEMP/files-current.json" > "$RUNNER_TEMP/decision-current.json" || { cat "$RUNNER_TEMP/decision-current.json"; exit 1; }
+          jq -e '.eligible == true' "$RUNNER_TEMP/decision-current.json" >/dev/null
+          gh pr merge "$PR" --repo "$REPO" --auto --merge --match-head-commit "$expected"
+          echo "AUTO_MERGE_ARMED pr=$PR sha=$expected (GitHub required gates remain authoritative)" >> "$GITHUB_STEP_SUMMARY"
