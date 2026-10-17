@@ -19,6 +19,7 @@ from typing import Any, Iterable
 from fastapi import FastAPI
 
 from github_actions_oidc import scout_route_auth_dependency
+from v17 import memory_admission
 from ncaaf_candidate_training_runner import NCAAFTrainingRunnerUnavailable, train_and_persist_candidate
 from ncaaf_cfbd_client import CFBDClient, CFBDUnavailable
 from ncaaf_cfbd_hydrator import hydrate_cfbd_season, persist_source_snapshots
@@ -310,7 +311,12 @@ def install_ncaaf_model_maintenance_route(app: FastAPI, *, auth_dependency: Any,
 
     @app.post(path, dependencies=[scout_route_auth_dependency(auth_dependency)], operation_id="runWowV17NcaafModelMaintenance")
     def run_maintenance() -> dict[str, Any]:
-        return run_ncaaf_model_maintenance(db_client_fn())
+        try:
+            return memory_admission.run_admitted_background_job(
+                "NCAAF_MODEL_MAINTENANCE", lambda: run_ncaaf_model_maintenance(db_client_fn())
+            )
+        except memory_admission.HeavyJobDeferred as exc:
+            raise memory_admission.http_deferral(exc) from exc
 
 
 __all__ = [
