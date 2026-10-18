@@ -278,6 +278,15 @@ def canonicalize_nfl_discovery_identity(
         or raw.get("id")
         or ""
     ).strip()
+    # The normalized event can carry an alias only in official_event_id (for
+    # example provider event_uuid). Save it as PRIVATE acquisition provenance
+    # before any failed ledger lookup clears the falsely-official field.
+    # An alias is never promoted to a canonical identifier by this copy.
+    if provider_event_id and not any(
+        str(raw.get(key) or "").strip()
+        for key in ("provider_event_id", "_wow_secondary_event_id", "event_id", "event_uuid", "id")
+    ):
+        raw["provider_event_id"] = provider_event_id
     get_client = getattr(event_api, "get_client", None)
     db = get_client() if callable(get_client) else None
     if not provider_event_id or db is None:
