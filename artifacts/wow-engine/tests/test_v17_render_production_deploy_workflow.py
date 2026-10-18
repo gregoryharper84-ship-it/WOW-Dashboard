@@ -205,3 +205,15 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "except (urllib.error.URLError, TimeoutError):" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
+
+
+def test_post_deploy_canary_classifier_accepts_observation_timeout_as_hold():
+    """A typed slow-build receipt must never be misreported as unknown or LIVE."""
+    text = _workflow_text()
+    classifier = text.split("- name: Fail closed when no exact deployment advanced", 1)[1]
+    non_advancing = classifier.split("non_advancing = {", 1)[1].split("}", 1)[0]
+    advancing = classifier.split("advancing = {", 1)[1].split("}", 1)[0]
+    assert '"DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT"' in non_advancing
+    assert '"DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT"' not in advancing
+    assert '"status":"POST_DEPLOY_CANARIES_BLOCKED"' in classifier
+    assert "raise SystemExit(1)" in classifier
