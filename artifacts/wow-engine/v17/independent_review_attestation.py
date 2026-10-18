@@ -134,13 +134,31 @@ def evaluate(*, repository: str, expected_sha: str, pr: Mapping[str, Any],
     author = (pr.get("user") or {}).get("login")
     if not isinstance(author, str) or not author:
         return _hold("PR_AUTHOR_UNKNOWN", head=expected_sha)
-    if not changed_files or len(changed_files) != int(pr.get("changed_files", -1)):
+    try:
+        complete_files = (bool(changed_files)
+                          and len(changed_files) == int(pr.get("changed_files", -1)))
+    except (TypeError, ValueError, OverflowError):
+        complete_files = False
+    if not complete_files:
         return _hold("DIFF_INVENTORY_MISMATCH", head=expected_sha)
     for item in changed_files:
-        for path in (item.get("filename"), item.get("previous_filename")):
+        if not isinstance(item, Mapping):
+            return _hold("DIFF_INVENTORY_INVALID", head=expected_sha)
+        # Every record needs a canonical current path. GitHub's "renamed"
+        # records also need the prior path: otherwise a protected source
+        # could be moved to an ordinary path and concealed from this audit.
+        filename = item.get("filename")
+        if not isinstance(filename, str) or not filename:
+            return _hold("DIFF_PATH_INVALID", head=expected_sha)
+        previous = item.get("previous_filename")
+        if item.get("status") == "renamed" and (not isinstance(previous, str) or not previous):
+            return _hold("RENAMED_SOURCE_PATH_MISSING", head=expected_sha)
+        if previous is not None and (not isinstance(previous, str) or not previous):
+            return _hold("DIFF_PATH_INVALID", head=expected_sha)
+        for path in (filename, previous):
             if path is None:
                 continue
-            if not isinstance(path, str) or path.startswith("/") or ".." in path.split("/"):
+            if path.startswith("/") or ".." in path.split("/") or "\\" in path:
                 return _hold("DIFF_PATH_INVALID", head=expected_sha)
             if path.startswith(DENIED_PREFIXES) or path in PROTECTED_NAMED:
                 return _hold("TRUST_ROOT_REQUIRES_PROTECTED_AUTHORIZATION", head=expected_sha)
