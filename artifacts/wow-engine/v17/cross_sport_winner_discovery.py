@@ -664,20 +664,18 @@ def classify_event_status(raw_status: Any, commence_time: Any, *, now: datetime 
 
 
 def _dedupe_identity(event: DiscoveredEvent) -> tuple[str, str, str]:
-    """Identity for suppressing the same fixture seen under two provider ids."""
+    """Deduplicate by governed identity, never just same teams and minute.
+
+    Provider aliases are NOT verified canonical event IDs. When an upstream
+    wrapper clears the unverified official ID (ESPN, Odds API), two separate
+    source candidates with identical teams/start must both survive discovery
+    and be HELD until canonical reconciliation. DiscoveredEvent.identity()
+    hashes the complete set of private aliases; identical source candidates
+    still deterministically collapse without leaking the aliases.
+    """
     if event.official_event_id:
         return ("ID", event.sport, str(event.official_event_id))
-    return (
-        "TEAMS",
-        event.sport,
-        "|".join(
-            (
-                _text(event.home_team).lower(),
-                _text(event.away_team).lower(),
-                _text(event.commence_time_utc)[:16],
-            )
-        ),
-    )
+    return ("HELD", event.sport, event.identity()["event_key"])
 
 
 def _slate_date_matches(commence_time: Any, slate_date: str, tz_name: str) -> bool:
