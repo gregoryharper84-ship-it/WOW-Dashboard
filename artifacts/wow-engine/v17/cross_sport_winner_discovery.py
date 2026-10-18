@@ -581,10 +581,13 @@ class DiscoveredEvent:
                     for key in (
                         "provider_event_id",
                         "_wow_secondary_event_id",
-                        "event_id",
-                        "event_uuid",
+                        # Match discovery's id > event_id > official_event_id
+                        # > event_uuid precedence when overlapping source keys
+                        # are present. Never collapse two discovered candidates.
                         "id",
+                        "event_id",
                         "official_event_id",
+                        "event_uuid",
                     )
                     if raw.get(key) is not None and str(raw[key]).strip()
                 ),
