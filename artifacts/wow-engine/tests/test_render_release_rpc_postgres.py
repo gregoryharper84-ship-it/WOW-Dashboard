@@ -156,3 +156,48 @@ def test_invalid_target_sha_cannot_reserve():
     with controller() as c:
         with pytest.raises(psycopg.Error, match="RELEASE_RPC_INPUT_INVALID"):
             reserve(c,"srv-" + secrets.token_hex(12),"invalid")
+
+
+def test_authenticated_database_login_cannot_bypass_release_table_privileges():
+    """Real SCRAM-authenticated CI login, NOT root SET SESSION AUTHORIZATION.
+
+    This verifies EXECUTE-only runtime permissions but is NOT evidence of
+    trusted GitHub Actions -> production database workload identity.
+    """
+    from psycopg.conninfo import make_conninfo
+    login_dsn = make_conninfo(
+        dsn,
+        user="wow_release_controller",
+        password="CI_FENCE_EPHEMERAL_ONLY",
+    )
+    service, sha = ids()
+    with psycopg.connect(login_dsn, autocommit=True, connect_timeout=5) as c:
+        assert c.execute("SELECT session_user, current_user").fetchone() == (
+            "wow_release_controller", "wow_release_controller"
+        )
+        assert reserve(c, service, sha, "authenticated-ci-run")[1] == "RESERVED"
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("UPDATE wow_release_control.release_intent SET state='VERIFIED'")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("SET ROLE wow_release_fence_owner")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("SELECT * FROM wow_release_control.release_intent")
+    with admin() as c:
+        assert c.execute(
+            "SELECT owner, state FROM wow_release_control.release_intent WHERE service_id=%s",
+            (service,),
+        ).fetchone() == ("wow_release_controller", "RESERVED")
+
+
+def test_privileged_definer_owner_cannot_login():
+    """Function-owner NOLOGIN remains separate from authenticated controller."""
+    from psycopg.conninfo import make_conninfo
+    with pytest.raises(psycopg.Error):
+        psycopg.connect(
+            make_conninfo(
+                dsn,
+                user="wow_release_fence_owner",
+                password="CI_FENCE_EPHEMERAL_ONLY",
+            ),
+            connect_timeout=3,
+        )
