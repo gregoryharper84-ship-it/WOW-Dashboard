@@ -1036,3 +1036,86 @@ def test_secondary_provider_alias_identity_survives_missing_official_id():
     assert a.official_event_id is None and b.official_event_id is None
     assert a.identity()["event_key"] != b.identity()["event_key"]
     assert "secondary-" not in a.identity()["event_key"] + b.identity()["event_key"]
+
+
+@pytest.mark.parametrize("source_shape", ["uuid_only", "event_field_only"])
+def test_actual_nfl_failed_canonicalizer_retains_distinct_source_alias_keys(source_shape):
+    """A uuid-only feed or event-field-only alias must not collapse HELD rows."""
+    from datetime import datetime, timezone
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory, IDENTITY_UNRESOLVED, normalize_discovered_event,
+        route_discovered_slate,
+    )
+
+    events = []
+    aliases = ("a827e4a1-1111-4567-890a-123456789aaa",
+               "b927e4a1-2222-4567-890a-123456789bbb")
+    for alias in aliases:
+        if source_shape == "uuid_only":
+            discovered = normalize_discovered_event(
+                {
+                    "event_uuid": alias,
+                    "home_team": "Chicago Bears",
+                    "away_team": "New York Jets",
+                    "start_time": "2026-10-04T17:00:00Z",
+                    "status": "scheduled",
+                },
+                sport="NFL",
+                sport_key="americanfootball_nfl",
+                source="DISCOVERY_FEED",
+                now=datetime(2026, 10, 1, tzinfo=timezone.utc),
+            )
+            assert discovered.official_event_id == alias
+            assert "provider_event_id" not in discovered.raw
+        else:
+            # Some first-party callers construct DiscoveredEvent with the
+            # untrusted alias on the event, and no private raw copy.
+            discovered = replace(
+                _nfl_alias_event(),
+                official_event_id=alias,
+                raw={"prediction_authority": False},
+            )
+        held = canonicalize_nfl_discovery_identity(
+            discovered,
+            req=SimpleNamespace(
+                requested_slate_date="2026-10-04",
+                requested_timezone="America/Chicago",
+            ),
+            event_api=SimpleNamespace(),  # no ledger client -> fail closed
+            settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        )
+        assert held.official_event_id is None
+        assert held.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+        assert held.raw["canonical_identity_blocker"] == "NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE"
+        if source_shape == "uuid_only":
+            assert held.raw["event_uuid"] == alias
+        else:
+            assert held.raw["provider_event_id"] == alias
+        events.append(held)
+
+    keys = [event.identity()["event_key"] for event in events]
+    assert len(set(keys)) == 2
+    assert all(key.startswith("NFL:UNRESOLVED:") for key in keys)
+    assert all(alias not in "".join(keys) for alias in aliases)
+    assert keys == [event.identity()["event_key"] for event in events]
+    assert all(event.identity()["official_event_id"] is None for event in events)
+
+    invoked = []
+    rows = route_discovered_slate(
+        DiscoveryInventory(
+            requested_slate_date="2026-10-04",
+            requested_timezone="America/Chicago",
+            events=events,
+        ),
+        resolve_model=lambda _event: invoked.append("resolve") or object(),
+        score_row=lambda *_args: invoked.append("score") or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+    )
+    assert len(rows) == 2
+    assert {row.identity["event_key"] for row in rows} == set(keys)
+    assert all(row.bucket == IDENTITY_UNRESOLVED for row in rows)
+    assert all(row.probability_publishable is False for row in rows)
+    assert all(row.rank_eligible is False for row in rows)
+    assert invoked == []
