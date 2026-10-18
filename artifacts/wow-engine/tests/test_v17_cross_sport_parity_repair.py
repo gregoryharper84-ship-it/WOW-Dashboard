@@ -1119,3 +1119,68 @@ def test_actual_nfl_failed_canonicalizer_retains_distinct_source_alias_keys(sour
     assert all(row.probability_publishable is False for row in rows)
     assert all(row.rank_eligible is False for row in rows)
     assert invoked == []
+
+
+def test_nfl_failed_ledger_keys_match_discovery_id_over_shared_event_uuid():
+    """Different primary IDs must stay distinct even with identical UUID alias."""
+    from datetime import datetime, timezone
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory, IDENTITY_UNRESOLVED, normalize_discovered_event,
+        route_discovered_slate,
+    )
+
+    held_events = []
+    for event_id in ("primary-aaa", "primary-bbb"):
+        event = normalize_discovered_event(
+            {
+                "id": event_id,
+                "event_uuid": "shared-uuid-from-provider",
+                "home_team": "Chicago Bears",
+                "away_team": "New York Jets",
+                "start_time": "2026-10-04T17:00:00Z",
+                "status": "scheduled",
+            },
+            sport="NFL",
+            sport_key="americanfootball_nfl",
+            source="DISCOVERY_FEED",
+            now=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert event.official_event_id == event_id
+        held = canonicalize_nfl_discovery_identity(
+            event,
+            req=SimpleNamespace(
+                requested_slate_date="2026-10-04",
+                requested_timezone="America/Chicago",
+            ),
+            event_api=SimpleNamespace(),
+            settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        )
+        assert held.official_event_id is None
+        assert held.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+        held_events.append(held)
+
+    keys = [event.identity()["event_key"] for event in held_events]
+    assert len(set(keys)) == 2
+    assert all(key.startswith("NFL:UNRESOLVED:") for key in keys)
+    assert all(secret not in "".join(keys) for secret in (
+        "primary-aaa", "primary-bbb", "shared-uuid-from-provider",
+    ))
+    # Terminal routing keeps both IDs without scorer or model invocation.
+    calls = []
+    rows = route_discovered_slate(
+        DiscoveryInventory(
+            requested_slate_date="2026-10-04",
+            requested_timezone="America/Chicago",
+            events=held_events,
+        ),
+        resolve_model=lambda *_: calls.append("model") or object(),
+        score_row=lambda *_: calls.append("score") or {
+            "rank_eligible": True,
+            "probability_publishable": True,
+        },
+    )
+    assert len(rows) == 2
+    assert {row.identity["event_key"] for row in rows} == set(keys)
+    assert all(row.bucket == IDENTITY_UNRESOLVED for row in rows)
+    assert all(row.probability_publishable is False for row in rows)
+    assert calls == []
