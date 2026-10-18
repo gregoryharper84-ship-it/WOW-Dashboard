@@ -1556,7 +1556,10 @@ def test_full_scan_scores_exactly_one_canonical_event_from_multiple_aliases(n_al
     assert result["discovery"]["events_discovered"] == n_aliases
     assert result["reconciliation"]["events_accounted"] == n_aliases
     assert result["reconciliation"]["row_reconciliation"] == "PASS"
-    assert model_calls == [verified_id] and scorer_calls == [verified_id]
+    # Every distinct alias is independently checked for specialist/regime
+    # eligibility; only ONE verified game may actually reach score_row.
+    assert model_calls == [verified_id] * n_aliases
+    assert scorer_calls == [verified_id]
 
     published = [row for row in terminal_rows if row["probability_publishable"]]
     held = [row for row in terminal_rows if row["bucket"] == discovery.OTHER_GOVERNED_HOLD]
