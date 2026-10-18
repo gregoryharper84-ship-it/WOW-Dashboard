@@ -86,14 +86,16 @@ def test_journal_preflight_holds_before_any_render_post():
     assert text.index("raise SystemExit(0)", text.index("journal_preflight =")) < text.index(
         "created = guarded_render_post("
     )
-    assert 'RENDER_AUTO_DEPLOY_TRIGGER = "checksPass"' in text
+    assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"' in text
     assert "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY" in text
     assert "GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY" in text
+    assert '"live_render_auto_deploy_trigger": "UNVERIFIED"' in text
+    assert '"obstruction": "GITHUB_NATIVE_FENCE_CANNOT_PROVE_SERVICE_WIDE_EXACT_ONCE"' in text
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in text
     assert "until an atomic service-wide intent and exclusive writer authority are independently proven" in text
 
 
-def test_preflight_inventory_identifies_configured_render_deploy_writers():
+def test_preflight_distinguishes_blueprint_from_live_render_writer_state():
     repo_root = Path(__file__).resolve().parents[3]
     render = (repo_root / "render.yaml").read_text(encoding="utf-8")
     manifest = (
@@ -107,6 +109,8 @@ def test_preflight_inventory_identifies_configured_render_deploy_writers():
     ).read_text(encoding="utf-8")
 
     assert 'autoDeployTrigger: "checksPass"' in render
+    assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"' in _workflow_text()
+    assert '"live_render_auto_deploy_trigger": "UNVERIFIED"' in _workflow_text()
     assert '"render_service_id": "srv-da7sa9gu01pc73brt80g"' in manifest
     assert "wow-v17-secret-sync" in sync_workflow
     assert "/deploys" in secret_sync

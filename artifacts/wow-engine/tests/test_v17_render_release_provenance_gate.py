@@ -86,54 +86,65 @@ def test_github_deployment_journal_preflight_never_claims_atomic_create():
 
     result = preflight(
         writer_inventory_complete=True,
-        render_auto_deploy_trigger="off",
-        competing_deploy_writers=[],
+        live_auto_deploy_trigger="off",
+        git_ref_write_once_protection_verified=False,
+        service_lock_release_cas_verified=False,
     )
 
-    assert result == {
-        "eligible": False,
-        "status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
-        "blockers": ["GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY"],
-    }
+    assert result["eligible"] is False
+    assert result["status"] == "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"
+    assert "GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY" in result["blockers"]
+    assert "GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE" in result["blockers"]
+    assert "GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED" in result["blockers"]
+    assert "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED" not in result["blockers"]
 
 
 @pytest.mark.parametrize(
-    "writer_inventory_complete,auto_deploy,competing_writers,expected_blocker",
+    "writer_inventory_complete,live_auto_deploy,protection_verified,release_cas_verified,expected_blocker",
     [
-        (False, "off", [], "RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED"),
-        (True, "checksPass", [], "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED"),
-        (True, "off", ["wow-v17-secret-sync"], "ADDITIONAL_RENDER_DEPLOY_WRITER_PRESENT"),
+        (False, "off", True, True, "RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED"),
+        (True, None, True, True, "RENDER_LIVE_AUTO_DEPLOY_STATE_UNVERIFIED"),
+        (True, "checksPass", True, True, "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED"),
+        (True, "off", False, True, "GITHUB_GIT_REF_WRITE_ONCE_PROTECTION_UNVERIFIED"),
+        (True, "off", True, False, "GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE"),
     ],
 )
 def test_github_deployment_journal_preflight_records_writer_conflicts(
-    writer_inventory_complete, auto_deploy, competing_writers, expected_blocker
+    writer_inventory_complete, live_auto_deploy, protection_verified, release_cas_verified, expected_blocker
 ):
     result = _embedded_function("github_deployment_journal_preflight")(
         writer_inventory_complete=writer_inventory_complete,
-        render_auto_deploy_trigger=auto_deploy,
-        competing_deploy_writers=competing_writers,
+        live_auto_deploy_trigger=live_auto_deploy,
+        git_ref_write_once_protection_verified=protection_verified,
+        service_lock_release_cas_verified=release_cas_verified,
     )
 
     assert result["eligible"] is False
     assert expected_blocker in result["blockers"]
+    assert "GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED" in result["blockers"]
 
 
 def test_guarded_render_post_rejects_without_calling_render_api():
     guarded_post = _embedded_function("guarded_render_post")
     preflight = _embedded_function("github_deployment_journal_preflight")(
         writer_inventory_complete=False,
-        render_auto_deploy_trigger="checksPass",
-        competing_deploy_writers=["wow-v17-secret-sync"],
+        live_auto_deploy_trigger=None,
+        git_ref_write_once_protection_verified=False,
+        service_lock_release_cas_verified=False,
     )
     render_calls = []
 
-    with pytest.raises(RuntimeError, match="RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD"):
-        guarded_post(
-            preflight,
-            lambda *args: render_calls.append(args),
-            "/services/service/deploys",
-            {"commitId": "a" * 40},
-        )
+    for path, payload in (
+        ("/services/service/deploys", {"commitId": "a" * 40}),
+        ("/services/service/rollback", {"deployId": "dep-previous"}),
+    ):
+        with pytest.raises(RuntimeError, match="RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD"):
+            guarded_post(
+                preflight,
+                lambda *args: render_calls.append(args),
+                path,
+                payload,
+            )
 
     assert render_calls == []
 

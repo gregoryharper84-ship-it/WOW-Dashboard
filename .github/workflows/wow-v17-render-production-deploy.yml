@@ -21,10 +21,9 @@ concurrency:
 jobs:
   deploy-production:
     name: Deploy exact protected-main SHA to Render
-    # The protected GitHub checks remain the release gate. After they pass,
-    # this controller performs one explicit Render control-plane handoff and
-    # verifies that the exact current-main SHA reaches live. This avoids the
-    # native checksPass listener silently missing an otherwise valid release.
+    # Protected GitHub checks are necessary but not sufficient. Render writes
+    # remain blocked until a durable service-wide fence and live writer inventory
+    # are independently proven; Blueprint settings do not prove live state.
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
@@ -58,7 +57,7 @@ jobs:
 
           MAX_WORKFLOW_RUN_ATTEMPTS = 3
           DEPLOY_WORKFLOW_PATH = ".github/workflows/wow-v17-render-production-deploy.yml"
-          RENDER_AUTO_DEPLOY_TRIGGER = "checksPass"
+          RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"
 
           repo = os.environ["GITHUB_REPOSITORY"]
           event_name = os.environ["GITHUB_EVENT_NAME"]
@@ -99,15 +98,21 @@ jobs:
               raise RuntimeError("RENDER_DEPLOY_TARGET_SHA_MISSING")
 
           def github_deployment_journal_preflight(
-              *, writer_inventory_complete, render_auto_deploy_trigger, competing_deploy_writers
+              *, writer_inventory_complete, live_auto_deploy_trigger,
+              git_ref_write_once_protection_verified, service_lock_release_cas_verified,
           ):
               blockers = ["GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY"]
               if not writer_inventory_complete:
                   blockers.append("RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED")
-              if render_auto_deploy_trigger != "off":
+              if live_auto_deploy_trigger is None:
+                  blockers.append("RENDER_LIVE_AUTO_DEPLOY_STATE_UNVERIFIED")
+              elif live_auto_deploy_trigger != "off":
                   blockers.append("RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED")
-              if competing_deploy_writers:
-                  blockers.append("ADDITIONAL_RENDER_DEPLOY_WRITER_PRESENT")
+              if not git_ref_write_once_protection_verified:
+                  blockers.append("GITHUB_GIT_REF_WRITE_ONCE_PROTECTION_UNVERIFIED")
+              if not service_lock_release_cas_verified:
+                  blockers.append("GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE")
+              blockers.append("GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED")
               return {
                   "eligible": False,
                   "status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
@@ -121,17 +126,20 @@ jobs:
 
           journal_preflight = github_deployment_journal_preflight(
               writer_inventory_complete=False,
-              render_auto_deploy_trigger=RENDER_AUTO_DEPLOY_TRIGGER,
-              competing_deploy_writers=["wow-v17-secret-sync"],
+              live_auto_deploy_trigger=None,
+              git_ref_write_once_protection_verified=False,
+              service_lock_release_cas_verified=False,
           )
           if not journal_preflight["eligible"]:
               emit_receipt({
                   "status": journal_preflight["status"],
                   "target_sha": target_sha,
                   "render_service_id": render_service_id,
-                  "obstruction": "GITHUB_DEPLOYMENT_JOURNAL_CANNOT_PROVE_SINGLE_WRITER_EXACT_ONCE",
+                  "obstruction": "GITHUB_NATIVE_FENCE_CANNOT_PROVE_SERVICE_WIDE_EXACT_ONCE",
                   "blocking_evidence": journal_preflight["blockers"],
-                  "next_action": "Keep Render POSTs blocked until an atomic service-wide intent and exclusive writer authority are independently proven.",
+                  "repository_blueprint_auto_deploy_trigger": RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER,
+                  "live_render_auto_deploy_trigger": "UNVERIFIED",
+                  "next_action": "Keep Render POSTs blocked until protected ref policy, owner-fenced service-lock release, and complete live writer inventory are independently verified.",
                   "runtime_generation": "V17_ACTIVE",
                   "terminal_authority": "V17_TERMINAL_REDUCER",
                   "custom_gpt_identity": "WOW_BETTING_ENGINE",
