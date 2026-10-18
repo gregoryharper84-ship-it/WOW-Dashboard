@@ -53,6 +53,12 @@ class ReleaseFence:
     """
 
     def __init__(self, connection: Any):
+        # reserve_single_post MUST commit the durable POST_UNCERTAIN state
+        # before issuing the external Render POST. A psycopg connection in
+        # implicit-transaction mode can silently defer that commit until
+        # after the network request, defeating the exact-once safety guard.
+        if getattr(connection, "autocommit", True) is False:
+            raise ReleaseHold("RELEASE_DB_AUTOCOMMIT_REQUIRED_BEFORE_RENDER_POST")
         self.db = connection
 
     def claim(self, service_id: str, target_sha: str, run_id: str, owner: str, *, ttl_seconds: int = 180) -> Lease:
