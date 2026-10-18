@@ -219,7 +219,7 @@ def dispatch_preflight(item: Mapping[str, Any]) -> RoleReceipt:
     if (item.get("severity") != "P0" or item.get("execution_lane") != "RAPID"
             or not str(item.get("lease_group") or "").startswith("P0_")
             or item.get("change_class") not in ("A", "B")
-            or item.get("can_execute", False) is not False):
+            or item.get("can_execute") is not False):
         return _receipt("BLOCKER_SENTINEL", "HELD", incident,
                         "ECOSYSTEM_CONDUCTOR", ("AMRT_DISPATCH_CONTRACT_INVALID",))
     keys = item.get("conflict_keys")
