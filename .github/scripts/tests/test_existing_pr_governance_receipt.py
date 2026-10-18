@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 import os
@@ -489,11 +489,35 @@ def test_receipt_cannot_relabel_a_bot_as_an_independent_human():
         verify(receipt)
 
 
-def test_expired_temporary_fallback_fails_closed():
+def test_per_receipt_30_minute_ttl_survives_fixed_calendar_sunset():
+    # Durable independent review, not a permanent bypass: new exact-head
+    # evidence can be certified after Nov 1 only while genuinely fresh.
+    future = datetime(2026, 11, 2, 0, 0, tzinfo=timezone.utc)
+    receipt = build(now=future)
+    assert receipt["fallback_expires_utc"] == "2026-11-02T00:30:00Z"
+    verify(receipt, now=future)
+    verify(receipt, now=future + timedelta(minutes=29, seconds=59))
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="FALLBACK_EXPIRED"):
-        build(now=datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc))
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="FALLBACK_EXPIRED"):
-        verify(build(), now=datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc))
+        verify(receipt, now=future + timedelta(minutes=30))
+
+
+def test_receipt_expiry_cannot_be_extended_or_backdated():
+    receipt = build()
+    receipt["fallback_expires_utc"] = "2036-11-02T00:00:00Z"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="FALLBACK_EXPIRY_MISMATCH"):
+        verify(receipt)
+
+    receipt = build()
+    receipt["created_at_utc"] = "2026-10-17T00:00:00Z"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="FALLBACK_EXPIRY_MISMATCH"):
+        verify(receipt)
+
+
+def test_independent_approval_still_required_with_fresh_receipt():
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REVIEW"):
+        build(data=evidence(review_state="COMMENTED"))
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REVIEW"):
+        build(data=evidence(review_state="DISMISSED"))
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch):
