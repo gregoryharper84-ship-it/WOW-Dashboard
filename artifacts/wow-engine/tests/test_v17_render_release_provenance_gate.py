@@ -399,99 +399,63 @@ def test_deployment_lease_retries_are_bounded_and_post_pins_exact_sha():
     assert not current_main_matches("not-a-sha", "not-a-sha")
 
 
-def test_rollback_requires_new_restored_deploy_and_terminal_mismatch():
-    previous_sha, mismatch_sha = "a" * 40, "b" * 40
-    previous_live = {"id": "dep-previous", "commit": {"id": previous_sha}, "status": "live"}
-    mismatch = {"id": "dep-mismatch", "commit": {"id": mismatch_sha}, "status": "in_progress"}
-    rollback = {"id": "dep-rollback", "commit": {"id": previous_sha}, "status": "build_in_progress"}
-    deploy_snapshots = [
-        [previous_live, mismatch],
-        [previous_live, mismatch],
-        [previous_live, mismatch, rollback],
-        [previous_live, dict(mismatch, status="deactivated"), rollback],
-        [
-            dict(previous_live, status="deactivated"),
-            dict(mismatch, status="deactivated"),
-            dict(rollback, status="live"),
-        ],
-    ]
-    receipts = []
+@pytest.mark.parametrize("previous_live,mismatch_deploy_id", [
+    ({"id": "dep-previous", "commit": {"id": "a" * 40}, "status": "live"}, "dep-mismatch"),
+    (None, "dep-mismatch"),
+    ({"id": "dep-previous", "commit": {"id": "a" * 40}, "status": "live"}, ""),
+])
+def test_rollback_without_distinct_authority_holds_without_provider_mutation(
+    previous_live, mismatch_deploy_id,
+):
+    """A mismatched SHA cannot authorize a new rollback, even after lost ACK."""
+    mismatch_sha = "b" * 40
+    receipts, mutations = [], []
 
-    class Clock:
-        @staticmethod
-        def time():
-            return 100
-
-        @staticmethod
-        def sleep(_seconds):
-            return None
+    def forbidden_provider(*args, **kwargs):
+        mutations.append((args, kwargs))
+        raise AssertionError("unapproved Render API access")
 
     rollback_function = _embedded_function(
         "rollback_after_sha_mismatch",
         target_sha=mismatch_sha,
-        service_path="service",
         commit_sha=lambda deploy: str((deploy.get("commit") or {}).get("id") or ""),
-        render_json=lambda method, path, payload: {"id": "dep-rollback"},
-        list_deploys=lambda: deploy_snapshots.pop(0),
+        render_json=forbidden_provider,
+        list_deploys=forbidden_provider,
+        guarded_render_post=forbidden_provider,
         emit_receipt=receipts.append,
-        time=Clock,
     )
 
     with pytest.raises(SystemExit) as result:
-        rollback_function(previous_live, mismatch_sha, "dep-mismatch")
-
+        rollback_function(previous_live, mismatch_sha, mismatch_deploy_id)
     assert result.value.code == 0
-    assert receipts == [{
-        "status": "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
-        "target_sha": mismatch_sha,
-        "observed_sha": mismatch_sha,
-        "rollback_deploy_id": "dep-rollback",
-        "restored_commit_sha": previous_sha,
-        "can_execute": False,
-    }]
-
-
-def test_unverified_rollback_retries_are_bounded_and_emit_hold():
-    previous_sha, mismatch_sha = "a" * 40, "b" * 40
-    previous_live = {"id": "dep-previous", "commit": {"id": previous_sha}, "status": "live"}
-    mismatch = {"id": "dep-mismatch", "commit": {"id": mismatch_sha}, "status": "in_progress"}
-    receipts = []
-    rollback_calls = []
-
-    class Clock:
-        now = 100
-
-        @classmethod
-        def time(cls):
-            return cls.now
-
-        @classmethod
-        def sleep(cls, seconds):
-            cls.now += seconds
-
-    def render_json(method, path, payload):
-        rollback_calls.append((method, path, payload))
-        raise RuntimeError("RENDER_DEPLOY_API_UNREACHABLE")
-
-    rollback_function = _embedded_function(
-        "rollback_after_sha_mismatch",
-        target_sha=mismatch_sha,
-        service_path="service",
-        commit_sha=lambda deploy: str((deploy.get("commit") or {}).get("id") or ""),
-        render_json=render_json,
-        list_deploys=lambda: [previous_live, mismatch],
-        emit_receipt=receipts.append,
-        time=Clock,
+    assert mutations == []
+    assert len(receipts) == 1
+    receipt = receipts[0]
+    assert receipt["status"] == "DEPLOY_SHA_MISMATCH_HOLD"
+    assert receipt["rollback_status"] == "ROLLBACK_AUTHORIZATION_REQUIRED_HOLD"
+    assert receipt["rollback_attempts"] == 0
+    assert receipt["observed_sha"] == mismatch_sha
+    assert receipt["mismatched_deploy_id"] == mismatch_deploy_id
+    assert receipt["previous_live_sha"] == (
+        str((previous_live or {}).get("commit", {}).get("id") or "")
     )
+    assert receipt["can_execute"] is False
+    assert "restored_commit_sha" not in receipt
+    assert "rollback_deploy_id" not in receipt
 
-    with pytest.raises(SystemExit) as result:
-        rollback_function(previous_live, mismatch_sha, "dep-mismatch")
 
-    assert result.value.code == 0
-    assert len(rollback_calls) == 3
-    assert receipts[0]["status"] == "DEPLOY_SHA_MISMATCH_HOLD"
-    assert receipts[0]["rollback_status"] == "VERIFICATION_TIMEOUT"
-    assert receipts[0]["rollback_attempts"] == 3
+def test_render_observation_window_is_monotonic_and_never_reposts_after_timeout():
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "timeout-minutes: 120" in text
+    assert "deploy_deadline = time.monotonic() + 90 * 60" in text
+    assert "if time.monotonic() >= deploy_deadline:" in text
+    assert "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT" in text
+    assert "Do not issue a second" in text
+    assert 'f"/services/{service_path}/rollback"' not in text
+    assert "rollback_attempts < 3" not in text
+    # Preflight must stay closed until a genuine service-wide atomic intent.
+    assert "writer_inventory_complete=False" in text
+    assert "service_lock_release_cas_verified=False" in text
 
 
 @pytest.mark.parametrize("failure,expected", [
