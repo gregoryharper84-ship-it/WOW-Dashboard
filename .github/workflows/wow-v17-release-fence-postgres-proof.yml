@@ -9,6 +9,8 @@ on:
       - 'artifacts/wow-engine/migrations/20261018_release_service_state_fence_REVIEW_ONLY.sql'
       - 'artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py'
       - 'artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py'
+      - 'artifacts/wow-engine/migrations/20261018_release_rpc_boundary_REVIEW_ONLY.sql'
+      - 'artifacts/wow-engine/tests/test_render_release_rpc_postgres.py'
 permissions:
   contents: read
   id-token: write # OIDC only for signed *test-evidence* provenance
@@ -74,6 +76,8 @@ jobs:
           set -euo pipefail
           psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE anon NOLOGIN;"
           psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE authenticated NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_fence_owner NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_controller NOLOGIN;"
       - name: Apply review schema ONLY to isolated local PostgreSQL
         shell: bash
         run: |
@@ -82,6 +86,10 @@ jobs:
           test "$PGHOST" = localhost
           psql -X -v ON_ERROR_STOP=1 \
             -f artifacts/wow-engine/migrations/20261018_release_service_state_fence_REVIEW_ONLY.sql
+          psql -X -v ON_ERROR_STOP=1 -c "GRANT USAGE, CREATE ON SCHEMA wow_release_control TO wow_release_fence_owner;"
+          psql -X -v ON_ERROR_STOP=1 -c "GRANT SELECT, INSERT, UPDATE ON wow_release_control.service_fence, wow_release_control.release_intent TO wow_release_fence_owner;"
+          psql -X -v ON_ERROR_STOP=1 \
+            -f artifacts/wow-engine/migrations/20261018_release_rpc_boundary_REVIEW_ONLY.sql
       - name: Run offline and actual two-connection PostgreSQL tests
         shell: bash
         run: |
@@ -92,6 +100,7 @@ jobs:
           python -m pytest -q --confcutdir=artifacts/wow-engine/tests \
             artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py \
             artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py \
+            artifacts/wow-engine/tests/test_render_release_rpc_postgres.py \
             --junitxml=release-evidence/junit.xml \
             2>&1 | tee release-evidence/pytest.log
       - name: Persist hashed non-secret evidence
@@ -103,6 +112,8 @@ jobs:
             .github/workflows/wow-v17-release-fence-postgres-proof.yml \
             artifacts/wow-engine/v17/render_release_service_fence_candidate.py \
             artifacts/wow-engine/migrations/20261018_release_service_state_fence_REVIEW_ONLY.sql \
+            artifacts/wow-engine/migrations/20261018_release_rpc_boundary_REVIEW_ONLY.sql \
+            artifacts/wow-engine/tests/test_render_release_rpc_postgres.py \
             artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py \
             artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py \
             > release-evidence/source-hashes.txt
