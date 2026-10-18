@@ -189,3 +189,52 @@ def test_null_base_fails_closed():
     e = evidence()
     e["pr"]["base"] = None
     assert m.evaluate(**e)["code"] == "REPOSITORY_IDENTITY_MISMATCH"
+
+
+def test_reject_missing_filename_even_when_inventory_count_matches():
+    e = evidence()
+    e["changed_files"] = [{"status": "modified"}]
+    assert m.evaluate(**e)["code"] == "DIFF_PATH_INVALID"
+
+
+def test_reject_empty_filename_even_when_inventory_count_matches():
+    e = evidence()
+    e["changed_files"] = [{"filename": ""}]
+    assert m.evaluate(**e)["code"] == "DIFF_PATH_INVALID"
+
+
+def test_reject_missing_renamed_source():
+    e = evidence()
+    e["changed_files"][0]["status"] = "renamed"
+    assert m.evaluate(**e)["code"] == "RENAMED_SOURCE_PATH_MISSING"
+
+
+def test_reject_invalid_previous_source_type():
+    e = evidence()
+    e["changed_files"][0]["status"] = "renamed"
+    e["changed_files"][0]["previous_filename"] = 5
+    assert m.evaluate(**e)["code"] == "RENAMED_SOURCE_PATH_MISSING"
+
+
+def test_reject_trust_root_renamed_as_source():
+    e = evidence()
+    e["changed_files"][0].update({"status": "renamed", "previous_filename": ".github/CODEOWNERS"})
+    assert m.evaluate(**e)["code"] == "TRUST_ROOT_REQUIRES_PROTECTED_AUTHORIZATION"
+
+
+def test_reject_non_mapping_diff_record():
+    e = evidence()
+    e["changed_files"] = [None]
+    assert m.evaluate(**e)["code"] == "DIFF_INVENTORY_INVALID"
+
+
+def test_reject_malformed_changed_files_count():
+    e = evidence()
+    e["pr"]["changed_files"] = None
+    assert m.evaluate(**e)["code"] == "DIFF_INVENTORY_MISMATCH"
+
+
+def test_reject_backslash_path():
+    e = evidence()
+    e["changed_files"][0]["filename"] = r".github\workflows\unsafe.yml"
+    assert m.evaluate(**e)["code"] == "DIFF_PATH_INVALID"
