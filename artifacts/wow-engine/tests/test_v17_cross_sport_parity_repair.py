@@ -1286,3 +1286,112 @@ def test_multiple_private_aliases_keep_unresolved_terminal_candidates_distinct(a
     assert all(row.probability_publishable is False for row in rows)
     assert all(row.rank_eligible is False for row in rows)
     assert called == []
+
+
+@pytest.mark.parametrize("alias_provider", ["ODDS_API_EVENTS", "ESPN_SCOREBOARD"])
+def test_discovery_preserves_same_fixture_distinct_unverified_provider_aliases(
+    alias_provider, monkeypatch,
+):
+    """Reproduce real discovery path, not just DiscoveredEvent.identity()."""
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import cross_sport_discovery_feed as feed
+    from v17 import quota_aware_degraded_discovery as quota
+
+    now = datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc)
+    aliases = ("event-source-A", "event-source-B")
+    base = {
+        "home_team": "Chicago Bears",
+        "away_team": "New York Jets",
+        "commence_time": "2026-10-18T21:00:00Z",
+        "status": "scheduled",
+    }
+    if alias_provider == "ODDS_API_EVENTS":
+        provider_rows = [
+            feed._odds_api_alias_row({**base, "id": alias}, sport_key="americanfootball_nfl")
+            for alias in aliases
+        ]
+    else:
+        provider_rows = [
+            {**base, "id": alias, "discovery_provider": "ESPN_SCOREBOARD"}
+            for alias in aliases
+        ]
+        original_normalize = discovery.normalize_discovered_event
+
+        def installed_normalizer(raw, *args, **kwargs):
+            return quota._normalize_public_alias(
+                raw, original_normalize(raw, *args, **kwargs)
+            )
+
+        monkeypatch.setattr(discovery, "normalize_discovered_event", installed_normalizer)
+
+    calls = []
+    def fetch(_family, _target):
+        calls.append(1)
+        return provider_rows if len(calls) == 1 else []
+
+    inventory = discovery.discover_winner_slate(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        now=now,
+        budget_seconds=30,
+    )
+    assert len(inventory.events) == 2
+    assert all(event.official_event_id is None for event in inventory.events)
+    keys = [event.identity()["event_key"] for event in inventory.events]
+    assert len(set(keys)) == 2
+    assert all(key.startswith("NFL:UNRESOLVED:") for key in keys)
+    assert all(alias not in "".join(keys) for alias in aliases)
+    assert sum(detail["duplicate_rows_suppressed"] for detail in inventory.acquisition_details) == 0
+    assert sum(detail["events_returned"] for detail in inventory.acquisition_details) == 2
+    called = []
+    rows = discovery.route_discovered_slate(
+        inventory,
+        resolve_model=lambda *_: called.append("model") or object(),
+        score_row=lambda *_: called.append("score") or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+    )
+    assert len(rows) == 2
+    assert {row.identity["event_key"] for row in rows} == set(keys)
+    assert all(row.bucket == discovery.IDENTITY_UNRESOLVED for row in rows)
+    assert all(row.probability_publishable is False for row in rows)
+    assert all(row.rank_eligible is False for row in rows)
+    assert called == []
+
+
+def test_discovery_same_source_alias_deduplicates_exact_fixture_without_scoring():
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import cross_sport_discovery_feed as feed
+
+    same_event = feed._odds_api_alias_row(
+        {
+            "id": "one-provider-alias",
+            "home_team": "Chicago Bears",
+            "away_team": "New York Jets",
+            "commence_time": "2026-10-18T21:00:00Z",
+            "status": "scheduled",
+        },
+        sport_key="americanfootball_nfl",
+    )
+    attempted = []
+
+    def fetch(_family, _target):
+        attempted.append(1)
+        return [same_event, dict(reversed(list(same_event.items())))] if len(attempted) == 1 else []
+
+    inventory = discovery.discover_winner_slate(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert len(inventory.events) == 1
+    assert sum(detail["duplicate_rows_suppressed"] for detail in inventory.acquisition_details) == 1
+    assert inventory.events[0].identity()["official_event_id"] is None
