@@ -125,3 +125,14 @@ def test_unknown_or_execution_enabled_receipt_fails_closed():
     receipt["can_execute"] = True
     with pytest.raises(DeploymentPointerContractError, match="CAN_EXECUTE_MUST_BE_FALSE"):
         receipt_advances_pointer(receipt)
+
+
+@pytest.mark.parametrize("status", [
+    "DEPLOY_LEASE_HOLD_NO_DEPLOY",
+    "DEPLOY_SHA_MISMATCH_HOLD",
+    "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
+    "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
+])
+def test_deployment_holds_and_rollbacks_never_advance_pointer(status):
+    assert status in NON_ADVANCING_RECEIPT_STATUSES
+    assert receipt_advances_pointer({"status": status, "can_execute": False}) is False

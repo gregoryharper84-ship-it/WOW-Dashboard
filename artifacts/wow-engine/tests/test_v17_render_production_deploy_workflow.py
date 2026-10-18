@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 REQUIRED_CHECKS = (
@@ -22,7 +23,7 @@ def test_render_deploy_gate_waits_for_protected_main_required_checks():
     assert 'head_branch != "main"' in text
     assert 'conclusion != "success"' in text
     assert 'github_json("/branches/main")' in text
-    assert "if main_sha != target_sha:" in text
+    assert "if not is_current_main_sha(target_sha, main_sha):" in text
     for check_name in REQUIRED_CHECKS:
         assert check_name in text
 
@@ -34,26 +35,46 @@ def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     assert 'WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"' in text
     assert "WOW_ACTION_API_KEY" not in text
     assert "SUPABASE_SERVICE_ROLE_KEY" not in text
+    assert "actions: read" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert '"can_execute":False' in text or '"can_execute": False' in text
     assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
     assert 'render_json(\n                  "POST"' in text
-    assert '{"clearCache":"do_not_clear"}' in text
+    assert 'render_deploy_payload(target_sha)' in text
+    assert '"commitId": commit_sha' in text
 
 
 def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     text = _workflow_text()
 
+    assert "group: wow-v17-render-production-deploy" in text
+    assert "cancel-in-progress: false" in text
+    assert "timeout-minutes: 40" in text
     assert "/deploys?limit=20" in text
     assert "commit_sha(deploy) == target_sha" in text
     assert "EXACT_SHA_ALREADY_LIVE" in text
     assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in text
-    assert "RENDER_DEPLOY_WRONG_SHA" in text
+    assert "rollback_after_sha_mismatch(previous_live, created_sha)" in text
     assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
     assert "deploy_deadline = time.time() + 900" in text
     assert "time.sleep(10)" in text
+    assert "MAX_WORKFLOW_RUN_ATTEMPTS = 3" in text
+    assert "cancel-in-progress: false" in text
+    assert 'f"/services/{service_path}/rollback"' in text
+    assert "DEPLOY_SHA_MISMATCH_ROLLED_BACK" in text
+    assert "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY" in text
+
+
+def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():
+    text = _workflow_text()
+
+    assert '"commitId": commit_sha' in text
+    assert text.index('if not is_current_main_sha(target_sha, latest_main_sha):') < text.index('render_deploy_payload(target_sha)')
+    assert text.index('if not is_current_main_sha(target_sha, live_main_sha):') < text.index('"status":"EXACT_SHA_RENDER_DEPLOY_LIVE"')
+    assert '"/branches/main"' in text
+    assert "DEPLOY_LEASE_HOLD_NO_DEPLOY" in text
 
 
 def test_render_deploy_handoff_reconciles_successful_create_without_top_level_id():
@@ -99,9 +120,11 @@ def test_render_deploy_no_deploy_paths_emit_typed_receipts_before_exit():
         "STALE_SHA_NO_DEPLOY",
         "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
     ):
-        marker = f'"status":"{status}"'
-        assert marker in text
-        assert text.index("emit_receipt({", text.index(marker) - 40) < text.index("raise SystemExit(0)", text.index(marker))
+        assert re.search(
+            rf'emit_receipt\(\{{\s*"status"\s*:\s*"{status}".*?raise SystemExit\(0\)',
+            text,
+            re.DOTALL,
+        )
 
 
 def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():

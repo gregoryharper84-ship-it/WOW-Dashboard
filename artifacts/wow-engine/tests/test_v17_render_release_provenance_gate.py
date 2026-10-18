@@ -31,6 +31,19 @@ def _gate():
     return namespace["validate_release_provenance"]
 
 
+def _embedded_function(name):
+    text = WORKFLOW.read_text(encoding="utf-8")
+    script = text.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    tree = ast.parse(textwrap.dedent(script))
+    func = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    namespace = {
+        "MAX_WORKFLOW_RUN_ATTEMPTS": 3,
+        "DEPLOY_WORKFLOW_PATH": ".github/workflows/wow-v17-render-production-deploy.yml",
+    }
+    exec(compile(ast.Module(body=[func], type_ignores=[]), "<workflow>", "exec"), namespace)
+    return namespace[name]
+
+
 def _fixture():
     pr = {
         "number": 101, "merged_at": "2026-10-11T21:00:00Z",
@@ -58,6 +71,9 @@ def _fixture():
 
 def test_workflow_embedded_python_compiles():
     assert _gate().__name__ == "validate_release_provenance"
+    assert _embedded_function("validate_deployment_lease_identity").__name__ == "validate_deployment_lease_identity"
+    assert _embedded_function("render_deploy_payload").__name__ == "render_deploy_payload"
+    assert _embedded_function("is_current_main_sha").__name__ == "is_current_main_sha"
 
 
 def test_exact_same_repo_independent_app_checks_pass():
@@ -101,6 +117,84 @@ def test_stale_qa_head_does_not_authorize_merge():
     packet["check_runs"][0]["head_sha"] = "c" * 40
     with pytest.raises(RuntimeError, match="RENDER_RELEASE_ROLE_CHECK_MISSING_OR_FOREIGN"):
         _gate()(**packet)
+
+
+def test_draft_source_pr_cannot_authorize_render_deploy():
+    packet = _fixture()
+    packet["merged_pr"]["draft"] = True
+    with pytest.raises(RuntimeError, match="RENDER_RELEASE_MERGED_PR_NOT_UNIQUE"):
+        _gate()(**packet)
+
+
+def test_deployment_lease_identity_binds_protected_workflow_run():
+    run = {
+        "id": 98765,
+        "path": ".github/workflows/wow-v17-render-production-deploy.yml@refs/heads/main",
+        "repository": {"full_name": REPO},
+        "event": "workflow_run",
+        "head_branch": "main",
+        "status": "in_progress",
+        "run_attempt": 2,
+    }
+
+    identity = _embedded_function("validate_deployment_lease_identity")(
+        run, repository=REPO, event="workflow_run", run_id="98765", run_attempt="2"
+    )
+
+    assert identity == f"{REPO}:.github/workflows/wow-v17-render-production-deploy.yml:98765:2"
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("id", 98766, "RENDER_DEPLOY_LEASE_IDENTITY_MISMATCH"),
+    ("path", ".github/workflows/other.yml@refs/heads/main", "RENDER_DEPLOY_LEASE_IDENTITY_MISMATCH"),
+    ("repository", {"full_name": "attacker/fork"}, "RENDER_DEPLOY_LEASE_IDENTITY_MISMATCH"),
+    ("event", "pull_request", "RENDER_DEPLOY_LEASE_IDENTITY_MISMATCH"),
+    ("head_branch", "feature", "RENDER_DEPLOY_LEASE_IDENTITY_MISMATCH"),
+    ("status", "completed", "RENDER_DEPLOY_LEASE_IDENTITY_MISMATCH"),
+    ("run_attempt", 1, "RENDER_DEPLOY_LEASE_IDENTITY_MISMATCH"),
+])
+def test_foreign_or_stale_deployment_lease_fails_closed(field, value, code):
+    run = {
+        "id": 98765,
+        "path": ".github/workflows/wow-v17-render-production-deploy.yml@refs/heads/main",
+        "repository": {"full_name": REPO},
+        "event": "workflow_run",
+        "head_branch": "main",
+        "status": "in_progress",
+        "run_attempt": 2,
+    }
+    run[field] = value
+    with pytest.raises(RuntimeError, match=code):
+        _embedded_function("validate_deployment_lease_identity")(
+            run, repository=REPO, event="workflow_run", run_id="98765", run_attempt="2"
+        )
+
+
+def test_deployment_lease_retries_are_bounded_and_post_pins_exact_sha():
+    validate = _embedded_function("validate_deployment_lease_identity")
+    run = {
+        "id": 98765,
+        "path": ".github/workflows/wow-v17-render-production-deploy.yml",
+        "repository": {"full_name": REPO},
+        "event": "workflow_run",
+        "head_branch": "main",
+        "status": "in_progress",
+        "run_attempt": 4,
+    }
+    with pytest.raises(RuntimeError, match="RENDER_DEPLOY_ATTEMPT_LIMIT_EXCEEDED"):
+        validate(run, repository=REPO, event="workflow_run", run_id="98765", run_attempt="4")
+
+    commit_sha = "b" * 40
+    assert _embedded_function("render_deploy_payload")(commit_sha) == {
+        "clearCache": "do_not_clear", "commitId": commit_sha,
+    }
+    with pytest.raises(RuntimeError, match="RENDER_DEPLOY_TARGET_SHA_INVALID"):
+        _embedded_function("render_deploy_payload")("stale-or-short-sha")
+
+    current_main_matches = _embedded_function("is_current_main_sha")
+    assert current_main_matches(commit_sha, commit_sha)
+    assert not current_main_matches(commit_sha, "c" * 40)
+    assert not current_main_matches("not-a-sha", "not-a-sha")
 
 
 @pytest.mark.parametrize("failure,expected", [
