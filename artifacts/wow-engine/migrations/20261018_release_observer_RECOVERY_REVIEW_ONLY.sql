@@ -97,26 +97,11 @@ BEGIN
      OR p_security_approval IS DISTINCT FROM true
      OR p_release_authority_approval IS DISTINCT FROM true
   THEN RAISE EXCEPTION 'RELEASE_INDEPENDENT_ACCEPTANCE_EVIDENCE_MISSING'; END IF;
-  -- Caller approvals are NOT database-verified evidence. Production adoption
-  -- must REPLACE booleans with independently verified, exact-head attestation
-  -- references and signed acceptance receipts. This remains offline-only.
-  UPDATE wow_release_control.release_intent i
-    SET state='VERIFIED', verified_at=clock_timestamp(),
-        verification_receipt_sha=p_acceptance_receipt_sha
-    WHERE i.service_id=p_service_id AND i.target_sha=p_target_sha
-      AND i.run_id=p_run_id AND i.fence=p_fence
-      AND i.provider_deploy_id=p_provider_deploy_id
-      AND i.state='LIVE_OBSERVED'
-      AND EXISTS (
-        SELECT 1 FROM wow_release_control.service_fence f
-        WHERE f.service_id=i.service_id AND f.target_sha=i.target_sha
-          AND f.run_id=i.run_id AND f.fence=i.fence
-      )
-    RETURNING i.state INTO v_state;
-  IF v_state IS DISTINCT FROM 'VERIFIED' THEN
-    RAISE EXCEPTION 'RELEASE_VERIFY_IDENTITY_OR_STATE_HOLD';
-  END IF;
-  RETURN v_state;
+  -- No promotion can be authorized from boolean values supplied by a caller.
+  -- This function is intentionally a non-advancing HOLD until a distinct
+  -- Security/QA/Release approved and cryptographically verified acceptance
+  -- receipt reader exists. No DB role can self-certify via this candidate.
+  RAISE EXCEPTION 'RELEASE_VERIFICATION_SIGNED_ATTESTATION_NOT_CERTIFIED_HOLD';
 END;
 $$;
 
