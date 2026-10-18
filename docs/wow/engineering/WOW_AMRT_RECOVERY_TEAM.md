@@ -116,3 +116,56 @@ draft PR, workflow dispatch or green CI alone must not count as recovered.
 
 **Initial target:** closure of #1841 under the complete proof chain, without
 misreporting source-only progress as production green.
+
+
+## Implemented seven-role source adapters (October 18 iteration)
+
+`v17/amrt_operational_lanes.py` implements all seven role **decision handlers**
+over externally supplied, attributed evidence. This is substantive source
+functionality, **not** seven separately running bots or authority to execute a
+repair from an unverified signal.
+
+1. Sentinel de-duplicates typed GitHub, Render, Supabase, Datadog, model,
+   Action and SIRT evidence. It holds unattributed signals instead of opening
+   duplicate issues.
+2. Investigator demands an explicit reproduction reference and independent
+   root-cause reference before specialist routing.
+3. Model Recovery routes scored-stage and publication defects to unchanged
+   fitted-model logic, while holding all Class C changes for certification.
+4. Data & Integration routes identity, ingestion and persistence defects with
+   Class B/regulated safety.
+5. Code & CI checks the active source PR first, then existing lease ownership,
+   approved implementation-worker authority and bounded provider fallback.
+6. Independent QA checks separate actor identity, exact reviewed source SHA,
+   a durable QA reference and negative-path regression result.
+7. Release & Verification checks an independent QA handoff, durable release
+   evidence, exact merged/deployed/Action SHAs, matched production run identity
+   and the fail-closed AMRT closure gate.
+
+`v17/amrt_receipt_bridge.py` encodes these findings into the existing
+`wow_engineering_attempt_receipts` append-only contract and uses its verified
+insert-and-readback writer. The resident worker always records its decisions as
+`conductor` evidence and **cannot fabricate independent QA PASS, release
+authorization or FIXED_AND_VERIFIED**. A new Supabase queue or table is not
+introduced.
+
+The existing `engineering_resident_supervisor.py` imports AMRT admission
+preflight for manifest items with `amrt_owned=true`; other legacy incidents
+retain their established dispatch behavior. The manifest admits #1841 into
+the `P0_LLP_RESTORE` RAPID domain with a Class B scope and conflict keys.
+Because #1842 already contains the canonical `Incident: #1841` marker,
+the supervisor's current pending-PR detector must hold duplicate dispatch.
+No second daemon is created and `--concurrency=2` is unchanged.
+
+### Activation boundary
+
+Actual 24/7 operation requires the authorized Engineering App to adopt and
+merge this branch, then use the protected worker release path and configure
+the existing dispatcher. The activated worker must prove a fresh
+`WOW_ENGINEERING_RESIDENT_DISPATCHER` heartbeat and at least one authenticated,
+persisted AMRT handoff. Independent QA/Release systems must provide their own
+receipts before the first production closure. Status until then:
+`SOURCE_IMPLEMENTED_NOT_ACTIVATED`.
+
+These new tests run within the existing GitHub CI suites; the results attached
+to the **current exact head** are authoritative, not older successful runs.
