@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
-import os
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -34,8 +34,6 @@ REQUIRED_CHECKS = {
     "WOW required-three regression": 15368,
     "WOW governed probability backend": 15368,
     "WOW additional required regression": 15368,
-    "WOW Independent QA exact-head": 5245832,
-    "WOW Release Authority exact-head": 5245853,
 }
 TRUST_ROOT_PREFIXES = (".github/", ".agents/")
 PROTECTED_PATHS = frozenset(
@@ -200,29 +198,72 @@ def _validate_changed_files(files: object, expected_count: object) -> list[dict[
     _require(isinstance(expected_count, int) and len(files) == expected_count, "DIFF_INVENTORY_MISMATCH")
     normalized = []
     filenames = set()
+    allowed_statuses = {"added", "changed", "copied", "modified", "removed", "renamed", "unchanged"}
     for file in files:
-        file = _exact_keys(file, {"filename", "previous_filename"}, "DIFF_FILE")
+        file = _exact_keys(file, {"filename", "previous_filename", "status"}, "DIFF_FILE")
+        status = file.get("status")
+        _require(status in allowed_statuses, "DIFF_STATUS_INVALID")
         paths = [file.get("filename")]
-        if file.get("previous_filename") is not None:
-            paths.append(file.get("previous_filename"))
+        previous_filename = file.get("previous_filename")
+        if status in {"renamed", "copied"}:
+            _require(isinstance(previous_filename, str) and bool(previous_filename),
+                     "DIFF_PREVIOUS_FILENAME_MISSING")
+            paths.append(previous_filename)
+        elif previous_filename is not None:
+            paths.append(previous_filename)
         for path in paths:
+            canonical = PurePosixPath(path) if isinstance(path, str) else None
             _require(
                 isinstance(path, str)
                 and bool(path)
                 and not path.startswith("/")
                 and ".." not in path.split("/")
-                and "\\" not in path,
+                and path != "."
+                and "\\" not in path
+                and str(canonical) == path
+                and not path.startswith("./"),
                 "DIFF_PATH_INVALID",
             )
-            _require(
-                not path.startswith(TRUST_ROOT_PREFIXES) and path not in PROTECTED_PATHS,
-                "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE",
-            )
+        if status in {"renamed", "copied"}:
+            _require(previous_filename != file["filename"], "DIFF_PROVENANCE_INVALID")
         filename = file["filename"]
         _require(filename not in filenames, "DIFF_INVENTORY_DUPLICATE_PATH")
         filenames.add(filename)
-        normalized.append({"filename": filename, "previous_filename": file.get("previous_filename")})
+        normalized.append(
+            {"filename": filename, "previous_filename": previous_filename, "status": status}
+        )
     return sorted(normalized, key=lambda item: item["filename"])
+
+
+def _protected_paths(repo_root: Path) -> set[str]:
+    policy_path = repo_root / "artifacts/wow-engine/v17/agent_identity_policy.py"
+    _require(policy_path.is_file(), "GOVERNANCE_TRUST_ROOT_POLICY_MISSING")
+    try:
+        spec = importlib.util.spec_from_file_location("_wow_agent_identity_policy", policy_path)
+        _require(spec is not None and spec.loader is not None,
+                 "GOVERNANCE_TRUST_ROOT_POLICY_UNLOADABLE")
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        roots = policy.governance_trust_roots(repo_root)
+        declared = policy.trust_root_paths(repo_root)
+    except ExistingPrGovernanceReceiptError:
+        raise
+    except Exception as exc:
+        raise ExistingPrGovernanceReceiptError("GOVERNANCE_TRUST_ROOT_POLICY_FAILED") from exc
+    _require(isinstance(roots, list) and isinstance(declared, list),
+             "GOVERNANCE_TRUST_ROOT_POLICY_INVALID")
+    return set(roots) | set(declared) | set(PROTECTED_PATHS)
+
+
+def _validate_protected_diff(files: Sequence[Mapping[str, Any]], *, repo_root: Path) -> None:
+    protected = _protected_paths(repo_root)
+    for file in files:
+        for path in (file["filename"], file.get("previous_filename")):
+            if path is not None:
+                _require(
+                    not path.startswith(TRUST_ROOT_PREFIXES) and path not in protected,
+                    "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE",
+                )
 
 
 def build_receipt(
@@ -279,6 +320,7 @@ def build_receipt(
     )
 
     changed_files = _validate_changed_files(evidence.get("changed_files"), pr.get("changed_files"))
+    _validate_protected_diff(changed_files, repo_root=Path.cwd())
     reviews = evidence.get("reviews")
     check_runs = evidence.get("check_runs")
     workflow_runs = evidence.get("workflow_runs")
@@ -356,6 +398,7 @@ def verify_receipt(
     expected_workflow_run_id: str,
     expected_workflow_name: str,
     expected_pr_number: int,
+    live_reviews: Sequence[Mapping[str, Any]],
     now: datetime | None = None,
 ) -> None:
     keys = {
@@ -438,6 +481,23 @@ def verify_receipt(
     _require(isinstance(changed_files, list), "DIFF_INVENTORY_INVALID")
     files = _validate_changed_files(changed_files, len(changed_files))
     _require(files == receipt.get("changed_files"), "DIFF_INVENTORY_INVALID")
+    _validate_protected_diff(files, repo_root=Path.cwd())
+
+    _require(isinstance(live_reviews, Sequence) and not isinstance(live_reviews, (str, bytes)),
+             "LIVE_REVIEW_INVENTORY_INVALID")
+    live_approval = _independent_approval(
+        live_reviews,
+        author_login=author["login"],
+        author_id=author["id"],
+        head_sha=expected_head_sha,
+        allowlist=allowlist,
+    )
+    _require(
+        live_approval["reviewer"]["id"] == reviewer_id
+        and live_approval["reviewer"]["login"].casefold() == reviewer_login.casefold()
+        and live_approval["review_id"] == review.get("review_id"),
+        "INDEPENDENT_REVIEW_WITHDRAWN_OR_CHANGED",
+    )
 
     workflows = receipt.get("required_workflows")
     _require(isinstance(workflows, list) and len(workflows) == len(REQUIRED_WORKFLOWS),
@@ -472,38 +532,6 @@ def verify_receipt(
     _require(receipt.get("can_execute") is False, "CAN_EXECUTE_INVARIANT_VIOLATED")
 
 
-def _event_pr_number(event_path: str, expected_head_sha: str) -> int:
-    _require(bool(event_path), "PR_CONTEXT_MISSING")
-    try:
-        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ExistingPrGovernanceReceiptError("PR_CONTEXT_INVALID") from exc
-    _require(isinstance(event, Mapping), "PR_CONTEXT_INVALID")
-    pull_request = event.get("pull_request")
-    if isinstance(pull_request, Mapping):
-        return _positive_int(pull_request.get("number"), "PR_CONTEXT_NUMBER")
-    workflow_run = event.get("workflow_run")
-    if isinstance(workflow_run, Mapping):
-        pull_requests = workflow_run.get("pull_requests")
-        _require(isinstance(pull_requests, list), "PR_CONTEXT_INVALID")
-        candidates = [
-            item.get("number")
-            for item in pull_requests
-            if isinstance(item, Mapping)
-            and isinstance(item.get("head"), Mapping)
-            and item["head"].get("sha") == expected_head_sha
-        ]
-        _require(len(candidates) == 1, "PR_CONTEXT_AMBIGUOUS_OR_MISSING")
-        return _positive_int(candidates[0], "PR_CONTEXT_NUMBER")
-    inputs = event.get("inputs")
-    if isinstance(inputs, Mapping):
-        number = inputs.get("pr_number")
-        _require(isinstance(number, (str, int)) and bool(re.fullmatch(r"[1-9][0-9]*", str(number))),
-                 "PR_CONTEXT_NUMBER_INVALID")
-        return int(number)
-    raise ExistingPrGovernanceReceiptError("PR_CONTEXT_AMBIGUOUS_OR_MISSING")
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -517,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workflow-run-id", required=True)
     parser.add_argument("--workflow-name", required=True)
     parser.add_argument("--pr-number", type=int)
+    parser.add_argument("--live-reviews-json", type=Path)
     parser.add_argument("--incident-id")
     parser.add_argument("--workflow-run-attempt", type=int)
     args = parser.parse_args(argv)
@@ -551,13 +580,14 @@ def main(argv: list[str] | None = None) -> int:
                 expected_workflow_run_id=args.workflow_run_id,
                 expected_workflow_name=args.workflow_name,
                 expected_pr_number=args.pr_number,
+                live_reviews=json.loads(args.evidence.read_text(encoding="utf-8"))["reviews"],
             )
             args.output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         else:
             receipt = json.loads(args.receipt.read_text(encoding="utf-8"))
-            pr_number = args.pr_number or _event_pr_number(
-                os.environ.get("GITHUB_EVENT_PATH", ""), args.head_sha
-            )
+            _require(args.pr_number is not None, "TRUSTED_PR_NUMBER_REQUIRED")
+            _require(args.live_reviews_json is not None, "LIVE_REVIEW_RECHECK_REQUIRED")
+            live_reviews = json.loads(args.live_reviews_json.read_text(encoding="utf-8"))
             verify_receipt(
                 receipt,
                 expected_repository=args.repository,
@@ -565,7 +595,8 @@ def main(argv: list[str] | None = None) -> int:
                 expected_head_ref=args.head_ref,
                 expected_workflow_run_id=args.workflow_run_id,
                 expected_workflow_name=args.workflow_name,
-                expected_pr_number=pr_number,
+                expected_pr_number=args.pr_number,
+                live_reviews=live_reviews,
             )
     except ExistingPrGovernanceReceiptError as exc:
         print(json.dumps({"status": "HOLD", "reason": str(exc)}, sort_keys=True))

@@ -8,11 +8,18 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_existing_pr_governance_receipt.py"
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "wow-v17-existing-pr-governance-review.yml"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+RELEASE_CHECKS_SCRIPT = REPO_ROOT / "artifacts/wow-engine/v17/independent_release_checks.py"
 spec = importlib.util.spec_from_file_location("verify_existing_pr_governance_receipt", SCRIPT)
 verifier = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 sys.modules[spec.name] = verifier
 spec.loader.exec_module(verifier)
+release_spec = importlib.util.spec_from_file_location("independent_release_checks_for_existing_pr", RELEASE_CHECKS_SCRIPT)
+release_checks = importlib.util.module_from_spec(release_spec)
+assert release_spec and release_spec.loader
+sys.modules[release_spec.name] = release_checks
+release_spec.loader.exec_module(release_checks)
 
 NOW = datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
 HEAD = "a" * 40
@@ -24,7 +31,7 @@ ALLOWLIST = [REVIEWER]
 def test_certifier_workflow_uses_no_claude_or_write_permissions():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "wow-claude-agent" not in workflow
+    assert "uses: ./.github/actions/wow-claude-agent" not in workflow
     assert "ANTHROPIC_API_KEY" not in workflow
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in workflow
     assert "TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}" in workflow
@@ -55,7 +62,7 @@ def evidence(*, author=None, review_state="APPROVED", review_sha=HEAD):
                 "repo": {"full_name": REPOSITORY},
             },
         },
-        "changed_files": [{"filename": "src/fix.py", "previous_filename": None}],
+        "changed_files": [{"filename": "src/fix.py", "previous_filename": None, "status": "modified"}],
         "reviews": [
             {
                 "id": 12,
@@ -107,7 +114,7 @@ def build(data=None, *, trusted_reviewers=ALLOWLIST, now=NOW):
     )
 
 
-def verify(receipt, *, head=HEAD, now=NOW):
+def verify(receipt, *, head=HEAD, now=NOW, live_reviews=None):
     return verifier.verify_receipt(
         receipt,
         expected_repository=REPOSITORY,
@@ -116,6 +123,7 @@ def verify(receipt, *, head=HEAD, now=NOW):
         expected_workflow_run_id="12345",
         expected_workflow_name=verifier.WORKFLOW_NAME,
         expected_pr_number=1822,
+        live_reviews=live_reviews if live_reviews is not None else evidence()["reviews"],
         now=now,
     )
 
@@ -192,6 +200,25 @@ def test_latest_trusted_reviewer_state_must_remain_approved():
         build(data)
 
 
+def test_receipt_rejects_withdrawn_or_replaced_live_approval():
+    receipt = build()
+    withdrawn = evidence()["reviews"] + [
+        {
+            "id": 13,
+            "state": "DISMISSED",
+            "commit_id": HEAD,
+            "submitted_at": "2026-10-17T23:01:00Z",
+            "user": {**REVIEWER, "type": "User"},
+        }
+    ]
+
+    with pytest.raises(
+        verifier.ExistingPrGovernanceReceiptError,
+        match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING|WITHDRAWN_OR_CHANGED",
+    ):
+        verify(receipt, live_reviews=withdrawn)
+
+
 @pytest.mark.parametrize("field", ["complete_inventory", "reviews", "check_runs", "workflow_runs"])
 def test_incomplete_or_missing_inventory_holds(field):
     data = evidence()
@@ -227,14 +254,7 @@ def test_unallowlisted_human_review_identity_holds():
         build(data)
 
 
-@pytest.mark.parametrize(
-    ("name", "app_id"),
-    [
-        ("WOW required-three regression", 1),
-        ("WOW Independent QA exact-head", 1),
-        ("WOW Release Authority exact-head", 1),
-    ],
-)
+@pytest.mark.parametrize(("name", "app_id"), [("WOW required-three regression", 1)])
 def test_wrong_check_app_identity_holds(name, app_id):
     data = evidence()
     check = next(item for item in data["check_runs"] if item["name"] == name)
@@ -244,12 +264,114 @@ def test_wrong_check_app_identity_holds(name, app_id):
         build(data)
 
 
-def test_non_green_qa_release_and_regression_checks_hold():
+def test_non_green_source_regression_holds():
     data = evidence()
     data["check_runs"][-1]["conclusion"] = "failure"
 
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CHECK_NOT_GREEN"):
         build(data)
+
+
+def test_pre_governance_receipt_precedes_qa_and_release_but_final_checks_remain_mandatory():
+    data = evidence()
+    data["check_runs"].append(
+        {
+            "id": 500,
+            "name": release_checks.QA_CHECK,
+            "head_sha": HEAD,
+            "app_id": 5245832,
+            "status": "in_progress",
+            "conclusion": None,
+            "started_at": "2026-10-17T23:30:00Z",
+        }
+    )
+    receipt = build(data)
+    assert receipt["evidence_state"] == "REVIEW_EVIDENCE_VERIFIED"
+    assert set(receipt["required_checks"]) == {
+        "WOW required-three regression",
+        "WOW governed probability backend",
+        "WOW additional required regression",
+    }
+    assert "merge_authorized" not in receipt
+    assert "qa" not in receipt and "release" not in receipt
+
+    later = release_evidence()
+    missing_qa = release_checks.release_findings(
+        later, qa_app_id=5245832, release_app_id=5245853
+    )
+    assert "RELEASE_QA_MISSING" in missing_qa
+    assert release_checks.decision("release", missing_qa, later)["conclusion"] == "failure"
+
+    later["check_runs"].append(final_app_check(release_checks.QA_CHECK, 5245832, "success", 601))
+    assert release_checks.release_findings(
+        later, qa_app_id=5245832, release_app_id=5245853
+    ) == []
+    assert release_checks.decision("release", [], later)["conclusion"] == "success"
+
+    later["check_runs"][0]["conclusion"] = "failure"
+    later["check_runs"].append(final_app_check(release_checks.QA_CHECK, 5245832, "failure", 602))
+    failed_qa = release_checks.qa_findings(later)
+    failed_release = release_checks.release_findings(
+        later, qa_app_id=5245832, release_app_id=5245853
+    )
+    assert release_checks.decision("qa", failed_qa, later)["conclusion"] == "failure"
+    assert "RELEASE_QA_FAILED" in failed_release
+    assert release_checks.decision("release", failed_release, later)["conclusion"] == "failure"
+    assert release_checks.decision("release", failed_release, later)["merge_or_release_authorized"] is False
+
+    failed_release = release_checks.release_findings(
+        release_evidence(), qa_app_id=5245832, release_app_id=5245832
+    )
+    assert "RELEASE_IDENTITY_NOT_DISTINCT" in failed_release
+    assert release_checks.decision("release", failed_release, release_evidence())["conclusion"] == "failure"
+
+
+def final_app_check(name, app_id, conclusion, check_id):
+    return {
+        "id": check_id,
+        "name": name,
+        "head_sha": HEAD,
+        "app_id": app_id,
+        "status": "completed",
+        "conclusion": conclusion,
+        "completed_at": "2026-10-17T23:45:00Z",
+    }
+
+
+def release_evidence():
+    checks = [
+        {
+            "id": index + 1,
+            "name": name,
+            "head_sha": HEAD,
+            "app_id": 15368,
+            "status": "completed",
+            "conclusion": "success",
+            "completed_at": "2026-10-17T23:40:00Z",
+        }
+        for index, name in enumerate(
+            (*release_checks.QA_EVIDENCE_CHECKS, release_checks.TRUSTED_GOVERNANCE_CHECK)
+        )
+    ]
+    return {
+        "repository": verifier.CANONICAL_REPOSITORY,
+        "expected_head_sha": HEAD,
+        "owner_login": verifier.OWNER_LOGIN,
+        "evidence_errors": [],
+        "pr": {
+            "state": "open",
+            "draft": False,
+            "merged": False,
+            "head_sha": HEAD,
+            "head_repo": verifier.CANONICAL_REPOSITORY,
+            "base_ref": "main",
+            "author": "wow-engineering[bot]",
+            "changed_files": 1,
+        },
+        "files": ["src/fix.py"],
+        "check_runs": checks,
+        "reviews": [],
+    }
 
 
 def test_missing_required_workflow_and_failed_latest_run_hold():
@@ -267,7 +389,7 @@ def test_missing_required_workflow_and_failed_latest_run_hold():
 @pytest.mark.parametrize("path", [".github/workflows/unsafe.yml", ".agents/skills/unsafe.md", "render.yaml"])
 def test_trust_root_changes_cannot_be_certified(path):
     data = evidence()
-    data["changed_files"] = [{"filename": path, "previous_filename": None}]
+    data["changed_files"] = [{"filename": path, "previous_filename": None, "status": "modified"}]
 
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_CHANGE"):
         build(data)
@@ -278,10 +400,56 @@ def test_renaming_a_trust_root_is_rejected():
     data["changed_files"] = [{
         "filename": "src/renamed.py",
         "previous_filename": ".github/scripts/verify.py",
+        "status": "renamed",
     }]
 
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_CHANGE"):
         build(data)
+
+
+@pytest.mark.parametrize(
+    ("file_record", "reason"),
+    [
+        ({"previous_filename": None, "status": "modified"}, "DIFF_FILE_SCHEMA_INVALID"),
+        ({"filename": "src/fix.py", "previous_filename": None}, "DIFF_FILE_SCHEMA_INVALID"),
+        (
+            {"filename": "src/fix.py", "previous_filename": None, "status": "unknown"},
+            "DIFF_STATUS_INVALID",
+        ),
+        (
+            {"filename": ".", "previous_filename": None, "status": "modified"},
+            "DIFF_PATH_INVALID",
+        ),
+        (
+            {"filename": "src/fix.py", "previous_filename": None, "status": "renamed"},
+            "DIFF_PREVIOUS_FILENAME_MISSING",
+        ),
+    ],
+)
+def test_changed_file_inventory_requires_typed_provenance(file_record, reason):
+    data = evidence()
+    data["changed_files"] = [file_record]
+
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match=reason):
+        build(data)
+
+
+def test_every_dynamically_declared_governance_trust_root_is_protected():
+    protected = verifier._protected_paths(REPO_ROOT)
+    policy_path = REPO_ROOT / "artifacts/wow-engine/v17/agent_identity_policy.py"
+    policy_spec = importlib.util.spec_from_file_location("agent_identity_policy_test", policy_path)
+    policy = importlib.util.module_from_spec(policy_spec)
+    assert policy_spec and policy_spec.loader
+    policy_spec.loader.exec_module(policy)
+
+    assert set(policy.governance_trust_roots(REPO_ROOT)) <= protected
+    assert set(policy.trust_root_paths(REPO_ROOT)) <= protected
+
+    for path in protected:
+        data = evidence()
+        data["changed_files"] = [{"filename": path, "previous_filename": None, "status": "modified"}]
+        with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_CHANGE"):
+            build(data)
 
 
 def test_draft_fork_or_stale_pr_head_holds():
@@ -326,19 +494,11 @@ def test_expired_temporary_fallback_fails_closed():
         verify(build(), now=datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc))
 
 
-@pytest.mark.parametrize(
-    "event",
-    [
-        {"pull_request": {"number": 1822}},
-        {"workflow_run": {"pull_requests": [{"number": 1822, "head": {"sha": HEAD}}]}},
-        {"inputs": {"pr_number": "1822"}},
-    ],
-)
-def test_consumer_context_binds_receipt_to_exact_pr(tmp_path, monkeypatch, event):
+def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch):
     receipt = build()
-    path = tmp_path / "event.json"
-    path.write_text(json.dumps(event), encoding="utf-8")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(path))
+    live_reviews = tmp_path / "reviews.json"
+    live_reviews.write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
+    (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", [
         "verify",
         "--receipt", str(tmp_path / "receipt.json"),
@@ -347,10 +507,30 @@ def test_consumer_context_binds_receipt_to_exact_pr(tmp_path, monkeypatch, event
         "--head-ref", "fix/issue-1806",
         "--workflow-run-id", "12345",
         "--workflow-name", verifier.WORKFLOW_NAME,
+        "--pr-number", "1822",
+        "--live-reviews-json", str(live_reviews),
     ])
-    (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
 
     assert verifier.main() == 0
+
+
+def test_consumer_context_does_not_infer_pr_number_from_event(tmp_path, monkeypatch):
+    (tmp_path / "receipt.json").write_text(json.dumps(build()), encoding="utf-8")
+    (tmp_path / "reviews.json").write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
+    (tmp_path / "event.json").write_text(json.dumps({"pull_request": {"number": 1822}}), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(tmp_path / "event.json"))
+    monkeypatch.setattr(sys, "argv", [
+        "verify",
+        "--receipt", str(tmp_path / "receipt.json"),
+        "--repository", REPOSITORY,
+        "--head-sha", HEAD,
+        "--head-ref", "fix/issue-1806",
+        "--workflow-run-id", "12345",
+        "--workflow-name", verifier.WORKFLOW_NAME,
+        "--live-reviews-json", str(tmp_path / "reviews.json"),
+    ])
+
+    assert verifier.main() == 1
 
 
 def test_consumer_context_rejects_other_pr(tmp_path):
@@ -363,6 +543,7 @@ def test_consumer_context_rejects_other_pr(tmp_path):
             expected_workflow_run_id="12345",
             expected_workflow_name=verifier.WORKFLOW_NAME,
             expected_pr_number=1823,
+            live_reviews=evidence()["reviews"],
             now=NOW,
         )
 

@@ -117,6 +117,19 @@ jobs:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
+          api_array() {
+            local endpoint="$1" selector="$2" page=1 response items count accumulated='[]'
+            while [ "$page" -le 10 ]; do
+              response=$(gh api "${endpoint}&per_page=100&page=${page}")
+              items=$(jq -ce "$selector" <<<"$response")
+              count=$(jq 'length' <<<"$items")
+              accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
+              [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
+              page=$((page + 1))
+            done
+            echo "EXISTING_PR_API_INVENTORY_LIMIT_EXCEEDED" >&2
+            return 1
+          }
           required=(
             "wow-verify|.github/workflows/wow-verify.yml"
             "wow-engine-verify|.github/workflows/wow-engine-verify.yml"
@@ -129,9 +142,7 @@ jobs:
           ready=false
           runs='[]'
           for _ in $(seq 1 120); do
-            runs=$(gh api --paginate \
-              "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" \
-              --jq '.workflow_runs[]' | jq -s '.')
+            runs=$(api_array "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}" '.workflow_runs')
             ready=true
             for required_spec in "${required[@]}"; do
               required_name="${required_spec%%|*}"
@@ -168,6 +179,19 @@ jobs:
           HEAD_REF: ${{ steps.target.outputs.head_ref }}
         run: |
           set -euo pipefail
+          api_array() {
+            local endpoint="$1" selector="$2" page=1 response items count accumulated='[]'
+            while [ "$page" -le 10 ]; do
+              response=$(gh api "${endpoint}?per_page=100&page=${page}")
+              items=$(jq -ce "$selector" <<<"$response")
+              count=$(jq 'length' <<<"$items")
+              accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
+              [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
+              page=$((page + 1))
+            done
+            echo "EXISTING_PR_API_INVENTORY_LIMIT_EXCEEDED" >&2
+            return 1
+          }
           api="/repos/${GITHUB_REPOSITORY}"
           pr_json=$(gh api "${api}/pulls/${PR_NUMBER}")
           jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
@@ -177,12 +201,10 @@ jobs:
               echo "EXISTING_PR_HEAD_MOVED_OR_NOT_READY" >&2; exit 1;
             }
 
-          changed_files=$(gh api --paginate "${api}/pulls/${PR_NUMBER}/files?per_page=100" |
-            jq -s '[.[][] | {filename,previous_filename}]')
-          reviews=$(gh api --paginate "${api}/pulls/${PR_NUMBER}/reviews?per_page=100" |
-            jq -s '[.[][]]')
-          checks=$(gh api --paginate "${api}/commits/${HEAD_SHA}/check-runs?per_page=100" |
-            jq -s '[.[] | .check_runs[]]')
+          changed_files=$(api_array "${api}/pulls/${PR_NUMBER}/files" \
+            '[.[] | {filename,previous_filename,status}]')
+          reviews=$(api_array "${api}/pulls/${PR_NUMBER}/reviews" '.')
+          checks=$(api_array "${api}/commits/${HEAD_SHA}/check-runs" '.check_runs')
           workflow_runs=$(cat ".governance-review-evidence/workflow-runs.json")
 
           current_sha=$(gh api "${api}/pulls/${PR_NUMBER}" --jq '.head.sha')
@@ -196,6 +218,15 @@ jobs:
             '{complete_inventory:true,pr:$pr,changed_files:$changed_files,reviews:$reviews,
               check_runs:$check_runs,workflow_runs:$workflow_runs}' \
             > ".governance-review-evidence/evidence.json"
+          while IFS= read -r changed_path; do
+            case "$changed_path" in
+              .github/workflows/wow-verify.yml|.github/workflows/wow-engine-verify.yml|.github/workflows/wow-v17-rapid-repair.yml|.github/workflows/wow-v17-change-impact-gate.yml|.github/workflows/wow-v17-trusted-governance-gate.yml|.github/workflows/wow-v17-existing-pr-governance-review.yml|.github/workflows/wow-v17-morning-green-continuation.yml|.github/workflows/wow-v17-release-production-verification-agent.yml|.github/workflows/wow-v17-chatgpt-engineering-worker.yml|.github/workflows/wow-v17-claude-engineering-worker.yml|.github/workflows/wow-v17-engineering-provider-dispatcher.yml|.github/scripts/verify_engineering_governance_receipt.py|.github/scripts/verify_existing_pr_governance_receipt.py|.github/actions/wow-chatgpt-agent/*|.github/actions/wow-claude-agent/*)
+                echo "EXISTING_PR_TRUST_ROOT_CHANGE_REQUIRES_WORKER_OR_BOOTSTRAP:$changed_path" >&2
+                exit 1
+                ;;
+            esac
+          done < <(jq -r '.changed_files[] | .filename, (.previous_filename // empty)' \
+            ".governance-review-evidence/evidence.json")
 
       - name: Build and verify review-evidence receipt
         shell: bash
