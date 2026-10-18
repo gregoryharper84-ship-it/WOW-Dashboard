@@ -1,8 +1,12 @@
 -- REVIEW ONLY. Apply solely in the short-lived PostgreSQL CI test instance.
 -- Production migration / roles / credentials / enabled API require independent
 -- Security, CODEOWNER, QA, and Release authorization.
--- Prerequisite: create NOLOGIN wow_release_fence_owner, NOLOGIN wow_release_controller;
--- owner has SELECT, INSERT, UPDATE on both private journal tables.
+-- Prerequisite: create NOLOGIN wow_release_fence_owner with narrow DML on
+-- private journal tables. The runtime wow_release_controller must authenticate
+-- as a restricted database session_user (a dedicated LOGIN principal, not
+-- the privileged owner); the ephemeral CI workflow alone provisions its LOGIN
+-- and a disposable password. Production identity/TLS/secret custody is NOT
+-- established here and requires independent Security/Release authorization.
 -- After review, an independently approved production migration must bind only
 -- the authenticated release-controller principal to EXECUTE, not journal DML.
 CREATE OR REPLACE FUNCTION wow_release_control.reserve_release(
