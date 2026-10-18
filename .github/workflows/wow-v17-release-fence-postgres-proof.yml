@@ -85,6 +85,9 @@ jobs:
           psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE authenticated NOLOGIN;"
           psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_fence_owner NOLOGIN;"
           psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_controller NOLOGIN;"
+          # Isolated CI only: exercise a *real authenticated PostgreSQL login*
+          # with narrow EXECUTE rights; never reuse this password or grant in production.
+          psql -X -v ON_ERROR_STOP=1 -c "ALTER ROLE wow_release_controller LOGIN PASSWORD 'CI_FENCE_EPHEMERAL_ONLY';"
           psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_observer NOLOGIN;"
           psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_verifier NOLOGIN;"
       - name: Apply review schema ONLY to isolated local PostgreSQL
