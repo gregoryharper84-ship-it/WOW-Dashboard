@@ -83,7 +83,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest -q \
+          # Scope collection to the release-fence proof suite. The unrelated
+          # engine-wide conftest imports Celery and is exercised by normal CI,
+          # not by this standalone PostgreSQL protocol/fault test.
+          python -m pytest -q --confcutdir=artifacts/wow-engine/tests \
             artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py \
             artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py \
             --junitxml=release-evidence/junit.xml \
