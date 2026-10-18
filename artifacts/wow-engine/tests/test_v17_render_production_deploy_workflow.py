@@ -77,6 +77,41 @@ def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():
     assert "DEPLOY_LEASE_HOLD_NO_DEPLOY" in text
 
 
+def test_journal_preflight_holds_before_any_render_post():
+    text = _workflow_text()
+
+    assert text.index("journal_preflight = github_deployment_journal_preflight(") < text.index(
+        "def render_json("
+    )
+    assert text.index("raise SystemExit(0)", text.index("journal_preflight =")) < text.index(
+        "created = guarded_render_post("
+    )
+    assert 'RENDER_AUTO_DEPLOY_TRIGGER = "checksPass"' in text
+    assert "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY" in text
+    assert "GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY" in text
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in text
+    assert "until an atomic service-wide intent and exclusive writer authority are independently proven" in text
+
+
+def test_preflight_inventory_identifies_configured_render_deploy_writers():
+    repo_root = Path(__file__).resolve().parents[3]
+    render = (repo_root / "render.yaml").read_text(encoding="utf-8")
+    manifest = (
+        repo_root / "artifacts/wow-engine/v17/secret_sync_manifest.json"
+    ).read_text(encoding="utf-8")
+    sync_workflow = (
+        repo_root / ".github/workflows/wow-v17-secret-sync.yml"
+    ).read_text(encoding="utf-8")
+    secret_sync = (
+        repo_root / "artifacts/wow-engine/v17/secret_sync.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'autoDeployTrigger: "checksPass"' in render
+    assert '"render_service_id": "srv-da7sa9gu01pc73brt80g"' in manifest
+    assert "wow-v17-secret-sync" in sync_workflow
+    assert "/deploys" in secret_sync
+
+
 def test_render_deploy_handoff_reconciles_successful_create_without_top_level_id():
     text = _workflow_text()
 
@@ -119,6 +154,7 @@ def test_render_deploy_no_deploy_paths_emit_typed_receipts_before_exit():
         "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
         "STALE_SHA_NO_DEPLOY",
         "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+        "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
     ):
         assert re.search(
             rf'emit_receipt\(\{{\s*"status"\s*:\s*"{status}".*?raise SystemExit\(0\)',

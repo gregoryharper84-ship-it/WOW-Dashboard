@@ -77,6 +77,65 @@ def test_workflow_embedded_python_compiles():
     assert _embedded_function("validate_deployment_lease_identity").__name__ == "validate_deployment_lease_identity"
     assert _embedded_function("render_deploy_payload").__name__ == "render_deploy_payload"
     assert _embedded_function("is_current_main_sha").__name__ == "is_current_main_sha"
+    assert _embedded_function("github_deployment_journal_preflight").__name__ == "github_deployment_journal_preflight"
+    assert _embedded_function("guarded_render_post").__name__ == "guarded_render_post"
+
+
+def test_github_deployment_journal_preflight_never_claims_atomic_create():
+    preflight = _embedded_function("github_deployment_journal_preflight")
+
+    result = preflight(
+        writer_inventory_complete=True,
+        render_auto_deploy_trigger="off",
+        competing_deploy_writers=[],
+    )
+
+    assert result == {
+        "eligible": False,
+        "status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+        "blockers": ["GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY"],
+    }
+
+
+@pytest.mark.parametrize(
+    "writer_inventory_complete,auto_deploy,competing_writers,expected_blocker",
+    [
+        (False, "off", [], "RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED"),
+        (True, "checksPass", [], "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED"),
+        (True, "off", ["wow-v17-secret-sync"], "ADDITIONAL_RENDER_DEPLOY_WRITER_PRESENT"),
+    ],
+)
+def test_github_deployment_journal_preflight_records_writer_conflicts(
+    writer_inventory_complete, auto_deploy, competing_writers, expected_blocker
+):
+    result = _embedded_function("github_deployment_journal_preflight")(
+        writer_inventory_complete=writer_inventory_complete,
+        render_auto_deploy_trigger=auto_deploy,
+        competing_deploy_writers=competing_writers,
+    )
+
+    assert result["eligible"] is False
+    assert expected_blocker in result["blockers"]
+
+
+def test_guarded_render_post_rejects_without_calling_render_api():
+    guarded_post = _embedded_function("guarded_render_post")
+    preflight = _embedded_function("github_deployment_journal_preflight")(
+        writer_inventory_complete=False,
+        render_auto_deploy_trigger="checksPass",
+        competing_deploy_writers=["wow-v17-secret-sync"],
+    )
+    render_calls = []
+
+    with pytest.raises(RuntimeError, match="RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD"):
+        guarded_post(
+            preflight,
+            lambda *args: render_calls.append(args),
+            "/services/service/deploys",
+            {"commitId": "a" * 40},
+        )
+
+    assert render_calls == []
 
 
 def test_exact_same_repo_independent_app_checks_pass():
