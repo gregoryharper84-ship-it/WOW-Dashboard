@@ -586,6 +586,9 @@ class DiscoveredEvent:
                 "id", "event_id", "official_event_id", "event_uuid",
                 "provider_event_id", "_wow_secondary_event_id",
                 "_wow_terminal_duplicate_ordinal",
+                # A shared provider alias can still name two games. game_id is
+                # private evidence and is hashed, never published.
+                "game_id",
             )
             source_alias_evidence = [
                 (key, str(raw[key]).strip())
@@ -672,19 +675,38 @@ def classify_event_status(raw_status: Any, commence_time: Any, *, now: datetime 
     return "UNKNOWN"
 
 
-def _dedupe_identity(event: DiscoveredEvent) -> tuple[str, str, str]:
-    """Deduplicate verified ids or exact opaque source identity, never teams.
+def _raw_record_token(raw: Mapping[str, Any] | None) -> str:
+    """Canonical digest of one provider payload. Key order does not matter."""
+    if not isinstance(raw, Mapping):
+        return ""
+    encoded = json.dumps(raw, sort_keys=True, default=str, ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
-    An unverified field-only row, including one without *any* provider id,
-    cannot share the constant SPORT:UNRESOLVED identity with every other game.
-    A provider alias marked ALIAS_ONLY must not be promoted into an official
-    id, even if a caller accidentally left official_event_id populated.
+
+def _dedupe_identity(event: DiscoveredEvent) -> tuple[str, ...]:
+    """Suppress only an exact repeated provider record.
+
+    Regime and provider source stay in the key. An unsupported playoff copy of
+    a verified id must not erase the regular-season row before eligibility.
+    Distinct sources of one official game are retained for the later canonical
+    owner, which scores once and holds the rest. An unverified row, including
+    one without any provider id, cannot share the constant SPORT:UNRESOLVED
+    identity with every other game. A provider alias marked ALIAS_ONLY must
+    not be promoted into an official id.
     """
     alias_only = isinstance(event.raw, Mapping) and (
         event.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
     )
     if event.official_event_id and not alias_only:
-        return ("ID", event.sport, str(event.official_event_id))
+        return (
+            "ID",
+            event.sport,
+            str(event.regime or ""),
+            str(event.provider or ""),
+            "" if event.provider_sport_id is None else str(event.provider_sport_id),
+            str(event.official_event_id),
+            _raw_record_token(event.raw),
+        )
     return ("HELD", event.sport, event.identity()["event_key"])
 
 
@@ -945,7 +967,7 @@ def discover_winner_slate(
                 )
             continue
 
-        seen_identities: set[tuple[str, str, str]] = set()
+        seen_identities: set[tuple[str, ...]] = set()
         duplicates = 0
         for target in family_targets:
             if monotonic() >= deadline:
@@ -1067,11 +1089,9 @@ def discover_winner_slate(
                     now=now,
                     target=target,
                 )
-                # A family is queried across several provider ids (twelve soccer
-                # competitions; regular season alongside a regime variant). The
-                # same fixture surfacing under two of them is one event, not two
-                # — counting it twice would inflate the board and break
-                # reconciliation against the real slate.
+                # Exact repeated payloads on one target are one record. A different
+                # regime or provider source of the same official id is a separate
+                # candidate until eligibility and canonical ownership run.
                 identity = _dedupe_identity(event)
                 if identity in seen_identities:
                     duplicates += 1

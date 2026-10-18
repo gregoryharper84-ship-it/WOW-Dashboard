@@ -79,8 +79,19 @@ def _event(event_id, *, home, away):
 
 
 def _feed(rows_by_sport):
+    """Return each family's slate once.
+
+    Regime and competition targets are separate discovery queries. This fixture
+    is one game per family, not a copy of that game on every provider sport id.
+    """
+    served = set()
+
     def fetch(family, _target=None, **_kwargs):
-        return list(rows_by_sport.get(str(family).upper(), []))
+        key = str(family).upper()
+        if key in served:
+            return []
+        served.add(key)
+        return list(rows_by_sport.get(key, []))
 
     return fetch
 

@@ -1846,3 +1846,277 @@ def test_once_any_canonical_scorer_invoked_second_alias_is_held_after_failure():
     assert rows[1].bucket == discovery.OTHER_GOVERNED_HOLD
     assert rows[1].detail["reason"] == "DUPLICATE_CANONICAL_EVENT_HELD"
     assert all(row.probability_publishable is False for row in rows)
+
+
+def _nfl_targets(*sport_ids):
+    from v17 import cross_sport_winner_discovery as discovery
+
+    by_id = {
+        target.sport_id: target
+        for target in discovery.rundown_discovery_targets(
+            "NFL", include_regime_variants=True
+        )
+    }
+    return {"NFL": tuple(by_id[sport_id] for sport_id in sport_ids)}
+
+
+def _bears_jets_row(event_id="2026_05_NYJ_CHI", **extra):
+    row = {
+        "id": event_id,
+        "home_team": "Chicago Bears",
+        "away_team": "New York Jets",
+        "commence_time": "2026-10-18T21:00:00Z",
+        "status": "scheduled",
+    }
+    row.update(extra)
+    return row
+
+
+@pytest.mark.parametrize("sport_ids", [(26, 25, 2), (2, 25, 26)])
+def test_official_id_regime_order_scores_regular_season_once(sport_ids):
+    """Playoff-first official ids must not erase the regular-season row."""
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+
+    def fetch(_family, target):
+        if target.sport_id == 2:
+            return [
+                _bears_jets_row(),
+                _bears_jets_row(provider_event_id="reg-source-b"),
+            ]
+        return [_bears_jets_row()]
+
+    calls = []
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        discovery_targets=_nfl_targets(*sport_ids),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda event, _: calls.append((event.regime, event.official_event_id)) or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    rows = result["rows"]
+    assert result["discovery"]["events_discovered"] == 4
+    assert result["reconciliation"]["acquisition_audit"][0]["duplicate_rows_suppressed"] == 0
+    assert calls == [("REGULAR_SEASON", "2026_05_NYJ_CHI")]
+    assert sum(row["probability_publishable"] for row in rows) == 1
+    assert result["reconciliation"]["buckets"][discovery.MODEL_COMPLETED] == 1
+    assert result["reconciliation"]["events_accounted"] == 4
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
+    unavailable = [row for row in rows if row["bucket"] == discovery.MODEL_UNAVAILABLE]
+    assert {row["regime"] for row in unavailable} == {"PLAYOFFS", "PRESEASON"}
+    assert {row["detail"]["reason"] for row in unavailable} == {
+        "NFL_PLAYOFFS_REGIME_NOT_SUPPORTED_BY_FITTED_MODEL",
+        "NFL_PRESEASON_REGIME_NOT_SUPPORTED_BY_FITTED_MODEL",
+    }
+    held = [row for row in rows if row["bucket"] == discovery.OTHER_GOVERNED_HOLD]
+    assert len(held) == 1
+    assert held[0]["detail"]["reason"] == "DUPLICATE_CANONICAL_EVENT_HELD"
+    assert held[0]["official_event_id"] is None
+    assert held[0]["probability_publishable"] is False
+    assert "reg-source-b" not in str(rows)
+    assert held[0]["event_key"] not in {
+        row["event_key"] for row in rows if row is not held[0]
+    }
+    assert result["can_execute"] is False
+    assert all(row["can_execute"] is False for row in rows)
+
+
+def test_supported_regimes_of_one_official_game_score_once():
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+
+    calls = []
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=lambda _family, _target: [_bears_jets_row()],
+        supported_sports=("NFL",),
+        discovery_targets=_nfl_targets(26, 2),
+        resolve_model=lambda *_: SimpleNamespace(
+            supported_regimes=("PLAYOFFS", "REGULAR_SEASON")
+        ),
+        score_row=lambda event, _: calls.append(event.regime) or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert result["discovery"]["events_discovered"] == 2
+    assert calls == ["PLAYOFFS"]
+    assert sum(row["probability_publishable"] for row in result["rows"]) == 1
+    held = [row for row in result["rows"] if row["bucket"] == discovery.OTHER_GOVERNED_HOLD]
+    assert len(held) == 1
+    assert held[0]["detail"]["reason"] == "DUPLICATE_CANONICAL_EVENT_HELD"
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
+    assert result["can_execute"] is False
+
+
+def test_exact_same_regime_official_payload_is_suppressed_once():
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+
+    row = _bears_jets_row()
+
+    def fetch(_family, target):
+        if target.sport_id != 2:
+            return []
+        return [row, dict(reversed(list(row.items())))]
+
+    calls = []
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        discovery_targets=_nfl_targets(2),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda event, _: calls.append(event.official_event_id) or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert result["discovery"]["events_discovered"] == 1
+    assert result["reconciliation"]["acquisition_audit"][0]["duplicate_rows_suppressed"] == 1
+    assert calls == ["2026_05_NYJ_CHI"]
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["bucket"] == discovery.MODEL_COMPLETED
+    assert result["can_execute"] is False
+
+
+def test_same_teams_different_official_games_both_score():
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+
+    calls = []
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=lambda _family, _target: [
+            _bears_jets_row("GAME-A"),
+            _bears_jets_row("GAME-B"),
+        ],
+        supported_sports=("NFL",),
+        discovery_targets=_nfl_targets(2),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda event, _: calls.append(event.official_event_id) or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert result["discovery"]["events_discovered"] == 2
+    assert sorted(calls) == ["GAME-A", "GAME-B"]
+    assert sum(row["probability_publishable"] for row in result["rows"]) == 2
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
+    assert result["can_execute"] is False
+
+
+def test_shared_provider_alias_with_distinct_game_id_keeps_both_unscored():
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+
+    calls = []
+
+    def fetch(_family, target):
+        if target.sport_id != 2:
+            return []
+        return [
+            {
+                "provider_event_id": "SHARED-PRIVATE",
+                "game_id": game_id,
+                "home_team": "Chicago Bears",
+                "away_team": "New York Jets",
+                "commence_time": "2026-10-18T21:00:00Z",
+                "status": "scheduled",
+            }
+            for game_id in ("game-aaa", "game-bbb")
+        ]
+
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        discovery_targets=_nfl_targets(2),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda *_: calls.append("scored") or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    rows = result["rows"]
+    assert result["discovery"]["events_discovered"] == 2
+    assert result["reconciliation"]["acquisition_audit"][0]["duplicate_rows_suppressed"] == 0
+    assert calls == []
+    assert [row["bucket"] for row in rows] == [
+        discovery.IDENTITY_UNRESOLVED,
+        discovery.IDENTITY_UNRESOLVED,
+    ]
+    assert len({row["event_key"] for row in rows}) == 2
+    rendered = str(rows)
+    assert "SHARED-PRIVATE" not in rendered
+    assert "game-aaa" not in rendered
+    assert "game-bbb" not in rendered
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("fault", ["scorer_failed", "malformed"])
+def test_official_duplicate_does_not_score_again_after_fault(fault):
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17.daily_snapshot_runtime import _accept_cross_sport_moneyline_score
+
+    calls = []
+
+    def score(event, _model):
+        calls.append(event.raw.get("provider_event_id"))
+        if fault == "malformed":
+            return _accept_cross_sport_moneyline_score(["not", "a", "mapping"])
+        return {
+            "code": discovery.MODEL_SCORER_FAILED,
+            "probability_publishable": False,
+            "rank_eligible": False,
+        }
+
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=lambda _family, _target: [
+            _bears_jets_row(provider_event_id="source-a"),
+            _bears_jets_row(provider_event_id="source-b"),
+        ],
+        supported_sports=("NFL",),
+        discovery_targets=_nfl_targets(2),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=score,
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    rows = result["rows"]
+    assert calls == ["source-a"]
+    assert result["discovery"]["events_discovered"] == 2
+    if fault == "malformed":
+        assert rows[0]["bucket"] == discovery.MODEL_OUTPUT_INVALID
+    else:
+        assert rows[0]["bucket"] == discovery.MODEL_SCORER_FAILED
+    assert rows[1]["bucket"] == discovery.OTHER_GOVERNED_HOLD
+    assert rows[1]["detail"]["reason"] == "DUPLICATE_CANONICAL_EVENT_HELD"
+    assert rows[1]["official_event_id"] is None
+    assert all(row["probability_publishable"] is False for row in rows)
+    assert "source-a" not in str(rows) and "source-b" not in str(rows)
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
+    assert result["can_execute"] is False

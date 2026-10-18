@@ -298,8 +298,15 @@ def test_prop_manifest_pages_through_1000_rows_without_truncation():
 # ---------------------------------------------------------------------------
 
 def _cross_sport_feed(rows_by_sport):
+    """Return each family's slate once, not once per regime or competition id."""
+    served = set()
+
     def fetch(sport, sport_key=None, *, target=None, **_kwargs):
-        return rows_by_sport.get(sport, [])
+        key = str(sport).upper()
+        if key in served:
+            return []
+        served.add(key)
+        return list(rows_by_sport.get(sport, []))
 
     return fetch
 
@@ -516,14 +523,23 @@ def test_installed_sport_parity_wrapper_retains_nhl_id_colliding_with_mlb(monkey
         assert ("MLB", 31) in queried_targets  # MLB playoffs
 
         assert len(by_sport["MLB"]) == 1, "canonical MLB duplicate remains suppressed"
-        for sport in ("NHL", "NBA", "WNBA"):
-            assert len(by_sport[sport]) == 1, f"{sport} candidate lost to MLB ID"
-            row = by_sport[sport][0]
-            assert row["identity"]["official_event_id"] == "1"
-            assert row["row_status"] == "HELD"
-            assert row["result"]["bucket"] == "MODEL_UNAVAILABLE"
-            assert row["probability_publishable"] is False
-            assert row["can_execute"] is False
+        # The same raw id is returned on every regime board. Each regime stays
+        # a held candidate; none is dropped because MLB already used id "1".
+        expected_regimes = {
+            "NHL": {"REGULAR_SEASON", "PRESEASON", "PLAYOFFS"},
+            "NBA": {"REGULAR_SEASON", "PRESEASON", "PLAYOFFS", "SUMMER_LEAGUE"},
+            "WNBA": {"REGULAR_SEASON"},
+        }
+        for sport, regimes in expected_regimes.items():
+            sport_rows = by_sport[sport]
+            assert len(sport_rows) == len(regimes), f"{sport} regime candidate lost to MLB ID"
+            assert {row["result"]["regime"] for row in sport_rows} == regimes
+            for row in sport_rows:
+                assert row["identity"]["official_event_id"] == "1"
+                assert row["row_status"] == "HELD"
+                assert row["result"]["bucket"] == "MODEL_UNAVAILABLE"
+                assert row["probability_publishable"] is False
+                assert row["can_execute"] is False
         assert result["reconciliation"]["balanced"] is True
         assert result["cross_sport_discovery_audit"]["reconciliation"]["row_reconciliation"] == "PASS"
         assert result["can_execute"] is False
