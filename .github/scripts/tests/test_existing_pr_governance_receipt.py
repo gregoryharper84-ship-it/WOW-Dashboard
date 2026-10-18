@@ -489,16 +489,28 @@ def test_receipt_cannot_relabel_a_bot_as_an_independent_human():
         verify(receipt)
 
 
-def test_per_receipt_30_minute_ttl_survives_fixed_calendar_sunset():
-    # Durable independent review, not a permanent bypass: new exact-head
-    # evidence can be certified after Nov 1 only while genuinely fresh.
-    future = datetime(2026, 11, 2, 0, 0, tzinfo=timezone.utc)
-    receipt = build(now=future)
-    assert receipt["fallback_expires_utc"] == "2026-11-02T00:30:00Z"
-    verify(receipt, now=future)
-    verify(receipt, now=future + timedelta(minutes=29, seconds=59))
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="FALLBACK_EXPIRED"):
-        verify(receipt, now=future + timedelta(minutes=30))
+def test_receipt_ttl_is_30_minutes_within_provider_sunset():
+    current = datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
+    receipt = build(now=current)
+    assert receipt["fallback_expires_utc"] == "2026-10-18T00:30:00Z"
+    verify(receipt, now=current)
+    verify(receipt, now=current + timedelta(minutes=29, seconds=59))
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT"):
+        verify(receipt, now=current + timedelta(minutes=30))
+
+
+def test_temporary_provider_sunset_blocks_new_receipts_and_replay():
+    before_sunset = datetime(2026, 10, 31, 23, 40, tzinfo=timezone.utc)
+    receipt = build(now=before_sunset)
+    assert receipt["fallback_expires_utc"] == "2026-11-01T00:10:00Z"
+    verify(receipt, now=before_sunset + timedelta(minutes=19, seconds=59))
+    at_sunset = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
+        verify(receipt, now=at_sunset)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
+        build(now=at_sunset)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
+        build(now=datetime(2026, 11, 2, 0, 0, tzinfo=timezone.utc))
 
 
 def test_receipt_expiry_cannot_be_extended_or_backdated():
