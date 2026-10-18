@@ -398,11 +398,11 @@ def _cross_sport_moneyline_rows(
             # The registered bridge owns its own canonical acquisition, so a
             # discovered row that cannot be hydrated terminates as
             # MODEL_INPUTS_INSUFFICIENT rather than as a missing model.
-            return score_team_event_request(
+            scored = score_team_event_request(
                 request, event_api=event_api, canonical_hydration_required=True
             )
         except HTTPException as exc:
-            return _detail(exc)
+            return _accept_cross_sport_moneyline_score(_detail(exc))
         except Exception as exc:  # noqa: BLE001 - an invoked scorer that throws
             return {
                 "code": "MODEL_SCORER_FAILED",
@@ -412,6 +412,7 @@ def _cross_sport_moneyline_rows(
                 "rank_eligible": False,
                 "can_execute": False,
             }
+        return _accept_cross_sport_moneyline_score(scored)
 
     scan = discovery.run_cross_sport_winner_scan(
         requested_slate_date=req.requested_slate_date,
@@ -466,6 +467,25 @@ def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str
         guarded["rank_eligible"] = False
         return guarded, inner_status if inner_status in ("REJECTED", "PURGED") else "HELD"
     return guarded, "COMPLETED"
+
+
+def _accept_cross_sport_moneyline_score(scored: Any) -> dict[str, Any]:
+    """Gate cross-sport publishability on official publication evidence.
+
+    Preserve sport-specific fitted output and typed scorer failures. Do not
+    fabricate a model probability when scorer output is malformed.
+    """
+    if not isinstance(scored, dict):
+        return {
+            "code": "MODEL_OUTPUT_INVALID",
+            "error_type": type(scored).__name__,
+            "model_invoked": True,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+    guarded, _stage_status = _guard_moneyline_result(scored)
+    return guarded
 
 
 def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:
