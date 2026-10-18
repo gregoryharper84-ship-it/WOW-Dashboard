@@ -5,6 +5,7 @@ only asserting its text. This is a non-deploying, no-secret test suite.
 """
 import ast
 from pathlib import Path
+import re
 import textwrap
 import urllib.error
 
@@ -41,6 +42,11 @@ def _embedded_function(name, **overrides):
         "MAX_WORKFLOW_RUN_ATTEMPTS": 3,
         "DEPLOY_WORKFLOW_PATH": ".github/workflows/wow-v17-render-production-deploy.yml",
         "urllib": urllib,
+        "re": re,
+        "journal_preflight": {"eligible": True},
+        "guarded_render_post": lambda _preflight, render_json, path, payload: render_json(
+            "POST", path, payload
+        ),
     }
     namespace.update(overrides)
     exec(compile(ast.Module(body=[func], type_ignores=[]), "<workflow>", "exec"), namespace)
@@ -79,6 +85,129 @@ def test_workflow_embedded_python_compiles():
     assert _embedded_function("is_current_main_sha").__name__ == "is_current_main_sha"
     assert _embedded_function("github_deployment_journal_preflight").__name__ == "github_deployment_journal_preflight"
     assert _embedded_function("guarded_render_post").__name__ == "guarded_render_post"
+    assert _embedded_function("validate_secret_sync_release_request").__name__ == "validate_secret_sync_release_request"
+
+
+def test_secret_sync_request_requires_successful_exact_main_run_and_artifact():
+    validate = _embedded_function("validate_secret_sync_release_request")
+    run_id, attempt, sha = "81234", "2", "a" * 40
+    request = {"run_id": run_id, "run_attempt": attempt, "source_sha": sha}
+    source_run = {
+        "id": int(run_id),
+        "run_attempt": int(attempt),
+        "path": ".github/workflows/wow-v17-secret-sync.yml@refs/heads/main",
+        "repository": {"full_name": REPO},
+        "head_branch": "main",
+        "head_sha": sha,
+        "status": "completed",
+        "conclusion": "success",
+        "event": "schedule",
+    }
+    artifacts = [{
+        "total_count": 1,
+        "artifacts": [{
+            "name": f"wow-v17-secret-env-release-request-{run_id}-{attempt}",
+            "expired": False,
+        }],
+    }]
+
+    result = validate(
+        request=request,
+        repository=REPO,
+        target_sha=sha,
+        source_run=source_run,
+        artifact_pages=artifacts,
+    )
+
+    assert result["request_type"] == "SECRET_ENV_CHANGED_RELEASE_REQUEST"
+    assert result["artifact_name"] == artifacts[0]["artifacts"][0]["name"]
+    assert result["source_sha"] == sha
+
+
+@pytest.mark.parametrize(
+    "mutate,code",
+    [
+        (lambda request, run, pages: run.update(status="in_progress"), "SECRET_ENV_RELEASE_REQUEST_RUN_MISMATCH"),
+        (lambda request, run, pages: run.update(head_branch="feature"), "SECRET_ENV_RELEASE_REQUEST_RUN_MISMATCH"),
+        (lambda request, run, pages: pages[0]["artifacts"][0].update(expired=True), "SECRET_ENV_RELEASE_REQUEST_ARTIFACT_MISSING"),
+        (lambda request, run, pages: pages[0].update(total_count=2), "SECRET_ENV_RELEASE_REQUEST_ARTIFACT_INVENTORY_INCOMPLETE"),
+    ],
+)
+def test_secret_sync_request_invalid_source_or_artifact_holds(mutate, code):
+    run_id, attempt, sha = "81234", "1", "a" * 40
+    request = {"run_id": run_id, "run_attempt": attempt, "source_sha": sha}
+    source_run = {
+        "id": int(run_id),
+        "run_attempt": int(attempt),
+        "path": ".github/workflows/wow-v17-secret-sync.yml@refs/heads/main",
+        "repository": {"full_name": REPO},
+        "head_branch": "main",
+        "head_sha": sha,
+        "status": "completed",
+        "conclusion": "success",
+        "event": "workflow_dispatch",
+    }
+    artifacts = [{
+        "total_count": 1,
+        "artifacts": [{
+            "name": f"wow-v17-secret-env-release-request-{run_id}-{attempt}",
+            "expired": False,
+        }],
+    }]
+    mutate(request, source_run, artifacts)
+
+    with pytest.raises(RuntimeError, match=code):
+        _embedded_function("validate_secret_sync_release_request")(
+            request=request,
+            repository=REPO,
+            target_sha=sha,
+            source_run=source_run,
+            artifact_pages=artifacts,
+        )
+
+
+def test_secret_sync_request_can_reconcile_partial_failed_run_with_durable_artifact():
+    run_id, attempt, sha = "81234", "2", "a" * 40
+    run = {
+        "id": int(run_id),
+        "run_attempt": int(attempt),
+        "path": ".github/workflows/wow-v17-secret-sync.yml@refs/heads/main",
+        "repository": {"full_name": REPO},
+        "head_branch": "main",
+        "head_sha": sha,
+        "status": "completed",
+        "conclusion": "failure",
+        "event": "workflow_dispatch",
+    }
+    artifacts = [{
+        "total_count": 1,
+        "artifacts": [{
+            "name": f"wow-v17-secret-env-release-request-{run_id}-{attempt}",
+            "expired": False,
+        }],
+    }]
+
+    result = _embedded_function("validate_secret_sync_release_request")(
+        request={"run_id": run_id, "run_attempt": attempt, "source_sha": sha},
+        repository=REPO,
+        target_sha=sha,
+        source_run=run,
+        artifact_pages=artifacts,
+    )
+
+    assert result["request_type"] == "SECRET_ENV_CHANGED_RELEASE_REQUEST"
+
+
+def test_secret_sync_request_sha_must_match_dispatch_target():
+    run_id, attempt, sha = "81234", "1", "a" * 40
+    with pytest.raises(RuntimeError, match="SECRET_ENV_RELEASE_REQUEST_SHA_OR_ID_INVALID"):
+        _embedded_function("validate_secret_sync_release_request")(
+            request={"run_id": run_id, "run_attempt": attempt, "source_sha": sha},
+            repository=REPO,
+            target_sha="b" * 40,
+            source_run={},
+            artifact_pages=[],
+        )
 
 
 def test_github_deployment_journal_preflight_never_claims_atomic_create():
@@ -398,6 +527,8 @@ def test_live_control_plane_invokes_guard_before_render_deploy_post():
     assert 'validate_release_provenance(' in text
     assert '/pulls?per_page=100' in text
     assert "RENDER_RELEASE_PROVENANCE_VERIFIED" in text
-    assert text.index("authorized_pr_head = validate_release_provenance(") < text.index('render_json(\n                  "POST"')
+    assert text.index("authorized_pr_head = validate_release_provenance(") < text.index(
+        "created = guarded_render_post("
+    )
     assert 'WOW_ACTION_API_KEY' not in text
     assert 'WOW_CAN_EXECUTE: "false"' in text

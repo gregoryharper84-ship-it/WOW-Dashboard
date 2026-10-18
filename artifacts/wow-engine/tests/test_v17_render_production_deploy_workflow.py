@@ -40,7 +40,7 @@ def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
     assert '"can_execute":False' in text or '"can_execute": False' in text
     assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
-    assert 'render_json(\n                  "POST"' in text
+    assert "return render_json(\"POST\", path, payload)" in text
     assert 'render_deploy_payload(target_sha)' in text
     assert '"commitId": commit_sha' in text
 
@@ -92,7 +92,24 @@ def test_journal_preflight_holds_before_any_render_post():
     assert '"live_render_auto_deploy_trigger": "UNVERIFIED"' in text
     assert '"obstruction": "GITHUB_NATIVE_FENCE_CANNOT_PROVE_SERVICE_WIDE_EXACT_ONCE"' in text
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in text
-    assert "until an atomic service-wide intent and exclusive writer authority are independently proven" in text
+    assert "until protected ref policy, owner-fenced service-lock release, and complete live writer inventory are independently verified" in text
+
+
+def test_secret_sync_request_enters_only_protected_controller_after_durable_artifact():
+    text = _workflow_text()
+    sync_workflow = (
+        Path(__file__).resolve().parents[3] / ".github/workflows/wow-v17-secret-sync.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "secret_sync_request_run_id:" in text
+    assert "secret_sync_request_run_attempt:" in text
+    assert "secret_sync_request_sha:" in text
+    assert "validate_secret_sync_release_request(" in text
+    assert "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY" in text
+    assert "source_sha != target_sha" in text
+    assert sync_workflow.index("Persist typed secret-change release request") < sync_workflow.index(
+        "Dispatch protected Render release controller"
+    )
 
 
 def test_preflight_distinguishes_blueprint_from_live_render_writer_state():
@@ -113,7 +130,7 @@ def test_preflight_distinguishes_blueprint_from_live_render_writer_state():
     assert '"live_render_auto_deploy_trigger": "UNVERIFIED"' in _workflow_text()
     assert '"render_service_id": "srv-da7sa9gu01pc73brt80g"' in manifest
     assert "wow-v17-secret-sync" in sync_workflow
-    assert "/deploys" in secret_sync
+    assert "/deploys" not in secret_sync
 
 
 def test_render_deploy_handoff_reconciles_successful_create_without_top_level_id():
@@ -158,13 +175,15 @@ def test_render_deploy_no_deploy_paths_emit_typed_receipts_before_exit():
         "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
         "STALE_SHA_NO_DEPLOY",
         "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
-        "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+        "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
     ):
         assert re.search(
             rf'emit_receipt\(\{{\s*"status"\s*:\s*"{status}".*?raise SystemExit\(0\)',
             text,
             re.DOTALL,
         )
+    assert '"status": journal_preflight["status"]' in text
+    assert '"RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"' in text
 
 
 def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():

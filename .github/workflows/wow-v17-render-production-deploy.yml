@@ -6,6 +6,19 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      secret_sync_request_run_id:
+        description: Successful secret-sync run carrying the release request artifact
+        required: false
+        type: string
+      secret_sync_request_run_attempt:
+        description: Source secret-sync run attempt
+        required: false
+        type: string
+      secret_sync_request_sha:
+        description: Exact main SHA from the source secret-sync run
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -50,6 +63,7 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import re
           import time
           import urllib.error
           import urllib.parse
@@ -72,6 +86,8 @@ jobs:
               body["workflow_run_attempt"] = str(os.environ.get("GITHUB_RUN_ATTEMPT") or "")
               if "lease_identity" in globals():
                   body["deploy_lease_identity"] = lease_identity
+              if "secret_sync_request" in globals() and secret_sync_request:
+                  body["secret_sync_request"] = secret_sync_request
               with open(receipt_path, "w", encoding="utf-8") as handle:
                   json.dump(body, handle, sort_keys=True)
                   handle.write("\n")
@@ -96,6 +112,42 @@ jobs:
               target_sha = str(os.environ.get("GITHUB_SHA") or "")
           if not target_sha:
               raise RuntimeError("RENDER_DEPLOY_TARGET_SHA_MISSING")
+
+          dispatch_inputs = (event.get("inputs") or {}) if event_name == "workflow_dispatch" else {}
+          request_fields = (
+              str(dispatch_inputs.get("secret_sync_request_run_id") or ""),
+              str(dispatch_inputs.get("secret_sync_request_run_attempt") or ""),
+              str(dispatch_inputs.get("secret_sync_request_sha") or ""),
+          )
+          secret_sync_request = None
+          if any(request_fields) and not all(request_fields):
+              emit_receipt({
+                  "status": "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+                  "target_sha": target_sha,
+                  "hold_reason": "SECRET_ENV_RELEASE_REQUEST_IDENTITY_INCOMPLETE",
+                  "next_action": "Retry the protected controller with the complete source run and SHA identity.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+          if all(request_fields):
+              secret_sync_request = {
+                  "run_id": request_fields[0],
+                  "run_attempt": request_fields[1],
+                  "source_sha": request_fields[2],
+              }
+              if (
+                  not secret_sync_request["run_id"].isdigit()
+                  or not secret_sync_request["run_attempt"].isdigit()
+                  or not re.fullmatch(r"[0-9a-f]{40}", secret_sync_request["source_sha"])
+              ):
+                  emit_receipt({
+                      "status": "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "hold_reason": "SECRET_ENV_RELEASE_REQUEST_IDENTITY_INVALID",
+                      "next_action": "Dispatch the protected controller with numeric source run identity and the full lowercase main SHA.",
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
 
           def github_deployment_journal_preflight(
               *, writer_inventory_complete, live_auto_deploy_trigger,
@@ -124,6 +176,117 @@ jobs:
                   raise RuntimeError("RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD")
               return render_json("POST", path, payload)
 
+          github_headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_API_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def github_json(path):
+              request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          def validate_secret_sync_release_request(
+              *, request, repository, target_sha, source_run, artifact_pages
+          ):
+              if not isinstance(request, dict):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_INVALID")
+              run_id = str(request.get("run_id") or "")
+              attempt = str(request.get("run_attempt") or "")
+              source_sha = str(request.get("source_sha") or "")
+              if (
+                  not run_id.isdigit()
+                  or not attempt.isdigit()
+                  or int(attempt) < 1
+                  or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+                  or source_sha != target_sha
+              ):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_SHA_OR_ID_INVALID")
+              if not isinstance(source_run, dict):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_RUN_INVALID")
+              if (
+                  str(source_run.get("id") or "") != run_id
+                  or str(source_run.get("run_attempt") or "") != attempt
+                  or str(source_run.get("path") or "").split("@", 1)[0]
+                  != ".github/workflows/wow-v17-secret-sync.yml"
+                  or str((source_run.get("repository") or {}).get("full_name") or "") != repository
+                  or str(source_run.get("head_branch") or "") != "main"
+                  or str(source_run.get("head_sha") or "") != source_sha
+                  or str(source_run.get("status") or "") != "completed"
+                  or str(source_run.get("conclusion") or "") not in {"success", "failure"}
+                  or str(source_run.get("event") or "") not in {"workflow_dispatch", "schedule", "push"}
+              ):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_RUN_MISMATCH")
+              if not isinstance(artifact_pages, list):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACTS_INVALID")
+              expected_name = f"wow-v17-secret-env-release-request-{run_id}-{attempt}"
+              all_artifacts = []
+              total_count = None
+              for page in artifact_pages:
+                  if not isinstance(page, dict) or not isinstance(page.get("artifacts"), list):
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACTS_INVALID")
+                  page_total = page.get("total_count")
+                  if not isinstance(page_total, int) or page_total < 0:
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACTS_INVALID")
+                  if total_count is not None and page_total != total_count:
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACT_INVENTORY_CHANGED")
+                  total_count = page_total
+                  all_artifacts.extend(page["artifacts"])
+              if total_count is None or len(all_artifacts) != total_count:
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACT_INVENTORY_INCOMPLETE")
+              if not any(
+                  isinstance(artifact, dict)
+                  and artifact.get("name") == expected_name
+                  and artifact.get("expired") is False
+                  for artifact in all_artifacts
+              ):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACT_MISSING")
+              return {
+                  "run_id": run_id,
+                  "run_attempt": attempt,
+                  "source_sha": source_sha,
+                  "artifact_name": expected_name,
+                  "request_type": "SECRET_ENV_CHANGED_RELEASE_REQUEST",
+              }
+
+          if secret_sync_request:
+              try:
+                  source_run = github_json(
+                      f"/actions/runs/{urllib.parse.quote(secret_sync_request['run_id'], safe='')}"
+                  )
+                  first_artifacts = github_json(
+                      f"/actions/runs/{urllib.parse.quote(secret_sync_request['run_id'], safe='')}/artifacts?per_page=100&page=1"
+                  )
+                  if not isinstance(first_artifacts, dict):
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACTS_INVALID")
+                  total = first_artifacts.get("total_count")
+                  if not isinstance(total, int) or total < 0 or total > 1000:
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACT_INVENTORY_UNBOUNDED")
+                  artifact_pages = [first_artifacts]
+                  for page_number in range(2, (total + 99) // 100 + 1):
+                      artifact_pages.append(
+                          github_json(
+                              f"/actions/runs/{urllib.parse.quote(secret_sync_request['run_id'], safe='')}/artifacts?per_page=100&page={page_number}"
+                          )
+                      )
+                  secret_sync_request = validate_secret_sync_release_request(
+                      request=secret_sync_request,
+                      repository=repo,
+                      target_sha=target_sha,
+                      source_run=source_run,
+                      artifact_pages=artifact_pages,
+                  )
+              except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+                  emit_receipt({
+                      "status": "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "hold_reason": str(exc) or "SECRET_ENV_RELEASE_REQUEST_UNREADABLE",
+                      "next_action": "Restore GitHub Actions run/artifact read access and dispatch from the durable source request again.",
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
+
           journal_preflight = github_deployment_journal_preflight(
               writer_inventory_complete=False,
               live_auto_deploy_trigger=None,
@@ -147,17 +310,6 @@ jobs:
                   "can_execute": False,
               })
               raise SystemExit(0)
-
-          github_headers = {
-              "Accept": "application/vnd.github+json",
-              "Authorization": f"Bearer {os.environ['GH_API_TOKEN']}",
-              "X-GitHub-Api-Version": "2022-11-28",
-          }
-
-          def github_json(path):
-              request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return json.load(response)
 
           def validate_deployment_lease_identity(run, *, repository, event, run_id, run_attempt):
               if not isinstance(run, dict):
@@ -756,6 +908,7 @@ jobs:
               "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
               "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
               "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+              "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
           }
           if status in advancing:
               print(json.dumps({"status":"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES","source_receipt_status":status,"can_execute":False}, sort_keys=True))

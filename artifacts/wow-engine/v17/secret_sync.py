@@ -9,7 +9,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -47,6 +47,7 @@ class SyncSummary:
     render_to_github_changed: int = 0
     render_to_github_skipped: int = 0
     deploy_triggered: bool = False
+    release_request_status: str = "NOT_REQUIRED"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +59,7 @@ class SyncSummary:
             "render_to_github_changed": self.render_to_github_changed,
             "render_to_github_skipped": self.render_to_github_skipped,
             "deploy_triggered": self.deploy_triggered,
+            "release_request_status": self.release_request_status,
             "delete_propagation": False,
             "secret_values_exposed": False,
             "can_execute": False,
@@ -138,16 +140,19 @@ class RenderClient:
                 "Render did not confirm the updated environment-variable key",
             )
 
-    def trigger_deploy(self) -> None:
-        data = self._request(
-            "POST",
-            f"/services/{quote(self.service_id, safe='')}/deploys",
-            {"clearCache": "do_not_clear"},
+    def assert_auto_deploy_disabled(self) -> None:
+        service = self._request(
+            "GET",
+            f"/services/{quote(self.service_id, safe='')}",
         )
-        if not isinstance(data, dict) or not data.get("id"):
+        if (
+            not isinstance(service, dict)
+            or service.get("autoDeploy") not in (False, "no")
+            or service.get("autoDeployTrigger") != "off"
+        ):
             raise SecretSyncError(
-                "RENDER_DEPLOY_RESPONSE_INVALID",
-                "Render did not return a deployment identifier",
+                "RENDER_AUTO_DEPLOY_STATE_UNVERIFIED",
+                "Render live auto-deploy must be verified off before secret mutation",
             )
 
 
@@ -281,6 +286,7 @@ def sync_github_to_render(
     environ: Mapping[str, str],
     *,
     dry_run: bool = False,
+    on_secret_changed: Callable[[], None] | None = None,
 ) -> tuple[int, int, int]:
     checked = changed = skipped = 0
     for entry in _github_entries(manifest):
@@ -300,6 +306,8 @@ def sync_github_to_render(
         changed += 1
         if not dry_run:
             render.set_env(entry.name, value)
+            if on_secret_changed is not None:
+                on_secret_changed()
     return checked, changed, skipped
 
 
@@ -333,6 +341,7 @@ def run_sync(
     dry_run: bool = False,
     render_client: RenderClient | None = None,
     github_writer: GitHubSecretWriter | None = None,
+    release_request_file: Path | None = None,
 ) -> SyncSummary:
     env = dict(os.environ if environ is None else environ)
     render_api_key = str(env.get("RENDER_API_KEY", ""))
@@ -352,12 +361,26 @@ def run_sync(
     render = render_client or RenderClient(render_api_key, str(manifest["render_service_id"]))
     summary = SyncSummary()
 
+    def record_release_request() -> None:
+        summary.release_request_status = "SECRET_ENV_CHANGED_RELEASE_REQUEST"
+        if release_request_file is not None:
+            receipt = build_release_request_receipt(
+                summary,
+                environ=env,
+                repository=str(manifest["github_repository"]),
+                service_id=str(manifest["render_service_id"]),
+            )
+            write_release_request_receipt(release_request_file, receipt)
+
     if mode in {"both", "github-to-render"}:
+        if not dry_run:
+            render.assert_auto_deploy_disabled()
         checked, changed, skipped = sync_github_to_render(
             manifest,
             render,
             env,
             dry_run=dry_run,
+            on_secret_changed=record_release_request,
         )
         summary.github_to_render_checked = checked
         summary.github_to_render_changed = changed
@@ -379,11 +402,75 @@ def run_sync(
         summary.render_to_github_changed = changed
         summary.render_to_github_skipped = skipped
 
-    if summary.github_to_render_changed and not dry_run:
-        render.trigger_deploy()
-        summary.deploy_triggered = True
+    if summary.github_to_render_changed and dry_run:
+        summary.release_request_status = "DRY_RUN_NO_RELEASE_REQUEST"
+
+    if release_request_file is not None and not release_request_file.exists():
+        receipt = build_release_request_receipt(
+            summary,
+            environ=env,
+            repository=str(manifest["github_repository"]),
+            service_id=str(manifest["render_service_id"]),
+        )
+        write_release_request_receipt(release_request_file, receipt)
 
     return summary
+
+
+def validate_release_request_identity(
+    environ: Mapping[str, str], *, repository: str
+) -> dict[str, str]:
+    sha = str(environ.get("GITHUB_SHA") or "")
+    run_id = str(environ.get("GITHUB_RUN_ID") or "")
+    run_attempt = str(environ.get("GITHUB_RUN_ATTEMPT") or "")
+    if (
+        environ.get("GITHUB_REPOSITORY") != repository
+        or environ.get("GITHUB_REF") != "refs/heads/main"
+        or not re.fullmatch(r"[0-9a-f]{40}", sha)
+        or not run_id.isdigit()
+        or not run_attempt.isdigit()
+        or int(run_attempt) < 1
+    ):
+        raise SecretSyncError(
+            "SECRET_ENV_RELEASE_REQUEST_IDENTITY_INVALID",
+            "A release request requires a verified main-branch workflow identity",
+        )
+    return {"source_sha": sha, "workflow_run_id": run_id, "workflow_run_attempt": run_attempt}
+
+
+def build_release_request_receipt(
+    summary: SyncSummary,
+    *,
+    environ: Mapping[str, str],
+    repository: str,
+    service_id: str,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "status": summary.release_request_status,
+        "repository": repository,
+        "service_id": service_id,
+        "can_execute": False,
+        "secret_values_exposed": False,
+    }
+    if summary.release_request_status == "SECRET_ENV_CHANGED_RELEASE_REQUEST":
+        receipt.update(validate_release_request_identity(environ, repository=repository))
+        receipt.update(
+            {
+                "request_type": "SECRET_ENV_CHANGED_RELEASE_REQUEST",
+                "runtime_generation": "V17_ACTIVE",
+                "terminal_authority": "V17_TERMINAL_REDUCER",
+                "custom_gpt_identity": "WOW_BETTING_ENGINE",
+                "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": True,
+            }
+        )
+    return receipt
+
+
+def write_release_request_receipt(path: Path, receipt: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(dict(receipt), sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def _repo_root_from_script() -> Path:
@@ -399,15 +486,19 @@ def main(argv: list[str] | None = None) -> int:
         default="both",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--release-request-file", type=Path)
     args = parser.parse_args(argv)
 
     try:
         manifest = load_manifest(args.manifest)
+        if not args.dry_run and args.mode in {"both", "github-to-render"}:
+            validate_release_request_identity(os.environ, repository=str(manifest["github_repository"]))
         summary = run_sync(
             manifest,
             mode=args.mode,
             repo_root=_repo_root_from_script(),
             dry_run=args.dry_run,
+            release_request_file=args.release_request_file,
         )
     except SecretSyncError as exc:
         print(
