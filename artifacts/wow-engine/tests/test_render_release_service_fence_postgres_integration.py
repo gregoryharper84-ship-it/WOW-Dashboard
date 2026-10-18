@@ -20,6 +20,18 @@ if not DSN or not ATTESTED:
     pytest.skip("Isolated PostgreSQL test database not attested/configured", allow_module_level=True)
 
 psycopg = pytest.importorskip("psycopg")
+from psycopg.conninfo import conninfo_to_dict
+
+# The opt-in string alone is NOT a database attestation. For this candidate,
+# accept only an isolated local PostgreSQL test container. A Supabase branch
+# must obtain a separately reviewed identity/provenance verifier.
+conninfo = conninfo_to_dict(DSN)
+if conninfo.get("host") not in {"127.0.0.1", "localhost", "::1"} or (
+    conninfo.get("dbname") != "wow_release_fence_test"
+):
+    raise RuntimeError(
+        "RELEASE_ISOLATED_DB_IDENTITY_UNVERIFIED: no remote or production DSN allowed"
+    )
 SOURCE = Path(__file__).resolve().parents[1] / "v17" / "render_release_service_fence_candidate.py"
 spec = importlib.util.spec_from_file_location("render_release_service_fence_candidate_integration", SOURCE)
 m = importlib.util.module_from_spec(spec)
