@@ -15,6 +15,7 @@
 /artifacts/wow-engine/v17/engineering_provider_failover.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/independent_release_checks.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/persistent_worker_safety.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/auto_merge_eligibility.py @gregoryharper84-ship-it
 # Protected list mirrored from .github/workflows/wow-v17-existing-pr-governance-review.yml:
 /.github/workflows/wow-verify.yml @gregoryharper84-ship-it
 /.github/workflows/wow-engine-verify.yml @gregoryharper84-ship-it
