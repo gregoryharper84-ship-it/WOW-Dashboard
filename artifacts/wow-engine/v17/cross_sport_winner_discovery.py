@@ -27,7 +27,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -565,7 +565,7 @@ class DiscoveredEvent:
         )
         event_id = None if alias_only else self.official_event_id
         event_key = self.event_key
-        if alias_only:
+        if alias_only or not event_id:
             # Keep multiple held events distinct without presenting public
             # provider IDs as official ids. A canonical JSON digest binds the
             # *unverified* source identity + fixture evidence for reconciliation.
@@ -585,6 +585,7 @@ class DiscoveredEvent:
             alias_keys = (
                 "id", "event_id", "official_event_id", "event_uuid",
                 "provider_event_id", "_wow_secondary_event_id",
+                "_wow_terminal_duplicate_ordinal",
             )
             source_alias_evidence = [
                 (key, str(raw[key]).strip())
@@ -595,6 +596,14 @@ class DiscoveredEvent:
                 source_alias_evidence = [
                     ("event_alias", str(self.official_event_id).strip())
                 ]
+            elif not source_alias_evidence:
+                # No provider identifier exists. A stable digest of the full
+                # private row distinguishes separately discovered idless
+                # fixtures without serializing any provider evidence publicly.
+                raw_digest = hashlib.sha256(
+                    json.dumps(raw, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
+                ).hexdigest()
+                source_alias_evidence = [("private_row_digest", raw_digest)]
             binding = [
                 self.sport, self.league, self.regime, self.provider,
                 source_alias_evidence, self.home_team, self.away_team,
@@ -664,16 +673,17 @@ def classify_event_status(raw_status: Any, commence_time: Any, *, now: datetime 
 
 
 def _dedupe_identity(event: DiscoveredEvent) -> tuple[str, str, str]:
-    """Deduplicate by governed identity, never just same teams and minute.
+    """Deduplicate verified ids or exact opaque source identity, never teams.
 
-    Provider aliases are NOT verified canonical event IDs. When an upstream
-    wrapper clears the unverified official ID (ESPN, Odds API), two separate
-    source candidates with identical teams/start must both survive discovery
-    and be HELD until canonical reconciliation. DiscoveredEvent.identity()
-    hashes the complete set of private aliases; identical source candidates
-    still deterministically collapse without leaking the aliases.
+    An unverified field-only row, including one without *any* provider id,
+    cannot share the constant SPORT:UNRESOLVED identity with every other game.
+    A provider alias marked ALIAS_ONLY must not be promoted into an official
+    id, even if a caller accidentally left official_event_id populated.
     """
-    if event.official_event_id:
+    alias_only = isinstance(event.raw, Mapping) and (
+        event.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
+    )
+    if event.official_event_id and not alias_only:
         return ("ID", event.sport, str(event.official_event_id))
     return ("HELD", event.sport, event.identity()["event_key"])
 
@@ -1222,6 +1232,7 @@ def route_discovered_slate(
     blocker rather than being invoked outside its calibration contract.
     """
     rows: list[RoutedRow] = []
+    seen_canonical_events: set[tuple[str, str]] = set()
     for event in inventory.events:
         purge = _purge_bucket(
             event, slate_date=inventory.requested_slate_date, tz_name=inventory.requested_timezone
@@ -1248,6 +1259,34 @@ def route_discovered_slate(
                 )
             )
             continue
+
+        # Canonical resolution can map multiple distinct provider aliases to
+        # ONE official game. Never invoke a fitted scorer twice for that row.
+        # Retain each redundant acquisition candidate as a distinct, opaque,
+        # unpublishable terminal hold rather than dropping it or publishing
+        # another copy of the same sporting probability.
+        if event.official_event_id:
+            canonical_key = (event.sport, str(event.official_event_id))
+            if canonical_key in seen_canonical_events:
+                raw = dict(event.raw) if isinstance(event.raw, Mapping) else {}
+                raw.update({
+                    "official_event_id": event.official_event_id,
+                    "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+                    "canonical_identity_blocker": "DUPLICATE_CANONICAL_EVENT_HELD",
+                    "_wow_terminal_duplicate_ordinal": len(rows),
+                })
+                duplicate = replace(event, official_event_id=None, raw=raw)
+                rows.append(RoutedRow(
+                    identity=duplicate.identity(),
+                    bucket=OTHER_GOVERNED_HOLD,
+                    model_status=None,
+                    detail={
+                        "reason": "DUPLICATE_CANONICAL_EVENT_HELD",
+                        "model_invoked": False,
+                    },
+                ))
+                continue
+            seen_canonical_events.add(canonical_key)
 
         try:
             model = resolve_model(event)
