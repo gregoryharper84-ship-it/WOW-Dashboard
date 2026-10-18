@@ -8,7 +8,7 @@ import importlib.util
 import json
 import re
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -18,7 +18,9 @@ CERTIFICATION_MODE = "EXISTING_PR_REVIEW_EVIDENCE"
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 OWNER_LOGIN = "gregoryharper84-ship-it"
 OWNER_ID = 285088163
-FALLBACK_EXPIRES_UTC = "2026-11-01T00:00:00Z"
+REVIEW_RECEIPT_MAX_AGE = timedelta(minutes=30)
+# Temporary Claude-provider substitution: independently authorized renewal required.
+FALLBACK_PROVIDER_SUNSET_UTC = "2026-11-01T00:00:00Z"
 SHA = re.compile(r"^[a-f0-9]{40}$")
 
 REQUIRED_WORKFLOWS = {
@@ -281,8 +283,11 @@ def build_receipt(
 ) -> dict[str, Any]:
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
-    _require(clock.astimezone(timezone.utc) < _timestamp(FALLBACK_EXPIRES_UTC, "FALLBACK_EXPIRY"),
-             "TEMPORARY_FALLBACK_EXPIRED")
+    # Two independent bounds: the provider exception sunsets on November 1,
+    # and each particular receipt must still expire after exactly 30 minutes.
+    # A receipt minted just before sunset never extends the provider exception.
+    _require(clock.astimezone(timezone.utc) < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
+             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
     _require(expected_repository == CANONICAL_REPOSITORY, "REPOSITORY_IDENTITY_MISMATCH")
     _require(bool(SHA.fullmatch(expected_head_sha)), "EXPECTED_SHA_INVALID")
     _require(bool(expected_head_ref), "EXPECTED_HEAD_REF_MISSING")
@@ -368,7 +373,9 @@ def build_receipt(
         "workflow_run_attempt": expected_workflow_run_attempt,
         "created_at_utc": clock.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         "certification_mode": CERTIFICATION_MODE,
-        "fallback_expires_utc": FALLBACK_EXPIRES_UTC,
+        "fallback_expires_utc": (
+            clock.astimezone(timezone.utc) + REVIEW_RECEIPT_MAX_AGE
+        ).isoformat().replace("+00:00", "Z"),
         "target": {
             "pr_number": expected_pr_number,
             "incident_id": expected_incident_id,
@@ -423,10 +430,12 @@ def verify_receipt(
     _positive_int(receipt.get("workflow_run_attempt"), "WORKFLOW_RUN_ATTEMPT")
     created = _timestamp(receipt.get("created_at_utc"), "RECEIPT_CREATED_AT")
     expiry = _timestamp(receipt.get("fallback_expires_utc"), "FALLBACK_EXPIRY")
-    _require(receipt.get("fallback_expires_utc") == FALLBACK_EXPIRES_UTC, "FALLBACK_EXPIRY_MISMATCH")
+    _require(expiry == created + REVIEW_RECEIPT_MAX_AGE, "FALLBACK_EXPIRY_MISMATCH")
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
     clock = clock.astimezone(timezone.utc)
+    _require(clock < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
+             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
     _require(created <= clock < expiry, "TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT")
     _require(bool(SHA.fullmatch(expected_head_sha)), "EXPECTED_SHA_INVALID")
     target = _exact_keys(
