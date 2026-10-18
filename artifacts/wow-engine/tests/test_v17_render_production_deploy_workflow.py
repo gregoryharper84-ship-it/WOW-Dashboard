@@ -50,7 +50,7 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
 
     assert "group: wow-v17-render-production-deploy" in text
     assert "cancel-in-progress: false" in text
-    assert "timeout-minutes: 50" in text
+    assert "timeout-minutes: 120" in text
     assert "/deploys?limit=20" in text
     assert "commit_sha(deploy) == target_sha" in text
     assert "EXACT_SHA_ALREADY_LIVE" in text
@@ -58,12 +58,15 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "previous_live, created_sha, str((created_deploy or {}).get" in text
     assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
-    assert "deploy_deadline = time.time() + 900" in text
+    assert "deploy_deadline = time.monotonic() + 90 * 60" in text
     assert "time.sleep(10)" in text
     assert "MAX_WORKFLOW_RUN_ATTEMPTS = 3" in text
     assert "cancel-in-progress: false" in text
-    assert 'f"/services/{service_path}/rollback"' in text
-    assert "DEPLOY_SHA_MISMATCH_ROLLED_BACK" in text
+    assert 'f"/services/{service_path}/rollback"' not in text
+    assert "ROLLBACK_AUTHORIZATION_REQUIRED_HOLD" in text
+    assert '"rollback_attempts": 0' in text
+    assert "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT" in text
+    assert "journal_preflight = github_deployment_journal_preflight(" in text
     assert "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY" in text
 
 
