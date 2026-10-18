@@ -49,7 +49,8 @@ def lease_reentry(case: Mapping[str, Any], *, now: datetime) -> Decision:
         raise ValueError("NOW_MUST_BE_TIMEZONE_AWARE")
     if not case.get("incident_id") or not case.get("owner_id"):
         return Decision("BLOCKED", ("INCIDENT_OR_OWNER_MISSING",), "ECOSYSTEM_CONDUCTOR")
-    if int(case.get("lease_epoch", -1)) < 0:
+    epoch = case.get("lease_epoch")
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
         return Decision("BLOCKED", ("LEASE_EPOCH_INVALID",), "ECOSYSTEM_CONDUCTOR")
     value = case.get("lease_expires_at")
     if not isinstance(value, str) or not value:
