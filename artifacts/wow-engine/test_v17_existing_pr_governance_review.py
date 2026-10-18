@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import shutil
 import subprocess
+import sys
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -109,6 +111,24 @@ def test_existing_pr_certifier_emits_truthful_exact_head_receipt():
         "WOW governed probability backend",
         "WOW additional required regression",
     }
+    assert "WOW Independent QA exact-head" not in verifier.REQUIRED_CHECKS
+    assert "WOW Release Authority exact-head" not in verifier.REQUIRED_CHECKS
+    assert verifier.REVIEW_RECEIPT_MAX_AGE == timedelta(minutes=30)
+    assert verifier.FALLBACK_PROVIDER_SUNSET_UTC == "2026-11-01T00:00:00Z"
+    assert "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING" in text
+
+
+def test_existing_pr_receipt_contract_runs_from_the_candidate_checkout():
+    """PR CI must execute the receipt contract. The producer checks out protected main."""
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--noconftest",
+         str(ROOT / ".github/scripts/tests/test_existing_pr_governance_receipt.py")],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 

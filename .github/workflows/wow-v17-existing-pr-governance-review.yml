@@ -238,6 +238,10 @@ jobs:
           INCIDENT: ${{ steps.target.outputs.incident }}
         run: |
           set -euo pipefail
+          if [ -z "${TRUSTED_REVIEWERS_JSON}" ] || [ "${TRUSTED_REVIEWERS_JSON}" = "null" ]; then
+            echo "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING" >&2
+            exit 1
+          fi
           receipt="$RUNNER_TEMP/wow-engineering-governance-receipt.json"
           python .github/scripts/verify_existing_pr_governance_receipt.py \
             --evidence .governance-review-evidence/evidence.json \
