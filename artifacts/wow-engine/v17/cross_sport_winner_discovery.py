@@ -570,9 +570,28 @@ class DiscoveredEvent:
             # provider IDs as official ids. A canonical JSON digest binds the
             # *unverified* source identity + fixture evidence for reconciliation.
             # It is neither an official game id nor model-scoring authority.
+            # Canonicalization clears official_event_id on identity failure.
+            # Bind the opaque HOLD key to the original provider alias kept in
+            # private acquisition evidence, or distinct unverified candidates
+            # for the same fixture collapse into one terminal event_key.
+            raw = self.raw if isinstance(self.raw, Mapping) else {}
+            source_alias = next(
+                (
+                    str(raw[key]).strip()
+                    for key in (
+                        "provider_event_id",
+                        "_wow_secondary_event_id",
+                        "event_id",
+                        "id",
+                        "official_event_id",
+                    )
+                    if raw.get(key) is not None and str(raw[key]).strip()
+                ),
+                str(self.official_event_id or "").strip(),
+            )
             binding = [
                 self.sport, self.league, self.regime, self.provider,
-                self.official_event_id, self.home_team, self.away_team,
+                source_alias, self.home_team, self.away_team,
                 self.commence_time_utc,
             ]
             fingerprint = hashlib.sha256(
