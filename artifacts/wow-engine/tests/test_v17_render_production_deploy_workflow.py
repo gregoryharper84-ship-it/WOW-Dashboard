@@ -50,12 +50,12 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
 
     assert "group: wow-v17-render-production-deploy" in text
     assert "cancel-in-progress: false" in text
-    assert "timeout-minutes: 40" in text
+    assert "timeout-minutes: 50" in text
     assert "/deploys?limit=20" in text
     assert "commit_sha(deploy) == target_sha" in text
     assert "EXACT_SHA_ALREADY_LIVE" in text
     assert "EXACT_SHA_RENDER_DEPLOY_LIVE" in text
-    assert "rollback_after_sha_mismatch(previous_live, created_sha)" in text
+    assert "previous_live, created_sha, str((created_deploy or {}).get" in text
     assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
     assert "deploy_deadline = time.time() + 900" in text

@@ -31,7 +31,7 @@ def _gate():
     return namespace["validate_release_provenance"]
 
 
-def _embedded_function(name):
+def _embedded_function(name, **overrides):
     text = WORKFLOW.read_text(encoding="utf-8")
     script = text.split("python - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
     tree = ast.parse(textwrap.dedent(script))
@@ -40,6 +40,7 @@ def _embedded_function(name):
         "MAX_WORKFLOW_RUN_ATTEMPTS": 3,
         "DEPLOY_WORKFLOW_PATH": ".github/workflows/wow-v17-render-production-deploy.yml",
     }
+    namespace.update(overrides)
     exec(compile(ast.Module(body=[func], type_ignores=[]), "<workflow>", "exec"), namespace)
     return namespace[name]
 
@@ -195,6 +196,52 @@ def test_deployment_lease_retries_are_bounded_and_post_pins_exact_sha():
     assert current_main_matches(commit_sha, commit_sha)
     assert not current_main_matches(commit_sha, "c" * 40)
     assert not current_main_matches("not-a-sha", "not-a-sha")
+
+
+def test_rollback_requires_new_restored_deploy_and_terminal_mismatch():
+    previous_sha, mismatch_sha = "a" * 40, "b" * 40
+    previous_live = {"id": "dep-previous", "commit": {"id": previous_sha}, "status": "live"}
+    mismatch = {"id": "dep-mismatch", "commit": {"id": mismatch_sha}, "status": "in_progress"}
+    rollback = {"id": "dep-rollback", "commit": {"id": previous_sha}, "status": "build_in_progress"}
+    deploy_snapshots = [
+        [previous_live, mismatch],
+        [previous_live, dict(mismatch, status="deactivated"), rollback],
+        [dict(previous_live, status="deactivated"), dict(mismatch, status="deactivated"), dict(rollback, status="live")],
+    ]
+    receipts = []
+
+    class Clock:
+        @staticmethod
+        def time():
+            return 100
+
+        @staticmethod
+        def sleep(_seconds):
+            return None
+
+    rollback_function = _embedded_function(
+        "rollback_after_sha_mismatch",
+        target_sha=mismatch_sha,
+        service_path="service",
+        commit_sha=lambda deploy: str((deploy.get("commit") or {}).get("id") or ""),
+        render_json=lambda method, path, payload: {"id": "dep-rollback"},
+        list_deploys=lambda: deploy_snapshots.pop(0),
+        emit_receipt=receipts.append,
+        time=Clock,
+    )
+
+    with pytest.raises(SystemExit) as result:
+        rollback_function(previous_live, mismatch_sha, "dep-mismatch")
+
+    assert result.value.code == 0
+    assert receipts == [{
+        "status": "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
+        "target_sha": mismatch_sha,
+        "observed_sha": mismatch_sha,
+        "rollback_deploy_id": "dep-rollback",
+        "restored_commit_sha": previous_sha,
+        "can_execute": False,
+    }]
 
 
 @pytest.mark.parametrize("failure,expected", [
