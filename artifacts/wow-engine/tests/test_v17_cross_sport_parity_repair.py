@@ -1184,3 +1184,105 @@ def test_nfl_failed_ledger_keys_match_discovery_id_over_shared_event_uuid():
     assert all(row.bucket == IDENTITY_UNRESOLVED for row in rows)
     assert all(row.probability_publishable is False for row in rows)
     assert calls == []
+
+
+@pytest.mark.parametrize("alias_case", [
+    "two_ids_one_provider",
+    "two_ids_one_event_id",
+    "two_ids_one_uuid",
+    "one_id_two_providers",
+    "one_id_two_secondary_aliases",
+])
+def test_multiple_private_aliases_keep_unresolved_terminal_candidates_distinct(alias_case):
+    """A shared single alias must never erase another unverified source candidate.
+
+    When official ledger evidence is unavailable, every provided private
+    identifier contributes to the *opaque* HOLD key. No provider field
+    becomes an official id and no scorer is invoked.
+    """
+    from datetime import datetime, timezone
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory, IDENTITY_UNRESOLVED, normalize_discovered_event,
+        route_discovered_slate,
+    )
+
+    alias_cases = {
+        "two_ids_one_provider": (
+            {"id": "a-id", "provider_event_id": "shared-provider"},
+            {"id": "b-id", "provider_event_id": "shared-provider"},
+        ),
+        "two_ids_one_event_id": (
+            {"id": "a-id", "event_id": "shared-event"},
+            {"id": "b-id", "event_id": "shared-event"},
+        ),
+        "two_ids_one_uuid": (
+            {"id": "a-id", "event_uuid": "shared-uuid"},
+            {"id": "b-id", "event_uuid": "shared-uuid"},
+        ),
+        "one_id_two_providers": (
+            {"id": "shared-id", "provider_event_id": "provider-a"},
+            {"id": "shared-id", "provider_event_id": "provider-b"},
+        ),
+        "one_id_two_secondary_aliases": (
+            {"id": "shared-id", "_wow_secondary_event_id": "secondary-a"},
+            {"id": "shared-id", "_wow_secondary_event_id": "secondary-b"},
+        ),
+    }
+    candidates = []
+    for raw_ids in alias_cases[alias_case]:
+        event = normalize_discovered_event(
+            {
+                **raw_ids,
+                "home_team": "Chicago Bears",
+                "away_team": "New York Jets",
+                "start_time": "2026-10-04T17:00:00Z",
+                "status": "scheduled",
+            },
+            sport="NFL",
+            sport_key="americanfootball_nfl",
+            source="DISCOVERY_FEED",
+            now=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        held = canonicalize_nfl_discovery_identity(
+            event,
+            req=SimpleNamespace(
+                requested_slate_date="2026-10-04",
+                requested_timezone="America/Chicago",
+            ),
+            event_api=SimpleNamespace(),
+            settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        )
+        assert held.official_event_id is None
+        assert held.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+        candidates.append(held)
+
+    keys = [c.identity()["event_key"] for c in candidates]
+    assert len(set(keys)) == 2
+    assert all(k.startswith("NFL:UNRESOLVED:") for k in keys)
+    secret_identifiers = {
+        str(value)
+        for raw_ids in alias_cases[alias_case]
+        for value in raw_ids.values()
+    }
+    assert all(secret not in "".join(keys) for secret in secret_identifiers)
+    assert candidates[0].identity()["event_key"] == candidates[0].identity()["event_key"]
+
+    called = []
+    rows = route_discovered_slate(
+        DiscoveryInventory(
+            requested_slate_date="2026-10-04",
+            requested_timezone="America/Chicago",
+            events=candidates,
+        ),
+        resolve_model=lambda *_: called.append("model") or object(),
+        score_row=lambda *_: called.append("score") or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+    )
+    assert len(rows) == 2
+    assert {row.identity["event_key"] for row in rows} == set(keys)
+    assert all(row.bucket == IDENTITY_UNRESOLVED for row in rows)
+    assert all(row.probability_publishable is False for row in rows)
+    assert all(row.rank_eligible is False for row in rows)
+    assert called == []
