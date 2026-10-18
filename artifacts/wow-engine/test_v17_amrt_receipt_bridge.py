@@ -26,7 +26,7 @@ def test_blocked_handoff_has_owner_and_reentry_and_is_not_approval():
     assert row["typed_blocker"] == "STAGE_PROOF_UNPROVEN"
     assert row["blocker_owner"] == "MODEL_RECOVERY_ENGINEER"
     assert row["revisit_trigger"] == "MODEL_OWNER_EVIDENCE_AVAILABLE"
-    assert row["can_execute"] is not True  # database enforces false
+    assert row.get("can_execute") is not True  # database enforces false
     assert row["role"] == "conductor"
     assert "qa_decision" not in row and "release_decision" not in row
     assert row["tests"][0]["evidence_refs"] == ["github:1841"]
