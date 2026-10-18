@@ -1618,3 +1618,78 @@ def test_distinct_verified_canonical_games_are_scored_once_each():
     assert len(score_ids) == 2 and len(set(score_ids)) == 2
     assert sum(row["probability_publishable"] for row in result["rows"]) == 2
     assert result["reconciliation"]["row_reconciliation"] == "PASS"
+
+
+def test_real_nfl_ledger_canonicalizer_duplicate_aliases_publish_only_one(monkeypatch):
+    """Two provider IDs match the SAME official NFL schedule row once."""
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import cross_sport_discovery_feed as feed
+    import v17.nfl_team_event_specialist as specialist
+
+    provider_ids = ("odds-alias-A", "odds-alias-B")
+    resolver_calls = []
+    api = _EventApi()
+    def resolve_nfl(probe, *, db):
+        assert db is api.db
+        resolver_calls.append(probe.official_event_id)
+        return {
+            "ok": True,
+            "canonical_event_id": "2026_05_NYJ_CHI",
+            "identity_resolution": "PROVIDER_ID_TO_CANONICAL_SCHEDULE_MATCH",
+            "canonical_source_snapshot_id": "official-fixture-test",
+        }
+
+    monkeypatch.setattr(specialist, "resolve_nfl_team_event_evidence", resolve_nfl)
+    source_rows = [
+        feed._odds_api_alias_row({
+            "id": pid,
+            "home_team": "Chicago Bears",
+            "away_team": "New York Jets",
+            "commence_time": "2026-10-18T21:00:00Z",
+            "status": "scheduled",
+        }, sport_key="americanfootball_nfl")
+        for pid in provider_ids
+    ]
+    fetch_calls = []
+    def fetch(_family, _target):
+        fetch_calls.append(1)
+        return source_rows if len(fetch_calls) == 1 else []
+
+    req = SimpleNamespace(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+    )
+    scored = []
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date=req.requested_slate_date,
+        requested_timezone=req.requested_timezone,
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        canonicalize_identity=lambda event: canonicalize_nfl_discovery_identity(
+            event,
+            req=req,
+            event_api=api,
+            settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        ),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda event, _: (
+            scored.append(event.official_event_id) or
+            {"probability_publishable": True, "rank_eligible": True}
+        ),
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert resolver_calls == list(provider_ids)
+    assert scored == ["2026_05_NYJ_CHI"]
+    assert len(result["rows"]) == 2
+    assert len([r for r in result["rows"] if r["probability_publishable"]]) == 1
+    held = [r for r in result["rows"] if r["bucket"] == discovery.OTHER_GOVERNED_HOLD]
+    assert len(held) == 1
+    assert held[0]["detail"]["reason"] == "DUPLICATE_CANONICAL_EVENT_HELD"
+    assert held[0]["official_event_id"] is None
+    assert held[0]["rank_eligible"] is False
+    assert all(alias not in str(result["rows"]) for alias in provider_ids)
+    assert len({r["event_key"] for r in result["rows"]}) == 2
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
+    assert result["can_execute"] is False
