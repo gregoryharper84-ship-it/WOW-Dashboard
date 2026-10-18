@@ -116,18 +116,35 @@ def restore_cross_sport_entrypoint():
 
 
 def _score_nfl(scorer):
-    original = runtime.score_team_event_request
-    runtime.score_team_event_request = scorer
-    try:
+    # Installed parity now correctly requires canonical NFL schedule evidence.
+    # Supply a deterministic, uniquely resolved ledger fixture before asserting
+    # the official-publication guard's behavior; do not bypass the identity gate.
+    from v17 import nfl_team_event_specialist
+
+    def verified_ledger_identity(probe, *, db):
+        assert db is not None
+        assert probe.official_event_id == EVENT_ID
+        return {
+            "ok": True,
+            "canonical_event_id": EVENT_ID,
+            "identity_resolution": "EXACT_LEDGER_MATCH",
+            "canonical_source_snapshot_id": "fixture-canonical-nfl-ledger",
+        }
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runtime, "score_team_event_request", scorer)
+        patch.setattr(
+            nfl_team_event_specialist,
+            "resolve_nfl_team_event_evidence",
+            verified_ledger_identity,
+        )
         rows, scan = runtime._cross_sport_moneyline_rows(
             _request(),
             run_id="v17-daily-publication-guard",
-            event_api=SimpleNamespace(),
+            event_api=SimpleNamespace(get_client=lambda: object()),
             covered_event_ids=set(),
             fetch_sport_events=_feed(),
         )
-    finally:
-        runtime.score_team_event_request = original
     assert rows is not None
     assert len(rows) == 1
     assert scan["reconciliation"]["row_reconciliation"] == "PASS"
@@ -297,4 +314,33 @@ def test_installed_parity_proven_package_stays_completed(
     assert detail["calibrated_lower_bound"] == 0.58
     assert detail["official_publication_guard"]["official_publication_allowed"] is True
     assert detail["can_execute"] is False
+    assert row["can_execute"] is False
+
+
+def test_installed_parity_missing_canonical_ledger_holds_without_scoring(
+    isolated_bridges, restore_cross_sport_entrypoint
+):
+    # Missing canonical identity must NOT be repaired by trusting a provider ID.
+    _use_installed_entrypoint()
+
+    def forbidden_score(*_args, **_kwargs):
+        raise AssertionError("unverified provider alias reached fitted scorer")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runtime, "score_team_event_request", forbidden_score)
+        rows, scan = runtime._cross_sport_moneyline_rows(
+            _request(),
+            run_id="v17-daily-unverified-identity",
+            event_api=SimpleNamespace(),
+            covered_event_ids=set(),
+            fetch_sport_events=_feed(),
+        )
+
+    assert scan["reconciliation"]["row_reconciliation"] == "PASS"
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["row_status"] == "HELD"
+    assert row["identity"]["official_event_id"] is None
+    assert row["result"]["bucket"] == "EVENT_IDENTITY_UNRESOLVED"
+    assert row["probability_publishable"] is False
     assert row["can_execute"] is False
