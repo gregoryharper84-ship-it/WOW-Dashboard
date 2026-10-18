@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS wow_release_control.release_intent (
   CHECK (state NOT IN ('PROVIDER_ACK','LIVE_OBSERVED','VERIFIED') OR provider_deploy_id IS NOT NULL),
   CHECK (state <> 'VERIFIED' OR
     (verified_at IS NOT NULL AND verification_receipt_sha IS NOT NULL
-     AND verification_receipt_sha ~ '^[0-9a-f]{64}
+     AND verification_receipt_sha ~ '^[0-9a-f]{64}$'))
 );
 
 -- Database-enforced guard in addition to the service_fence SELECT ... FOR UPDATE.
