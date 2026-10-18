@@ -582,6 +582,7 @@ class DiscoveredEvent:
                         "provider_event_id",
                         "_wow_secondary_event_id",
                         "event_id",
+                        "event_uuid",
                         "id",
                         "official_event_id",
                     )
