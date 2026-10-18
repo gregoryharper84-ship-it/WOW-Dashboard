@@ -947,3 +947,92 @@ def test_nba_daily_discovery_alias_stays_unresolved_without_schedule_match(monke
     assert out.official_event_id is None
     assert out.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
     assert out.raw["canonical_identity_blocker"] == "NBA_CANONICAL_EVENT_NOT_FOUND"
+
+
+@pytest.mark.parametrize("sport", ["NFL", "WNBA"])
+def test_unresolved_canonicalized_aliases_keep_distinct_opaque_terminal_keys(sport):
+    """Two provider IDs for identical teams/start must remain two HELD receipts."""
+    from v17.cross_sport_winner_discovery import (
+        DiscoveryInventory, IDENTITY_UNRESOLVED, route_discovered_slate,
+    )
+
+    if sport == "NFL":
+        first = _nfl_alias_event()
+        slate = "2026-10-04"
+
+        def canonicalize(event):
+            return canonicalize_nfl_discovery_identity(
+                event,
+                req=SimpleNamespace(
+                    requested_slate_date=slate,
+                    requested_timezone="America/Chicago",
+                ),
+                event_api=SimpleNamespace(),  # No official ledger: HOLD
+                settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+            )
+
+    else:
+        first = _wnba_alias_event()
+        slate = "2026-10-07"
+
+        def canonicalize(event):
+            return canonicalize_wnba_discovery_identity(event)
+
+    aliases = ("provider-alias-001", "provider-alias-002")
+    events = []
+    for alias in aliases:
+        raw = {
+            **first.raw,
+            "provider_event_id": alias,
+            # Missing WNBA team alias makes canonical matching unavailable.
+            "_wow_secondary_home_team_id": "",
+        }
+        # NFL intentionally uses an unavailable ledger; WNBA lacks team alias.
+        unresolved = canonicalize(replace(first, raw=raw, official_event_id=None))
+        assert unresolved.official_event_id is None
+        assert unresolved.raw["canonical_identity_status"] == "ALIAS_ONLY_UNRESOLVED"
+        events.append(unresolved)
+
+    keys = [event.identity()["event_key"] for event in events]
+    assert len(set(keys)) == 2
+    assert all(key.startswith(sport + ":UNRESOLVED:") for key in keys)
+    assert keys == [event.identity()["event_key"] for event in events]
+    assert all(alias not in "".join(keys) for alias in aliases)
+    assert all(event.identity()["official_event_id"] is None for event in events)
+
+    calls = []
+    rows = route_discovered_slate(
+        DiscoveryInventory(
+            requested_slate_date=slate,
+            requested_timezone="America/Chicago",
+            events=events,
+        ),
+        resolve_model=lambda _event: calls.append("model") or object(),
+        score_row=lambda *_args: calls.append("scorer") or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+    )
+    assert len(rows) == 2
+    assert {row.identity["event_key"] for row in rows} == set(keys)
+    assert all(row.bucket == IDENTITY_UNRESOLVED for row in rows)
+    assert all(row.probability_publishable is False for row in rows)
+    assert all(row.rank_eligible is False for row in rows)
+    assert calls == []
+
+
+def test_secondary_provider_alias_identity_survives_missing_official_id():
+    """Some providers retain alias only in the secondary raw event field."""
+    base = _wnba_alias_event()
+    def held(alias):
+        raw = dict(base.raw)
+        raw.pop("provider_event_id", None)
+        raw["_wow_secondary_event_id"] = alias
+        raw["_wow_secondary_home_team_id"] = ""
+        return canonicalize_wnba_discovery_identity(
+            replace(base, raw=raw, official_event_id=None)
+        )
+    a, b = held("secondary-001"), held("secondary-002")
+    assert a.official_event_id is None and b.official_event_id is None
+    assert a.identity()["event_key"] != b.identity()["event_key"]
+    assert "secondary-" not in a.identity()["event_key"] + b.identity()["event_key"]
