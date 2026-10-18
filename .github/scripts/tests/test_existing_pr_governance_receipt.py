@@ -514,14 +514,15 @@ def test_receipt_expiry_cannot_be_extended_or_backdated():
 
 
 def test_independent_approval_still_required_with_fresh_receipt():
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REVIEW"):
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING"):
         build(data=evidence(review_state="COMMENTED"))
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REVIEW"):
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING"):
         build(data=evidence(review_state="DISMISSED"))
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch):
-    receipt = build()
+    # CLI uses live wall clock; never feed it the suite’s frozen historical NOW.
+    receipt = build(now=datetime.now(timezone.utc))
     live_reviews = tmp_path / "reviews.json"
     live_reviews.write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
@@ -655,7 +656,8 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     assert legacy_invalid.returncode == 1
     assert "receipt head SHA mismatch" in legacy_invalid.stdout
 
-    receipt = build()
+    # External Python verifier uses the current wall clock, not the test fixture clock.
+    receipt = build(now=datetime.now(timezone.utc))
     reviews = evidence()["reviews"]
     v2_valid = run(verifier.WORKFLOW_NAME, receipt, reviews)
     assert v2_valid.returncode == 0, v2_valid.stderr
