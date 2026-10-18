@@ -133,6 +133,7 @@ def test_unknown_or_execution_enabled_receipt_fails_closed():
     "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
     "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
     "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+    "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
     "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
 ])
 def test_deployment_holds_and_rollbacks_never_advance_pointer(status):
