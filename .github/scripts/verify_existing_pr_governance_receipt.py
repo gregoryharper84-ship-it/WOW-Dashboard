@@ -19,6 +19,8 @@ CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 OWNER_LOGIN = "gregoryharper84-ship-it"
 OWNER_ID = 285088163
 REVIEW_RECEIPT_MAX_AGE = timedelta(minutes=30)
+# Temporary Claude-provider substitution: independently authorized renewal required.
+FALLBACK_PROVIDER_SUNSET_UTC = "2026-11-01T00:00:00Z"
 SHA = re.compile(r"^[a-f0-9]{40}$")
 
 REQUIRED_WORKFLOWS = {
@@ -281,10 +283,11 @@ def build_receipt(
 ) -> dict[str, Any]:
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
-    # Every certification is an exact-PR, short-lived evidence snapshot.
-    # A calendar-based global sunset is not a retry policy: it permanently
-    # wedges valid independent reviews without any renewal path.
-    # The trusted verifier below constrains expiry to this fixed maximum.
+    # Two independent bounds: the provider exception sunsets on November 1,
+    # and each particular receipt must still expire after exactly 30 minutes.
+    # A receipt minted just before sunset never extends the provider exception.
+    _require(clock.astimezone(timezone.utc) < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
+             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
     _require(expected_repository == CANONICAL_REPOSITORY, "REPOSITORY_IDENTITY_MISMATCH")
     _require(bool(SHA.fullmatch(expected_head_sha)), "EXPECTED_SHA_INVALID")
     _require(bool(expected_head_ref), "EXPECTED_HEAD_REF_MISSING")
@@ -431,6 +434,8 @@ def verify_receipt(
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
     clock = clock.astimezone(timezone.utc)
+    _require(clock < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
+             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
     _require(created <= clock < expiry, "TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT")
     _require(bool(SHA.fullmatch(expected_head_sha)), "EXPECTED_SHA_INVALID")
     target = _exact_keys(
