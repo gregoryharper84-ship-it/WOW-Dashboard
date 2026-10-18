@@ -1693,3 +1693,153 @@ def test_real_nfl_ledger_canonicalizer_duplicate_aliases_publish_only_one(monkey
     assert len({r["event_key"] for r in result["rows"]}) == 2
     assert result["reconciliation"]["row_reconciliation"] == "PASS"
     assert result["can_execute"] is False
+
+
+def test_full_scan_wrong_regime_first_does_not_claim_valid_canonical_scoring_slot():
+    """A playoff fixture alias cannot make a regular-season row disappear."""
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import cross_sport_discovery_feed as feed
+
+    playoffs = discovery.DiscoveryTarget(
+        family="NFL", provider="RUNDOWN", league="NFL",
+        regime="PLAYOFFS", sport_key="nfl_playoff",
+    )
+    regular = discovery.DiscoveryTarget(
+        family="NFL", provider="RUNDOWN", league="NFL",
+        regime="REGULAR_SEASON", sport_key="americanfootball_nfl",
+    )
+    targets = {"NFL": (playoffs, regular)}
+    actual_fetch = []
+    def fetch(_family, target):
+        actual_fetch.append(target.regime)
+        return [feed._odds_api_alias_row({
+            "id": f"alias-{target.regime}",
+            "home_team": "Chicago Bears",
+            "away_team": "New York Jets",
+            "commence_time": "2026-10-18T21:00:00Z",
+            "status": "scheduled",
+        }, sport_key=target.sport_key)]
+
+    calls = []
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        discovery_targets=targets,
+        canonicalize_identity=lambda event: replace(
+            event,
+            official_event_id="2026_05_NYJ_CHI",
+            raw={**event.raw, "canonical_identity_status": "CANONICAL_RESOLVED"},
+        ),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda event, _: (
+            calls.append((event.regime, event.official_event_id)) or
+            {"probability_publishable": True, "rank_eligible": True}
+        ),
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert actual_fetch == ["PLAYOFFS", "REGULAR_SEASON"]
+    assert calls == [("REGULAR_SEASON", "2026_05_NYJ_CHI")]
+    rows = result["rows"]
+    assert len(rows) == 2
+    assert rows[0]["bucket"] == discovery.MODEL_UNAVAILABLE
+    assert rows[0]["detail"]["reason"] == "NFL_PLAYOFFS_REGIME_NOT_SUPPORTED_BY_FITTED_MODEL"
+    assert rows[0]["probability_publishable"] is False
+    assert rows[1]["bucket"] == discovery.MODEL_COMPLETED
+    assert rows[1]["probability_publishable"] is True
+    assert rows[1]["rank_eligible"] is True
+    assert rows[1]["event_key"] == "NFL:2026_05_NYJ_CHI"
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("first_hold", ["missing_model", "resolver_exception", "unsupported_regime"])
+def test_unscored_first_canonical_alias_does_not_preempt_later_eligible_model(first_hold):
+    """A canonical game is reserved only when its owner can really score."""
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+
+    alias_events = [
+        replace(
+            _nfl_alias_event(),
+            official_event_id="2026_04_NYJ_CHI",
+            commence_time_utc="2026-10-04T17:00:00Z",
+            raw={
+                "provider_event_id": f"provider-{index}",
+                "canonical_identity_status": "CANONICAL_RESOLVED",
+            },
+        )
+        for index in (1, 2)
+    ]
+    if first_hold == "unsupported_regime":
+        alias_events[0] = replace(alias_events[0], regime="PLAYOFFS")
+    models, scores = [], []
+
+    def resolve(event):
+        models.append(event.raw["provider_event_id"])
+        if event.raw["provider_event_id"] == "provider-1":
+            if first_hold == "missing_model":
+                return None
+            if first_hold == "resolver_exception":
+                raise RuntimeError("injected resolver failure")
+        return SimpleNamespace(supported_regimes=("REGULAR_SEASON",))
+
+    def score(event, _model):
+        scores.append(event.raw["provider_event_id"])
+        return {"probability_publishable": True, "rank_eligible": True}
+
+    rows = discovery.route_discovered_slate(
+        discovery.DiscoveryInventory(
+            requested_slate_date="2026-10-04",
+            requested_timezone="America/Chicago",
+            events=alias_events,
+        ),
+        resolve_model=resolve,
+        score_row=score,
+        now=datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    assert models == ["provider-1", "provider-2"]
+    assert scores == ["provider-2"]
+    assert rows[0].bucket == discovery.MODEL_UNAVAILABLE
+    assert rows[1].bucket == discovery.MODEL_COMPLETED
+    assert rows[0].probability_publishable is False
+    assert rows[1].probability_publishable is True
+
+
+def test_once_any_canonical_scorer_invoked_second_alias_is_held_after_failure():
+    """A scorer error is not permission to run another scorer for one game."""
+    from v17 import cross_sport_winner_discovery as discovery
+
+    events = [
+        replace(
+            _nfl_alias_event(),
+            official_event_id="2026_04_NYJ_CHI",
+            raw={
+                "provider_event_id": f"provider-{index}",
+                "canonical_identity_status": "CANONICAL_RESOLVED",
+            },
+        )
+        for index in (1, 2)
+    ]
+    invoked = []
+    rows = discovery.route_discovered_slate(
+        discovery.DiscoveryInventory(
+            requested_slate_date="2026-10-04",
+            requested_timezone="America/Chicago",
+            events=events,
+        ),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda event, _: (
+            invoked.append(event.raw["provider_event_id"]) or
+            {"code": discovery.MODEL_SCORER_FAILED,
+             "probability_publishable": False, "rank_eligible": False}
+        ),
+    )
+    assert invoked == ["provider-1"]
+    assert rows[0].bucket == discovery.MODEL_SCORER_FAILED
+    assert rows[1].bucket == discovery.OTHER_GOVERNED_HOLD
+    assert rows[1].detail["reason"] == "DUPLICATE_CANONICAL_EVENT_HELD"
+    assert all(row.probability_publishable is False for row in rows)
