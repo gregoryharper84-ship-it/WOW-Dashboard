@@ -183,3 +183,10 @@ def test_invalid_provider_identity_refuses_reconciliation_before_db():
     with pytest.raises(m.ReleaseHold, match="RELEASE_PROVIDER_IDENTITY_MISMATCH"):
         fence.reconcile_provider(LEASE, deploy_id="oops", deployed_sha=SHA,
                                  provider_created_at=datetime.now(timezone.utc), candidate_count=1)
+
+
+def test_implicit_transaction_connection_cannot_reserve_render_post():
+    class UncommittedConnection:
+        autocommit = False
+    with pytest.raises(m.ReleaseHold, match="RELEASE_DB_AUTOCOMMIT_REQUIRED_BEFORE_RENDER_POST"):
+        m.ReleaseFence(UncommittedConnection())
