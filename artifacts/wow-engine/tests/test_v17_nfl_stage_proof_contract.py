@@ -13,8 +13,11 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from v17 import daily_snapshot_runtime as runtime
+from v17 import nhl_event_identity
 from v17 import team_event_bridge_runtime as bridge_runtime
+from v17.nhl_event_identity import NHLEventIdentityError
 from v17.team_event_bridge_runtime import TeamEventBridgeRegistration
+from v17.team_event_sport_parity import install_cross_sport_discovery_evidence_handoff
 from v17.cross_sport_winner_discovery import MODEL_COMPLETED, OTHER_GOVERNED_HOLD
 from v17.daily_response_contract import (
     DAILY_ACQUISITION_DETAIL_TABLE,
@@ -658,7 +661,18 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     original_bridges = dict(bridge_runtime.TEAM_EVENT_BRIDGES)
     original_feed = runtime.discovery_feed.union_feed
     original_score = runtime.score_team_event_request
+    original_resolve = nhl_event_identity.resolve_nhl_current_event_identity
+    original_cross = runtime._cross_sport_moneyline_rows
+    handoff_before = getattr(
+        runtime, "_v17_cross_sport_discovery_evidence_handoff_installed", False
+    )
     install_cross_sport_full_board_overlay()
+    # Shard 3 imports the production entrypoint, which installs this handoff
+    # before the test. An unresolved NHL alias then loses official_event_id and
+    # cannot be read back as nhl-1. Force that same path in isolation, and stub
+    # only the schedule match. The stub carries no probability and no NHL bridge.
+    if not handoff_before:
+        install_cross_sport_discovery_evidence_handoff()
     bridge_runtime.TEAM_EVENT_BRIDGES.clear()
     for sport in ("NFL", "MLB"):
         bridge_runtime.TEAM_EVENT_BRIDGES[sport] = TeamEventBridgeRegistration(
@@ -669,6 +683,17 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
             scorer=lambda *_args, **_kwargs: {},
             supported_regimes=("REGULAR_SEASON",),
         )
+
+    def resolve_nhl_schedule_stub(**_kwargs):
+        return {
+            "event_id": "nhl-1",
+            "identity_provider": "NHL_TEST_SCHEDULE_STUB",
+            "identity_verified_at": commence,
+            "market_features_used": False,
+            "can_execute": False,
+        }
+
+    nhl_event_identity.resolve_nhl_current_event_identity = resolve_nhl_schedule_stub
     runtime.discovery_feed.union_feed = lambda *_args, **_kwargs: fetch
     runtime.score_team_event_request = score_team_event_request
     db = _DB()
@@ -689,6 +714,10 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     finally:
         runtime.discovery_feed.union_feed = original_feed
         runtime.score_team_event_request = original_score
+        nhl_event_identity.resolve_nhl_current_event_identity = original_resolve
+        if not handoff_before:
+            runtime._cross_sport_moneyline_rows = original_cross
+            runtime._v17_cross_sport_discovery_evidence_handoff_installed = False
         bridge_runtime.TEAM_EVENT_BRIDGES.clear()
         bridge_runtime.TEAM_EVENT_BRIDGES.update(original_bridges)
         if not already_installed:
@@ -725,11 +754,27 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     assert patriots["result"]["detail"]["official_publication_guard"]["status"] == "HELD"
     assert patriots["result"]["publication_chain_audit"]["status"] == "UNPROVEN"
     assert patriots["result"]["publication_chain_audit"]["first_blocker"] == "PROBABILITY_PACKAGE_EVIDENCE_NOT_EMITTED"
+    stage_evidence = patriots["result"]["publication_chain_audit"]["stage_evidence"]
+    assert stage_evidence["dynamic_calibration_complete"] == "EVIDENCE_NOT_EMITTED"
+    assert stage_evidence["final_refresh_passed"] == "EVIDENCE_NOT_EMITTED"
+    assert patriots["result"]["publication_agreement"]["status"] == "UNPROVEN"
+    assert patriots["result"]["detail"].get("code") == "STAGE_PROOF_UNPROVEN"
+    assert patriots["result"]["bucket"] != "MODEL_UNAVAILABLE"
     assert full_by_event["mlb-1"]["row_status"] == "COMPLETED"
     assert full_by_event["mlb-1"]["result"]["publication_chain_audit"]["status"] == "PASS"
-    assert full_by_event["nhl-1"]["row_status"] == "HELD"
-    assert full_by_event["nhl-1"]["result"]["bucket"] == "MODEL_UNAVAILABLE"
+    nhl = full_by_event["nhl-1"]
+    nhl_detail = nhl["result"]["detail"]
+    assert nhl["row_status"] == "HELD"
+    assert nhl["result"]["bucket"] == "MODEL_UNAVAILABLE"
+    assert nhl["probability_publishable"] is False
+    assert nhl["can_execute"] is False
+    assert nhl_detail.get("model_invoked") is False
+    assert "calibrated_probability" not in nhl_detail
+    assert "calibrated_home_probability" not in nhl_detail
     assert sum(1 for event_id in full_by_event if str(event_id).startswith("nfl-")) == 8
+    discovery_audit = full["cross_sport_discovery_audit"]["reconciliation"]
+    assert discovery_audit["events_discovered"] == discovery_audit["events_accounted"]
+    assert discovery_audit["events_discovered"] == len(full_by_event)
 
     compact_by_event = {row["identity"]["official_event_id"]: row for row in compact["rows"]}
     compact_patriots = compact_by_event["nfl-17"]
@@ -743,7 +788,11 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     assert compact_patriots["result_summary"]["publication_chain_audit"]["status"] == "UNPROVEN"
     assert compact_patriots["result_summary"]["publication_agreement"]["status"] == "UNPROVEN"
     assert compact_by_event["mlb-1"]["row_status"] == "COMPLETED"
-    assert compact_by_event["nhl-1"]["row_status"] == "HELD"
+    compact_nhl = compact_by_event["nhl-1"]
+    assert compact_nhl["row_status"] == "HELD"
+    assert compact_nhl["probability_publishable"] is False
+    assert compact_nhl["can_execute"] is False
+    assert "calibrated_home_probability" not in (compact_nhl.get("result_summary") or {})
 
     stored = read_row_detail_page(db, run_id=full["run_id"], limit=50)
     stored_patriots = next(
@@ -753,3 +802,105 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     assert stored_patriots["detail"]["result"]["publication_chain_audit"]["status"] == "UNPROVEN"
     assert stored_patriots["detail"]["result"]["detail"]["calibrated_home_probability"] == PATRIOTS_PROBABILITY
     assert stored_patriots["detail"]["can_execute"] is False
+    stored_nhl = [
+        row for row in stored["rows"] if row["identity"]["official_event_id"] == "nhl-1"
+    ]
+    assert len(stored_nhl) == 1
+    assert stored_nhl[0]["detail"]["result"]["bucket"] == "MODEL_UNAVAILABLE"
+    assert stored_nhl[0]["detail"]["can_execute"] is False
+
+
+def test_unresolved_nhl_alias_is_retained_without_a_probability():
+    """An official-schedule miss must not delete the discovered NHL row.
+
+    The production handoff clears official_event_id when the NHL schedule does
+    not match. The row stays on the board as an identity hold, with no model
+    probability substituted for the missing canonical id.
+    """
+    slate, commence = _future_slate()
+
+    def fetch(family, target=None):
+        sport_id = getattr(target, "sport_id", None)
+        if family == "NHL" and sport_id == 6:
+            return [{
+                "id": "nhl-unresolved",
+                "home_team": "Chicago Blackhawks",
+                "away_team": "Detroit Red Wings",
+                "commence_time": commence,
+                "status": "SCHEDULED",
+            }]
+        return []
+
+    def fail_nhl_schedule(**_kwargs):
+        raise NHLEventIdentityError("NHL_CANONICAL_EVENT_NOT_FOUND")
+
+    original_scan = discovery.run_cross_sport_winner_scan
+    already_installed = getattr(discovery, "_v17_full_board_overlay_installed", False)
+    original_bridges = dict(bridge_runtime.TEAM_EVENT_BRIDGES)
+    original_feed = runtime.discovery_feed.union_feed
+    original_resolve = nhl_event_identity.resolve_nhl_current_event_identity
+    original_cross = runtime._cross_sport_moneyline_rows
+    handoff_before = getattr(
+        runtime, "_v17_cross_sport_discovery_evidence_handoff_installed", False
+    )
+    install_cross_sport_full_board_overlay()
+    if not handoff_before:
+        install_cross_sport_discovery_evidence_handoff()
+    bridge_runtime.TEAM_EVENT_BRIDGES.clear()
+    nhl_event_identity.resolve_nhl_current_event_identity = fail_nhl_schedule
+    runtime.discovery_feed.union_feed = lambda *_args, **_kwargs: fetch
+    db = _DB()
+    try:
+        request = DailySnapshotRequest(
+            requested_slate_date=slate,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            response_mode="FULL",
+        )
+        full = run_daily_snapshot(request, db=db, market_api=object(), event_api=object())
+        compact = run_daily_snapshot(
+            request.model_copy(update={"response_mode": "COMPACT"}),
+            db=db,
+            market_api=object(),
+            event_api=object(),
+        )
+    finally:
+        runtime.discovery_feed.union_feed = original_feed
+        nhl_event_identity.resolve_nhl_current_event_identity = original_resolve
+        if not handoff_before:
+            runtime._cross_sport_moneyline_rows = original_cross
+            runtime._v17_cross_sport_discovery_evidence_handoff_installed = False
+        bridge_runtime.TEAM_EVENT_BRIDGES.clear()
+        bridge_runtime.TEAM_EVENT_BRIDGES.update(original_bridges)
+        if not already_installed:
+            discovery.run_cross_sport_winner_scan = getattr(
+                discovery, "_v17_full_board_original_scan", original_scan
+            )
+            discovery._v17_full_board_overlay_installed = False
+
+    for response in (full, compact):
+        assert response["can_execute"] is False
+        assert response["reconciliation"]["balanced"] is True
+        moneyline = [row for row in response["rows"] if row["lane"] == "MONEYLINE"]
+        assert len(moneyline) == 1
+        assert response["reconciliation"]["rows_in"] == 1
+        audit = response["cross_sport_discovery_audit"]["reconciliation"]
+        assert audit["events_discovered"] == audit["events_accounted"] == 1
+        nhl_rows = [
+            row for row in moneyline
+            if (row.get("identity") or {}).get("home_team") == "Chicago Blackhawks"
+        ]
+        assert len(nhl_rows) == 1
+        assert nhl_rows[0]["identity"].get("official_event_id") in (None, "")
+        assert nhl_rows[0]["row_status"] == "HELD"
+        assert nhl_rows[0]["probability_publishable"] is False
+        assert nhl_rows[0]["can_execute"] is False
+
+    assert full["rows"][0]["result"]["bucket"] == "EVENT_IDENTITY_UNRESOLVED"
+    detail = full["rows"][0]["result"]["detail"]
+    assert detail.get("model_invoked") is False
+    assert "calibrated_probability" not in detail
+    assert "calibrated_home_probability" not in detail
+    stored = read_row_detail_page(db, run_id=full["run_id"], limit=50)
+    assert len(stored["rows"]) == 1
+    assert stored["rows"][0]["detail"]["can_execute"] is False
