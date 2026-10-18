@@ -6,6 +6,7 @@ only asserting its text. This is a non-deploying, no-secret test suite.
 import ast
 from pathlib import Path
 import textwrap
+import urllib.error
 
 import pytest
 
@@ -39,6 +40,7 @@ def _embedded_function(name, **overrides):
     namespace = {
         "MAX_WORKFLOW_RUN_ATTEMPTS": 3,
         "DEPLOY_WORKFLOW_PATH": ".github/workflows/wow-v17-render-production-deploy.yml",
+        "urllib": urllib,
     }
     namespace.update(overrides)
     exec(compile(ast.Module(body=[func], type_ignores=[]), "<workflow>", "exec"), namespace)
@@ -205,8 +207,14 @@ def test_rollback_requires_new_restored_deploy_and_terminal_mismatch():
     rollback = {"id": "dep-rollback", "commit": {"id": previous_sha}, "status": "build_in_progress"}
     deploy_snapshots = [
         [previous_live, mismatch],
+        [previous_live, mismatch],
+        [previous_live, mismatch, rollback],
         [previous_live, dict(mismatch, status="deactivated"), rollback],
-        [dict(previous_live, status="deactivated"), dict(mismatch, status="deactivated"), dict(rollback, status="live")],
+        [
+            dict(previous_live, status="deactivated"),
+            dict(mismatch, status="deactivated"),
+            dict(rollback, status="live"),
+        ],
     ]
     receipts = []
 
@@ -242,6 +250,49 @@ def test_rollback_requires_new_restored_deploy_and_terminal_mismatch():
         "restored_commit_sha": previous_sha,
         "can_execute": False,
     }]
+
+
+def test_unverified_rollback_retries_are_bounded_and_emit_hold():
+    previous_sha, mismatch_sha = "a" * 40, "b" * 40
+    previous_live = {"id": "dep-previous", "commit": {"id": previous_sha}, "status": "live"}
+    mismatch = {"id": "dep-mismatch", "commit": {"id": mismatch_sha}, "status": "in_progress"}
+    receipts = []
+    rollback_calls = []
+
+    class Clock:
+        now = 100
+
+        @classmethod
+        def time(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, seconds):
+            cls.now += seconds
+
+    def render_json(method, path, payload):
+        rollback_calls.append((method, path, payload))
+        raise RuntimeError("RENDER_DEPLOY_API_UNREACHABLE")
+
+    rollback_function = _embedded_function(
+        "rollback_after_sha_mismatch",
+        target_sha=mismatch_sha,
+        service_path="service",
+        commit_sha=lambda deploy: str((deploy.get("commit") or {}).get("id") or ""),
+        render_json=render_json,
+        list_deploys=lambda: [previous_live, mismatch],
+        emit_receipt=receipts.append,
+        time=Clock,
+    )
+
+    with pytest.raises(SystemExit) as result:
+        rollback_function(previous_live, mismatch_sha, "dep-mismatch")
+
+    assert result.value.code == 0
+    assert len(rollback_calls) == 3
+    assert receipts[0]["status"] == "DEPLOY_SHA_MISMATCH_HOLD"
+    assert receipts[0]["rollback_status"] == "VERIFICATION_TIMEOUT"
+    assert receipts[0]["rollback_attempts"] == 3
 
 
 @pytest.mark.parametrize("failure,expected", [
