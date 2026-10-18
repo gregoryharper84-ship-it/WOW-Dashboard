@@ -819,6 +819,7 @@ jobs:
               "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
               "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
               "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+              "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
           }
           if status in advancing:
               print(json.dumps({"status":"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES","source_receipt_status":status,"can_execute":False}, sort_keys=True))
