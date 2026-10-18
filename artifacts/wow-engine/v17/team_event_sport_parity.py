@@ -788,13 +788,13 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                     "can_execute": False,
                 }
             try:
-                return daily.score_team_event_request(
+                scored = daily.score_team_event_request(
                     request,
                     event_api=event_api,
                     canonical_hydration_required=True,
                 )
             except HTTPException as exc:
-                return daily._detail(exc)
+                return daily._accept_cross_sport_moneyline_score(daily._detail(exc))
             except Exception as exc:  # noqa: BLE001
                 return {
                     "code": "MODEL_SCORER_FAILED",
@@ -804,6 +804,7 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                     "rank_eligible": False,
                     "can_execute": False,
                 }
+            return daily._accept_cross_sport_moneyline_score(scored)
 
         scan = dict(daily.discovery.run_cross_sport_winner_scan(
             requested_slate_date=req.requested_slate_date,
