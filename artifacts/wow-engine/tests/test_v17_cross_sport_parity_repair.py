@@ -1395,3 +1395,226 @@ def test_discovery_same_source_alias_deduplicates_exact_fixture_without_scoring(
     assert len(inventory.events) == 1
     assert sum(detail["duplicate_rows_suppressed"] for detail in inventory.acquisition_details) == 1
     assert inventory.events[0].identity()["official_event_id"] is None
+
+
+@pytest.mark.parametrize("case", [
+    "distinct_teams_no_ids",
+    "same_teams_different_start_no_ids",
+    "different_source_aliases_without_official_ids",
+    "different_secondary_aliases_without_official_ids",
+    "same_teams_same_start_different_private_rows",
+])
+def test_full_discovery_never_collapses_distinct_idless_candidates(case):
+    """No SPORT:UNRESOLVED constant may suppress separate acquired events."""
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+
+    base = {
+        "home_team": "Chicago Bears",
+        "away_team": "New York Jets",
+        "commence_time": "2026-10-18T21:00:00Z",
+        "status": "scheduled",
+    }
+    first, second = dict(base), dict(base)
+    if case == "distinct_teams_no_ids":
+        second.update(home_team="Green Bay Packers", away_team="Detroit Lions")
+    elif case == "same_teams_different_start_no_ids":
+        second["commence_time"] = "2026-10-18T23:00:00Z"
+    elif case == "different_source_aliases_without_official_ids":
+        first["provider_event_id"] = "alias-A"
+        second["provider_event_id"] = "alias-B"
+    elif case == "different_secondary_aliases_without_official_ids":
+        first["_wow_secondary_event_id"] = "secondary-A"
+        second["_wow_secondary_event_id"] = "secondary-B"
+    else:
+        first["game_sequence"] = 1
+        second["game_sequence"] = 2
+
+    called = []
+    def fetch(_family, _target):
+        called.append("fetch")
+        return [first, second] if len(called) == 1 else []
+
+    inventory = discovery.discover_winner_slate(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert len(inventory.events) == 2
+    assert sum(d["duplicate_rows_suppressed"] for d in inventory.acquisition_details) == 0
+    keys = [e.identity()["event_key"] for e in inventory.events]
+    assert len(set(keys)) == 2
+    assert all(key.startswith("NFL:UNRESOLVED:") for key in keys)
+    assert all(e.identity()["official_event_id"] is None for e in inventory.events)
+    assert "alias-" not in str(keys) and "secondary-" not in str(keys)
+
+    invoked = []
+    routed = discovery.route_discovered_slate(
+        inventory,
+        resolve_model=lambda *_: invoked.append("resolve") or object(),
+        score_row=lambda *_: invoked.append("score") or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+    )
+    assert len(routed) == 2
+    assert all(r.bucket == discovery.IDENTITY_UNRESOLVED for r in routed)
+    assert all(r.probability_publishable is False for r in routed)
+    assert invoked == []
+    assert discovery.reconcile(inventory, routed)["row_reconciliation"] == "PASS"
+
+
+def test_idless_exact_duplicate_with_reordered_fields_is_deduped_once():
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+
+    row = {
+        "home_team": "Chicago Bears", "away_team": "New York Jets",
+        "commence_time": "2026-10-18T21:00:00Z", "status": "scheduled",
+    }
+    seen = []
+    def fetch(_family, _target):
+        seen.append(1)
+        return [row, dict(reversed(list(row.items())))] if len(seen) == 1 else []
+    inventory = discovery.discover_winner_slate(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert len(inventory.events) == 1
+    assert sum(d["duplicate_rows_suppressed"] for d in inventory.acquisition_details) == 1
+
+
+@pytest.mark.parametrize("n_aliases", [2, 3])
+def test_full_scan_scores_exactly_one_canonical_event_from_multiple_aliases(n_aliases):
+    """Provider aliases all resolve to one official NFL schedule game."""
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import cross_sport_discovery_feed as feed
+
+    aliases = [f"odds-private-alias-{i}" for i in range(n_aliases)]
+    rows = [
+        feed._odds_api_alias_row({
+            "id": alias,
+            "home_team": "Chicago Bears",
+            "away_team": "New York Jets",
+            "commence_time": "2026-10-18T21:00:00Z",
+            "status": "scheduled",
+        }, sport_key="americanfootball_nfl")
+        for alias in aliases
+    ]
+    fetch_calls = []
+    def fetch(_family, _target):
+        fetch_calls.append(1)
+        return rows if len(fetch_calls) == 1 else []
+
+    verified_id = "2026_05_NYJ_CHI"
+    def canonicalize(event):
+        assert event.official_event_id is None
+        return replace(
+            event,
+            official_event_id=verified_id,
+            raw={
+                **event.raw,
+                "canonical_identity_status": "CANONICAL_RESOLVED",
+                "canonical_identity_source": "CANONICAL_NFLVERSE_LEDGER",
+            },
+        )
+
+    model_calls, scorer_calls = [], []
+    def resolve_model(event):
+        model_calls.append(event.official_event_id)
+        return SimpleNamespace(supported_regimes=("REGULAR_SEASON",))
+
+    def score(event, _model):
+        scorer_calls.append(event.official_event_id)
+        return {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "model_status": "FITTED_SPECIALIST_COMPLETED",
+        }
+
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        canonicalize_identity=canonicalize,
+        resolve_model=resolve_model,
+        score_row=score,
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    terminal_rows = result["rows"]
+    assert len(terminal_rows) == n_aliases
+    assert result["discovery"]["events_discovered"] == n_aliases
+    assert result["reconciliation"]["events_accounted"] == n_aliases
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
+    assert model_calls == [verified_id] and scorer_calls == [verified_id]
+
+    published = [row for row in terminal_rows if row["probability_publishable"]]
+    held = [row for row in terminal_rows if row["bucket"] == discovery.OTHER_GOVERNED_HOLD]
+    assert len(published) == 1 and len(held) == n_aliases - 1
+    assert published[0]["bucket"] == discovery.MODEL_COMPLETED
+    assert published[0]["event_key"] == f"NFL:{verified_id}"
+    assert published[0]["rank_eligible"] is True
+    assert all(row["rank_eligible"] is False for row in held)
+    assert all(row["probability_publishable"] is False for row in held)
+    assert all(row["official_event_id"] is None for row in held)
+    assert all(row["detail"] == {
+        "reason": "DUPLICATE_CANONICAL_EVENT_HELD", "model_invoked": False,
+    } for row in held)
+    assert len({row["event_key"] for row in terminal_rows}) == n_aliases
+    assert all(alias not in str(terminal_rows) for alias in aliases)
+    assert result["can_execute"] is False
+
+
+def test_distinct_verified_canonical_games_are_scored_once_each():
+    from datetime import datetime, timezone
+    from v17 import cross_sport_winner_discovery as discovery
+    from v17 import cross_sport_discovery_feed as feed
+
+    raw_rows = [
+        feed._odds_api_alias_row({
+            "id": f"private-{index}",
+            "home_team": "Chicago Bears",
+            "away_team": "New York Jets",
+            "commence_time": "2026-10-18T21:00:00Z",
+            "status": "scheduled",
+        }, sport_key="americanfootball_nfl")
+        for index in range(2)
+    ]
+    count = []
+    def fetch(_family, _target):
+        count.append(1)
+        return raw_rows if len(count) == 1 else []
+
+    score_ids = []
+    result = discovery.run_cross_sport_winner_scan(
+        requested_slate_date="2026-10-18",
+        requested_timezone="America/Chicago",
+        fetch_sport_events=fetch,
+        supported_sports=("NFL",),
+        canonicalize_identity=lambda event: replace(
+            event, official_event_id=(
+                "CANONICAL_ID_A" if event.raw["provider_event_id"] == "private-0"
+                else "CANONICAL_ID_B"
+            ), raw={**event.raw, "canonical_identity_status": "CANONICAL_RESOLVED"},
+        ),
+        resolve_model=lambda *_: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda event, _: (
+            score_ids.append(event.official_event_id) or
+            {"probability_publishable": True, "rank_eligible": True}
+        ),
+        now=datetime(2026, 10, 18, 15, 0, tzinfo=timezone.utc),
+        budget_seconds=30,
+    )
+    assert len(score_ids) == 2 and len(set(score_ids)) == 2
+    assert sum(row["probability_publishable"] for row in result["rows"]) == 2
+    assert result["reconciliation"]["row_reconciliation"] == "PASS"
