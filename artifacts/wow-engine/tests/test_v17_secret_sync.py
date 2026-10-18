@@ -277,6 +277,39 @@ def test_partial_secret_mutation_keeps_release_request_receipt(manifest, tmp_pat
     assert render.deploy_calls == 0
 
 
+def test_secret_readback_mismatch_keeps_request_and_fails_closed(manifest, tmp_path):
+    class MismatchedRender(FakeRender):
+        def set_env(self, name, value):
+            super().set_env(name, "unexpected-value")
+
+    render = MismatchedRender({"RUNDOWN_API_KEY": "old"})
+    receipt_path = tmp_path / "readback-request.json"
+    with pytest.raises(secret_sync.SecretSyncError) as error:
+        secret_sync.run_sync(
+            manifest,
+            mode="github-to-render",
+            repo_root=tmp_path,
+            environ={
+                "RENDER_API_KEY": "render-control",
+                "RUNDOWN_API_KEY": "new-secret",
+                "GITHUB_REPOSITORY": manifest["github_repository"],
+                "GITHUB_REF": "refs/heads/main",
+                "GITHUB_SHA": "a" * 40,
+                "GITHUB_RUN_ID": "12345",
+                "GITHUB_RUN_ATTEMPT": "1",
+            },
+            render_client=render,
+            release_request_file=receipt_path,
+        )
+
+    assert error.value.reason_code == "RENDER_ENV_UPDATE_READBACK_MISMATCH"
+    stored = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert stored["request_type"] == "SECRET_ENV_CHANGED_RELEASE_REQUEST"
+    assert "unexpected-value" not in json.dumps(stored)
+    assert "new-secret" not in json.dumps(stored)
+    assert render.deploy_calls == 0
+
+
 def test_secret_change_request_requires_exact_main_workflow_identity(manifest):
     with pytest.raises(secret_sync.SecretSyncError, match="verified main-branch"):
         secret_sync.validate_release_request_identity(

@@ -308,6 +308,12 @@ def sync_github_to_render(
             render.set_env(entry.name, value)
             if on_secret_changed is not None:
                 on_secret_changed()
+            applied = render.get_env(entry.name)
+            if applied is None or not hmac.compare_digest(applied, value):
+                raise SecretSyncError(
+                    "RENDER_ENV_UPDATE_READBACK_MISMATCH",
+                    "Render did not confirm the updated environment-variable value",
+                )
     return checked, changed, skipped
 
 
