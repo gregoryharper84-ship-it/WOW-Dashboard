@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -558,3 +560,102 @@ def test_terminal_and_execution_invariants_are_enforced():
     receipt["terminal_authority"] = "OTHER"
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TERMINAL_AUTHORITY"):
         verify(receipt)
+
+
+def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes(tmp_path):
+    workflow = (REPO_ROOT / ".github/workflows/wow-v17-trusted-governance-gate.yml").read_text()
+    start = workflow.index('verifier=".github/scripts/verify_engineering_governance_receipt.py"')
+    end_marker = 'echo "Trusted exact-head governance receipt verified. can_execute=false."'
+    end = workflow.index(end_marker, start) + len(end_marker)
+    invocation = workflow[start:end]
+
+    def run(workflow_name, receipt, live_reviews=None):
+        receipt_path = tmp_path / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        reviews_path = tmp_path / "reviews.json"
+        reviews_path.write_text(json.dumps(live_reviews or []), encoding="utf-8")
+        script = (
+            'set -euo pipefail\n'
+            'receipt="$RECEIPT_PATH"\n'
+            'live_reviews="$LIVE_REVIEWS_PATH"\n'
+            f"{invocation}\n"
+        )
+        env = os.environ | {
+            "WORKFLOW_NAME": workflow_name,
+            "RECEIPT_PATH": str(receipt_path),
+            "LIVE_REVIEWS_PATH": str(reviews_path),
+            "PR_NUMBER": "1822",
+            "PR_HEAD_SHA": HEAD,
+            "PR_HEAD_REF": "fix/issue-1806",
+            "RUN_ID": "12345",
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+        }
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", script],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    legacy = {
+        "receipt_schema_version": 1,
+        "workflow_name": "wow-v17-chatgpt-engineering-worker",
+        "repository": REPOSITORY,
+        "workflow_run_id": "12345",
+        "implementation": {
+            "changed": True,
+            "branch": "fix/issue-1806",
+            "head_sha": HEAD,
+            "incident_id": "1806",
+        },
+        "handoff": {
+            "lead_dispatch": {"decision": "REPAIR"},
+            "triage": {"repairable": True, "incident_id": "1806"},
+            "engineering": {"changed": True, "incident_id": "1806"},
+            "independent_review": {"decision": "PASS"},
+            "system_architect": {"decision": "NOT_APPLICABLE"},
+            "deterministic_regression": {"status": "0"},
+            "qa": {"decision": "PASS"},
+        },
+        "governance_complete": True,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "can_execute": False,
+    }
+    legacy_valid = run("wow-v17-chatgpt-engineering-worker", legacy)
+    assert legacy_valid.returncode == 0, legacy_valid.stderr
+    legacy["implementation"]["head_sha"] = "b" * 40
+    legacy_invalid = run("wow-v17-chatgpt-engineering-worker", legacy)
+    assert legacy_invalid.returncode == 1
+    assert "receipt head SHA mismatch" in legacy_invalid.stdout
+
+    receipt = build()
+    reviews = evidence()["reviews"]
+    v2_valid = run(verifier.WORKFLOW_NAME, receipt, reviews)
+    assert v2_valid.returncode == 0, v2_valid.stderr
+    withdrawn = reviews + [
+        {
+            "id": 13,
+            "state": "DISMISSED",
+            "commit_id": HEAD,
+            "submitted_at": "2026-10-17T23:01:00Z",
+            "user": {**REVIEWER, "type": "User"},
+        }
+    ]
+    v2_withdrawn = run(verifier.WORKFLOW_NAME, receipt, withdrawn)
+    assert v2_withdrawn.returncode == 1
+    assert "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING" in v2_withdrawn.stdout
+
+    renamed_source = dict(receipt)
+    renamed_source["changed_files"] = [
+        {
+            "filename": "src/relocated.py",
+            "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
+            "status": "renamed",
+        }
+    ]
+    v2_renamed = run(verifier.WORKFLOW_NAME, renamed_source, reviews)
+    assert v2_renamed.returncode == 1
+    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in v2_renamed.stdout

@@ -185,6 +185,11 @@ jobs:
             verifier=".github/scripts/verify_existing_pr_governance_receipt.py"
           fi
 
+          extra_args=()
+          if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
+            extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
+          fi
+
           python "$verifier" \
             --receipt "$receipt" \
             --repository "$GITHUB_REPOSITORY" \
@@ -192,7 +197,6 @@ jobs:
             --head-ref "$PR_HEAD_REF" \
             --workflow-run-id "$RUN_ID" \
             --workflow-name "$WORKFLOW_NAME" \
-            --pr-number "$PR_NUMBER" \
-            --live-reviews-json "$live_reviews"
+            "${extra_args[@]}"
 
           echo "Trusted exact-head governance receipt verified. can_execute=false." >> "$GITHUB_STEP_SUMMARY"
