@@ -13,6 +13,11 @@ on:
       - 'artifacts/wow-engine/tests/test_render_release_rpc_postgres.py'
       - 'artifacts/wow-engine/migrations/20261018_release_observer_RECOVERY_REVIEW_ONLY.sql'
       - 'artifacts/wow-engine/tests/test_render_release_recovery_postgres.py'
+      - '.github/workflows/wow-v17-render-production-deploy.yml'
+      - 'artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py'
+      - 'artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py'
+      - 'artifacts/wow-engine/v17/render_deployment_pointer.py'
+      - 'artifacts/wow-engine/v17/test_render_deployment_pointer.py'
 permissions:
   contents: read
   id-token: write # OIDC only for signed *test-evidence* provenance
@@ -108,6 +113,8 @@ jobs:
             artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py \
             artifacts/wow-engine/tests/test_render_release_rpc_postgres.py \
             artifacts/wow-engine/tests/test_render_release_recovery_postgres.py \
+            artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py \
+            artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py \
             --junitxml=release-evidence/junit.xml \
             2>&1 | tee release-evidence/pytest.log
       - name: Persist hashed non-secret evidence
@@ -125,6 +132,11 @@ jobs:
             artifacts/wow-engine/tests/test_render_release_recovery_postgres.py \
             artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py \
             artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py \
+            .github/workflows/wow-v17-render-production-deploy.yml \
+            artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py \
+            artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py \
+            artifacts/wow-engine/v17/render_deployment_pointer.py \
+            artifacts/wow-engine/v17/test_render_deployment_pointer.py \
             > release-evidence/source-hashes.txt
           (cd release-evidence && sha256sum source-identity.txt source-hashes.txt junit.xml pytest.log 2>/dev/null || true) \
             > release-evidence/evidence-hashes.txt
