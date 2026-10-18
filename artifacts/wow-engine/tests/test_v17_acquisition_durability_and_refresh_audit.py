@@ -464,8 +464,9 @@ def test_nested_final_refresh_is_authoritative_and_pregame_is_never_proof():
     assert publication_chain_audit(nested).status == "PASS"
 
     pregame_only = publication_chain_audit(_audit_row(official_event_status="PREGAME"))
-    assert pregame_only.status == "BLOCKED"
-    assert pregame_only.first_blocker == "FINAL_REFRESH_NOT_COMPLETE"
+    assert pregame_only.status == "UNPROVEN"
+    assert pregame_only.first_blocker == "FINAL_REFRESH_EVIDENCE_NOT_EMITTED"
+    assert pregame_only.stage_evidence["final_refresh_passed"] == "EVIDENCE_NOT_EMITTED"
 
 
 @pytest.mark.parametrize(
@@ -487,7 +488,7 @@ def test_nested_refresh_conflict_or_malformed_fails_closed(refresh, legacy, bloc
             "can_execute": False,
         }
     audit = publication_chain_audit(row)
-    assert audit.status == "BLOCKED"
+    assert audit.status == ("CONFLICT" if blocker == "FINAL_REFRESH_EVIDENCE_CONFLICT" else "BLOCKED")
     assert audit.first_blocker == blocker
     assert audit.rank_eligible is False
 

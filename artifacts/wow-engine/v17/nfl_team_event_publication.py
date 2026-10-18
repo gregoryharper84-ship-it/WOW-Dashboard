@@ -20,6 +20,7 @@ from nfl_event_model_v17 import (
     load_champion_model,
 )
 from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence, score_nfl_team_event
+from v17.stage_proof_contract import finalize_nfl_governed_publication
 
 NFL_ALIASES = frozenset({"NFL", "FOOTBALL_NFL"})
 _PATCH_MARKER = "_v17_nfl_team_event_publication_installed"
@@ -144,6 +145,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
     score_snapshot_id = model_result.get("score_snapshot_id")
     if not score_snapshot_id:
         raise NFLModelOutputInvalid("NFL_SCORE_SNAPSHOT_ID_MISSING")
+    governance_from_bridge = True
     try:
         rpc = db.rpc(
             "wow_v17_nfl_team_event_governance_bridge",
@@ -158,6 +160,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
         ).execute()
         governance = rpc.data
     except Exception as exc:
+        governance_from_bridge = False
         governance = {
             "status": "UNAVAILABLE",
             "blockers": ["V17_NFL_EVENT_GOVERNANCE_BRIDGE_UNAVAILABLE"],
@@ -169,6 +172,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
         }
 
     if not isinstance(governance, dict):
+        governance_from_bridge = False
         governance = {
             "status": "INVALID",
             "blockers": ["V17_NFL_EVENT_GOVERNANCE_BRIDGE_INVALID_RESPONSE"],
@@ -209,7 +213,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
         "can_execute": False,
     }
     if required_pass:
-        return {
+        governed = {
             **common,
             "code": "GOVERNED_PROBABILITY_PUBLISHED",
             "terminal_label": "FINAL_APPROVED",
@@ -218,18 +222,30 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
             "rank_eligible": True,
             "terminal_reducer_input": {"status": "PASS", "terminal_output": "FINAL_APPROVED", "global_terminal_reducer": "V17_TERMINAL_REDUCER"},
         }
-
-    blockers = ["NFL_GOVERNED_PUBLICATION_NOT_PROVEN", *(str(v) for v in (governance.get("blockers") or []))]
-    return {
-        **common,
-        "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
-        "terminal_label": str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD"),
-        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
-        "blockers": sorted(set(blockers)),
-        "probability_publishable": False,
-        "rank_eligible": False,
-        "terminal_reducer_input": {"status": governance.get("status", "HOLD"), "terminal_output": "MODEL_QUALIFIED_HOLD", "global_terminal_reducer": "V17_TERMINAL_REDUCER"},
-    }
+    else:
+        blockers = ["NFL_GOVERNED_PUBLICATION_NOT_PROVEN", *(str(v) for v in (governance.get("blockers") or []))]
+        governed = {
+            **common,
+            "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "terminal_label": str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD"),
+            "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+            "blockers": sorted(set(blockers)),
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "terminal_reducer_input": {"status": governance.get("status", "HOLD"), "terminal_output": "MODEL_QUALIFIED_HOLD", "global_terminal_reducer": "V17_TERMINAL_REDUCER"},
+        }
+    return finalize_nfl_governed_publication(
+        governed,
+        research_run_id=str(req.research_run_id),
+        event_key=str(req.event_key),
+        official_event_id=str(envelope.official_event_id),
+        score_snapshot_id=str(score_snapshot_id) if score_snapshot_id else None,
+        source_snapshot_id=getattr(req, "source_snapshot_id", None),
+        model_artifact_id=model_result.get("model_artifact_id"),
+        model_version=model_result.get("model_version"),
+        package_validated=True,
+        governance_from_bridge=governance_from_bridge,
+    )
 
 
 def score_nfl_team_event_request(
