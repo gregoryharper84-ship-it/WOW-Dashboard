@@ -1,0 +1,228 @@
+# P0 #1845 — review-only trusted-main manual sandbox proof. No release authorization.
+# Native GitHub approval, independent QA App and Release App checks are NOT replaced.
+name: wow-v17-controlled-pr-sandbox
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Exact open PR to test (initially only #1834)"
+        required: true
+        default: '1834'
+        type: string
+      expected_head_sha:
+        description: Exact full 40-character integrated PR SHA inspected by maintainer
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+concurrency:
+  group: wow-v17-contained-proof-${{ inputs.pr_number }}
+  cancel-in-progress: false
+jobs:
+  bind-exact-pr:
+    name: Read-only exact-head adoption and ancestry preflight
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.bind.outputs.sha }}
+    steps:
+      - name: Bind authorized main run to current PR head
+        id: bind
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          CANDIDATE_SOURCE_SHA: 58ee0f2763c276c61c1a178bc9a83404facdd63a
+        run: |
+          set -euo pipefail
+          # Manual dispatch proves only a sandbox request, NEVER workflow approval.
+          [[ "$GITHUB_REF" == 'refs/heads/main' ]] || { echo 'TRUSTED_MAIN_ONLY_HOLD'; exit 1; }
+          [[ "$GITHUB_ACTOR" != 'Copilot' ]] || { echo 'UNTRUSTED_DISPATCH_ACTOR_HOLD'; exit 1; }
+          [[ "$PR_NUMBER" == '1834' ]] || { echo 'UNREGISTERED_REPAIR_PR_HOLD'; exit 1; }
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'EXPECTED_SHA_INVALID_HOLD'; exit 1; }
+          pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          head_sha=$(jq -r '.head.sha // ""' <<<"$pr_json")
+          head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")
+          head_ref=$(jq -r '.head.ref // ""' <<<"$pr_json")
+          base_ref=$(jq -r '.base.ref // ""' <<<"$pr_json")
+          pr_state=$(jq -r '.state // ""' <<<"$pr_json")
+          [[ "$pr_state" == open && "$base_ref" == main && "$head_repo" == "$GITHUB_REPOSITORY" ]] || {
+            echo 'REPAIR_PR_PROVENANCE_INVALID_HOLD'; exit 1;
+          }
+          [[ "$head_ref" == 'copilot/gregoryharper84-ship-itwow-dashboard-1759-adopt-re' ]] || {
+            echo 'ENGINEERING_BRANCH_IDENTITY_MISMATCH_HOLD'; exit 1;
+          }
+          [[ "$head_sha" == "$EXPECTED_HEAD_SHA" ]] || { echo 'EXACT_HEAD_CHANGED_HOLD'; exit 1; }
+          compare_json=$(gh api "/repos/${GITHUB_REPOSITORY}/compare/${CANDIDATE_SOURCE_SHA}...${head_sha}")
+          behind=$(jq -r '.behind_by // -1' <<<"$compare_json")
+          relation=$(jq -r '.status // ""' <<<"$compare_json")
+          [[ "$behind" == 0 && ( "$relation" == ahead || "$relation" == identical ) ]] || {
+            echo 'CANDIDATE_ANCESTRY_HOLD'; exit 1;
+          }
+          # No API writes: no approval, PR update, check-run creation or deploy.
+          echo "sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo 'RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY'
+          echo 'can_execute=false'
+  sandbox-proof:
+    name: Tokenless isolated PostgreSQL and rollback tests
+    needs: bind-exact-pr
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_DB: wow_release_fence_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-ci-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d wow_release_fence_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGDATABASE: wow_release_fence_test
+      PGUSER: postgres
+      PGPASSWORD: local-ci-test-only
+      WOW_RELEASE_ISOLATED_TEST_DSN: postgresql://postgres:local-ci-test-only@127.0.0.1:5432/wow_release_fence_test
+      WOW_RELEASE_ISOLATED_TEST_ATTESTATION: NONPRODUCTION_EPHEMERAL_ONLY
+      WOW_CAN_EXECUTE: 'false'
+      WOW_DRY_RUN_ONLY: 'true'
+    steps:
+      - name: Checkout exact PR content without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.bind-exact-pr.outputs.sha }}
+          persist-credentials: false
+      - name: Assert isolated exact-head evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ needs.bind-exact-pr.outputs.sha }}"
+          test "$WOW_CAN_EXECUTE" = false
+          test "$WOW_DRY_RUN_ONLY" = true
+          test "$PGHOST" = localhost
+          test "$PGDATABASE" = wow_release_fence_test
+          mkdir -p release-evidence
+          printf 'repository=%s\nsource_sha=%s\nrun_id=%s\nprovenance_kind=SANDBOX_NON_RELEASE\n' \
+            "$GITHUB_REPOSITORY" "$(git rev-parse HEAD)" "$GITHUB_RUN_ID" > release-evidence/source-identity.txt
+          echo 'DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true'
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - name: Install pinned isolated test tools
+        run: python -m pip install 'psycopg[binary]==3.2.10' 'pytest==8.4.2'
+      - name: Apply review-only migrations solely to local PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PGHOST" = localhost
+          test "$PGDATABASE" = wow_release_fence_test
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE anon NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE authenticated NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_fence_owner NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_controller NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "ALTER ROLE wow_release_controller LOGIN PASSWORD 'CI_FENCE_EPHEMERAL_ONLY';"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_observer NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_verifier NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -f artifacts/wow-engine/migrations/20261018_release_service_state_fence_REVIEW_ONLY.sql
+          psql -X -v ON_ERROR_STOP=1 -c "GRANT USAGE, CREATE ON SCHEMA wow_release_control TO wow_release_fence_owner;"
+          psql -X -v ON_ERROR_STOP=1 -c "GRANT SELECT, INSERT, UPDATE ON wow_release_control.service_fence, wow_release_control.release_intent TO wow_release_fence_owner;"
+          psql -X -v ON_ERROR_STOP=1 -f artifacts/wow-engine/migrations/20261018_release_rpc_boundary_REVIEW_ONLY.sql
+          psql -X -v ON_ERROR_STOP=1 -f artifacts/wow-engine/migrations/20261018_release_observer_RECOVERY_REVIEW_ONLY.sql
+      - name: Execute isolated candidate regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q --confcutdir=artifacts/wow-engine/tests \
+            artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py \
+            artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py \
+            artifacts/wow-engine/tests/test_render_release_rpc_postgres.py \
+            artifacts/wow-engine/tests/test_render_release_recovery_postgres.py \
+            artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py \
+            artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py \
+            --junitxml=release-evidence/junit.xml 2>&1 | tee release-evidence/pytest.log
+      - name: Package hashed nonsecret evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ needs.bind-exact-pr.outputs.sha }}"
+          sha256sum \
+            .github/workflows/wow-v17-render-production-deploy.yml \
+            artifacts/wow-engine/migrations/20261018_release_service_state_fence_REVIEW_ONLY.sql \
+            artifacts/wow-engine/migrations/20261018_release_rpc_boundary_REVIEW_ONLY.sql \
+            artifacts/wow-engine/migrations/20261018_release_observer_RECOVERY_REVIEW_ONLY.sql \
+            artifacts/wow-engine/tests/test_render_release_rpc_postgres.py \
+            artifacts/wow-engine/tests/test_render_release_recovery_postgres.py \
+            artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py \
+            artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py \
+            > release-evidence/source-hashes.txt
+          test -s release-evidence/junit.xml
+          tar -czf wow-v17-controlled-pr-sandbox-evidence.tar.gz -C release-evidence .
+      - name: Upload sandbox evidence not release authorization
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-v17-contained-${{ needs.bind-exact-pr.outputs.sha }}-${{ github.run_id }}
+          path: |
+            release-evidence/
+            wow-v17-controlled-pr-sandbox-evidence.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+  sign-only-evidence:
+    name: Trusted-main validation and non-release attestation
+    needs: [bind-exact-pr, sandbox-proof]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Checkout only trusted main for evidence validator
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: trusted-main
+          persist-credentials: false
+      - name: Download sandbox artifact as untrusted data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wow-v17-contained-${{ needs.bind-exact-pr.outputs.sha }}-${{ github.run_id }}
+          path: evidence
+      - name: Validate source SHA, tests and bundle without executing PR content
+        shell: bash
+        run: |
+          set -euo pipefail
+          python trusted-main/artifacts/wow-engine/v17/controlled_pr_proof_contract.py \
+            --evidence-dir evidence/release-evidence \
+            --expected-sha '${{ needs.bind-exact-pr.outputs.sha }}' \
+            --run-id "$GITHUB_RUN_ID" --repository "$GITHUB_REPOSITORY"
+      - name: Attest validated evidence not independent Release authorization
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: evidence/wow-v17-controlled-pr-sandbox-evidence.tar.gz
+      - name: Verify signer provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify evidence/wow-v17-controlled-pr-sandbox-evidence.tar.gz \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/wow-v17-controlled-pr-sandbox.yml" \
+            --deny-self-hosted-runners
+          echo 'SANDBOX_PROOF_ONLY_NOT_RELEASE_AUTHORIZATION'
+          echo 'RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY'
