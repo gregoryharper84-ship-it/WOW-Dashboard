@@ -575,27 +575,29 @@ class DiscoveredEvent:
             # private acquisition evidence, or distinct unverified candidates
             # for the same fixture collapse into one terminal event_key.
             raw = self.raw if isinstance(self.raw, Mapping) else {}
-            source_alias = next(
-                (
-                    str(raw[key]).strip()
-                    for key in (
-                        "provider_event_id",
-                        "_wow_secondary_event_id",
-                        # Match discovery's id > event_id > official_event_id
-                        # > event_uuid precedence when overlapping source keys
-                        # are present. Never collapse two discovered candidates.
-                        "id",
-                        "event_id",
-                        "official_event_id",
-                        "event_uuid",
-                    )
-                    if raw.get(key) is not None and str(raw[key]).strip()
-                ),
-                str(self.official_event_id or "").strip(),
+            # One source field is not a sufficient unique identifier: two
+            # candidates may share provider_event_id yet have different id,
+            # or share id while retaining different secondary aliases.
+            # Bind *all* available private identifiers, in stable field order.
+            # They are hashed only and never published as official IDs.
+            # This also preserves source candidates across canonicalizer
+            # failure paths which clear the unverified official_event_id.
+            alias_keys = (
+                "id", "event_id", "official_event_id", "event_uuid",
+                "provider_event_id", "_wow_secondary_event_id",
             )
+            source_alias_evidence = [
+                (key, str(raw[key]).strip())
+                for key in alias_keys
+                if raw.get(key) is not None and str(raw[key]).strip()
+            ]
+            if not source_alias_evidence and self.official_event_id:
+                source_alias_evidence = [
+                    ("event_alias", str(self.official_event_id).strip())
+                ]
             binding = [
                 self.sport, self.league, self.regime, self.provider,
-                source_alias, self.home_team, self.away_team,
+                source_alias_evidence, self.home_team, self.away_team,
                 self.commence_time_utc,
             ]
             fingerprint = hashlib.sha256(
