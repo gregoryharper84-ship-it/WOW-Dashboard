@@ -1260,34 +1260,6 @@ def route_discovered_slate(
             )
             continue
 
-        # Canonical resolution can map multiple distinct provider aliases to
-        # ONE official game. Never invoke a fitted scorer twice for that row.
-        # Retain each redundant acquisition candidate as a distinct, opaque,
-        # unpublishable terminal hold rather than dropping it or publishing
-        # another copy of the same sporting probability.
-        if event.official_event_id:
-            canonical_key = (event.sport, str(event.official_event_id))
-            if canonical_key in seen_canonical_events:
-                raw = dict(event.raw) if isinstance(event.raw, Mapping) else {}
-                raw.update({
-                    "official_event_id": event.official_event_id,
-                    "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
-                    "canonical_identity_blocker": "DUPLICATE_CANONICAL_EVENT_HELD",
-                    "_wow_terminal_duplicate_ordinal": len(rows),
-                })
-                duplicate = replace(event, official_event_id=None, raw=raw)
-                rows.append(RoutedRow(
-                    identity=duplicate.identity(),
-                    bucket=OTHER_GOVERNED_HOLD,
-                    model_status=None,
-                    detail={
-                        "reason": "DUPLICATE_CANONICAL_EVENT_HELD",
-                        "model_invoked": False,
-                    },
-                ))
-                continue
-            seen_canonical_events.add(canonical_key)
-
         try:
             model = resolve_model(event)
         except Exception as exc:  # noqa: BLE001 - resolution defects fail closed
@@ -1343,6 +1315,37 @@ def route_discovered_slate(
                 )
             )
             continue
+
+        # Only reserve the canonical game when a fitted specialist is about to
+        # be invoked. A wrong-regime or missing-model row MUST NOT preempt a
+        # later valid row resolving to the same official game.
+        # Canonical resolution can map multiple distinct provider aliases to
+        # ONE official game. Never invoke a fitted scorer twice for that row.
+        # Retain each redundant acquisition candidate as a distinct, opaque,
+        # unpublishable terminal hold rather than dropping it or publishing
+        # another copy of the same sporting probability.
+        if event.official_event_id:
+            canonical_key = (event.sport, str(event.official_event_id))
+            if canonical_key in seen_canonical_events:
+                raw = dict(event.raw) if isinstance(event.raw, Mapping) else {}
+                raw.update({
+                    "official_event_id": event.official_event_id,
+                    "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+                    "canonical_identity_blocker": "DUPLICATE_CANONICAL_EVENT_HELD",
+                    "_wow_terminal_duplicate_ordinal": len(rows),
+                })
+                duplicate = replace(event, official_event_id=None, raw=raw)
+                rows.append(RoutedRow(
+                    identity=duplicate.identity(),
+                    bucket=OTHER_GOVERNED_HOLD,
+                    model_status=None,
+                    detail={
+                        "reason": "DUPLICATE_CANONICAL_EVENT_HELD",
+                        "model_invoked": False,
+                    },
+                ))
+                continue
+            seen_canonical_events.add(canonical_key)
 
         result = score_row(event, model)
         payload = dict(result or {})
