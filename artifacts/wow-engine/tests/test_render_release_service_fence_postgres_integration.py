@@ -146,3 +146,59 @@ def test_anon_and_authenticated_have_no_release_table_write_permission():
            has_table_privilege('authenticated','wow_release_control.release_intent','UPDATE')
         """).fetchone()
     assert rows == (False, False)
+
+
+def test_cannot_insert_fake_verified_intent():
+    service, sha = new_service(), new_sha()
+    with connection() as db:
+        db.execute("INSERT INTO wow_release_control.service_fence(service_id) VALUES (%s)", (service,))
+        with pytest.raises(psycopg.Error, match="RELEASE_INTENT_INITIAL_STATE_FORBIDDEN"):
+            db.execute("""INSERT INTO wow_release_control.release_intent(
+              service_id, target_sha, run_id, owner, fence, state,
+              post_reserved_at, provider_deploy_id, verified_at, verification_receipt_sha)
+              VALUES (%s, %s, 'rogue-run', 'rogue-owner', 1, 'VERIFIED',
+               clock_timestamp(), %s, clock_timestamp(), %s)""",
+              (service, sha, "dep-" + secrets.token_hex(12), "a" * 64))
+
+
+def test_cannot_insert_uncertain_state_without_prior_reservation():
+    service, sha = new_service(), new_sha()
+    with connection() as db:
+        db.execute("INSERT INTO wow_release_control.service_fence(service_id) VALUES (%s)", (service,))
+        with pytest.raises(psycopg.Error, match="RELEASE_INTENT_INITIAL_STATE_FORBIDDEN"):
+            db.execute("""INSERT INTO wow_release_control.release_intent(
+              service_id, target_sha, run_id, owner, fence, state, post_reserved_at)
+              VALUES (%s, %s, 'rogue-run', 'rogue-owner', 1, 'POST_UNCERTAIN', clock_timestamp())""",
+              (service, sha))
+
+
+def test_cannot_verify_without_immutable_receipt_hash():
+    service, sha = new_service(), new_sha()
+    with connection() as db:
+        fence = m.ReleaseFence(db)
+        lease = fence.claim(service, sha, "cert-run", "cert-owner")
+        fence.reserve_single_post(lease)
+        deploy = "dep-" + secrets.token_hex(12)
+        db.execute("""UPDATE wow_release_control.release_intent
+                      SET state='PROVIDER_ACK', provider_deploy_id=%s
+                      WHERE service_id=%s AND target_sha=%s""", (deploy, service, sha))
+        db.execute("""UPDATE wow_release_control.release_intent SET state='LIVE_OBSERVED'
+                      WHERE service_id=%s AND target_sha=%s""", (service, sha))
+        with pytest.raises(psycopg.Error):
+            db.execute("""UPDATE wow_release_control.release_intent
+                          SET state='VERIFIED', verified_at=clock_timestamp()
+                          WHERE service_id=%s AND target_sha=%s""", (service, sha))
+        row = db.execute("""SELECT state FROM wow_release_control.release_intent
+                            WHERE service_id=%s AND target_sha=%s""", (service, sha)).fetchone()
+        assert row == ("LIVE_OBSERVED",)
+
+
+def test_cannot_set_verification_evidence_before_verification():
+    service, sha = new_service(), new_sha()
+    with connection() as db:
+        lease = m.ReleaseFence(db).claim(service, sha, "premature-run", "premature-owner")
+        with pytest.raises(psycopg.Error, match="RELEASE_VERIFICATION_PREMATURE"):
+            db.execute("""UPDATE wow_release_control.release_intent
+                          SET state='POST_UNCERTAIN', post_reserved_at=clock_timestamp(),
+                              verified_at=clock_timestamp(), verification_receipt_sha=%s
+                          WHERE service_id=%s AND target_sha=%s""", ("a"*64, service, sha))
