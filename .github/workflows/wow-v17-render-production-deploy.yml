@@ -38,7 +38,7 @@ jobs:
     # remain blocked until a durable service-wide fence and live writer inventory
     # are independently proven; Blueprint settings do not prove live state.
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 120
     env:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
@@ -547,136 +547,32 @@ jobs:
               ]
 
           def rollback_after_sha_mismatch(previous_live, mismatch_sha, mismatch_deploy_id):
+              # A rollback is a NEW production mutation, not an automatic
+              # consequence of a mismatched observation. It must have its own
+              # distinct exact-SHA Release Authority authorization and a
+              # durable service-wide intent. Neither is available here.
+              # Never retry an ambiguous Render POST or speculate that the
+              # previous release is live. Leave recovery to the protected
+              # release controller with an explicit hold receipt.
               previous_id = str((previous_live or {}).get("id") or "")
               previous_sha = commit_sha(previous_live or {})
-              rollback_terminal_failures = {
-                  "build_failed", "update_failed", "pre_deploy_failed", "canceled", "cancelled",
-              }
-              mismatch_terminal_states = rollback_terminal_failures | {"deactivated"}
-              if not mismatch_deploy_id:
-                  current_deploys = list_deploys()
-                  mismatch_deploy_id = str(next((
-                      deploy.get("id") for deploy in current_deploys
-                      if commit_sha(deploy) == mismatch_sha
-                      and str(deploy.get("id") or "") != previous_id
-                      and deploy.get("id")
-                  ), "") or "")
-              else:
-                  current_deploys = list_deploys()
-              if not previous_id or len(previous_sha) != 40 or not mismatch_deploy_id:
-                  emit_receipt({
-                      "status": "DEPLOY_SHA_MISMATCH_HOLD",
-                      "target_sha": target_sha,
-                      "observed_sha": mismatch_sha,
-                      "rollback_status": "ROLLBACK_IDENTITY_UNVERIFIED",
-                      "next_action": "Release Authority must inspect Render and restore the previously approved live deploy before retrying.",
-                      "can_execute": False,
-                  })
-                  raise SystemExit(0)
-              rollback_deadline = time.time() + 900
-              rollback_attempts = 0
-              rollback_id = ""
-              known_deploy_ids = {
-                  str(deploy.get("id") or "")
-                  for deploy in current_deploys
-                  if isinstance(deploy, dict)
-              }
-              next_rollback_at = 0
-              rollback_error = ""
-              while True:
-                  rollback_deploys = current_deploys
-                  if not rollback_id:
-                      rollback_id = str(next((
-                          deploy.get("id") for deploy in rollback_deploys
-                          if commit_sha(deploy) == previous_sha
-                          and str(deploy.get("id") or "") not in known_deploy_ids
-                          and deploy.get("id")
-                      ), "") or "")
-                  rollback_deploy = next(
-                      (deploy for deploy in rollback_deploys if str(deploy.get("id") or "") == rollback_id),
-                      None,
-                  )
-                  mismatched_deploy = next(
-                      (
-                          deploy for deploy in rollback_deploys
-                          if str(deploy.get("id") or "") == mismatch_deploy_id
-                      ),
-                      None,
-                  )
-                  rollback_status = str((rollback_deploy or {}).get("status") or "")
-                  mismatch_status = str((mismatched_deploy or {}).get("status") or "")
-                  if (
-                      rollback_deploy is not None
-                      and rollback_status == "live"
-                      and commit_sha(rollback_deploy) == previous_sha
-                      and mismatch_status in mismatch_terminal_states
-                  ):
-                      emit_receipt({
-                          "status": "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
-                          "target_sha": target_sha,
-                          "observed_sha": mismatch_sha,
-                          "rollback_deploy_id": rollback_id,
-                          "restored_commit_sha": previous_sha,
-                          "can_execute": False,
-                      })
-                      raise SystemExit(0)
-                  if rollback_status in rollback_terminal_failures:
-                      known_deploy_ids.add(rollback_id)
-                      rollback_id = ""
-                      rollback_error = "RENDER_ROLLBACK_DEPLOY_TERMINAL_FAILURE:" + rollback_status
-                      next_rollback_at = min(next_rollback_at, time.time())
-                  now = time.time()
-                  if (
-                      rollback_attempts < 3
-                      and now >= next_rollback_at
-                      and (not rollback_id or mismatch_status == "live")
-                  ):
-                      known_deploy_ids.update(
-                          str(deploy.get("id") or "")
-                          for deploy in rollback_deploys
-                          if isinstance(deploy, dict)
-                      )
-                      try:
-                          rollback_created = guarded_render_post(
-                              journal_preflight,
-                              render_json,
-                              f"/services/{service_path}/rollback",
-                              {"deployId": previous_id},
-                          )
-                          if isinstance(rollback_created, dict) and isinstance(rollback_created.get("deploy"), dict):
-                              rollback_created = rollback_created["deploy"]
-                          rollback_id = str(
-                              (rollback_created.get("id") or "")
-                              if isinstance(rollback_created, dict)
-                              else ""
-                          )
-                          if rollback_id == previous_id:
-                              rollback_id = ""
-                              rollback_error = "RENDER_ROLLBACK_DEPLOY_ID_INVALID"
-                          else:
-                              rollback_error = ""
-                      except (RuntimeError, urllib.error.URLError, TimeoutError) as exc:
-                          rollback_id = ""
-                          rollback_error = str(exc)
-                      rollback_attempts += 1
-                      next_rollback_at = now + 30
-                  if now >= rollback_deadline:
-                      emit_receipt({
-                          "status": "DEPLOY_SHA_MISMATCH_HOLD",
-                          "target_sha": target_sha,
-                          "observed_sha": mismatch_sha,
-                          "rollback_status": "VERIFICATION_TIMEOUT",
-                          "rollback_attempts": rollback_attempts,
-                          "rollback_error": rollback_error,
-                          "previous_live_sha": previous_sha,
-                          "mismatched_deploy_id": mismatch_deploy_id,
-                          "mismatched_deploy_status": mismatch_status,
-                          "next_action": "Release Authority must continue Render rollback and verify the mismatched deploy is terminal and the prior SHA is live.",
-                          "can_execute": False,
-                      })
-                      raise SystemExit(0)
-                  time.sleep(10)
-                  current_deploys = list_deploys()
+              emit_receipt({
+                  "status": "DEPLOY_SHA_MISMATCH_HOLD",
+                  "target_sha": target_sha,
+                  "observed_sha": mismatch_sha,
+                  "mismatched_deploy_id": mismatch_deploy_id,
+                  "previous_live_sha": previous_sha,
+                  "previous_live_deploy_id": previous_id,
+                  "rollback_status": "ROLLBACK_AUTHORIZATION_REQUIRED_HOLD",
+                  "rollback_attempts": 0,
+                  "next_action": (
+                      "Independently authorize an exact-SHA rollback under a "
+                      "durable service-wide release fence, then verify Render "
+                      "LIVE state; do not replay this workflow blindly."
+                  ),
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
 
           lease_path = f"/actions/runs/{urllib.parse.quote(str(os.environ.get('GITHUB_RUN_ID') or ''), safe='')}"
           try:
@@ -810,7 +706,7 @@ jobs:
               if not deploy_id:
                   raise RuntimeError("RENDER_ACTIVE_DEPLOY_ID_MISSING")
 
-          deploy_deadline = time.time() + 900
+          deploy_deadline = time.monotonic() + 90 * 60
           prior_deploy_ids = {
               str(deploy.get("id") or "")
               for deploy in deploys_before_post
@@ -861,8 +757,22 @@ jobs:
               current_main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
               if current_main_sha != target_sha:
                   rollback_after_sha_mismatch(previous_live, target_sha, deploy_id)
-              if time.time() >= deploy_deadline:
-                  raise RuntimeError("RENDER_EXACT_SHA_DEPLOY_TIMEOUT")
+              if time.monotonic() >= deploy_deadline:
+                  emit_receipt({
+                      "status": "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
+                      "target_sha": target_sha,
+                      "deploy_id": deploy_id,
+                      "last_observed_status": (
+                          str((target or {}).get("status") or "UNKNOWN")
+                      ),
+                      "next_action": (
+                          "Continue read-only Render reconciliation of the "
+                          "existing deployment by ID. Do not issue a second "
+                          "Render POST on an uncertain outcome."
+                      ),
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
               time.sleep(10)
           PY
 
@@ -909,6 +819,7 @@ jobs:
               "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
               "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
               "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+              "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
           }
           if status in advancing:
               print(json.dumps({"status":"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES","source_receipt_status":status,"can_execute":False}, sort_keys=True))
