@@ -34,6 +34,7 @@ def test_non_advancing_deploy_receipts_fail_controller_after_pointer_reconcile()
         "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
         "PRODUCTION_RELEASE_HOLD",
         "RELEASE_INTENT_HOLD_NO_DEPLOY",
+    "RELEASE_INTENT_RESERVED_POST_UNCERTAIN",
         "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
     ):
         assert status in text[final_gate:]
