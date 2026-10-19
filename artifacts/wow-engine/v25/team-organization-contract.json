@@ -1,0 +1,420 @@
+{
+  "schema_version": 1,
+  "initiative": "WOW_ENGINEERING_V25_TEAM_EXPANSION",
+  "status": "PROPOSED_NOT_DEPLOYED",
+  "change_class": "B_REVIEW_REQUIRED_FOR_AGENT_AUTHORITY_ADOPTION",
+  "custom_gpt_identity": "WOW_BETTING_ENGINE",
+  "runtime_generation": "V17_ACTIVE",
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "can_execute": false,
+  "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": true,
+  "shared_control_plane": "WOW_ECOSYSTEM_CONDUCTOR",
+  "shared_queue": "EXISTING_CANONICAL_INCIDENT_AND_WORK_LEDGER",
+  "shared_dispatcher": "EXISTING_GOVERNED_WORKER_ONLY",
+  "shared_release_path": "EXISTING_PROTECTED_GITHUB_AND_RENDER_RELEASE",
+  "teams": {
+    "PRODUCTION_ENGINEERING": {
+      "parent": "ENGINEERING_CLOSURE",
+      "roles": [
+        "production_commander",
+        "runtime_infrastructure_engineer",
+        "release_deployment_engineer",
+        "production_data_integrity_engineer",
+        "production_journey_tester"
+      ],
+      "operational_status": "PROPOSED_NOT_DEPLOYED"
+    },
+    "MODEL_EXCELLENCE": {
+      "parent": "ENGINEERING_CLOSURE",
+      "roles": [
+        "model_science_lead",
+        "feature_engineering_specialist",
+        "backtesting_challenger",
+        "calibration_drift_specialist",
+        "model_lifecycle_engineer",
+        "experiment_registry_learning_agent"
+      ],
+      "operational_status": "PROPOSED_NOT_DEPLOYED"
+    },
+    "RESEARCH_INNOVATION": {
+      "parent": "WOW_ECOSYSTEM_CONDUCTOR",
+      "roles": [
+        "technology_radar",
+        "scientific_research_analyst",
+        "architecture_automation_researcher",
+        "tool_benchmark_engineer",
+        "continuous_improvement_analyst"
+      ],
+      "operational_status": "PROPOSED_NOT_DEPLOYED"
+    },
+    "AMRT": {
+      "parent": "PRODUCTION_ENGINEERING",
+      "roles": [
+        "model_recovery_commander",
+        "model_dependency_investigator",
+        "model_restoration_engineer",
+        "model_recovery_regression_specialist",
+        "recovery_escalation_deadlock_breaker"
+      ],
+      "operational_status": "PROPOSED_NOT_DEPLOYED"
+    },
+    "SYSTEMS_INTELLIGENCE_RELIABILITY": {
+      "parent": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+      "roles": [
+        "cross_system_handoff_sentinel",
+        "failure_pattern_intelligence_agent",
+        "production_resilience_challenger",
+        "data_provenance_quality_guardian"
+      ],
+      "operational_status": "PROPOSED_NOT_DEPLOYED"
+    },
+    "BETTING_INTELLIGENCE": {
+      "parent": "WOW_BETTING_INTELLIGENCE",
+      "roles": [
+        "model_portfolio_coverage_strategist"
+      ],
+      "operational_status": "PROPOSED_NOT_DEPLOYED"
+    },
+    "INDEPENDENT_VERIFICATION": {
+      "parent": "INDEPENDENT_VERIFICATION",
+      "roles": [
+        "production_golden_path_acceptance_agent"
+      ],
+      "operational_status": "PROPOSED_NOT_DEPLOYED"
+    }
+  },
+  "agent_authorities": {
+    "production_commander": {
+      "team": "PRODUCTION_ENGINEERING",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "runtime_infrastructure_engineer": {
+      "team": "PRODUCTION_ENGINEERING",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "release_deployment_engineer": {
+      "team": "PRODUCTION_ENGINEERING",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "production_data_integrity_engineer": {
+      "team": "PRODUCTION_ENGINEERING",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "production_journey_tester": {
+      "team": "PRODUCTION_ENGINEERING",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "model_science_lead": {
+      "team": "MODEL_EXCELLENCE",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "feature_engineering_specialist": {
+      "team": "MODEL_EXCELLENCE",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "backtesting_challenger": {
+      "team": "MODEL_EXCELLENCE",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "calibration_drift_specialist": {
+      "team": "MODEL_EXCELLENCE",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "model_lifecycle_engineer": {
+      "team": "MODEL_EXCELLENCE",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "experiment_registry_learning_agent": {
+      "team": "MODEL_EXCELLENCE",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "technology_radar": {
+      "team": "RESEARCH_INNOVATION",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "scientific_research_analyst": {
+      "team": "RESEARCH_INNOVATION",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "architecture_automation_researcher": {
+      "team": "RESEARCH_INNOVATION",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "tool_benchmark_engineer": {
+      "team": "RESEARCH_INNOVATION",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "continuous_improvement_analyst": {
+      "team": "RESEARCH_INNOVATION",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "model_recovery_commander": {
+      "team": "AMRT",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "model_dependency_investigator": {
+      "team": "AMRT",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "model_restoration_engineer": {
+      "team": "AMRT",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "model_recovery_regression_specialist": {
+      "team": "AMRT",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "recovery_escalation_deadlock_breaker": {
+      "team": "AMRT",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "cross_system_handoff_sentinel": {
+      "team": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "failure_pattern_intelligence_agent": {
+      "team": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "production_resilience_challenger": {
+      "team": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "data_provenance_quality_guardian": {
+      "team": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "model_portfolio_coverage_strategist": {
+      "team": "BETTING_INTELLIGENCE",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    },
+    "production_golden_path_acceptance_agent": {
+      "team": "INDEPENDENT_VERIFICATION",
+      "probability_authority": false,
+      "terminal_authority": false,
+      "safety_hold_authority": false,
+      "release_approval_authority": false,
+      "production_write_authority": false,
+      "can_execute": false,
+      "activation": "DESIGN_ONLY"
+    }
+  },
+  "handoff_required_fields": [
+    "work_item_id",
+    "source_team",
+    "current_owner",
+    "next_owner",
+    "change_class",
+    "evidence_refs",
+    "accepted_by_next_owner",
+    "lease_id",
+    "lease_epoch",
+    "next_action",
+    "blocking_reason",
+    "updated_at"
+  ],
+  "production_closure_required_fields": [
+    "root_cause_evidence",
+    "focused_and_negative_tests",
+    "regression_and_adjacent_tests",
+    "independent_review",
+    "required_approvals",
+    "merged_sha",
+    "target_deploy_sha",
+    "live_sha",
+    "production_replay",
+    "persistence_reconciliation",
+    "independent_qa",
+    "security_governance_clear"
+  ],
+  "model_promotion_required_fields": [
+    "hypothesis",
+    "baseline",
+    "versioned_training_data",
+    "challenger",
+    "historical_replay",
+    "counterexamples",
+    "holdout_forward_validation",
+    "regression",
+    "independent_model_review",
+    "governed_authorization"
+  ],
+  "route_scopes": {
+    "RESTORE_MODEL_CAPABILITY": "AMRT",
+    "PRODUCTION_RUNTIME_REPAIR": "PRODUCTION_ENGINEERING",
+    "MODEL_REDESIGN_EXPERIMENT": "MODEL_EXCELLENCE",
+    "PROPOSE_TOOL_OR_RESEARCH": "RESEARCH_INNOVATION",
+    "PRODUCT_COVERAGE_PRIORITIZATION": "BETTING_INTELLIGENCE",
+    "SYSTEMIC_INDEPENDENT_ASSURANCE": "SYSTEMS_INTELLIGENCE_RELIABILITY",
+    "PRODUCTION_ACCEPTANCE": "INDEPENDENT_VERIFICATION"
+  },
+  "amrt_policy": {
+    "priority": "P0_P1_RESTORATION_BEFORE_DISCRETIONARY_ENHANCEMENTS",
+    "class_c_handoff": "Model Excellence owns experiments; AMRT retains original model recovery incident and its re-entry.",
+    "fallback": "Reconcile existing fenced writer and actual outcomes before a governed provider fallback; never create a parallel writer or bypass approval."
+  },
+  "nonfinal_dispositions": [
+    "PR_CREATED",
+    "EXPERIMENT_CREATED",
+    "BLOCKED_WITH_EXACT_REASON",
+    "DEFERRED_WITH_JUSTIFICATION",
+    "NOT_REPRODUCIBLE"
+  ],
+  "final_closure": "FIXED_AND_VERIFIED"
+}
