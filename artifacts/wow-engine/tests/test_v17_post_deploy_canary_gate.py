@@ -33,6 +33,7 @@ def test_non_advancing_deploy_receipts_fail_controller_after_pointer_reconcile()
         "STALE_SHA_NO_DEPLOY",
         "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
         "PRODUCTION_RELEASE_HOLD",
+        "RELEASE_INTENT_HOLD_NO_DEPLOY",
         "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
     ):
         assert status in text[final_gate:]
