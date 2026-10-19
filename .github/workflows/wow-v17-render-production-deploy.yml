@@ -85,6 +85,7 @@ jobs:
               REQUIRED_ENVIRONMENT,
               ambiguous_render_ack,
               load_workflow_texts,
+              protected_release_job_environment,
               paginate,
               plan_release_admission,
               RefJournal,
@@ -548,12 +549,20 @@ jobs:
                   "can_execute": False,
               })
               raise SystemExit(0)
-          if os.environ.get("GITHUB_ENVIRONMENT") != REQUIRED_ENVIRONMENT:
+          # GitHub Actions does not provide GITHUB_ENVIRONMENT. The protected
+          # environment is enforced by GitHub from the job's YAML declaration,
+          # before any job steps or environment-scoped secrets are available.
+          # Verify this checked-out exact-SHA controller still declares it;
+          # environment reviewer policy and credential scope require independent
+          # GitHub settings attestation, not a self-asserted runner variable.
+          release_workflow_texts = load_workflow_texts(".github/workflows")
+          protected_job_environment = protected_release_job_environment(release_workflow_texts)
+          if protected_job_environment != REQUIRED_ENVIRONMENT:
               emit_receipt({
                   "status": "RELEASE_ENVIRONMENT_RESTRICTION_FAILED",
                   "target_sha": target_sha,
-                  "hold_reason": "RELEASE_ENVIRONMENT_RESTRICTION_FAILED",
-                  "next_action": "Run this job only in the protected wow-release environment.",
+                  "hold_reason": "RELEASE_PROTECTED_JOB_BINDING_MISSING",
+                  "next_action": "Restore the protected deploy-production job environment binding and independently verify GitHub settings.",
                   "can_execute": False,
               })
               raise SystemExit(0)
@@ -816,7 +825,7 @@ jobs:
               except RuntimeError:
                   live_service = None
               journal_preflight = plan_release_admission(
-                  environment_name=os.environ.get("GITHUB_ENVIRONMENT") or "",
+                  environment_name=protected_job_environment,
                   target_sha=target_sha,
                   current_main_sha=latest_main_sha,
                   qa_app_id=qa_app_id,
@@ -824,7 +833,7 @@ jobs:
                   source_head=authorized_pr_head,
                   role_checks=source_checks,
                   live_service=live_service,
-                  workflow_texts=load_workflow_texts(".github/workflows"),
+                  workflow_texts=release_workflow_texts,
                   deploys=deploys_before_post,
                   journal=journal,
                   service_id=render_service_id,
