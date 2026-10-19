@@ -365,6 +365,7 @@
     "accepted_by_next_owner",
     "lease_id",
     "lease_epoch",
+    "lease_expires_at",
     "next_action",
     "blocking_reason",
     "updated_at"
