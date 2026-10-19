@@ -907,6 +907,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Reconcile exact Render receipt to durable deployment pointer
         shell: bash
