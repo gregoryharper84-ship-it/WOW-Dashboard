@@ -53,6 +53,8 @@ def test_exact_live_receipts_create_successful_pointer_with_provenance(status):
 
     def github_api(method, path, payload=None):
         calls.append((method, path, payload))
+        if method == "GET" and path == "/branches/main":
+            return {"commit": {"sha": COMMIT_SHA}}
         if method == "GET" and path.startswith("/deployments?"):
             return []
         if method == "POST" and path == "/deployments":
@@ -100,6 +102,8 @@ def test_replaying_same_exact_receipt_is_idempotent(status):
 
     def github_api(method, path, payload=None):
         calls.append((method, path, payload))
+        if method == "GET" and path == "/branches/main":
+            return {"commit": {"sha": COMMIT_SHA}}
         if method == "GET" and path.startswith("/deployments?"):
             return [{"id": 4242, "payload": existing_payload}]
         if method == "GET" and path == "/deployments/4242/statuses?per_page=100":
@@ -125,3 +129,75 @@ def test_unknown_or_execution_enabled_receipt_fails_closed():
     receipt["can_execute"] = True
     with pytest.raises(DeploymentPointerContractError, match="CAN_EXECUTE_MUST_BE_FALSE"):
         receipt_advances_pointer(receipt)
+
+
+
+def test_stale_main_rejects_live_receipt_before_any_github_pointer_write():
+    calls = []
+
+    def github_api(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "GET" and path == "/branches/main":
+            return {"commit": {"sha": "b" * 40}}
+        raise AssertionError((method, path, payload))
+
+    with pytest.raises(DeploymentPointerContractError, match="MAIN_SHA_STALE_OR_UNKNOWN"):
+        reconcile_deployment_pointer(_advancing_receipt(), github_api, repository="owner/repo")
+    assert calls == [("GET", "/branches/main", None)]
+
+
+def test_moving_main_between_receipt_and_pointer_create_fails_closed():
+    calls = []
+    reads = []
+
+    def github_api(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "GET" and path == "/branches/main":
+            reads.append(1)
+            return {"commit": {"sha": COMMIT_SHA if len(reads) == 1 else "b" * 40}}
+        if method == "GET" and path.startswith("/deployments?"):
+            return []
+        raise AssertionError((method, path, payload))
+
+    with pytest.raises(DeploymentPointerContractError, match="MAIN_SHA_STALE_OR_UNKNOWN"):
+        reconcile_deployment_pointer(_advancing_receipt(), github_api, repository="owner/repo")
+    assert len(reads) == 2
+    assert not any(method == "POST" for method, _path, _payload in calls)
+
+
+def test_moving_main_after_pointer_create_never_posts_success_status():
+    calls = []
+    reads = []
+
+    def github_api(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "GET" and path == "/branches/main":
+            reads.append(1)
+            return {"commit": {"sha": COMMIT_SHA if len(reads) <= 2 else "b" * 40}}
+        if method == "GET" and path.startswith("/deployments?"):
+            return []
+        if method == "POST" and path == "/deployments":
+            return {"id": 4242}
+        if method == "GET" and path == "/deployments/4242/statuses?per_page=100":
+            return []
+        raise AssertionError((method, path, payload))
+
+    with pytest.raises(DeploymentPointerContractError, match="MAIN_SHA_STALE_OR_UNKNOWN"):
+        reconcile_deployment_pointer(_advancing_receipt(), github_api, repository="owner/repo")
+    assert len(reads) == 3
+    assert any(method == "POST" and path == "/deployments" for method, path, _ in calls)
+    assert not any(path.endswith("/statuses") and method == "POST" for method, path, _ in calls)
+
+
+def test_unknown_main_lookup_response_is_typed_blocker_without_write():
+    calls = []
+
+    def github_api(method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "GET" and path == "/branches/main":
+            return {"message": "temporarily unavailable"}
+        raise AssertionError((method, path, payload))
+
+    with pytest.raises(DeploymentPointerContractError, match="MAIN_SHA_STALE_OR_UNKNOWN"):
+        reconcile_deployment_pointer(_advancing_receipt(), github_api, repository="owner/repo")
+    assert not any(method == "POST" for method, _path, _payload in calls)

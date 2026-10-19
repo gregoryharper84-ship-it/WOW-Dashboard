@@ -39,7 +39,11 @@ def test_render_deploy_handoff_uses_control_plane_only_after_governance_gate():
     assert '"can_execute":False' in text or '"can_execute": False' in text
     assert '"deploy_authority":"GOVERNED_RENDER_API_HANDOFF"' in text
     assert 'render_json(\n                  "POST"' in text
-    assert '{"clearCache":"do_not_clear"}' in text
+    # Protected deployments must be pinned to the certified exact SHA.
+    # A branch-default POST can silently deploy a newer, unreviewed main.
+    assert '{"clearCache":"do_not_clear", "commitId":target_sha}' in text
+    assert '{"clearCache":"do_not_clear"}' not in text
+    assert "latest_main_before_post != target_sha" in text
 
 
 def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
@@ -52,7 +56,7 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "RENDER_DEPLOY_WRONG_SHA" in text
     assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
-    assert "deploy_deadline = time.time() + 900" in text
+    assert "deploy_deadline = time.time() + 5400" in text
     assert "time.sleep(10)" in text
 
 
@@ -120,3 +124,24 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "except (urllib.error.URLError, TimeoutError):" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
+
+
+def test_render_deploy_terminal_gate_never_passes_skipped_jobs():
+    text = _workflow_text()
+    assert 'release-terminal-verdict:' in text
+    assert 'needs: [deploy-production, deploy-background-worker]' in text
+    assert 'if: always()' in text
+    assert 'RELEASE_UPSTREAM_NON_GREEN_NO_SUCCESS_RECEIPT' in text
+    assert 'RELEASE_REQUIRED_JOB_NOT_SUCCESS' in text
+    assert '"$API_JOB_RESULT" != success' in text
+    assert '"$WORKER_JOB_RESULT" != success' in text
+
+
+def test_morning_green_does_not_dispatch_disabled_render_workflow():
+    repo_root = Path(__file__).resolve().parents[3]
+    text = (repo_root / '.github/workflows/wow-v17-morning-green-continuation.yml').read_text(
+        encoding='utf-8'
+    )
+    assert 'gh workflow run wow-verify.yml' in text
+    assert 'RENDER_RELEASE_AWAITS_PROTECTED_MAIN_WOW_VERIFY_WORKFLOW_RUN' in text
+    assert 'gh workflow run wow-v17-render-production-deploy.yml' not in text
