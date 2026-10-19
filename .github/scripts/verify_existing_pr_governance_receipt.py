@@ -15,6 +15,8 @@ from typing import Any
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 WORKFLOW_NAME = "wow-v17-existing-pr-governance-review"
 CERTIFICATION_MODE = "EXISTING_PR_REVIEW_EVIDENCE"
+BOOTSTRAP_MODE = "TRUST_ROOT_BOOTSTRAP"
+ORDINARY_MODE = "ORDINARY_ENGINEERING"
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 OWNER_LOGIN = "gregoryharper84-ship-it"
 OWNER_ID = 285088163
@@ -36,6 +38,14 @@ REQUIRED_CHECKS = {
     "WOW required-three regression": 15368,
     "WOW governed probability backend": 15368,
     "WOW additional required regression": 15368,
+}
+# Post-governance authority. These are not prerequisites of an ordinary receipt.
+# Ruleset 24907422 pins QA and Release to these integration ids.
+BOOTSTRAP_CHECKS = {
+    **REQUIRED_CHECKS,
+    "WOW V17 change impact gate": 15368,
+    "WOW Independent QA exact-head": 5245832,
+    "WOW Release Authority exact-head": 5245853,
 }
 TRUST_ROOT_PREFIXES = (".github/", ".agents/")
 PROTECTED_PATHS = frozenset(
@@ -541,6 +551,266 @@ def verify_receipt(
     _require(receipt.get("can_execute") is False, "CAN_EXECUTE_INVARIANT_VIOLATED")
 
 
+def _path_is_trust_root(path: str, protected: set[str]) -> bool:
+    return path.startswith(TRUST_ROOT_PREFIXES) or path in protected
+
+
+def classify_changed_files(files: object, *, repo_root: Path, expected_count: object) -> str:
+    normalized = _validate_changed_files(files, expected_count)
+    protected = _protected_paths(repo_root)
+    trust = False
+    for item in normalized:
+        for path in (item["filename"], item.get("previous_filename")):
+            if path is not None and _path_is_trust_root(path, protected):
+                trust = True
+    return BOOTSTRAP_MODE if trust else ORDINARY_MODE
+
+
+def _owner_approval(reviews: Sequence[Mapping[str, Any]], *, head_sha: str) -> dict[str, Any]:
+    latest: tuple[datetime, int, Mapping[str, Any]] | None = None
+    for review in reviews:
+        _require(isinstance(review, Mapping), "REVIEW_INVENTORY_INVALID")
+        user = review.get("user")
+        _require(isinstance(user, Mapping), "REVIEWER_IDENTITY_UNKNOWN")
+        if user.get("id") != OWNER_ID:
+            continue
+        reviewer_login = _login(user.get("login"), "REVIEWER_IDENTITY_UNKNOWN")
+        _require(reviewer_login.casefold() == OWNER_LOGIN.casefold(), "REVIEWER_IDENTITY_UNKNOWN")
+        _require(user.get("type") == "User", "TRUST_ROOT_OWNER_REVIEW_NOT_HUMAN")
+        submitted = _timestamp(review.get("submitted_at"), "REVIEW_SUBMITTED_AT")
+        review_id = _positive_int(review.get("id"), "REVIEW_ID")
+        _require(isinstance(review.get("state"), str), "REVIEW_STATE_INVALID")
+        if latest is None or (submitted, review_id) > latest[:2]:
+            latest = (submitted, review_id, review)
+    _require(latest is not None, "TRUST_ROOT_OWNER_APPROVAL_MISSING")
+    assert latest is not None
+    submitted, review_id, review = latest
+    _require(
+        review.get("state") == "APPROVED" and review.get("commit_id") == head_sha,
+        "TRUST_ROOT_OWNER_APPROVAL_MISSING",
+    )
+    return {
+        "state": "APPROVED",
+        "reviewer": {"id": OWNER_ID, "login": OWNER_LOGIN, "type": "User"},
+        "review_id": review_id,
+        "commit_id": head_sha,
+        "submitted_at": submitted.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _verified_named_check(
+    check_runs: Sequence[Mapping[str, Any]], *, name: str, app_id: int, head_sha: str,
+) -> dict[str, Any]:
+    check = _latest(check_runs, name=name, expected_sha=head_sha, app_id=app_id)
+    _require(check is not None, f"REQUIRED_CHECK_MISSING:{name}")
+    assert check is not None
+    _require(
+        check.get("status") == "completed" and check.get("conclusion") == "success",
+        f"REQUIRED_CHECK_NOT_GREEN:{name}",
+    )
+    return {
+        "id": _positive_int(check.get("id"), "CHECK_ID"),
+        "app_id": app_id,
+        "head_sha": head_sha,
+        "status": "completed",
+        "conclusion": "success",
+    }
+
+
+def build_trust_root_bootstrap(
+    evidence: Mapping[str, Any],
+    *,
+    expected_repository: str,
+    expected_head_sha: str,
+    expected_head_ref: str,
+    expected_pr_number: int,
+    expected_incident_id: str,
+    expected_workflow_run_id: str,
+    expected_workflow_run_attempt: int,
+    repo_root: Path,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    clock = now or datetime.now(timezone.utc)
+    _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
+    clock = clock.astimezone(timezone.utc)
+    _require(clock < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
+             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
+    _require(expected_repository == CANONICAL_REPOSITORY, "REPOSITORY_IDENTITY_MISMATCH")
+    _require(bool(SHA.fullmatch(expected_head_sha)), "EXPECTED_SHA_INVALID")
+    _require(bool(expected_head_ref), "EXPECTED_HEAD_REF_MISSING")
+    _positive_int(expected_pr_number, "EXPECTED_PR_NUMBER")
+    _positive_int(expected_workflow_run_attempt, "WORKFLOW_RUN_ATTEMPT")
+    _require(bool(re.fullmatch(r"[1-9][0-9]*", str(expected_workflow_run_id))), "WORKFLOW_RUN_ID_INVALID")
+    _require(bool(re.fullmatch(r"[1-9][0-9]*", expected_incident_id)), "INCIDENT_ID_INVALID")
+    _require(evidence.get("complete_inventory") is True, "REVIEW_OR_CI_INVENTORY_INCOMPLETE")
+    pr = evidence.get("pr")
+    _require(isinstance(pr, Mapping), "PR_EVIDENCE_INVALID")
+    changed = _validate_changed_files(evidence.get("changed_files"), pr.get("changed_files"))
+    _require(
+        classify_changed_files(changed, repo_root=repo_root, expected_count=len(changed)) == BOOTSTRAP_MODE,
+        "TRUST_ROOT_REQUIRED",
+    )
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    _require(isinstance(head, Mapping) and isinstance(base, Mapping), "PR_EVIDENCE_INVALID")
+    _require(isinstance(pr.get("user"), Mapping), "PR_AUTHOR_IDENTITY_UNKNOWN")
+    _require(isinstance(head.get("repo"), Mapping) and isinstance(base.get("repo"), Mapping),
+             "PR_REPOSITORY_IDENTITY_UNKNOWN")
+    author = pr.get("user") or {}
+    author_login = _login(author.get("login"), "PR_AUTHOR_IDENTITY_UNKNOWN")
+    author_id = _positive_int(author.get("id"), "PR_AUTHOR_IDENTITY_UNKNOWN")
+    _require(
+        author_id != OWNER_ID and author_login.casefold() != OWNER_LOGIN.casefold(),
+        "TRUST_ROOT_OWNER_AUTHORED",
+    )
+    _require(
+        pr.get("number") == expected_pr_number
+        and pr.get("state") == "open"
+        and pr.get("draft") is False
+        and not pr.get("merged_at")
+        and base.get("ref") == "main"
+        and base["repo"].get("full_name") == expected_repository
+        and head["repo"].get("full_name") == expected_repository
+        and head.get("sha") == expected_head_sha
+        and head.get("ref") == expected_head_ref,
+        "PR_SHA_REPOSITORY_STATE_OR_BASE_MISMATCH",
+    )
+    reviews = evidence.get("reviews")
+    check_runs = evidence.get("check_runs")
+    _require(isinstance(reviews, list), "REVIEW_INVENTORY_INVALID")
+    _require(isinstance(check_runs, list), "CHECK_INVENTORY_INVALID")
+    owner_review = _owner_approval(reviews, head_sha=expected_head_sha)
+    verified = {
+        name: _verified_named_check(check_runs, name=name, app_id=app_id, head_sha=expected_head_sha)
+        for name, app_id in BOOTSTRAP_CHECKS.items()
+    }
+    return {
+        "receipt_schema_version": 2,
+        "workflow_name": WORKFLOW_NAME,
+        "repository": expected_repository,
+        "workflow_run_id": str(expected_workflow_run_id),
+        "workflow_run_attempt": expected_workflow_run_attempt,
+        "created_at_utc": clock.isoformat().replace("+00:00", "Z"),
+        "certification_mode": BOOTSTRAP_MODE,
+        "fallback_expires_utc": (clock + REVIEW_RECEIPT_MAX_AGE).isoformat().replace("+00:00", "Z"),
+        "target": {
+            "pr_number": expected_pr_number,
+            "incident_id": expected_incident_id,
+            "author": {"login": author_login, "id": author_id},
+            "base_ref": "main",
+            "head_ref": expected_head_ref,
+            "head_sha": expected_head_sha,
+            "head_repository": expected_repository,
+        },
+        "changed_files": changed,
+        "owner_review": owner_review,
+        "required_checks": verified,
+        "evidence_state": "TRUST_ROOT_BOOTSTRAP_VERIFIED",
+        "terminal_authority": TERMINAL_AUTHORITY,
+        "can_execute": False,
+    }
+
+
+def verify_trust_root_bootstrap(
+    receipt: Mapping[str, Any],
+    *,
+    expected_repository: str,
+    expected_head_sha: str,
+    expected_head_ref: str,
+    expected_workflow_run_id: str,
+    expected_workflow_name: str,
+    expected_pr_number: int,
+    live_reviews: Sequence[Mapping[str, Any]],
+    live_checks: Sequence[Mapping[str, Any]],
+    repo_root: Path,
+    now: datetime | None = None,
+) -> None:
+    keys = {
+        "receipt_schema_version", "workflow_name", "repository", "workflow_run_id",
+        "workflow_run_attempt", "created_at_utc", "certification_mode",
+        "fallback_expires_utc", "target", "changed_files", "owner_review",
+        "required_checks", "evidence_state", "terminal_authority", "can_execute",
+    }
+    _exact_keys(receipt, keys, "RECEIPT")
+    _require(receipt.get("receipt_schema_version") == 2, "RECEIPT_SCHEMA_VERSION_UNSUPPORTED")
+    _require(receipt.get("certification_mode") == BOOTSTRAP_MODE, "CERTIFICATION_MODE_MISMATCH")
+    _require(receipt.get("evidence_state") == "TRUST_ROOT_BOOTSTRAP_VERIFIED",
+             "TRUST_ROOT_BOOTSTRAP_NOT_VERIFIED")
+    _require("independent_review" not in receipt and "trusted_reviewers" not in receipt,
+             "BOOTSTRAP_MUST_NOT_CLAIM_INDEPENDENT_REVIEW")
+    _require(expected_workflow_name == WORKFLOW_NAME and receipt.get("workflow_name") == WORKFLOW_NAME,
+             "RECEIPT_WORKFLOW_IDENTITY_MISMATCH")
+    _require(receipt.get("repository") == expected_repository == CANONICAL_REPOSITORY,
+             "REPOSITORY_IDENTITY_MISMATCH")
+    _require(
+        bool(re.fullmatch(r"[1-9][0-9]*", str(receipt.get("workflow_run_id"))))
+        and str(receipt.get("workflow_run_id")) == str(expected_workflow_run_id),
+        "WORKFLOW_RUN_ID_MISMATCH",
+    )
+    _positive_int(receipt.get("workflow_run_attempt"), "WORKFLOW_RUN_ATTEMPT")
+    created = _timestamp(receipt.get("created_at_utc"), "RECEIPT_CREATED_AT")
+    expiry = _timestamp(receipt.get("fallback_expires_utc"), "FALLBACK_EXPIRY")
+    _require(expiry == created + REVIEW_RECEIPT_MAX_AGE, "FALLBACK_EXPIRY_MISMATCH")
+    clock = now or datetime.now(timezone.utc)
+    _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
+    clock = clock.astimezone(timezone.utc)
+    _require(clock < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
+             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
+    _require(created <= clock < expiry, "TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT")
+    target = _exact_keys(
+        receipt.get("target"),
+        {"pr_number", "incident_id", "author", "base_ref", "head_ref", "head_sha", "head_repository"},
+        "TARGET",
+    )
+    _require(_positive_int(target.get("pr_number"), "PR_NUMBER") == expected_pr_number,
+             "RECEIPT_PR_NUMBER_MISMATCH")
+    author = _exact_keys(target.get("author"), {"login", "id"}, "PR_AUTHOR")
+    author_id = _positive_int(author.get("id"), "PR_AUTHOR_ID")
+    author_login = _login(author.get("login"), "PR_AUTHOR_LOGIN")
+    _require(author_id != OWNER_ID and author_login.casefold() != OWNER_LOGIN.casefold(),
+             "TRUST_ROOT_OWNER_AUTHORED")
+    _require(
+        target.get("base_ref") == "main"
+        and target.get("head_ref") == expected_head_ref
+        and target.get("head_sha") == expected_head_sha
+        and target.get("head_repository") == expected_repository,
+        "RECEIPT_TARGET_MISMATCH",
+    )
+    changed = receipt.get("changed_files")
+    _require(isinstance(changed, list), "DIFF_INVENTORY_INVALID")
+    _require(
+        classify_changed_files(changed, repo_root=repo_root, expected_count=len(changed)) == BOOTSTRAP_MODE,
+        "TRUST_ROOT_REQUIRED",
+    )
+    _require(isinstance(live_reviews, Sequence) and not isinstance(live_reviews, (str, bytes)),
+             "LIVE_REVIEW_INVENTORY_INVALID")
+    _require(isinstance(live_checks, Sequence) and not isinstance(live_checks, (str, bytes)),
+             "LIVE_CHECK_INVENTORY_INVALID")
+    live_owner = _owner_approval(live_reviews, head_sha=expected_head_sha)
+    recorded = _exact_keys(
+        receipt.get("owner_review"),
+        {"state", "reviewer", "review_id", "commit_id", "submitted_at"},
+        "OWNER_REVIEW",
+    )
+    _require(
+        recorded.get("review_id") == live_owner["review_id"]
+        and recorded.get("commit_id") == expected_head_sha
+        and recorded.get("state") == "APPROVED",
+        "TRUST_ROOT_OWNER_APPROVAL_WITHDRAWN_OR_CHANGED",
+    )
+    checks = receipt.get("required_checks")
+    _exact_keys(checks, set(BOOTSTRAP_CHECKS), "REQUIRED_CHECKS")
+    for name, app_id in BOOTSTRAP_CHECKS.items():
+        recorded_check = _exact_keys(
+            checks.get(name), {"id", "app_id", "head_sha", "status", "conclusion"}, "REQUIRED_CHECK",
+        )
+        live_check = _verified_named_check(live_checks, name=name, app_id=app_id, head_sha=expected_head_sha)
+        _require(recorded_check.get("id") == live_check["id"], f"REQUIRED_CHECK_SUPERSEDED:{name}")
+        _require(recorded_check.get("app_id") == app_id, f"REQUIRED_CHECK_APP_MISMATCH:{name}")
+    _require(receipt.get("terminal_authority") == TERMINAL_AUTHORITY, "TERMINAL_AUTHORITY_MISMATCH")
+    _require(receipt.get("can_execute") is False, "CAN_EXECUTE_INVARIANT_VIOLATED")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -555,66 +825,132 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workflow-name", required=True)
     parser.add_argument("--pr-number", type=int)
     parser.add_argument("--live-reviews-json", type=Path)
+    parser.add_argument("--live-checks-json", type=Path)
     parser.add_argument("--incident-id")
     parser.add_argument("--workflow-run-attempt", type=int)
+    parser.add_argument("--classify", action="store_true")
+    parser.add_argument("--bootstrap", action="store_true")
     args = parser.parse_args(argv)
 
+    def load_json(path: Path) -> Any:
+        return json.loads(path.read_text(encoding="utf-8"))
+
     try:
+        if args.classify:
+            _require(args.evidence is not None, "CLASSIFY_EVIDENCE_REQUIRED")
+            _require(not args.bootstrap, "CLASSIFY_BOOTSTRAP_CONFLICT")
+            payload = load_json(args.evidence)
+            pr = payload.get("pr")
+            _require(isinstance(pr, Mapping), "PR_EVIDENCE_INVALID")
+            print(classify_changed_files(
+                payload.get("changed_files"),
+                repo_root=Path.cwd(),
+                expected_count=pr.get("changed_files"),
+            ))
+            return 0
+        if args.bootstrap and args.evidence is None:
+            raise ExistingPrGovernanceReceiptError("BOOTSTRAP_REQUIRES_EVIDENCE")
         if args.evidence:
             _require(args.output is not None, "RECEIPT_OUTPUT_MISSING")
             _require(args.pr_number is not None, "EXPECTED_PR_NUMBER_MISSING")
             _require(bool(args.incident_id), "EXPECTED_INCIDENT_ID_MISSING")
             _require(args.workflow_run_attempt is not None, "WORKFLOW_RUN_ATTEMPT_MISSING")
-            _require(args.trusted_reviewers_json is not None, "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING")
-            try:
-                allowlist = json.loads(args.trusted_reviewers_json)
-            except json.JSONDecodeError as exc:
-                raise ExistingPrGovernanceReceiptError("INDEPENDENT_REVIEWER_ALLOWLIST_INVALID") from exc
-            receipt = build_receipt(
-                json.loads(args.evidence.read_text(encoding="utf-8")),
-                expected_repository=args.repository,
-                expected_head_sha=args.head_sha,
-                expected_head_ref=args.head_ref,
-                expected_pr_number=args.pr_number,
-                expected_incident_id=args.incident_id,
-                expected_workflow_run_id=args.workflow_run_id,
-                expected_workflow_run_attempt=args.workflow_run_attempt,
-                trusted_reviewers=allowlist,
-            )
-            verify_receipt(
-                receipt,
-                expected_repository=args.repository,
-                expected_head_sha=args.head_sha,
-                expected_head_ref=args.head_ref,
-                expected_workflow_run_id=args.workflow_run_id,
-                expected_workflow_name=args.workflow_name,
-                expected_pr_number=args.pr_number,
-                live_reviews=json.loads(args.evidence.read_text(encoding="utf-8"))["reviews"],
-            )
+            payload = load_json(args.evidence)
+            if args.bootstrap:
+                _require(args.trusted_reviewers_json is None, "BOOTSTRAP_MUST_NOT_USE_ALLOWLIST")
+                receipt = build_trust_root_bootstrap(
+                    payload,
+                    expected_repository=args.repository,
+                    expected_head_sha=args.head_sha,
+                    expected_head_ref=args.head_ref,
+                    expected_pr_number=args.pr_number,
+                    expected_incident_id=args.incident_id,
+                    expected_workflow_run_id=args.workflow_run_id,
+                    expected_workflow_run_attempt=args.workflow_run_attempt,
+                    repo_root=Path.cwd(),
+                )
+                verify_trust_root_bootstrap(
+                    receipt,
+                    expected_repository=args.repository,
+                    expected_head_sha=args.head_sha,
+                    expected_head_ref=args.head_ref,
+                    expected_workflow_run_id=args.workflow_run_id,
+                    expected_workflow_name=args.workflow_name,
+                    expected_pr_number=args.pr_number,
+                    live_reviews=payload["reviews"],
+                    live_checks=payload["check_runs"],
+                    repo_root=Path.cwd(),
+                )
+                verified_status = "TRUST_ROOT_BOOTSTRAP_VERIFIED"
+            else:
+                _require(args.trusted_reviewers_json is not None, "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING")
+                try:
+                    allowlist = json.loads(args.trusted_reviewers_json)
+                except json.JSONDecodeError as exc:
+                    raise ExistingPrGovernanceReceiptError("INDEPENDENT_REVIEWER_ALLOWLIST_INVALID") from exc
+                receipt = build_receipt(
+                    payload,
+                    expected_repository=args.repository,
+                    expected_head_sha=args.head_sha,
+                    expected_head_ref=args.head_ref,
+                    expected_pr_number=args.pr_number,
+                    expected_incident_id=args.incident_id,
+                    expected_workflow_run_id=args.workflow_run_id,
+                    expected_workflow_run_attempt=args.workflow_run_attempt,
+                    trusted_reviewers=allowlist,
+                )
+                verify_receipt(
+                    receipt,
+                    expected_repository=args.repository,
+                    expected_head_sha=args.head_sha,
+                    expected_head_ref=args.head_ref,
+                    expected_workflow_run_id=args.workflow_run_id,
+                    expected_workflow_name=args.workflow_name,
+                    expected_pr_number=args.pr_number,
+                    live_reviews=payload["reviews"],
+                )
+                verified_status = "REVIEW_EVIDENCE_VERIFIED"
             args.output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         else:
-            receipt = json.loads(args.receipt.read_text(encoding="utf-8"))
+            receipt = load_json(args.receipt)
             _require(args.pr_number is not None, "TRUSTED_PR_NUMBER_REQUIRED")
             _require(args.live_reviews_json is not None, "LIVE_REVIEW_RECHECK_REQUIRED")
-            live_reviews = json.loads(args.live_reviews_json.read_text(encoding="utf-8"))
-            verify_receipt(
-                receipt,
-                expected_repository=args.repository,
-                expected_head_sha=args.head_sha,
-                expected_head_ref=args.head_ref,
-                expected_workflow_run_id=args.workflow_run_id,
-                expected_workflow_name=args.workflow_name,
-                expected_pr_number=args.pr_number,
-                live_reviews=live_reviews,
-            )
+            live_reviews = load_json(args.live_reviews_json)
+            if isinstance(receipt, Mapping) and receipt.get("certification_mode") == BOOTSTRAP_MODE:
+                _require(args.live_checks_json is not None, "LIVE_CHECK_RECHECK_REQUIRED")
+                verify_trust_root_bootstrap(
+                    receipt,
+                    expected_repository=args.repository,
+                    expected_head_sha=args.head_sha,
+                    expected_head_ref=args.head_ref,
+                    expected_workflow_run_id=args.workflow_run_id,
+                    expected_workflow_name=args.workflow_name,
+                    expected_pr_number=args.pr_number,
+                    live_reviews=live_reviews,
+                    live_checks=load_json(args.live_checks_json),
+                    repo_root=Path.cwd(),
+                )
+                verified_status = "TRUST_ROOT_BOOTSTRAP_VERIFIED"
+            else:
+                verify_receipt(
+                    receipt,
+                    expected_repository=args.repository,
+                    expected_head_sha=args.head_sha,
+                    expected_head_ref=args.head_ref,
+                    expected_workflow_run_id=args.workflow_run_id,
+                    expected_workflow_name=args.workflow_name,
+                    expected_pr_number=args.pr_number,
+                    live_reviews=live_reviews,
+                )
+                verified_status = "REVIEW_EVIDENCE_VERIFIED"
     except ExistingPrGovernanceReceiptError as exc:
         print(json.dumps({"status": "HOLD", "reason": str(exc)}, sort_keys=True))
         return 1
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, KeyError):
         print(json.dumps({"status": "HOLD", "reason": "EVIDENCE_OR_RECEIPT_IO_INVALID"}, sort_keys=True))
         return 1
 
-    print(json.dumps({"status": "REVIEW_EVIDENCE_VERIFIED", "head_sha": args.head_sha,
+    print(json.dumps({"status": verified_status, "head_sha": args.head_sha,
                       "can_execute": False, "terminal_authority": TERMINAL_AUTHORITY}, sort_keys=True))
     return 0
 

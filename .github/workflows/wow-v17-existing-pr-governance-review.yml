@@ -218,15 +218,6 @@ jobs:
             '{complete_inventory:true,pr:$pr,changed_files:$changed_files,reviews:$reviews,
               check_runs:$check_runs,workflow_runs:$workflow_runs}' \
             > ".governance-review-evidence/evidence.json"
-          while IFS= read -r changed_path; do
-            case "$changed_path" in
-              .github/workflows/wow-verify.yml|.github/workflows/wow-engine-verify.yml|.github/workflows/wow-v17-rapid-repair.yml|.github/workflows/wow-v17-change-impact-gate.yml|.github/workflows/wow-v17-trusted-governance-gate.yml|.github/workflows/wow-v17-existing-pr-governance-review.yml|.github/workflows/wow-v17-morning-green-continuation.yml|.github/workflows/wow-v17-release-production-verification-agent.yml|.github/workflows/wow-v17-chatgpt-engineering-worker.yml|.github/workflows/wow-v17-claude-engineering-worker.yml|.github/workflows/wow-v17-engineering-provider-dispatcher.yml|.github/scripts/verify_engineering_governance_receipt.py|.github/scripts/verify_existing_pr_governance_receipt.py|.github/actions/wow-chatgpt-agent/*|.github/actions/wow-claude-agent/*)
-                echo "EXISTING_PR_TRUST_ROOT_CHANGE_REQUIRES_WORKER_OR_BOOTSTRAP:$changed_path" >&2
-                exit 1
-                ;;
-            esac
-          done < <(jq -r '.changed_files[] | .filename, (.previous_filename // empty)' \
-            ".governance-review-evidence/evidence.json")
 
       - name: Build and verify review-evidence receipt
         shell: bash
@@ -238,15 +229,12 @@ jobs:
           INCIDENT: ${{ steps.target.outputs.incident }}
         run: |
           set -euo pipefail
-          if [ -z "${TRUSTED_REVIEWERS_JSON}" ] || [ "${TRUSTED_REVIEWERS_JSON}" = "null" ]; then
-            echo "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING" >&2
-            exit 1
-          fi
-          receipt="$RUNNER_TEMP/wow-engineering-governance-receipt.json"
+          evidence=".governance-review-evidence/evidence.json"
+          classification_file="$RUNNER_TEMP/wow-governance-classification.txt"
+          set +e
           python .github/scripts/verify_existing_pr_governance_receipt.py \
-            --evidence .governance-review-evidence/evidence.json \
-            --output "$receipt" \
-            --trusted-reviewers-json "$TRUSTED_REVIEWERS_JSON" \
+            --evidence "$evidence" \
+            --classify \
             --repository "$GITHUB_REPOSITORY" \
             --head-sha "$HEAD_SHA" \
             --head-ref "$HEAD_REF" \
@@ -254,7 +242,100 @@ jobs:
             --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
             --workflow-name "wow-v17-existing-pr-governance-review" \
             --pr-number "$PR_NUMBER" \
+            --incident-id "$INCIDENT" \
+            > "$classification_file"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            cat "$classification_file" >&2
+            exit 1
+          fi
+          classification=$(tr -d '[:space:]' < "$classification_file")
+          case "$classification" in
+            TRUST_ROOT_BOOTSTRAP|ORDINARY_ENGINEERING) ;;
+            *) echo "EXISTING_PR_CLASSIFICATION_INVALID:$classification" >&2; exit 1 ;;
+          esac
+
+          if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then
+            api="/repos/${GITHUB_REPOSITORY}"
+            api_array() {
+              local endpoint="$1" selector="$2" page=1 response items count accumulated='[]'
+              while [ "$page" -le 10 ]; do
+                response=$(gh api "${endpoint}?per_page=100&page=${page}")
+                items=$(jq -ce "$selector" <<<"$response")
+                count=$(jq 'length' <<<"$items")
+                accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
+                [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
+                page=$((page + 1))
+              done
+              echo "EXISTING_PR_API_INVENTORY_LIMIT_EXCEEDED" >&2
+              return 1
+            }
+            required_checks=(
+              "WOW required-three regression|15368"
+              "WOW governed probability backend|15368"
+              "WOW additional required regression|15368"
+              "WOW V17 change impact gate|15368"
+              "WOW Independent QA exact-head|5245832"
+              "WOW Release Authority exact-head|5245853"
+            )
+            ready=false
+            checks='[]'
+            for _ in $(seq 1 60); do
+              checks=$(api_array "${api}/commits/${HEAD_SHA}/check-runs" '.check_runs')
+              ready=true
+              for required_spec in "${required_checks[@]}"; do
+                check_name="${required_spec%%|*}"
+                app_id="${required_spec#*|}"
+                match=$(jq -r --arg name "$check_name" --argjson app "$app_id" --arg sha "$HEAD_SHA" \
+                  '[.[] | select(.name == $name and (.app.id == $app) and .head_sha == $sha)] | sort_by(.started_at, .id) | last | "\(.status // "")|\(.conclusion // "")"' \
+                  <<<"$checks")
+                if [ "$match" = "completed|failure" ] || [ "$match" = "completed|cancelled" ] || \
+                   [ "$match" = "completed|timed_out" ] || [ "$match" = "completed|action_required" ] || \
+                   [ "$match" = "completed|skipped" ]; then
+                  echo "EXISTING_PR_BOOTSTRAP_CHECK_FAILED:$check_name" >&2
+                  exit 1
+                fi
+                if [ "$match" != "completed|success" ]; then
+                  ready=false
+                fi
+              done
+              [ "$ready" = "true" ] && break
+              sleep 10
+            done
+            [ "$ready" = "true" ] || {
+              echo "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" >&2
+              exit 1
+            }
+            jq -n --argjson evidence "$(cat "$evidence")" --argjson check_runs "$checks" \
+              '$evidence | .check_runs = $check_runs' > "${evidence}.tmp"
+            mv "${evidence}.tmp" "$evidence"
+          fi
+
+          receipt="$RUNNER_TEMP/wow-engineering-governance-receipt.json"
+          common=(
+            --evidence "$evidence"
+            --output "$receipt"
+            --repository "$GITHUB_REPOSITORY"
+            --head-sha "$HEAD_SHA"
+            --head-ref "$HEAD_REF"
+            --workflow-run-id "$GITHUB_RUN_ID"
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT"
+            --workflow-name "wow-v17-existing-pr-governance-review"
+            --pr-number "$PR_NUMBER"
             --incident-id "$INCIDENT"
+          )
+          if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then
+            python .github/scripts/verify_existing_pr_governance_receipt.py "${common[@]}" --bootstrap
+          else
+            if [ -z "${TRUSTED_REVIEWERS_JSON}" ] || [ "${TRUSTED_REVIEWERS_JSON}" = "null" ]; then
+              echo "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING" >&2
+              exit 1
+            fi
+            python .github/scripts/verify_existing_pr_governance_receipt.py \
+              "${common[@]}" \
+              --trusted-reviewers-json "$TRUSTED_REVIEWERS_JSON"
+          fi
           sha256sum "$receipt" | awk '{print $1}' > "$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
 
       - name: Upload exact-head review-evidence receipt

@@ -116,6 +116,88 @@ def build(data=None, *, trusted_reviewers=ALLOWLIST, now=NOW):
     )
 
 
+BOT_AUTHOR = {"id": 4242, "login": "copilot-swe-agent", "type": "Bot"}
+
+
+def bootstrap_evidence(
+    *,
+    author=None,
+    owner_state="APPROVED",
+    owner_sha=HEAD,
+    qa_conclusion="success",
+    qa_app=5245832,
+    check_sha=HEAD,
+):
+    data = evidence(author=author or BOT_AUTHOR)
+    data["changed_files"] = [{
+        "filename": ".github/workflows/wow-v17-existing-pr-governance-review.yml",
+        "previous_filename": None,
+        "status": "modified",
+    }]
+    data["reviews"] = [
+        {
+            "id": 12,
+            "state": "APPROVED",
+            "commit_id": HEAD,
+            "submitted_at": "2026-10-17T22:00:00Z",
+            "user": {**REVIEWER, "type": "User"},
+        },
+        {
+            "id": 77,
+            "state": owner_state,
+            "commit_id": owner_sha,
+            "submitted_at": "2026-10-17T23:10:00Z",
+            "user": {"id": verifier.OWNER_ID, "login": verifier.OWNER_LOGIN, "type": "User"},
+        },
+    ]
+    data["check_runs"] = []
+    for index, (name, app_id) in enumerate(verifier.BOOTSTRAP_CHECKS.items()):
+        conclusion = qa_conclusion if name == "WOW Independent QA exact-head" else "success"
+        resolved_app = qa_app if name == "WOW Independent QA exact-head" else app_id
+        data["check_runs"].append({
+            "id": index + 300,
+            "name": name,
+            "head_sha": check_sha,
+            "app": {"id": resolved_app},
+            "status": "completed",
+            "conclusion": conclusion,
+            "started_at": f"2026-10-17T23:{index:02d}:00Z",
+        })
+    return data
+
+
+def build_bootstrap(data=None, *, now=NOW):
+    return verifier.build_trust_root_bootstrap(
+        data or bootstrap_evidence(),
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        repo_root=REPO_ROOT,
+        now=now,
+    )
+
+
+def verify_bootstrap(receipt, *, now=NOW, live_reviews=None, live_checks=None, data=None):
+    source = data or bootstrap_evidence()
+    return verifier.verify_trust_root_bootstrap(
+        receipt,
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_name=verifier.WORKFLOW_NAME,
+        expected_pr_number=1822,
+        live_reviews=source["reviews"] if live_reviews is None else live_reviews,
+        live_checks=source["check_runs"] if live_checks is None else live_checks,
+        repo_root=REPO_ROOT,
+        now=now,
+    )
+
+
 def verify(receipt, *, head=HEAD, now=NOW, live_reviews=None):
     return verifier.verify_receipt(
         receipt,
@@ -606,21 +688,25 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     end = workflow.index(end_marker, start) + len(end_marker)
     invocation = workflow[start:end]
 
-    def run(workflow_name, receipt, live_reviews=None):
+    def run(workflow_name, receipt, live_reviews=None, live_checks=None):
         receipt_path = tmp_path / "receipt.json"
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
         reviews_path = tmp_path / "reviews.json"
         reviews_path.write_text(json.dumps(live_reviews or []), encoding="utf-8")
+        checks_path = tmp_path / "checks.json"
+        checks_path.write_text(json.dumps(live_checks or []), encoding="utf-8")
         script = (
             'set -euo pipefail\n'
             'receipt="$RECEIPT_PATH"\n'
             'live_reviews="$LIVE_REVIEWS_PATH"\n'
+            'live_checks="$LIVE_CHECKS_PATH"\n'
             f"{invocation}\n"
         )
         env = os.environ | {
             "WORKFLOW_NAME": workflow_name,
             "RECEIPT_PATH": str(receipt_path),
             "LIVE_REVIEWS_PATH": str(reviews_path),
+            "LIVE_CHECKS_PATH": str(checks_path),
             "PR_NUMBER": "1822",
             "PR_HEAD_SHA": HEAD,
             "PR_HEAD_REF": "fix/issue-1806",
@@ -697,3 +783,176 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     v2_renamed = run(verifier.WORKFLOW_NAME, renamed_source, reviews)
     assert v2_renamed.returncode == 1
     assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in v2_renamed.stdout
+
+    boot_data = bootstrap_evidence()
+    boot = build_bootstrap(boot_data, now=datetime.now(timezone.utc))
+    boot_ok = run(verifier.WORKFLOW_NAME, boot, boot_data["reviews"], boot_data["check_runs"])
+    assert boot_ok.returncode == 0, boot_ok.stdout + boot_ok.stderr
+    assert "TRUST_ROOT_BOOTSTRAP_VERIFIED" in boot_ok.stdout
+    assert "REVIEW_EVIDENCE_VERIFIED" not in boot_ok.stdout
+    withdrawn_owner = json.loads(json.dumps(boot_data["reviews"]))
+    withdrawn_owner[-1]["state"] = "CHANGES_REQUESTED"
+    boot_withdrawn = run(verifier.WORKFLOW_NAME, boot, withdrawn_owner, boot_data["check_runs"])
+    assert boot_withdrawn.returncode == 1
+    assert "TRUST_ROOT_OWNER_APPROVAL_MISSING" in boot_withdrawn.stdout
+
+
+def test_trust_root_bootstrap_receipt_uses_owner_approval_not_an_allowlist():
+    receipt = build_bootstrap()
+    verify_bootstrap(receipt)
+    assert receipt["certification_mode"] == "TRUST_ROOT_BOOTSTRAP"
+    assert receipt["evidence_state"] == "TRUST_ROOT_BOOTSTRAP_VERIFIED"
+    assert receipt["can_execute"] is False
+    assert receipt["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert "independent_review" not in receipt
+    assert "trusted_reviewers" not in receipt
+    assert set(receipt["required_checks"]) == set(verifier.BOOTSTRAP_CHECKS)
+    assert "WOW Independent QA exact-head" in receipt["required_checks"]
+    assert "WOW Release Authority exact-head" in receipt["required_checks"]
+    for name in verifier.REQUIRED_CHECKS:
+        assert name in receipt["required_checks"]
+
+
+def test_trust_root_bootstrap_holds_for_missing_or_stale_owner_approval():
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_OWNER_APPROVAL_MISSING"):
+        build_bootstrap(bootstrap_evidence(owner_state="CHANGES_REQUESTED"))
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_OWNER_APPROVAL_MISSING"):
+        build_bootstrap(bootstrap_evidence(owner_sha="b" * 40))
+    data = bootstrap_evidence()
+    data["reviews"] = [review for review in data["reviews"] if review["user"]["id"] != verifier.OWNER_ID]
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_OWNER_APPROVAL_MISSING"):
+        build_bootstrap(data)
+
+
+def test_owner_authored_trust_root_change_cannot_bootstrap():
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_OWNER_AUTHORED"):
+        build_bootstrap(bootstrap_evidence(author={
+            "id": verifier.OWNER_ID,
+            "login": verifier.OWNER_LOGIN,
+            "type": "User",
+        }))
+
+
+def test_ordinary_diff_cannot_use_the_bootstrap_receipt():
+    data = bootstrap_evidence()
+    data["changed_files"] = [{"filename": "src/fix.py", "previous_filename": None, "status": "modified"}]
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_REQUIRED"):
+        build_bootstrap(data)
+
+
+def test_bootstrap_requires_green_qa_release_and_exact_check_provenance():
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_NOT_GREEN"):
+        build_bootstrap(bootstrap_evidence(qa_conclusion="failure"))
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_MISSING"):
+        build_bootstrap(bootstrap_evidence(qa_app=1))
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_MISSING"):
+        build_bootstrap(bootstrap_evidence(check_sha="b" * 40))
+
+
+def test_bootstrap_receipt_expires_in_30_minutes_and_at_the_provider_sunset():
+    current = datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
+    receipt = build_bootstrap(now=current)
+    assert receipt["fallback_expires_utc"] == "2026-10-18T00:30:00Z"
+    verify_bootstrap(receipt, now=current)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT"):
+        verify_bootstrap(receipt, now=current + timedelta(minutes=30))
+    at_sunset = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
+        build_bootstrap(now=at_sunset)
+    before_sunset = datetime(2026, 10, 31, 23, 40, tzinfo=timezone.utc)
+    sunset_receipt = build_bootstrap(now=before_sunset)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
+        verify_bootstrap(sunset_receipt, now=at_sunset)
+
+
+def test_live_recheck_rejects_replaced_owner_review_and_superseded_checks():
+    data = bootstrap_evidence()
+    receipt = build_bootstrap(data)
+    replaced = json.loads(json.dumps(data["reviews"]))
+    replaced.append({
+        "id": 88,
+        "state": "APPROVED",
+        "commit_id": HEAD,
+        "submitted_at": "2026-10-17T23:20:00Z",
+        "user": {"id": verifier.OWNER_ID, "login": verifier.OWNER_LOGIN, "type": "User"},
+    })
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_OWNER_APPROVAL_WITHDRAWN_OR_CHANGED"):
+        verify_bootstrap(receipt, data=data, live_reviews=replaced)
+    superseded = json.loads(json.dumps(data["check_runs"]))
+    superseded.append({
+        "id": 999,
+        "name": "WOW Release Authority exact-head",
+        "head_sha": HEAD,
+        "app": {"id": 5245853},
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-17T23:40:00Z",
+    })
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_SUPERSEDED"):
+        verify_bootstrap(receipt, data=data, live_checks=superseded)
+
+
+def test_protected_worker_paths_classify_as_trust_root_bootstrap():
+    for path in (
+        ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+        ".github/workflows/wow-v17-claude-engineering-worker.yml",
+        ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+        "render.yaml",
+    ):
+        data = bootstrap_evidence()
+        data["changed_files"] = [{"filename": path, "previous_filename": None, "status": "modified"}]
+        assert verifier.classify_changed_files(
+            data["changed_files"], repo_root=REPO_ROOT, expected_count=1,
+        ) == verifier.BOOTSTRAP_MODE
+    ordinary = evidence()
+    assert verifier.classify_changed_files(
+        ordinary["changed_files"], repo_root=REPO_ROOT, expected_count=1,
+    ) == verifier.ORDINARY_MODE
+
+
+def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch):
+    monkeypatch.chdir(REPO_ROOT)
+    data = bootstrap_evidence()
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(json.dumps(data), encoding="utf-8")
+    output = tmp_path / "receipt.json"
+    common = [
+        "--evidence", str(evidence_path),
+        "--repository", REPOSITORY,
+        "--head-sha", HEAD,
+        "--head-ref", "fix/issue-1806",
+        "--workflow-run-id", "12345",
+        "--workflow-run-attempt", "1",
+        "--workflow-name", verifier.WORKFLOW_NAME,
+        "--pr-number", "1822",
+        "--incident-id", "1806",
+    ]
+    monkeypatch.setattr(sys, "argv", ["verify", *common, "--classify"])
+    assert verifier.main() == 0
+    monkeypatch.setattr(sys, "argv", ["verify", *common, "--output", str(output), "--bootstrap"])
+    assert verifier.main() == 0
+    receipt = json.loads(output.read_text(encoding="utf-8"))
+    assert receipt["certification_mode"] == "TRUST_ROOT_BOOTSTRAP"
+    assert receipt["can_execute"] is False
+    monkeypatch.setattr(sys, "argv", [
+        "verify", *common, "--output", str(output), "--bootstrap",
+        "--trusted-reviewers-json", json.dumps(ALLOWLIST),
+    ])
+    assert verifier.main() == 1
+    ordinary = evidence()
+    evidence_path.write_text(json.dumps(ordinary), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["verify", *common, "--classify"])
+    assert verifier.main() == 0
+    monkeypatch.setattr(sys, "argv", [
+        "verify", *common, "--output", str(output),
+        "--trusted-reviewers-json", json.dumps(ALLOWLIST),
+    ])
+    # CLI verifies against the wall clock; the fixture clock is historical.
+    original_build = verifier.build_receipt
+
+    def build_now(*args, **kwargs):
+        kwargs["now"] = datetime.now(timezone.utc)
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "build_receipt", build_now)
+    assert verifier.main() == 0

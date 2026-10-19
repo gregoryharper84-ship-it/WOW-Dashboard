@@ -73,8 +73,13 @@ def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
     assert 'api_array "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}"' in text
     assert "EXISTING_PR_REQUIRED_CI_FAILED" in text
     assert "EXISTING_PR_REQUIRED_CI_INCOMPLETE_AFTER_BOUNDED_WAIT" in text
-    assert "EXISTING_PR_TRUST_ROOT_CHANGE_REQUIRES_WORKER_OR_BOOTSTRAP" in text
-    assert ".github/workflows/wow-v17-trusted-governance-gate.yml" in text
+    assert "EXISTING_PR_TRUST_ROOT_CHANGE_REQUIRES_WORKER_OR_BOOTSTRAP" not in text
+    assert "--classify" in text
+    assert "--bootstrap" in text
+    assert "TRUST_ROOT_BOOTSTRAP" in text
+    assert "ORDINARY_ENGINEERING" in text
+    assert "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" in text
+    assert "pull_request:" not in text.replace("pull_request_target:", "")
     assert ".github/scripts/verify_existing_pr_governance_receipt.py" in text
     assert 'select(.name == $name and .path == $path)' in text
     assert '\\(.conclusion // "")' in text
@@ -86,7 +91,7 @@ def test_existing_pr_collector_preserves_full_diff_provenance():
     assert "{filename,previous_filename,status}" in text
     assert "EXISTING_PR_API_INVENTORY_LIMIT_EXCEEDED" in text
     assert "EXISTING_PR_HEAD_MOVED_DURING_CAPTURE" in text
-    assert 'jq -r \'.changed_files[] | .filename, (.previous_filename // empty)\'' in text
+    assert "--classify" in text
 
 
 def test_existing_pr_certifier_uses_independent_review_evidence_not_synthetic_roles():
@@ -204,3 +209,6 @@ def test_trusted_consumers_use_dedicated_existing_pr_verifier():
     assert "Trusted exact-head engineering governance" in release
     assert "Lead/Triage/Engineering/Independent Review/QA governance receipt" not in release
     assert "active independent allowlisted APPROVED review" in release
+    for text in (gate, morning, release):
+        assert "--live-checks-json" in text
+        assert "TRUST_ROOT_BOOTSTRAP" in text

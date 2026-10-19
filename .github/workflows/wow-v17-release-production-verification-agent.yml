@@ -261,11 +261,28 @@ jobs:
           verifier=".github/scripts/verify_engineering_governance_receipt.py"
           if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
             verifier=".github/scripts/verify_existing_pr_governance_receipt.py"
+            cert_mode=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")' "$receipt")
+            live_checks="$RUNNER_TEMP/wow-live-checks.json"
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+              checks='[]'
+              for page in $(seq 1 10); do
+                response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}")
+                items=$(jq -ce '.check_runs' <<<"$response")
+                count=$(jq 'length' <<<"$items")
+                checks=$(jq -cn --argjson old "$checks" --argjson new "$items" '$old + $new')
+                [ "$count" -lt 100 ] && break
+                [ "$page" -lt 10 ] || { echo "RELEASE_GOVERNANCE_CHECK_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1; }
+              done
+              printf '%s\n' "$checks" > "$live_checks"
+            fi
           fi
 
           extra_args=()
           if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
             extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+              extra_args+=(--live-checks-json "$live_checks")
+            fi
           fi
           python "$verifier" \
             --receipt "$receipt" \
