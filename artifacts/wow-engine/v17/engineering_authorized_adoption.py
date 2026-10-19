@@ -136,9 +136,10 @@ def preflight(pr_number: int, source_sha: str) -> tuple[str, list[str], str]:
 
 
 def integrate(pr_number: int, source_sha: str) -> None:
-    if (not os.environ.get("APP_TOKEN")
-            or os.environ.get("GH_TOKEN") != os.environ.get("APP_TOKEN")):
-        raise AdoptionHold("REAL_ENGINEERING_APP_TOKEN_REQUIRED_HOLD")
+    if not os.environ.get("APP_TOKEN") or not os.environ.get("GH_TOKEN"):
+        raise AdoptionHold("APP_TOKEN_AND_READ_TOKEN_REQUIRED_HOLD")
+    if os.environ.get("APP_TOKEN") == os.environ.get("GH_TOKEN"):
+        raise AdoptionHold("READ_AND_WRITE_IDENTITY_NOT_SEPARATED_HOLD")
     if os.environ.get("WOW_CAN_EXECUTE") != "false" or os.environ.get("WOW_DRY_RUN_ONLY") != "true":
         raise AdoptionHold("DRY_RUN_INVARIANTS_HOLD")
     main_sha, paths, base = preflight(pr_number, source_sha)
@@ -183,9 +184,11 @@ def integrate(pr_number: int, source_sha: str) -> None:
             f"No auto-merge, deploy, probability change, or orders. "
             f"can_execute=false.\n"
         )
+        # Only this mutating call receives the short-lived Engineering App token.
+        app_env = dict(os.environ, GH_TOKEN=os.environ["APP_TOKEN"])
         call("gh", "pr", "create", "--repo", REPO, "--base", "main",
              "--head", branch, "--title", f"Engineering App: exact source #{pr_number} integration",
-             "--body-file", str(body))
+             "--body-file", str(body), env=app_env)
     created = api(f"pulls?state=open&head={REPO.split('/')[0]}:{branch}")
     if (not isinstance(created, list) or len(created) != 1
             or created[0].get("user", {}).get("login") != APP_AUTHOR
