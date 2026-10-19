@@ -469,31 +469,80 @@ class RefJournal:
             raise JournalProtocolError("RELEASE_JOURNAL_REF_PERMISSION_DENIED")
         raise JournalProtocolError("RELEASE_JOURNAL_REF_REJECTED")
 
-    def reserve(self, service_id: str, target_sha: str, *, consume_only: bool = False) -> dict[str, Any]:
+    def _reclaim_resolved_lock(
+        self,
+        service: str,
+        lock: str,
+        holder: str,
+        sha: str,
+        *,
+        holder_resolved: Callable[[str], bool] | None,
+        consume_only: bool,
+    ) -> list[str] | None:
+        """Move a stale lock to ``sha``. Returns None on success, else hold blockers.
+
+        A lock is stale only when its holder's own intent ref exists (the lock
+        came from this journal) and Render shows the holder's deployment
+        resolved (live or terminal). An uncertain holder is never reclaimed.
+        """
+        held = ["RELEASE_JOURNAL_SERVICE_LOCK_HELD"]
+        if consume_only or holder_resolved is None:
+            return held
+        if self._get(intent_ref(service, holder)) != holder or not holder_resolved(holder):
+            return held + ["RELEASE_JOURNAL_SERVICE_LOCK_HOLDER_UNRESOLVED"]
+        if self._get(lock) != holder:
+            return held
+        status, _body = self._request("DELETE", "/git/refs/" + _api_ref(lock), None)
+        if status not in (200, 204):
+            return held + ["RELEASE_JOURNAL_STALE_LOCK_RECLAIM_FAILED"]
+        if self._create(lock, sha) == "exists" and self._get(lock) != sha:
+            return held
+        return None
+
+    def reserve(
+        self,
+        service_id: str,
+        target_sha: str,
+        *,
+        consume_only: bool = False,
+        holder_resolved: Callable[[str], bool] | None = None,
+    ) -> dict[str, Any]:
         service = _service(service_id)
         sha = _sha(target_sha)
         lock = lock_ref(service)
         intent = intent_ref(service, sha)
+        reclaimed_from = None
         try:
             current = self._get(lock)
             if current is None:
                 created = self._create(lock, sha)
                 if created == "exists":
                     current = self._get(lock)
-                    if current != sha:
+                    if current is None:
                         return _hold(
                             "RELEASE_JOURNAL_SERVICE_LOCK_HELD",
                             ["RELEASE_JOURNAL_SERVICE_LOCK_HELD"],
                             lock_ref=lock,
                             intent_ref=intent,
                         )
-            elif current != sha:
-                return _hold(
-                    "RELEASE_JOURNAL_SERVICE_LOCK_HELD",
-                    ["RELEASE_JOURNAL_SERVICE_LOCK_HELD"],
-                    lock_ref=lock,
-                    intent_ref=intent,
+            if current is not None and current != sha:
+                refusal = self._reclaim_resolved_lock(
+                    service,
+                    lock,
+                    current,
+                    sha,
+                    holder_resolved=holder_resolved,
+                    consume_only=consume_only,
                 )
+                if refusal is not None:
+                    return _hold(
+                        "RELEASE_JOURNAL_SERVICE_LOCK_HELD",
+                        refusal,
+                        lock_ref=lock,
+                        intent_ref=intent,
+                        lock_holder_sha=current,
+                    )
+                reclaimed_from = current
             existing = self._get(intent)
             if existing == sha:
                 return _reconcile("", lock_ref=lock, intent_ref=intent)
@@ -525,6 +574,7 @@ class RefJournal:
                 "retry": False,
                 "lock_ref": lock,
                 "intent_ref": intent,
+                "reclaimed_lock_from": reclaimed_from,
                 "release_control_store": "github_ref_journal",
             }
         except JournalProtocolError as exc:
@@ -562,6 +612,20 @@ class RefJournal:
 
 def _same_sha(deploys: list, target_sha: str) -> list[dict]:
     return [deploy for deploy in deploys if isinstance(deploy, dict) and _commit_sha(deploy) == target_sha]
+
+
+def holder_deploy_resolved(deploys: Any, holder_sha: str) -> bool:
+    """Positive Render evidence that the lock holder's own deploy reached live or terminal.
+
+    No deploy for the holder (an uncertain or rejected POST) is not evidence.
+    """
+    if not isinstance(deploys, list) or not _SHA_RE.fullmatch(str(holder_sha or "")):
+        return False
+    mine = _same_sha(deploys, holder_sha)
+    if not mine:
+        return False
+    resolved = _TERMINAL_DEPLOY_STATUSES | {"live"}
+    return all(_deploy_status(deploy) in resolved for deploy in mine)
 
 
 def plan_release_admission(
@@ -713,7 +777,12 @@ def plan_release_admission(
             journal.release_lock(service_id, target_sha)
         return classified
 
-    reserved = journal.reserve(service_id, target_sha, consume_only=False)
+    reserved = journal.reserve(
+        service_id,
+        target_sha,
+        consume_only=False,
+        holder_resolved=lambda holder: holder_deploy_resolved(deploys, holder),
+    )
     if reserved["action"] != "POST_ONCE":
         return {**reserved, **common}
 
