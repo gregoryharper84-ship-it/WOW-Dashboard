@@ -357,7 +357,10 @@ def _cross_sport_moneyline_rows(
         return bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
     def score(event: discovery.DiscoveredEvent, _model: Any) -> dict[str, Any]:
-        if str(event.official_event_id or "") in covered_event_ids:
+        # A canonical MLB ID never owns the same raw ID in another sport.
+        # Cross-sport source aliases are only unique within their own sport:
+        # suppress genuine MLB duplicate scoring without losing NHL/NBA/etc.
+        if event.sport == "MLB" and str(event.official_event_id or "") in covered_event_ids:
             return {
                 "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
                 "probability_publishable": False,
@@ -437,7 +440,8 @@ def _cross_sport_moneyline_rows(
             ),
         )
         for row in scan["rows"]
-        if str(row.get("official_event_id") or "") not in covered_event_ids
+        if row.get("sport") != "MLB"
+        or str(row.get("official_event_id") or "") not in covered_event_ids
     ]
     return rows, scan
 
