@@ -97,6 +97,18 @@ class V25TeamContractTests(unittest.TestCase):
         self.assertIn("AMRT: cannot claim deployed status",
                       v25.validate_contract(altered))
 
+    def test_malformed_team_does_not_crash_or_grant_authority(self):
+        altered = copy.deepcopy(self.cfg)
+        altered["teams"]["AMRT"] = None
+        self.assertTrue(v25.validate_contract(altered))
+
+    def test_malformed_route_scopes_fail_closed(self):
+        altered = copy.deepcopy(self.cfg)
+        altered["route_scopes"] = {"BROKEN": ["AMRT"]}
+        self.assertTrue(v25.validate_contract(altered))
+        self.assertEqual("ORGANIZATION_CONTRACT_INVALID",
+                         v25.route_objective(altered, "BROKEN")["reason"])
+
     def test_unknown_objective_cannot_get_auto_assigned(self):
         self.assertEqual({"state": "BLOCKED", "reason": "UNREGISTERED_WORK_SCOPE"},
                          v25.route_objective(self.cfg, "BYPASS_RELEASE"))
