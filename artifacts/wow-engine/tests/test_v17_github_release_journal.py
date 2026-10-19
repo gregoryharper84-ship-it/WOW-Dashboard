@@ -31,6 +31,8 @@ from v17.github_release_journal import (
     observation_decision,
     paginate,
     plan_release_admission,
+    intent_ref,
+    lock_ref,
     render_post_followup,
     workflow_posts_render_deploy,
 )
@@ -536,3 +538,125 @@ def test_repository_workflows_do_not_add_a_second_deploy_writer_or_push_the_jour
         if isinstance(branches, str):
             branches = [branches]
         assert not any(matches(str(pattern), branch) for pattern in branches), path.name
+
+# --- Stale service-lock liveness (Claude adversarial review of #1855 @ 112d044) ---
+# The lock is released only on LIVE / ALREADY_LIVE / pre-POST terminal failure.
+# If main advances during a long Render build the controller exits through
+# DEPLOY_SHA_MISMATCH_HOLD with the lock still on the old SHA; the old SHA then
+# holds STALE_SHA before it can release, and every later main holds
+# RELEASE_JOURNAL_SERVICE_LOCK_HELD. A lock is reclaimed only on positive Render
+# evidence that the holder's own deploy resolved and only when the holder's
+# intent ref proves the lock came from this journal.
+
+
+def _deploy(sha: str, status: str, deploy_id: str = "dep-x") -> dict:
+    return {"id": deploy_id, "status": status, "commit": {"id": sha}}
+
+
+def _plan_for(store: MemoryGitHub, target: str, deploys: list, main: str | None = None):
+    main = target if main is None else main
+    return _plan(
+        store,
+        target_sha=target,
+        current_main_sha=main,
+        deploys=deploys,
+        recheck_main_sha=lambda: main,
+        recheck_deploys=lambda: deploys,
+    )
+
+
+def _strand_lock_on_sha(store: MemoryGitHub) -> None:
+    """Run for SHA reserves and posts, then exits without release (main moved)."""
+    first = _plan_for(store, SHA, [])
+    assert first["action"] == "POST_ONCE"
+    assert store.refs[lock_ref(SERVICE)] == SHA
+
+
+def test_main_advancing_during_build_does_not_permanently_block_next_main():
+    store = MemoryGitHub()
+    _strand_lock_on_sha(store)
+    resolved = [_deploy(SHA, "live")]
+
+    # The old SHA can never release its own lock once main has moved.
+    rerun_old = _plan_for(store, SHA, resolved, main=OTHER)
+    assert rerun_old["status"] == "STALE_SHA_NO_DEPLOY"
+    assert store.refs[lock_ref(SERVICE)] == SHA
+
+    nxt = _plan_for(store, OTHER, resolved)
+    assert nxt["action"] == "POST_ONCE", nxt.get("blockers")
+    assert nxt["reclaimed_lock_from"] == SHA
+    assert _render_posts(nxt) == [{"clearCache": "do_not_clear", "commitId": OTHER}]
+    assert store.refs[lock_ref(SERVICE)] == OTHER
+    # Exactly-once history is preserved: the old intent is never deleted.
+    assert store.refs[intent_ref(SERVICE, SHA)] == SHA
+    assert store.refs[intent_ref(SERVICE, OTHER)] == OTHER
+
+
+def test_holder_build_failed_inside_observation_loop_is_reclaimed():
+    store = MemoryGitHub()
+    _strand_lock_on_sha(store)
+    nxt = _plan_for(store, OTHER, [_deploy(SHA, "build_failed")])
+    assert nxt["action"] == "POST_ONCE"
+    assert nxt["reclaimed_lock_from"] == SHA
+
+
+def test_holder_still_building_holds_and_keeps_the_lock():
+    store = MemoryGitHub()
+    _strand_lock_on_sha(store)
+    nxt = _plan_for(store, OTHER, [_deploy(SHA, "build_in_progress")])
+    assert nxt["action"] == "HOLD"
+    assert nxt["status"] == "RELEASE_OTHER_SHA_DEPLOY_ACTIVE"
+    assert store.refs[lock_ref(SERVICE)] == SHA
+    assert _render_posts(nxt) == []
+
+
+def test_holder_with_uncertain_post_and_no_render_evidence_stays_locked():
+    store = MemoryGitHub()
+    _strand_lock_on_sha(store)
+    nxt = _plan_for(store, OTHER, [])
+    assert nxt["action"] == "HOLD"
+    assert nxt["status"] == "RELEASE_JOURNAL_SERVICE_LOCK_HELD"
+    assert "RELEASE_JOURNAL_SERVICE_LOCK_HOLDER_UNRESOLVED" in nxt["blockers"]
+    assert nxt["lock_holder_sha"] == SHA
+    assert store.refs[lock_ref(SERVICE)] == SHA
+    assert not any(
+        method == "DELETE" for method, _path, _payload in store.calls
+    )
+
+
+def test_lock_without_journal_intent_is_never_reclaimed():
+    store = MemoryGitHub()
+    store.refs[lock_ref(SERVICE)] = SHA  # foreign or hand-made lock, no intent ref
+    nxt = _plan_for(store, OTHER, [_deploy(SHA, "live")])
+    assert nxt["action"] == "HOLD"
+    assert nxt["status"] == "RELEASE_JOURNAL_SERVICE_LOCK_HELD"
+    assert "RELEASE_JOURNAL_SERVICE_LOCK_HOLDER_UNRESOLVED" in nxt["blockers"]
+    assert store.refs[lock_ref(SERVICE)] == SHA
+
+
+def test_consume_only_reservation_never_reclaims():
+    store = MemoryGitHub()
+    _strand_lock_on_sha(store)
+    journal = RefJournal(store.request)
+    held = journal.reserve(
+        SERVICE, OTHER, consume_only=True, holder_resolved=lambda _sha: True
+    )
+    assert held["action"] == "HOLD"
+    assert store.refs[lock_ref(SERVICE)] == SHA
+
+
+def test_failed_reclaim_delete_holds_without_posting():
+    class DeleteDenied(MemoryGitHub):
+        def request(self, method, path, payload):
+            if method == "DELETE":
+                self.calls.append((method, path, None))
+                return 403, {"message": "Resource not accessible by integration"}
+            return super().request(method, path, payload)
+
+    store = DeleteDenied()
+    _strand_lock_on_sha(store)
+    nxt = _plan_for(store, OTHER, [_deploy(SHA, "live")])
+    assert nxt["action"] == "HOLD"
+    assert "RELEASE_JOURNAL_STALE_LOCK_RECLAIM_FAILED" in nxt["blockers"]
+    assert _render_posts(nxt) == []
+    assert store.refs[lock_ref(SERVICE)] == SHA
