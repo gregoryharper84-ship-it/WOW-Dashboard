@@ -790,7 +790,17 @@ jobs:
                   raise SystemExit(0)
               # Create a GitHub ref only once. If the worker crashes or its
               # provider response is ambiguous, a rerun cannot send another POST.
-              release_intent_ref = reserve_git_release_intent(target_sha)
+              try:
+                  release_intent_ref = reserve_git_release_intent(target_sha)
+              except RuntimeError as exc:
+                  emit_receipt({
+                      "status": "RELEASE_INTENT_HOLD_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "hold_reason": str(exc),
+                      "next_action": "Read the protected Git intent and Render deployment; never repeat a POST on an uncertain intent.",
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
               emit_receipt({
                   "status": "RELEASE_INTENT_RESERVED_POST_UNCERTAIN",
                   "target_sha": target_sha,
@@ -936,6 +946,7 @@ jobs:
               "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
               "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
               "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+              "RELEASE_INTENT_HOLD_NO_DEPLOY",
               "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
               "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
               "PRODUCTION_RELEASE_HOLD",
