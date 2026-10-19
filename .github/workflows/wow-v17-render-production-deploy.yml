@@ -45,6 +45,7 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
       GH_API_TOKEN: ${{ github.token }}
+      WOW_REPOSITORY_NODE_ID: ${{ github.event.repository.node_id }}
       WOW_QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
       WOW_RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
@@ -214,6 +215,26 @@ jobs:
                           raise
                       time.sleep(2 ** attempt)
               raise last_error
+
+          def github_graphql(query, variables):
+              # No blind retry. A lost GraphQL acknowledgment is reconciled by
+              # reading refs; a failed or ambiguous mutation must never POST to Render.
+              headers = dict(github_headers)
+              headers["Content-Type"] = "application/json"
+              request = urllib.request.Request(
+                  "https://api.github.com/graphql",
+                  data=json.dumps({"query": query, "variables": variables}).encode("utf-8"),
+                  headers=headers,
+                  method="POST",
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      raw = response.read()
+                      return response.status, (json.loads(raw.decode("utf-8")) if raw else None)
+              except urllib.error.HTTPError as exc:
+                  return exc.code, {"message": "GITHUB_GRAPHQL_HTTP_" + str(exc.code)}
+              except (urllib.error.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError):
+                  return 0, {"message": "GITHUB_GRAPHQL_UNREACHABLE"}
 
           def github_status(method, path, payload=None):
               data = None
@@ -758,7 +779,11 @@ jobs:
               })
               raise SystemExit(0)
 
-          journal = RefJournal(github_status)
+          journal = RefJournal(
+              github_status,
+              github_graphql,
+              repository_id=os.environ.get("WOW_REPOSITORY_NODE_ID", ""),
+          )
           deploys_before_post = list_deploys()
           previous_live = next(
               (deploy for deploy in deploys_before_post if str(deploy.get("status") or "") == "live"),
