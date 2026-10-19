@@ -438,6 +438,9 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 ENGINEERING_LEAD_AGENT running on OpenAI/ChatGPT tooling only.
             Read the repository governance, .agents/skills/wow-engineering-lead-agent/SKILL.md,
             artifacts/wow-engine/v17/.agent-handoff/dispatch.json,
@@ -486,6 +489,9 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 ACCELERATION_TRIAGE_AGENT.
             Read artifacts/wow-engine/v17/.agent-handoff/dispatch.json and
             artifacts/wow-engine/v17/.agent-handoff/acceleration-context.json.
@@ -527,6 +533,9 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 RESEARCH_TRIAGE_AGENT running on OpenAI/ChatGPT tooling only.
             Read .agents/skills/wow-engineering-research-triage-agent/SKILL.md and
             artifacts/wow-engine/v17/.agent-handoff/lead.json.
@@ -576,6 +585,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 CROSS_PROVIDER_PEER_DIAGNOSIS_AGENT running on Anthropic/Claude.
             Read artifacts/wow-engine/v17/.agent-handoff/dispatch.json,
             artifacts/wow-engine/v17/.agent-handoff/lead.json, and
@@ -637,6 +649,9 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 ${{ steps.specialist_route.outputs.subagent }}.
             Read .agents/skills/wow-engineering-specialist-subagents/SKILL.md,
             artifacts/wow-engine/v17/.agent-handoff/triage.json, and
@@ -748,6 +763,9 @@ jobs:
           # The action resolves on trusted main; only the agent writable workspace changes.
           working_directory: ${{ steps.repair_target.outputs.bound == 'true' && format('{0}/.wow-repair-target', github.workspace) || github.workspace }}
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the WOW V17 ENGINEERING_AGENT running on OpenAI/ChatGPT tooling only and hold the single implementation lease for domain group ${{ steps.dispatch.outputs.lease_group }}.
             Read .agents/skills/wow-engineering-implementation-agent/SKILL.md,
             .agents/skills/wow-replit-patch-governor/SKILL.md,
@@ -918,6 +936,9 @@ jobs:
           permission_profile: ":read-only"
           working_directory: ${{ steps.repair_target.outputs.bound == 'true' && format('{0}/.wow-repair-target', github.workspace) || github.workspace }}
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 INDEPENDENT_REVIEW_AGENT running on OpenAI/ChatGPT tooling only.
             Read .agents/skills/wow-engineering-independent-review-agent/SKILL.md.
             Review the complete current-branch diff against main. You did not write this patch.
@@ -945,6 +966,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 CROSS_PROVIDER_ADVERSARIAL_REVIEW_AGENT running on Anthropic/Claude.
             Review the complete current implementation-branch diff against main. OpenAI authored the patch;
             you did not. Read .agents/skills/wow-engineering-independent-review-agent/SKILL.md and any available
@@ -976,6 +1000,9 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 SYSTEM_ARCHITECT_AGENT running on OpenAI/ChatGPT tooling only.
             Read .agents/skills/wow-engineering-system-architect-agent/SKILL.md.
             Review the current diff for protected-contract changes. Do not edit. Reject hidden
@@ -1020,6 +1047,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 CROSS_PROVIDER_QA_COUNTEREXAMPLE_AGENT running on Anthropic/Claude.
             OpenAI authored the patch; you did not. Review the current diff, incident handoff evidence, and
             deterministic regression result. Search specifically for missing counterexamples, adjacent-lane
@@ -1097,6 +1127,9 @@ jobs:
           permission_profile: ":read-only"
           working_directory: ${{ steps.repair_target.outputs.bound == 'true' && format('{0}/.wow-repair-target', github.workspace) || github.workspace }}
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 QA_VERIFICATION_AGENT running on OpenAI/ChatGPT tooling only.
             Read .agents/skills/wow-engineering-qa-verification-agent/SKILL.md.
             Review the current diff and deterministic regression evidence. You did not implement

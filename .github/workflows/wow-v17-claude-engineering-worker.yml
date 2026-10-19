@@ -376,6 +376,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 ENGINEERING_LEAD_AGENT running on Anthropic/Claude fallback tooling.
             OpenAI primary engineering is unavailable for this run because: ${{ inputs.fallback_reason }}.
             Read repository governance, .agents/skills/wow-engineering-lead-agent/SKILL.md,
@@ -420,6 +423,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 ACCELERATION_TRIAGE_AGENT running on fallback tooling.
             Read artifacts/wow-engine/v17/.agent-handoff/dispatch.json and
             artifacts/wow-engine/v17/.agent-handoff/acceleration-context.json.
@@ -462,6 +468,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 RESEARCH_TRIAGE_AGENT running on Anthropic/Claude fallback tooling.
             Read .agents/skills/wow-engineering-research-triage-agent/SKILL.md and
             artifacts/wow-engine/v17/.agent-handoff/lead.json.
@@ -520,6 +529,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 ${{ steps.specialist_route.outputs.subagent }} running on Anthropic/Claude fallback tooling.
             Read .agents/skills/wow-engineering-specialist-subagents/SKILL.md,
             artifacts/wow-engine/v17/.agent-handoff/triage.json, and
@@ -627,6 +639,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":workspace"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the WOW V17 ENGINEERING_AGENT running on Anthropic/Claude fallback tooling
             and hold the single implementation lease for domain group ${{ steps.dispatch.outputs.lease_group }}.
             Read .agents/skills/wow-engineering-implementation-agent/SKILL.md,
@@ -720,6 +735,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 INDEPENDENT_REVIEW_AGENT running on Anthropic/Claude fallback tooling.
             Read .agents/skills/wow-engineering-independent-review-agent/SKILL.md.
             Review the complete current-branch diff against main. You did not write this patch.
@@ -746,6 +764,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 SYSTEM_ARCHITECT_AGENT running on Anthropic/Claude fallback tooling.
             Read .agents/skills/wow-engineering-system-architect-agent/SKILL.md.
             Review the current diff for protected-contract changes. Do not edit. Reject hidden ownership
@@ -788,6 +809,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           permission_profile: ":read-only"
           prompt: |
+            Read root AGENTS.md first and apply its execution/evidence contract within your assigned role.
+            Status polling is not repair evidence. Continue permitted work when another transition is blocked.
+            Preserve role independence, single-writer lease, exact revisions and all protected release gates.
             You are the independent WOW V17 QA_VERIFICATION_AGENT running on Anthropic/Claude fallback tooling.
             Read .agents/skills/wow-engineering-qa-verification-agent/SKILL.md.
             Review the current diff and deterministic regression evidence. You did not implement the patch.
