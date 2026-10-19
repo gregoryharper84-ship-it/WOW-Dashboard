@@ -170,8 +170,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_FILES_EMPTY` | independent QA | No changed files could be listed. | N/A |
 | `QA_EVIDENCE_MISSING` | independent QA | A required exact-head check from `github-actions` (App 15368) has no completed run at the head; same-named checks from other Apps are ignored. Suffixed `:<check>`. | N/A |
 | `QA_EVIDENCE_FAILED` | independent QA | The latest exact-head run of a required check is not `success`; suffixed `:<check>`. | N/A |
-| `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING` | independent QA (prior policy) | Previous exact-head owner-review hold; replaced in the proposed contributor-neutral policy by independent, source-pinned regression/QA/Release checks on the current head. Only effective after approved merge. | N/A |
-| `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA (prior policy) | Previous unconditional owner-authorship hold. The proposed contributor-neutral rule accepts changes from authenticated contributors under unchanged independent, source-pinned exact-head verification and protected-merge controls. Only effective after approved merge. | N/A |
+<!-- Retired historical QA_TRUST_ROOT_OWNER_AUTHORED and QA_TRUST_ROOT_OWNER_APPROVAL_MISSING codes were replaced by independently source-pinned exact-head checks in the proposed contributor-neutral policy; not operative until an authorized merge. -->
 | `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
 | `RELEASE_TARGETS_UNRESOLVED` | release authority | Release could not resolve any valid (PR, exact head) target. | N/A |
 | `RELEASE_DECISION_INVARIANT_VIOLATED` | release authority | A Release decision file claimed authority; nothing published. | N/A |
