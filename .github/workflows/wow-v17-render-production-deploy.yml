@@ -25,7 +25,8 @@ jobs:
     # verifies that the exact current-main SHA reaches live. This avoids the
     # native checksPass listener silently missing an otherwise valid release.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 90
+    environment: wow-release
     env:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
@@ -33,8 +34,17 @@ jobs:
       WOW_QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
       WOW_RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      WOW_RELEASE_CONTROL_DSN: ${{ secrets.WOW_RELEASE_CONTROL_DSN }}
       WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"
     steps:
+      - name: Checkout exact intended release code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Install pinned primary release-control DB adapter
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --no-input 'psycopg[binary]==3.2.9'
       - name: Assert deployment governance
         shell: bash
         run: |
@@ -43,6 +53,7 @@ jobs:
           test -n "$GH_API_TOKEN"
           test -n "$RENDER_API_KEY"
           test -n "$WOW_RENDER_SERVICE_ID"
+          test -n "$WOW_RELEASE_CONTROL_DSN" || { echo PRIMARY_RELEASE_CONTROL_DSN_NOT_CERTIFIED; exit 1; }
 
       - name: Verify protected-main gates and deploy exact SHA
         shell: bash
@@ -233,6 +244,22 @@ jobs:
               })
               raise SystemExit(0)
 
+          release_environment = github_json("/environments/wow-release")
+          rules = release_environment.get("protection_rules") or []
+          branch_scope = release_environment.get("deployment_branch_policy") or {}
+          if not any(r.get("type") == "required_reviewers" and r.get("reviewers") for r in rules):
+              raise RuntimeError("PRIMARY_RELEASE_ENV_INDEPENDENT_REVIEWERS_MISSING")
+          if branch_scope.get("protected_branches") is not True:
+              raise RuntimeError("PRIMARY_RELEASE_ENV_PROTECTED_MAIN_ONLY_MISSING")
+          import sys
+          sys.path.insert(0, os.path.abspath("artifacts/wow-engine"))
+          import psycopg
+          from v17.primary_api_release_fence import (
+              PRIMARY_SERVICE, post_render_exactly_once, record_authenticated_readback
+          )
+          if render_service_id != PRIMARY_SERVICE:
+              raise RuntimeError("PRIMARY_RELEASE_SERVICE_SCOPE_MISMATCH")
+
           render_headers = {
               "Accept": "application/json",
               "Authorization": f"Bearer {render_api_key}",
@@ -291,17 +318,12 @@ jobs:
               return [deploy for deploy in list_deploys() if commit_sha(deploy) == target_sha]
 
           existing = exact_target_deploys()
-          for deploy in existing:
-              if str(deploy.get("status") or "") == "live":
-                  emit_receipt({
-                      "status":"EXACT_SHA_ALREADY_LIVE",
-                      "commit_sha":target_sha,
-                      "deploy_id":str(deploy.get("id") or ""),
-                      "deploy_authority":"GOVERNED_RENDER_API_HANDOFF",
-                      "required_checks":sorted(required),
-                      "can_execute":False,
-                  })
-                  raise SystemExit(0)
+          # An observed Render LIVE revision is not independently approved
+          # merely because its commit matches main. The protected release
+          # DB must reconcile a matching reservation and verified QA/Release
+          # acceptance before advancing durable deployment pointers.
+          if any(str(item.get("status") or "") == "live" for item in existing):
+              raise RuntimeError("PRIMARY_RELEASE_LIVE_REQUIRES_CERTIFIED_LEDGER_READBACK")
 
           terminal_failures = {
               "build_failed",
@@ -320,31 +342,32 @@ jobs:
                   active = deploy
                   break
 
-          if active is None:
-              created = render_json(
-                  "POST",
-                  f"/services/{service_path}/deploys",
-                  {"clearCache":"do_not_clear"},
+          if active is not None:
+              raise RuntimeError("PRIMARY_RELEASE_EXISTING_ACTIVE_DEPLOY_RECONCILE_ONLY")
+          current_service = render_json("GET", f"/services/{service_path}")
+          service_identity = (
+              current_service.get("service", current_service)
+              if isinstance(current_service, dict) else {}
+          )
+          if not isinstance(service_identity, dict) or service_identity.get("id") != render_service_id:
+              raise RuntimeError("PRIMARY_RELEASE_RENDER_IDENTITY_MISSING")
+          if service_identity.get("autoDeployTrigger") != "off" or service_identity.get("branch") != "main":
+              raise RuntimeError("PRIMARY_RELEASE_RENDER_AUTODEPLOY_OFF_NOT_CERTIFIED")
+          current_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
+          if current_sha != target_sha:
+              raise RuntimeError("PRIMARY_RELEASE_MAIN_SHA_CHANGED_BEFORE_POST")
+          run_id = "{}:{}".format(os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"])
+          with psycopg.connect(
+              os.environ["WOW_RELEASE_CONTROL_DSN"], autocommit=True, connect_timeout=10
+          ) as db:
+              post_receipt = post_render_exactly_once(
+                  db,
+                  lambda payload: render_json("POST", f"/services/{service_path}/deploys", payload),
+                  service_id=render_service_id, sha=target_sha, run_id=run_id,
               )
-              created_deploy = created
-              if isinstance(created, dict) and isinstance(created.get("deploy"), dict):
-                  created_deploy = created["deploy"]
-              if isinstance(created_deploy, dict) and created_deploy.get("id"):
-                  deploy_id = str(created_deploy["id"])
-                  created_sha = commit_sha(created_deploy)
-                  if created_sha and created_sha != target_sha:
-                      raise RuntimeError(f"RENDER_DEPLOY_WRONG_SHA:{created_sha}")
-              else:
-                  # A successful Render POST can be acknowledged without a top-level
-                  # deploy object. Reconcile the exact target SHA from Render's
-                  # authoritative deploy list instead of reporting a false failure.
-                  deploy_id = ""
-          else:
-              deploy_id = str(active.get("id") or "")
-              if not deploy_id:
-                  raise RuntimeError("RENDER_ACTIVE_DEPLOY_ID_MISSING")
+              deploy_id = post_receipt["deploy_id"]
 
-          deploy_deadline = time.time() + 900
+          deploy_deadline = time.time() + 4200
           while True:
               matching = exact_target_deploys()
               target = next((deploy for deploy in matching if str(deploy.get("id") or "") == deploy_id), None)
@@ -353,11 +376,31 @@ jobs:
               if target is not None:
                   status = str(target.get("status") or "")
                   if status == "live":
+                      # Provider GET is distinct from POST ACK; require a
+                      # durable, independently authorized DB record before
+                      # reporting live. This is NOT model/QA verification.
+                      observed_id = str(target.get("id") or "")
+                      observed_sha = commit_sha(target)
+                      if observed_id != deploy_id or observed_sha != target_sha:
+                          raise RuntimeError("PRIMARY_RELEASE_LIVE_IDENTITY_MISMATCH")
+                      with psycopg.connect(
+                          os.environ["WOW_RELEASE_CONTROL_DSN"],
+                          autocommit=True, connect_timeout=10
+                      ) as readback_db:
+                          accepted = record_authenticated_readback(
+                              readback_db, service_id=render_service_id,
+                              sha=target_sha, run_id=run_id,
+                              deploy_id=observed_id,
+                              observed_sha=observed_sha, live=True,
+                          )
+                      if accepted.get("status") != "LIVE_OBSERVED_NOT_QA_VERIFIED":
+                          raise RuntimeError("PRIMARY_RELEASE_DURABLE_LIVE_RECEIPT_MISSING")
                       emit_receipt({
                           "status":"EXACT_SHA_RENDER_DEPLOY_LIVE",
                           "commit_sha":target_sha,
-                          "deploy_id":str(target.get("id") or deploy_id),
-                          "deploy_authority":"GOVERNED_RENDER_API_HANDOFF",
+                          "deploy_id":observed_id,
+                          "deploy_authority":"DBA_FENCED_RENDER_READBACK_NOT_QA_VERIFIED",
+                          "durable_ledger_state":"LIVE_OBSERVED",
                           "required_checks":sorted(required),
                           "can_execute":False,
                       })
