@@ -1,0 +1,66 @@
+name: Verify Bot Authentication & Repo Access
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-auth:
+    name: Verify App Installation & Access
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Generate GitHub App Installation Token
+        id: app-token
+        # actions/create-github-app-token v1.11.0
+        uses: actions/create-github-app-token@5d869da34e18e7287c1daad50e0b8ea0f506ce69
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_BOT_APP_ID }}
+          private-key: ${{ secrets.WOW_ENGINEERING_BOT_PRIVATE_KEY }}
+          owner: gregoryharper84-ship-it
+          repositories: WOW-Dashboard
+
+      - name: Assert Installation Scope and Repository Identity
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EXPECTED_REPOSITORY: gregoryharper84-ship-it/WOW-Dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REPOSITORY" != "$EXPECTED_REPOSITORY" ]]; then
+            echo "::error::Workflow repository does not match the approved target"
+            exit 1
+          fi
+
+          # This endpoint requires an installation token, unlike public metadata.
+          INSTALLATION_DATA=$(gh api /installation/repositories)
+          if ! jq -e --arg expected "$EXPECTED_REPOSITORY" '
+            .total_count == 1 and
+            (.repositories | length) == 1 and
+            .repositories[0].full_name == $expected
+          ' <<< "$INSTALLATION_DATA" > /dev/null; then
+            echo "::error::Installation token must have access to exactly the approved repository"
+            exit 1
+          fi
+
+          REPO_DATA=$(gh api "/repos/$EXPECTED_REPOSITORY")
+          if ! jq -e --arg expected "$EXPECTED_REPOSITORY" '
+            .full_name == $expected
+          ' <<< "$REPO_DATA" > /dev/null; then
+            echo "::error::Target repository identity mismatch"
+            exit 1
+          fi
+
+          CAN_PUSH=$(jq -r '.permissions.push // false' <<< "$REPO_DATA")
+          echo "Target repository: $EXPECTED_REPOSITORY"
+          echo "Reported push permission: $CAN_PUSH"
+          if [[ "$CAN_PUSH" != "true" ]]; then
+            echo "::warning::Write/push capability is not established by this read-only test"
+          fi
+
+          echo "Installation authentication, single-repository scope, and repository identity verified."
+          echo "No repository write, merge, or release authorization was exercised."
