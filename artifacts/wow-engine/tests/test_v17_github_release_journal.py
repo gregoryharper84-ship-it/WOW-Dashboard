@@ -44,6 +44,7 @@ SHA = "b" * 40
 OTHER = "c" * 40
 HEAD = "a" * 40
 STALE_PREFIX = "dfe47f42"
+REPO_NODE_ID = "R_kgDOtestrepo"
 
 
 class MemoryGitHub:
@@ -75,6 +76,28 @@ class MemoryGitHub:
             del self.refs[full]
             return 204, None
         raise AssertionError((method, path))
+
+    def graphql(self, query, variables):
+        """In-memory all-or-nothing updateRefs with expected beforeOid."""
+        self.calls.append(("GRAPHQL", "updateRefs", {"refUpdates": list(variables["refUpdates"])}))
+        assert "updateRefs" in query and variables.get("repositoryId") == REPO_NODE_ID
+        if self.create_status == 403:
+            return 200, {"data": {"updateRefs": None}, "errors": [
+                {"type": "FORBIDDEN", "message": "Resource not accessible by integration"}]}
+        zero = "0" * 40
+        for update in variables["refUpdates"]:
+            if self.refs.get(update["name"], zero) != update["beforeOid"]:
+                return 200, {"data": {"updateRefs": None}, "errors": [
+                    {"message": "ref update rejected: stale beforeOid"}]}
+        for update in variables["refUpdates"]:
+            if update["afterOid"] == zero:
+                self.refs.pop(update["name"], None)
+            else:
+                self.refs[update["name"]] = update["afterOid"]
+        return 200, {"data": {"updateRefs": {"clientMutationId": None}}}
+
+    def journal(self):
+        return RefJournal(self.request, self.graphql, repository_id=REPO_NODE_ID)
 
 
 def _checks(head=HEAD, qa_app=AUTHENTIC_QA_APP_ID, release_app=AUTHENTIC_RELEASE_APP_ID, conclusion="success"):
@@ -143,7 +166,7 @@ def _plan(store: MemoryGitHub, **overrides):
         live_service={"id": SERVICE, "autoDeploy": "no", "autoDeployTrigger": "off"},
         workflow_texts=_texts(),
         deploys=[],
-        journal=RefJournal(store.request),
+        journal=store.journal(),
         service_id=SERVICE,
         recheck_main_sha=lambda: SHA,
         recheck_deploys=lambda: [],
@@ -287,8 +310,13 @@ def test_green_path_reserves_one_intent_and_one_pinned_post():
     assert again["action"] == "RECONCILE"
     assert again["eligible"] is False
     assert _render_posts(again) == []
-    creates = [call for call in store.calls if call[0] == "POST"]
-    assert len(creates) == 2
+    mutations = [call for call in store.calls if call[0] == "GRAPHQL"]
+    assert len(mutations) == 1
+    assert {(u["name"], u["beforeOid"]) for u in mutations[0][2]["refUpdates"]} == {
+        (f"refs/heads/wow-release/lock/{SERVICE}", "0" * 40),
+        (f"refs/heads/wow-release/intent/{SERVICE}/{SHA}", "0" * 40),
+    }
+    assert not any(call[0] in ("POST", "DELETE") for call in store.calls)
 
 
 def test_missing_wrong_and_stale_app_checks_do_not_reserve_or_post():
@@ -329,9 +357,9 @@ def test_missing_or_stale_sha_never_reserves_a_journal():
 
 def test_concurrent_same_sha_posts_once_and_other_sha_holds_the_lock():
     store = MemoryGitHub()
-    first = RefJournal(store.request).reserve(SERVICE, SHA, consume_only=False)
-    second = RefJournal(store.request).reserve(SERVICE, SHA, consume_only=False)
-    other = RefJournal(store.request).reserve(SERVICE, OTHER, consume_only=False)
+    first = store.journal().reserve(SERVICE, SHA, consume_only=False)
+    second = store.journal().reserve(SERVICE, SHA, consume_only=False)
+    other = store.journal().reserve(SERVICE, OTHER, consume_only=False)
 
     assert first["action"] == "POST_ONCE"
     assert second["action"] == "RECONCILE"
@@ -430,7 +458,8 @@ def test_permission_denied_ref_create_holds_and_stops():
     assert decision["action"] == "HOLD"
     assert decision["blockers"] == ["RELEASE_JOURNAL_REF_PERMISSION_DENIED"]
     assert _render_posts(decision) == []
-    assert sum(1 for method, _path, _payload in store.calls if method == "POST") == 1
+    assert sum(1 for method, _path, _payload in store.calls if method == "GRAPHQL") == 1
+    assert store.refs == {}
 
 
 def test_observation_timeout_is_read_only():
@@ -459,7 +488,7 @@ def test_observation_timeout_is_read_only():
 
 def test_lock_release_deletes_only_our_lock_and_keeps_the_intent():
     store = MemoryGitHub()
-    journal = RefJournal(store.request)
+    journal = store.journal()
     assert journal.reserve(SERVICE, SHA, consume_only=False)["action"] == "POST_ONCE"
     released = journal.release_lock(SERVICE, SHA)
     assert released["released"] is True
@@ -476,7 +505,7 @@ def test_lock_release_deletes_only_our_lock_and_keeps_the_intent():
 
     orphan = MemoryGitHub()
     orphan.refs[f"refs/heads/wow-release/lock/{SERVICE}"] = SHA
-    assert RefJournal(orphan.request).release_lock(SERVICE, SHA)["released"] is True
+    assert orphan.journal().release_lock(SERVICE, SHA)["released"] is True
     assert orphan.refs == {}
 
 
@@ -637,7 +666,7 @@ def test_lock_without_journal_intent_is_never_reclaimed():
 def test_consume_only_reservation_never_reclaims():
     store = MemoryGitHub()
     _strand_lock_on_sha(store)
-    journal = RefJournal(store.request)
+    journal = store.journal()
     held = journal.reserve(
         SERVICE, OTHER, consume_only=True, holder_resolved=lambda _sha: True
     )
@@ -645,21 +674,68 @@ def test_consume_only_reservation_never_reclaims():
     assert store.refs[lock_ref(SERVICE)] == SHA
 
 
-def test_failed_reclaim_delete_holds_without_posting():
-    class DeleteDenied(MemoryGitHub):
-        def request(self, method, path, payload):
-            if method == "DELETE":
-                self.calls.append((method, path, None))
-                return 403, {"message": "Resource not accessible by integration"}
-            return super().request(method, path, payload)
+def test_reclaim_swap_rejected_when_lock_moves_inside_mutation_window():
+    third = "d" * 40
+    class MovesBeforeMutation(MemoryGitHub):
+        armed = False
+        def graphql(self, query, variables):
+            if self.armed:
+                self.refs[lock_ref(SERVICE)] = third
+            return super().graphql(query, variables)
 
-    store = DeleteDenied()
+    store = MovesBeforeMutation()
     _strand_lock_on_sha(store)
+    store.armed = True
     nxt = _plan_for(store, OTHER, [_deploy(SHA, "live")])
     assert nxt["action"] == "HOLD"
     assert "RELEASE_JOURNAL_STALE_LOCK_RECLAIM_FAILED" in nxt["blockers"]
+    assert store.refs[lock_ref(SERVICE)] == third
+    assert intent_ref(SERVICE, OTHER) not in store.refs
     assert _render_posts(nxt) == []
-    assert store.refs[lock_ref(SERVICE)] == SHA
+
+
+def test_update_refs_batch_is_all_or_nothing():
+    store = MemoryGitHub()
+    store.refs[intent_ref(SERVICE, OTHER)] = OTHER
+    result = store.journal()._update([
+        (lock_ref(SERVICE), "0" * 40, SHA),
+        (intent_ref(SERVICE, OTHER), "0" * 40, SHA),
+    ])
+    assert result == "rejected"
+    assert lock_ref(SERVICE) not in store.refs
+    assert store.refs[intent_ref(SERVICE, OTHER)] == OTHER
+
+
+def test_release_lock_cas_does_not_delete_replaced_lock():
+    store = MemoryGitHub()
+    _strand_lock_on_sha(store)
+    original = store.graphql
+    def swap_then_apply(query, variables):
+        store.refs[lock_ref(SERVICE)] = OTHER
+        return original(query, variables)
+    store.graphql = swap_then_apply
+    released = store.journal().release_lock(SERVICE, SHA)
+    assert released["released"] is False
+    assert store.refs[lock_ref(SERVICE)] == OTHER
+    assert not any(call[0] == "DELETE" for call in store.calls)
+
+
+def test_journal_without_graphql_cas_cannot_mutate():
+    store = MemoryGitHub()
+    decision = _plan(store, journal=RefJournal(store.request))
+    assert decision["action"] == "HOLD"
+    assert decision["blockers"] == ["RELEASE_JOURNAL_CAS_UNAVAILABLE"]
+    assert store.refs == {}
+    assert _render_posts(decision) == []
+
+
+def test_existing_lock_without_own_intent_can_never_issue_second_post():
+    store = MemoryGitHub()
+    store.refs[lock_ref(SERVICE)] = SHA
+    decision = _plan(store)
+    assert decision["action"] == "HOLD"
+    assert "RELEASE_JOURNAL_LOCK_WITHOUT_INTENT" in decision["blockers"]
+    assert _render_posts(decision) == []
 
 
 def test_reclaimer_must_not_delete_a_lock_replaced_after_final_read():
@@ -696,3 +772,14 @@ def test_reclaimer_must_not_delete_a_lock_replaced_after_final_read():
     assert nxt["action"] == "HOLD"
     assert store.refs[lock_ref(SERVICE)] == third
     assert _render_posts(nxt) == []
+
+ 
+def test_controller_wires_graphql_cas_with_valid_python_script():
+    workflow = yaml.safe_load((REPO / ".github/workflows" / CONTROLLER_FILENAME).read_text())
+    job = workflow["jobs"]["deploy-production"]
+    assert job["env"]["WOW_REPOSITORY_NODE_ID"] == "${{ github.event.repository.node_id }}"
+    step = next(item for item in job["steps"] if "RefJournal(" in str(item.get("run") or ""))
+    script = step["run"].split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    compile(script, CONTROLLER_FILENAME, "exec")
+    assert re.search(r"RefJournal\(\s*github_status,\s*github_graphql,\s*repository_id=", script)
+    assert "https://api.github.com/graphql" in script
