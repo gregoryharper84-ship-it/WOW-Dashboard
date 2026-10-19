@@ -31,6 +31,20 @@ def _model_completed_row(*, audit, rank_eligible=True, publishable=True):
     return row
 
 
+def _passed_audit():
+    return {
+        "status": "PASS",
+        "rank_eligible": True,
+        "first_blocker": None,
+        "can_execute": False,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "stages": {
+            stage: True
+            for stage in daily._FULL_BOARD_REQUIRED_STAGES
+        },
+    }
+
+
 def _daily_cross_row(monkeypatch, row):
     monkeypatch.setattr(discovery_feed, "enabled", lambda: True)
     monkeypatch.setattr(
@@ -68,6 +82,8 @@ def _daily_cross_row(monkeypatch, row):
          "PUBLICATION_CHAIN_NOT_APPROVED"),
         ({"status": "UNKNOWN", "rank_eligible": True, "first_blocker": None},
          "PUBLICATION_CHAIN_NOT_APPROVED"),
+        ({"status": "PASS", "rank_eligible": True, "first_blocker": None},
+         "PUBLICATION_CHAIN_STAGES_INCOMPLETE"),
     ],
 )
 def test_cross_sport_completed_scorer_must_hold_without_publication_proof(
@@ -94,7 +110,7 @@ def test_cross_sport_completed_scorer_must_hold_without_publication_proof(
 def test_cross_sport_passed_publication_keeps_approved_completion(monkeypatch):
     row = _daily_cross_row(
         monkeypatch,
-        _model_completed_row(audit={"status": "PASS", "rank_eligible": True, "first_blocker": None}),
+        _model_completed_row(audit=_passed_audit()),
     )
     assert row["row_status"] == "COMPLETED"
     assert row["probability_publishable"] is True
