@@ -824,6 +824,48 @@ def test_trust_root_bootstrap_holds_for_missing_or_stale_owner_approval():
         build_bootstrap(data)
 
 
+def test_merged_exact_head_can_bootstrap_and_unmerged_closure_cannot():
+    merged = bootstrap_evidence()
+    merged["pr"]["state"] = "closed"
+    merged["pr"]["merged"] = True
+    merged["pr"]["merged_at"] = "2026-10-19T02:19:34Z"
+    merged["pr"]["merge_commit_sha"] = "b" * 40
+    receipt = build_bootstrap(merged)
+    assert receipt["certification_mode"] == "TRUST_ROOT_BOOTSTRAP"
+    assert receipt["target"]["head_sha"] == HEAD
+    assert receipt["can_execute"] is False
+    verify_bootstrap(receipt, data=merged)
+
+    closed = bootstrap_evidence()
+    closed["pr"]["state"] = "closed"
+    closed["pr"]["merged"] = False
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="PR_SHA_REPOSITORY_STATE_OR_BASE_MISMATCH"):
+        build_bootstrap(closed)
+
+    ordinary = evidence()
+    ordinary["pr"]["state"] = "closed"
+    ordinary["pr"]["merged"] = True
+    ordinary["pr"]["merged_at"] = "2026-10-19T02:19:34Z"
+    ordinary["pr"]["merge_commit_sha"] = "b" * 40
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="PR_SHA_REPOSITORY_STATE_OR_BASE_MISMATCH"):
+        build(ordinary)
+
+
+def test_release_verifier_accepts_bootstrap_receipt_without_a_green_legacy_gate():
+    workflow = (REPO_ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml").read_text()
+    assert 'governance_gate=trusted_gate_green' in workflow
+    assert 'governance_gate=legacy_gate_not_green:' in workflow
+    assert '[ "$gate" = "completed|success" ] ||' not in workflow
+    assert '[ "${cert_mode:-}" != "TRUST_ROOT_BOOTSTRAP" ] && [ "$GOVERNANCE_GATE" != "trusted_gate_green" ]' in workflow
+    assert "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN" in workflow
+    producer = (REPO_ROOT / ".github/workflows/wow-v17-existing-pr-governance-review.yml").read_text()
+    gate = (REPO_ROOT / ".github/workflows/wow-v17-trusted-governance-gate.yml").read_text()
+    for text in (producer, gate):
+        assert 'git merge-base --is-ancestor "$merge_sha" HEAD' in text
+        assert 'git merge-base --is-ancestor' in text
+        assert '.state == "open"' not in text or "state == \"open\" and .merged_at == null" in text
+
+
 def test_owner_authored_trust_root_change_cannot_bootstrap():
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_OWNER_AUTHORED"):
         build_bootstrap(bootstrap_evidence(author={
