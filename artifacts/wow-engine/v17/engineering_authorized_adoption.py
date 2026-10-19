@@ -103,7 +103,23 @@ def branch_for(requested_pr: int, sha: str) -> str:
 def verify_git_source(base: str, main_sha: str, source_sha: str, paths: list[str]) -> str:
     if not all(SHA.fullmatch(sha) for sha in (base, main_sha, source_sha)):
         raise AdoptionHold("GIT_SHA_INVALID_HOLD")
-    call("git", "fetch", "--no-tags", "origin", source_sha, main_sha)
+    # Checkout never persists credentials. Fetch source refs with the readonly
+    # token via a short-lived askpass helper; do not expose it to the source tree.
+    read_token = os.environ.get("GH_TOKEN")
+    if not read_token:
+        raise AdoptionHold("READ_TOKEN_REQUIRED_FOR_SOURCE_FETCH_HOLD")
+    with tempfile.TemporaryDirectory(prefix="wow-readonly-fetch-") as temp:
+        askpass = Path(temp) / "askpass"
+        askpass.write_text(
+            '#!/bin/sh\\n'
+            'case "$1" in *Username*) printf "x-access-token\\\\n";;'
+            ' *) printf "%s\\\\n" "$GIT_READ_TOKEN";; esac\\n'
+        )
+        askpass.chmod(0o700)
+        environment = dict(os.environ, GIT_ASKPASS=str(askpass),
+                           GIT_READ_TOKEN=read_token, GIT_TERMINAL_PROMPT="0")
+        call("git", "fetch", "--no-tags", "origin", source_sha, main_sha,
+             env=environment)
     if call("git", "rev-parse", "refs/remotes/origin/main") != main_sha:
         raise AdoptionHold("MAIN_MOVED_DURING_PREFLIGHT_HOLD")
     # GitHub PR base.sha tracks current main and is not the original branch
