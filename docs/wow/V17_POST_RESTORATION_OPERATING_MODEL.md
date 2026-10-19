@@ -12,6 +12,71 @@ Source repairs, production deployments, independent acceptance, fitted-model evi
 
 This document defines future responsibilities and acceptance conditions only. It introduces no new executable workflows, GitHub permissions, model inference code, CI checks, releases, Supabase tables or live agent workers.
 
+## Retained learnings from the October 2026 restoration (evidence-bounded)
+
+These are architectural lessons from the P0 incidents and Engineering's **staged designs**, not a claim that their fixes are currently deployed. Before any future implementation, independently re-read GitHub main, candidate heads, production Render SHA, security reviews and durable runtime evidence.
+
+### L1 — Distinguish four independent kinds of 'done'
+
+1. **Code exists:** an engineer/agent prepared a candidate. Tests or a green source PR do not prove it has been adopted.
+2. **Integration accepted:** the *correct*, least-privilege Engineering App made or adopted a bounded PR, required exact-head checks passed, and the appropriate independent reviewers approved the current head.
+3. **Release deployed:** independent Release authorized the exact main commit; the actual authorized Render service reports that exact commit LIVE, rather than a stale deployment or mutable branch snapshot.
+4. **Product working:** genuine GPT Actions produce complete durable specialist outputs, terminal decisions and reconciliation at the same run/event/model/deployment identities.
+
+A workflow or team that claims FIXED_AND_VERIFIED after any earlier stage must fail a negative contract test.
+
+### L2 — Remove a fake HOLD only together with a functioning replacement
+
+The historical controller included a hardcoded `service_lock_release_cas_verified=False` and `RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY`. A sentinel that always blocks release is not an implemented lease protocol. **Do not infer that merely replacing the false literal with true is safe.** Engineering must prove serialized exact-SHA deployment, independently authorized reviewer/owner boundaries, no alternate uncontrolled Render writer, durable intent/receipt handling, read-before-retry when POST outcome is unknown, and rollback.
+
+GitHub `concurrency: production-deploy` with `cancel-in-progress: false` prevents concurrent matching GitHub Actions runs; it does **not** fence an external direct Render API caller or a second workflow with a different group. The production deploy job must use the protected `wow-release` environment and the minimum possible write permissions. If external multi-writer release remains possible, enforce an appropriate production-side deployment guard rather than assuming CI serialization is global.
+
+### L3 — Independent means distinct *credential custody*, not two labels
+
+- QA App ID `5245832` and Release App ID `5245853` are necessary **identities**, not alone proof of independent human/cryptographic authorization.
+- For trust-root/workflow changes, an `APPROVED` review or issue comment from `gregoryharper84-ship-it` is **not** an independent owner factor when Engineering shares that account.
+- An independent owner cryptographic factor must be validated across **every trust-root bootstrap/authorization mode**, with owner private signing material unavailable to QA, Claude, and Engineering; no owner approval token/env secret distributed at job scope to untrusted QA/Claude code.
+- QA/review jobs must not inherit release/PR write tokens; prove token scopes and installation ownership through negative tests.
+- Changes to the authorizer itself must require an independently protected bootstrap. No retrospective proof from the same compromised trust root and no automatic promotion on a green status alone.
+
+### L4 — AMRT's missing link is deterministic **adoption**, not another reporting agent
+
+Engineering's October 17 source package described a no-model, exact-blob Engineering App adoption adapter with 57 passing *offline* tests, explicitly **not installed** and with its candidate producer/control-database authorization still unwired. It can form the later implementation basis, but do not count the staged package as a deployed autonomous resident dispatcher.
+
+Maintain a distinct `SOURCE_READY → CANDIDATE_REGISTERED → APP_DRAFT_CREATED → INDEPENDENTLY_REVIEWED` transition with:
+- content-addressed source head, exact changed blob IDs and separately attested test receipts;
+- independently approved canonical production control datastore and a bounded writer lease *for conflicting Engineering edits*, not automatically the Render deployment mutex;
+- GitHub Engineering App ID `5245813`, exact repository scope, least privilege and no owner-token impersonation;
+- deterministic reconcile-before-create and GET-after-ambiguous-write behavior, never duplicate PR creation or blind retry;
+- no self-merge, self-approval, status laundering or skipped QA/Release.
+
+### L5 — Internal observations and actual customer failures must not be conflated
+
+A real HTTP 200 Action transport receipt is not by itself a certified fitted-model delivery. An internal `SELF_ACCEPTANCE` 422 probe is not a customer-scoring failure. A Daily queue with no pending rows and idle memory-pressure warnings does not independently establish blocked scoring.
+
+The acceptance denominator must count *eligible distinct candidates/events* separately from request attempts, slate rows, settled outcomes and independently certified sport × market × line routes. An Action-to-durable-run join returning zero proves a **traceability gap**, not automatically zero calls or a specific causal outage.
+
+### L6 — Nested specialist proof and board publication evidence must agree
+
+The NFL `FINAL_APPROVED` scorer versus `publication_chain_audit=BLOCKED` conflict tracked in [#1841](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1841) demonstrates why `calibration_health=PASS` or an official-guard PASS cannot stand in for distinct producer proof of probability package validity, dynamic calibration, final refresh and full-board publication. Use a typed, versioned producer-to-board adapter with distinct `EVIDENCE_NOT_EMITTED` versus `EVIDENCE_FAILED`, tied to run/event/model identities. Never manufacture booleans from generic success or change probabilities to hide a contract defect.
+
+### L7 — Production database authority cannot be inferred from an accessible Supabase project
+
+A datastore named `wow-engine-validation` may contain useful diagnostic rows, but is **not automatically** the authoritative production inference or release-control database. Before a production control-plane migration, independently verify environment/service identity, role grants, ownership, writer lease/lock and mutation restrictions. Do not import a validation-only lock as a de facto production trust root.
+
+### L8 — Automation should preserve work, not create repeated HOLD narratives
+
+Conductor stores one canonical incident/candidate with owner, stage, exact evidence fingerprint and bounded retry/escalation. AMRT actively advances accepted repair tasks. SIRT performs **independent, event-triggered observation** with suppression of repeated unchanged findings and a periodic liveness fallback. A HOLD is justified when a real mandatory safety boundary is unsatisfied; it is not a substitute for Engineering diagnosing and implementing that boundary.
+
+Measured goals: no orphan handoffs, no indefinite `IN_PROGRESS`, shorter detection-to-deployment time, and independently verified Action completion—while unrelated model research and nonconflicting engineering proceed.
+
+### Provenance and implementation sequencing
+
+- Engineering's October 14 release-fence design was **offline tested only** and required real database, two-writer, lost-ack and deployment integration tests; do not treat it as production acceptance.
+- Engineering's October 17 Engineering App adoption V4 was **offline tested only** and required authorization, candidate registration and nonproduction live-canary evidence.
+- This document's own PR is **P2 documentation-only**; these learnings are candidates for post-restoration designs, not instructions to bypass #1562 P0 security holds or the independent terminal authority.
+- Any contemporaneous SHA, PR status, runtime record or certification claim must be reverified at the decision point. Historical figures are evidence context, never a live status feed.
+
 ## Separation of duties
 
 | Capability | Accountable authority | Must not do |
