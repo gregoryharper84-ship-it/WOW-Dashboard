@@ -59,6 +59,13 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "RENDER_TARGET_DEPLOY_TERMINAL_FAILURE" in text
     assert "DEPLOY_SUPERSEDED_BY_NEW_MAIN" in text
     assert "deploy_deadline = time.monotonic() + 90 * 60" in text
+    assert "deploy_deadline = time.time() + 2700" not in text
+    assert "timeout-minutes: 55" not in text
+    assert "role_deadline = time.time() + 900" in text
+    assert "QA_RELEASE_DECISION_TIMEOUT" in text
+    assert "RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED" in text
+    assert "RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE" in text
+    assert "service_lock_release_cas_verified=False" in text
     assert "time.sleep(10)" in text
     assert "MAX_WORKFLOW_RUN_ATTEMPTS = 3" in text
     assert "cancel-in-progress: false" in text
@@ -68,6 +75,11 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT" in text
     assert "journal_preflight = github_deployment_journal_preflight(" in text
     assert "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY" in text
+    verify = (Path(__file__).resolve().parents[3] / ".github/workflows/wow-verify.yml").read_text(encoding="utf-8")
+    dispatch = verify.split("dispatch-protected-deploy:", 1)[1]
+    assert "gh workflow run wow-v17-render-production-deploy.yml --ref main" in dispatch
+    assert 'github.event_name == \'workflow_dispatch\'' in dispatch
+    assert 'WOW_CAN_EXECUTE: "false"' in dispatch
 
 
 def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():

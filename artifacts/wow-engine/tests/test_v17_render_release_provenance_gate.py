@@ -225,7 +225,10 @@ def test_github_deployment_journal_preflight_never_claims_atomic_create():
     assert "GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY" in result["blockers"]
     assert "GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE" in result["blockers"]
     assert "GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED" in result["blockers"]
+    assert "RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED" in result["blockers"]
+    assert "RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE" in result["blockers"]
     assert "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED" not in result["blockers"]
+    assert result["eligible"] is False
 
 
 @pytest.mark.parametrize(

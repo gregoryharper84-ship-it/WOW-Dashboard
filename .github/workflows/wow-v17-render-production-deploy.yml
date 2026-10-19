@@ -165,6 +165,12 @@ jobs:
               if not service_lock_release_cas_verified:
                   blockers.append("GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE")
               blockers.append("GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED")
+              # iczfhsmjrrafhvcpmqhr is the connected wow-engine-validation
+              # application project, not a certified release-control schema.
+              # A Render deploy list is not a durable service-wide fence.
+              blockers.append("APPLICATION_DATABASE_PROJECT_IS_NOT_RELEASE_CONTROL_SCHEMA")
+              blockers.append("RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED")
+              blockers.append("RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE")
               return {
                   "eligible": False,
                   "status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
@@ -179,13 +185,69 @@ jobs:
           github_headers = {
               "Accept": "application/vnd.github+json",
               "Authorization": f"Bearer {os.environ['GH_API_TOKEN']}",
+              "User-Agent": "wow-v17-render-production-deploy",
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
           def github_json(path):
-              request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return json.load(response)
+              last_error = None
+              for attempt in range(5):
+                  request = urllib.request.Request(
+                      f"https://api.github.com/repos/{repo}{path}",
+                      headers=github_headers,
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          return json.load(response)
+                  except urllib.error.HTTPError as exc:
+                      last_error = exc
+                      if exc.code not in (403, 429, 502, 503) or attempt == 4:
+                          raise
+                      time.sleep(2 ** attempt)
+              raise last_error
+
+          def check_runs_named(sha, name):
+              found = []
+              for page in range(1, 6):
+                  quoted = urllib.parse.quote(sha, safe="")
+                  check_name = urllib.parse.quote(name)
+                  payload = github_json(
+                      f"/commits/{quoted}/check-runs?check_name={check_name}&per_page=100&page={page}"
+                  )
+                  batch = (payload or {}).get("check_runs") or []
+                  found.extend(batch)
+                  if len(batch) < 100:
+                      break
+              return found
+
+          def classify_role_checks(check_runs, *, qa_app_id, release_app_id, source_head):
+              """PASS, PENDING, or a typed failure. Pending waits; non-success fails closed."""
+              if not (str(qa_app_id).isdigit() and str(release_app_id).isdigit()):
+                  return "RENDER_RELEASE_APP_IDENTITIES_UNBOUND"
+              if int(qa_app_id) == int(release_app_id):
+                  return "RENDER_RELEASE_APP_IDENTITIES_NOT_DISTINCT"
+              if not isinstance(check_runs, list):
+                  return "RENDER_RELEASE_CHECK_EVIDENCE_INVALID"
+              required_roles = {
+                  "WOW Independent QA exact-head": int(qa_app_id),
+                  "WOW Release Authority exact-head": int(release_app_id),
+              }
+              for name, role_app_id in required_roles.items():
+                  matching = [
+                      check for check in check_runs
+                      if isinstance(check, dict)
+                      and str(check.get("name") or "") == name
+                      and str(check.get("head_sha") or "") == source_head
+                      and (check.get("app") or {}).get("id") == role_app_id
+                  ]
+                  if not matching:
+                      return "PENDING"
+                  latest = max(matching, key=lambda check: int(check.get("id") or 0))
+                  if latest.get("status") != "completed":
+                      return "PENDING"
+                  if latest.get("conclusion") != "success":
+                      return "RENDER_RELEASE_ROLE_CHECK_NOT_SUCCESS:" + name
+              return "PASS"
 
           def validate_secret_sync_release_request(
               *, request, repository, target_sha, source_run, artifact_pages
@@ -405,7 +467,9 @@ jobs:
           }
           check_deadline = time.time() + 900
           while True:
-              checks = github_json(f"/commits/{urllib.parse.quote(target_sha, safe='')}/check-runs?per_page=100").get("check_runs") or []
+              checks = []
+              for check_name in sorted(required):
+                  checks.extend(check_runs_named(target_sha, check_name))
               latest = {}
               for check in checks:
                   name = str(check.get("name") or "")
@@ -445,18 +509,34 @@ jobs:
               raise RuntimeError("RENDER_RELEASE_MERGED_PR_NOT_UNIQUE")
           source_pr = github_json(f"/pulls/{int(matching_candidates[0]['number'])}")
           source_head = str((source_pr.get("head") or {}).get("sha") or "")
-          source_checks = github_json(
-              f"/commits/{urllib.parse.quote(source_head, safe='')}/check-runs?per_page=100"
-          )
+          qa_app_id = os.environ.get("WOW_QA_APP_ID", "")
+          release_app_id = os.environ.get("WOW_RELEASE_APP_ID", "")
+          role_deadline = time.time() + 900
+          source_checks = []
           try:
+              while True:
+                  source_checks = []
+                  for role_name in ("WOW Independent QA exact-head", "WOW Release Authority exact-head"):
+                      source_checks.extend(check_runs_named(source_head, role_name))
+                  role_state = classify_role_checks(
+                      source_checks,
+                      qa_app_id=qa_app_id,
+                      release_app_id=release_app_id,
+                      source_head=source_head,
+                  )
+                  if role_state == "PASS":
+                      break
+                  if role_state != "PENDING" or time.time() >= role_deadline:
+                      raise RuntimeError(role_state if role_state != "PENDING" else "QA_RELEASE_DECISION_TIMEOUT")
+                  time.sleep(15)
               authorized_pr_head = validate_release_provenance(
                   target_sha=target_sha,
                   repository=repo,
                   pull_requests=merged_candidates,
                   merged_pr=source_pr,
-                  check_runs=(source_checks or {}).get("check_runs"),
-                  qa_app_id=os.environ.get("WOW_QA_APP_ID", ""),
-                  release_app_id=os.environ.get("WOW_RELEASE_APP_ID", ""),
+                  check_runs=source_checks,
+                  qa_app_id=qa_app_id,
+                  release_app_id=release_app_id,
               )
           except RuntimeError as exc:
               emit_receipt({
@@ -602,16 +682,16 @@ jobs:
               })
               raise SystemExit(0)
 
-          source_checks = github_json(
-              f"/commits/{urllib.parse.quote(authorized_pr_head, safe='')}/check-runs?per_page=100"
-          )
+          source_checks = []
+          for role_name in ("WOW Independent QA exact-head", "WOW Release Authority exact-head"):
+              source_checks.extend(check_runs_named(authorized_pr_head, role_name))
           try:
               authorized_pr_head = validate_release_provenance(
                   target_sha=target_sha,
                   repository=repo,
                   pull_requests=merged_candidates,
                   merged_pr=source_pr,
-                  check_runs=(source_checks or {}).get("check_runs"),
+                  check_runs=source_checks,
                   qa_app_id=os.environ.get("WOW_QA_APP_ID", ""),
                   release_app_id=os.environ.get("WOW_RELEASE_APP_ID", ""),
               )
@@ -820,6 +900,7 @@ jobs:
               "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
               "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
               "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
+              "PRODUCTION_RELEASE_HOLD",
           }
           if status in advancing:
               print(json.dumps({"status":"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES","source_receipt_status":status,"can_execute":False}, sort_keys=True))
