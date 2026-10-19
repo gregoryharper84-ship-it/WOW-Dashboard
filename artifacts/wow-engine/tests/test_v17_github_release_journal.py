@@ -149,13 +149,13 @@ def test_real_controller_uses_github_job_binding_not_nonexistent_runner_environm
 @pytest.mark.parametrize(
     "workflow",
     [
-        "jobs:\\n  deploy-production:\\n    runs-on: ubuntu-latest\\n",
-        "jobs:\\n  deploy-production:\\n    environment: production\\n",
-        "jobs:\\n  different-job:\\n    environment: wow-release\\n",
-        "jobs:\\n  deploy-production:\\n    environment: wow-release\\n    environment: wow-release\\n",
-        "jobs:\\n  deploy-production:\\n    environment:\\n      name: wow-release\\n",
-        "jobs:\\n  deploy-production:\\n    steps:\\n      - run: echo wow-release\\n",
-        "not-jobs:\\n  deploy-production:\\n    environment: wow-release\\n",
+        "jobs:\n  deploy-production:\n    runs-on: ubuntu-latest\n",
+        "jobs:\n  deploy-production:\n    environment: production\n",
+        "jobs:\n  different-job:\n    environment: wow-release\n",
+        "jobs:\n  deploy-production:\n    environment: wow-release\n    environment: wow-release\n",
+        "jobs:\n  deploy-production:\n    environment:\n      name: wow-release\n",
+        "jobs:\n  deploy-production:\n    steps:\n      - run: echo wow-release\n",
+        "not-jobs:\n  deploy-production:\n    environment: wow-release\n",
     ],
 )
 def test_missing_wrong_duplicated_or_spoofed_job_binding_fails_closed(workflow):
@@ -164,13 +164,13 @@ def test_missing_wrong_duplicated_or_spoofed_job_binding_fails_closed(workflow):
 
 def test_realistic_protected_job_environment_is_accepted_without_runner_variable():
     text = (
-        "name: governed\\n"
-        "jobs:\\n"
-        "  prepare:\\n    runs-on: ubuntu-latest\\n"
-        "  deploy-production:\\n    name: release\\n"
-        "    environment: wow-release\\n    runs-on: ubuntu-latest\\n"
-        "    steps:\\n      - run: echo okay\\n"
-        "  audit:\\n    runs-on: ubuntu-latest\\n"
+        "name: governed\n"
+        "jobs:\n"
+        "  prepare:\n    runs-on: ubuntu-latest\n"
+        "  deploy-production:\n    name: release\n"
+        "    environment: wow-release\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: echo okay\n"
+        "  audit:\n    runs-on: ubuntu-latest\n"
     )
     assert protected_release_job_environment({CONTROLLER_FILENAME: text}) == REQUIRED_ENVIRONMENT
 
