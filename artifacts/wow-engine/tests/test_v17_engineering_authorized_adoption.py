@@ -132,6 +132,7 @@ def test_wrong_model_execution_setting_holds_before_any_write(monkeypatch):
 
 
 def test_source_mode_and_path_drift_are_challenged(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "read-only-test-token")
     def fake(*args, **kwargs):
         if args[:2] == ("git", "fetch"):
             return ""
@@ -147,6 +148,12 @@ def test_source_mode_and_path_drift_are_challenged(monkeypatch):
     monkeypatch.setattr(mod, "call", fake)
     monkeypatch.setattr(mod.subprocess, "run", lambda *args, **kw: type("R", (), {"returncode": 1})())
     with pytest.raises(mod.AdoptionHold, match="MAIN_CHANGED_SOURCE_PATH_HOLD"):
+        mod.verify_git_source(BASE_SHA, OTHER_SHA, SOURCE_SHA, sorted(PATHS))
+
+
+def test_private_source_fetch_requires_readonly_authentication(monkeypatch):
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    with pytest.raises(mod.AdoptionHold, match="READ_TOKEN_REQUIRED_FOR_SOURCE_FETCH_HOLD"):
         mod.verify_git_source(BASE_SHA, OTHER_SHA, SOURCE_SHA, sorted(PATHS))
 
 
