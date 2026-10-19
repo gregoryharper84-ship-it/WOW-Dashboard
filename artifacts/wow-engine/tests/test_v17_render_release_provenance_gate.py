@@ -83,7 +83,6 @@ def test_workflow_embedded_python_compiles():
     assert _embedded_function("validate_deployment_lease_identity").__name__ == "validate_deployment_lease_identity"
     assert _embedded_function("render_deploy_payload").__name__ == "render_deploy_payload"
     assert _embedded_function("is_current_main_sha").__name__ == "is_current_main_sha"
-    assert _embedded_function("github_deployment_journal_preflight").__name__ == "github_deployment_journal_preflight"
     assert _embedded_function("guarded_render_post").__name__ == "guarded_render_post"
     assert _embedded_function("validate_secret_sync_release_request").__name__ == "validate_secret_sync_release_request"
 
@@ -210,60 +209,8 @@ def test_secret_sync_request_sha_must_match_dispatch_target():
         )
 
 
-def test_github_deployment_journal_preflight_never_claims_atomic_create():
-    preflight = _embedded_function("github_deployment_journal_preflight")
-
-    result = preflight(
-        writer_inventory_complete=True,
-        live_auto_deploy_trigger="off",
-        git_ref_write_once_protection_verified=False,
-        service_lock_release_cas_verified=False,
-    )
-
-    assert result["eligible"] is False
-    assert result["status"] == "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"
-    assert "GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY" in result["blockers"]
-    assert "GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE" in result["blockers"]
-    assert "GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED" in result["blockers"]
-    assert "RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED" in result["blockers"]
-    assert "RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE" in result["blockers"]
-    assert "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED" not in result["blockers"]
-    assert result["eligible"] is False
-
-
-@pytest.mark.parametrize(
-    "writer_inventory_complete,live_auto_deploy,protection_verified,release_cas_verified,expected_blocker",
-    [
-        (False, "off", True, True, "RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED"),
-        (True, None, True, True, "RENDER_LIVE_AUTO_DEPLOY_STATE_UNVERIFIED"),
-        (True, "checksPass", True, True, "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED"),
-        (True, "off", False, True, "GITHUB_GIT_REF_WRITE_ONCE_PROTECTION_UNVERIFIED"),
-        (True, "off", True, False, "GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE"),
-    ],
-)
-def test_github_deployment_journal_preflight_records_writer_conflicts(
-    writer_inventory_complete, live_auto_deploy, protection_verified, release_cas_verified, expected_blocker
-):
-    result = _embedded_function("github_deployment_journal_preflight")(
-        writer_inventory_complete=writer_inventory_complete,
-        live_auto_deploy_trigger=live_auto_deploy,
-        git_ref_write_once_protection_verified=protection_verified,
-        service_lock_release_cas_verified=release_cas_verified,
-    )
-
-    assert result["eligible"] is False
-    assert expected_blocker in result["blockers"]
-    assert "GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED" in result["blockers"]
-
-
 def test_guarded_render_post_rejects_without_calling_render_api():
     guarded_post = _embedded_function("guarded_render_post")
-    preflight = _embedded_function("github_deployment_journal_preflight")(
-        writer_inventory_complete=False,
-        live_auto_deploy_trigger=None,
-        git_ref_write_once_protection_verified=False,
-        service_lock_release_cas_verified=False,
-    )
     render_calls = []
 
     for path, payload in (
@@ -272,13 +219,24 @@ def test_guarded_render_post_rejects_without_calling_render_api():
     ):
         with pytest.raises(RuntimeError, match="RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD"):
             guarded_post(
-                preflight,
+                {"eligible": False},
                 lambda *args: render_calls.append(args),
                 path,
                 payload,
             )
 
     assert render_calls == []
+    guarded_post(
+        {"eligible": True},
+        lambda *args: render_calls.append(args),
+        "/services/service/deploys",
+        {"clearCache": "do_not_clear", "commitId": "a" * 40},
+    )
+    assert render_calls == [(
+        "POST",
+        "/services/service/deploys",
+        {"clearCache": "do_not_clear", "commitId": "a" * 40},
+    )]
 
 
 def test_exact_same_repo_independent_app_checks_pass():
@@ -456,9 +414,10 @@ def test_render_observation_window_is_monotonic_and_never_reposts_after_timeout(
     assert "Do not issue a second" in text
     assert 'f"/services/{service_path}/rollback"' not in text
     assert "rollback_attempts < 3" not in text
-    # Preflight must stay closed until a genuine service-wide atomic intent.
-    assert "writer_inventory_complete=False" in text
-    assert "service_lock_release_cas_verified=False" in text
+    assert "writer_inventory_complete=False" not in text
+    assert "service_lock_release_cas_verified=False" not in text
+    assert "plan_release_admission(" in text
+    assert 'environment: wow-release' in text
 
 
 @pytest.mark.parametrize("failure,expected", [

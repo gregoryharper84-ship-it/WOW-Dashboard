@@ -65,7 +65,8 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "QA_RELEASE_DECISION_TIMEOUT" in text
     assert "RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED" in text
     assert "RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE" in text
-    assert "service_lock_release_cas_verified=False" in text
+    assert "service_lock_release_cas_verified=False" not in text
+    assert "plan_release_admission(" in text
     assert "time.sleep(10)" in text
     assert "MAX_WORKFLOW_RUN_ATTEMPTS = 3" in text
     assert "cancel-in-progress: false" in text
@@ -73,7 +74,7 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "ROLLBACK_AUTHORIZATION_REQUIRED_HOLD" in text
     assert '"rollback_attempts": 0' in text
     assert "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT" in text
-    assert "journal_preflight = github_deployment_journal_preflight(" in text
+    assert 'if journal_preflight["action"] == "POST_ONCE":' in text
     assert "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY" in text
     verify = (Path(__file__).resolve().parents[3] / ".github/workflows/wow-verify.yml").read_text(encoding="utf-8")
     dispatch = verify.split("dispatch-protected-deploy:", 1)[1]
@@ -95,19 +96,31 @@ def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():
 def test_journal_preflight_holds_before_any_render_post():
     text = _workflow_text()
 
-    assert text.index("journal_preflight = github_deployment_journal_preflight(") < text.index(
-        "def render_json("
-    )
-    assert text.index("raise SystemExit(0)", text.index("journal_preflight =")) < text.index(
+    assert text.index("journal_preflight = plan_release_admission(") < text.index(
         "created = guarded_render_post("
     )
+    assert text.index('if journal_preflight["action"] == "HOLD":') < text.index(
+        "created = guarded_render_post("
+    )
+    assert text.index("raise SystemExit(0)", text.index("journal_preflight = plan_release_admission(")) < text.index(
+        "created = guarded_render_post("
+    )
+    assert 'if journal_preflight["action"] == "POST_ONCE":' in text
     assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"' in text
     assert "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY" in text
     assert "GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY" in text
-    assert '"live_render_auto_deploy_trigger": "UNVERIFIED"' in text
-    assert '"obstruction": "GITHUB_NATIVE_FENCE_CANNOT_PROVE_SERVICE_WIDE_EXACT_ONCE"' in text
+    assert 'journal_preflight.get("live_render_auto_deploy_trigger") or "UNVERIFIED"' in text
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in text
-    assert "until protected ref policy, owner-fenced service-lock release, and complete live writer inventory are independently verified" in text
+    assert "id-token:" not in text
+    assert "environment: wow-release" in text
+    assert "contents: write" in text
+    assert "qa_app_id = str(AUTHENTIC_QA_APP_ID)" in text
+    assert "release_app_id = str(AUTHENTIC_RELEASE_APP_ID)" in text
+    journal = (
+        Path(__file__).resolve().parents[3] / "artifacts/wow-engine/v17/github_release_journal.py"
+    ).read_text(encoding="utf-8")
+    assert "AUTHENTIC_QA_APP_ID = 5245832" in journal
+    assert "AUTHENTIC_RELEASE_APP_ID = 5245853" in journal
 
 
 def test_secret_sync_request_enters_only_protected_controller_after_durable_artifact():
@@ -142,7 +155,7 @@ def test_preflight_distinguishes_blueprint_from_live_render_writer_state():
 
     assert 'autoDeployTrigger: "checksPass"' in render
     assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"' in _workflow_text()
-    assert '"live_render_auto_deploy_trigger": "UNVERIFIED"' in _workflow_text()
+    assert 'journal_preflight.get("live_render_auto_deploy_trigger") or "UNVERIFIED"' in _workflow_text()
     assert '"render_service_id": "srv-da7sa9gu01pc73brt80g"' in manifest
     assert "wow-v17-secret-sync" in sync_workflow
     assert "/deploys" not in secret_sync
