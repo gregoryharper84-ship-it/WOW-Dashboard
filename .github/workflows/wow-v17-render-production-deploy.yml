@@ -6,11 +6,25 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      secret_sync_request_run_id:
+        description: Successful secret-sync run carrying the release request artifact
+        required: false
+        type: string
+      secret_sync_request_run_attempt:
+        description: Source secret-sync run attempt
+        required: false
+        type: string
+      secret_sync_request_sha:
+        description: Exact main SHA from the source secret-sync run
+        required: false
+        type: string
 
 permissions:
   contents: read
   pull-requests: read
   checks: read
+  actions: read
   deployments: write
 
 concurrency:
@@ -20,12 +34,11 @@ concurrency:
 jobs:
   deploy-production:
     name: Deploy exact protected-main SHA to Render
-    # The protected GitHub checks remain the release gate. After they pass,
-    # this controller performs one explicit Render control-plane handoff and
-    # verifies that the exact current-main SHA reaches live. This avoids the
-    # native checksPass listener silently missing an otherwise valid release.
+    # Protected GitHub checks are necessary but not sufficient. Render writes
+    # remain blocked until a durable service-wide fence and live writer inventory
+    # are independently proven; Blueprint settings do not prove live state.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 120
     env:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
@@ -50,10 +63,15 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import re
           import time
           import urllib.error
           import urllib.parse
           import urllib.request
+
+          MAX_WORKFLOW_RUN_ATTEMPTS = 3
+          DEPLOY_WORKFLOW_PATH = ".github/workflows/wow-v17-render-production-deploy.yml"
+          RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"
 
           repo = os.environ["GITHUB_REPOSITORY"]
           event_name = os.environ["GITHUB_EVENT_NAME"]
@@ -66,6 +84,10 @@ jobs:
               body.setdefault("can_execute", False)
               body["workflow_run_id"] = str(os.environ.get("GITHUB_RUN_ID") or "")
               body["workflow_run_attempt"] = str(os.environ.get("GITHUB_RUN_ATTEMPT") or "")
+              if "lease_identity" in globals():
+                  body["deploy_lease_identity"] = lease_identity
+              if "secret_sync_request" in globals() and secret_sync_request:
+                  body["secret_sync_request"] = secret_sync_request
               with open(receipt_path, "w", encoding="utf-8") as handle:
                   json.dump(body, handle, sort_keys=True)
                   handle.write("\n")
@@ -91,16 +113,298 @@ jobs:
           if not target_sha:
               raise RuntimeError("RENDER_DEPLOY_TARGET_SHA_MISSING")
 
+          dispatch_inputs = (event.get("inputs") or {}) if event_name == "workflow_dispatch" else {}
+          request_fields = (
+              str(dispatch_inputs.get("secret_sync_request_run_id") or ""),
+              str(dispatch_inputs.get("secret_sync_request_run_attempt") or ""),
+              str(dispatch_inputs.get("secret_sync_request_sha") or ""),
+          )
+          secret_sync_request = None
+          if any(request_fields) and not all(request_fields):
+              emit_receipt({
+                  "status": "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+                  "target_sha": target_sha,
+                  "hold_reason": "SECRET_ENV_RELEASE_REQUEST_IDENTITY_INCOMPLETE",
+                  "next_action": "Retry the protected controller with the complete source run and SHA identity.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+          if all(request_fields):
+              secret_sync_request = {
+                  "run_id": request_fields[0],
+                  "run_attempt": request_fields[1],
+                  "source_sha": request_fields[2],
+              }
+              if (
+                  not secret_sync_request["run_id"].isdigit()
+                  or not secret_sync_request["run_attempt"].isdigit()
+                  or not re.fullmatch(r"[0-9a-f]{40}", secret_sync_request["source_sha"])
+              ):
+                  emit_receipt({
+                      "status": "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "hold_reason": "SECRET_ENV_RELEASE_REQUEST_IDENTITY_INVALID",
+                      "next_action": "Dispatch the protected controller with numeric source run identity and the full lowercase main SHA.",
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
+
+          def github_deployment_journal_preflight(
+              *, writer_inventory_complete, live_auto_deploy_trigger,
+              git_ref_write_once_protection_verified, service_lock_release_cas_verified,
+          ):
+              blockers = ["GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY"]
+              if not writer_inventory_complete:
+                  blockers.append("RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED")
+              if live_auto_deploy_trigger is None:
+                  blockers.append("RENDER_LIVE_AUTO_DEPLOY_STATE_UNVERIFIED")
+              elif live_auto_deploy_trigger != "off":
+                  blockers.append("RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED")
+              if not git_ref_write_once_protection_verified:
+                  blockers.append("GITHUB_GIT_REF_WRITE_ONCE_PROTECTION_UNVERIFIED")
+              if not service_lock_release_cas_verified:
+                  blockers.append("GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE")
+              blockers.append("GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED")
+              # iczfhsmjrrafhvcpmqhr is the connected wow-engine-validation
+              # application project, not a certified release-control schema.
+              # A Render deploy list is not a durable service-wide fence.
+              blockers.append("APPLICATION_DATABASE_PROJECT_IS_NOT_RELEASE_CONTROL_SCHEMA")
+              blockers.append("RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED")
+              blockers.append("RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE")
+              return {
+                  "eligible": False,
+                  "status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+                  "blockers": blockers,
+              }
+
+          def guarded_render_post(preflight, render_json, path, payload):
+              if not preflight["eligible"]:
+                  raise RuntimeError("RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD")
+              return render_json("POST", path, payload)
+
           github_headers = {
               "Accept": "application/vnd.github+json",
               "Authorization": f"Bearer {os.environ['GH_API_TOKEN']}",
+              "User-Agent": "wow-v17-render-production-deploy",
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
           def github_json(path):
-              request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return json.load(response)
+              last_error = None
+              for attempt in range(5):
+                  request = urllib.request.Request(
+                      f"https://api.github.com/repos/{repo}{path}",
+                      headers=github_headers,
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          return json.load(response)
+                  except urllib.error.HTTPError as exc:
+                      last_error = exc
+                      if exc.code not in (403, 429, 502, 503) or attempt == 4:
+                          raise
+                      time.sleep(2 ** attempt)
+              raise last_error
+
+          def check_runs_named(sha, name):
+              found = []
+              for page in range(1, 6):
+                  quoted = urllib.parse.quote(sha, safe="")
+                  check_name = urllib.parse.quote(name)
+                  payload = github_json(
+                      f"/commits/{quoted}/check-runs?check_name={check_name}&per_page=100&page={page}"
+                  )
+                  batch = (payload or {}).get("check_runs") or []
+                  found.extend(batch)
+                  if len(batch) < 100:
+                      break
+              return found
+
+          def classify_role_checks(check_runs, *, qa_app_id, release_app_id, source_head):
+              """PASS, PENDING, or a typed failure. Pending waits; non-success fails closed."""
+              if not (str(qa_app_id).isdigit() and str(release_app_id).isdigit()):
+                  return "RENDER_RELEASE_APP_IDENTITIES_UNBOUND"
+              if int(qa_app_id) == int(release_app_id):
+                  return "RENDER_RELEASE_APP_IDENTITIES_NOT_DISTINCT"
+              if not isinstance(check_runs, list):
+                  return "RENDER_RELEASE_CHECK_EVIDENCE_INVALID"
+              required_roles = {
+                  "WOW Independent QA exact-head": int(qa_app_id),
+                  "WOW Release Authority exact-head": int(release_app_id),
+              }
+              for name, role_app_id in required_roles.items():
+                  matching = [
+                      check for check in check_runs
+                      if isinstance(check, dict)
+                      and str(check.get("name") or "") == name
+                      and str(check.get("head_sha") or "") == source_head
+                      and (check.get("app") or {}).get("id") == role_app_id
+                  ]
+                  if not matching:
+                      return "PENDING"
+                  latest = max(matching, key=lambda check: int(check.get("id") or 0))
+                  if latest.get("status") != "completed":
+                      return "PENDING"
+                  if latest.get("conclusion") != "success":
+                      return "RENDER_RELEASE_ROLE_CHECK_NOT_SUCCESS:" + name
+              return "PASS"
+
+          def validate_secret_sync_release_request(
+              *, request, repository, target_sha, source_run, artifact_pages
+          ):
+              if not isinstance(request, dict):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_INVALID")
+              run_id = str(request.get("run_id") or "")
+              attempt = str(request.get("run_attempt") or "")
+              source_sha = str(request.get("source_sha") or "")
+              if (
+                  not run_id.isdigit()
+                  or not attempt.isdigit()
+                  or int(attempt) < 1
+                  or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+                  or source_sha != target_sha
+              ):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_SHA_OR_ID_INVALID")
+              if not isinstance(source_run, dict):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_RUN_INVALID")
+              if (
+                  str(source_run.get("id") or "") != run_id
+                  or str(source_run.get("run_attempt") or "") != attempt
+                  or str(source_run.get("path") or "").split("@", 1)[0]
+                  != ".github/workflows/wow-v17-secret-sync.yml"
+                  or str((source_run.get("repository") or {}).get("full_name") or "") != repository
+                  or str(source_run.get("head_branch") or "") != "main"
+                  or str(source_run.get("head_sha") or "") != source_sha
+                  or str(source_run.get("status") or "") != "completed"
+                  or str(source_run.get("conclusion") or "") not in {"success", "failure"}
+                  or str(source_run.get("event") or "") not in {"workflow_dispatch", "schedule", "push"}
+              ):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_RUN_MISMATCH")
+              if not isinstance(artifact_pages, list):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACTS_INVALID")
+              expected_name = f"wow-v17-secret-env-release-request-{run_id}-{attempt}"
+              all_artifacts = []
+              total_count = None
+              for page in artifact_pages:
+                  if not isinstance(page, dict) or not isinstance(page.get("artifacts"), list):
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACTS_INVALID")
+                  page_total = page.get("total_count")
+                  if not isinstance(page_total, int) or page_total < 0:
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACTS_INVALID")
+                  if total_count is not None and page_total != total_count:
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACT_INVENTORY_CHANGED")
+                  total_count = page_total
+                  all_artifacts.extend(page["artifacts"])
+              if total_count is None or len(all_artifacts) != total_count:
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACT_INVENTORY_INCOMPLETE")
+              if not any(
+                  isinstance(artifact, dict)
+                  and artifact.get("name") == expected_name
+                  and artifact.get("expired") is False
+                  for artifact in all_artifacts
+              ):
+                  raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACT_MISSING")
+              return {
+                  "run_id": run_id,
+                  "run_attempt": attempt,
+                  "source_sha": source_sha,
+                  "artifact_name": expected_name,
+                  "request_type": "SECRET_ENV_CHANGED_RELEASE_REQUEST",
+              }
+
+          if secret_sync_request:
+              try:
+                  source_run = github_json(
+                      f"/actions/runs/{urllib.parse.quote(secret_sync_request['run_id'], safe='')}"
+                  )
+                  first_artifacts = github_json(
+                      f"/actions/runs/{urllib.parse.quote(secret_sync_request['run_id'], safe='')}/artifacts?per_page=100&page=1"
+                  )
+                  if not isinstance(first_artifacts, dict):
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACTS_INVALID")
+                  total = first_artifacts.get("total_count")
+                  if not isinstance(total, int) or total < 0 or total > 1000:
+                      raise RuntimeError("SECRET_ENV_RELEASE_REQUEST_ARTIFACT_INVENTORY_UNBOUNDED")
+                  artifact_pages = [first_artifacts]
+                  for page_number in range(2, (total + 99) // 100 + 1):
+                      artifact_pages.append(
+                          github_json(
+                              f"/actions/runs/{urllib.parse.quote(secret_sync_request['run_id'], safe='')}/artifacts?per_page=100&page={page_number}"
+                          )
+                      )
+                  secret_sync_request = validate_secret_sync_release_request(
+                      request=secret_sync_request,
+                      repository=repo,
+                      target_sha=target_sha,
+                      source_run=source_run,
+                      artifact_pages=artifact_pages,
+                  )
+              except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+                  emit_receipt({
+                      "status": "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "hold_reason": str(exc) or "SECRET_ENV_RELEASE_REQUEST_UNREADABLE",
+                      "next_action": "Restore GitHub Actions run/artifact read access and dispatch from the durable source request again.",
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
+
+          journal_preflight = github_deployment_journal_preflight(
+              writer_inventory_complete=False,
+              live_auto_deploy_trigger=None,
+              git_ref_write_once_protection_verified=False,
+              service_lock_release_cas_verified=False,
+          )
+          if not journal_preflight["eligible"]:
+              emit_receipt({
+                  "status": journal_preflight["status"],
+                  "target_sha": target_sha,
+                  "render_service_id": render_service_id,
+                  "obstruction": "GITHUB_NATIVE_FENCE_CANNOT_PROVE_SERVICE_WIDE_EXACT_ONCE",
+                  "blocking_evidence": journal_preflight["blockers"],
+                  "repository_blueprint_auto_deploy_trigger": RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER,
+                  "live_render_auto_deploy_trigger": "UNVERIFIED",
+                  "next_action": "Keep Render POSTs blocked until protected ref policy, owner-fenced service-lock release, and complete live writer inventory are independently verified.",
+                  "runtime_generation": "V17_ACTIVE",
+                  "terminal_authority": "V17_TERMINAL_REDUCER",
+                  "custom_gpt_identity": "WOW_BETTING_ENGINE",
+                  "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": True,
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+
+          def validate_deployment_lease_identity(run, *, repository, event, run_id, run_attempt):
+              if not isinstance(run, dict):
+                  raise RuntimeError("RENDER_DEPLOY_LEASE_IDENTITY_INVALID")
+              if not str(run_id).isdigit() or not str(run_attempt).isdigit():
+                  raise RuntimeError("RENDER_DEPLOY_LEASE_IDENTITY_INVALID")
+              attempt = int(run_attempt)
+              if attempt < 1 or attempt > MAX_WORKFLOW_RUN_ATTEMPTS:
+                  raise RuntimeError("RENDER_DEPLOY_ATTEMPT_LIMIT_EXCEEDED")
+              run_path = str(run.get("path") or "").split("@", 1)[0]
+              if (
+                  str(run.get("id") or "") != str(run_id)
+                  or run_path != DEPLOY_WORKFLOW_PATH
+                  or str((run.get("repository") or {}).get("full_name") or "") != repository
+                  or str(run.get("event") or "") != event
+                  or str(run.get("head_branch") or "") != "main"
+                  or str(run.get("status") or "") != "in_progress"
+                  or str(run.get("run_attempt") or "") != str(attempt)
+              ):
+                  raise RuntimeError("RENDER_DEPLOY_LEASE_IDENTITY_MISMATCH")
+              return f"{repository}:{DEPLOY_WORKFLOW_PATH}:{run_id}:{attempt}"
+
+          def render_deploy_payload(commit_sha):
+              if len(commit_sha) != 40 or any(char not in "0123456789abcdef" for char in commit_sha):
+                  raise RuntimeError("RENDER_DEPLOY_TARGET_SHA_INVALID")
+              return {"clearCache": "do_not_clear", "commitId": commit_sha}
+
+          def is_current_main_sha(target_sha, current_main_sha):
+              return (
+                  len(target_sha) == 40
+                  and all(char in "0123456789abcdef" for char in target_sha)
+                  and current_main_sha == target_sha
+              )
 
           def validate_release_provenance(*, target_sha, repository, pull_requests, merged_pr,
                                           check_runs, qa_app_id, release_app_id):
@@ -122,6 +426,7 @@ jobs:
                   and (pr.get("base") or {}).get("ref") == "main"
                   and str((pr.get("base") or {}).get("repo", {}).get("full_name") or "") == repository
                   and pr.get("merged_at")
+                  and not pr.get("draft")
               ]
               if len(matching) != 1 or matching[0].get("number") != merged_pr.get("number"):
                   raise RuntimeError("RENDER_RELEASE_MERGED_PR_NOT_UNIQUE")
@@ -162,7 +467,9 @@ jobs:
           }
           check_deadline = time.time() + 900
           while True:
-              checks = github_json(f"/commits/{urllib.parse.quote(target_sha, safe='')}/check-runs?per_page=100").get("check_runs") or []
+              checks = []
+              for check_name in sorted(required):
+                  checks.extend(check_runs_named(target_sha, check_name))
               latest = {}
               for check in checks:
                   name = str(check.get("name") or "")
@@ -202,18 +509,44 @@ jobs:
               raise RuntimeError("RENDER_RELEASE_MERGED_PR_NOT_UNIQUE")
           source_pr = github_json(f"/pulls/{int(matching_candidates[0]['number'])}")
           source_head = str((source_pr.get("head") or {}).get("sha") or "")
-          source_checks = github_json(
-              f"/commits/{urllib.parse.quote(source_head, safe='')}/check-runs?per_page=100"
-          )
-          authorized_pr_head = validate_release_provenance(
-              target_sha=target_sha,
-              repository=repo,
-              pull_requests=merged_candidates,
-              merged_pr=source_pr,
-              check_runs=(source_checks or {}).get("check_runs"),
-              qa_app_id=os.environ.get("WOW_QA_APP_ID", ""),
-              release_app_id=os.environ.get("WOW_RELEASE_APP_ID", ""),
-          )
+          qa_app_id = os.environ.get("WOW_QA_APP_ID", "")
+          release_app_id = os.environ.get("WOW_RELEASE_APP_ID", "")
+          role_deadline = time.time() + 900
+          source_checks = []
+          try:
+              while True:
+                  source_checks = []
+                  for role_name in ("WOW Independent QA exact-head", "WOW Release Authority exact-head"):
+                      source_checks.extend(check_runs_named(source_head, role_name))
+                  role_state = classify_role_checks(
+                      source_checks,
+                      qa_app_id=qa_app_id,
+                      release_app_id=release_app_id,
+                      source_head=source_head,
+                  )
+                  if role_state == "PASS":
+                      break
+                  if role_state != "PENDING" or time.time() >= role_deadline:
+                      raise RuntimeError(role_state if role_state != "PENDING" else "QA_RELEASE_DECISION_TIMEOUT")
+                  time.sleep(15)
+              authorized_pr_head = validate_release_provenance(
+                  target_sha=target_sha,
+                  repository=repo,
+                  pull_requests=merged_candidates,
+                  merged_pr=source_pr,
+                  check_runs=source_checks,
+                  qa_app_id=qa_app_id,
+                  release_app_id=release_app_id,
+              )
+          except RuntimeError as exc:
+              emit_receipt({
+                  "status": "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
+                  "target_sha": target_sha,
+                  "hold_reason": str(exc),
+                  "next_action": "Obtain valid independent QA and Release approvals for the exact merged PR head before retrying.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
           print(json.dumps({
               "status": "RENDER_RELEASE_PROVENANCE_VERIFIED",
               "merge_sha": target_sha,
@@ -224,7 +557,7 @@ jobs:
           }, sort_keys=True))
 
           main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
-          if main_sha != target_sha:
+          if not is_current_main_sha(target_sha, main_sha):
               emit_receipt({
                   "status":"STALE_SHA_NO_DEPLOY",
                   "target_sha":target_sha,
@@ -287,12 +620,109 @@ jobs:
               commit = deploy.get("commit") if isinstance(deploy, dict) else None
               return str((commit or {}).get("id") or "")
 
-          def exact_target_deploys():
-              return [deploy for deploy in list_deploys() if commit_sha(deploy) == target_sha]
+          def exact_target_deploys(deploys=None):
+              return [
+                  deploy for deploy in (deploys if deploys is not None else list_deploys())
+                  if commit_sha(deploy) == target_sha
+              ]
 
-          existing = exact_target_deploys()
+          def rollback_after_sha_mismatch(previous_live, mismatch_sha, mismatch_deploy_id):
+              # A rollback is a NEW production mutation, not an automatic
+              # consequence of a mismatched observation. It must have its own
+              # distinct exact-SHA Release Authority authorization and a
+              # durable service-wide intent. Neither is available here.
+              # Never retry an ambiguous Render POST or speculate that the
+              # previous release is live. Leave recovery to the protected
+              # release controller with an explicit hold receipt.
+              previous_id = str((previous_live or {}).get("id") or "")
+              previous_sha = commit_sha(previous_live or {})
+              emit_receipt({
+                  "status": "DEPLOY_SHA_MISMATCH_HOLD",
+                  "target_sha": target_sha,
+                  "observed_sha": mismatch_sha,
+                  "mismatched_deploy_id": mismatch_deploy_id,
+                  "previous_live_sha": previous_sha,
+                  "previous_live_deploy_id": previous_id,
+                  "rollback_status": "ROLLBACK_AUTHORIZATION_REQUIRED_HOLD",
+                  "rollback_attempts": 0,
+                  "next_action": (
+                      "Independently authorize an exact-SHA rollback under a "
+                      "durable service-wide release fence, then verify Render "
+                      "LIVE state; do not replay this workflow blindly."
+                  ),
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+
+          lease_path = f"/actions/runs/{urllib.parse.quote(str(os.environ.get('GITHUB_RUN_ID') or ''), safe='')}"
+          try:
+              lease_identity = validate_deployment_lease_identity(
+                  github_json(lease_path),
+                  repository=repo,
+                  event=event_name,
+                  run_id=os.environ.get("GITHUB_RUN_ID", ""),
+                  run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+              )
+          except RuntimeError as exc:
+              emit_receipt({
+                  "status": "DEPLOY_LEASE_HOLD_NO_DEPLOY",
+                  "target_sha": target_sha,
+                  "hold_reason": str(exc),
+                  "next_action": "A verified protected-main deployment workflow run with an allowed attempt is required.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+          except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
+              emit_receipt({
+                  "status": "DEPLOY_LEASE_HOLD_NO_DEPLOY",
+                  "target_sha": target_sha,
+                  "hold_reason": "RENDER_DEPLOY_LEASE_IDENTITY_UNREADABLE",
+                  "next_action": "Restore GitHub Actions read access and retry within the bounded attempt limit.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+
+          source_checks = []
+          for role_name in ("WOW Independent QA exact-head", "WOW Release Authority exact-head"):
+              source_checks.extend(check_runs_named(authorized_pr_head, role_name))
+          try:
+              authorized_pr_head = validate_release_provenance(
+                  target_sha=target_sha,
+                  repository=repo,
+                  pull_requests=merged_candidates,
+                  merged_pr=source_pr,
+                  check_runs=source_checks,
+                  qa_app_id=os.environ.get("WOW_QA_APP_ID", ""),
+                  release_app_id=os.environ.get("WOW_RELEASE_APP_ID", ""),
+              )
+          except RuntimeError as exc:
+              emit_receipt({
+                  "status": "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
+                  "target_sha": target_sha,
+                  "hold_reason": str(exc),
+                  "next_action": "Obtain valid independent QA and Release approvals for the exact merged PR head before retrying.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+
+          deploys_before_post = list_deploys()
+          previous_live = next(
+              (deploy for deploy in deploys_before_post if str(deploy.get("status") or "") == "live"),
+              None,
+          )
+          existing = [deploy for deploy in deploys_before_post if commit_sha(deploy) == target_sha]
           for deploy in existing:
               if str(deploy.get("status") or "") == "live":
+                  live_main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
+                  if not is_current_main_sha(target_sha, live_main_sha):
+                      emit_receipt({
+                          "status":"DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+                          "target_sha":target_sha,
+                          "current_main_sha":live_main_sha,
+                          "deploy_id":str(deploy.get("id") or ""),
+                          "can_execute":False,
+                      })
+                      raise SystemExit(0)
                   emit_receipt({
                       "status":"EXACT_SHA_ALREADY_LIVE",
                       "commit_sha":target_sha,
@@ -321,19 +751,31 @@ jobs:
                   break
 
           if active is None:
-              created = render_json(
-                  "POST",
+              latest_main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
+              if not is_current_main_sha(target_sha, latest_main_sha):
+                  emit_receipt({
+                      "status": "STALE_SHA_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "current_main_sha": latest_main_sha,
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
+              created = guarded_render_post(
+                  journal_preflight,
+                  render_json,
                   f"/services/{service_path}/deploys",
-                  {"clearCache":"do_not_clear"},
+                  render_deploy_payload(target_sha),
               )
               created_deploy = created
               if isinstance(created, dict) and isinstance(created.get("deploy"), dict):
                   created_deploy = created["deploy"]
+              created_sha = commit_sha(created_deploy)
+              if created_sha and created_sha != target_sha:
+                  rollback_after_sha_mismatch(
+                      previous_live, created_sha, str((created_deploy or {}).get("id") or "")
+                  )
               if isinstance(created_deploy, dict) and created_deploy.get("id"):
                   deploy_id = str(created_deploy["id"])
-                  created_sha = commit_sha(created_deploy)
-                  if created_sha and created_sha != target_sha:
-                      raise RuntimeError(f"RENDER_DEPLOY_WRONG_SHA:{created_sha}")
               else:
                   # A successful Render POST can be acknowledged without a top-level
                   # deploy object. Reconcile the exact target SHA from Render's
@@ -344,15 +786,43 @@ jobs:
               if not deploy_id:
                   raise RuntimeError("RENDER_ACTIVE_DEPLOY_ID_MISSING")
 
-          deploy_deadline = time.time() + 900
+          deploy_deadline = time.monotonic() + 90 * 60
+          prior_deploy_ids = {
+              str(deploy.get("id") or "")
+              for deploy in deploys_before_post
+              if isinstance(deploy, dict)
+          }
           while True:
-              matching = exact_target_deploys()
+              current_deploys = list_deploys()
+              matching = exact_target_deploys(current_deploys)
               target = next((deploy for deploy in matching if str(deploy.get("id") or "") == deploy_id), None)
               if target is None and matching:
                   target = matching[0]
+                  deploy_id = str(target.get("id") or deploy_id)
+              observed = next(
+                  (
+                      deploy for deploy in current_deploys
+                      if (str(deploy.get("id") or "") == deploy_id and deploy_id)
+                      or (
+                          not deploy_id
+                          and str(deploy.get("id") or "") not in prior_deploy_ids
+                          and str(deploy.get("id") or "")
+                      )
+                  ),
+                  None,
+              )
+              if observed is not None:
+                  observed_sha = commit_sha(observed or {})
+                  if observed_sha and observed_sha != target_sha:
+                      rollback_after_sha_mismatch(
+                          previous_live, observed_sha, str(observed.get("id") or "")
+                      )
               if target is not None:
                   status = str(target.get("status") or "")
                   if status == "live":
+                      live_main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
+                      if not is_current_main_sha(target_sha, live_main_sha):
+                          rollback_after_sha_mismatch(previous_live, target_sha, str(target.get("id") or ""))
                       emit_receipt({
                           "status":"EXACT_SHA_RENDER_DEPLOY_LIVE",
                           "commit_sha":target_sha,
@@ -366,18 +836,34 @@ jobs:
                       raise RuntimeError(f"RENDER_TARGET_DEPLOY_TERMINAL_FAILURE:{status}")
               current_main_sha = str(((github_json("/branches/main").get("commit") or {}).get("sha")) or "")
               if current_main_sha != target_sha:
+                  rollback_after_sha_mismatch(previous_live, target_sha, deploy_id)
+              if time.monotonic() >= deploy_deadline:
                   emit_receipt({
-                      "status":"DEPLOY_SUPERSEDED_BY_NEW_MAIN",
-                      "target_sha":target_sha,
-                      "current_main_sha":current_main_sha,
-                      "deploy_id":deploy_id,
-                      "can_execute":False,
+                      "status": "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
+                      "target_sha": target_sha,
+                      "deploy_id": deploy_id,
+                      "last_observed_status": (
+                          str((target or {}).get("status") or "UNKNOWN")
+                      ),
+                      "next_action": (
+                          "Continue read-only Render reconciliation of the "
+                          "existing deployment by ID. Do not issue a second "
+                          "Render POST on an uncertain outcome."
+                      ),
+                      "can_execute": False,
                   })
                   raise SystemExit(0)
-              if time.time() >= deploy_deadline:
-                  raise RuntimeError("RENDER_EXACT_SHA_DEPLOY_TIMEOUT")
               time.sleep(10)
           PY
+
+      - name: Preserve release preflight receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-v17-render-release-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wow-v17-render-deploy-receipt.json
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Checkout deployment-pointer reconciler
         uses: actions/checkout@v4
@@ -407,6 +893,14 @@ jobs:
               "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
               "STALE_SHA_NO_DEPLOY",
               "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+              "DEPLOY_LEASE_HOLD_NO_DEPLOY",
+              "DEPLOY_SHA_MISMATCH_HOLD",
+              "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
+              "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
+              "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+              "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
+              "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
+              "PRODUCTION_RELEASE_HOLD",
           }
           if status in advancing:
               print(json.dumps({"status":"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES","source_receipt_status":status,"can_execute":False}, sort_keys=True))
