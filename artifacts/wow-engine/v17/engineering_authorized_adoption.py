@@ -100,28 +100,32 @@ def branch_for(requested_pr: int, sha: str) -> str:
     return f"wow-engineering/exact-replay-{requested_pr}-{sha[:12]}"
 
 
-def verify_git_source(base: str, main_sha: str, source_sha: str, paths: list[str]) -> None:
+def verify_git_source(base: str, main_sha: str, source_sha: str, paths: list[str]) -> str:
     if not all(SHA.fullmatch(sha) for sha in (base, main_sha, source_sha)):
         raise AdoptionHold("GIT_SHA_INVALID_HOLD")
-    call("git", "fetch", "--no-tags", "origin", base, source_sha, main_sha)
+    call("git", "fetch", "--no-tags", "origin", source_sha, main_sha)
     if call("git", "rev-parse", "refs/remotes/origin/main") != main_sha:
         raise AdoptionHold("MAIN_MOVED_DURING_PREFLIGHT_HOLD")
+    # GitHub PR base.sha tracks current main and is not the original branch
+    # fork-point. Recalculate the actual source merge-base on each dispatch.
     try:
-        call("git", "merge-base", "--is-ancestor", base, source_sha)
-        call("git", "merge-base", "--is-ancestor", base, main_sha)
+        source_base = call("git", "merge-base", main_sha, source_sha)
     except subprocess.CalledProcessError as exc:
         raise AdoptionHold("SOURCE_ANCESTRY_OR_MAIN_DRIFT_HOLD") from exc
-    actual = call("git", "diff", "--name-only", base, source_sha).splitlines()
+    if not SHA.fullmatch(source_base):
+        raise AdoptionHold("SOURCE_BASE_INVALID_HOLD")
+    actual = call("git", "diff", "--name-only", source_base, source_sha).splitlines()
     if sorted(actual) != paths:
         raise AdoptionHold("SOURCE_DIFF_NOT_EXACT_HOLD")
     for path in paths:
         source_mode = call("git", "ls-tree", source_sha, "--", path).split()
         if not source_mode or source_mode[0] != "100644":
             raise AdoptionHold("SOURCE_FILE_MODE_UNTRUSTED_HOLD")
-        diff = subprocess.run(["git", "diff", "--quiet", base, main_sha, "--", path],
+        diff = subprocess.run(["git", "diff", "--quiet", source_base, main_sha, "--", path],
                               check=False, capture_output=True)
         if diff.returncode != 0:
             raise AdoptionHold("MAIN_CHANGED_SOURCE_PATH_HOLD")
+    return source_base
 
 
 def preflight(pr_number: int, source_sha: str) -> tuple[str, list[str], str]:
@@ -131,8 +135,8 @@ def preflight(pr_number: int, source_sha: str) -> tuple[str, list[str], str]:
     base, paths = validate_evidence(pr, files, checks,
                                     requested_pr=pr_number, requested_sha=source_sha)
     main_sha = call("git", "rev-parse", "refs/remotes/origin/main")
-    verify_git_source(base, main_sha, source_sha, paths)
-    return main_sha, paths, base
+    source_base = verify_git_source(base, main_sha, source_sha, paths)
+    return main_sha, paths, source_base
 
 
 def integrate(pr_number: int, source_sha: str) -> None:
