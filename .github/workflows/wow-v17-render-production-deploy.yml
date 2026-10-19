@@ -25,13 +25,15 @@ jobs:
     # verifies that the exact current-main SHA reaches live. This avoids the
     # native checksPass listener silently missing an otherwise valid release.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 55
     env:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
       GH_API_TOKEN: ${{ github.token }}
       WOW_QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
       WOW_RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+      WOW_PRODUCTION_DB_PROJECT_REF: ${{ vars.WOW_PRODUCTION_DB_PROJECT_REF }}
+      WOW_PRODUCTION_GOVERNANCE_URL: https://wow-governed-probability-engine.onrender.com/governance
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"
     steps:
@@ -44,16 +46,37 @@ jobs:
           test -n "$RENDER_API_KEY"
           test -n "$WOW_RENDER_SERVICE_ID"
 
+      - name: Checkout release admission
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
       - name: Verify protected-main gates and deploy exact SHA
         shell: bash
         run: |
           python - <<'PY'
           import json
           import os
+          import sys
           import time
           import urllib.error
           import urllib.parse
           import urllib.request
+
+          sys.path.insert(0, "artifacts/wow-engine")
+          from v17.production_release_admission import (
+              COMMITTED_APPLICATION_DATABASE_PROJECT_REF,
+              QA_CHECK,
+              RELEASE_CHECK,
+              admit_production_release,
+              classify_role_checks,
+              database_identity_decision,
+              env_var_value,
+              native_auto_deploy_trigger,
+              project_ref_from_supabase_url,
+              writer_lock_decision,
+          )
 
           repo = os.environ["GITHUB_REPOSITORY"]
           event_name = os.environ["GITHUB_EVENT_NAME"]
@@ -94,13 +117,37 @@ jobs:
           github_headers = {
               "Accept": "application/vnd.github+json",
               "Authorization": f"Bearer {os.environ['GH_API_TOKEN']}",
+              "User-Agent": "wow-v17-render-production-deploy",
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
           def github_json(path):
               request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return json.load(response)
+              last_code = 0
+              for attempt in range(5):
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          return json.load(response)
+                  except urllib.error.HTTPError as exc:
+                      last_code = exc.code
+                      if exc.code not in (403, 429, 502, 503) or attempt == 4:
+                          raise RuntimeError(f"GITHUB_API_HTTP_{exc.code}") from exc
+                      time.sleep(2 ** attempt)
+              raise RuntimeError(f"GITHUB_API_HTTP_{last_code}")
+
+          def check_runs_named(sha, name):
+              found = []
+              for page in range(1, 6):
+                  quoted = urllib.parse.quote(sha, safe="")
+                  check_name = urllib.parse.quote(name)
+                  payload = github_json(
+                      f"/commits/{quoted}/check-runs?check_name={check_name}&per_page=100&page={page}"
+                  )
+                  batch = (payload or {}).get("check_runs") or []
+                  found.extend(batch)
+                  if len(batch) < 100:
+                      break
+              return found
 
           def validate_release_provenance(*, target_sha, repository, pull_requests, merged_pr,
                                           check_runs, qa_app_id, release_app_id):
@@ -162,7 +209,9 @@ jobs:
           }
           check_deadline = time.time() + 900
           while True:
-              checks = github_json(f"/commits/{urllib.parse.quote(target_sha, safe='')}/check-runs?per_page=100").get("check_runs") or []
+              checks = []
+              for check_name in sorted(required):
+                  checks.extend(check_runs_named(target_sha, check_name))
               latest = {}
               for check in checks:
                   name = str(check.get("name") or "")
@@ -202,17 +251,32 @@ jobs:
               raise RuntimeError("RENDER_RELEASE_MERGED_PR_NOT_UNIQUE")
           source_pr = github_json(f"/pulls/{int(matching_candidates[0]['number'])}")
           source_head = str((source_pr.get("head") or {}).get("sha") or "")
-          source_checks = github_json(
-              f"/commits/{urllib.parse.quote(source_head, safe='')}/check-runs?per_page=100"
-          )
+          qa_app_id = os.environ.get("WOW_QA_APP_ID", "")
+          release_app_id = os.environ.get("WOW_RELEASE_APP_ID", "")
+          role_deadline = time.time() + 900
+          while True:
+              source_checks = []
+              for role_name in (QA_CHECK, RELEASE_CHECK):
+                  source_checks.extend(check_runs_named(source_head, role_name))
+              role_state = classify_role_checks(
+                  source_checks,
+                  qa_app_id=qa_app_id,
+                  release_app_id=release_app_id,
+                  source_head=source_head,
+              )
+              if role_state == "PASS":
+                  break
+              if role_state != "PENDING" or time.time() >= role_deadline:
+                  raise RuntimeError(role_state if role_state != "PENDING" else "QA_RELEASE_DECISION_TIMEOUT")
+              time.sleep(15)
           authorized_pr_head = validate_release_provenance(
               target_sha=target_sha,
               repository=repo,
               pull_requests=merged_candidates,
               merged_pr=source_pr,
-              check_runs=(source_checks or {}).get("check_runs"),
-              qa_app_id=os.environ.get("WOW_QA_APP_ID", ""),
-              release_app_id=os.environ.get("WOW_RELEASE_APP_ID", ""),
+              check_runs=source_checks,
+              qa_app_id=qa_app_id,
+              release_app_id=release_app_id,
           )
           print(json.dumps({
               "status": "RENDER_RELEASE_PROVENANCE_VERIFIED",
@@ -290,6 +354,57 @@ jobs:
           def exact_target_deploys():
               return [deploy for deploy in list_deploys() if commit_sha(deploy) == target_sha]
 
+          try:
+              service_document = render_json("GET", f"/services/{service_path}")
+              env_document = render_json("GET", f"/services/{service_path}/env-vars?limit=100")
+              governance_request = urllib.request.Request(
+                  os.environ["WOW_PRODUCTION_GOVERNANCE_URL"],
+                  headers={"Accept": "application/json", "User-Agent": "wow-v17-render-production-deploy"},
+              )
+              with urllib.request.urlopen(governance_request, timeout=30) as governance_response:
+                  governance = json.load(governance_response)
+          except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+              if isinstance(exc, RuntimeError) and not str(exc).startswith("RENDER_DEPLOY_API_"):
+                  raise
+              emit_receipt({
+                  "status": "PRODUCTION_RELEASE_HOLD",
+                  "target_sha": target_sha,
+                  "blockers": ["RELEASE_DATABASE_IDENTITY_UNREADABLE"],
+                  "next_action": "Read the production service database identity and try the same single writer again.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+          sealed_project_ref = (
+              os.environ.get("WOW_PRODUCTION_DB_PROJECT_REF") or COMMITTED_APPLICATION_DATABASE_PROJECT_REF
+          ).strip()
+          identity = database_identity_decision(
+              observed_project_ref=project_ref_from_supabase_url(env_var_value(env_document, "SUPABASE_URL")),
+              sealed_project_ref=sealed_project_ref,
+              database_provider=str((governance or {}).get("database_provider") or ""),
+              service_id=render_service_id,
+              can_execute=(governance or {}).get("can_execute", True),
+          )
+          lock = writer_lock_decision(
+              auto_deploy_trigger=native_auto_deploy_trigger(service_document),
+              deploys=list_deploys(),
+              target_sha=target_sha,
+          )
+          admission = admit_production_release(
+              role_checks="PASS",
+              database_identity=identity,
+              writer_lock=lock,
+          )
+          if not admission["eligible"]:
+              emit_receipt({
+                  "status": "PRODUCTION_RELEASE_HOLD",
+                  "target_sha": target_sha,
+                  "blockers": admission["blockers"],
+                  "controls": admission["controls"],
+                  "next_action": "Restore the failing QA/Release decision, production database identity, or single-writer lock. Do not turn the control off.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
+
           existing = exact_target_deploys()
           for deploy in existing:
               if str(deploy.get("status") or "") == "live":
@@ -320,11 +435,13 @@ jobs:
                   active = deploy
                   break
 
+          if active is None and not admission["post_allowed"]:
+              raise RuntimeError("RELEASE_WRITER_LOCK_OBSERVE_ONLY_WITHOUT_ACTIVE_DEPLOY")
           if active is None:
               created = render_json(
                   "POST",
                   f"/services/{service_path}/deploys",
-                  {"clearCache":"do_not_clear"},
+                  {"clearCache": "do_not_clear", "commitId": target_sha},
               )
               created_deploy = created
               if isinstance(created, dict) and isinstance(created.get("deploy"), dict):
@@ -344,7 +461,7 @@ jobs:
               if not deploy_id:
                   raise RuntimeError("RENDER_ACTIVE_DEPLOY_ID_MISSING")
 
-          deploy_deadline = time.time() + 900
+          deploy_deadline = time.time() + 2700
           while True:
               matching = exact_target_deploys()
               target = next((deploy for deploy in matching if str(deploy.get("id") or "") == deploy_id), None)
@@ -375,7 +492,14 @@ jobs:
                   })
                   raise SystemExit(0)
               if time.time() >= deploy_deadline:
-                  raise RuntimeError("RENDER_EXACT_SHA_DEPLOY_TIMEOUT")
+                  emit_receipt({
+                      "status": "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
+                      "target_sha": target_sha,
+                      "deploy_id": deploy_id,
+                      "next_action": "Do not POST again. Observe the existing deploy until it is live or terminal.",
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
               time.sleep(10)
           PY
 
@@ -407,6 +531,8 @@ jobs:
               "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
               "STALE_SHA_NO_DEPLOY",
               "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+              "PRODUCTION_RELEASE_HOLD",
+              "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
           }
           if status in advancing:
               print(json.dumps({"status":"EXACT_DEPLOY_ACCEPTED_FOR_CANARIES","source_receipt_status":status,"can_execute":False}, sort_keys=True))
