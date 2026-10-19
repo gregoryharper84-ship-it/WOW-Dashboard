@@ -63,9 +63,10 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "timeout-minutes: 55" not in text
     assert "role_deadline = time.time() + 900" in text
     assert "QA_RELEASE_DECISION_TIMEOUT" in text
-    assert "RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED" in text
-    assert "RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE" in text
-    assert "service_lock_release_cas_verified=False" in text
+    assert "RELEASE_WRITER_LOCK_BUSY" in text
+    assert "RELEASE_INTENT_EXISTS_NO_SECOND_POST" in text
+    assert "service_lock_release_cas_verified=False" not in text
+    assert "environment: wow-release" in text
     assert "time.sleep(10)" in text
     assert "MAX_WORKFLOW_RUN_ATTEMPTS = 3" in text
     assert "cancel-in-progress: false" in text
@@ -92,22 +93,22 @@ def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():
     assert "DEPLOY_LEASE_HOLD_NO_DEPLOY" in text
 
 
-def test_journal_preflight_holds_before_any_render_post():
+def test_native_release_intent_is_reserved_after_live_writer_checks_and_before_render_post():
     text = _workflow_text()
-
-    assert text.index("journal_preflight = github_deployment_journal_preflight(") < text.index(
-        "def render_json("
-    )
-    assert text.index("raise SystemExit(0)", text.index("journal_preflight =")) < text.index(
-        "created = guarded_render_post("
-    )
-    assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"' in text
-    assert "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY" in text
-    assert "GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY" in text
-    assert '"live_render_auto_deploy_trigger": "UNVERIFIED"' in text
-    assert '"obstruction": "GITHUB_NATIVE_FENCE_CANNOT_PROVE_SERVICE_WIDE_EXACT_ONCE"' in text
+    assert "environment: wow-release" in text
+    assert "contents: write" in text
+    assert "github_deployment_journal_preflight(" in text
+    assert 'service_document = render_json("GET", f"/services/{service_path}")' in text
+    assert '"status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"' in text
+    assert "service_lock_release_cas_verified=False" not in text
+    assert "reserve_git_release_intent(target_sha)" in text
+    assert "RELEASE_INTENT_EXISTS_NO_SECOND_POST" in text
+    assert "RELEASE_INTENT_WRITE_UNCERTAIN_NO_POST" in text
+    assert "RELEASE_INTENT_RESERVED_POST_UNCERTAIN" in text
+    assert "RELEASE_INTENT_HOLD_NO_DEPLOY" in text
+    assert text.index("journal_preflight = github_deployment_journal_preflight(") < text.index("release_intent_ref = reserve_git_release_intent(target_sha)")
+    assert text.index("release_intent_ref = reserve_git_release_intent(target_sha)") < text.index("created = guarded_render_post(")
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in text
-    assert "until protected ref policy, owner-fenced service-lock release, and complete live writer inventory are independently verified" in text
 
 
 def test_secret_sync_request_enters_only_protected_controller_after_durable_artifact():
@@ -142,7 +143,8 @@ def test_preflight_distinguishes_blueprint_from_live_render_writer_state():
 
     assert 'autoDeployTrigger: "checksPass"' in render
     assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"' in _workflow_text()
-    assert '"live_render_auto_deploy_trigger": "UNVERIFIED"' in _workflow_text()
+    assert 'service_document.get("autoDeployTrigger") != "off"' in _workflow_text()
+    assert '"RELEASE_NATIVE_WRITER_ENABLED"' in _workflow_text()
     assert '"render_service_id": "srv-da7sa9gu01pc73brt80g"' in manifest
     assert "wow-v17-secret-sync" in sync_workflow
     assert "/deploys" not in secret_sync
@@ -197,7 +199,7 @@ def test_render_deploy_no_deploy_paths_emit_typed_receipts_before_exit():
             text,
             re.DOTALL,
         )
-    assert '"status": journal_preflight["status"]' in text
+    assert '"status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"' in text
     assert '"RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"' in text
 
 

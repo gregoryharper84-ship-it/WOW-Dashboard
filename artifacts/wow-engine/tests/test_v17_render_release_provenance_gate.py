@@ -210,75 +210,116 @@ def test_secret_sync_request_sha_must_match_dispatch_target():
         )
 
 
-def test_github_deployment_journal_preflight_never_claims_atomic_create():
-    preflight = _embedded_function("github_deployment_journal_preflight")
-
-    result = preflight(
-        writer_inventory_complete=True,
-        live_auto_deploy_trigger="off",
-        git_ref_write_once_protection_verified=False,
-        service_lock_release_cas_verified=False,
+def _render_preflight(*, service=None, deploys=None, sha=HEAD_SHA):
+    preflight = _embedded_function(
+        "github_deployment_journal_preflight",
+        render_service_id="srv-da7sa9gu01pc73brt80g",
+        commit_sha=lambda deploy: str((deploy.get("commit") or {}).get("id") or ""),
     )
-
-    assert result["eligible"] is False
-    assert result["status"] == "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"
-    assert "GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY" in result["blockers"]
-    assert "GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE" in result["blockers"]
-    assert "GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED" in result["blockers"]
-    assert "RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED" in result["blockers"]
-    assert "RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE" in result["blockers"]
-    assert "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED" not in result["blockers"]
-    assert result["eligible"] is False
+    if service is None:
+        service = {"id": "srv-da7sa9gu01pc73brt80g", "autoDeploy": "no", "autoDeployTrigger": "off"}
+    if deploys is None:
+        deploys = [{"status": "live", "commit": {"id": "b" * 40}}]
+    return preflight(service_document=service, deploys=deploys, target_sha=sha)
 
 
-@pytest.mark.parametrize(
-    "writer_inventory_complete,live_auto_deploy,protection_verified,release_cas_verified,expected_blocker",
-    [
-        (False, "off", True, True, "RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED"),
-        (True, None, True, True, "RENDER_LIVE_AUTO_DEPLOY_STATE_UNVERIFIED"),
-        (True, "checksPass", True, True, "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED"),
-        (True, "off", False, True, "GITHUB_GIT_REF_WRITE_ONCE_PROTECTION_UNVERIFIED"),
-        (True, "off", True, False, "GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE"),
-    ],
-)
-def test_github_deployment_journal_preflight_records_writer_conflicts(
-    writer_inventory_complete, live_auto_deploy, protection_verified, release_cas_verified, expected_blocker
-):
-    result = _embedded_function("github_deployment_journal_preflight")(
-        writer_inventory_complete=writer_inventory_complete,
-        live_auto_deploy_trigger=live_auto_deploy,
-        git_ref_write_once_protection_verified=protection_verified,
-        service_lock_release_cas_verified=release_cas_verified,
-    )
-
-    assert result["eligible"] is False
-    assert expected_blocker in result["blockers"]
-    assert "GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED" in result["blockers"]
+def test_live_render_state_admits_single_github_intent_without_an_always_failing_stub():
+    result = _render_preflight()
+    assert result["eligible"] is True
+    assert result["blockers"] == []
 
 
-def test_guarded_render_post_rejects_without_calling_render_api():
+@pytest.mark.parametrize("service,deploys,expected", [
+    ({"id": "srv-wrong", "autoDeploy": "no", "autoDeployTrigger": "off"},
+     [], "RELEASE_SERVICE_IDENTITY_UNVERIFIED"),
+    ({"id": "srv-da7sa9gu01pc73brt80g", "autoDeploy": "yes", "autoDeployTrigger": "checksPass"},
+     [], "RELEASE_NATIVE_WRITER_ENABLED"),
+    ({"id": "srv-da7sa9gu01pc73brt80g", "autoDeploy": "no", "autoDeployTrigger": "off"},
+     [{"status": "build_in_progress", "commit": {"id": "b" * 40}}], "RELEASE_WRITER_LOCK_BUSY"),
+    ({"id": "srv-da7sa9gu01pc73brt80g", "autoDeploy": "no", "autoDeployTrigger": "off"},
+     [{"commit": {"id": HEAD_SHA}}], "RELEASE_WRITER_INVENTORY_UNREADABLE"),
+])
+def test_native_release_admission_rejects_unverified_or_busy_writers(service, deploys, expected):
+    decision = _render_preflight(service=service, deploys=deploys)
+    assert decision["eligible"] is False
+    assert expected in decision["blockers"]
+
+
+def test_native_release_admission_observes_same_sha_instead_of_denial():
+    assert _render_preflight(
+        deploys=[{"status": "build_in_progress", "commit": {"id": HEAD_SHA}}],
+    )["eligible"] is True
+
+
+def test_guarded_render_post_rejects_any_mutation_when_writer_preflight_fails():
     guarded_post = _embedded_function("guarded_render_post")
-    preflight = _embedded_function("github_deployment_journal_preflight")(
-        writer_inventory_complete=False,
-        live_auto_deploy_trigger=None,
-        git_ref_write_once_protection_verified=False,
-        service_lock_release_cas_verified=False,
+    preflight = _render_preflight(
+        service={"id": "srv-da7sa9gu01pc73brt80g", "autoDeploy": "yes", "autoDeployTrigger": "checksPass"},
     )
     render_calls = []
-
     for path, payload in (
         ("/services/service/deploys", {"commitId": "a" * 40}),
         ("/services/service/rollback", {"deployId": "dep-previous"}),
     ):
         with pytest.raises(RuntimeError, match="RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD"):
-            guarded_post(
-                preflight,
-                lambda *args: render_calls.append(args),
-                path,
-                payload,
-            )
-
+            guarded_post(preflight, lambda *args: render_calls.append(args), path, payload)
     assert render_calls == []
+
+
+def test_atomic_tag_reservation_rejects_ambiguous_and_existing_intents_without_render_post():
+    import json
+    import types
+    import urllib.error
+    import urllib.request
+
+    service = "srv-da7sa9gu01pc73brt80g"
+    ref = f"refs/tags/wow-v17-release-intent/{service}/{HEAD_SHA}"
+
+    class Response:
+        def __enter__(self):
+            import io
+            return io.StringIO(json.dumps({"ref": ref, "object": {"sha": HEAD_SHA}}))
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    calls = []
+    fake_urlopen = lambda request, timeout: (calls.append((request, timeout)), Response())[1]
+    def reserve_with(urlopen):
+        fake_urllib = types.SimpleNamespace(
+            request=types.SimpleNamespace(Request=urllib.request.Request, urlopen=urlopen),
+            error=urllib.error,
+        )
+        return _embedded_function(
+            "reserve_git_release_intent",
+            re=re,
+            json=json,
+            urllib=fake_urllib,
+            repo=REPO,
+            render_service_id=service,
+            github_headers={"Authorization": "Bearer fake"},
+        )
+
+    reserve = reserve_with(fake_urlopen)
+    assert reserve(HEAD_SHA) == ref
+    assert len(calls) == 1
+    req = calls[0][0]
+    assert req.get_method() == "POST"
+    assert json.loads(req.data)["ref"] == ref
+    assert json.loads(req.data)["sha"] == HEAD_SHA
+
+    def duplicate(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 422, "already exists", {}, None)
+    with pytest.raises(RuntimeError, match="RELEASE_INTENT_EXISTS_NO_SECOND_POST"):
+        reserve_with(duplicate)(HEAD_SHA)
+
+    def uncertain(request, timeout):
+        raise TimeoutError("connection lost")
+    with pytest.raises(RuntimeError, match="RELEASE_INTENT_WRITE_UNCERTAIN_NO_POST"):
+        reserve_with(uncertain)(HEAD_SHA)
+
+    with pytest.raises(RuntimeError, match="RELEASE_INTENT_TARGET_SHA_INVALID"):
+        reserve("dfe47f42")
 
 
 def test_exact_same_repo_independent_app_checks_pass():
@@ -456,9 +497,10 @@ def test_render_observation_window_is_monotonic_and_never_reposts_after_timeout(
     assert "Do not issue a second" in text
     assert 'f"/services/{service_path}/rollback"' not in text
     assert "rollback_attempts < 3" not in text
-    # Preflight must stay closed until a genuine service-wide atomic intent.
-    assert "writer_inventory_complete=False" in text
-    assert "service_lock_release_cas_verified=False" in text
+    # A write-once Git ref is reserved before a single Render POST; a retry must HOLD.
+    assert "service_lock_release_cas_verified=False" not in text
+    assert "release_intent_ref = reserve_git_release_intent(target_sha)" in text
+    assert "RELEASE_INTENT_EXISTS_NO_SECOND_POST" in text
 
 
 @pytest.mark.parametrize("failure,expected", [

@@ -21,7 +21,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write  # Atomic write-once Git release-intent tag; restricted to protected deployment job
   pull-requests: read
   checks: read
   actions: read
@@ -38,6 +38,7 @@ jobs:
     # remain blocked until a durable service-wide fence and live writer inventory
     # are independently proven; Blueprint settings do not prove live state.
     runs-on: ubuntu-latest
+    environment: wow-release  # Must be configured with protected main and independent authorized reviewers
     timeout-minutes: 120
     env:
       WOW_CAN_EXECUTE: "false"
@@ -149,38 +150,73 @@ jobs:
                   })
                   raise SystemExit(0)
 
-          def github_deployment_journal_preflight(
-              *, writer_inventory_complete, live_auto_deploy_trigger,
-              git_ref_write_once_protection_verified, service_lock_release_cas_verified,
-          ):
-              blockers = ["GITHUB_DEPLOYMENT_CREATE_HAS_NO_ATOMIC_IDEMPOTENCY"]
-              if not writer_inventory_complete:
-                  blockers.append("RENDER_SERVICE_WRITER_INVENTORY_UNVERIFIED")
-              if live_auto_deploy_trigger is None:
-                  blockers.append("RENDER_LIVE_AUTO_DEPLOY_STATE_UNVERIFIED")
-              elif live_auto_deploy_trigger != "off":
-                  blockers.append("RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED")
-              if not git_ref_write_once_protection_verified:
-                  blockers.append("GITHUB_GIT_REF_WRITE_ONCE_PROTECTION_UNVERIFIED")
-              if not service_lock_release_cas_verified:
-                  blockers.append("GITHUB_GIT_REF_SERVICE_LOCK_RELEASE_CAS_UNAVAILABLE")
-              blockers.append("GITHUB_GIT_REF_ATOMIC_SERVICE_FENCE_NOT_IMPLEMENTED")
-              # iczfhsmjrrafhvcpmqhr is the connected wow-engine-validation
-              # application project, not a certified release-control schema.
-              # A Render deploy list is not a durable service-wide fence.
-              blockers.append("APPLICATION_DATABASE_PROJECT_IS_NOT_RELEASE_CONTROL_SCHEMA")
-              blockers.append("RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED")
-              blockers.append("RENDER_DEPLOY_LIST_SNAPSHOT_IS_NOT_DURABLE_FENCE")
-              return {
-                  "eligible": False,
-                  "status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
-                  "blockers": blockers,
-              }
+          def github_deployment_journal_preflight(*, service_document, deploys, target_sha):
+              """Verify current Render state. Only the protected job may reserve an intent.
+
+              This is not a general-purpose distributed lock: external Render writers
+              must be independently removed/certified before environment approval.
+              """
+              blockers = []
+              if not isinstance(service_document, dict) or str(service_document.get("id") or "") != render_service_id:
+                  blockers.append("RELEASE_SERVICE_IDENTITY_UNVERIFIED")
+              else:
+                  if service_document.get("autoDeploy") not in ("no", False):
+                      blockers.append("RELEASE_NATIVE_WRITER_ENABLED")
+                  if service_document.get("autoDeployTrigger") != "off":
+                      blockers.append("RELEASE_NATIVE_WRITER_ENABLED")
+              if not isinstance(deploys, list):
+                  blockers.append("RELEASE_WRITER_INVENTORY_UNREADABLE")
+              else:
+                  terminal = {"live", "build_failed", "update_failed", "pre_deploy_failed",
+                              "deactivated", "canceled", "cancelled"}
+                  for deploy in deploys:
+                      if not isinstance(deploy, dict):
+                          blockers.append("RELEASE_WRITER_INVENTORY_UNREADABLE")
+                          continue
+                      status = str(deploy.get("status") or "").lower()
+                      if not status:
+                          blockers.append("RELEASE_WRITER_INVENTORY_UNREADABLE")
+                      elif status not in terminal and commit_sha(deploy) != target_sha:
+                          blockers.append("RELEASE_WRITER_LOCK_BUSY")
+              return {"eligible": not blockers, "status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+                      "blockers": sorted(set(blockers))}
 
           def guarded_render_post(preflight, render_json, path, payload):
               if not preflight["eligible"]:
                   raise RuntimeError("RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD")
               return render_json("POST", path, payload)
+
+          def reserve_git_release_intent(target_sha):
+              """Atomic create-if-absent ref before at most one Render POST.
+
+              Any 422, ambiguous GitHub response, or post-create crash is a HOLD,
+              never a reason to replay the Render POST.
+              """
+              if not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+                  raise RuntimeError("RELEASE_INTENT_TARGET_SHA_INVALID")
+              if not re.fullmatch(r"srv-[a-z0-9]{8,64}", render_service_id):
+                  raise RuntimeError("RELEASE_INTENT_SERVICE_INVALID")
+              ref = f"refs/tags/wow-v17-release-intent/{render_service_id}/{target_sha}"
+              headers = dict(github_headers)
+              headers["Content-Type"] = "application/json"
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/git/refs",
+                  headers=headers, method="POST",
+                  data=json.dumps({"ref": ref, "sha": target_sha}).encode("utf-8"),
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      document = json.load(response)
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 422:
+                      raise RuntimeError("RELEASE_INTENT_EXISTS_NO_SECOND_POST") from exc
+                  raise RuntimeError(f"RELEASE_INTENT_WRITE_HTTP_{exc.code}_NO_POST") from exc
+              except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+                  raise RuntimeError("RELEASE_INTENT_WRITE_UNCERTAIN_NO_POST") from exc
+              if (not isinstance(document, dict) or document.get("ref") != ref or
+                      (document.get("object") or {}).get("sha") != target_sha):
+                  raise RuntimeError("RELEASE_INTENT_ACK_INVALID_NO_POST")
+              return ref
 
           github_headers = {
               "Accept": "application/vnd.github+json",
@@ -348,30 +384,6 @@ jobs:
                       "can_execute": False,
                   })
                   raise SystemExit(0)
-
-          journal_preflight = github_deployment_journal_preflight(
-              writer_inventory_complete=False,
-              live_auto_deploy_trigger=None,
-              git_ref_write_once_protection_verified=False,
-              service_lock_release_cas_verified=False,
-          )
-          if not journal_preflight["eligible"]:
-              emit_receipt({
-                  "status": journal_preflight["status"],
-                  "target_sha": target_sha,
-                  "render_service_id": render_service_id,
-                  "obstruction": "GITHUB_NATIVE_FENCE_CANNOT_PROVE_SERVICE_WIDE_EXACT_ONCE",
-                  "blocking_evidence": journal_preflight["blockers"],
-                  "repository_blueprint_auto_deploy_trigger": RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER,
-                  "live_render_auto_deploy_trigger": "UNVERIFIED",
-                  "next_action": "Keep Render POSTs blocked until protected ref policy, owner-fenced service-lock release, and complete live writer inventory are independently verified.",
-                  "runtime_generation": "V17_ACTIVE",
-                  "terminal_authority": "V17_TERMINAL_REDUCER",
-                  "custom_gpt_identity": "WOW_BETTING_ENGINE",
-                  "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": True,
-                  "can_execute": False,
-              })
-              raise SystemExit(0)
 
           def validate_deployment_lease_identity(run, *, repository, event, run_id, run_attempt):
               if not isinstance(run, dict):
@@ -706,6 +718,22 @@ jobs:
               raise SystemExit(0)
 
           deploys_before_post = list_deploys()
+          # Check live service configuration, not a repository Blueprint snapshot.
+          service_document = render_json("GET", f"/services/{service_path}")
+          journal_preflight = github_deployment_journal_preflight(
+              service_document=service_document,
+              deploys=deploys_before_post,
+              target_sha=target_sha,
+          )
+          if not journal_preflight["eligible"]:
+              emit_receipt({
+                  "status": "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+                  "target_sha": target_sha,
+                  "blocking_evidence": journal_preflight["blockers"],
+                  "next_action": "Resolve the live Render writer inventory or auto-deploy conflict before another attempt.",
+                  "can_execute": False,
+              })
+              raise SystemExit(0)
           previous_live = next(
               (deploy for deploy in deploys_before_post if str(deploy.get("status") or "") == "live"),
               None,
@@ -760,6 +788,25 @@ jobs:
                       "can_execute": False,
                   })
                   raise SystemExit(0)
+              # Create a GitHub ref only once. If the worker crashes or its
+              # provider response is ambiguous, a rerun cannot send another POST.
+              try:
+                  release_intent_ref = reserve_git_release_intent(target_sha)
+              except RuntimeError as exc:
+                  emit_receipt({
+                      "status": "RELEASE_INTENT_HOLD_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "hold_reason": str(exc),
+                      "next_action": "Read the protected Git intent and Render deployment; never repeat a POST on an uncertain intent.",
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
+              emit_receipt({
+                  "status": "RELEASE_INTENT_RESERVED_POST_UNCERTAIN",
+                  "target_sha": target_sha,
+                  "intent_ref": release_intent_ref,
+                  "can_execute": False,
+              })
               created = guarded_render_post(
                   journal_preflight,
                   render_json,
@@ -870,6 +917,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Reconcile exact Render receipt to durable deployment pointer
         shell: bash
@@ -898,6 +946,8 @@ jobs:
               "DEPLOY_SHA_MISMATCH_ROLLED_BACK",
               "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
               "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+              "RELEASE_INTENT_HOLD_NO_DEPLOY",
+              "RELEASE_INTENT_RESERVED_POST_UNCERTAIN",
               "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
               "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
               "PRODUCTION_RELEASE_HOLD",
