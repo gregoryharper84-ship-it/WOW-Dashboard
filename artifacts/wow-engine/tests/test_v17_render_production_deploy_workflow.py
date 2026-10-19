@@ -105,6 +105,7 @@ def test_native_release_intent_is_reserved_after_live_writer_checks_and_before_r
     assert "RELEASE_INTENT_EXISTS_NO_SECOND_POST" in text
     assert "RELEASE_INTENT_WRITE_UNCERTAIN_NO_POST" in text
     assert "RELEASE_INTENT_RESERVED_POST_UNCERTAIN" in text
+    assert "RELEASE_INTENT_HOLD_NO_DEPLOY" in text
     assert text.index("journal_preflight = github_deployment_journal_preflight(") < text.index("reserve_git_release_intent(target_sha)\n              emit_receipt")
     assert text.index("release_intent_ref = reserve_git_release_intent(target_sha)") < text.index("created = guarded_render_post(")
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in text
