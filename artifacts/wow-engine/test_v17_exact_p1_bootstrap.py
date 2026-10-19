@@ -55,9 +55,10 @@ def test_workflow_syntax_and_independent_trust_root_protection():
     for name in (PRIMARY, FALLBACK, PROVIDER):
         yaml.safe_load((WORKFLOW_DIR / name).read_text())
     gate = (WORKFLOW_DIR / "wow-v17-existing-pr-governance-review.yml").read_text()
-    for name in (PRIMARY, FALLBACK, PROVIDER):
-        assert name in gate
-    assert "EXISTING_PR_TRUST_ROOT_CHANGE_REQUIRES_WORKER_OR_BOOTSTRAP" in gate
+    assert "EXISTING_PR_TRUST_ROOT_CHANGE_REQUIRES_WORKER_OR_BOOTSTRAP" not in gate
+    assert "--bootstrap" in gate
+    assert "TRUST_ROOT_BOOTSTRAP" in gate
+    assert "pull_request:" not in gate.replace("pull_request_target:", "")
 
 
 def test_bootstrap_does_not_authorize_execution_or_merge():

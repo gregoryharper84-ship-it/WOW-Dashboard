@@ -39,11 +39,20 @@ jobs:
           if [ -n "${EXPLICIT_PR:-}" ]; then
             pr_number="$EXPLICIT_PR"
           else
-            pr_number=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" --jq '[.[] | select(.head.sha == env.EVENT_HEAD_SHA and .head.repo.full_name == env.GITHUB_REPOSITORY)] | first | .number // empty')
+            matches=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" |
+              jq -s --arg sha "$EVENT_HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
+                '[.[][] | select(.head.sha == $sha and .head.repo.full_name == $repo)]')
+            match_count=$(jq 'length' <<<"$matches")
+            if [ "$match_count" != "1" ]; then
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              echo "PR resolution was missing or ambiguous for the completed CI SHA." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            pr_number=$(jq -r '.[0].number' <<<"$matches")
           fi
-          if [ -z "${pr_number:-}" ]; then
+          if ! [[ "${pr_number:-}" =~ ^[1-9][0-9]*$ ]]; then
             echo "eligible=false" >> "$GITHUB_OUTPUT"
-            echo "No open same-repository PR matches this completed CI head SHA." >> "$GITHUB_STEP_SUMMARY"
+            echo "PR identity is invalid." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
@@ -173,8 +182,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
           HEAD_REF: ${{ steps.resolve.outputs.head_ref }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
         run: |
           set -euo pipefail
+          pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
+            '.state == "open" and .draft == false and .head.sha == $sha and
+             .head.repo.full_name == $repo and .base.ref == "main" and
+             .base.repo.full_name == $repo' <<<"$pr_json" >/dev/null || {
+              echo "GOVERNANCE_PR_IDENTITY_MOVED_OR_UNTRUSTED" >&2
+              echo "approved=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
           artifact_name="wow-v17-engineering-governance-${HEAD_SHA}"
           artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
           artifact_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // ""' <<<"$artifacts")
@@ -230,6 +249,20 @@ jobs:
           zip_path="$RUNNER_TEMP/governance.zip"
           receipt="$RUNNER_TEMP/wow-engineering-governance-receipt.json"
           checksum="$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
+          live_reviews="$RUNNER_TEMP/wow-live-reviews.json"
+          reviews='[]'
+          for page in $(seq 1 10); do
+            response=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100&page=${page}")
+            count=$(jq 'length' <<<"$response")
+            reviews=$(jq -cn --argjson old "$reviews" --argjson new "$response" '$old + $new')
+            [ "$count" -lt 100 ] && break
+            [ "$page" -lt 10 ] || {
+              echo "GOVERNANCE_REVIEW_INVENTORY_LIMIT_EXCEEDED" >&2
+              echo "approved=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          done
+          printf '%s\n' "$reviews" > "$live_reviews"
           gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$zip_path"
           unzip -p "$zip_path" wow-engineering-governance-receipt.json > "$receipt"
           unzip -p "$zip_path" wow-engineering-governance-receipt.sha256 > "$checksum"
@@ -243,11 +276,49 @@ jobs:
           fi
 
           verifier=".github/scripts/verify_engineering_governance_receipt.py"
+          cert_mode=""
+          live_checks="$RUNNER_TEMP/wow-live-checks.json"
           if [ "$name" = "wow-v17-existing-pr-governance-review" ]; then
             verifier=".github/scripts/verify_existing_pr_governance_receipt.py"
+            set +e
+            cert_mode=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")' "$receipt")
+            cert_rc=$?
+            set -e
+            if [ "$cert_rc" -ne 0 ]; then
+              echo "GOVERNANCE_RECEIPT_UNREADABLE: autonomous merge denied." >> "$GITHUB_STEP_SUMMARY"
+              echo "approved=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+              checks='[]'
+              for page in $(seq 1 10); do
+                response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}") || {
+                  echo "GOVERNANCE_CHECK_INVENTORY_UNAVAILABLE: autonomous merge denied." >> "$GITHUB_STEP_SUMMARY"
+                  echo "approved=false" >> "$GITHUB_OUTPUT"
+                  exit 0
+                }
+                items=$(jq -ce '.check_runs' <<<"$response")
+                count=$(jq 'length' <<<"$items")
+                checks=$(jq -cn --argjson old "$checks" --argjson new "$items" '$old + $new')
+                [ "$count" -lt 100 ] && break
+                [ "$page" -lt 10 ] || {
+                  echo "GOVERNANCE_CHECK_INVENTORY_LIMIT_EXCEEDED" >&2
+                  echo "approved=false" >> "$GITHUB_OUTPUT"
+                  exit 0
+                }
+              done
+              printf '%s\n' "$checks" > "$live_checks"
+            fi
           fi
 
           set +e
+          extra_args=()
+          if [ "$name" = "wow-v17-existing-pr-governance-review" ]; then
+            extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+              extra_args+=(--live-checks-json "$live_checks")
+            fi
+          fi
           python "$verifier" \
             --receipt "$receipt" \
             --repository "$GITHUB_REPOSITORY" \
@@ -255,6 +326,7 @@ jobs:
             --head-ref "$HEAD_REF" \
             --workflow-run-id "$run_id" \
             --workflow-name "$name" \
+            "${extra_args[@]}" \
             | tee "$RUNNER_TEMP/governance-result.json"
           rc=${PIPESTATUS[0]}
           set -e
