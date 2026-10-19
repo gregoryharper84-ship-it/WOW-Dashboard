@@ -513,12 +513,18 @@ def test_rename_out_of_trust_root_holds_both_qa_and_release(source):
     ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(files=renamed, changed=1)))
     assert ev["evidence_errors"] == []
     assert ev["files"] == ["docs/relocated-unprotected-file.md", source]
-    ev["check_runs"] = evidence()["check_runs"]
-    assert m.qa_findings(evidence(files=("docs/relocated-unprotected-file.md",))) == []
-    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+    ev["check_runs"] = [r for r in evidence()["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
+    assert m.is_trust_root(source, frozenset(m.governance_trust_roots(m.REPO_ROOT)))
+    assert m.qa_findings(ev) == []  # rename origin remains classified as protected
+    ordinary = evidence(files=("docs/relocated-unprotected-file.md",))
+    ordinary["check_runs"] = ev["check_runs"]
+    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in m.qa_findings(ordinary)
+    # The protected rename cannot waive independent exact-head source checks.
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.QA_EVIDENCE_CHECKS[0]]
+    assert f"QA_EVIDENCE_MISSING:{m.QA_EVIDENCE_CHECKS[0]}" in m.qa_findings(ev)
     with_qa(ev)
     findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
-    assert "RELEASE_QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in findings
+    assert f"RELEASE_QA_EVIDENCE_MISSING:{m.QA_EVIDENCE_CHECKS[0]}" in findings
 
 
 def test_rename_origin_missing_or_invalid_fails_closed():
