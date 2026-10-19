@@ -55,11 +55,11 @@ def validate_contract(spec: dict[str, Any]) -> list[str]:
         return errors + ["teams: missing or unexpected team"]
     if not isinstance(agents, dict):
         return errors + ["agent_authorities: must be a mapping"]
-    if teams["AMRT"].get("parent") != "PRODUCTION_ENGINEERING":
+    if not isinstance(teams["AMRT"], dict) or teams["AMRT"].get("parent") != "PRODUCTION_ENGINEERING":
         errors.append("AMRT must remain a Production Engineering unit")
-    if teams["SYSTEMS_INTELLIGENCE_RELIABILITY"].get("parent") != "SYSTEMS_INTELLIGENCE_RELIABILITY":
+    if not isinstance(teams["SYSTEMS_INTELLIGENCE_RELIABILITY"], dict) or teams["SYSTEMS_INTELLIGENCE_RELIABILITY"].get("parent") != "SYSTEMS_INTELLIGENCE_RELIABILITY":
         errors.append("SIRT must remain independently owned")
-    if teams["INDEPENDENT_VERIFICATION"].get("parent") != "INDEPENDENT_VERIFICATION":
+    if not isinstance(teams["INDEPENDENT_VERIFICATION"], dict) or teams["INDEPENDENT_VERIFICATION"].get("parent") != "INDEPENDENT_VERIFICATION":
         errors.append("Independent Verification must remain separate from implementation")
     seen: set[str] = set()
     for team, team_spec in teams.items():
@@ -97,7 +97,7 @@ def validate_contract(spec: dict[str, Any]) -> list[str]:
     if set(agents) != seen:
         errors.append("agent catalog must match exactly the team role inventory")
     route_scopes = spec.get("route_scopes", {})
-    if not isinstance(route_scopes, dict) or set(route_scopes.values()) != REQUIRED_TEAMS:
+    if not isinstance(route_scopes, dict) or not all(isinstance(v, str) for v in route_scopes.values()) or set(route_scopes.values()) != REQUIRED_TEAMS:
         errors.append("route_scopes must cover the seven unique team domains")
     if spec.get("final_closure") != "FIXED_AND_VERIFIED":
         errors.append("final closure must require production verification")
