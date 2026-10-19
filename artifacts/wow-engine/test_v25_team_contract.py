@@ -130,7 +130,8 @@ class V25TeamContractTests(unittest.TestCase):
         self.assertIn("INVALID_LEASE_EPOCH", v25.assess_handoff(self.cfg, item))
 
     def test_evidence_complete_receipt_is_not_production_release_authority(self):
-        self.assertEqual([], v25.assess_production_closure(self.cfg, closure()))
+        self.assertEqual(["PENDING_AUTHORITATIVE_RECEIPT_VERIFICATION"],
+                         v25.assess_production_closure(self.cfg, closure()))
         self.assertEqual("PROPOSED_NOT_DEPLOYED", self.cfg["status"])
 
     def test_missing_production_replay_prevents_closure(self):
@@ -162,6 +163,13 @@ class V25TeamContractTests(unittest.TestCase):
         receipt["independent_qa"]["actor"] = "reviewer-app"
         self.assertIn("REVIEW_AND_QA_MUST_BE_INDEPENDENT",
                       v25.assess_production_closure(self.cfg, receipt))
+
+    def test_complete_class_c_proposal_is_not_authorized_promotion(self):
+        proposal = {key: "receipt://verified" for key in
+                    self.cfg["model_promotion_required_fields"]}
+        proposal["submitter"] = "science-implementer"
+        self.assertEqual(["MODEL_PROMOTION_REQUIRES_INDEPENDENT_AUTHORIZATION"],
+                         v25.assess_model_promotion(self.cfg, proposal))
 
     def test_class_c_cannot_promote_without_challenger(self):
         proposal = {key: "receipt://verified" for key in
