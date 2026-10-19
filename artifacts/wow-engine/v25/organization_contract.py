@@ -199,6 +199,11 @@ def assess_production_closure(spec: dict[str, Any],
         isinstance(receipt.get("independent_qa"), dict) and
         receipt["independent_review"].get("actor") == receipt["independent_qa"].get("actor")):
         errors.append("REVIEW_AND_QA_MUST_BE_INDEPENDENT")
+    if not errors:
+        # Caller-provided fields are NOT independently authenticated receipts.
+        # Only a future governed live adapter may attest exact source provenance,
+        # and this proposal deliberately does not install such an adapter.
+        errors.append("PENDING_AUTHORITATIVE_RECEIPT_VERIFICATION")
     return errors
 
 
@@ -214,4 +219,7 @@ def assess_model_promotion(spec: dict[str, Any],
     ]
     if proposal.get("submitter") == proposal.get("independent_model_review"):
         errors.append("MODEL_SELF_REVIEW_FORBIDDEN")
+    if not errors:
+        # An evidence-shaped challenger is not governed model promotion.
+        errors.append("MODEL_PROMOTION_REQUIRES_INDEPENDENT_AUTHORIZATION")
     return errors
