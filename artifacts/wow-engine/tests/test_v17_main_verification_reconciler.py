@@ -12,10 +12,16 @@ def test_watchdog_only_dispatches_missing_main_verify():
     assert "actions: write" in src
     assert "deployments: write" not in src
     assert "RENDER_API_KEY" not in src
-    assert "wow-verify.yml/dispatches" in src
+    assert 'for workflow in wow-verify.yml wow-engine-verify.yml; do' in src
+    assert 'actions/workflows/$workflow/dispatches' in src
+    assert 'EXACT_MAIN_VERIFY_PRESENT:$workflow:$verdict' in src
+    assert 'MISSING_VERIFY_DISPATCHED_FOR_MAIN:$workflow:$main_sha' in src
+    assert 'continue' in src
     assert 'head_sha == $sha' in src
     assert '"MISSING"' in src
     assert 'if [ "$verdict" != MISSING ]; then' in src
+    assert '"push" or .event == "workflow_dispatch"' in src
+    assert "sort_by(.created_at) | reverse | first" in src
     assert '[ "$main_sha" = "$current_sha" ]' in src
 
 
