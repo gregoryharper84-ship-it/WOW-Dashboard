@@ -555,6 +555,31 @@ def _path_is_trust_root(path: str, protected: set[str]) -> bool:
     return path.startswith(TRUST_ROOT_PREFIXES) or path in protected
 
 
+def _require_bootstrap_pr_state(pr: Mapping[str, Any]) -> None:
+    """Open exact heads, or a merged exact head whose merge commit is recorded.
+
+    Closed-unmerged and inconsistent open/merged combinations stay fail-closed.
+    Ordinary receipts do not use this predicate.
+    """
+    _require(pr.get("draft") is False, "PR_SHA_REPOSITORY_STATE_OR_BASE_MISMATCH")
+    if pr.get("state") == "open":
+        _require(
+            not pr.get("merged_at") and pr.get("merged") is not True,
+            "PR_SHA_REPOSITORY_STATE_OR_BASE_MISMATCH",
+        )
+        return
+    _require(
+        pr.get("state") == "closed" and pr.get("merged") is True,
+        "PR_SHA_REPOSITORY_STATE_OR_BASE_MISMATCH",
+    )
+    _timestamp(pr.get("merged_at"), "MERGED_AT")
+    merge_sha = pr.get("merge_commit_sha")
+    _require(
+        isinstance(merge_sha, str) and bool(SHA.fullmatch(merge_sha)),
+        "PR_SHA_REPOSITORY_STATE_OR_BASE_MISMATCH",
+    )
+
+
 def classify_changed_files(files: object, *, repo_root: Path, expected_count: object) -> str:
     normalized = _validate_changed_files(files, expected_count)
     protected = _protected_paths(repo_root)
@@ -663,11 +688,9 @@ def build_trust_root_bootstrap(
         author_id != OWNER_ID and author_login.casefold() != OWNER_LOGIN.casefold(),
         "TRUST_ROOT_OWNER_AUTHORED",
     )
+    _require_bootstrap_pr_state(pr)
     _require(
         pr.get("number") == expected_pr_number
-        and pr.get("state") == "open"
-        and pr.get("draft") is False
-        and not pr.get("merged_at")
         and base.get("ref") == "main"
         and base["repo"].get("full_name") == expected_repository
         and head["repo"].get("full_name") == expected_repository

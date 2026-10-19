@@ -69,16 +69,36 @@ jobs:
           base_repo=$(jq -r '.base.repo.full_name // ""' <<<"$pr_json")
           body=$(jq -r '.body // ""' <<<"$pr_json")
 
-          [ "$state" = "open" ] || { echo "EXISTING_PR_NOT_OPEN" >&2; exit 1; }
-          [ "$draft" = "false" ] || { echo "EXISTING_PR_NOT_READY_FOR_REVIEW" >&2; exit 1; }
+          merged=$(jq -r '.merged // false' <<<"$pr_json")
+          merged_at=$(jq -r '.merged_at // ""' <<<"$pr_json")
+          merge_sha=$(jq -r '.merge_commit_sha // ""' <<<"$pr_json")
+          [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] && [ -n "$head_ref" ] || {
+            echo "EXISTING_PR_IDENTITY_INCOMPLETE" >&2; exit 1;
+          }
+          if [ "$state" = "open" ]; then
+            [ "$draft" = "false" ] || { echo "EXISTING_PR_NOT_READY_FOR_REVIEW" >&2; exit 1; }
+            [ "$merged" = "false" ] && [ -z "$merged_at" ] || {
+              echo "EXISTING_PR_OPEN_STATE_INCONSISTENT" >&2; exit 1;
+            }
+          elif [ "$state" = "closed" ] && [ "$merged" = "true" ] && [ -n "$merged_at" ]; then
+            [[ "$merge_sha" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "EXISTING_PR_MERGE_COMMIT_MISSING" >&2; exit 1;
+            }
+            git merge-base --is-ancestor "$merge_sha" HEAD || {
+              echo "EXISTING_PR_MERGE_COMMIT_NOT_ON_MAIN: $merge_sha" >&2; exit 1;
+            }
+            git merge-base --is-ancestor "$head_sha" "$merge_sha" || {
+              echo "EXISTING_PR_HEAD_NOT_IN_MERGE_COMMIT: $head_sha" >&2; exit 1;
+            }
+          else
+            echo "EXISTING_PR_NOT_CERTIFIABLE_STATE: state=$state merged=$merged" >&2
+            exit 1
+          fi
           [ "$base_ref" = "main" ] && [ "$base_repo" = "$GITHUB_REPOSITORY" ] || {
             echo "EXISTING_PR_BASE_NOT_CANONICAL_MAIN" >&2; exit 1;
           }
           [ "$head_repo" = "$GITHUB_REPOSITORY" ] || {
             echo "EXISTING_PR_HEAD_REPOSITORY_MISMATCH" >&2; exit 1;
-          }
-          [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] && [ -n "$head_ref" ] || {
-            echo "EXISTING_PR_IDENTITY_INCOMPLETE" >&2; exit 1;
           }
 
           incident="${INPUT_INCIDENT:-}"
@@ -195,9 +215,13 @@ jobs:
           api="/repos/${GITHUB_REPOSITORY}"
           pr_json=$(gh api "${api}/pulls/${PR_NUMBER}")
           jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
-            '.state == "open" and .draft == false and .head.sha == $sha and
+            '.draft == false and .head.sha == $sha and
              .head.repo.full_name == $repo and .base.ref == "main" and
-             .base.repo.full_name == $repo' <<<"$pr_json" >/dev/null || {
+             .base.repo.full_name == $repo and (
+               (.state == "open" and .merged_at == null and .merged != true) or
+               (.state == "closed" and .merged == true and .merged_at != null and
+                (.merge_commit_sha | type == "string" and test("^[a-f0-9]{40}$")))
+             )' <<<"$pr_json" >/dev/null || {
               echo "EXISTING_PR_HEAD_MOVED_OR_NOT_READY" >&2; exit 1;
             }
 

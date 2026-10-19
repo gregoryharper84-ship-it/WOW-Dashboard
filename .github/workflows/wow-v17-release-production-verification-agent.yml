@@ -105,6 +105,7 @@ jobs:
 
       - name: Verify required exact-head CI
         if: steps.pr.outputs.number != ''
+        id: required_ci
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,10 +132,13 @@ jobs:
           done
           checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" --jq '.check_runs')
           gate=$(jq -r '[.[] | select(.name == "Trusted exact-head engineering governance")] | sort_by(.started_at // .created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' <<<"$checks")
-          [ "$gate" = "completed|success" ] || {
-            echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN: ${gate:-MISSING}" >&2
-            exit 1
-          }
+          if [ "$gate" = "completed|success" ]; then
+            echo "governance_gate=trusted_gate_green" >> "$GITHUB_OUTPUT"
+          else
+            # Path A rechecks a real trust-root bootstrap receipt below. Ordinary
+            # receipts still fail closed when this legacy gate is not green.
+            echo "governance_gate=legacy_gate_not_green:${gate:-MISSING}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Resolve trusted exact-head governance artifact
         if: steps.pr.outputs.number != ''
@@ -221,6 +225,7 @@ jobs:
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           HEAD_REF: ${{ steps.merged.outputs.head_ref }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+          GOVERNANCE_GATE: ${{ steps.required_ci.outputs.governance_gate }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/wow-engine/v17/.release-evidence
@@ -292,6 +297,10 @@ jobs:
             --workflow-run-id "$RUN_ID" \
             --workflow-name "$WORKFLOW_NAME" \
             "${extra_args[@]}"
+          if [ "${cert_mode:-}" != "TRUST_ROOT_BOOTSTRAP" ] && [ "$GOVERNANCE_GATE" != "trusted_gate_green" ]; then
+            echo "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN: ${GOVERNANCE_GATE}" >&2
+            exit 1
+          fi
 
       - name: Capture deterministic release evidence
         if: steps.pr.outputs.number != ''
@@ -329,10 +338,11 @@ jobs:
             You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on OpenAI/ChatGPT tooling only.
             Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
             the merged PR, and artifacts/wow-engine/v17/.release-evidence/**.
-            The deterministic workflow has required exact-head source-pinned regression CI and a
-            trusted receipt proving an active independent allowlisted APPROVED review on that exact
-            pre-merge head. Independent QA and Release checks remain separate mandatory gates. The
-            workflow has also proven the GitHub merge SHA is on protected main. Independently
+            The deterministic workflow has required exact-head source-pinned regression CI.
+            A TRUST_ROOT_BOOTSTRAP receipt is rechecked here against the live owner approval
+            and the live required checks, including Independent QA and Release Authority.
+            An ordinary receipt still requires the trusted governance check and an allowlisted
+            exact-head approval. The GitHub merge SHA is on protected main. Independently
             verify production liveness/governance and exact deployed-SHA evidence. Do not edit, merge, deploy,
             or change sporting probability behavior. If exact production SHA cannot
             be independently proven, return PENDING. Preserve can_execute=false.
