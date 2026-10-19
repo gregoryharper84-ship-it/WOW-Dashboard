@@ -37,8 +37,8 @@ jobs:
     env:
       WOW_CAN_EXECUTE: 'false'
       WOW_DRY_RUN_ONLY: 'true'
-      SOURCE_PR: ${{ inputs.source_pr }
-      SOURCE_SHA: ${{ inputs.source_sha }
+      SOURCE_PR: ${{ inputs.source_pr }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
     steps:
       - name: Checkout protected main only (no persisted credentials)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -50,7 +50,7 @@ jobs:
       - name: Validate exact source PR, original base, paths, regression provenance
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$WOW_CAN_EXECUTE" = false
@@ -65,15 +65,15 @@ jobs:
         id: engineering
         uses: ./.github/actions/wow-engineering-token
         with:
-          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }
-          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
 
       - name: Require real App credential and separate read/write tokens
         shell: bash
         env:
-          APP_TOKEN: ${{ steps.engineering.outputs.token }
-          KEY_PRESENT: ${{ steps.engineering.outputs.key-present }
-          GH_TOKEN: ${{ github.token }
+          APP_TOKEN: ${{ steps.engineering.outputs.token }}
+          KEY_PRESENT: ${{ steps.engineering.outputs.key-present }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "${KEY_PRESENT:-false}" == true && -n "${APP_TOKEN:-}" ]] || {
@@ -86,8 +86,8 @@ jobs:
       - name: One authorized App commit, PR, and exact author readback
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }
-          APP_TOKEN: ${{ steps.engineering.outputs.token }
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.engineering.outputs.token }}
         run: |
           set -euo pipefail
           python artifacts/wow-engine/v17/engineering_authorized_adoption.py integrate \
