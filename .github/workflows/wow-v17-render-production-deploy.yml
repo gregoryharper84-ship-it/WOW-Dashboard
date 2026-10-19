@@ -99,8 +99,25 @@ jobs:
 
           def github_json(path):
               request = urllib.request.Request(f"https://api.github.com/repos/{repo}{path}", headers=github_headers)
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  return json.load(response)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as exc:
+                  # Never print credentials, response bodies, or sensitive headers.
+                  try:
+                      details = json.loads(exc.read().decode("utf-8", errors="replace"))
+                  except (ValueError, UnicodeError):
+                      details = {}
+                  if not isinstance(details, dict):
+                      details = {}
+                  print("GITHUB_RELEASE_API_ERROR:" + json.dumps({
+                      "endpoint": path.split("?")[0],
+                      "status": exc.code,
+                      "message_category": ("RATE_LIMIT" if exc.code == 403 and exc.headers.get("x-ratelimit-remaining") == "0" else "ACCESS_DENIED" if exc.code == 403 else "HTTP_ERROR"),
+                      "accepted_permissions": exc.headers.get("x-accepted-github-permissions"),
+                      "rate_limit_remaining": exc.headers.get("x-ratelimit-remaining"),
+                  }, sort_keys=True), flush=True)
+                  raise
 
           def validate_release_provenance(*, target_sha, repository, pull_requests, merged_pr,
                                           check_runs, qa_app_id, release_app_id):
