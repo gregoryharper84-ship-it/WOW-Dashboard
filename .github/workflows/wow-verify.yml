@@ -231,3 +231,24 @@ jobs:
         run: |
           echo "additional shards=$SHARD_RESULT"
           test "$SHARD_RESULT" = "success"
+
+  dispatch-protected-deploy:
+    name: Dispatch protected production deploy
+    needs: [required-three, additional-required]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && needs.required-three.result == 'success' && needs.additional-required.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Start the single production deploy workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WOW_CAN_EXECUTE: "false"
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          # A GITHUB_TOKEN dispatch of wow-verify does not chain workflow_run.
+          # workflow_dispatch is allowed to start the deploy. QA, database
+          # identity, and the single-writer lock still run inside that workflow.
+          gh workflow run wow-v17-render-production-deploy.yml --ref main
+          echo "PROTECTED_DEPLOY_DISPATCHED_GATES_STILL_REQUIRED"

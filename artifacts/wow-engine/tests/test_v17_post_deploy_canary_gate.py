@@ -32,6 +32,8 @@ def test_non_advancing_deploy_receipts_fail_controller_after_pointer_reconcile()
         "UPSTREAM_NOT_SUCCESS_NO_DEPLOY",
         "STALE_SHA_NO_DEPLOY",
         "DEPLOY_SUPERSEDED_BY_NEW_MAIN",
+        "PRODUCTION_RELEASE_HOLD",
+        "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT",
     ):
         assert status in text[final_gate:]
     assert '"POST_DEPLOY_CANARIES_BLOCKED"' in text[final_gate:]
