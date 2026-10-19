@@ -26,6 +26,7 @@ from v17.github_release_journal import (
     deployments_api_is_not_a_cas,
     inventory_render_writers,
     load_workflow_texts,
+    protected_release_job_environment,
     observation_decision,
     paginate,
     plan_release_admission,
@@ -130,6 +131,48 @@ def _render_posts(decision) -> list:
     if follow["post"]:
         return [decision["payload"]]
     return []
+
+
+def test_real_controller_uses_github_job_binding_not_nonexistent_runner_environment():
+    texts = load_workflow_texts(REPO / ".github/workflows")
+    controller = texts[CONTROLLER_FILENAME]
+    assert protected_release_job_environment(texts) == REQUIRED_ENVIRONMENT
+    parsed = yaml.safe_load(controller)
+    assert parsed["jobs"]["deploy-production"]["environment"] == REQUIRED_ENVIRONMENT
+    assert "ref: ${{ github.sha }}" in controller
+    assert 'os.environ.get("GITHUB_ENVIRONMENT")' not in controller
+    assert "protected_job_environment = protected_release_job_environment(release_workflow_texts)" in controller
+    assert "environment_name=protected_job_environment" in controller
+    assert "RELEASE_PROTECTED_JOB_BINDING_MISSING" in controller
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        "jobs:\\n  deploy-production:\\n    runs-on: ubuntu-latest\\n",
+        "jobs:\\n  deploy-production:\\n    environment: production\\n",
+        "jobs:\\n  different-job:\\n    environment: wow-release\\n",
+        "jobs:\\n  deploy-production:\\n    environment: wow-release\\n    environment: wow-release\\n",
+        "jobs:\\n  deploy-production:\\n    environment:\\n      name: wow-release\\n",
+        "jobs:\\n  deploy-production:\\n    steps:\\n      - run: echo wow-release\\n",
+        "not-jobs:\\n  deploy-production:\\n    environment: wow-release\\n",
+    ],
+)
+def test_missing_wrong_duplicated_or_spoofed_job_binding_fails_closed(workflow):
+    assert protected_release_job_environment({CONTROLLER_FILENAME: workflow}) == ""
+
+
+def test_realistic_protected_job_environment_is_accepted_without_runner_variable():
+    text = (
+        "name: governed\\n"
+        "jobs:\\n"
+        "  prepare:\\n    runs-on: ubuntu-latest\\n"
+        "  deploy-production:\\n    name: release\\n"
+        "    environment: wow-release\\n    runs-on: ubuntu-latest\\n"
+        "    steps:\\n      - run: echo okay\\n"
+        "  audit:\\n    runs-on: ubuntu-latest\\n"
+    )
+    assert protected_release_job_environment({CONTROLLER_FILENAME: text}) == REQUIRED_ENVIRONMENT
 
 
 def test_deployments_api_is_rejected_as_the_journal_cas():
