@@ -660,3 +660,39 @@ def test_failed_reclaim_delete_holds_without_posting():
     assert "RELEASE_JOURNAL_STALE_LOCK_RECLAIM_FAILED" in nxt["blockers"]
     assert _render_posts(nxt) == []
     assert store.refs[lock_ref(SERVICE)] == SHA
+
+
+def test_reclaimer_must_not_delete_a_lock_replaced_after_final_read():
+    """Adversarial safety test: GET then DELETE is not an atomic CAS.
+
+    A concurrent authorized/ref writer can replace the lock after the
+    last `_get(lock)` and before `DELETE`; the current reclaimer would
+    delete someone else's lock and may authorize a new Render POST.
+    Until exclusive writer/immutable ref policy is genuinely attested, a
+    read-delete-create sequence cannot claim service-wide atomicity.
+    """
+    third = "d" * 40
+
+    class ConcurrentRefWriter(MemoryGitHub):
+        def __init__(self):
+            super().__init__()
+            self.simulate_race = False
+            self.lock_reads = 0
+
+        def request(self, method, path, payload):
+            lock_path = "/git/ref/" + lock_ref(SERVICE).removeprefix("refs/")
+            if method == "GET" and path == lock_path and self.simulate_race:
+                self.lock_reads += 1
+                if self.lock_reads == 2:
+                    observed = super().request(method, path, payload)
+                    self.refs[lock_ref(SERVICE)] = third
+                    return observed
+            return super().request(method, path, payload)
+
+    store = ConcurrentRefWriter()
+    _strand_lock_on_sha(store)
+    store.simulate_race = True
+    nxt = _plan_for(store, OTHER, [_deploy(SHA, "live")])
+    assert nxt["action"] == "HOLD"
+    assert store.refs[lock_ref(SERVICE)] == third
+    assert _render_posts(nxt) == []
