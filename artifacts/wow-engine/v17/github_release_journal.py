@@ -306,6 +306,42 @@ def load_workflow_texts(directory: str | Path) -> dict[str, str]:
     return texts
 
 
+def protected_release_job_environment(workflow_texts: Any) -> str:
+    """Read the environment declaration from the checked-out controller job.
+
+    GitHub Actions does not export GITHUB_ENVIRONMENT. GitHub enforces the
+    YAML job environment *before* the runner starts. This confirms the exact
+    checked-out workflow still binds the production job to wow-release; it
+    does NOT independently certify the environment's reviewer settings or
+    exclusive Render credential. Security/Release must attest those settings.
+    """
+    if not isinstance(workflow_texts, dict):
+        return ""
+    source = workflow_texts.get(CONTROLLER_FILENAME)
+    if not isinstance(source, str):
+        return ""
+    lines = source.splitlines()
+    if lines.count("jobs:") != 1:
+        return ""
+    start = [i for i, line in enumerate(lines) if line == "  deploy-production:"]
+    if len(start) != 1 or start[0] <= lines.index("jobs:"):
+        return ""
+    end = next(
+        (i for i in range(start[0] + 1, len(lines))
+         if re.fullmatch(r"  [A-Za-z0-9_-]+:", lines[i])),
+        len(lines),
+    )
+    bindings = [
+        line.removeprefix("    environment:").strip()
+        for line in lines[start[0] + 1:end]
+        if line.startswith("    environment:")
+    ]
+    if len(bindings) != 1:
+        return ""
+    declared = bindings[0].strip("'\"")
+    return declared if declared == REQUIRED_ENVIRONMENT else ""
+
+
 def _commit_sha(deploy: Any) -> str:
     if not isinstance(deploy, dict):
         return ""
