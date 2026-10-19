@@ -549,12 +549,10 @@ jobs:
                   "can_execute": False,
               })
               raise SystemExit(0)
-          # GitHub Actions does not provide GITHUB_ENVIRONMENT. The protected
-          # environment is enforced by GitHub from the job's YAML declaration,
-          # before any job steps or environment-scoped secrets are available.
-          # Verify this checked-out exact-SHA controller still declares it;
-          # environment reviewer policy and credential scope require independent
-          # GitHub settings attestation, not a self-asserted runner variable.
+          # GitHub enforces the job environment from this checked-out workflow
+          # before steps run or environment-scoped secrets are available.
+          # Reviewer policy and credential scope come from the environment API.
+          # A missing reviewer rule is recorded for Security attestation.
           release_workflow_texts = load_workflow_texts(".github/workflows")
           protected_job_environment = protected_release_job_environment(release_workflow_texts)
           if protected_job_environment != REQUIRED_ENVIRONMENT:
@@ -824,8 +822,37 @@ jobs:
                   live_service = render_json("GET", f"/services/{service_path}")
               except RuntimeError:
                   live_service = None
+              environment_status, environment_document = github_status(
+                  "GET", "/environments/wow-release", None
+              )
+              if environment_status != 200:
+                  environment_document = None
+              policy_status, policy_body = github_status(
+                  "GET",
+                  "/environments/wow-release/deployment-branch-policies?per_page=100",
+                  None,
+              )
+              branch_policies = []
+              if policy_status == 200 and isinstance(policy_body, dict):
+                  listed = policy_body.get("branch_policies")
+                  if isinstance(listed, list):
+                      branch_policies = listed
+              secret_status, secret_body = github_status(
+                  "GET", "/environments/wow-release/secrets?per_page=100", None
+              )
+              secret_list_readable = secret_status == 200 and isinstance(secret_body, dict)
+              environment_secret_names = []
+              if secret_list_readable:
+                  environment_secret_names = [
+                      item.get("name")
+                      for item in (secret_body.get("secrets") or [])
+                      if isinstance(item, dict) and isinstance(item.get("name"), str)
+                  ]
               journal_preflight = plan_release_admission(
-                  environment_name=protected_job_environment,
+                  environment_document=environment_document,
+                  branch_policies=branch_policies,
+                  environment_secret_names=environment_secret_names,
+                  secret_list_readable=secret_list_readable,
                   target_sha=target_sha,
                   current_main_sha=latest_main_sha,
                   qa_app_id=qa_app_id,
@@ -847,6 +874,8 @@ jobs:
                       "render_service_id": render_service_id,
                       "blocking_evidence": journal_preflight.get("blockers") or [],
                       "hold_reason": (journal_preflight.get("blockers") or ["RELEASE_JOURNAL_HOLD"])[0],
+                      "environment_reviewers_configured": journal_preflight.get("environment_reviewers_configured"),
+                      "environment_credential_scope": journal_preflight.get("environment_credential_scope"),
                       "repository_blueprint_auto_deploy_trigger": RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER,
                       "live_render_auto_deploy_trigger": journal_preflight.get("live_render_auto_deploy_trigger") or "UNVERIFIED",
                       "release_control_store": "github_ref_journal",
@@ -870,6 +899,16 @@ jobs:
                   })
                   raise SystemExit(0)
               if journal_preflight["action"] == "POST_ONCE":
+                  emit_receipt({
+                      "status": "RELEASE_INTENT_RESERVED_POST_UNCERTAIN",
+                      "target_sha": target_sha,
+                      "intent_ref": journal_preflight.get("intent_ref"),
+                      "lock_ref": journal_preflight.get("lock_ref"),
+                      "environment_reviewers_configured": journal_preflight.get("environment_reviewers_configured"),
+                      "environment_credential_scope": journal_preflight.get("environment_credential_scope"),
+                      "next_action": "The git intent is reserved. If this is the last receipt, do not issue a second Render POST.",
+                      "can_execute": False,
+                  })
                   try:
                       created = guarded_render_post(
                           {"eligible": True},
@@ -1027,6 +1066,9 @@ jobs:
               "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
               "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
               "RELEASE_ENVIRONMENT_RESTRICTION_FAILED",
+              "RELEASE_ENVIRONMENT_REVIEWERS_REQUIRED",
+              "RELEASE_ENVIRONMENT_CREDENTIAL_UNSCOPED",
+              "RELEASE_INTENT_RESERVED_POST_UNCERTAIN",
               "RELEASE_NATIVE_WRITER_ENABLED",
               "RELEASE_OTHER_SHA_DEPLOY_ACTIVE",
               "RELEASE_JOURNAL_SERVICE_LOCK_HELD",

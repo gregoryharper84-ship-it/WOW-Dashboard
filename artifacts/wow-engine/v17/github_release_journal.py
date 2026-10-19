@@ -246,12 +246,91 @@ def role_admission(
     return "PASS"
 
 
-def native_writer_state(service: Any) -> dict[str, Any]:
+def _ref_pattern_matches(pattern: str, ref: str) -> bool:
+    pieces: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            pieces.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            pieces.append("[^/]*")
+            index += 1
+        elif pattern[index] == "?":
+            pieces.append("[^/]")
+            index += 1
+        else:
+            pieces.append(re.escape(pattern[index]))
+            index += 1
+    return re.fullmatch("".join(pieces), ref) is not None
+
+
+def protected_environment_admission(
+    environment_document: Any,
+    branch_policies: Any,
+    *,
+    environment_secret_names: Any = None,
+    secret_list_readable: bool = False,
+) -> str:
+    """Decide from GitHub's environment API, not from a self-set environment variable.
+
+    ``GITHUB_ENVIRONMENT`` is not a default Actions variable. Setting it in the
+    workflow would only repeat the job name and would not prove protection.
+    """
+    if not isinstance(environment_document, dict) or environment_document.get("name") != REQUIRED_ENVIRONMENT:
+        return "RELEASE_ENVIRONMENT_RESTRICTION_FAILED"
+    if environment_document.get("can_admins_bypass") is not False:
+        return "RELEASE_ENVIRONMENT_ADMIN_BYPASS_ENABLED"
+    policy = environment_document.get("deployment_branch_policy")
+    if not isinstance(policy, dict):
+        return "RELEASE_ENVIRONMENT_BRANCH_POLICY_UNRESTRICTED"
+    custom = policy.get("custom_branch_policies") is True
+    protected_only = policy.get("protected_branches") is True
+    if not custom and not protected_only:
+        return "RELEASE_ENVIRONMENT_BRANCH_POLICY_UNRESTRICTED"
+    if custom:
+        if not isinstance(branch_policies, list):
+            return "RELEASE_ENVIRONMENT_BRANCH_POLICY_UNRESTRICTED"
+        names = [
+            str(item.get("name") or "") if isinstance(item, dict) else str(item or "")
+            for item in branch_policies
+        ]
+        if not any(name and _ref_pattern_matches(name, "main") for name in names):
+            return "RELEASE_ENVIRONMENT_BRANCH_POLICY_EXCLUDES_MAIN"
+    if secret_list_readable:
+        names = environment_secret_names if isinstance(environment_secret_names, list) else []
+        if "RENDER_API_KEY" not in names:
+            return "RELEASE_ENVIRONMENT_CREDENTIAL_UNSCOPED"
+    return "PASS"
+
+
+def environment_reviewers_configured(environment_document: Any) -> bool:
+    """Record whether GitHub requires reviewers. Absence is attested, not a code hold.
+
+    The live wow-release environment currently has a branch policy and no
+    required-reviewer rule. Security and Release own that attestation. Treating
+    the absence as a hard hold would block every production run.
+    """
+    if not isinstance(environment_document, dict):
+        return False
+    rules = environment_document.get("protection_rules")
+    if not isinstance(rules, list):
+        return False
+    return any(isinstance(rule, dict) and rule.get("type") == "required_reviewers" for rule in rules)
+
+
+def native_writer_state(service: Any, *, service_id: str | None = None) -> dict[str, Any]:
     if not isinstance(service, dict):
         return {
             "off": False,
             "trigger": "UNVERIFIED",
             "blocker": "RENDER_LIVE_AUTO_DEPLOY_STATE_UNVERIFIED",
+        }
+    if service_id is not None and str(service.get("id") or "") != service_id:
+        return {
+            "off": False,
+            "trigger": str(service.get("autoDeployTrigger") or "UNVERIFIED"),
+            "blocker": "RELEASE_SERVICE_IDENTITY_UNVERIFIED",
         }
     trigger = service.get("autoDeployTrigger")
     off = service.get("autoDeploy") == "no" and trigger == "off"
@@ -487,7 +566,8 @@ def _same_sha(deploys: list, target_sha: str) -> list[dict]:
 
 def plan_release_admission(
     *,
-    environment_name: str,
+    environment_document: Any,
+    branch_policies: Any,
     target_sha: str,
     current_main_sha: str,
     qa_app_id: Any,
@@ -499,17 +579,30 @@ def plan_release_admission(
     deploys: Any,
     journal: RefJournal,
     service_id: str,
+    environment_secret_names: Any = None,
+    secret_list_readable: bool = False,
     recheck_main_sha: Callable[[], str] | None = None,
     recheck_deploys: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Admit at most one pinned Render POST, or a typed hold, or read-only reconcile."""
     deployments_api_is_not_a_cas("git_ref")
-    writer = native_writer_state(live_service)
+    writer = native_writer_state(live_service, service_id=service_id)
     inventory = inventory_render_writers(workflow_texts)
+    credential_scope = (
+        "ENVIRONMENT_SECRET"
+        if secret_list_readable
+        and isinstance(environment_secret_names, list)
+        and "RENDER_API_KEY" in environment_secret_names
+        else "UNVERIFIED_API_FORBIDDEN"
+        if not secret_list_readable
+        else "MISSING"
+    )
     common = {
         "live_render_auto_deploy_trigger": writer["trigger"],
         "repository_blueprint_auto_deploy_trigger": BLUEPRINT_AUTO_DEPLOY_TRIGGER,
         "credential_holders": inventory["credential_holders"],
+        "environment_credential_scope": credential_scope,
+        "environment_reviewers_configured": environment_reviewers_configured(environment_document),
         "release_control_notes": [
             APPLICATION_DATABASE_IS_NOT_RELEASE_CONTROL_SCHEMA,
             RELEASE_CONTROL_SCHEMA_NOT_CERTIFIED,
@@ -517,8 +610,30 @@ def plan_release_admission(
             DEPLOYMENT_API_CAS_BLOCKER,
         ],
     }
-    if str(environment_name or "") != REQUIRED_ENVIRONMENT:
-        return _hold("RELEASE_ENVIRONMENT_RESTRICTION_FAILED", ["RELEASE_ENVIRONMENT_RESTRICTION_FAILED"], **common)
+    if protected_release_job_environment(workflow_texts) != REQUIRED_ENVIRONMENT:
+        return _hold(
+            "RELEASE_ENVIRONMENT_RESTRICTION_FAILED",
+            ["RELEASE_ENVIRONMENT_JOB_BINDING_MISSING"],
+            **common,
+        )
+    environment_code = protected_environment_admission(
+        environment_document,
+        branch_policies,
+        environment_secret_names=environment_secret_names,
+        secret_list_readable=secret_list_readable,
+    )
+    if environment_code != "PASS":
+        status = (
+            environment_code
+            if environment_code
+            in {
+                "RELEASE_ENVIRONMENT_RESTRICTION_FAILED",
+                "RELEASE_ENVIRONMENT_REVIEWERS_REQUIRED",
+                "RELEASE_ENVIRONMENT_CREDENTIAL_UNSCOPED",
+            }
+            else "RELEASE_ENVIRONMENT_RESTRICTION_FAILED"
+        )
+        return _hold(status, [environment_code], **common)
     if not _SHA_RE.fullmatch(str(target_sha or "")) or not _SHA_RE.fullmatch(str(current_main_sha or "")):
         return _hold("STALE_SHA_NO_DEPLOY", ["RENDER_DEPLOY_TARGET_SHA_INVALID"], **common)
     if current_main_sha != target_sha:
@@ -537,7 +652,7 @@ def plan_release_admission(
             if writer["blocker"] == "RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED"
             else "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"
         )
-        return _hold(status, [writer["blocker"]], **common)
+        return _hold(status, [writer["blocker"] or "RENDER_LIVE_AUTO_DEPLOY_STATE_UNVERIFIED"], **common)
     if not inventory["complete"]:
         return _hold(
             "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",

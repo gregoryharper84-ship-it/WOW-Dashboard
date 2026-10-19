@@ -6,6 +6,7 @@ call Render or GitHub and they do not authorize a deployment.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -95,9 +96,17 @@ def _checks(head=HEAD, qa_app=AUTHENTIC_QA_APP_ID, release_app=AUTHENTIC_RELEASE
     ]
 
 
-def _texts(foreign_post: bool = False):
+def _texts(foreign_post: bool = False, *, bind_environment: bool = True):
+    environment_line = "    environment: wow-release\n" if bind_environment else ""
     texts = {
-        CONTROLLER_FILENAME: 'render_json("POST", f"/services/{service}/deploys", payload)\n',
+        CONTROLLER_FILENAME: (
+            "name: wow-v17-render-production-deploy\n"
+            "jobs:\n"
+            "  deploy-production:\n"
+            + environment_line
+            + "    steps:\n"
+            + '      - run: render_json("POST", f"/services/{service}/deploys", payload)\n'
+        ),
         "wow-v17-secret-sync.yml": "RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}\n",
     }
     if foreign_post:
@@ -105,16 +114,31 @@ def _texts(foreign_post: bool = False):
     return texts
 
 
+def _protected_environment():
+    return {
+        "name": "wow-release",
+        "can_admins_bypass": False,
+        "protection_rules": [{"type": "required_reviewers"}, {"type": "branch_policy"}],
+        "deployment_branch_policy": {
+            "protected_branches": False,
+            "custom_branch_policies": True,
+        },
+    }
+
+
 def _plan(store: MemoryGitHub, **overrides):
     evidence = dict(
-        environment_name=REQUIRED_ENVIRONMENT,
+        environment_document=_protected_environment(),
+        branch_policies=[{"name": "main"}],
+        environment_secret_names=["RENDER_API_KEY"],
+        secret_list_readable=True,
         target_sha=SHA,
         current_main_sha=SHA,
         qa_app_id=str(AUTHENTIC_QA_APP_ID),
         release_app_id=str(AUTHENTIC_RELEASE_APP_ID),
         source_head=HEAD,
         role_checks=_checks(),
-        live_service={"autoDeploy": "no", "autoDeployTrigger": "off"},
+        live_service={"id": SERVICE, "autoDeploy": "no", "autoDeployTrigger": "off"},
         workflow_texts=_texts(),
         deploys=[],
         journal=RefJournal(store.request),
@@ -140,10 +164,12 @@ def test_real_controller_uses_github_job_binding_not_nonexistent_runner_environm
     parsed = yaml.safe_load(controller)
     assert parsed["jobs"]["deploy-production"]["environment"] == REQUIRED_ENVIRONMENT
     assert "ref: ${{ github.sha }}" in controller
-    assert 'os.environ.get("GITHUB_ENVIRONMENT")' not in controller
+    assert "GITHUB_ENVIRONMENT" not in controller
     assert "protected_job_environment = protected_release_job_environment(release_workflow_texts)" in controller
-    assert "environment_name=protected_job_environment" in controller
+    assert "environment_document=environment_document" in controller
+    assert "secret_list_readable=secret_list_readable" in controller
     assert "RELEASE_PROTECTED_JOB_BINDING_MISSING" in controller
+    assert "/environments/wow-release" in controller
 
 
 @pytest.mark.parametrize(
@@ -175,6 +201,65 @@ def test_realistic_protected_job_environment_is_accepted_without_runner_variable
     assert protected_release_job_environment({CONTROLLER_FILENAME: text}) == REQUIRED_ENVIRONMENT
 
 
+def test_environment_api_authorization_is_reachable_without_a_runner_environment(monkeypatch):
+    """A missing runner environment variable is not evidence. API evidence can pass."""
+    monkeypatch.delenv("GITHUB_ENVIRONMENT", raising=False)
+    assert "GITHUB_ENVIRONMENT" not in os.environ
+    store = MemoryGitHub()
+
+    admitted = _plan(store, secret_list_readable=False, environment_secret_names=None)
+
+    assert admitted["action"] == "POST_ONCE"
+    assert admitted["environment_credential_scope"] == "UNVERIFIED_API_FORBIDDEN"
+    assert admitted["environment_reviewers_configured"] is True
+    assert admitted["can_execute"] is False
+    workflow = (REPO / ".github/workflows/wow-v17-render-production-deploy.yml").read_text(encoding="utf-8")
+    assert "GITHUB_ENVIRONMENT" not in workflow
+    assert "/environments/wow-release" in workflow
+    real_texts = load_workflow_texts(REPO / ".github" / "workflows")
+    assert protected_release_job_environment(real_texts) == REQUIRED_ENVIRONMENT
+    unbound = _plan(MemoryGitHub(), workflow_texts=_texts(bind_environment=False))
+    assert unbound["blockers"] == ["RELEASE_ENVIRONMENT_JOB_BINDING_MISSING"]
+    assert unbound["status"] == "RELEASE_ENVIRONMENT_RESTRICTION_FAILED"
+
+
+def test_missing_environment_protection_blocks_without_a_ref_create():
+    live_shaped = dict(_protected_environment())
+    live_shaped["protection_rules"] = [{"type": "branch_policy"}]
+    recorded = _plan(MemoryGitHub(), environment_document=live_shaped)
+    assert recorded["action"] == "POST_ONCE"
+    assert recorded["environment_reviewers_configured"] is False
+
+    open_environment = dict(_protected_environment())
+    open_environment["deployment_branch_policy"] = None
+    unrestricted_store = MemoryGitHub()
+    unrestricted = _plan(unrestricted_store, environment_document=open_environment)
+    assert unrestricted["blockers"] == ["RELEASE_ENVIRONMENT_BRANCH_POLICY_UNRESTRICTED"]
+    assert unrestricted_store.calls == []
+
+    excludes_store = MemoryGitHub()
+    excludes = _plan(excludes_store, branch_policies=[{"name": "release/*"}])
+    assert excludes["blockers"] == ["RELEASE_ENVIRONMENT_BRANCH_POLICY_EXCLUDES_MAIN"]
+    assert excludes_store.calls == []
+
+    bypass = dict(_protected_environment())
+    bypass["can_admins_bypass"] = True
+    bypass_store = MemoryGitHub()
+    admin = _plan(bypass_store, environment_document=bypass)
+    assert admin["blockers"] == ["RELEASE_ENVIRONMENT_ADMIN_BYPASS_ENABLED"]
+    assert bypass_store.calls == []
+
+    unscoped_store = MemoryGitHub()
+    unscoped = _plan(
+        unscoped_store,
+        secret_list_readable=True,
+        environment_secret_names=["SOME_OTHER_SECRET"],
+    )
+    assert unscoped["status"] == "RELEASE_ENVIRONMENT_CREDENTIAL_UNSCOPED"
+    assert unscoped["environment_credential_scope"] == "MISSING"
+    assert unscoped_store.calls == []
+
+
 def test_deployments_api_is_rejected_as_the_journal_cas():
     with pytest.raises(JournalProtocolError, match=DEPLOYMENT_API_CAS_BLOCKER):
         deployments_api_is_not_a_cas("github_deployments")
@@ -189,6 +274,8 @@ def test_green_path_reserves_one_intent_and_one_pinned_post():
     assert decision["eligible"] is True
     assert decision["can_execute"] is False
     assert decision["payload"] == {"clearCache": "do_not_clear", "commitId": SHA}
+    assert decision["environment_reviewers_configured"] is True
+    assert decision["environment_credential_scope"] == "ENVIRONMENT_SECRET"
     assert _render_posts(decision) == [decision["payload"]]
     assert decision["credential_holders"] == ["wow-v17-secret-sync.yml"]
     assert store.refs[f"refs/heads/wow-release/intent/{SERVICE}/{SHA}"] == SHA
@@ -256,7 +343,10 @@ def test_concurrent_same_sha_posts_once_and_other_sha_holds_the_lock():
 
 def test_native_writer_environment_and_foreign_post_hold_before_any_ref_create():
     native = MemoryGitHub()
-    decision = _plan(native, live_service={"autoDeploy": "yes", "autoDeployTrigger": "checksPass"})
+    decision = _plan(
+        native,
+        live_service={"id": SERVICE, "autoDeploy": "yes", "autoDeployTrigger": "checksPass"},
+    )
     assert decision["status"] == "RELEASE_NATIVE_WRITER_ENABLED"
     assert decision["blockers"] == ["RENDER_NATIVE_AUTO_DEPLOY_WRITER_ENABLED"]
     assert native.calls == []
@@ -265,8 +355,14 @@ def test_native_writer_environment_and_foreign_post_hold_before_any_ref_create()
     assert unverified["status"] == "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"
     assert unverified["live_render_auto_deploy_trigger"] == "UNVERIFIED"
 
+    wrong_service = _plan(
+        MemoryGitHub(),
+        live_service={"id": "srv-someoneelse", "autoDeploy": "no", "autoDeployTrigger": "off"},
+    )
+    assert wrong_service["blockers"] == ["RELEASE_SERVICE_IDENTITY_UNVERIFIED"]
+
     environment = MemoryGitHub()
-    blocked = _plan(environment, environment_name="production")
+    blocked = _plan(environment, environment_document=None, branch_policies=[])
     assert blocked["status"] == "RELEASE_ENVIRONMENT_RESTRICTION_FAILED"
     assert environment.calls == []
 
