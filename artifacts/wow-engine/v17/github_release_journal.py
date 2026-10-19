@@ -436,11 +436,27 @@ def _deploy_status(deploy: Any) -> str:
     return str(deploy.get("status") or "")
 
 
-class RefJournal:
-    """Compare-and-swap on git refs. ``request`` returns ``(status, body)``."""
+ZERO_OID = "0" * 40
+UPDATE_REFS_MUTATION = (
+    "mutation($repositoryId: ID!, $refUpdates: [RefUpdate!]!) {"
+    " updateRefs(input: {repositoryId: $repositoryId, refUpdates: $refUpdates})"
+    " { clientMutationId } }"
+)
 
-    def __init__(self, request: Callable[..., tuple[int, Any]]):
+
+class RefJournal:
+    """All journal mutations use atomic GitHub GraphQL updateRefs beforeOid CAS."""
+
+    def __init__(
+        self,
+        request: Callable[..., tuple[int, Any]],
+        graphql: Callable[[str, dict], tuple[int, Any]] | None = None,
+        *,
+        repository_id: str = "",
+    ):
         self._request = request
+        self._graphql = graphql
+        self._repository_id = str(repository_id or "")
 
     def _get(self, full_ref: str) -> str | None:
         status, body = self._request("GET", "/git/ref/" + _api_ref(full_ref), None)
@@ -455,49 +471,47 @@ class RefJournal:
             raise JournalProtocolError("RELEASE_JOURNAL_REF_UNREADABLE")
         return sha
 
-    def _create(self, full_ref: str, target_sha: str) -> str:
-        status, _body = self._request(
-            "POST",
-            "/git/refs",
-            {"ref": full_ref, "sha": target_sha},
-        )
-        if status in (200, 201):
-            return "created"
-        if status == 422:
-            return "exists"
-        if status == 403:
+    def _update(self, updates: list[tuple[str, str, str]]) -> str:
+        """Apply all ref mutations atomically; do not retry ambiguous results."""
+        if self._graphql is None or not self._repository_id:
+            raise JournalProtocolError("RELEASE_JOURNAL_CAS_UNAVAILABLE")
+        variables = {
+            "repositoryId": self._repository_id,
+            "refUpdates": [
+                {"name": ref, "beforeOid": before, "afterOid": after, "force": True}
+                for ref, before, after in updates
+            ],
+        }
+        status, body = self._graphql(UPDATE_REFS_MUTATION, variables)
+        if status in (401, 403):
             raise JournalProtocolError("RELEASE_JOURNAL_REF_PERMISSION_DENIED")
-        raise JournalProtocolError("RELEASE_JOURNAL_REF_REJECTED")
+        if status != 200 or not isinstance(body, dict):
+            raise JournalProtocolError("RELEASE_JOURNAL_CAS_UNAVAILABLE")
+        errors = body.get("errors")
+        if errors:
+            err_text = str(errors).lower()
+            if "forbidden" in err_text or "not accessible" in err_text:
+                raise JournalProtocolError("RELEASE_JOURNAL_REF_PERMISSION_DENIED")
+            return "rejected"
+        data = body.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get("updateRefs"), dict):
+            raise JournalProtocolError("RELEASE_JOURNAL_CAS_UNAVAILABLE")
+        return "applied"
 
-    def _reclaim_resolved_lock(
+    def _reclaim_blockers(
         self,
         service: str,
-        lock: str,
         holder: str,
-        sha: str,
         *,
         holder_resolved: Callable[[str], bool] | None,
         consume_only: bool,
-    ) -> list[str] | None:
-        """Move a stale lock to ``sha``. Returns None on success, else hold blockers.
-
-        A lock is stale only when its holder's own intent ref exists (the lock
-        came from this journal) and Render shows the holder's deployment
-        resolved (live or terminal). An uncertain holder is never reclaimed.
-        """
+    ) -> list[str]:
         held = ["RELEASE_JOURNAL_SERVICE_LOCK_HELD"]
         if consume_only or holder_resolved is None:
             return held
         if self._get(intent_ref(service, holder)) != holder or not holder_resolved(holder):
             return held + ["RELEASE_JOURNAL_SERVICE_LOCK_HOLDER_UNRESOLVED"]
-        if self._get(lock) != holder:
-            return held
-        status, _body = self._request("DELETE", "/git/refs/" + _api_ref(lock), None)
-        if status not in (200, 204):
-            return held + ["RELEASE_JOURNAL_STALE_LOCK_RECLAIM_FAILED"]
-        if self._create(lock, sha) == "exists" and self._get(lock) != sha:
-            return held
-        return None
+        return []
 
     def reserve(
         self,
@@ -511,58 +525,44 @@ class RefJournal:
         sha = _sha(target_sha)
         lock = lock_ref(service)
         intent = intent_ref(service, sha)
+        refs = {"lock_ref": lock, "intent_ref": intent}
         reclaimed_from = None
         try:
             current = self._get(lock)
-            if current is None:
-                created = self._create(lock, sha)
-                if created == "exists":
-                    current = self._get(lock)
-                    if current is None:
-                        return _hold(
-                            "RELEASE_JOURNAL_SERVICE_LOCK_HELD",
-                            ["RELEASE_JOURNAL_SERVICE_LOCK_HELD"],
-                            lock_ref=lock,
-                            intent_ref=intent,
-                        )
-            if current is not None and current != sha:
-                refusal = self._reclaim_resolved_lock(
-                    service,
-                    lock,
-                    current,
-                    sha,
-                    holder_resolved=holder_resolved,
-                    consume_only=consume_only,
-                )
-                if refusal is not None:
-                    return _hold(
-                        "RELEASE_JOURNAL_SERVICE_LOCK_HELD",
-                        refusal,
-                        lock_ref=lock,
-                        intent_ref=intent,
-                        lock_holder_sha=current,
-                    )
-                reclaimed_from = current
             existing = self._get(intent)
-            if existing == sha:
-                return _reconcile("", lock_ref=lock, intent_ref=intent)
-            if existing:
-                return _hold(
-                    "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
-                    ["RELEASE_JOURNAL_INTENT_SHA_MISMATCH"],
-                    lock_ref=lock,
-                    intent_ref=intent,
+            if existing not in (None, sha):
+                return _hold("RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+                             ["RELEASE_JOURNAL_INTENT_SHA_MISMATCH"], **refs)
+            intent_update = [] if existing == sha else [(intent, ZERO_OID, sha)]
+            if current is None:
+                if self._update([(lock, ZERO_OID, sha)] + intent_update) == "rejected":
+                    holder = self._get(lock)
+                    if holder == sha and self._get(intent) == sha:
+                        return _reconcile("", **refs)
+                    return _hold("RELEASE_JOURNAL_SERVICE_LOCK_HELD",
+                                 ["RELEASE_JOURNAL_SERVICE_LOCK_HELD", "RELEASE_JOURNAL_CAS_REJECTED"],
+                                 lock_holder_sha=holder, **refs)
+            elif current != sha:
+                blockers = self._reclaim_blockers(
+                    service, current, holder_resolved=holder_resolved, consume_only=consume_only
                 )
-            created_intent = self._create(intent, sha)
-            if created_intent == "exists" and self._get(intent) != sha:
-                return _hold(
-                    "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
-                    ["RELEASE_JOURNAL_REF_REJECTED"],
-                    lock_ref=lock,
-                    intent_ref=intent,
-                )
-            if created_intent == "exists" or consume_only:
-                return _reconcile("", lock_ref=lock, intent_ref=intent)
+                if not blockers and self._get(lock) != current:
+                    blockers = ["RELEASE_JOURNAL_SERVICE_LOCK_HELD"]
+                if blockers:
+                    return _hold("RELEASE_JOURNAL_SERVICE_LOCK_HELD",
+                                 blockers, lock_holder_sha=current, **refs)
+                if self._update([(lock, current, sha)] + intent_update) == "rejected":
+                    return _hold("RELEASE_JOURNAL_SERVICE_LOCK_HELD",
+                                 ["RELEASE_JOURNAL_SERVICE_LOCK_HELD", "RELEASE_JOURNAL_STALE_LOCK_RECLAIM_FAILED"],
+                                 lock_holder_sha=current, **refs)
+                reclaimed_from = current
+            elif intent_update:
+                # A lock without its intent is an incomplete prior reservation.
+                # Never treat it as permission for a second Render POST.
+                return _hold("RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
+                             ["RELEASE_JOURNAL_LOCK_WITHOUT_INTENT"], **refs)
+            if existing == sha or consume_only:
+                return _reconcile("", **refs)
             return {
                 "action": "POST_ONCE",
                 "eligible": True,
@@ -578,16 +578,10 @@ class RefJournal:
                 "release_control_store": "github_ref_journal",
             }
         except JournalProtocolError as exc:
-            code = str(exc)
-            return _hold(
-                "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
-                [code],
-                lock_ref=lock,
-                intent_ref=intent,
-            )
+            return _hold("RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY", [str(exc)], **refs)
 
     def release_lock(self, service_id: str, target_sha: str) -> dict[str, Any]:
-        """Delete the service lock only if it still points at this SHA and the intent remains."""
+        """Release only our current lock via expected-holder CAS, never bare DELETE."""
         try:
             service = _service(service_id)
             sha = _sha(target_sha)
@@ -598,16 +592,15 @@ class RefJournal:
         try:
             intent_sha = self._get(intent)
             lock_sha = self._get(lock)
+            if lock_sha != sha:
+                return {"released": False, "reason": "LOCK_NOT_OURS", "can_execute": False}
+            if intent_sha not in (None, sha):
+                return {"released": False, "reason": "INTENT_ABSENT", "can_execute": False}
+            if self._update([(lock, sha, ZERO_OID)]) == "rejected":
+                return {"released": False, "reason": "LOCK_NOT_OURS", "can_execute": False}
         except JournalProtocolError as exc:
             return {"released": False, "reason": str(exc), "can_execute": False}
-        if lock_sha != sha:
-            return {"released": False, "reason": "LOCK_NOT_OURS", "can_execute": False}
-        if intent_sha not in (None, sha):
-            return {"released": False, "reason": "INTENT_ABSENT", "can_execute": False}
-        status, _body = self._request("DELETE", "/git/refs/" + _api_ref(lock), None)
-        if status in (200, 204):
-            return {"released": True, "reason": "RELEASED", "can_execute": False}
-        return {"released": False, "reason": "LOCK_DELETE_FAILED", "can_execute": False}
+        return {"released": True, "reason": "RELEASED", "can_execute": False}
 
 
 def _same_sha(deploys: list, target_sha: str) -> list[dict]:
