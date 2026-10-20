@@ -75,22 +75,18 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "journal_preflight = plan_release_admission(" in text
     assert "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY" in text
     verify = (Path(__file__).resolve().parents[3] / ".github/workflows/wow-verify.yml").read_text(encoding="utf-8")
-    dispatch = verify.split("dispatch-protected-deploy:", 1)[1]
-    qualified_dispatch = (
-        'gh workflow run wow-v17-render-production-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main'
-    )
-    assert qualified_dispatch in dispatch
-    assert "gh workflow run wow-v17-render-production-deploy.yml --ref main" not in dispatch
-    assert 'github.event_name == \'workflow_dispatch\'' in dispatch
-    assert 'WOW_CAN_EXECUTE: "false"' in dispatch
-    assert "GH_TOKEN: ${{ github.token }}" in dispatch
-    assert "permissions:\n      actions: write" in dispatch
-    assert "needs: [required-three, additional-required]" in dispatch
-    assert (
-        "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' "
-        "&& needs.required-three.result == 'success' && needs.additional-required.result == 'success'"
-    ) in dispatch
-    assert "uses: actions/checkout" not in dispatch
+    # Only the August-era required CI producers remain here; an extra
+    # workflow_dispatch forwarding job previously started a second deploy run.
+    assert "name: WOW required-three regression" in verify
+    assert "name: WOW additional required regression" in verify
+    assert "dispatch-protected-deploy:" not in verify
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in verify
+    assert "actions: write" not in verify
+    # The existing protected workflow_run controller remains the sole automatic
+    # Render admission path, with exact-SHA/QA/Release and writer gates intact.
+    assert 'workflows: ["wow-verify"]' in text
+    assert "workflow_run:" in text
+    assert "RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED" in text
 
 
 def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():
