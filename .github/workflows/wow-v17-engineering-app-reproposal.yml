@@ -1,0 +1,90 @@
+name: wow-v17-engineering-app-reproposal
+
+# Bootstrap for #1701 (owner break-glass, see PR body). Manually dispatched by the
+# repository owner from protected main only. Mints a fresh wow-engineering App
+# installation token and runs artifacts/wow-engine/v17/engineering_app_reproposal.py,
+# which re-proposes ONLY the owner-pinned exact source heads (#1683, #1716) as a
+# wow-engineering[bot]-authored DRAFT PR. Dry run unless `write` is true.
+# Never merges, approves, deploys or attests QA/Release. can_execute=false.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_pr:
+        description: Pinned source PR to re-propose
+        required: true
+        type: choice
+        options: ["1683", "1716"]
+      expected_head:
+        description: Exact 40-char source head SHA (must equal the pinned head)
+        required: true
+        type: string
+      write:
+        description: Create the draft PR (false = preflight only)
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-engineering-app-reproposal-${{ inputs.source_pr }}
+  cancel-in-progress: false
+
+jobs:
+  repropose:
+    if: github.ref == 'refs/heads/main' && github.actor == github.repository_owner
+    environment: wow-engineering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Validate inputs
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::EXPECTED_HEAD_INVALID"; exit 1
+          fi
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING"; exit 1
+          fi
+
+      - name: Re-propose pinned source (dry run unless write)
+        shell: bash
+        working-directory: artifacts/wow-engine
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          SOURCE_PR: ${{ inputs.source_pr }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          WRITE: ${{ inputs.write }}
+        run: |
+          set -euo pipefail
+          args=(--source-pr "$SOURCE_PR" --expected-head "$EXPECTED_HEAD")
+          if [ "$WRITE" = "true" ]; then args+=(--write); fi
+          python -m v17.engineering_app_reproposal "${args[@]}" | tee "$RUNNER_TEMP/receipt.json"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/receipt.json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
