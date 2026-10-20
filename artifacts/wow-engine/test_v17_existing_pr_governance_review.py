@@ -208,7 +208,16 @@ def test_trusted_consumers_use_dedicated_existing_pr_verifier():
     assert '"wow-v17-spread-forward-shadow|.github/workflows/wow-v17-spread-forward-shadow.yml"' in release
     assert "Trusted exact-head engineering governance" in release
     assert "Lead/Triage/Engineering/Independent Review/QA governance receipt" not in release
-    assert "active independent allowlisted APPROVED review" in release
+    # Verify both release classes rather than matching obsolete agent-prompt text.
+    assert 'if [ "${cert_mode:-}" != "TRUST_ROOT_BOOTSTRAP" ] && [ "$GOVERNANCE_GATE" != "trusted_gate_green" ]; then' in release
+    assert "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN" in release
+    assert 'extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")' in release
+    assert 'extra_args+=(--live-checks-json "$live_checks")' in release
+    assert 'cert_mode=$(python -c' in release
+    assert "TRUST_ROOT_BOOTSTRAP" in release
+    assert "An ordinary receipt still requires the trusted governance check and an allowlisted" in release
+    assert "exact-head approval." in release
+    assert "Independent QA and Release Authority." in release
     for text in (gate, morning, release):
         assert "--live-checks-json" in text
         assert "TRUST_ROOT_BOOTSTRAP" in text
