@@ -111,15 +111,16 @@ def test_manual_and_push_ci_keep_the_required_regression_producers():
     assert "name: WOW governed probability backend" in engine_verify
 
 
-def test_morning_green_keeps_its_separate_single_controller_handoff():
+def test_morning_green_resumes_ci_and_uses_the_single_workflow_run_handoff():
     repo_root = Path(__file__).resolve().parents[3]
     morning_green = (
         repo_root / ".github" / "workflows" / "wow-v17-morning-green-continuation.yml"
     ).read_text(encoding="utf-8")
+    deploy = _workflow_text()
 
     assert "gh workflow run wow-verify.yml --repo \"$GITHUB_REPOSITORY\" --ref main" in morning_green
-    assert "gh workflow run wow-v17-render-production-deploy.yml --repo \"$GITHUB_REPOSITORY\" --ref main" in morning_green
-    assert "protected_release_handoff" not in morning_green
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in morning_green
+    assert 'workflows: ["wow-verify"]' in deploy
 
 
 def test_repeated_attempts_remain_inside_the_protected_single_writer_fence():
