@@ -157,7 +157,7 @@ def test_journal_preflight_holds_before_any_render_post():
     assert text.index('if journal_preflight["action"] == "HOLD":') < text.index(
         "created = guarded_render_post("
     )
-    assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"' in text
+    assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "off"' in text
     assert "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY" in text
     assert "RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED" in text
     assert "service_lock_release_cas_verified" not in text
@@ -200,8 +200,8 @@ def test_preflight_distinguishes_blueprint_from_live_render_writer_state():
         repo_root / "artifacts/wow-engine/v17/secret_sync.py"
     ).read_text(encoding="utf-8")
 
-    assert 'autoDeployTrigger: "checksPass"' in render
-    assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"' in _workflow_text()
+    assert 'autoDeployTrigger: "checksPass"' not in render
+    assert 'RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "off"' in _workflow_text()
     assert "RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED" in _workflow_text()
     assert '"render_service_id": "srv-da7sa9gu01pc73brt80g"' in manifest
     assert "wow-v17-secret-sync" in sync_workflow
