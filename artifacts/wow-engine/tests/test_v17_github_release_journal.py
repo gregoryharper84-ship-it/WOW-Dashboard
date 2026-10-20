@@ -313,10 +313,18 @@ def test_repository_writer_inventory_and_workflow_keep_release_safeguards():
     inventory = inventory_render_writers(texts)
     assert inventory["complete"] is True
     assert inventory["foreign_posts"] == []
-    assert {
-        "wow-v17-secret-sync.yml",
-        "wow-v17-mcp-remote-acceptance.yml",
-    } <= set(inventory["credential_holders"])
+    # The production deploy credential must not be handed to test/sync workflows.
+    # This only removes known repository holders; it does NOT establish provider
+    # credential exclusivity or authorize a release.
+    assert inventory["credential_holders"] == []
+    assert journal_module.RENDER_CREDENTIAL_SCOPE_ATTESTED is False
+    sync_text = texts["wow-v17-secret-sync.yml"]
+    mcp_text = texts["wow-v17-mcp-remote-acceptance.yml"]
+    assert "secrets.WOW_SECRET_SYNC_RENDER_API_KEY" in sync_text
+    assert "secrets.WOW_MCP_AUTH_TOKEN" in mcp_text
+    assert "secrets.RENDER_API_KEY" not in sync_text
+    assert "secrets.RENDER_API_KEY" not in mcp_text
+    assert "RENDER_API_KEY" not in mcp_text
     workflow = yaml.safe_load((REPO / ".github/workflows" / CONTROLLER_FILENAME).read_text())
     job = workflow["jobs"]["deploy-production"]
     assert job["environment"] == "wow-release"
