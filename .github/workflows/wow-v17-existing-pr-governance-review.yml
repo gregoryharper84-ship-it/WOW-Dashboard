@@ -61,7 +61,7 @@ jobs:
           mkdir -p .governance-review-evidence
           pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
           state=$(jq -r '.state // ""' <<<"$pr_json")
-          draft=$(jq -r '.draft // true' <<<"$pr_json")
+          draft=$(jq -r 'if (.draft | type) == "boolean" then (.draft | tostring) else "unknown" end' <<<"$pr_json")
           head_sha=$(jq -r '.head.sha // ""' <<<"$pr_json")
           head_ref=$(jq -r '.head.ref // ""' <<<"$pr_json")
           head_repo=$(jq -r '.head.repo.full_name // ""' <<<"$pr_json")
