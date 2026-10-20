@@ -198,6 +198,8 @@ def _bootstrap_pick_payload(raw: str) -> dict[str, Any]:
     direction = str(value["direction"]).strip().upper()
     if direction not in {"MORE", "LESS"}:
         raise BootstrapConfigError("BOOTSTRAP_DIRECTION_INVALID", "bootstrap direction must be MORE or LESS")
+    if isinstance(value["line"], bool):
+        raise BootstrapConfigError("BOOTSTRAP_LINE_INVALID", "bootstrap exact line invalid")
     try:
         exact_line = float(value["line"])
     except (TypeError, ValueError) as exc:

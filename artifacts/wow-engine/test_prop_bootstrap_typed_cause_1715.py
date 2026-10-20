@@ -44,6 +44,8 @@ _DROP = object()
         (json.dumps([1, 2]), "BOOTSTRAP_JSON_NOT_OBJECT"),
         (json.dumps(_candidate(direction="OVER")), "BOOTSTRAP_DIRECTION_INVALID"),
         (json.dumps(_candidate(line="abc")), "BOOTSTRAP_LINE_INVALID"),
+        (json.dumps(_candidate(line=True)), "BOOTSTRAP_LINE_INVALID"),
+        (json.dumps(_candidate(line=False)), "BOOTSTRAP_LINE_INVALID"),
         (json.dumps(_candidate(line="Infinity")), "BOOTSTRAP_LINE_NONFINITE"),
         (json.dumps(_candidate(event_start_time="2099-10-04T17:00:00")), "BOOTSTRAP_EVENT_START_INVALID"),
         (json.dumps(_candidate(event_start_time="not-a-time")), "BOOTSTRAP_EVENT_START_INVALID"),
@@ -87,6 +89,18 @@ def _run_bootstrap(monkeypatch, caplog, raw):
     )
     assert result is None
     return "\n".join(r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("boolean_line", [True, False])
+def test_boolean_line_fails_before_network_and_redacts_values(monkeypatch, caplog, boolean_line):
+    raw = json.dumps(_candidate(line=boolean_line))
+    text = _run_bootstrap(monkeypatch, caplog, raw)
+    assert "reason=BOOTSTRAP_CONFIG_INVALID" in text
+    assert "error_type=BootstrapConfigError" in text
+    assert "cause=BOOTSTRAP_LINE_INVALID" in text
+    assert "can_execute=false" in text
+    for sensitive in (SENTINEL_PLAYER, SENTINEL_EVENT, "key-not-secret"):
+        assert sensitive not in text
 
 
 def test_stale_fixture_logs_typed_cause_without_values(monkeypatch, caplog):
