@@ -127,7 +127,7 @@ def test_journal_preflight_holds_before_any_render_post():
     assert "release_app_id = str(AUTHENTIC_RELEASE_APP_ID)" in text
 
 
-def test_secret_sync_request_enters_only_protected_controller_after_durable_artifact():
+def test_secret_sync_cannot_dispatch_the_protected_release_controller():
     text = _workflow_text()
     sync_workflow = (
         Path(__file__).resolve().parents[3] / ".github/workflows/wow-v17-secret-sync.yml"
@@ -139,9 +139,9 @@ def test_secret_sync_request_enters_only_protected_controller_after_durable_arti
     assert "validate_secret_sync_release_request(" in text
     assert "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY" in text
     assert "source_sha != target_sha" in text
-    assert sync_workflow.index("Persist typed secret-change release request") < sync_workflow.index(
-        "Dispatch protected Render release controller"
-    )
+    assert "actions: write" not in sync_workflow
+    assert "--release-request-file" not in sync_workflow
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in sync_workflow
 
 
 def test_preflight_distinguishes_blueprint_from_live_render_writer_state():
