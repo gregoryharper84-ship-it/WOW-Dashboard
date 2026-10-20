@@ -21,7 +21,7 @@ SECRET_BRACKET_REF_RE = re.compile(r"\bsecrets\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\
 
 CONTROL_PLANE_KEYS = {
     "RENDER_API_KEY",
-    "WOW_SECRET_SYNC_RENDER_API_KEY",
+    "WOW_RENDER_SYNC_KEY",
     "WOW_MCP_AUTH_TOKEN",
     "WOW_GITHUB_SECRET_SYNC_TOKEN",
     "SUPABASE_SERVICE_ROLE_KEY",
@@ -352,11 +352,11 @@ def run_sync(
     release_request_file: Path | None = None,
 ) -> SyncSummary:
     env = dict(os.environ if environ is None else environ)
-    render_api_key = str(env.get("WOW_SECRET_SYNC_RENDER_API_KEY", ""))
+    render_api_key = str(env.get("WOW_RENDER_SYNC_KEY", ""))
     if not render_api_key:
         raise SecretSyncError(
             "BOOTSTRAP_SYNC_RENDER_CREDENTIAL_UNCONFIGURED",
-            "WOW_SECRET_SYNC_RENDER_API_KEY must be configured for the isolated secret-sync principal",
+            "WOW_RENDER_SYNC_KEY must be configured for the isolated secret-sync principal",
         )
 
     reverse_token = str(env.get("WOW_GITHUB_SECRET_SYNC_TOKEN", ""))
