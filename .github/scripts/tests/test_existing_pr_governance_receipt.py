@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import textwrap
 
 import pytest
 
@@ -41,6 +42,116 @@ def test_certifier_workflow_uses_no_claude_or_write_permissions():
     assert "actions: write" not in workflow
     assert "contents: write" not in workflow
     assert "pull-requests: write" not in workflow
+
+
+@pytest.fixture
+def run_identity_step(tmp_path):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    step = workflow.split("      - name: Resolve exact PR identity and incident\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    stub = """
+gh() {
+  if [ "$*" = "api /repos/${GITHUB_REPOSITORY}/pulls/1822" ]; then
+    printf '%s\\n' "$TEST_PR_JSON"
+  elif [ "$*" = "issue view 1806 --repo ${GITHUB_REPOSITORY} --json number,title,state,url" ]; then
+    printf '%s\\n' '{"number":1806}'
+  else
+    echo "UNEXPECTED_GH_INVOCATION:$*" >&2
+    return 1
+  fi
+}
+"""
+
+    def run(pr, **overrides):
+        env = os.environ | {
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_OUTPUT": str(tmp_path / "outputs"),
+            "EVENT_PR": "1822",
+            "INPUT_PR": "",
+            "INPUT_INCIDENT": "",
+            "TEST_PR_JSON": json.dumps(pr),
+        } | overrides
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", stub + script],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    return run
+
+
+@pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({"draft": False}, "false"),
+        ({"draft": True}, "true"),
+        ({}, "unknown"),
+        ({"draft": None}, "unknown"),
+        ({"draft": "false"}, "unknown"),
+        ({"draft": "true"}, "unknown"),
+        ({"draft": 0}, "unknown"),
+        ({"draft": []}, "unknown"),
+        ({"draft": {}}, "unknown"),
+    ],
+)
+def test_workflow_draft_parsing_is_boolean_only(fields, expected, run_identity_step):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assignment = next(line.strip() for line in workflow.splitlines() if line.strip().startswith("draft=$("))
+    parsed = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", assignment + '\nprintf "%s" "$draft"'],
+        env=os.environ | {"pr_json": json.dumps(fields)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert parsed.returncode == 0, parsed.stderr
+    assert parsed.stdout == expected
+
+    pr = evidence()["pr"]
+    pr.pop("draft")
+    pr.update(fields, body="Closes #1806")
+    result = run_identity_step(pr)
+    if expected == "false":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert "EXISTING_PR_NOT_READY_FOR_REVIEW" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "reason"),
+    [
+        (("state",), "closed", "EXISTING_PR_NOT_OPEN"),
+        (("base", "ref"), "other", "EXISTING_PR_BASE_NOT_CANONICAL_MAIN"),
+        (("base", "repo", "full_name"), "fork/WOW-Dashboard", "EXISTING_PR_BASE_NOT_CANONICAL_MAIN"),
+        (("head", "repo", "full_name"), "fork/WOW-Dashboard", "EXISTING_PR_HEAD_REPOSITORY_MISMATCH"),
+        (("head", "sha"), "not-a-sha", "EXISTING_PR_IDENTITY_INCOMPLETE"),
+        (("head", "ref"), "", "EXISTING_PR_IDENTITY_INCOMPLETE"),
+        (("body",), "", "EXISTING_PR_INCIDENT_ID_MISSING"),
+    ],
+)
+def test_non_draft_workflow_preserves_identity_guards(path, value, reason, run_identity_step):
+    pr = evidence()["pr"]
+    pr["body"] = "Closes #1806"
+    target = pr
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    result = run_identity_step(pr)
+
+    assert result.returncode == 1
+    assert reason in result.stderr
+
+
+def test_workflow_rejects_invalid_pr_number(run_identity_step):
+    result = run_identity_step(evidence()["pr"], EVENT_PR="invalid")
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_NUMBER_INVALID" in result.stderr
 
 
 def evidence(*, author=None, review_state="APPROVED", review_sha=HEAD):
