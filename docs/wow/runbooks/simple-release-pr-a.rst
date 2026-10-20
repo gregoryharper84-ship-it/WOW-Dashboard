@@ -57,6 +57,50 @@ This session could not perform authenticated environment/ruleset CLI reads:
 environment/ruleset administration read endpoint. No live reviewer, environment
 rule, credential isolation, App capability or deployment was certified.
 
+Owner CLI observations — October 20, review 6298495522
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The owner subsequently supplied these authenticated CLI observations (reported
+evidence, not a fresh capture independently performed by this coding session):
+
+* ``gh api repos/gregoryharper84-ship-it/WOW-Dashboard/environments/wow-release --jq '{name, protection_rules, deployment_branch_policy}'``
+  returned ``wow-release`` with only a ``branch_policy`` protection rule and
+  ``custom_branch_policies=true``. No ``required_reviewers`` rule was configured.
+* ``gh secret list -R "$REPO" --env wow-release`` showed
+  ``WOW_RELEASE_APP_PRIVATE_KEY``; ``gh secret list -R "$REPO"`` showed
+  repository-scoped ``RENDER_API_KEY``. Only names/scopes were supplied; no
+  credential values were supplied or retrieved.
+
+Route A is unavailable: native environment human review is not configured.
+CODEOWNERS or repository owner/admin permissions do not configure an environment
+reviewer and cannot substitute for an independent run approval. Route B is also
+unavailable for authorization until independently verified: the reported output
+does not evidence an enabled existing-Release-App custom protection rule.
+The custom deployment-protection-rule endpoint was not reported; do not turn
+that missing evidence into a claim that its list is empty. Presence of the
+App private-key secret does not prove a configured rule or independent decision.
+Both routes remain unavailable, not implicitly selected alternatives.
+
+The negative fixture transcribes the reported branch-only fields and removes
+unreported bypass, custom-rule and approval evidence. Synthetic environment IDs
+and branch-policy details are test scaffolding, not additional live observations.
+Separate conditional cases isolate missing versus empty custom-rule readback;
+neither conditional case attests live settings. Existing legacy five-check
+recognition still does not establish a release-authorization route.
+
+#1875 remains open and owns credential-isolation/writer evidence. The reported
+repository secret is not proof of protected-environment or provider-side scope.
+This follow-up proposes no environment-rule or secret migration: do not move,
+copy, delete or rename secrets, change workflow secret references, or alter any
+writer. Any separately authorized proposal must enumerate exact workflow secret
+references, the full actual writer/credential-holder inventory (including external
+and provider-side writers), authenticated scope evidence and an explicit rollback
+before mutation. No blind repository-secret movement, self-review or bypass.
+Production mode and ``RENDER_CREDENTIAL_SCOPE_ATTESTED=False`` remain unchanged.
+
+Unsupported authoritative evidence
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 The documented environment GET schema does not expose ``can_admins_bypass``.
 Absence is UNKNOWN, never false. The candidate returns
 ``ENVIRONMENT_BYPASS_UNPROVEN`` in that case, including for otherwise valid

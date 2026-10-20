@@ -165,6 +165,65 @@ def reported_live_legacy():
     return github
 
 
+def reported_branch_only_environment(github):
+    """Owner CLI fields from review 6298495522; other identity fields are synthetic."""
+    env = github.data[ENV]
+    env["name"] = "wow-release"
+    env["protection_rules"] = [{"type": "branch_policy"}]
+    env["deployment_branch_policy"]["custom_branch_policies"] = True
+    del env["can_admins_bypass"]
+    # The owner did not report the custom-rule endpoint or run approval history.
+    del github.data[ENV + "/deployment_protection_rules"]
+    del github.data[RUN + "/approvals"]
+    return github
+
+
+def test_owner_reported_branch_only_environment_does_not_establish_authorization():
+    github = reported_branch_only_environment(GitHub())
+    result = github.inspect()
+    assert result["policy_evidence_valid"] is False
+    assert result["authorization_route"] is None
+    assert result["blockers"] == ["ENVIRONMENT_BYPASS_UNPROVEN"]
+    assert RUN + "/approvals" not in github.calls
+
+
+def test_branch_only_environment_does_not_infer_release_app_from_missing_evidence():
+    github = reported_branch_only_environment(GitHub())
+    # Conditional isolation of the next gate, NOT an owner-attested bypass setting.
+    github.data[ENV]["can_admins_bypass"] = False
+    result = github.inspect()
+    assert result["policy_evidence_valid"] is False
+    assert result["authorization_route"] is None
+    assert result["blockers"] == [
+        "GITHUB_EVIDENCE_UNREADABLE:" + ENV + "/deployment_protection_rules",
+    ]
+    assert ROOT + "/collaborators/independent-reviewer/permission" not in github.calls
+    assert MAIN_CHECKS not in github.calls
+
+
+def test_branch_only_environment_with_conditionally_empty_custom_rules_has_no_route():
+    github = reported_branch_only_environment(GitHub())
+    # Separate hypothetical readback; absence was not proved by the owner CLI.
+    github.data[ENV]["can_admins_bypass"] = False
+    github.data[ENV + "/deployment_protection_rules"] = {
+        "total_count": 0, "custom_deployment_protection_rules": [],
+    }
+    result = github.inspect()
+    assert result["policy_evidence_valid"] is False
+    assert result["authorization_route"] is None
+    assert result["blockers"] == ["RELEASE_AUTHORIZATION_ROUTE_AMBIGUOUS_OR_MISSING"]
+
+
+def test_owner_reported_environment_does_not_promote_valid_legacy_checks():
+    github = reported_branch_only_environment(reported_live_legacy())
+    result = github.inspect()
+    assert result["observed_policy"] == candidate.LEGACY
+    assert result["policy_evidence_valid"] is True
+    assert result["authorization_route"] is None
+    assert ENV not in github.calls
+    assert journal.RENDER_CREDENTIAL_SCOPE_ATTESTED is False
+
+
 def test_reported_live_legacy_is_recognized_without_asserting_candidate_readiness():
     github = reported_live_legacy()
     result = github.inspect()
