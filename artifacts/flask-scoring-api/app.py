@@ -22894,6 +22894,15 @@ def gate_engine_run():
     NOTE: This endpoint is a data/classification layer only.
     Final approval remains with WOW/LLP. can_approve_bets = false.
     """
+    # Import manifest audit contract before any return branch. A local import
+    # below the session-ledger failure branch causes UnboundLocalError while
+    # composing its fail-closed invocation audit (#1914, CI gate-engine route).
+    from gate_engine.wow_runtime_manifest import (
+        determine_required_skills as _det_req_skills,
+        resolve_lowest_ceiling    as _resolve_ceiling,
+        MANIFEST_GOVERNANCE_HASH,
+    )
+
     body = request.get_json(silent=True) or {}
 
     # -------------------------------------------------------------------
@@ -23504,11 +23513,6 @@ def gate_engine_run():
     # Must be present in every 200 response regardless of terminal outcome.
     # The GPT treats a response without this block as incomplete runtime evidence
     # and returns NO_PLAY.
-    from gate_engine.wow_runtime_manifest import (
-        determine_required_skills as _det_req_skills,
-        resolve_lowest_ceiling    as _resolve_ceiling,
-        MANIFEST_GOVERNANCE_HASH,
-    )
     # Use the full row set (prop + outright) so the audit correctly reflects
     # which skills were required by the entire request.
     _skills_req  = _det_req_skills(_all_raw_rows_for_audit)
