@@ -385,6 +385,8 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
                 "C: ${{ secrets.RUNDOWN_API_KEY }}",
                 "D: ${{ secrets.WOW_ACTION_API_KEY }}",
                 "E: ${{ secrets.RENDER_API_KEY }}",
+                "F: ${{ secrets.WOW_MCP_AUTH_TOKEN }}",
+                "G: ${{ secrets.WOW_SECRET_SYNC_RENDER_API_KEY }}",
             ]
         ),
         encoding="utf-8",
@@ -396,6 +398,8 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
             "RUNDOWN_API_KEY": "must-not-win",
             "WOW_ACTION_API_KEY": "must-not-copy",
             "RENDER_API_KEY": "must-not-copy",
+            "WOW_MCP_AUTH_TOKEN": "must-not-copy",
+            "WOW_SECRET_SYNC_RENDER_API_KEY": "must-not-copy",
         }
     )
     github = FakeGitHub()
