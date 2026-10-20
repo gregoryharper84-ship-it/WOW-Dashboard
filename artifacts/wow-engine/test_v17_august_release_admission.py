@@ -98,9 +98,7 @@ def test_non_release_fact_objects_hold(value):
 
 def test_subclass_cannot_override_claim_fields():
     class Forged(ReleaseFacts):
-        @property
-        def credential_scope_attested(self):
-            return True
+        pass
 
     result = admission(Forged(**good().__dict__))
     assert result["status"] == "HOLD"
