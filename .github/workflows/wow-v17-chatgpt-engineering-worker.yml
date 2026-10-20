@@ -35,7 +35,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-implementation-single-writer
   cancel-in-progress: false
 
 jobs:
@@ -153,6 +153,13 @@ jobs:
               target_reason="Domain-scoped exact P0 target."
               target_hold="DOMAIN_SCOPED_P0_LEASE"
             elif [ "$severity" = "P1" ] && [ "$lane" = "STANDARD" ]; then
+              python artifacts/wow-engine/v17/engineering_dispatch_queue.py check-standard \
+                --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+                --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+                --incident "$TARGET_INCIDENT" > /dev/null || {
+                echo "::error::STANDARD_TARGET_CONFLICTS_WITH_OPEN_RAPID_P0:$TARGET_INCIDENT"
+                exit 1
+              }
               [ -z "$lease_group" ] || [ "$lease_group" = "GLOBAL" ] || {
                 echo "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE:$TARGET_INCIDENT" >&2; exit 1;
               }
@@ -175,8 +182,10 @@ jobs:
               terminal_authority:"V17_TERMINAL_REDUCER"
             }')
           else
-            jq '.records |= map(select(.severity != "P0" or .execution_lane != "RAPID"))' \
-              "$RUNNER_TEMP/wow-dispatch-queue.json" > "$RUNNER_TEMP/wow-standard-dispatch-queue.json"
+            python artifacts/wow-engine/v17/engineering_dispatch_queue.py standard \
+              --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+              --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+              --output "$RUNNER_TEMP/wow-standard-dispatch-queue.json" > /dev/null
             decision=$(python artifacts/wow-engine/v17/engineering_agent_team.py dual-priority \
               --ledger "$RUNNER_TEMP/wow-standard-dispatch-queue.json")
           fi

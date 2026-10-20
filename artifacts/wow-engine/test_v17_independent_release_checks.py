@@ -116,7 +116,7 @@ def test_trust_root_pr_needs_owner_approval_of_this_exact_head():
     ev["reviews"] = [{"user": OWNER, "state": "APPROVED", "commit_id": OLD, "submitted_at": "2026-10-09T01:00:00Z"}]
     assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
     ev["reviews"].append({"user": OWNER, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"})
-    assert m.qa_findings(ev) == []  # trusted gate rejects trust roots by design; owner approval replaces it
+    assert m.qa_findings(ev) == []  # trust-root QA uses owner approval, not the governance receipt
 
 
 def test_later_owner_change_request_revokes_approval():
