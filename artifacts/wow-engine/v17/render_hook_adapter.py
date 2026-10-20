@@ -229,20 +229,30 @@ def prepare_exact_sha_request(
 def classify_hook_ack(http_status: object, body: bytes | str | None) -> dict[str, object]:
     """Classify an already-observed response; never authorizes a retry or deploy."""
     if type(http_status) is not int:
-        return _ack("HOOK_RESPONSE_UNVERIFIED")
+        return _ambiguous_ack("HOOK_RESPONSE_UNVERIFIED")
     if http_status == 202:
         return _ack("HOOK_QUEUED_RECONCILE_NO_RETRY")
+    if http_status in {408, 429} or 500 <= http_status < 600:
+        return _ambiguous_ack("HOOK_HTTP_" + str(http_status))
     if http_status != 200:
         return _ack("HOOK_RESPONSE_HOLD", reason_code=f"HOOK_HTTP_{http_status}")
     try:
         payload = json.loads(body if body is not None else "")
     except (TypeError, UnicodeDecodeError, ValueError):
-        return _ack("HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY")
+        return _ambiguous_ack("HOOK_ACK_BODY_INVALID")
     deploy = payload.get("deploy") if isinstance(payload, dict) else None
     deploy_id = deploy.get("id") if isinstance(deploy, dict) else None
     if not isinstance(deploy_id, str) or _DEPLOY_ID_RE.fullmatch(deploy_id) is None:
-        return _ack("HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY")
+        return _ambiguous_ack("HOOK_ACK_DEPLOY_ID_INVALID")
     return _ack("HOOK_ACK_PENDING_EXACT_SHA_READBACK", deploy_id=deploy_id)
+
+
+def _ambiguous_ack(reason_code: str) -> dict[str, object]:
+    return _ack(
+        "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY",
+        reason_code=reason_code,
+        next_action="READ_ONLY_RECONCILIATION_ONLY",
+    )
 
 
 def _ack(status: str, **extra: object) -> dict[str, object]:

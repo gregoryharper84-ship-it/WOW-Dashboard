@@ -203,8 +203,15 @@ def test_stale_live_receipt_and_unknown_run_identity_hold():
     [
         (200, '{"deploy":{"id":"dep-abc123"}}', "HOOK_ACK_PENDING_EXACT_SHA_READBACK"),
         (202, "queued", "HOOK_QUEUED_RECONCILE_NO_RETRY"),
-        (500, "opaque error", "HOOK_RESPONSE_HOLD"),
-        (None, None, "HOOK_RESPONSE_UNVERIFIED"),
+        (400, "rejected", "HOOK_RESPONSE_HOLD"),
+        (408, "request timeout", "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+        (429, "rate limited", "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+        (500, "opaque error", "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+        (502, "gateway error", "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+        (503, "service unavailable", "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+        (504, "gateway timeout", "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+        (None, None, "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+        (True, None, "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
         (200, '{"deploy":{}}', "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
     ],
 )
@@ -214,3 +221,7 @@ def test_acknowledgements_never_retry_or_claim_live(status, body, expected):
     assert result["status"] == expected
     assert result["retry"] is False
     assert result["can_execute"] is False
+    if expected == "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY":
+        assert result["next_action"] == "READ_ONLY_RECONCILIATION_ONLY"
+    else:
+        assert "next_action" not in result
