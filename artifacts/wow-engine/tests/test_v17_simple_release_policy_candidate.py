@@ -77,6 +77,7 @@ class GitHub:
                      "slug": "wow-release-authority", "node_id": "A_release", "integration_url": "https://example.invalid"}}]
         pr = {
             "number": 99, "merged": True, "merged_at": "2026-10-20T12:00:00Z",
+            "user": {"id": 300, "login": "engineering-author"}, "changed_files": 1,
             "merge_commit_sha": MAIN,
             "base": {"ref": "main", "repo": {"full_name": candidate.REPOSITORY}},
             "head": {"sha": HEAD, "repo": {"full_name": candidate.REPOSITORY}},
@@ -87,6 +88,11 @@ class GitHub:
                        completed_at="2026-10-20T13:01:00Z")
         self.data = {
             "user": {"id": 100, "login": "authenticated-collector"},
+            ROOT: {"full_name": candidate.REPOSITORY, "default_branch": "main",
+                   "owner": {"id": 400, "login": "owner"}},
+            ROOT + "/pulls/99/files?per_page=100&page=1": [
+                {"filename": "artifacts/wow-engine/v17/ordinary.py", "status": "modified"},
+            ],
             RULESET: ruleset,
             EFFECTIVE: [dict(deepcopy(status), ruleset_id=candidate.RULESET_ID)],
             MAIN_REF: {"object": {"sha": MAIN}},
@@ -144,6 +150,152 @@ class GitHub:
         assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
         assert "RENDER_API_CREDENTIAL_SCOPE_UNATTESTED:#1875" in result["deployment_blockers"]
         return result
+
+
+def reported_live_legacy():
+    """Fields attested in owner review 6297970596, not a fresh live API capture."""
+    github = GitHub(candidate.LEGACY)
+    ruleset = github.data[RULESET]
+    ruleset["conditions"]["ref_name"]["include"] = ["~DEFAULT_BRANCH"]
+    ruleset["rules"][-1]["parameters"].update(
+        require_code_owner_review=False, require_last_push_approval=False,
+    )
+    ruleset["rules"][0]["parameters"]["strict_required_status_checks_policy"] = False
+    github.data[EFFECTIVE][0]["parameters"] = deepcopy(ruleset["rules"][0]["parameters"])
+    return github
+
+
+def test_reported_live_legacy_is_recognized_without_asserting_candidate_readiness():
+    github = reported_live_legacy()
+    result = github.inspect()
+    assert result["observed_policy"] == candidate.LEGACY
+    assert result["policy_evidence_valid"] is True
+    assert result["migration_requirements"] == []
+    github.checks[-1]["conclusion"] = "failure"
+    assert github.inspect()["policy_evidence_valid"] is False
+
+
+def test_only_removing_release_context_reports_all_additional_migration_requirements():
+    github = reported_live_legacy()
+    github.data[RULESET]["rules"][0]["parameters"]["required_status_checks"].pop()
+    github.data[EFFECTIVE][0]["parameters"] = deepcopy(github.data[RULESET]["rules"][0]["parameters"])
+    result = github.inspect()
+    assert result["observed_policy"] == candidate.SINGLE_QA
+    assert result["policy_evidence_valid"] is False
+    assert result["blockers"] == result["migration_requirements"] == [
+        "RULESET_OWNER_PROTECTION_MISSING:require_code_owner_review",
+        "RULESET_OWNER_PROTECTION_MISSING:require_last_push_approval",
+        "RULESET_CHECKS_NOT_STRICT",
+    ]
+    assert ENV not in github.calls
+
+
+def test_strengthened_readback_after_minimal_removal_is_separate_conditional_evidence():
+    github = reported_live_legacy()
+    rules = github.data[RULESET]["rules"]
+    rules[0]["parameters"]["required_status_checks"].pop()
+    rules[-1]["parameters"].update(require_code_owner_review=True, require_last_push_approval=True)
+    rules[0]["parameters"]["strict_required_status_checks_policy"] = True
+    github.data[EFFECTIVE][0]["parameters"] = deepcopy(rules[0]["parameters"])
+    result = github.inspect()
+    assert result["observed_policy"] == candidate.SINGLE_QA
+    assert result["policy_evidence_valid"] is True
+    assert result["authorization_route"] == "independent_environment_reviewer"
+    assert "ENVIRONMENT_ADMIN_BYPASS_AUTHORITATIVE_EVIDENCE_UNSUPPORTED" in result["deployment_blockers"]
+    assert "ENVIRONMENT_APPROVAL_TIMESTAMP_AUTHORITATIVE_EVIDENCE_UNSUPPORTED" in result["deployment_blockers"]
+    # The conditional parser fixture cannot clear the production blocker.
+    del github.data[ENV]["can_admins_bypass"]
+    assert github.inspect()["blockers"] == ["ENVIRONMENT_BYPASS_UNPROVEN"]
+
+
+def test_only_dispatch_actor_eligible_is_not_an_independent_reviewer_route():
+    github = GitHub()
+    github.data[RUN]["actor"]["id"] = 200
+    assert github.inspect()["blockers"] == ["INDEPENDENT_ENVIRONMENT_REVIEWER_UNPROVEN"]
+
+
+def test_approval_from_another_workflow_run_cannot_supply_current_run_evidence():
+    github = GitHub()
+    history = github.data.pop(RUN + "/approvals")
+    github.data[ROOT + "/actions/runs/41/approvals"] = history
+    assert github.inspect()["blockers"] == ["GITHUB_EVIDENCE_UNREADABLE:" + RUN + "/approvals"]
+
+
+@pytest.mark.parametrize("policy", [candidate.LEGACY, candidate.SINGLE_QA])
+@pytest.mark.parametrize("removed", ["pull_request", "deletion", "non_fast_forward"])
+def test_no_pr_requirement_or_history_protection_always_holds(policy, removed):
+    github = GitHub(policy)
+    github.data[RULESET]["rules"] = [r for r in github.data[RULESET]["rules"] if r["type"] != removed]
+    result = github.inspect()
+    assert result["policy_evidence_valid"] is False
+    assert result["blockers"] == [
+        "RULESET_PULL_REQUEST_REQUIREMENT_MISSING_OR_AMBIGUOUS" if removed == "pull_request"
+        else "RULESET_HISTORY_PROTECTION_MISSING"
+    ]
+
+
+def test_default_branch_selector_requires_authenticated_main_and_stable_readback():
+    github = reported_live_legacy()
+    github.data[ROOT]["default_branch"] = "other"
+    assert github.inspect()["blockers"] == ["ACTIVE_RULESET_MISMATCH"]
+    github = reported_live_legacy()
+    def drift(api, path):
+        if path == ROOT and api.calls.count(ROOT) == 2:
+            api.data[ROOT]["default_branch"] = "other"
+    github.fault = drift
+    assert github.inspect()["blockers"] == ["REPOSITORY_CHANGED_DURING_READ"]
+
+
+@pytest.mark.parametrize("identity", ["actor", "triggering_actor", "pr_author"])
+def test_aliases_do_not_hide_same_immutable_identity(identity):
+    github = GitHub()
+    # Keep another eligible reviewer so the selected self-review is rejected.
+    rule = github.data[ENV]["protection_rules"][-1]
+    rule["reviewers"].append({"type": "User", "reviewer": {"id": 201, "type": "User"}})
+    if identity == "pr_author":
+        github.data[ROOT + "/pulls/99"]["user"] = {"id": 200, "login": "author_alias"}
+    else:
+        github.data[RUN][identity] = {"id": 200, "login": "dispatch_alias"}
+    github.data[RUN + "/approvals"][0]["user"]["login"] = "review_alias"
+    assert github.inspect()["blockers"] == [
+        "ENVIRONMENT_PR_AUTHOR_SELF_REVIEW" if identity == "pr_author" else "ENVIRONMENT_SELF_REVIEW",
+    ]
+
+
+@pytest.mark.parametrize("identity", ["actor", "triggering_actor", "pr_author", "reviewer"])
+def test_missing_immutable_identity_fails_closed(identity):
+    github = GitHub()
+    if identity == "pr_author":
+        del github.data[ROOT + "/pulls/99"]["user"]["id"]
+    elif identity == "reviewer":
+        del github.data[RUN + "/approvals"][0]["user"]["id"]
+    else:
+        del github.data[RUN][identity]["id"]
+    assert github.inspect()["policy_evidence_valid"] is False
+
+
+@pytest.mark.parametrize("failure", ["missing", "stale", "owner_authored", "revoked", "foreign_owner"])
+def test_trust_root_owner_approval_uses_exact_head_and_immutable_owner_identity(failure):
+    github = GitHub()
+    github.data[ROOT + "/pulls/99/files?per_page=100&page=1"][0]["filename"] = (
+        "artifacts/wow-engine/v17/simple_release_policy_candidate.py"
+    )
+    approval = {"id": 1, "user": {"id": 400, "login": "owner_alias"},
+                "state": "APPROVED", "commit_id": HEAD}
+    reviews = [approval]
+    github.data[ROOT + "/pulls/99/reviews?per_page=100&page=1"] = reviews
+    assert github.inspect()["policy_evidence_valid"] is True
+    if failure == "missing":
+        reviews.clear()
+    elif failure == "stale":
+        approval["commit_id"] = OTHER
+    elif failure == "owner_authored":
+        github.data[ROOT + "/pulls/99"]["user"]["id"] = 400
+    elif failure == "foreign_owner":
+        approval["user"]["id"] = 999
+    else:
+        reviews.append(dict(approval, id=2, state="CHANGES_REQUESTED"))
+    assert github.inspect()["policy_evidence_valid"] is False
 
 
 @pytest.mark.parametrize("policy,route", [

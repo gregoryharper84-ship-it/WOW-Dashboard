@@ -65,6 +65,9 @@ they are not evidence that GitHub actually supplies it. Before adoption,
 Security must independently establish an authoritative authenticated method
 for proving bypass is disabled and review the corresponding verifier change.
 Do not inject an attestation Boolean to make this helper pass.
+``ENVIRONMENT_ADMIN_BYPASS_AUTHORITATIVE_EVIDENCE_UNSUPPORTED`` is a permanent
+adoption blocker in this candidate, even for positive conditional fixtures.
+There is no claimed feasible production verifier for this property yet.
 
 The run approvals endpoint returns an array of
 ``{environments, state, user, comment}``. It has no approval timestamp, SHA or
@@ -72,6 +75,10 @@ attempt ID. Human authorization is therefore limited to attempt 1 and exactly
 one unambiguous approval for the exact environment ID. Reruns require a fresh
 dispatch, not reuse of old approval. Teams without individually verified
 membership do not establish an eligible independent human.
+``ENVIRONMENT_APPROVAL_TIMESTAMP_AUTHORITATIVE_EVIDENCE_UNSUPPORTED`` likewise
+blocks adoption: attempt-1 run-specific history is bounded observation, not
+proof of approval time. No invented timestamp or workflow-input attestation
+may clear either unsupported-evidence blocker.
 
 Two mutually exclusive candidate routes
 ---------------------------------------
@@ -81,18 +88,43 @@ The authenticated active ruleset selects the observed PR policy:
 * Legacy: ruleset 24907422, ``wow-v17-main-agent-separation``, active on main,
   the three Actions checks (App 15368), QA (5245832) and Release (5245853).
   Legacy role admission continues to require both Apps. Environment evidence
-  cannot remove that requirement.
-* Candidate: the same protected ruleset, changing only the removal of
-  ``WOW Release Authority exact-head``. The three CI checks and authentic
-  ``WOW Independent QA exact-head`` remain source-pinned and strict.
-  Any other context, source, effective-rule or owner-protection mismatch holds.
+  cannot remove that requirement. Required PR merge, deletion/non-fast-forward
+  protection, exact source-pinned five contexts and no bypass actors are checked.
+  Recognizing legacy does not assert candidate protections already exist.
+* Candidate: the same ruleset with ``WOW Release Authority exact-head`` removed.
+  The three CI checks and authentic ``WOW Independent QA exact-head`` remain
+  source-pinned. Missing stronger protections populate the complete
+  ``migration_requirements`` list and return HOLD before environment evaluation.
+  Any other context, source or effective-rule mismatch also holds.
+
+Owner-authenticated review 6297970596 reports the current legacy selector as
+``["~DEFAULT_BRANCH"]``; CODEOWNER review, last-push approval and strict required
+status checking are false. The deterministic fixture transcribes those reported
+fields, not a complete independently captured live ruleset. The helper accepts
+that selector only with authenticated repository ``default_branch=main`` and
+stable repository readback; no literal-ref rewrite is required.
+
+Removing only Release context from that reported legacy state returns all:
+
+* ``RULESET_OWNER_PROTECTION_MISSING:require_code_owner_review``
+* ``RULESET_OWNER_PROTECTION_MISSING:require_last_push_approval``
+* ``RULESET_CHECKS_NOT_STRICT``
+
+Missing stale-review dismissal adds
+``RULESET_OWNER_PROTECTION_MISSING:dismiss_stale_reviews_on_push`` too. These
+stronger settings require separate owner authorization and exact authenticated
+readback **before** any context-only cutover. This PR changes none of them.
 
 For the candidate release observation, real enabled environment protections,
 not an override, select exactly one route:
 
 A. Native required reviewers, ``prevent_self_review=true``, authenticated
    run-specific approval from an eligible human other than both original
-   dispatch actor and triggering actor, with current repository access.
+   dispatch actor, triggering actor and PR author, with current repository access.
+   Eligibility and self-review checks use immutable positive GitHub user IDs;
+   login aliases are not identity. Candidate trust-root changes additionally
+   require the immutable repository owner's latest exact-head approval and
+   cannot be owner-authored. The existing QA verifier remains unchanged.
    If the owner is the only eligible person and also dispatches, this holds.
    Do not enable self-review or introduce a second credential as a shortcut.
 B. No native required-reviewer route, and exactly one enabled custom protection
@@ -169,8 +201,16 @@ API evidence verifier and compatible existing-controller integration:
 2. Capture the complete authenticated legacy ruleset, effective rules and
    controller SHA as the rollback pair. The compatible controller must support
    legacy while legacy rules are active and hold on any mismatch.
+   Obtain separate explicit owner authorization for each missing
+   ``migration_requirements`` setting above. Enable and authenticate readback
+   of those stronger protections while retaining all five contexts; record that
+   separately authorized before/after diff. No implicit authorization is derived
+   from this runbook. If approval or proof is unavailable, HOLD without cutover.
+   Resolve the named unsupported environment evidence blockers through an
+   independently accepted verifier change; synthetic fixtures cannot resolve them.
 3. In one authorized maintenance window, change ruleset 24907422 **only** by
-   removing the Release-App PR context. Retain all three App-15368 CI contexts,
+   removing the Release-App PR context from that separately verified stronger
+   baseline. Retain all three App-15368 CI contexts,
    App-5245832 QA, strict exact-SHA checking, owner/CODEOWNER/stale-review
    protections, history protections and no bypass actors.
 4. Immediately repeat the exact authenticated ruleset/effective-main readbacks

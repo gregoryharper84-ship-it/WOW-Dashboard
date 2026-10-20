@@ -7,10 +7,12 @@ two-App controller remains authoritative until a separately approved cutover.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 import re
 from typing import Any, Callable
 
 from v17.agent_identity_policy import REQUIRED_REGRESSION_CHECKS, gh_fetch
+from v17.agent_identity_policy import governance_trust_roots, is_trust_root
 from v17.github_release_journal import (
     AUTHENTIC_QA_APP_ID,
     AUTHENTIC_RELEASE_APP_ID,
@@ -64,7 +66,11 @@ def _pages(fetch: Fetch, path: str, key: str | None = None) -> list[dict]:
     raise EvidenceHold("GITHUB_EVIDENCE_TRUNCATED:" + path)
 
 
-def _policy(ruleset: dict, effective: list[dict]) -> str:
+def _policy(ruleset: dict, effective: list[dict], default_branch: str) -> tuple[str, list[str]]:
+    selector = ruleset.get("conditions", {}).get("ref_name")
+    targets_main = selector == {"include": ["refs/heads/main"], "exclude": []} or (
+        selector == {"include": ["~DEFAULT_BRANCH"], "exclude": []} and default_branch == "main"
+    )
     _require(
         ruleset.get("id") == RULESET_ID
         and ruleset.get("name") == RULESET_NAME
@@ -73,22 +79,18 @@ def _policy(ruleset: dict, effective: list[dict]) -> str:
         and ruleset.get("target") == "branch"
         and ruleset.get("enforcement") == "active"
         and ruleset.get("bypass_actors") == []
-        and ruleset.get("conditions", {}).get("ref_name") == {
-            "include": ["refs/heads/main"], "exclude": [],
-        },
+        and targets_main,
         "ACTIVE_RULESET_MISMATCH",
     )
     rules = ruleset.get("rules", [])
     _require(isinstance(rules, list), "ACTIVE_RULESET_MISMATCH")
-    for flag in ("require_code_owner_review", "dismiss_stale_reviews_on_push", "require_last_push_approval"):
-        _require(any(r.get("type") == "pull_request" and r.get("parameters", {}).get(flag) is True
-                     for r in rules), "RULESET_OWNER_PROTECTION_MISSING:" + flag)
+    pr_rules = [r for r in rules if r.get("type") == "pull_request"]
+    _require(len(pr_rules) == 1, "RULESET_PULL_REQUEST_REQUIREMENT_MISSING_OR_AMBIGUOUS")
     _require({"deletion", "non_fast_forward"} <= {r.get("type") for r in rules},
              "RULESET_HISTORY_PROTECTION_MISSING")
     status_rules = [r for r in rules if r.get("type") == "required_status_checks"]
     _require(len(status_rules) == 1, "RULESET_CHECKS_AMBIGUOUS")
     params = status_rules[0].get("parameters", {})
-    _require(params.get("strict_required_status_checks_policy") is True, "RULESET_CHECKS_NOT_STRICT")
     checks = params.get("required_status_checks", [])
     required = {(name, 15368) for name in REQUIRED_REGRESSION_CHECKS}
     required.add((QA_CHECK_NAME, AUTHENTIC_QA_APP_ID))
@@ -102,7 +104,14 @@ def _policy(ruleset: dict, effective: list[dict]) -> str:
     active = [r for r in effective if r.get("type") == "required_status_checks"]
     _require(len(active) == 1 and active[0].get("ruleset_id") == RULESET_ID
              and active[0].get("parameters") == params, "EFFECTIVE_MAIN_RULESET_MISMATCH")
-    return policy
+    requirements = []
+    if policy == SINGLE_QA:
+        for flag in ("require_code_owner_review", "dismiss_stale_reviews_on_push", "require_last_push_approval"):
+            if pr_rules[0].get("parameters", {}).get(flag) is not True:
+                requirements.append("RULESET_OWNER_PROTECTION_MISSING:" + flag)
+        if params.get("strict_required_status_checks_policy") is not True:
+            requirements.append("RULESET_CHECKS_NOT_STRICT")
+    return policy, requirements
 
 
 def _check(checks: list[dict], name: str, sha: str, app: int) -> dict:
@@ -117,7 +126,7 @@ def _check(checks: list[dict], name: str, sha: str, app: int) -> dict:
     return latest
 
 
-def _authorization(fetch: Fetch, root: str, run: dict, target_sha: str) -> str:
+def _authorization(fetch: Fetch, root: str, run: dict, target_sha: str, pr_author_id: int) -> str:
     env_path = root + "/environments/wow-release"
     env = _get(fetch, env_path)
     _require(env.get("name") == "wow-release" and type(env.get("id")) is int,
@@ -148,7 +157,8 @@ def _authorization(fetch: Fetch, root: str, run: dict, target_sha: str) -> str:
         return route
 
     actor, trigger = run.get("actor", {}), run.get("triggering_actor", {})
-    _require(type(actor.get("id")) is int and type(trigger.get("id")) is int,
+    _require(type(actor.get("id")) is int and actor["id"] > 0
+             and type(trigger.get("id")) is int and trigger["id"] > 0,
              "DISPATCH_ACTOR_UNREADABLE")
     if reviewers:
         _require(len(reviewers) == 1 and reviewers[0].get("prevent_self_review") is True,
@@ -159,7 +169,10 @@ def _authorization(fetch: Fetch, root: str, run: dict, target_sha: str) -> str:
         eligible = reviewers[0].get("reviewers", [])
         ids = {r.get("reviewer", {}).get("id") for r in eligible
                if r.get("type") == "User" and r.get("reviewer", {}).get("type") == "User"}
-        _require(bool(ids) and None not in ids, "INDEPENDENT_ENVIRONMENT_REVIEWER_UNPROVEN")
+        _require(bool(ids) and all(type(i) is int and i > 0 for i in ids),
+                 "INDEPENDENT_ENVIRONMENT_REVIEWER_UNPROVEN")
+        _require(bool(ids - {actor["id"], trigger["id"], pr_author_id}),
+                 "INDEPENDENT_ENVIRONMENT_REVIEWER_UNPROVEN")
         history = _get(fetch, root + f"/actions/runs/{run['id']}/approvals", list)
         relevant = [h for h in history if any(e.get("id") == env["id"] and e.get("name") == "wow-release"
                                              for e in h.get("environments", []))]
@@ -170,8 +183,10 @@ def _authorization(fetch: Fetch, root: str, run: dict, target_sha: str) -> str:
         approval = relevant[0]
         user = approval.get("user", {})
         _require(approval.get("state") == "approved" and user.get("type") == "User"
-                 and user.get("id") in ids, "ENVIRONMENT_REVIEWER_UNAUTHORIZED")
+                 and type(user.get("id")) is int and user["id"] > 0
+                 and user["id"] in ids, "ENVIRONMENT_REVIEWER_UNAUTHORIZED")
         _require(user.get("id") not in {actor["id"], trigger["id"]}, "ENVIRONMENT_SELF_REVIEW")
+        _require(user.get("id") != pr_author_id, "ENVIRONMENT_PR_AUTHOR_SELF_REVIEW")
         permission = _get(fetch, root + f"/collaborators/{user['login']}/permission")
         _require(permission.get("user", {}).get("id") == user["id"]
                  and permission.get("permission") in {"admin", "write", "read", "maintain"},
@@ -190,6 +205,35 @@ def _authorization(fetch: Fetch, root: str, run: dict, target_sha: str) -> str:
     return readback("existing_release_app_deployment_decision")
 
 
+def _trust_root_review(fetch: Fetch, root: str, pr: dict, owner: dict) -> None:
+    files = _pages(fetch, root + f"/pulls/{pr['number']}/files")
+    _require(bool(files) and len(files) == pr.get("changed_files"), "PR_FILE_INVENTORY_UNPROVEN")
+    paths = []
+    for entry in files:
+        _require(isinstance(entry.get("filename"), str) and bool(entry["filename"]),
+                 "PR_FILE_IDENTITY_UNPROVEN")
+        paths.append(entry["filename"])
+        if entry.get("status") == "renamed" or "previous_filename" in entry:
+            _require(isinstance(entry.get("previous_filename"), str) and bool(entry["previous_filename"]),
+                     "PR_RENAME_ORIGIN_UNPROVEN")
+            paths.append(entry["previous_filename"])
+    governed = frozenset(governance_trust_roots(Path(__file__).resolve().parents[3])) | {
+        "artifacts/wow-engine/v17/simple_release_policy_candidate.py",
+    }
+    if not any(is_trust_root(path, governed) for path in paths):
+        return
+    _require(type(owner.get("id")) is int and owner["id"] > 0, "OWNER_IDENTITY_UNPROVEN")
+    _require(pr["user"]["id"] != owner["id"], "TRUST_ROOT_OWNER_AUTHORED")
+    reviews = _pages(fetch, root + f"/pulls/{pr['number']}/reviews")
+    decisions = [r for r in reviews if (r.get("user") or {}).get("id") == owner["id"]
+                 and r.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}]
+    _require(bool(decisions) and all(type(r.get("id")) is int for r in decisions),
+             "TRUST_ROOT_OWNER_APPROVAL_UNPROVEN")
+    latest = max(decisions, key=lambda r: r["id"])
+    _require(latest.get("state") == "APPROVED" and latest.get("commit_id") == pr["head"]["sha"],
+             "TRUST_ROOT_OWNER_APPROVAL_NOT_CURRENT")
+
+
 def inspect_release_policy(
     *, target_sha: str, run_id: int, fetch: Fetch = gh_fetch,
 ) -> dict[str, Any]:
@@ -201,9 +245,11 @@ def inspect_release_policy(
     """
     result: dict[str, Any] = {
         "observed_policy": None, "authorization_route": None, "policy_evidence_valid": False,
-        "status": "BLOCKED_WITH_EXACT_REASON", "blockers": [],
+        "status": "BLOCKED_WITH_EXACT_REASON", "blockers": [], "migration_requirements": [],
         "deployment_blockers": [
             "PR_A_NOT_PRODUCTION_AUTHORIZED",
+            "ENVIRONMENT_ADMIN_BYPASS_AUTHORITATIVE_EVIDENCE_UNSUPPORTED",
+            "ENVIRONMENT_APPROVAL_TIMESTAMP_AUTHORITATIVE_EVIDENCE_UNSUPPORTED",
             "RENDER_API_CREDENTIAL_SCOPE_UNATTESTED:#1875",
             "TRUE_MAIN_PUSH_CI_VERIFICATION_REQUIRED",
             "EXCLUSIVE_PRODUCTION_WRITER_AND_JOURNAL_CAS_LEASE_REQUIRED",
@@ -221,10 +267,14 @@ def inspect_release_policy(
                  "RELEASE_IDENTITY_INVALID")
         user = _get(fetch, "user")
         _require(type(user.get("id")) is int and bool(user.get("login")), "AUTHENTICATED_READ_UNPROVEN")
+        repository = _get(fetch, root)
+        _require(repository.get("full_name") == REPOSITORY
+                 and isinstance(repository.get("default_branch"), str), "REPOSITORY_IDENTITY_UNPROVEN")
         ruleset = _get(fetch, root + f"/rulesets/{RULESET_ID}")
         effective = _pages(fetch, root + "/rules/branches/main")
-        policy = _policy(ruleset, effective)
+        policy, requirements = _policy(ruleset, effective, repository["default_branch"])
         result["observed_policy"] = policy
+        result["migration_requirements"] = requirements
         main_path = root + "/git/ref/heads/main"
         _require(_get(fetch, main_path).get("object", {}).get("sha") == target_sha, "CURRENT_MAIN_DRIFT")
         prs = _pages(fetch, root + f"/commits/{target_sha}/pulls")
@@ -238,6 +288,8 @@ def inspect_release_policy(
                  "MERGED_PR_PROVENANCE_INVALID")
         head = pr.get("head", {}).get("sha", "")
         _require(bool(_SHA.fullmatch(head)), "PR_HEAD_INVALID")
+        _require(type(pr.get("user", {}).get("id")) is int and pr["user"]["id"] > 0,
+                 "PR_AUTHOR_IDENTITY_UNPROVEN")
         checks = _pages(fetch, root + f"/commits/{head}/check-runs", "check_runs")
         for name in REQUIRED_REGRESSION_CHECKS:
             _check(checks, name, head, 15368)
@@ -246,7 +298,8 @@ def inspect_release_policy(
             admission = role_admission(checks, qa_app_id=AUTHENTIC_QA_APP_ID,
                                        release_app_id=AUTHENTIC_RELEASE_APP_ID, source_head=head)
             _require(admission == "PASS", admission)
-        else:
+        elif not requirements:
+            _trust_root_review(fetch, root, pr, repository.get("owner", {}))
             run_path = root + f"/actions/runs/{run_id}"
             run = _get(fetch, run_path)
             _require(run.get("id") == run_id and run.get("event") == "workflow_dispatch"
@@ -256,14 +309,16 @@ def inspect_release_policy(
                      and type(run.get("run_attempt")) is int and run["run_attempt"] > 0
                      and run.get("html_url") == f"https://github.com/{REPOSITORY}/actions/runs/{run_id}",
                      "MANUAL_PROTECTED_RUN_IDENTITY_INVALID")
-            result["authorization_route"] = _authorization(fetch, root, run, target_sha)
+            result["authorization_route"] = _authorization(fetch, root, run, target_sha, pr["user"]["id"])
             _require(_get(fetch, run_path) == run, "WORKFLOW_RUN_CHANGED_DURING_READ")
         _require(_get(fetch, main_path).get("object", {}).get("sha") == target_sha, "CURRENT_MAIN_DRIFT")
         _require(_get(fetch, root + f"/rulesets/{RULESET_ID}") == ruleset,
                  "RULESET_CHANGED_DURING_READ")
         _require(_pages(fetch, root + "/rules/branches/main") == effective,
                  "EFFECTIVE_RULESET_CHANGED_DURING_READ")
-        result["policy_evidence_valid"] = True
+        _require(_get(fetch, root) == repository, "REPOSITORY_CHANGED_DURING_READ")
+        result["blockers"].extend(requirements)
+        result["policy_evidence_valid"] = not requirements
     except EvidenceHold as exc:
         result["blockers"].append(str(exc))
     except Exception:
