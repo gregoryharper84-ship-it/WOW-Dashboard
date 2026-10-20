@@ -250,5 +250,5 @@ jobs:
           # A GITHUB_TOKEN dispatch of wow-verify does not chain workflow_run.
           # This starts the existing deploy workflow only. Journal preflight,
           # the durable POST_UNCERTAIN fence, and QA/Release checks still hold.
-          gh workflow run wow-v17-render-production-deploy.yml --ref main
+          gh workflow run wow-v17-render-production-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
           echo "PROTECTED_DEPLOY_DISPATCHED_GATES_STILL_REQUIRED"
