@@ -15,6 +15,7 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "artifacts/wow-engine/v17/independent_release_checks.py"
@@ -306,6 +307,19 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
     assert re.search(r"group: wow-v17-[a-z-]+-check\n  cancel-in-progress: false", text)
 
 
+@pytest.mark.parametrize("wf, upstream", [
+    (QA_WF, ["wow-verify", "wow-engine-verify", "wow-v17-change-impact-gate", "wow-v17-trusted-governance-gate"]),
+    (REL_WF, ["wow-v17-independent-qa-check"]),
+])
+def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
+    triggers = yaml.load(wf.read_text(), Loader=yaml.BaseLoader)["on"]
+
+    assert set(triggers) == {"workflow_run", "workflow_dispatch"}
+    assert triggers["workflow_run"]["types"] == ["completed"]
+    assert triggers["workflow_run"]["workflows"] == upstream
+    assert triggers["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "true"
+
+
 # --- workflows: execute the real Bash against a fake gh ------------------------------
 
 
@@ -371,10 +385,12 @@ def _evidence_runs(extra=()):
     return runs + list(extra)
 
 
-def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh):
+@pytest.mark.parametrize("event", ["workflow_run", "workflow_dispatch"])
+def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, event):
     prs = json.dumps([{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}])
     proc, runner, env = _run_decide(fake_gh, QA_WF, _routes_for_pr(_evidence_runs()),
-                                    {"EVENT": "workflow_run", "WR_PRS": prs, "INPUT_PR": ""})
+                                    {"EVENT": event, "WR_PRS": prs if event == "workflow_run" else "null",
+                                     "INPUT_PR": "7" if event == "workflow_dispatch" else ""})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "success" and decision["check_name"] == m.QA_CHECK
@@ -412,13 +428,13 @@ def test_release_workflow_end_to_end_requires_qa_from_qa_app(fake_gh):
     routes = _routes_for_pr(_evidence_runs([qa_run]))
     routes[f"repos/{REPO}/pulls?state=open&base=main&per_page=100"] = [200, [
         {"number": 7, "draft": False, "head": {"sha": HEAD, "repo": {"full_name": REPO}}}]]
-    proc, runner, _ = _run_decide(fake_gh, REL_WF, routes, {"EVENT": "schedule", "INPUT_PR": "", "WR_PRS": "null",
+    proc, runner, _ = _run_decide(fake_gh, REL_WF, routes, {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
                                                            "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert json.loads((runner / "decisions" / "decision-7.json").read_text())["conclusion"] == "success"
     # Same evidence, but the QA check came from the Release App itself: must fail.
     routes[f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"][1]["check_runs"][-1]["app"]["id"] = int(REL_APP)
-    proc, runner, _ = _run_decide(fake_gh, REL_WF, routes, {"EVENT": "schedule", "INPUT_PR": "", "WR_PRS": "null",
+    proc, runner, _ = _run_decide(fake_gh, REL_WF, routes, {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
                                                            "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP})
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "failure" and "RELEASE_QA_FOREIGN_SOURCE" in decision["findings"]

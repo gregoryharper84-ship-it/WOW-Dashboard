@@ -120,10 +120,14 @@ jobs:
           api_array() {
             local endpoint="$1" selector="$2" page=1 response items count accumulated='[]'
             while [ "$page" -le 10 ]; do
-              response=$(gh api "${endpoint}&per_page=100&page=${page}")
-              items=$(jq -ce "$selector" <<<"$response")
+              response=$(gh api "${endpoint}&per_page=100&page=${page}") || return 1
+              items=$(jq -ce "$selector" <<<"$response") || {
+                echo "EXISTING_PR_API_ARRAY_INVALID" >&2; return 1;
+              }
+              accumulated=$(printf '%s\n%s\n' "$accumulated" "$items" |
+                jq -cse 'if length == 2 and all(.[]; type == "array")
+                         then .[0] + .[1] else error("EXISTING_PR_API_ARRAY_INVALID") end') || return 1
               count=$(jq 'length' <<<"$items")
-              accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
               [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
               page=$((page + 1))
             done
@@ -182,10 +186,14 @@ jobs:
           api_array() {
             local endpoint="$1" selector="$2" page=1 response items count accumulated='[]'
             while [ "$page" -le 10 ]; do
-              response=$(gh api "${endpoint}?per_page=100&page=${page}")
-              items=$(jq -ce "$selector" <<<"$response")
+              response=$(gh api "${endpoint}?per_page=100&page=${page}") || return 1
+              items=$(jq -ce "$selector" <<<"$response") || {
+                echo "EXISTING_PR_API_ARRAY_INVALID" >&2; return 1;
+              }
+              accumulated=$(printf '%s\n%s\n' "$accumulated" "$items" |
+                jq -cse 'if length == 2 and all(.[]; type == "array")
+                         then .[0] + .[1] else error("EXISTING_PR_API_ARRAY_INVALID") end') || return 1
               count=$(jq 'length' <<<"$items")
-              accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
               [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
               page=$((page + 1))
             done
@@ -201,22 +209,26 @@ jobs:
               echo "EXISTING_PR_HEAD_MOVED_OR_NOT_READY" >&2; exit 1;
             }
 
-          changed_files=$(api_array "${api}/pulls/${PR_NUMBER}/files" \
-            '[.[] | {filename,previous_filename,status}]')
-          reviews=$(api_array "${api}/pulls/${PR_NUMBER}/reviews" '.')
-          checks=$(api_array "${api}/commits/${HEAD_SHA}/check-runs" '.check_runs')
-          workflow_runs=$(cat ".governance-review-evidence/workflow-runs.json")
+          api_array "${api}/pulls/${PR_NUMBER}/files" \
+            '[.[] | {filename,previous_filename,status}]' > ".governance-review-evidence/changed-files.json"
+          api_array "${api}/pulls/${PR_NUMBER}/reviews" '.' > ".governance-review-evidence/reviews.json"
+          api_array "${api}/commits/${HEAD_SHA}/check-runs" '.check_runs' > ".governance-review-evidence/check-runs.json"
+          printf '%s\n' "$pr_json" > ".governance-review-evidence/pr.json"
 
           current_sha=$(gh api "${api}/pulls/${PR_NUMBER}" --jq '.head.sha')
           [ "$current_sha" = "$HEAD_SHA" ] || { echo "EXISTING_PR_HEAD_MOVED_DURING_CAPTURE" >&2; exit 1; }
-          jq -n \
-            --argjson pr "$pr_json" \
-            --argjson changed_files "$changed_files" \
-            --argjson reviews "$reviews" \
-            --argjson check_runs "$checks" \
-            --argjson workflow_runs "$workflow_runs" \
-            '{complete_inventory:true,pr:$pr,changed_files:$changed_files,reviews:$reviews,
-              check_runs:$check_runs,workflow_runs:$workflow_runs}' \
+          jq -nce \
+            --slurpfile pr ".governance-review-evidence/pr.json" \
+            --slurpfile changed_files ".governance-review-evidence/changed-files.json" \
+            --slurpfile reviews ".governance-review-evidence/reviews.json" \
+            --slurpfile check_runs ".governance-review-evidence/check-runs.json" \
+            --slurpfile workflow_runs ".governance-review-evidence/workflow-runs.json" \
+            'def one($kind):
+               if length == 1 and (.[0] | type) == $kind then .[0]
+               else error("EXISTING_PR_API_ARRAY_INVALID") end;
+             {complete_inventory:true,pr:($pr | one("object")),
+              changed_files:($changed_files | one("array")),reviews:($reviews | one("array")),
+              check_runs:($check_runs | one("array")),workflow_runs:($workflow_runs | one("array"))}' \
             > ".governance-review-evidence/evidence.json"
 
       - name: Build and verify review-evidence receipt
@@ -261,10 +273,14 @@ jobs:
             api_array() {
               local endpoint="$1" selector="$2" page=1 response items count accumulated='[]'
               while [ "$page" -le 10 ]; do
-                response=$(gh api "${endpoint}?per_page=100&page=${page}")
-                items=$(jq -ce "$selector" <<<"$response")
+                response=$(gh api "${endpoint}?per_page=100&page=${page}") || return 1
+                items=$(jq -ce "$selector" <<<"$response") || {
+                  echo "EXISTING_PR_API_ARRAY_INVALID" >&2; return 1;
+                }
+                accumulated=$(printf '%s\n%s\n' "$accumulated" "$items" |
+                  jq -cse 'if length == 2 and all(.[]; type == "array")
+                           then .[0] + .[1] else error("EXISTING_PR_API_ARRAY_INVALID") end') || return 1
                 count=$(jq 'length' <<<"$items")
-                accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
                 [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
                 page=$((page + 1))
               done
@@ -307,8 +323,13 @@ jobs:
               echo "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" >&2
               exit 1
             }
-            jq -n --argjson evidence "$(cat "$evidence")" --argjson check_runs "$checks" \
-              '$evidence | .check_runs = $check_runs' > "${evidence}.tmp"
+            printf '%s\n' "$checks" > ".governance-review-evidence/bootstrap-check-runs.json"
+            jq -nce --slurpfile evidence "$evidence" \
+              --slurpfile check_runs ".governance-review-evidence/bootstrap-check-runs.json" \
+              'if ($evidence | length) == 1 and ($evidence[0] | type) == "object"
+                  and ($check_runs | length) == 1 and ($check_runs[0] | type) == "array"
+               then $evidence[0] | .check_runs = $check_runs[0]
+               else error("EXISTING_PR_API_ARRAY_INVALID") end' > "${evidence}.tmp"
             mv "${evidence}.tmp" "$evidence"
           fi
 
