@@ -16,8 +16,6 @@ on:
       pr_number:
         description: Pull request number to evaluate at its current exact head.
         required: true
-  schedule:
-    - cron: "17 * * * *"
 
 permissions:
   contents: read

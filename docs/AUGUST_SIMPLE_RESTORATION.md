@@ -19,3 +19,25 @@ change the separate guarded model-experiment workflow's auto-merge behavior.
 Historical auto-merge settings on existing PRs may remain after workflow
 retirement. The repository owner must audit and cancel those settings through
 GitHub before any future re-enablement; this change does not clear them.
+
+## Independent QA/Release manual recovery
+
+The independent QA and Release Authority workflows retain their `workflow_run`
+triggers. Their hourly polling schedules are removed; when an upstream event is
+lost, an authorized operator can recover the checks manually:
+
+1. In GitHub Actions, open `wow-v17-independent-qa-check`, choose **Run
+   workflow** on branch `main`, and enter the PR number. Wait for the
+   `WOW Independent QA exact-head` check.
+2. If QA passes, open `wow-v17-release-authority-check`, choose **Run
+   workflow** on branch `main`, and enter the same PR number. Wait for
+   `WOW Release Authority exact-head`.
+3. Confirm both checks are completed successfully on the PR's current head and
+   attributed to their separate QA and Release Apps. If the head changes, rerun
+   QA and then Release for that head. A failure or missing check remains a
+   blocker; do not bypass it.
+
+Manual dispatch re-resolves the open PR's current head and independently
+rechecks evidence. There is no automatic polling fallback: unresolved or lost
+events require this operator re-entry, and the required ruleset checks remain
+unchanged.
