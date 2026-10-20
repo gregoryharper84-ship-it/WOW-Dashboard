@@ -14,10 +14,6 @@ name: wow-v17-engineering-pr-keep-current
 # - Never merges, never enables bypass, never touches a PR from any other author.
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
