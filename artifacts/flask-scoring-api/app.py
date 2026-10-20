@@ -22198,8 +22198,15 @@ try:
 except Exception:
     pass  # No DATABASE_URL configured; fallback to process-memory is safe
 
-_threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
-_bt("startup daemon spawned — app fully ready")
+# Under CI, import-time daemon DDL can race pytest's environment patches and
+# test-owned PostgreSQL teardown. It has caused psycopg2/libpq segfaults in
+# required-three services tests (#1794). Tests own schema setup explicitly;
+# preserve the full asynchronous warmup unchanged for production imports.
+if os.environ.get("WOW_CI", "").strip().lower() not in {"1", "true", "yes"}:
+    _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
+    _bt("startup daemon spawned — app fully ready")
+else:
+    _bt("startup daemon disabled under CI; explicit test setup owns DB")
 
 
 def _get_session_ledger(session_id: str | None) -> "_PgSessionLedger | None":
