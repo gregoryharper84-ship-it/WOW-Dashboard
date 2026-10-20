@@ -109,27 +109,25 @@ def test_ineligible_or_unreadable_pr_holds(over, code):
     assert code in m.qa_findings(evidence(**over))
 
 
-def test_trust_root_pr_needs_owner_approval_of_this_exact_head():
-    ev = evidence(files=TRUST_ROOT_FILES)
+@pytest.mark.parametrize("author", [OWNER, "wow-engineering[bot]", "claude-coding-agent", "cursor-coding-agent"])
+def test_trust_root_authorship_neutral_but_exact_head_regressions_required(author):
+    ev = evidence(files=TRUST_ROOT_FILES, author=author)
     ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
-    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
-    ev["reviews"] = [{"user": OWNER, "state": "APPROVED", "commit_id": OLD, "submitted_at": "2026-10-09T01:00:00Z"}]
-    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
-    ev["reviews"].append({"user": OWNER, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"})
-    assert m.qa_findings(ev) == []  # trust-root QA uses owner approval, not the governance receipt
+    assert m.qa_findings(ev) == []
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.QA_EVIDENCE_CHECKS[0]]
+    assert f"QA_EVIDENCE_MISSING:{m.QA_EVIDENCE_CHECKS[0]}" in m.qa_findings(ev)
 
 
-def test_later_owner_change_request_revokes_approval():
-    ev = evidence(files=TRUST_ROOT_FILES, reviews=[
-        {"user": OWNER, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"},
-        {"user": OWNER, "state": "CHANGES_REQUESTED", "commit_id": HEAD, "submitted_at": "2026-10-09T03:00:00Z"}])
-    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
-
-
-def test_non_owner_approval_does_not_count_for_trust_roots():
-    ev = evidence(files=TRUST_ROOT_FILES, reviews=[
-        {"user": "wow-independent-qa[bot]", "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"}])
-    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+def test_author_cannot_mint_its_own_independent_qa_release_evidence():
+    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER)
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
+    assert "RELEASE_QA_MISSING" in m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    ev["check_runs"].append(run_(m.QA_CHECK, app=GHA, rid=100))
+    findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    assert "RELEASE_QA_FOREIGN_SOURCE" in findings
+    assert "RELEASE_QA_MISSING" in findings
+    ev["check_runs"][-1] = run_(m.QA_CHECK, app=int(QA_APP), rid=101)
+    assert m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP) == []
 
 
 @pytest.mark.parametrize("path", [
@@ -143,7 +141,10 @@ def test_non_owner_approval_does_not_count_for_trust_roots():
 ])
 def test_governance_files_outside_github_are_trust_roots(path):
     ev = evidence(files=(path,))
-    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
+    assert m.qa_findings(ev) == []
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.QA_EVIDENCE_CHECKS[-1]]
+    assert f"QA_EVIDENCE_MISSING:{m.QA_EVIDENCE_CHECKS[-1]}" in m.qa_findings(ev)
 
 
 def test_ordinary_engine_code_stays_autonomous():
@@ -151,10 +152,12 @@ def test_ordinary_engine_code_stays_autonomous():
     assert m.qa_findings(ev) == []
 
 
-def test_owner_authored_trust_root_pr_can_never_pass():
-    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[
-        {"user": OWNER, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"}])
-    assert "QA_TRUST_ROOT_OWNER_AUTHORED" in m.qa_findings(ev)
+def test_owner_authored_trust_root_still_requires_same_exact_head_qa_evidence():
+    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER)
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
+    assert m.qa_findings(ev) == []
+    ev["check_runs"] = [dict(r, head_sha=OLD) for r in ev["check_runs"]]
+    assert all(f"QA_EVIDENCE_MISSING:{n}" in m.qa_findings(ev) for n in m.QA_EVIDENCE_CHECKS)
 
 
 # --- Release decisions --------------------------------------------------------------
@@ -510,12 +513,18 @@ def test_rename_out_of_trust_root_holds_both_qa_and_release(source):
     ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(files=renamed, changed=1)))
     assert ev["evidence_errors"] == []
     assert ev["files"] == ["docs/relocated-unprotected-file.md", source]
-    ev["check_runs"] = evidence()["check_runs"]
-    assert m.qa_findings(evidence(files=("docs/relocated-unprotected-file.md",))) == []
-    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+    ev["check_runs"] = [r for r in evidence()["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
+    assert m.is_trust_root(source, frozenset(m.governance_trust_roots(m.REPO_ROOT)))
+    assert m.qa_findings(ev) == []  # rename origin remains classified as protected
+    ordinary = evidence(files=("docs/relocated-unprotected-file.md",))
+    ordinary["check_runs"] = ev["check_runs"]
+    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in m.qa_findings(ordinary)
+    # The protected rename cannot waive independent exact-head source checks.
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.QA_EVIDENCE_CHECKS[0]]
+    assert f"QA_EVIDENCE_MISSING:{m.QA_EVIDENCE_CHECKS[0]}" in m.qa_findings(ev)
     with_qa(ev)
     findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
-    assert "RELEASE_QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in findings
+    assert f"RELEASE_QA_EVIDENCE_MISSING:{m.QA_EVIDENCE_CHECKS[0]}" in findings
 
 
 def test_rename_origin_missing_or_invalid_fails_closed():
