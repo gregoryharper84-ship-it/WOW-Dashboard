@@ -96,6 +96,18 @@ def test_non_release_fact_objects_hold(value):
     assert_inert(result)
 
 
+def test_subclass_cannot_override_claim_fields():
+    class Forged(ReleaseFacts):
+        @property
+        def credential_scope_attested(self):
+            return True
+
+    result = admission(Forged(**good().__dict__))
+    assert result["status"] == "HOLD"
+    assert "RELEASE_FACTS_INVALID" in result["reasons"]
+    assert_inert(result)
+
+
 def test_multiple_unsafe_claims_keep_distinct_reasons():
     result = admission(replace(
         good(), writer_count=True, credential_scope_attested="false",
