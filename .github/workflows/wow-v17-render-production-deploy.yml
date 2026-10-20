@@ -93,7 +93,7 @@ jobs:
 
           MAX_WORKFLOW_RUN_ATTEMPTS = 3
           DEPLOY_WORKFLOW_PATH = ".github/workflows/wow-v17-render-production-deploy.yml"
-          RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "checksPass"
+          RENDER_BLUEPRINT_AUTO_DEPLOY_TRIGGER = "off"
 
           repo = os.environ["GITHUB_REPOSITORY"]
           event_name = os.environ["GITHUB_EVENT_NAME"]
