@@ -491,6 +491,7 @@ def test_pre_governance_receipt_precedes_qa_and_release_but_final_checks_remain_
     assert "qa" not in receipt and "release" not in receipt
 
     later = release_evidence()
+    assert release_checks.qa_findings(later) == []
     missing_qa = release_checks.release_findings(
         later, qa_app_id=5245832, release_app_id=5245853
     )
@@ -545,7 +546,7 @@ def release_evidence():
             "completed_at": "2026-10-17T23:40:00Z",
         }
         for index, name in enumerate(
-            (*release_checks.QA_EVIDENCE_CHECKS, release_checks.TRUSTED_GOVERNANCE_CHECK)
+            release_checks.QA_EVIDENCE_CHECKS
         )
     ]
     return {

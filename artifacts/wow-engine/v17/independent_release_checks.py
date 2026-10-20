@@ -25,7 +25,6 @@ from agent_identity_policy import (  # noqa: E402
 
 GITHUB_ACTIONS_APP_ID = 15368  # only source trusted for workflow evidence checks
 CHANGE_IMPACT_CHECK = "WOW V17 change impact gate"
-TRUSTED_GOVERNANCE_CHECK = "Trusted exact-head engineering governance"
 QA_EVIDENCE_CHECKS = (*REQUIRED_REGRESSION_CHECKS, CHANGE_IMPACT_CHECK)
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -209,12 +208,6 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
             findings.append("QA_TRUST_ROOT_OWNER_AUTHORED")
         elif not _owner_approved_at_head(ev, head):
             findings.append("QA_TRUST_ROOT_OWNER_APPROVAL_MISSING")
-    else:
-        run = _latest(runs, TRUSTED_GOVERNANCE_CHECK, head, GITHUB_ACTIONS_APP_ID)
-        if run is None:
-            findings.append(f"QA_EVIDENCE_MISSING:{TRUSTED_GOVERNANCE_CHECK}")
-        elif run.get("conclusion") != "success":
-            findings.append(f"QA_EVIDENCE_FAILED:{TRUSTED_GOVERNANCE_CHECK}")
     return sorted(set(findings))
 
 

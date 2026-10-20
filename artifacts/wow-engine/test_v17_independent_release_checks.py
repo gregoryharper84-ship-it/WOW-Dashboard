@@ -45,7 +45,7 @@ def evidence(files=("artifacts/wow-engine/v17/x.py",), author="wow-engineering[b
         "pr": {"state": "open", "draft": False, "merged": False, "head_sha": HEAD, "head_repo": REPO,
                "base_ref": "main", "author": author, "changed_files": len(files)},
         "files": list(files),
-        "check_runs": [run_(n, rid=i) for i, n in enumerate((*m.QA_EVIDENCE_CHECKS, m.TRUSTED_GOVERNANCE_CHECK))],
+        "check_runs": [run_(n, rid=i) for i, n in enumerate(m.QA_EVIDENCE_CHECKS)],
         "reviews": [],
     }
     for key, value in over.items():
@@ -62,11 +62,11 @@ TRUST_ROOT_FILES = (".github/workflows/wow-v17-claude-engineering-worker.yml",)
 # --- QA decisions --------------------------------------------------------------------
 
 
-def test_ordinary_pr_with_complete_exact_head_evidence_passes():
+def test_ordinary_pr_passes_with_exact_head_ci_without_trusted_receipt():
     assert m.qa_findings(evidence()) == []
 
 
-@pytest.mark.parametrize("name", [*m.QA_EVIDENCE_CHECKS, m.TRUSTED_GOVERNANCE_CHECK])
+@pytest.mark.parametrize("name", m.QA_EVIDENCE_CHECKS)
 def test_each_missing_or_failed_evidence_check_holds(name):
     ev = evidence()
     ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != name]
@@ -77,9 +77,21 @@ def test_each_missing_or_failed_evidence_check_holds(name):
 
 def test_same_named_check_from_another_app_is_ignored():
     ev = evidence()
-    name = m.TRUSTED_GOVERNANCE_CHECK
+    name = m.CHANGE_IMPACT_CHECK
     ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != name] + [run_(name, app=424242, rid=50)]
     assert f"QA_EVIDENCE_MISSING:{name}" in m.qa_findings(ev)
+
+
+@pytest.mark.parametrize("run", [
+    None,
+    run_("Trusted exact-head engineering governance", "failure"),
+    run_("Trusted exact-head engineering governance", app=424242),
+])
+def test_trusted_governance_receipt_is_not_an_ordinary_qa_prerequisite(run):
+    ev = evidence()
+    if run is not None:
+        ev["check_runs"].append(run)
+    assert m.qa_findings(ev) == []
 
 
 def test_evidence_at_another_commit_does_not_count():
@@ -112,7 +124,6 @@ def test_ineligible_or_unreadable_pr_holds(over, code):
 
 def test_trust_root_pr_needs_owner_approval_of_this_exact_head():
     ev = evidence(files=TRUST_ROOT_FILES)
-    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
     assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
     ev["reviews"] = [{"user": OWNER, "state": "APPROVED", "commit_id": OLD, "submitted_at": "2026-10-09T01:00:00Z"}]
     assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
@@ -381,7 +392,7 @@ def _run_decide(tmp, wf, routes, env_extra):
 def _evidence_runs(extra=()):
     runs = [{"id": i, "name": n, "head_sha": HEAD, "status": "completed", "conclusion": "success",
              "app": {"id": GHA}, "completed_at": "2026-10-09T03:00:00Z"}
-            for i, n in enumerate((*m.QA_EVIDENCE_CHECKS, m.TRUSTED_GOVERNANCE_CHECK))]
+            for i, n in enumerate(m.QA_EVIDENCE_CHECKS)]
     return runs + list(extra)
 
 
@@ -406,12 +417,12 @@ def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, ev
 
 
 def test_qa_workflow_publishes_failure_when_evidence_is_missing(fake_gh):
-    runs = [r for r in _evidence_runs() if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
+    runs = [r for r in _evidence_runs() if r["name"] != m.CHANGE_IMPACT_CHECK]
     proc, runner, _ = _run_decide(fake_gh, QA_WF, _routes_for_pr(runs), {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null"})
     assert proc.returncode == 0, proc.stderr
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "failure"
-    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in decision["findings"]
+    assert f"QA_EVIDENCE_MISSING:{m.CHANGE_IMPACT_CHECK}" in decision["findings"]
 
 
 def test_invalid_dispatch_target_fails_without_publishing(fake_gh):

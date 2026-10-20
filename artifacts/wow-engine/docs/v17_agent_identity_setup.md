@@ -101,10 +101,11 @@ separation comes from pinning each required check to its App's `integration_id` 
    Store the private keys as **environment secrets only**, never repository secrets: `WOW_QA_APP_PRIVATE_KEY` under environment `wow-qa`, and `WOW_RELEASE_APP_PRIVATE_KEY` under environment `wow-release`. Restrict each environment's deployment branches to **only protected `main`** before adding secrets. Each workflow job declares only its role's environment. Do not grant Engineering Workflows: write until environment restrictions and trust-root protection are independently proven. While a role's `WOW_*_APP_ID` variable is unset the job is skipped (not activated, no red runs); once it is set,
    a missing key fails closed with `QA_APP_CREDENTIAL_MISSING` / `RELEASE_APP_CREDENTIAL_MISSING` and publishes nothing.
    - **QA passes only if**, at the exact head and from `github-actions` only: the 3 regression checks and the change
-     impact gate pass, and the trusted governance gate passes. For **trust-root** changes, the owner's latest review
-     must instead be APPROVED on this exact head, and an owner-authored trust-root PR can never pass. Trust roots are
-     `.github/`, `.agents/`, and every file a governance workflow executes or reads, including its local imports and
-     this QA module itself (`agent_identity_policy.governance_trust_roots()`). So no ordinary PR can weaken the gates.
+     impact gate pass. The trusted governance receipt is evaluated independently and is not a prerequisite of the
+     ordinary QA decision. For **trust-root** changes, the owner's latest review must instead be APPROVED on this exact
+     head, and an owner-authored trust-root PR can never pass. Trust roots are `.github/`, `.agents/`, and every file a
+     governance workflow executes or reads, including its local imports and this QA module itself
+     (`agent_identity_policy.governance_trust_roots()`). So no ordinary PR can weaken the gates.
    - **Release passes only if** it independently re-derives every QA condition and finds a successful QA check from
      the QA App, with QA and Release bound to different Apps.
    - Triggers: upstream workflow completion, an hourly sweep (bounded to 20 open PRs) and manual dispatch per PR.
