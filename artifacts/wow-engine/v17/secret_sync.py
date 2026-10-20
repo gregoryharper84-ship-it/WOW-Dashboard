@@ -350,11 +350,11 @@ def run_sync(
     release_request_file: Path | None = None,
 ) -> SyncSummary:
     env = dict(os.environ if environ is None else environ)
-    render_api_key = str(env.get("RENDER_API_KEY", ""))
+    render_api_key = str(env.get("WOW_SECRET_SYNC_RENDER_API_KEY", ""))
     if not render_api_key:
         raise SecretSyncError(
-            "BOOTSTRAP_RENDER_API_KEY_UNCONFIGURED",
-            "RENDER_API_KEY is required to synchronize Render environment variables",
+            "BOOTSTRAP_SYNC_RENDER_CREDENTIAL_UNCONFIGURED",
+            "WOW_SECRET_SYNC_RENDER_API_KEY must be configured for the isolated secret-sync principal",
         )
 
     reverse_token = str(env.get("WOW_GITHUB_SECRET_SYNC_TOKEN", ""))
