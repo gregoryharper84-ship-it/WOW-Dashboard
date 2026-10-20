@@ -123,7 +123,10 @@ jobs:
               response=$(gh api "${endpoint}&per_page=100&page=${page}")
               items=$(jq -ce "$selector" <<<"$response")
               count=$(jq 'length' <<<"$items")
-              accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
+              accumulated=$(
+                printf '%s\n%s\n' "$accumulated" "$items" |
+                  jq -cse 'if (length == 2 and all(.[]; type == "array")) then .[0] + .[1] else error("EXISTING_PR_API_ARRAY_INVALID") end'
+              )
               [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
               page=$((page + 1))
             done
@@ -185,7 +188,10 @@ jobs:
               response=$(gh api "${endpoint}?per_page=100&page=${page}")
               items=$(jq -ce "$selector" <<<"$response")
               count=$(jq 'length' <<<"$items")
-              accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
+              accumulated=$(
+                printf '%s\n%s\n' "$accumulated" "$items" |
+                  jq -cse 'if (length == 2 and all(.[]; type == "array")) then .[0] + .[1] else error("EXISTING_PR_API_ARRAY_INVALID") end'
+              )
               [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
               page=$((page + 1))
             done
@@ -205,18 +211,27 @@ jobs:
             '[.[] | {filename,previous_filename,status}]')
           reviews=$(api_array "${api}/pulls/${PR_NUMBER}/reviews" '.')
           checks=$(api_array "${api}/commits/${HEAD_SHA}/check-runs" '.check_runs')
-          workflow_runs=$(cat ".governance-review-evidence/workflow-runs.json")
 
           current_sha=$(gh api "${api}/pulls/${PR_NUMBER}" --jq '.head.sha')
           [ "$current_sha" = "$HEAD_SHA" ] || { echo "EXISTING_PR_HEAD_MOVED_DURING_CAPTURE" >&2; exit 1; }
-          jq -n \
-            --argjson pr "$pr_json" \
-            --argjson changed_files "$changed_files" \
-            --argjson reviews "$reviews" \
-            --argjson check_runs "$checks" \
-            --argjson workflow_runs "$workflow_runs" \
-            '{complete_inventory:true,pr:$pr,changed_files:$changed_files,reviews:$reviews,
-              check_runs:$check_runs,workflow_runs:$workflow_runs}' \
+          parts="$RUNNER_TEMP/wow-existing-pr-evidence-parts"
+          mkdir -p "$parts"
+          printf '%s\n' "$pr_json" > "$parts/pr.json"
+          printf '%s\n' "$changed_files" > "$parts/changed_files.json"
+          printf '%s\n' "$reviews" > "$parts/reviews.json"
+          printf '%s\n' "$checks" > "$parts/check_runs.json"
+          jq -en \
+            --slurpfile pr "$parts/pr.json" \
+            --slurpfile changed_files "$parts/changed_files.json" \
+            --slurpfile reviews "$parts/reviews.json" \
+            --slurpfile check_runs "$parts/check_runs.json" \
+            --slurpfile workflow_runs ".governance-review-evidence/workflow-runs.json" \
+            'if ([$pr, $changed_files, $reviews, $check_runs, $workflow_runs] | all(length == 1))
+               and ($pr[0] | type == "object")
+               and ([$changed_files[0], $reviews[0], $check_runs[0], $workflow_runs[0]] | all(type == "array"))
+             then {complete_inventory:true,pr:$pr[0],changed_files:$changed_files[0],reviews:$reviews[0],
+                   check_runs:$check_runs[0],workflow_runs:$workflow_runs[0]}
+             else error("EXISTING_PR_EVIDENCE_INVALID") end' \
             > ".governance-review-evidence/evidence.json"
 
       - name: Build and verify review-evidence receipt
@@ -264,7 +279,10 @@ jobs:
                 response=$(gh api "${endpoint}?per_page=100&page=${page}")
                 items=$(jq -ce "$selector" <<<"$response")
                 count=$(jq 'length' <<<"$items")
-                accumulated=$(jq -cn --argjson current "$accumulated" --argjson next "$items" '$current + $next')
+                accumulated=$(
+                  printf '%s\n%s\n' "$accumulated" "$items" |
+                    jq -cse 'if (length == 2 and all(.[]; type == "array")) then .[0] + .[1] else error("EXISTING_PR_API_ARRAY_INVALID") end'
+                )
                 [ "$count" -lt 100 ] && { printf '%s\n' "$accumulated"; return 0; }
                 page=$((page + 1))
               done
@@ -307,8 +325,12 @@ jobs:
               echo "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" >&2
               exit 1
             }
-            jq -n --argjson evidence "$(cat "$evidence")" --argjson check_runs "$checks" \
-              '$evidence | .check_runs = $check_runs' > "${evidence}.tmp"
+            printf '%s\n' "$checks" > "$RUNNER_TEMP/wow-bootstrap-check-runs.json"
+            jq -e --slurpfile check_runs "$RUNNER_TEMP/wow-bootstrap-check-runs.json" \
+              'if (type == "object") and ($check_runs | length == 1) and ($check_runs[0] | type == "array")
+               then .check_runs = $check_runs[0] else error("EXISTING_PR_BOOTSTRAP_EVIDENCE_INVALID") end' \
+              "$evidence" > "${evidence}.tmp"
+            rm -f "$RUNNER_TEMP/wow-bootstrap-check-runs.json"
             mv "${evidence}.tmp" "$evidence"
           fi
 
