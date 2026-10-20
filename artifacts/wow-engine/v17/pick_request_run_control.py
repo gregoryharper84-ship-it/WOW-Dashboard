@@ -33,6 +33,7 @@ CONTROL_VERSION = "V17_PICK_REQUEST_RUN_CONTROL_V1"
 IDENTITY_VERSION = "V2_SEMANTIC_UTC"
 _STATE_KEY = "wow_pick_request_run_control_installed"
 _TERMINAL_RUN_PREFIXES = ("STOPPED_", "CLOSED")
+RUN_CLOSED_ROW_TERMINAL = "RUN_CLOSED_BEFORE_TERMINAL"
 
 _ORIGINAL_BEGIN = state.PickRequestStateStore.begin
 _ORIGINAL_FINALIZE = state.PickRequestStateStore.finalize
@@ -219,6 +220,19 @@ def _closure_safe_finalize(
     ctx: state.RunContext,
     outcomes: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    # A row held by closure has already terminated; a late worker finalize must
+    # not terminate it a second time.
+    closure_held = {
+        str(item.get("row_key"))
+        for item in self._load_all(ctx.run_id)
+        if item.get("terminal_code") == RUN_CLOSED_ROW_TERMINAL
+    }
+    if closure_held:
+        outcomes = [
+            item
+            for item in outcomes
+            if not (isinstance(item, dict) and str(item.get("row_key") or "") in closure_held)
+        ]
     manifest = _ORIGINAL_FINALIZE(self, ctx, outcomes)
     run = _run_row(self.db, ctx.run_id)
     if run and run.get("closed_at") and run.get("closure_code"):
@@ -392,6 +406,9 @@ def close_run(db: Any, request_id: str, request: ClosePickRunRequest) -> dict[st
         }
     )
     db.table(state.RUN_TABLE).upsert(updated, on_conflict="run_id").execute()
+    held_at_closure = 0
+    if not updated["reopen_allowed"]:
+        held_at_closure = _hold_pending_rows_at_closure(db, updated, closure_code)
     return {
         "request_id": request_id,
         "run_id": run.get("run_id"),
@@ -399,8 +416,83 @@ def close_run(db: Any, request_id: str, request: ClosePickRunRequest) -> dict[st
         "closure_code": updated["closure_code"],
         "closed_at": closed_at,
         "reopen_allowed": updated["reopen_allowed"],
+        "rows_held_at_closure": held_at_closure,
         "can_execute": False,
     }
+
+
+def _closure_held_outcome(record: dict[str, Any], closure_code: str) -> dict[str, Any]:
+    return {
+        "row_key": record.get("row_key"),
+        "terminal_status": "HELD",
+        "code": RUN_CLOSED_ROW_TERMINAL,
+        "model_evaluated": False,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "pick_rejected": False,
+        "infrastructure_blocked": True,
+        "detail": {
+            "run_closure_code": closure_code,
+            "stage_at_closure": record.get("current_stage"),
+            "specialist_scoring_attempted": False,
+            "can_execute": False,
+        },
+        "can_execute": False,
+    }
+
+
+def _hold_pending_rows_at_closure(db: Any, run: dict[str, Any], closure_code: str) -> int:
+    """Terminate rows a non-reopenable closure would otherwise strand as PENDING.
+
+    Closed runs refuse resume, so a PENDING row could never reach a terminal
+    state and the run could never satisfy rows_in = completed + held + rejected.
+    Only rows with no terminal status are touched; model-evaluated rows keep
+    their own outcome.
+    """
+    run_id = str(run["run_id"])
+    rows = state.PickRequestStateStore(db)._load_all(run_id)
+    now = state._now()
+    held: list[dict[str, Any]] = []
+    for record in rows:
+        if record.get("terminal_status") != "PENDING":
+            continue
+        updated = dict(record)
+        updated.update(
+            {
+                "terminal_status": "HELD",
+                "terminal_code": RUN_CLOSED_ROW_TERMINAL,
+                "failure_domain": "RUN_CLOSURE",
+                "model_evaluated": False,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "outcome": _closure_held_outcome(record, closure_code),
+                "can_execute": False,
+                "updated_at": now,
+            }
+        )
+        held.append(updated)
+    if held:
+        db.table(state.ROW_TABLE).upsert(held, on_conflict="run_id,row_key").execute()
+    by_key = {str(item.get("row_key")): item for item in rows}
+    by_key.update({str(item.get("row_key")): item for item in held})
+    final = list(by_key.values())
+    counts = {
+        "total_rows": len(final),
+        "completed_rows": sum(item.get("terminal_status") == "COMPLETED" for item in final),
+        "held_rows": sum(item.get("terminal_status") == "HELD" for item in final),
+        "rejected_rows": sum(item.get("terminal_status") == "REJECTED" for item in final),
+        "pending_rows": sum(item.get("terminal_status") == "PENDING" for item in final),
+        "unresolved_rows": sum(
+            item.get("model_evaluated") is True
+            and int(item.get("stage_seq") or 0) < state.STAGE_SEQ["RECEIPT_PERSISTED"]
+            for item in final
+        ),
+    }
+    db.table(state.RUN_TABLE).upsert(
+        {**run, **counts, "updated_at": now, "can_execute": False},
+        on_conflict="run_id",
+    ).execute()
+    return len(held)
 
 
 def _seed_manifest(db: Any, request: ResumablePickRunRequest) -> None:
