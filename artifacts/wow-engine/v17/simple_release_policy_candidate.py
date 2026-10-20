@@ -49,7 +49,10 @@ def _get(fetch: Fetch, path: str, kind: type = dict) -> Any:
 def _pages(fetch: Fetch, path: str, key: str | None = None) -> list[dict]:
     items = []
     for page in range(1, 11):
-        body = _get(fetch, f"{path}?per_page=100&page={page}", dict if key else list)
+        query = f"per_page=100&page={page}"
+        if key == "check_runs":
+            query += "&filter=all"
+        body = _get(fetch, f"{path}?{query}", dict if key else list)
         rows = body.get(key) if key else body
         _require(isinstance(rows, list) and all(isinstance(r, dict) for r in rows),
                  "GITHUB_EVIDENCE_SCHEMA_INVALID:" + path)
@@ -104,7 +107,7 @@ def _policy(ruleset: dict, effective: list[dict]) -> str:
 
 def _check(checks: list[dict], name: str, sha: str, app: int) -> dict:
     matching = [c for c in checks if c.get("name") == name and c.get("head_sha") == sha
-                and c.get("app", {}).get("id") == app]
+                and (c.get("app") or {}).get("id") == app]
     _require(bool(matching), "CHECK_MISSING_STALE_OR_FOREIGN:" + name)
     _require(all(type(c.get("id")) is int and c["id"] > 0 for c in matching),
              "CHECK_ID_INVALID:" + name)
@@ -119,6 +122,7 @@ def _authorization(fetch: Fetch, root: str, run: dict, target_sha: str) -> str:
     env = _get(fetch, env_path)
     _require(env.get("name") == "wow-release" and type(env.get("id")) is int,
              "ENVIRONMENT_IDENTITY_INVALID")
+    # Not exposed by the published REST schema: missing remains UNKNOWN/HOLD.
     _require(env.get("can_admins_bypass") is False, "ENVIRONMENT_BYPASS_UNPROVEN")
     _require(env.get("deployment_branch_policy") == {
         "protected_branches": False, "custom_branch_policies": True,

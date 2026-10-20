@@ -17,6 +17,8 @@ RUN = ROOT + "/actions/runs/42"
 RULESET = ROOT + f"/rulesets/{candidate.RULESET_ID}"
 MAIN_REF = ROOT + "/git/ref/heads/main"
 EFFECTIVE = ROOT + "/rules/branches/main?per_page=100&page=1"
+HEAD_CHECKS = ROOT + f"/commits/{HEAD}/check-runs?per_page=100&page=1&filter=all"
+MAIN_CHECKS = ROOT + f"/commits/{MAIN}/check-runs?per_page=100&page=1&filter=all"
 
 
 def check(name, app, sha=HEAD, id=1):
@@ -90,7 +92,7 @@ class GitHub:
             MAIN_REF: {"object": {"sha": MAIN}},
             ROOT + f"/commits/{MAIN}/pulls?per_page=100&page=1": [pr],
             ROOT + "/pulls/99": pr,
-            ROOT + f"/commits/{HEAD}/check-runs?per_page=100&page=1": {
+            HEAD_CHECKS: {
                 "total_count": len(checks), "check_runs": checks,
             },
             RUN: {"id": 42, "run_attempt": 1, "event": "workflow_dispatch", "head_sha": MAIN,
@@ -112,7 +114,7 @@ class GitHub:
             ROOT + "/collaborators/independent-reviewer/permission": {
                 "permission": "read", "user": reviewer,
             },
-            ROOT + f"/commits/{MAIN}/check-runs?per_page=100&page=1": {
+            MAIN_CHECKS: {
                 "total_count": 1, "check_runs": [release],
             },
         }
@@ -121,7 +123,7 @@ class GitHub:
 
     @property
     def checks(self):
-        return self.data[ROOT + f"/commits/{HEAD}/check-runs?per_page=100&page=1"]["check_runs"]
+        return self.data[HEAD_CHECKS]["check_runs"]
 
     def fetch(self, path):
         self.calls.append(path)
@@ -178,15 +180,24 @@ def test_qa_stale_foreign_failed_and_malformed_fail_closed(field, value, policy)
 def test_new_pending_qa_does_not_reuse_old_pass():
     github = GitHub()
     github.checks.append(dict(github.checks[-1], id=2, status="in_progress", conclusion=None))
-    github.data[ROOT + f"/commits/{HEAD}/check-runs?per_page=100&page=1"]["total_count"] += 1
+    github.data[HEAD_CHECKS]["total_count"] += 1
     assert github.inspect()["blockers"] == ["CHECK_NOT_SUCCESS:" + journal.QA_CHECK_NAME]
+
+
+def test_nullable_app_and_missing_qa_have_exact_diagnostics():
+    github = GitHub()
+    github.checks[-1]["app"] = None
+    assert github.inspect()["blockers"] == ["CHECK_MISSING_STALE_OR_FOREIGN:" + journal.QA_CHECK_NAME]
+    github.checks.pop()
+    github.data[HEAD_CHECKS]["total_count"] -= 1
+    assert github.inspect()["blockers"] == ["CHECK_MISSING_STALE_OR_FOREIGN:" + journal.QA_CHECK_NAME]
 
 
 @pytest.mark.parametrize("index", range(5))
 def test_every_legacy_context_is_required(index):
     github = GitHub(candidate.LEGACY)
     del github.checks[index]
-    github.data[ROOT + f"/commits/{HEAD}/check-runs?per_page=100&page=1"]["total_count"] -= 1
+    github.data[HEAD_CHECKS]["total_count"] -= 1
     assert github.inspect()["policy_evidence_valid"] is False
 
 
@@ -297,7 +308,7 @@ def test_human_authorization_negative_real_review_history_schema(failure):
 def test_existing_release_app_on_demand_authorization_is_bound_to_run_and_attempt(failure):
     github = GitHub(route="app")
     app = github.data[ENV + "/deployment_protection_rules"]["custom_deployment_protection_rules"][0]
-    release = github.data[ROOT + f"/commits/{MAIN}/check-runs?per_page=100&page=1"]["check_runs"][0]
+    release = github.data[MAIN_CHECKS]["check_runs"][0]
     if failure == "foreign_app":
         app["app"]["id"] = journal.AUTHENTIC_QA_APP_ID
     elif failure == "disabled":
@@ -341,7 +352,7 @@ def test_ambiguous_merged_pr_and_unreadable_or_truncated_api_evidence():
     del github.data["user"]
     assert github.inspect()["blockers"] == ["GITHUB_EVIDENCE_UNREADABLE:user"]
     github = GitHub()
-    github.data[ROOT + f"/commits/{HEAD}/check-runs?per_page=100&page=1"]["total_count"] = 500
+    github.data[HEAD_CHECKS]["total_count"] = 500
     assert github.inspect()["blockers"][0].startswith("GITHUB_EVIDENCE_TRUNCATED:")
 
 
