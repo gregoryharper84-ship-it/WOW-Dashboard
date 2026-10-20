@@ -21,6 +21,8 @@ SECRET_BRACKET_REF_RE = re.compile(r"\bsecrets\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\
 
 CONTROL_PLANE_KEYS = {
     "RENDER_API_KEY",
+    "WOW_SECRET_SYNC_RENDER_API_KEY",
+    "WOW_MCP_AUTH_TOKEN",
     "WOW_GITHUB_SECRET_SYNC_TOKEN",
     "SUPABASE_SERVICE_ROLE_KEY",
 }
