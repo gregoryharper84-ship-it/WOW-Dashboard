@@ -76,9 +76,17 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY" in text
     verify = (Path(__file__).resolve().parents[3] / ".github/workflows/wow-verify.yml").read_text(encoding="utf-8")
     dispatch = verify.split("dispatch-protected-deploy:", 1)[1]
-    assert "gh workflow run wow-v17-render-production-deploy.yml --ref main" in dispatch
+    assert 'gh workflow run wow-v17-render-production-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main' in dispatch
     assert 'github.event_name == \'workflow_dispatch\'' in dispatch
     assert 'WOW_CAN_EXECUTE: "false"' in dispatch
+
+    # The dispatch job does not checkout a git repository; gh must not invoke
+    # git rev-parse to identify the repo (regression from run 39343326121).
+    assert 'GH_TOKEN: ${{ github.token }}' in dispatch
+    assert 'actions: write' in dispatch
+    assert "github.ref == 'refs/heads/main'" in dispatch
+    assert 'uses: actions/checkout' not in dispatch
+
 
 
 def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():
