@@ -69,7 +69,12 @@ def test_other_service_cannot_be_selected_by_caller():
     (401, b'unauthorized', "HOOK_RESPONSE_HOLD"),
     (404, b'missing', "HOOK_RESPONSE_HOLD"),
     (409, b'conflict', "HOOK_RESPONSE_HOLD"),
-    (500, b'oops', "HOOK_RESPONSE_HOLD"),
+    (408, b'timeout', "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+    (429, b'throttled', "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+    (500, b'oops', "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+    (502, b'upstream-error', "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+    (503, b'provider-unavailable', "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
+    (504, b'gateway-timeout', "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"),
     (True, None, "HOOK_RESPONSE_UNVERIFIED"),
 ])
 def test_response_never_claims_production_acceptance_or_retries(status, body, expected):
@@ -91,3 +96,13 @@ def test_adapter_exports_no_transport_path():
     assert "urlopen" not in module_source
     assert "requests.post" not in module_source
     assert "http.client" not in module_source
+
+
+def test_ambiguous_provider_failure_is_typed_for_read_only_reconciliation():
+    for code in (408, 429, 500, 502, 503, 504):
+        result = classify_hook_ack(code, b'provider may have accepted the deploy')
+        assert result["status"] == "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY"
+        assert result["reason"] == f"HOOK_HTTP_{code}"
+        assert result["retry"] is False
+        assert result["deploy_id"] == ""
+        assert result["can_execute"] is False
