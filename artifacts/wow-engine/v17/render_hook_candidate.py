@@ -87,6 +87,13 @@ def classify_hook_ack(http_status: int, body: bytes | str | None) -> dict[str, o
         return {"status": "HOOK_RESPONSE_UNVERIFIED", "retry": False, "deploy_id": "", "can_execute": False}
     if http_status == 202:
         return {"status": "HOOK_QUEUED_RECONCILE_NO_RETRY", "retry": False, "deploy_id": "", "can_execute": False}
+    # A timeout, throttling response, or provider-side failure does not prove
+    # the request was rejected before the deploy was queued. Under the durable
+    # once-only intent, reconcile provider state read-only; NEVER submit again.
+    if http_status in {408, 429} or 500 <= http_status <= 599:
+        return {"status": "HOOK_ACK_AMBIGUOUS_RECONCILE_NO_RETRY",
+                "reason": "HOOK_HTTP_" + str(http_status),
+                "retry": False, "deploy_id": "", "can_execute": False}
     if http_status != 200:
         return {"status": "HOOK_RESPONSE_HOLD", "reason": "HOOK_HTTP_" + str(http_status),
                 "retry": False, "deploy_id": "", "can_execute": False}
