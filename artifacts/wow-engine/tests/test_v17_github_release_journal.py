@@ -320,7 +320,7 @@ def test_repository_writer_inventory_and_workflow_keep_release_safeguards():
     assert journal_module.RENDER_CREDENTIAL_SCOPE_ATTESTED is False
     sync_text = texts["wow-v17-secret-sync.yml"]
     mcp_text = texts["wow-v17-mcp-remote-acceptance.yml"]
-    assert "secrets.WOW_SECRET_SYNC_RENDER_API_KEY" in sync_text
+    assert "secrets.WOW_RENDER_SYNC_KEY" in sync_text
     assert "secrets.WOW_MCP_AUTH_TOKEN" in mcp_text
     assert "secrets.RENDER_API_KEY" not in sync_text
     assert "secrets.RENDER_API_KEY" not in mcp_text
