@@ -6,8 +6,6 @@ name: wow-v17-engineering-probe-cleanup
 # only gathers the PR list and applies the plan. can_execute=false; never merges.
 
 on:
-  schedule:
-    - cron: "40 */6 * * *"
   workflow_dispatch:
 
 permissions:
