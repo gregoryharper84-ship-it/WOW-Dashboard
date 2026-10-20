@@ -34,6 +34,7 @@ IDENTITY_VERSION = "V2_SEMANTIC_UTC"
 _STATE_KEY = "wow_pick_request_run_control_installed"
 _TERMINAL_RUN_PREFIXES = ("STOPPED_", "CLOSED")
 RUN_CLOSED_ROW_TERMINAL = "RUN_CLOSED_BEFORE_TERMINAL"
+CLOSE_ROWS_RPC = "wow_v17_close_pick_request_run_rows"
 
 _ORIGINAL_BEGIN = state.PickRequestStateStore.begin
 _ORIGINAL_FINALIZE = state.PickRequestStateStore.finalize
@@ -220,19 +221,6 @@ def _closure_safe_finalize(
     ctx: state.RunContext,
     outcomes: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    # A row held by closure has already terminated; a late worker finalize must
-    # not terminate it a second time.
-    closure_held = {
-        str(item.get("row_key"))
-        for item in self._load_all(ctx.run_id)
-        if item.get("terminal_code") == RUN_CLOSED_ROW_TERMINAL
-    }
-    if closure_held:
-        outcomes = [
-            item
-            for item in outcomes
-            if not (isinstance(item, dict) and str(item.get("row_key") or "") in closure_held)
-        ]
     manifest = _ORIGINAL_FINALIZE(self, ctx, outcomes)
     run = _run_row(self.db, ctx.run_id)
     if run and run.get("closed_at") and run.get("closure_code"):
@@ -241,9 +229,22 @@ def _closure_safe_finalize(
         restored["updated_at"] = state._now()
         restored["can_execute"] = False
         self.db.table(state.RUN_TABLE).upsert(restored, on_conflict="run_id").execute()
-        manifest["run_status"] = restored["run_status"]
-        manifest["closed_at"] = restored.get("closed_at")
-        manifest["closure_code"] = restored.get("closure_code")
+        # The database fence keeps closure holds terminal; recount from committed
+        # rows and report committed state rather than this worker's snapshot.
+        reconciliation = _reconcile_closed_run_rows(
+            self.db, ctx.run_id, hold_pending=not bool(run.get("reopen_allowed"))
+        )
+        if reconciliation.get("status") == "RECONCILED":
+            for key in _MANIFEST_COUNT_KEYS:
+                manifest[key] = reconciliation[key]
+            for record in self._load_all(ctx.run_id):
+                row_key = str(record.get("row_key") or "")
+                if record.get("terminal_code") == RUN_CLOSED_ROW_TERMINAL and row_key in ctx.rows:
+                    ctx.rows[row_key].update(record)
+        manifest["run_status"] = str(run["closure_code"])
+        manifest["closed_at"] = run.get("closed_at")
+        manifest["closure_code"] = run.get("closure_code")
+        manifest["row_closure_reconciliation"] = reconciliation
     manifest["can_execute"] = False
     return manifest
 
@@ -382,12 +383,16 @@ def close_run(db: Any, request_id: str, request: ClosePickRunRequest) -> dict[st
             },
         )
     if _is_closed(run):
+        # Repeat close is the retry path for an uncertain row reconciliation.
         return {
             "request_id": request_id,
             "run_status": run.get("run_status"),
             "already_closed": True,
             "closure_code": run.get("closure_code"),
             "closed_at": run.get("closed_at"),
+            "row_closure_reconciliation": _reconcile_closed_run_rows(
+                db, str(run["run_id"]), hold_pending=not bool(run.get("reopen_allowed"))
+            ),
             "can_execute": False,
         }
     closed_at = state._now()
@@ -406,9 +411,9 @@ def close_run(db: Any, request_id: str, request: ClosePickRunRequest) -> dict[st
         }
     )
     db.table(state.RUN_TABLE).upsert(updated, on_conflict="run_id").execute()
-    held_at_closure = 0
-    if not updated["reopen_allowed"]:
-        held_at_closure = _hold_pending_rows_at_closure(db, updated, closure_code)
+    reconciliation = _reconcile_closed_run_rows(
+        db, str(run["run_id"]), hold_pending=not updated["reopen_allowed"]
+    )
     return {
         "request_id": request_id,
         "run_id": run.get("run_id"),
@@ -416,83 +421,55 @@ def close_run(db: Any, request_id: str, request: ClosePickRunRequest) -> dict[st
         "closure_code": updated["closure_code"],
         "closed_at": closed_at,
         "reopen_allowed": updated["reopen_allowed"],
-        "rows_held_at_closure": held_at_closure,
+        "rows_held_at_closure": int(reconciliation.get("rows_held_at_closure") or 0),
+        "row_closure_reconciliation": reconciliation,
         "can_execute": False,
     }
 
 
-def _closure_held_outcome(record: dict[str, Any], closure_code: str) -> dict[str, Any]:
-    return {
-        "row_key": record.get("row_key"),
-        "terminal_status": "HELD",
-        "code": RUN_CLOSED_ROW_TERMINAL,
-        "model_evaluated": False,
-        "probability_publishable": False,
-        "rank_eligible": False,
-        "pick_rejected": False,
-        "infrastructure_blocked": True,
-        "detail": {
-            "run_closure_code": closure_code,
-            "stage_at_closure": record.get("current_stage"),
-            "specialist_scoring_attempted": False,
-            "can_execute": False,
-        },
-        "can_execute": False,
-    }
+_MANIFEST_COUNT_KEYS = (
+    "total_rows",
+    "completed_rows",
+    "held_rows",
+    "rejected_rows",
+    "pending_rows",
+    "unresolved_rows",
+)
 
 
-def _hold_pending_rows_at_closure(db: Any, run: dict[str, Any], closure_code: str) -> int:
-    """Terminate rows a non-reopenable closure would otherwise strand as PENDING.
+def _reconcile_closed_run_rows(db: Any, run_id: str, *, hold_pending: bool) -> dict[str, Any]:
+    """Hold still-PENDING rows and recount the run inside one database transaction.
 
-    Closed runs refuse resume, so a PENDING row could never reach a terminal
-    state and the run could never satisfy rows_in = completed + held + rejected.
-    Only rows with no terminal status are touched; model-evaluated rows keep
-    their own outcome.
+    The RPC re-checks each row under its row lock, so a row a worker terminated
+    first is never overwritten, and it recounts from committed rows. It is
+    idempotent: an uncertain result is resolved by calling close_run again.
     """
-    run_id = str(run["run_id"])
-    rows = state.PickRequestStateStore(db)._load_all(run_id)
-    now = state._now()
-    held: list[dict[str, Any]] = []
-    for record in rows:
-        if record.get("terminal_status") != "PENDING":
-            continue
-        updated = dict(record)
-        updated.update(
-            {
-                "terminal_status": "HELD",
-                "terminal_code": RUN_CLOSED_ROW_TERMINAL,
-                "failure_domain": "RUN_CLOSURE",
-                "model_evaluated": False,
-                "probability_publishable": False,
-                "rank_eligible": False,
-                "outcome": _closure_held_outcome(record, closure_code),
-                "can_execute": False,
-                "updated_at": now,
-            }
-        )
-        held.append(updated)
-    if held:
-        db.table(state.ROW_TABLE).upsert(held, on_conflict="run_id,row_key").execute()
-    by_key = {str(item.get("row_key")): item for item in rows}
-    by_key.update({str(item.get("row_key")): item for item in held})
-    final = list(by_key.values())
-    counts = {
-        "total_rows": len(final),
-        "completed_rows": sum(item.get("terminal_status") == "COMPLETED" for item in final),
-        "held_rows": sum(item.get("terminal_status") == "HELD" for item in final),
-        "rejected_rows": sum(item.get("terminal_status") == "REJECTED" for item in final),
-        "pending_rows": sum(item.get("terminal_status") == "PENDING" for item in final),
-        "unresolved_rows": sum(
-            item.get("model_evaluated") is True
-            and int(item.get("stage_seq") or 0) < state.STAGE_SEQ["RECEIPT_PERSISTED"]
-            for item in final
-        ),
-    }
-    db.table(state.RUN_TABLE).upsert(
-        {**run, **counts, "updated_at": now, "can_execute": False},
-        on_conflict="run_id",
-    ).execute()
-    return len(held)
+    try:
+        result = db.rpc(
+            CLOSE_ROWS_RPC,
+            {"p_run_id": run_id, "p_hold_pending": hold_pending},
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 - typed, value-free uncertain state
+        return {
+            "status": "UNCERTAIN",
+            "code": "RUN_CLOSURE_ROW_RECONCILIATION_UNCERTAIN",
+            "error_type": type(exc).__name__,
+            "retry": "REPEAT_CLOSE_RUN_SAME_REQUEST_ID",
+            "can_execute": False,
+        }
+    data = getattr(result, "data", None)
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict) or not data.get("status"):
+        return {
+            "status": "UNCERTAIN",
+            "code": "RUN_CLOSURE_ROW_RECONCILIATION_INVALID_RESPONSE",
+            "retry": "REPEAT_CLOSE_RUN_SAME_REQUEST_ID",
+            "can_execute": False,
+        }
+    out = dict(data)
+    out["can_execute"] = False
+    return out
 
 
 def _seed_manifest(db: Any, request: ResumablePickRunRequest) -> None:
