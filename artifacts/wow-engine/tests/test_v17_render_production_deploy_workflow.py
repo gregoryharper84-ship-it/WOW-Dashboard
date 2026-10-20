@@ -16,6 +16,11 @@ def _workflow_text() -> str:
     )
 
 
+def _verify_workflow_text() -> str:
+    repo_root = Path(__file__).resolve().parents[3]
+    return (repo_root / ".github" / "workflows" / "wow-verify.yml").read_text(encoding="utf-8")
+
+
 def test_render_deploy_gate_waits_for_protected_main_required_checks():
     text = _workflow_text()
 
@@ -74,23 +79,46 @@ def test_render_deploy_handoff_is_idempotent_and_exact_sha_verified():
     assert "DEPLOY_STILL_BUILDING_OBSERVATION_TIMED_OUT" in text
     assert "journal_preflight = plan_release_admission(" in text
     assert "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY" in text
-    verify = (Path(__file__).resolve().parents[3] / ".github/workflows/wow-verify.yml").read_text(encoding="utf-8")
-    dispatch = verify.split("dispatch-protected-deploy:", 1)[1]
-    qualified_dispatch = (
-        'gh workflow run wow-v17-render-production-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main'
+
+
+def test_ci_completion_has_only_one_protected_release_handoff():
+    deploy = _workflow_text()
+    verify = _verify_workflow_text()
+    triggers = deploy.split("\npermissions:", 1)[0]
+
+    assert triggers.count("\n  workflow_run:\n") == 1
+    assert 'workflows: ["wow-verify"]' in triggers
+    assert "types: [completed]" in triggers
+    assert "branches: [main]" in triggers
+    assert "dispatch-protected-deploy:" not in verify
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in verify
+    assert "actions: write" not in verify
+
+
+def test_manual_and_push_ci_keep_the_required_regression_producers():
+    repo_root = Path(__file__).resolve().parents[3]
+    verify = _verify_workflow_text()
+    engine_verify = (repo_root / ".github" / "workflows" / "wow-engine-verify.yml").read_text(
+        encoding="utf-8"
     )
-    assert qualified_dispatch in dispatch
-    assert "gh workflow run wow-v17-render-production-deploy.yml --ref main" not in dispatch
-    assert 'github.event_name == \'workflow_dispatch\'' in dispatch
-    assert 'WOW_CAN_EXECUTE: "false"' in dispatch
-    assert "GH_TOKEN: ${{ github.token }}" in dispatch
-    assert "permissions:\n      actions: write" in dispatch
-    assert "needs: [required-three, additional-required]" in dispatch
-    assert (
-        "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' "
-        "&& needs.required-three.result == 'success' && needs.additional-required.result == 'success'"
-    ) in dispatch
-    assert "uses: actions/checkout" not in dispatch
+    triggers = verify.split("\npermissions:", 1)[0]
+
+    assert "\n  push:\n" in triggers
+    assert "\n  workflow_dispatch:\n" in triggers
+    assert "name: WOW required-three regression" in verify
+    assert "name: WOW additional required regression" in verify
+    assert "name: WOW governed probability backend" in engine_verify
+
+
+def test_repeated_attempts_remain_inside_the_protected_single_writer_fence():
+    text = _workflow_text()
+
+    assert "group: wow-v17-render-production-deploy" in text
+    assert "cancel-in-progress: false" in text
+    assert "journal_preflight = plan_release_admission(" in text
+    assert "journal.release_lock(render_service_id, target_sha)" in text
+    assert "RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED" in text
+    assert "wow-v17-render-production-deploy.yml" not in _verify_workflow_text()
 
 
 def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():
