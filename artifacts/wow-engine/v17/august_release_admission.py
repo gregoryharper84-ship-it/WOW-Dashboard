@@ -58,7 +58,7 @@ def _check_claims_match(facts: ReleaseFacts) -> bool:
 
 def admission(facts: ReleaseFacts) -> dict[str, Any]:
     """Fail closed on malformed claims. Never grant operational deploy authority."""
-    if not isinstance(facts, ReleaseFacts):
+    if type(facts) is not ReleaseFacts:
         return {
             "status": "HOLD",
             "reasons": ["RELEASE_FACTS_INVALID"],
