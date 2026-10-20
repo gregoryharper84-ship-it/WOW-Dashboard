@@ -179,7 +179,9 @@ def test_secret_sync_workflow_is_protected_main_only_and_never_pr_exposed():
     assert '      - "artifacts/wow-engine/v17/secret_sync.py"' in workflow
     assert '      - "artifacts/wow-engine/v17/secret_sync_manifest.json"' in workflow
     assert "if: github.ref == 'refs/heads/main'" in workflow
-    assert "RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}" in workflow
+    assert "WOW_RENDER_SYNC_KEY: ${{ secrets.WOW_RENDER_SYNC_KEY }}" in workflow
+    assert "RENDER_API_KEY" not in workflow
+    assert "pull_request_target:" not in workflow
     assert "WOW_GITHUB_SECRET_SYNC_TOKEN: ${{ secrets.WOW_GITHUB_SECRET_SYNC_TOKEN }}" in workflow
     assert 'WOW_CAN_EXECUTE: "false"' in workflow
     assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
