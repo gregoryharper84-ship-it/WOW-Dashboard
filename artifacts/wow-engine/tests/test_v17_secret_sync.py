@@ -97,6 +97,21 @@ def test_workflow_secret_discovery_reads_names_only(tmp_path):
     }
 
 
+def test_legacy_render_key_does_not_satisfy_isolated_sync_principal(manifest, tmp_path):
+    render = FakeRender({"RUNDOWN_API_KEY": "old"})
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
+        secret_sync.run_sync(
+            manifest,
+            mode="github-to-render",
+            repo_root=tmp_path,
+            environ={"RENDER_API_KEY": "legacy-key", "RUNDOWN_API_KEY": "new"},
+            render_client=render,
+        )
+    assert exc.value.reason_code == "BOOTSTRAP_SYNC_RENDER_CREDENTIAL_UNCONFIGURED"
+    assert render.set_calls == []
+    assert render.deploy_calls == 0
+
+
 def test_github_to_render_required_missing_fails_closed(manifest, tmp_path):
     render = FakeRender()
     with pytest.raises(secret_sync.SecretSyncError) as exc:
@@ -104,7 +119,7 @@ def test_github_to_render_required_missing_fails_closed(manifest, tmp_path):
             manifest,
             mode="github-to-render",
             repo_root=tmp_path,
-            environ={"RENDER_API_KEY": "render-control"},
+            environ={"WOW_SECRET_SYNC_RENDER_API_KEY": "render-control"},
             render_client=render,
         )
     assert exc.value.reason_code == "GITHUB_SOURCE_SECRET_UNCONFIGURED"
@@ -120,7 +135,7 @@ def test_both_mode_missing_reverse_bootstrap_fails_before_any_mutation(manifest,
             mode="both",
             repo_root=tmp_path,
             environ={
-                "RENDER_API_KEY": "render-control",
+                "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
                 "RUNDOWN_API_KEY": "new",
             },
             render_client=render,
@@ -137,7 +152,7 @@ def test_github_to_render_updates_secret_and_queues_release_request_without_depl
         mode="github-to-render",
         repo_root=tmp_path,
         environ={
-            "RENDER_API_KEY": "render-control",
+            "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
             "RUNDOWN_API_KEY": "new",
         },
         render_client=render,
@@ -160,7 +175,7 @@ def test_live_auto_deploy_unknown_or_enabled_blocks_secret_mutation(manifest, tm
             mode="github-to-render",
             repo_root=tmp_path,
             environ={
-                "RENDER_API_KEY": "render-control",
+                "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
                 "RUNDOWN_API_KEY": "new",
             },
             render_client=render,
@@ -208,7 +223,7 @@ def test_secret_change_release_receipt_is_durable_typed_and_secret_free(manifest
         manifest,
         mode="github-to-render",
         repo_root=tmp_path,
-        environ={"RENDER_API_KEY": "render-control", "RUNDOWN_API_KEY": "new-secret"},
+        environ={"WOW_SECRET_SYNC_RENDER_API_KEY": "render-control", "RUNDOWN_API_KEY": "new-secret"},
         render_client=render,
     )
     environment = {
@@ -257,7 +272,7 @@ def test_partial_secret_mutation_keeps_release_request_receipt(manifest, tmp_pat
             mode="github-to-render",
             repo_root=tmp_path,
             environ={
-                "RENDER_API_KEY": "render-control",
+                "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
                 "RUNDOWN_API_KEY": "new-secret",
                 "OPTIONAL_API_KEY": "new-optional",
                 "GITHUB_REPOSITORY": manifest["github_repository"],
@@ -290,7 +305,7 @@ def test_secret_readback_mismatch_keeps_request_and_fails_closed(manifest, tmp_p
             mode="github-to-render",
             repo_root=tmp_path,
             environ={
-                "RENDER_API_KEY": "render-control",
+                "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
                 "RUNDOWN_API_KEY": "new-secret",
                 "GITHUB_REPOSITORY": manifest["github_repository"],
                 "GITHUB_REF": "refs/heads/main",
@@ -349,7 +364,7 @@ def test_github_to_render_equal_value_does_not_redeploy(manifest, tmp_path):
         mode="github-to-render",
         repo_root=tmp_path,
         environ={
-            "RENDER_API_KEY": "render-control",
+            "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
             "RUNDOWN_API_KEY": "same",
         },
         render_client=render,
@@ -389,7 +404,7 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
         mode="render-to-github",
         repo_root=tmp_path,
         environ={
-            "RENDER_API_KEY": "render-control",
+            "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
             "WOW_GITHUB_SECRET_SYNC_TOKEN": "github-control",
         },
         render_client=render,
@@ -417,7 +432,7 @@ def test_dry_run_never_mutates_either_store_and_needs_no_github_write_token(mani
         mode="both",
         repo_root=tmp_path,
         environ={
-            "RENDER_API_KEY": "render-control",
+            "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
             "RUNDOWN_API_KEY": "new",
         },
         dry_run=True,
@@ -440,7 +455,7 @@ def test_summary_never_contains_secret_values(manifest, tmp_path):
         mode="github-to-render",
         repo_root=tmp_path,
         environ={
-            "RENDER_API_KEY": "render-control",
+            "WOW_SECRET_SYNC_RENDER_API_KEY": "render-control",
             "RUNDOWN_API_KEY": secret_value,
         },
         render_client=render,
