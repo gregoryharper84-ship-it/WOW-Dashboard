@@ -30,8 +30,11 @@ def test_remote_acceptance_remains_main_only_and_fail_closed():
     assert "if: github.ref == 'refs/heads/main'" in text
     assert "cancel-in-progress: false" in text
     assert "WOW_MCP_ACCEPTANCE_SERVICE_ID: srv-dapfrkrbc2fs73fjjsig" in text
-    assert "WOW_MCP_SHARED_TOKEN" in text
-    assert "::add-mask::" in text
+    assert "WOW_MCP_AUTH_TOKEN: ${{ secrets.WOW_MCP_AUTH_TOKEN }}" in text
+    assert "MCP_ACCEPTANCE_TOKEN_UNCONFIGURED" in text
+    assert "RENDER_API_KEY" not in text
+    assert "WOW_MCP_SHARED_TOKEN" not in text
+    assert "pull_request_target:" not in text
     assert "acceptance:remote:v17" in text
     assert "can_execute=false" in text
     assert "terminal_authority=V17_TERMINAL_REDUCER" in text
@@ -39,6 +42,7 @@ def test_remote_acceptance_remains_main_only_and_fail_closed():
 
 def test_remote_acceptance_never_inlines_mcp_or_backend_credentials():
     text = _text()
-    assert "WOW_MCP_AUTH_TOKEN:" not in text
+    assert "WOW_MCP_AUTH_TOKEN: ${{ secrets.WOW_MCP_AUTH_TOKEN }}" in text
+    assert "WOW_MCP_AUTH_TOKEN: literal" not in text
     assert "WOW_ACTION_API_KEY:" not in text
     assert "server-side-secret-only" not in text
