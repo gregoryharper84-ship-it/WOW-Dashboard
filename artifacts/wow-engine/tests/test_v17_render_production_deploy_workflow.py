@@ -21,13 +21,6 @@ def _verify_workflow_text() -> str:
     return (repo_root / ".github" / "workflows" / "wow-verify.yml").read_text(encoding="utf-8")
 
 
-def _main_verification_reconciler_text() -> str:
-    repo_root = Path(__file__).resolve().parents[3]
-    return (repo_root / ".github" / "workflows" / "wow-v17-main-verification-reconciler.yml").read_text(
-        encoding="utf-8"
-    )
-
-
 def test_render_deploy_gate_waits_for_protected_main_required_checks():
     text = _workflow_text()
 
@@ -92,21 +85,15 @@ def test_ci_completion_has_only_one_protected_release_handoff():
     deploy = _workflow_text()
     verify = _verify_workflow_text()
     triggers = deploy.split("\npermissions:", 1)[0]
-    dispatch = verify.split("dispatch-protected-deploy:", 1)[1]
 
     assert triggers.count("\n  workflow_run:\n") == 1
     assert 'workflows: ["wow-verify"]' in triggers
     assert "types: [completed]" in triggers
     assert "branches: [main]" in triggers
-    assert "inputs.protected_release_handoff == true" in dispatch
-    assert "gh workflow run wow-v17-render-production-deploy.yml" in dispatch
-    assert "actions: write" in dispatch
-    assert "needs: [required-three, additional-required]" in dispatch
-    assert (
-        "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' "
-        "&& inputs.protected_release_handoff == true "
-        "&& needs.required-three.result == 'success' && needs.additional-required.result == 'success'"
-    ) in dispatch
+    assert "workflow_dispatch:" in triggers
+    assert "dispatch-protected-deploy:" not in verify
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in verify
+    assert "actions: write" not in verify
 
 
 def test_manual_and_push_ci_keep_the_required_regression_producers():
@@ -119,23 +106,9 @@ def test_manual_and_push_ci_keep_the_required_regression_producers():
 
     assert "\n  push:\n" in triggers
     assert "\n  workflow_dispatch:\n" in triggers
-    assert "protected_release_handoff:" in triggers
-    assert "default: false" in triggers
     assert "name: WOW required-three regression" in verify
     assert "name: WOW additional required regression" in verify
     assert "name: WOW governed probability backend" in engine_verify
-
-
-def test_main_verification_reconciler_opts_into_the_token_handoff():
-    verify = _verify_workflow_text()
-    reconciler = _main_verification_reconciler_text()
-    dispatch = verify.split("dispatch-protected-deploy:", 1)[1]
-
-    assert "-F 'inputs[protected_release_handoff]=true'" in reconciler
-    assert "-F ref=main" in reconciler
-    assert "MISSING_VERIFY_DISPATCHED_FOR_MAIN" in reconciler
-    assert "inputs.protected_release_handoff == true" in dispatch
-    assert "github.event_name == 'workflow_dispatch'" in dispatch
 
 
 def test_morning_green_keeps_its_separate_single_controller_handoff():
@@ -152,15 +125,14 @@ def test_morning_green_keeps_its_separate_single_controller_handoff():
 def test_repeated_attempts_remain_inside_the_protected_single_writer_fence():
     text = _workflow_text()
     verify = _verify_workflow_text()
-    reconciler = _main_verification_reconciler_text()
 
     assert "group: wow-v17-render-production-deploy" in text
     assert "cancel-in-progress: false" in text
     assert "journal_preflight = plan_release_admission(" in text
     assert "journal.release_lock(render_service_id, target_sha)" in text
     assert "RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED" in text
-    assert verify.count("gh workflow run wow-v17-render-production-deploy.yml") == 1
-    assert "inputs[protected_release_handoff]=true" in reconciler
+    assert "dispatch-protected-deploy:" not in verify
+    assert "gh workflow run wow-v17-render-production-deploy.yml" not in verify
 
 
 def test_render_deploy_post_and_live_readback_recheck_authorized_main_sha():

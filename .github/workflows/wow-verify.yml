@@ -6,12 +6,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      protected_release_handoff:
-        description: Optional direct handoff for API-dispatched verification when workflow_run is unavailable
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -237,23 +231,3 @@ jobs:
         run: |
           echo "additional shards=$SHARD_RESULT"
           test "$SHARD_RESULT" = "success"
-
-  dispatch-protected-deploy:
-    name: Dispatch protected production deploy
-    needs: [required-three, additional-required]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.protected_release_handoff == true && needs.required-three.result == 'success' && needs.additional-required.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - name: Start the single production deploy workflow
-        env:
-          GH_TOKEN: ${{ github.token }}
-          WOW_CAN_EXECUTE: "false"
-        run: |
-          test "$WOW_CAN_EXECUTE" = "false"
-          # Use this opt-in for token-dispatched verification; ordinary manual
-          # dispatches and pushes use the protected workflow_run handoff.
-          gh workflow run wow-v17-render-production-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main
-          echo "PROTECTED_DEPLOY_DISPATCHED_GATES_STILL_REQUIRED"

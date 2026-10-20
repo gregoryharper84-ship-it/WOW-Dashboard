@@ -41,7 +41,6 @@ jobs:
           # Refuse to act against a superseded main commit.
           current_sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
           [ "$main_sha" = "$current_sha" ] || { echo "MAIN_SUPERSEDED_HOLD"; exit 0; }
-          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/dispatches" \
-            -F ref=main -F 'inputs[protected_release_handoff]=true'
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/dispatches" -f ref=main
           echo "MISSING_VERIFY_DISPATCHED_FOR_MAIN:$main_sha"
           echo "CHECKS_AND_INDEPENDENT_RELEASE_PROVENANCE_STILL_REQUIRED"
