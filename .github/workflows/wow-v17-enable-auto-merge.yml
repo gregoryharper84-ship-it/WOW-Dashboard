@@ -15,6 +15,12 @@ name: wow-v17-enable-auto-merge
 #   not by this workflow.
 # - Arming auto-merge grants nothing by itself: branch protection still
 #   requires QA + Release Authority from their own GitHub Apps.
+# - Auto-merge executes as the identity that armed it. A merge executed via
+#   github.token is attributed to github-actions[bot] and GitHub does not
+#   start push workflows for it, so main never received exact-SHA CI or the
+#   release handoff (#1887). Arming therefore uses the wow-engineering App
+#   installation token and fails closed when that credential is absent; it
+#   never falls back to github.token.
 
 on:
   pull_request_target:
@@ -34,13 +40,39 @@ jobs:
       github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    environment: wow-engineering
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
+      # Base ref only, for the local token action; PR code is never checked out.
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::AUTO_MERGE_APP_IDENTITY_MISSING: github.token merges suppress post-merge push CI (#1887); not arming."
+            exit 1
+          fi
+
       - name: Enable auto-merge
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
