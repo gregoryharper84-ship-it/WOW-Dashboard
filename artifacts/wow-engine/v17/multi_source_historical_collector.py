@@ -92,14 +92,20 @@ def _approved_source(sport: str, provider: str, manifest_path: Path = MANIFEST_P
 
 def _allowed_initial_url(url: str) -> bool:
     p = urlparse(url)
-    if p.scheme != 'https' or p.username or p.password or p.port not in (None, 443):
+    if p.scheme != 'https' or p.username or p.password or p.port not in (None, 443) or p.query or p.fragment:
         return False
     if p.hostname == 'statsapi.mlb.com':
-        return bool(re.fullmatch(r'/api/v1\.1/game/[0-9]{1,12}/feed/live', p.path)) and not p.query
+        return bool(re.fullmatch(r'/api/v1\.1/game/[0-9]{1,12}/feed/live', p.path))
     if p.hostname == 'github.com':
         return bool(re.fullmatch(
             r'/sportsdataverse/sportsdataverse-data/releases/download/'
-            r'wnba_stats_player_game_logs/player_game_logs_20[0-9]{2}\.csv', p.path)) and not p.query
+            r'wnba_stats_player_game_logs/player_game_logs_20[0-9]{2}\.csv', p.path
+        ) or re.fullmatch(
+            r'/nflverse/nflverse-data/releases/download/'
+            r'stats_player/stats_player_week_20[0-9]{2}\.csv', p.path
+        ))
+    if p.hostname == 'raw.githubusercontent.com':
+        return p.path == '/nflverse/nfldata/master/data/games.csv'
     return False
 
 
