@@ -647,6 +647,33 @@ def test_qa_policy_artifact_authenticates_exact_run_mode_target_and_freshness():
     }
 
 
+@pytest.mark.parametrize("event", ["workflow_dispatch", "workflow_run"])
+def test_qa_policy_accepts_static_workflow_identity_for_github_run_events(event):
+    source_run = {**PRODUCER_RUN, "event": event}
+    api_run = {**CONSUMER_RUN, "event": event}
+    policy = review.build_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY,
+        pr_number=1822,
+        head_sha=HEAD,
+        head_ref="copilot/fix",
+        mode="independent",
+        run=source_run,
+        now=NOW,
+    )
+
+    assert policy["source"]["workflow_name"] == review.WORKFLOW_NAME
+    assert api_run["name"] == policy["source"]["workflow_name"] == review.WORKFLOW_NAME
+    review.verify_qa_review_policy(
+        policy,
+        run=api_run,
+        expected_repository=review.CANONICAL_REPOSITORY,
+        expected_pr_number=1822,
+        expected_head_sha=HEAD,
+        expected_attempt=1,
+        now=NOW + timedelta(minutes=1),
+    )
+
+
 def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path):
     policy = qa_policy("canary")
     run_path = tmp_path / "run.json"
@@ -665,10 +692,11 @@ def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path
 
 
 @pytest.mark.parametrize(("field", "value", "reason"), [
-    ("name", "foreign-workflow", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("name", "wow-v17-independent-qa-check event=workflow_run pr=AUTO", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("path", ".github/workflows/other.yml", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("head_branch", "feature", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("conclusion", "cancelled", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("id", 999, "QA_POLICY_RUN_ID_MISMATCH"),
     ("run_attempt", 2, "QA_POLICY_RUN_ATTEMPT_MISMATCH"),
 ])
 def test_qa_policy_rejects_foreign_failed_or_replayed_producer_run(field, value, reason):
@@ -772,6 +800,7 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     review_step = next(step for step in steps if step.get("name") == "Run isolated read-only adversarial review")
     publisher_step = next(step for step in steps if step.get("name") == "Mint checks-only App token")
 
+    assert parsed["run-name"] == review.WORKFLOW_NAME
     assert "github.ref == 'refs/heads/main'" in workflow
     assert parsed["on"]["workflow_run"]["workflows"] == [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
