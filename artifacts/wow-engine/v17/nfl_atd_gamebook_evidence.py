@@ -48,10 +48,19 @@ def _abbrev(fullname: str) -> str | None:
 
 def _official_url(url: str, season: int, week: int) -> bool:
     parsed=urlparse(url)
-    if (parsed.scheme!="https" or parsed.hostname!="www.nflgsis.com"
-        or parsed.query or parsed.fragment or parsed.username or parsed.password):
+    if (parsed.scheme!="https" or parsed.query or parsed.fragment
+        or parsed.username or parsed.password or parsed.port not in (None, 443)):
         return False
-    return bool(re.fullmatch(rf"/{season}/REG/{week:02d}/\d{{5,6}}/Gamebook\.pdf",parsed.path))
+    if parsed.hostname=="www.nflgsis.com":
+        return bool(re.fullmatch(rf"/{season}/REG/{week:02d}/\d{{5,6}}/Gamebook\.pdf",parsed.path))
+    # NFL.com game center links resolve to this official static PDF host.
+    # Cross-check season/week by the PDF's actual date/matchup below.
+    if parsed.hostname=="static.www.nfl.com":
+        return bool(re.fullmatch(
+            r"/image/upload/v\d{8,12}/gamecenter/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.pdf",
+            parsed.path,
+        ))
+    return False
 
 def _extract_page_1(pdf_bytes: bytes) -> str:
     from pypdf import PdfReader
