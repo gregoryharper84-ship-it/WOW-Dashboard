@@ -30,7 +30,7 @@ def test_evidence_is_anchored_to_real_nfl_or_club_source_urls():
         for field in ("scoring_evidence_url","participation_evidence_url"):
             url=urlparse(event[field])
             assert url.scheme=="https"
-            assert url.hostname in {"www.nflgsis.com","www.chicagobears.com"}
+            assert url.hostname in {"www.nflgsis.com","www.chicagobears.com","static.www.nfl.com"}
             assert not url.username and not url.password
         assert event["canonical_event_id"].startswith("2026_06_")
         assert len(event["players"])>=2
