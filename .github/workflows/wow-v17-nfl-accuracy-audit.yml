@@ -13,6 +13,10 @@ on:
       - "artifacts/wow-engine/test_v17_nfl_accuracy_audit.py"
       - ".github/workflows/wow-v17-nfl-accuracy-audit.yml"
 
+concurrency:
+  group: wow-v17-nfl-accuracy-audit-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
