@@ -210,3 +210,26 @@ def test_terminal_role_success_stops_duplicate_dispatch():
     got = advise_reentry(previous=None, current=decision(), role="qa",
                          active_lease=False, already_completed=True)
     assert got.state == "NOOP"
+
+def test_provider_quota_recovery_can_reenter_without_ci_state_change():
+    ready = decision()
+    first = advise_reentry(previous=ready, current=ready, role="qa",
+                           active_lease=False, provider_state="quota_exceeded")
+    assert first.state == "WAIT"
+    later = advise_reentry(previous=ready, current=ready, role="qa",
+                           active_lease=False, previous_provider_state="quota_exceeded",
+                           provider_state="available")
+    assert later.state == "READY_FOR_EXTERNAL_DISPATCH"
+    assert not later.dispatch_authorized
+
+
+def test_qa_artifact_arrival_can_reenter_release_after_ci_already_ready():
+    ready = decision()
+    before = advise_reentry(previous=ready, current=ready, role="release",
+                            active_lease=False, qa_receipt_verified=False)
+    assert before.state == "HOLD"
+    after = advise_reentry(previous=ready, current=ready, role="release",
+                           active_lease=False, qa_receipt_verified=True,
+                           previous_qa_receipt_verified=False)
+    assert after.state == "READY_FOR_EXTERNAL_DISPATCH"
+    assert not after.can_publish_check
