@@ -160,6 +160,76 @@ def test_existing_pr_ci_selector_compiles_and_matches_exact_workflow_path():
     assert proc.stdout.strip() == "completed|success"
 
 
+@pytest.mark.parametrize("newest_first", [True, False])
+@pytest.mark.parametrize("older_conclusion", ["cancelled", "success"])
+@pytest.mark.parametrize(
+    ("status", "conclusion", "expected_rc"),
+    [
+        ("completed", "success", 0),
+        ("completed", "failure", 1),
+        ("completed", "cancelled", 1),
+        ("in_progress", None, 99),
+    ],
+)
+def test_existing_pr_ci_resolves_timestamp_ties_by_run_id(
+    tmp_path, newest_first, older_conclusion, status, conclusion, expected_rc
+):
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    script = next(
+        step["run"]
+        for step in workflow["jobs"]["certify-existing-pr"]["steps"]
+        if step.get("id") == "regression"
+    )
+    verifier = _load_verifier()
+    head = "a" * 40
+    runs = [
+        {
+            "id": index + 100,
+            "name": name,
+            "path": path,
+            "head_sha": head,
+            "created_at": "2026-10-21T14:52:46Z",
+            "status": "completed",
+            "conclusion": "success",
+        }
+        for index, (name, path) in enumerate(verifier.REQUIRED_WORKFLOWS.items())
+    ]
+    older = {**runs[0], "conclusion": older_conclusion}
+    newer = {**older, "id": older["id"] + 1000, "status": status, "conclusion": conclusion}
+    runs[:1] = [newer, older] if newest_first else [older, newer]
+    selected = verifier._latest(
+        runs, name=newer["name"], expected_sha=head, path=newer["path"],
+        time_field="created_at",
+    )
+    assert selected["id"] == newer["id"]
+    (tmp_path / ".governance-review-evidence").mkdir()
+    output = tmp_path / "output"
+    proc = subprocess.run(
+        ["bash", "-c", """
+        gh() { printf '%s\\n' "$WORKFLOW_RUNS"; }
+        sleep() { exit 99; }
+        """ + script],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GITHUB_REPOSITORY": "gregoryharper84-ship-it/WOW-Dashboard",
+            "GITHUB_OUTPUT": str(output),
+            "HEAD_SHA": head,
+            "WORKFLOW_RUNS": json.dumps({"workflow_runs": runs}),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == expected_rc, proc.stdout + proc.stderr
+    if expected_rc == 0:
+        assert output.read_text(encoding="utf-8") == "status=0\n"
+    else:
+        assert not output.exists()
+        if expected_rc == 1:
+            assert f"EXISTING_PR_REQUIRED_CI_FAILED:{newer['name']}" in proc.stderr
+
+
 def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
     text = WORKFLOW.read_text(encoding="utf-8")
     for required in ("wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate", "wow-v17-engineering-auditor-code-health", "wow-v17-spread-forward-shadow", "wow-v17-release-production-verification-agent"):

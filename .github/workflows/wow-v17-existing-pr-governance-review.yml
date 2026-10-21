@@ -269,7 +269,7 @@ jobs:
               required_name="${required_spec%%|*}"
               required_path="${required_spec#*|}"
               match=$(jq -r --arg name "$required_name" --arg path "$required_path" \
-                '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at) | reverse | first | "\(.status)|\(.conclusion // "")"' \
+                '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at, .id) | last | "\(.status)|\(.conclusion // "")"' \
                 <<<"$runs")
               if [ "$match" = "completed|failure" ] || [ "$match" = "completed|cancelled" ] || \
                  [ "$match" = "completed|timed_out" ] || [ "$match" = "completed|action_required" ]; then
