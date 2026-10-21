@@ -107,3 +107,29 @@ def test_unparseable_or_empty_espn_response_fails_closed():
 def test_scoping_cannot_be_changed_to_arbitrary_dates():
     with pytest.raises(CollectionBlocked, match="NFL_ESPN_PILOT_DATE_UNSUPPORTED"):
         compare_espn_date(schedule_csv=SCHEDULE.encode(), espn_json=b"{}", game_day="2025-09-08")
+
+
+def test_two_additional_allowlisted_week_dates_are_scoped_and_independent():
+    import copy
+    for week, day in ((2, "2025-09-14"), (3, "2025-09-21")):
+        # Synthetic game values are only fixture inputs, not real NFL results.
+        schedule = SCHEDULE.replace("2025,1,2025_01_DAL_PHI,REG,2025-09-07",
+                                    f"2025,{week},2025_{week:02d}_DAL_PHI,REG,{day}")
+        event = copy.deepcopy(GAME)
+        event["id"] = f"synthetic-{week}"
+        event["date"] = day + "T17:00:00Z"
+        event["week"] = {"number": week}
+        result = compare_espn_date(schedule_csv=schedule.encode(),
+                                   espn_json=json.dumps({"events": [event]}).encode(), game_day=day)
+        assert result["status"] == "MATCHED"
+        assert result["matched_final_games"] == 1
+        assert result["date"] == day
+        assert result["source_url"].endswith("dates=" + day.replace("-", ""))
+        assert result["full_season_parity_established"] is False
+
+
+def test_other_dates_never_pass_through_source_allowlist():
+    from v17.nfl_espn_independent_parity_1933 import fetch_espn_historical_scoreboard
+    for day in ("2025-09-08", "2026-09-14", "../2025-09-14"):
+        with pytest.raises(CollectionBlocked, match="NFL_ESPN_PILOT_DATE_UNSUPPORTED"):
+            fetch_espn_historical_scoreboard(game_day=day)
