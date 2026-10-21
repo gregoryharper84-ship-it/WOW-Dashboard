@@ -6,6 +6,7 @@
 
 - nflverse `stats_player_week_2025.csv` 2025 immutable expected hash: `e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2` (19,422 raw rows). Source SHA must be freshly checked, never merely asserted.
 - nflverse/nfldata `games.csv` is a distinct file in the **same source family**, not independent publisher validation.
+- `games.csv` was **mutable on `master`** and changed SHA between two live canaries despite retaining 7,548 rows. The pilot now pins the file to upstream commit `a2c9f13593a311b09bfd2d00851e55dbdafb3c8d` (2026-10-21 22:05:13Z), with expected raw SHA-256 `6011ae7b41fe3dcea1572b6e508fc8af3b8e03cf063df2681eb9e9a8c19a4332`. This pin requires a new live read-only verification receipt; do not claim verified until that occurs.
 - The ESPN scoreboard one-day pilot (`2025-09-07`) is independently sourced; it can confirm exact identity/final score for **that calendar date only**, not full-season parity. Capture retrieved UTC, endpoint and exact payload SHA. Never promote an unsupported full-season completeness claim.
 - There are 18 quarantined 2025 regular-season player-stat rows without player IDs. The six audited settlement outcomes are zero in those rows; all opportunity metrics and special-teams outcomes require separate explicit audit before a training-readiness conclusion.
 - Source manifest `NFLVERSE=LICENSE_REVIEW_REQUIRED`; dataset-specific CC-BY-4.0 metadata is not sufficient for automatic V17 production-training entitlement.
