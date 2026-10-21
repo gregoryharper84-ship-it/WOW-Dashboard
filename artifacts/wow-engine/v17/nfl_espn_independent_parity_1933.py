@@ -1,14 +1,14 @@
 """Independent ESPN NFL final-event parity for WOW backlog #1933.
 
-Scope: one historical scoreboard calendar date, exact NFLverse schedule identity,
+Scope: three explicitly allowlisted historical scoreboard calendar dates, NFLverse identity,
 score and UTC kickoff matching. No model capability, staging write or execution.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, timezone
-from typing import Any, Callable, Mapping
+from datetime import datetime, timezone
+from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.parse import urlparse
@@ -19,11 +19,14 @@ from v17.nfl_multi_source_pilot import _read_csv, REQUIRED_SCHEDULE
 
 CAN_EXECUTE = False
 MAX_ESPN_BYTES = 5 * 1024 * 1024
-ESPN_SCOREBOARD_URL = (
-    "https://site.api.espn.com/apis/site/v2/sports/football/nfl/"
-    "scoreboard?dates=20250907"
-)
-PILOT_DAY = "2025-09-07"
+ESPN_SCOREBOARD_URLS = {
+    "2025-09-07": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=20250907",
+    "2025-09-14": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=20250914",
+    "2025-09-21": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=20250921",
+}
+PILOT_DAYS = tuple(ESPN_SCOREBOARD_URLS)
+PILOT_DAY = PILOT_DAYS[0]
+ESPN_SCOREBOARD_URL = ESPN_SCOREBOARD_URLS[PILOT_DAY]
 ESPN_TO_NFLVERSE_TEAM = {
     "LAR": "LA", "WSH": "WAS", "JAC": "JAX", "GNB": "GB", "KAN": "KC",
     "NWE": "NE", "NOR": "NO", "SFO": "SF", "TBB": "TB",
@@ -35,14 +38,17 @@ class _NoRedirects(HTTPRedirectHandler):
         raise CollectionBlocked("NFL_ESPN_UNEXPECTED_REDIRECT")
 
 
-def fetch_espn_historical_scoreboard() -> bytes:
-    """Exactly one public ESPN endpoint, no arbitrary URL inputs or redirects."""
-    parsed = urlparse(ESPN_SCOREBOARD_URL)
-    if parsed.scheme != "https" or parsed.hostname != "site.api.espn.com":
+def fetch_espn_historical_scoreboard(*, game_day: str = PILOT_DAY) -> bytes:
+    """Only three explicit public ESPN date URLs; no arbitrary URL/redirect."""
+    if game_day not in ESPN_SCOREBOARD_URLS:
+        raise CollectionBlocked("NFL_ESPN_PILOT_DATE_UNSUPPORTED")
+    url = ESPN_SCOREBOARD_URLS[game_day]
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "site.api.espn.com" or parsed.query != ("dates=" + game_day.replace("-", "")):
         raise CollectionBlocked("NFL_ESPN_ORIGIN_INVALID")
     try:
         with build_opener(_NoRedirects()).open(
-            Request(ESPN_SCOREBOARD_URL, headers={
+            Request(url, headers={
                 "User-Agent": "WOW-V17-backlog-historical-identity/1.0",
                 "Accept": "application/json",
             }), timeout=18,
@@ -111,7 +117,7 @@ def _event_identity(event: Mapping[str, Any], payload: Mapping[str, Any]) -> dic
 def compare_espn_date(
     *, schedule_csv: bytes, espn_json: bytes, game_day: str = PILOT_DAY,
 ) -> dict[str, Any]:
-    if game_day != PILOT_DAY:
+    if game_day not in ESPN_SCOREBOARD_URLS:
         raise CollectionBlocked("NFL_ESPN_PILOT_DATE_UNSUPPORTED")
     source_schedule = _read_csv(schedule_csv, required=REQUIRED_SCHEDULE, label="schedules")
     try:
@@ -158,7 +164,7 @@ def compare_espn_date(
         "status": status,
         "scope": "ONE_2025_REGULAR_SEASON_DATE",
         "date": game_day,
-        "source_url": ESPN_SCOREBOARD_URL,
+        "source_url": ESPN_SCOREBOARD_URLS[game_day],
         "source_sha256": hashlib.sha256(espn_json).hexdigest(),
         "source": "ESPN_NFL_SCOREBOARD_INDEPENDENT",
         "games_in_scope": len(fixtures),
