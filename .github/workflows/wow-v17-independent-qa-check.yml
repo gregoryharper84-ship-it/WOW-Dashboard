@@ -185,6 +185,7 @@ jobs:
             ${{ runner.temp }}/wow-v17-qa-review-policy.json.sha256
 
       - name: Require isolated adversarial-review credential
+        id: review_credential
         if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
@@ -346,6 +347,7 @@ jobs:
           POLICY_OUTCOME: ${{ steps.policy.outcome }}
           POLICY_RECEIPT_OUTCOME: ${{ steps.policy_receipt.outcome }}
           POLICY_ARTIFACT_OUTCOME: ${{ steps.policy_artifact.outcome }}
+          REVIEW_CREDENTIAL_OUTCOME: ${{ steps.review_credential.outcome }}
           CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           RECHECK_OUTCOME: ${{ steps.recheck.outcome }}
@@ -357,8 +359,9 @@ jobs:
           decision="$RUNNER_TEMP/decisions/decision-$PR_NUMBER.json"
           if [ ! -s "$decision" ]; then
             failed_step=qa_decision_unavailable
-            for step in policy capture review recheck source_review decide; do
+            for step in review_credential policy capture review recheck source_review decide; do
               case "$step" in
+                review_credential) outcome="${REVIEW_CREDENTIAL_OUTCOME:-skipped}" ;;
                 policy) outcome="${POLICY_OUTCOME:-skipped}" ;;
                 capture) outcome="${CAPTURE_OUTCOME:-skipped}" ;;
                 review) outcome="${REVIEW_OUTCOME:-skipped}" ;;

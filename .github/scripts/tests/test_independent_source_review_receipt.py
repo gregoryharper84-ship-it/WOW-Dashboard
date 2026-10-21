@@ -137,6 +137,100 @@ def test_capture_normalized_commit_metadata_is_accepted_by_build_cli(tmp_path):
     assert receipt["review"]["decision"] == "PASS"
 
 
+def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypatch, tmp_path):
+    responses = [
+        pr(),
+        [{"filename": "src/fix.py", "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b",
+          "additions": 1, "deletions": 1}],
+        COMMIT_METADATA,
+        pr(),
+    ]
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self, _limit):
+            return self.payload
+
+    monkeypatch.setattr(review, "urlopen", lambda *_args, **_kwargs: Response(responses.pop(0)))
+    captured = review.capture_pr_evidence(
+        repository=review.CANONICAL_REPOSITORY,
+        pr_number=1822,
+        expected_head_sha=HEAD,
+        token="test-read-only-token",
+    )
+    input_path = tmp_path / "captured.json"
+    result_path = tmp_path / "review.json"
+    run_path = tmp_path / "producer-run.json"
+    receipt_path = tmp_path / "receipt.json"
+    input_path.write_text(json.dumps(captured), encoding="utf-8")
+    result_path.write_text(json.dumps({
+        **RESULT,
+        "reviewed_diff_sha256": captured["diff_sha256"],
+        "reviewed_files": ["src/fix.py"],
+    }), encoding="utf-8")
+    run_path.write_text(json.dumps(PRODUCER_RUN), encoding="utf-8")
+
+    assert review.main([
+        "--build", "--input", str(input_path), "--result", str(result_path),
+        "--run", str(run_path), "--output", str(receipt_path),
+        "--repository", review.CANONICAL_REPOSITORY, "--pr-number", "1822",
+        "--head-sha", HEAD, "--head-ref", "copilot/fix",
+    ]) == 0
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+
+    qa_path = SCRIPT.parents[2] / "artifacts" / "wow-engine" / "v17" / "independent_release_checks.py"
+    qa_spec = importlib.util.spec_from_file_location("independent_release_checks_capture_test", qa_path)
+    qa = importlib.util.module_from_spec(qa_spec)
+    assert qa_spec and qa_spec.loader
+    qa_spec.loader.exec_module(qa)
+    evidence = {
+        "repository": review.CANONICAL_REPOSITORY,
+        "pr_number": 1822,
+        "expected_head_sha": HEAD,
+        "evidence_errors": [],
+        "owner_login": "repository-owner",
+        "pr": {
+            "state": "open", "draft": False, "merged": False, "head_sha": HEAD,
+            "head_ref": "copilot/fix", "head_repo": review.CANONICAL_REPOSITORY,
+            "base_ref": "main", "author": "copilot-swe-agent", "author_id": 123,
+        },
+        "files": ["src/fix.py"],
+        "source_review_paths": ["src/fix.py"],
+        "source_review": {
+            "artifact_id": 77, "artifact": receipt, "run": PRODUCER_RUN,
+            "producer_context": True,
+        },
+        "qa_review_policy": {
+            "mode": "independent",
+            "target": {"pr_number": 1822, "head_sha": HEAD, "head_ref": "copilot/fix"},
+            "canary_scope": None,
+        },
+        "independent_review_active": True,
+        "current_review_active": False,
+        "check_runs": [
+            {"id": index, "name": name, "head_sha": HEAD, "status": "completed",
+             "conclusion": "success", "app_id": 15368, "completed_at": "2026-10-20T12:00:00Z"}
+            for index, name in enumerate(qa.QA_EVIDENCE_CHECKS, start=1)
+        ],
+        "reviews": [],
+    }
+
+    assert qa.decision("qa", qa.qa_findings(evidence), evidence)["conclusion"] == "success"
+    evidence["source_review"].pop("producer_context")
+    assert any(
+        finding.startswith("QA_INDEPENDENT_SOURCE_REVIEW_INVALID:")
+        for finding in qa.qa_findings(evidence)
+    )
+
+
 def verify(value, *, run=None, now=NOW, head=HEAD, attempt=1):
     return review.verify_artifact(
         value,
