@@ -120,7 +120,9 @@ def test_existing_pr_certifier_emits_truthful_exact_head_receipt():
     assert "WOW Release Authority exact-head" not in verifier.REQUIRED_CHECKS
     assert verifier.REVIEW_RECEIPT_MAX_AGE == timedelta(minutes=30)
     assert verifier.FALLBACK_PROVIDER_SUNSET_UTC == "2026-11-01T00:00:00Z"
-    assert "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING" in text
+    assert "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING" in (
+        ROOT / ".github/scripts/verify_existing_pr_governance_receipt.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_existing_pr_receipt_contract_runs_from_the_candidate_checkout():

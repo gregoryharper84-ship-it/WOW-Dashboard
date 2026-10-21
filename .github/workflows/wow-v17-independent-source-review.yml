@@ -172,8 +172,8 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           EXPECTED_HEAD_REF: ${{ steps.capture.outputs.head_ref }}
         run: |
           set -euo pipefail

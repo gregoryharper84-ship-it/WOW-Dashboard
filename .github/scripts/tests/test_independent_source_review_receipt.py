@@ -368,6 +368,10 @@ def test_artifact_checksum_is_verified_by_cli(tmp_path):
 def test_workflow_is_main_only_read_only_and_uses_dedicated_provider_secret():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     parsed = __import__("yaml").load(workflow, Loader=__import__("yaml").BaseLoader)
+    recheck = next(
+        step for step in parsed["jobs"]["independent-source-review"]["steps"]
+        if step.get("name") == "Recheck PR head and diff after review"
+    )
 
     assert "github.ref == 'refs/heads/main'" in workflow
     assert parsed["on"]["workflow_run"]["workflows"] == ["wow-v17-rapid-repair"]
@@ -386,6 +390,8 @@ def test_workflow_is_main_only_read_only_and_uses_dedicated_provider_secret():
     assert "checkout.*inputs" not in workflow
     assert "retention-days: 1" in workflow
     assert "github.run_id" in workflow and "github.run_attempt" in workflow
+    assert recheck["env"]["PR_NUMBER"] == "${{ steps.target.outputs.pr_number }}"
+    assert recheck["env"]["EXPECTED_HEAD_SHA"] == "${{ steps.target.outputs.head_sha }}"
 
 
 def test_capture_uses_read_only_api_and_rejects_head_movement(monkeypatch):
