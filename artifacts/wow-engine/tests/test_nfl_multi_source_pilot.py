@@ -106,6 +106,8 @@ def test_injected_market_field_does_not_enter_pilot_stats():
 def test_only_allowlisted_https_nflverse_dataset_urls():
     assert _allowed_initial_url(PLAYER_URL.format(season=2025))
     assert _allowed_initial_url(SCHEDULE_URL)
+    assert "/a2c9f13593a311b09bfd2d00851e55dbdafb3c8d/" in SCHEDULE_URL
+    assert not _allowed_initial_url("https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv")
     assert not _allowed_initial_url("http://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2025.csv")
     assert not _allowed_initial_url("https://github.com/nflverse/nflverse-data/releases/download/ftn/ftn_2025.csv")
     assert not _allowed_initial_url("https://raw.githubusercontent.com/nflverse/nfldata/master/private.csv")
