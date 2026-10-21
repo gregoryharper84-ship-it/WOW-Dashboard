@@ -76,6 +76,10 @@ def all_ci_checks():
     ]
 
 
+def required_ci_checks():
+    return [make_check(name, id=index + 1) for index, name in enumerate(policy.QA_EVIDENCE_CHECKS)]
+
+
 def journal_test_key():
     return hashlib.sha256(b"dispatcher journal test key").hexdigest()
 
@@ -202,6 +206,107 @@ def test_source_review_gate_is_fail_closed(source_review, runs, expected, findin
         assert finding in result["findings"]
     if expected == "DISPATCH":
         assert result["role"] == "source_review"
+
+
+def test_missing_trusted_gate_does_not_block_read_only_source_review_dispatch():
+    result = classify(
+        source_review="MISSING",
+        check_runs=required_ci_checks(),
+        completed_role_runs={},
+    )
+
+    assert result["action"] == "DISPATCH"
+    assert result["role"] == "source_review"
+    assert result["head_sha"] == HEAD
+
+
+def test_action_required_zero_job_source_review_only_dispatches_reviewer():
+    result = classify(
+        source_review="ACTION_REQUIRED_ZERO_JOBS",
+        check_runs=required_ci_checks(),
+        completed_role_runs={"source_review": "action_required"},
+    )
+
+    assert result["action"] == "DISPATCH"
+    assert result["role"] == "source_review"
+    assert result["head_sha"] == HEAD
+
+    not_verified = classify(
+        source_review="ACTION_REQUIRED_ZERO_JOBS",
+        check_runs=required_ci_checks(),
+        completed_role_runs={"source_review": "success"},
+    )
+    assert not_verified["action"] == "HOLD"
+    assert not_verified["findings"] == ["SOURCE_REVIEW_BLOCKED_RUN_UNPROVEN"]
+
+
+@pytest.mark.parametrize(
+    ("trusted_check", "finding"),
+    [
+        (None, f"TRUSTED_GOVERNANCE_CHECK_MISSING:{policy.TRUSTED_GOVERNANCE_CHECK}"),
+        (
+            make_check(policy.TRUSTED_GOVERNANCE_CHECK, status="in_progress"),
+            f"TRUSTED_GOVERNANCE_CHECK_PENDING:{policy.TRUSTED_GOVERNANCE_CHECK}",
+        ),
+        (
+            make_check(policy.TRUSTED_GOVERNANCE_CHECK, conclusion="failure"),
+            f"TRUSTED_GOVERNANCE_CHECK_FAILED:{policy.TRUSTED_GOVERNANCE_CHECK}",
+        ),
+        (
+            make_check(policy.TRUSTED_GOVERNANCE_CHECK, app_id=policy.QA_APP_ID),
+            f"TRUSTED_GOVERNANCE_CHECK_FOREIGN_SOURCE:{policy.TRUSTED_GOVERNANCE_CHECK}",
+        ),
+    ],
+)
+def test_authenticated_source_review_does_not_bypass_downstream_trusted_gate(trusted_check, finding):
+    checks = required_ci_checks()
+    if trusted_check:
+        checks.append(trusted_check)
+
+    result = classify(source_review="PASS", check_runs=checks)
+
+    assert result["action"] == "HOLD"
+    assert result["findings"] == [finding]
+
+
+def test_source_review_and_trusted_gate_order_before_qa_then_release():
+    checks = required_ci_checks()
+
+    reviewed_without_trusted = classify(source_review="PASS", check_runs=checks)
+    assert reviewed_without_trusted["action"] == "HOLD"
+    assert reviewed_without_trusted["findings"] == [
+        f"TRUSTED_GOVERNANCE_CHECK_MISSING:{policy.TRUSTED_GOVERNANCE_CHECK}"
+    ]
+
+    checks.append(make_check(policy.TRUSTED_GOVERNANCE_CHECK))
+    qa = classify(source_review="PASS", check_runs=checks)
+    assert qa["action"] == "DISPATCH"
+    assert qa["role"] == "qa"
+
+    checks.append(make_check(policy.QA_CHECK, app_id=policy.QA_APP_ID))
+    release = classify(source_review="PASS", check_runs=checks)
+    assert release["action"] == "DISPATCH"
+    assert release["role"] == "release"
+
+
+def test_same_sha_opened_then_ready_blocked_review_still_routes_only_source_review():
+    opened = classify(
+        pull=make_pull(sha=HEAD),
+        source_review="MISSING",
+        check_runs=required_ci_checks(),
+    )
+    ready = classify(
+        pull=make_pull(sha=HEAD),
+        source_review="ACTION_REQUIRED_ZERO_JOBS",
+        check_runs=required_ci_checks(),
+        completed_role_runs={"source_review": "action_required"},
+    )
+
+    assert opened["head_sha"] == ready["head_sha"] == HEAD
+    assert [(opened["action"], opened.get("role")), (ready["action"], ready.get("role"))] == [
+        ("DISPATCH", "source_review"),
+        ("DISPATCH", "source_review"),
+    ]
 
 
 def test_source_review_must_exist_as_active_protected_workflow():
@@ -889,6 +994,52 @@ def test_missing_source_review_without_a_prior_run_can_be_dispatched():
     assert result == "MISSING"
 
 
+def test_zero_job_action_required_source_review_is_recoverable_but_not_success():
+    module = source_review_module()
+    source_run = {
+        "id": 987,
+        "name": transport.WORKFLOWS["source_review"]["name"],
+        "display_title": policy.run_name("source_review", 41, HEAD),
+        "path": transport.WORKFLOWS["source_review"]["path"],
+        "event": "workflow_run",
+        "head_branch": "main",
+        "head_repository": {"full_name": REPOSITORY},
+        "head_sha": OTHER_HEAD,
+        "status": "completed",
+        "conclusion": "action_required",
+        "created_at": "2026-10-21T04:00:00Z",
+        "run_attempt": 1,
+    }
+
+    class FakeClient:
+        token = "test-token"
+
+        def get(self, path):
+            if path.startswith("/repos/") and "/actions/artifacts" in path:
+                return {"artifacts": []}
+            if "/actions/runs/987/jobs" in path:
+                return {"total_count": 0, "jobs": []}
+            pytest.fail(f"unexpected API request: {path}")
+
+    status = transport.source_review_status(
+        FakeClient(),
+        module=module,
+        pr=make_pull(),
+        files=[make_file()],
+        source_runs=[source_run],
+    )
+    assert status == "ACTION_REQUIRED_ZERO_JOBS"
+
+    decision = classify(
+        source_review=status,
+        check_runs=required_ci_checks(),
+        completed_role_runs={"source_review": "action_required"},
+    )
+    assert decision["action"] == "DISPATCH"
+    assert decision["role"] == "source_review"
+    assert decision["findings"] == []
+
+
 def test_fresh_but_unresolvable_source_review_artifact_is_not_retried():
     module = source_review_module()
 
@@ -1113,6 +1264,7 @@ def test_reconcile_does_not_fetch_reviewer_artifact_before_ci_is_ready(monkeypat
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
     monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
     monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
     monkeypatch.setattr(
         transport,
         "source_review_status",
@@ -1292,6 +1444,22 @@ def test_same_sha_ancillary_action_required_is_a_typed_certifier_hold():
         f"REQUIRED_CHECK_FAILED:{policy.QA_EVIDENCE_CHECKS[0]}"
     ]
 
+    reviewer_first = classify(
+        source_review="MISSING",
+        check_runs=required_ci_checks(),
+        ancillary_ci_hold=finding,
+    )
+    assert reviewer_first["action"] == "DISPATCH"
+    assert reviewer_first["role"] == "source_review"
+
+    downstream = classify(
+        source_review="PASS",
+        check_runs=all_ci_checks(),
+        ancillary_ci_hold=finding,
+    )
+    assert downstream["action"] == "HOLD"
+    assert downstream["findings"] == [finding]
+
 
 def test_ancillary_certifier_hold_requires_same_pr_and_head_identity():
     class FakeClient:
@@ -1315,7 +1483,7 @@ def test_ancillary_certifier_hold_requires_same_pr_and_head_identity():
     assert transport.legacy_certifier_ancillary_hold(FakeClient(), HEAD, 41) is None
 
 
-def test_ancillary_action_required_never_enters_a_dispatch_retry_loop(monkeypatch):
+def test_ancillary_action_required_does_not_block_source_review_dispatch(monkeypatch):
     monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
     pr = make_pull()
     workflows = {
@@ -1332,12 +1500,17 @@ def test_ancillary_action_required_never_enters_a_dispatch_retry_loop(monkeypatc
     monkeypatch.setattr(transport, "pull_files", lambda *_: [make_file()])
     monkeypatch.setattr(transport, "check_runs", lambda *_: all_ci_checks())
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
-    monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: "ANCILLARY_CI_EVENT_POLICY_HOLD:workflow=wow-v17-release-production-verification-agent:run_id=801:owner_action=review_protected_certifier_failure")
+    monkeypatch.setattr(
+        transport,
+        "legacy_certifier_ancillary_hold",
+        lambda *_: pytest.fail("ancillary gate must not be queried before reviewer PASS"),
+    )
     monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
     monkeypatch.setattr(
         transport,
         "source_review_status",
-        lambda *_args, **_kwargs: pytest.fail("held target must not enter role retry or dispatch"),
+        lambda *_args, **_kwargs: "MISSING",
     )
     monkeypatch.setattr(transport, "reserve_dispatch", lambda *_args, **_kwargs: calls.append("reserve"))
     monkeypatch.setattr(transport, "dispatch", lambda *_args, **_kwargs: calls.append("dispatch"))
@@ -1350,9 +1523,9 @@ def test_ancillary_action_required_never_enters_a_dispatch_retry_loop(monkeypatc
         source_sha=OTHER_HEAD,
     )
 
-    assert result["dispatch_count"] == 0
-    assert calls == []
-    assert result["decisions"][0]["findings"][0].startswith("ANCILLARY_CI_EVENT_POLICY_HOLD:")
+    assert result["dispatch_count"] == 1
+    assert calls == ["reserve", "dispatch"]
+    assert result["decisions"][0]["role"] == "source_review"
 
 
 def test_controller_workflow_is_scheduled_manual_and_singleton():

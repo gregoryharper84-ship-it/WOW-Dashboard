@@ -67,18 +67,26 @@ change requiring independent review.
    be authored by a non-owner and have the owner's genuine APPROVED review on
    that exact head.
 3. Require the three Actions App 15368 regression checks and change-impact
-   check to pass. Ordinary PRs also require the existing trusted-governance
-   check. The controller does not dispatch a reviewer while these checks are
-   pending.
-4. Validate a fresh protected-main source-review artifact before QA. If an
+   check to pass before dispatching the read-only source reviewer. These checks,
+   exact PR/file provenance, and trust-root owner approval are reviewer
+   admission; the downstream trusted-governance receipt is not.
+4. Validate a fresh protected-main source-review artifact. A missing review
+   receipt, including an exact protected source-review run that ended
+   `action_required` with zero jobs, may request only a new read-only
+   source-review dispatch. That blocked run is never treated as success.
+   Rejected, malformed, ambiguous, or otherwise failed runs HOLD. For ordinary
+   PRs, after the authenticated exact-head source-review PASS, require the
+   Actions App 15368 `Trusted exact-head engineering governance` check before
+   any QA or Release dispatch. If an
    earlier independently triggered review artifact expires while CI is
    pending, a fresh source-review dispatch is allowed only after its prior
    successful run is proven; controller-issued source-review attempts are
    capped at two for the same PR+SHA. A missing, rejected, malformed, or
    ambiguous artifact remains HOLD. Route QA only after review and evidence
    are ready, then Release only after the exact-head QA App 5245832 check
-   succeeds. The existing role workflows independently re-derive their
-   authority.
+   succeeds. A legacy-certifier ancillary `action_required` HOLD cannot prevent
+   the read-only reviewer dispatch, but remains a HOLD before QA/Release. The
+   existing role workflows independently re-derive their authority.
 5. Reserve the exact PR+SHA+role in a bot-authored issue comment before the
    non-idempotent POST. On an uncertain response, missing run, stale evidence,
    foreign App, failure, or duplicate run, HOLD and reconcile; never mint a

@@ -421,7 +421,39 @@ def source_review_status(
                 if isinstance(run, dict) and run.get("id") is not None
             }
             if not matching:
-                return "MISSING" if not runs_by_id else "INVALID"
+                latest_run = max(
+                    runs_by_id.values(),
+                    key=lambda run: str(run.get("created_at") or ""),
+                    default=None,
+                )
+                if latest_run is None:
+                    return "MISSING"
+                if (
+                    latest_run.get("status") == "completed"
+                    and latest_run.get("conclusion") == "action_required"
+                    and isinstance(latest_run.get("id"), int)
+                    and not isinstance(latest_run.get("id"), bool)
+                    and latest_run.get("path") == WORKFLOWS["source_review"]["path"]
+                    and latest_run.get("head_branch") == "main"
+                    and (latest_run.get("head_repository") or {}).get("full_name") == REPOSITORY
+                    and latest_run.get("event") in {"workflow_dispatch", "workflow_run"}
+                    and policy.run_name("source_review", pr["number"], (pr.get("head") or {}).get("sha") or "")
+                    in {latest_run.get("name"), latest_run.get("display_title")}
+                    and isinstance(latest_run.get("run_attempt"), int)
+                    and not isinstance(latest_run.get("run_attempt"), bool)
+                    and latest_run.get("run_attempt") > 0
+                ):
+                    jobs = client.get(
+                        f"/repos/{REPOSITORY}/actions/runs/{latest_run['id']}/jobs"
+                        "?per_page=100&page=1"
+                    )
+                    if (
+                        isinstance(jobs, dict)
+                        and jobs.get("total_count") == 0
+                        and jobs.get("jobs") == []
+                    ):
+                        return "ACTION_REQUIRED_ZERO_JOBS"
+                return "INVALID"
             now = datetime.now(timezone.utc)
             stale = True
             for item in matching:
@@ -730,11 +762,6 @@ def reconcile(
             files = pull_files(client, number, pr.get("changed_files"))
             checks = check_runs(client, head_sha)
             reviews = pull_reviews(client, number)
-            ancillary_ci_hold = (
-                legacy_certifier_ancillary_hold(client, head_sha, number)
-                if required_evidence_ready(checks, head_sha)
-                else None
-            )
             role_runs = matching_role_runs(client, workflows, number, head_sha)
             statuses = role_run_statuses(role_runs)
             available_roles = set(workflows)
@@ -747,7 +774,7 @@ def reconcile(
                 "file_records": files,
                 "check_runs": checks,
                 "reviews": reviews,
-                "ancillary_ci_hold": ancillary_ci_hold,
+                "ancillary_ci_hold": None,
                 "available_roles": available_roles,
                 "completed_role_runs": statuses,
             }
@@ -764,6 +791,12 @@ def reconcile(
                     files=files,
                     source_runs=source_history,
                 )
+                if reviewer_status == "PASS" and required_evidence_ready(checks, head_sha):
+                    target_evidence["ancillary_ci_hold"] = legacy_certifier_ancillary_hold(
+                        client,
+                        head_sha,
+                        number,
+                    )
                 decision = policy.classify_target(
                     **target_evidence,
                     source_review=reviewer_status,

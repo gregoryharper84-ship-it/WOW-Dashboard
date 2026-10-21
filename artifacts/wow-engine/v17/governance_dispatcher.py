@@ -179,6 +179,35 @@ def classify_target(
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_PENDING:{name}"], "head_sha": head}
         if check.get("conclusion") != "success":
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_FAILED:{name}"], "head_sha": head}
+    if source_review not in {
+        "PASS",
+        "MISSING",
+        "PENDING",
+        "STALE",
+        "REJECT",
+        "INVALID",
+        "ACTION_REQUIRED_ZERO_JOBS",
+    }:
+        return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STATUS_INVALID"], "head_sha": head}
+    if source_review in {"REJECT", "INVALID"}:
+        return {"action": "HOLD", "findings": [f"SOURCE_REVIEW_{source_review}"], "head_sha": head}
+    if source_review == "ACTION_REQUIRED_ZERO_JOBS":
+        if runs.get("source_review") != "action_required":
+            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_BLOCKED_RUN_UNPROVEN"], "head_sha": head}
+        return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
+    if source_review == "MISSING":
+        if runs.get("source_review") in {"queued", "in_progress", "waiting", "pending", "requested"}:
+            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_PENDING"], "head_sha": head}
+        if runs.get("source_review") is not None:
+            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_RUN_FAILED"], "head_sha": head}
+        return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
+    if source_review == "PENDING":
+        return {"action": "HOLD", "findings": ["SOURCE_REVIEW_PENDING"], "head_sha": head}
+    if source_review == "STALE":
+        if runs.get("source_review") != "success":
+            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STALE_UNPROVEN"], "head_sha": head}
+        return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
+
     if ancillary_ci_hold:
         return {"action": "HOLD", "findings": [ancillary_ci_hold], "head_sha": head}
     if not protected:
@@ -207,23 +236,6 @@ def classify_target(
                 "findings": [f"TRUSTED_GOVERNANCE_CHECK_FAILED:{TRUSTED_GOVERNANCE_CHECK}"],
                 "head_sha": head,
             }
-
-    if source_review not in {"PASS", "MISSING", "PENDING", "STALE", "REJECT", "INVALID"}:
-        return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STATUS_INVALID"], "head_sha": head}
-    if source_review in {"REJECT", "INVALID"}:
-        return {"action": "HOLD", "findings": [f"SOURCE_REVIEW_{source_review}"], "head_sha": head}
-    if source_review == "MISSING":
-        if runs.get("source_review") in {"queued", "in_progress", "waiting", "pending", "requested"}:
-            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_PENDING"], "head_sha": head}
-        if runs.get("source_review") is not None:
-            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_RUN_FAILED"], "head_sha": head}
-        return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
-    if source_review == "PENDING":
-        return {"action": "HOLD", "findings": ["SOURCE_REVIEW_PENDING"], "head_sha": head}
-    if source_review == "STALE":
-        if runs.get("source_review") != "success":
-            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STALE_UNPROVEN"], "head_sha": head}
-        return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
 
     qa_check = latest_check(checks, QA_CHECK, head, QA_APP_ID)
     if qa_check is None:
