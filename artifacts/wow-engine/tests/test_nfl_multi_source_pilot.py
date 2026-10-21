@@ -169,3 +169,33 @@ def test_quarantine_distinguishes_zero_from_nonzero_and_missing_label_rows():
     assert counts["quarantined_invalid_or_missing_stat_rows"] == 1
     assert counts["joined_player_rows"] == 1
     assert result["ready_for_offline_training"] is False
+
+
+def test_opportunity_materiality_on_quarantined_rows_is_separate_from_six_outcomes():
+    header = PLAYER.splitlines()[0].split(",")
+    row = PLAYER.splitlines()[1].split(",")
+    fields = ["attempts", "completions", "carries", "targets", "receptions", "special_teams_tds"]
+    enriched = header + fields
+    played = row + ["34", "23", "4", "0", "0", "0"]
+    missing_id = played.copy()
+    missing_id[header.index("player_id")] = ""
+    for name in ("passing_yards", "rushing_yards", "receiving_yards",
+                 "passing_tds", "rushing_tds", "receiving_tds"):
+        missing_id[header.index(name)] = "0"
+    missing_id[enriched.index("special_teams_tds")] = "1"
+    source = "\n".join([",".join(enriched), ",".join(played), ",".join(missing_id)]) + "\n"
+    counts = pilot(player=source)["counts"]
+    audit = counts["quarantine_opportunity_audit"]
+    assert audit["status"] == "NONZERO_OPPORTUNITY_HOLD"
+    assert audit["nonzero_rows"] == 1
+    assert audit["zero_rows"] == 0
+    assert counts["quarantined_zero_stat_rows"] == 1
+    assert counts["quarantined_nonzero_stat_rows"] == 0
+
+
+def test_opportunity_missing_columns_never_leads_to_clean_claim():
+    # Original fixture has six outcome labels only, no opportunity context.
+    p = pilot(player=PLAYER)
+    assert p["counts"]["quarantine_opportunity_audit"]["status"] == "MISSING_COLUMNS"
+    assert "targets" in p["counts"]["quarantine_opportunity_audit"]["missing_columns"]
+    assert p["ready_for_offline_training"] is False
