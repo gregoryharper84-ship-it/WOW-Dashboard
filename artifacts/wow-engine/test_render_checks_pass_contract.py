@@ -6,7 +6,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_render_checks_pass_matches_main_push_ci_contract():
+def test_render_native_auto_deploy_is_off_with_protected_release_controller():
     workflow_text = (ROOT / ".github/workflows/wow-engine-verify.yml").read_text()
     assert "pull_request:\n    branches: [main]" in workflow_text
     assert "push:\n    branches: [main]" in workflow_text
@@ -15,7 +15,12 @@ def test_render_checks_pass_matches_main_push_ci_contract():
     services = {item["name"]: item for item in render["services"]}
     production = services["wow-governed-probability-engine"]
 
-    assert production["autoDeployTrigger"] == "checksPass"
+    assert production["autoDeployTrigger"] == "off"
+    assert production.get("autoDeploy", False) is False
+    controller = yaml.safe_load(
+        (ROOT / ".github/workflows/wow-v17-render-production-deploy.yml").read_text()
+    )
+    assert controller["jobs"]["deploy-production"]["environment"] == "wow-release"
     env = {item["key"]: item for item in production["envVars"]}
     assert env["WOW_CAN_EXECUTE"]["value"] == "false"
     assert env["WOW_DRY_RUN_ONLY"]["value"] == "true"
