@@ -1,0 +1,64 @@
+name: wow-v17-nfl-atd-gamebook-evidence
+
+on:
+  pull_request:
+    paths:
+      - "artifacts/wow-engine/v17/nfl_atd_gamebook_evidence.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_gamebook_evidence.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_gsis_live_source.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_nflcom_live_source.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_official_candidate_manifest.py"
+      - "artifacts/wow-engine/research/nfl_atd_2026_wk06_official_candidate_evidence.json"
+      - ".github/workflows/wow-v17-nfl-atd-gamebook-evidence.yml"
+  push:
+    branches: [main]
+    paths:
+      - "artifacts/wow-engine/v17/nfl_atd_gamebook_evidence.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_gamebook_evidence.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_gsis_live_source.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_nflcom_live_source.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_official_candidate_manifest.py"
+      - "artifacts/wow-engine/research/nfl_atd_2026_wk06_official_candidate_evidence.json"
+      - ".github/workflows/wow-v17-nfl-atd-gamebook-evidence.yml"
+
+concurrency:
+  group: wow-v17-nfl-atd-gamebook-evidence-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  evidence-regressions:
+    name: NFL official gamebook evidence no-write regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install isolated test dependencies
+        run: python -m pip install "pytest==8.4.2" "pypdf>=5.0"
+      - name: Verify scorer identity, source boundaries and no execution
+        run: python -m pytest --noconftest -q test_v17_nfl_atd_gamebook_evidence.py test_v17_nfl_atd_official_candidate_manifest.py
+
+  live-pdf-acceptance:
+    name: Authenticate official GSIS and NFL.com PDFs using real bytes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install acceptance dependencies (no tokens)
+        run: python -m pip install "pytest==8.4.2" "pypdf>=5.0"
+      - name: Verify both official league PDFs without database writes
+        run: python -m pytest --noconftest -q test_v17_nfl_atd_gsis_live_source.py test_v17_nfl_atd_nflcom_live_source.py
