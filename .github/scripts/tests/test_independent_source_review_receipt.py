@@ -20,7 +20,10 @@ spec.loader.exec_module(review)
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 HEAD = "a" * 40
 MAIN = "b" * 40
-DIFF = [{"filename": "src/fix.py", "previous_filename": None, "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b"}]
+DIFF = [{
+    "filename": "src/fix.py", "previous_filename": None, "status": "modified",
+    "patch": "@@ -1 +1 @@\n-a\n+b", "additions": 1, "deletions": 1,
+}]
 COMMIT_METADATA = {
     "sha": HEAD,
     "commit": {"tree": {"sha": "d" * 40}, "message": "Fix the narrow source issue"},
@@ -89,6 +92,49 @@ def artifact(*, now=NOW, **overrides):
     )
     value.update(overrides)
     return value
+
+
+@pytest.mark.parametrize(
+    ("patch", "additions", "deletions", "reason"),
+    [
+        ("@@ -1,2 +1,2 @@\n-old\n+new", 1, 1, "PATCH_HUNK_INCOMPLETE"),
+        ("@@ -1 +1 @@\n-old\n+new\n+omitted", 2, 1, "PATCH_HUNK_OVERFLOW"),
+        ("@@ -1 +1 @@\n-old\n+new", 2, 1, "PATCH_COUNTS_MISMATCH"),
+        ("@@ -1 +1 @@\n-old", 0, 1, "PATCH_HUNK_INCOMPLETE"),
+        ("@@ -1 +1 @@\n-old\n+new\n", 1, 0, "PATCH_COUNTS_MISMATCH"),
+        ("diff --git a/src/fix.py b/src/fix.py\n@@ -1 +1 @@\n-old\n+new", 1, 1, "PATCH_HUNK_INVALID"),
+    ],
+)
+def test_patch_hunks_must_match_complete_api_change_counts(patch, additions, deletions, reason):
+    file = {**DIFF[0], "patch": patch, "additions": additions, "deletions": deletions}
+    with pytest.raises(review.SourceReviewError, match=reason):
+        review.canonical_diff([file], expected_count=1)
+
+
+def test_capture_normalized_commit_metadata_is_accepted_by_build_cli(tmp_path):
+    captured = {
+        "pr": pr(),
+        "files": DIFF,
+        "commit": review._commit_metadata(COMMIT_METADATA, expected_head_sha=HEAD),
+        "diff_sha256": review.canonical_diff(DIFF, expected_count=1)[1],
+    }
+    input_path = tmp_path / "captured.json"
+    result_path = tmp_path / "result.json"
+    run_path = tmp_path / "run.json"
+    output_path = tmp_path / "receipt.json"
+    input_path.write_text(json.dumps(captured), encoding="utf-8")
+    result_path.write_text(json.dumps(RESULT), encoding="utf-8")
+    run_path.write_text(json.dumps(PRODUCER_RUN), encoding="utf-8")
+
+    assert review.main([
+        "--build", "--input", str(input_path), "--result", str(result_path),
+        "--run", str(run_path), "--output", str(output_path),
+        "--repository", review.CANONICAL_REPOSITORY, "--pr-number", "1822",
+        "--head-sha", HEAD, "--head-ref", "copilot/fix",
+    ]) == 0
+    receipt = json.loads(output_path.read_text(encoding="utf-8"))
+    assert receipt["commit"]["tree_sha"] == "d" * 40
+    assert receipt["review"]["decision"] == "PASS"
 
 
 def verify(value, *, run=None, now=NOW, head=HEAD, attempt=1):
@@ -273,7 +319,10 @@ def test_current_review_resolution_verifies_zip_run_and_unique_fresh_artifact():
 def test_review_requires_complete_untruncated_diff_and_exact_file_coverage():
     with pytest.raises(review.SourceReviewError, match="PATCH_MISSING"):
         review.canonical_diff(
-            [{"filename": "src/fix.py", "previous_filename": None, "status": "modified", "patch": None}],
+            [{
+                "filename": "src/fix.py", "previous_filename": None, "status": "modified",
+                "patch": None, "additions": 1, "deletions": 1,
+            }],
             expected_count=1,
         )
     with pytest.raises(review.SourceReviewError, match="DIFF_INCOMPLETE"):
@@ -404,6 +453,7 @@ def test_capture_uses_read_only_api_and_rejects_head_movement(monkeypatch):
         },
         [{
             "filename": "src/fix.py", "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b",
+            "additions": 1, "deletions": 1,
             "sha": "not-used", "blob_url": "https://example.invalid",
         }],
         {
@@ -460,6 +510,7 @@ def test_capture_uses_read_only_api_and_rejects_head_movement(monkeypatch):
     }
     responses.extend([stable_pr, [{
         "filename": "src/fix.py", "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b",
+        "additions": 1, "deletions": 1,
     }], COMMIT_METADATA, moved])
     with pytest.raises(review.SourceReviewError, match="PR_IDENTITY_MISMATCH"):
         review.capture_pr_evidence(

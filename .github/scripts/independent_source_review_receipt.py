@@ -28,6 +28,7 @@ CREDENTIAL_SCOPE = "WOW_REVIEW_OPENAI_API_KEY"
 MAX_REVIEW_AGE = timedelta(minutes=30)
 MAX_DIFF_FILES = 100
 MAX_DIFF_BYTES = 512 * 1024
+MAX_DIFF_LINES = 100_000
 MAX_REVIEW_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_ARTIFACT_INVENTORY = 2000
 SHA = re.compile(r"^[a-f0-9]{40}$")
@@ -280,6 +281,39 @@ def resolve_current_source_review(
 
 def _commit_metadata(value: object, *, expected_head_sha: str) -> dict[str, Any]:
     _require(isinstance(value, Mapping), "SOURCE_REVIEW_COMMIT_METADATA_INVALID")
+    normalized_keys = {
+        "sha", "tree_sha", "parent_shas", "message", "author_login", "committer_login",
+    }
+    if set(value) == normalized_keys:
+        sha = value.get("sha")
+        tree_sha = value.get("tree_sha")
+        parent_shas = value.get("parent_shas")
+        message = value.get("message")
+        author_login = value.get("author_login")
+        committer_login = value.get("committer_login")
+        _require(sha == expected_head_sha and bool(SHA.fullmatch(str(sha))),
+                 "SOURCE_REVIEW_COMMIT_SHA_MISMATCH")
+        _require(isinstance(tree_sha, str) and bool(SHA.fullmatch(tree_sha)),
+                 "SOURCE_REVIEW_COMMIT_TREE_INVALID")
+        _require(isinstance(parent_shas, list), "SOURCE_REVIEW_COMMIT_PARENTS_INVALID")
+        for parent_sha in parent_shas:
+            _require(isinstance(parent_sha, str) and bool(SHA.fullmatch(parent_sha)),
+                     "SOURCE_REVIEW_COMMIT_PARENTS_INVALID")
+        _require(
+            isinstance(message, str) and message.strip()
+            and len(message.encode("utf-8")) <= 8192,
+            "SOURCE_REVIEW_COMMIT_MESSAGE_INVALID",
+        )
+        for login in (author_login, committer_login):
+            _require(login is None or isinstance(login, str), "SOURCE_REVIEW_COMMIT_IDENTITY_INVALID")
+        return {
+            "sha": sha,
+            "tree_sha": tree_sha,
+            "parent_shas": list(parent_shas),
+            "message": message,
+            "author_login": author_login,
+            "committer_login": committer_login,
+        }
     commit = value.get("commit")
     _require(isinstance(commit, Mapping), "SOURCE_REVIEW_COMMIT_METADATA_INVALID")
     tree = commit.get("tree") or {}
@@ -319,7 +353,61 @@ def _commit_metadata(value: object, *, expected_head_sha: str) -> dict[str, Any]
     }
 
 
-def canonical_diff(files: object, *, expected_count: object) -> tuple[list[dict[str, str | None]], str]:
+def _validate_patch_counts(patch: str, *, additions: object, deletions: object) -> None:
+    _require(
+        isinstance(additions, int) and not isinstance(additions, bool) and additions >= 0
+        and isinstance(deletions, int) and not isinstance(deletions, bool) and deletions >= 0
+        and additions + deletions <= MAX_DIFF_LINES,
+        "SOURCE_DIFF_LINE_COUNTS_INVALID",
+    )
+    lines = patch.splitlines()
+    _require(bool(lines), "SOURCE_DIFF_PATCH_INCOMPLETE")
+    hunk_re = re.compile(r"^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@(?: .*)?$")
+    observed_additions = 0
+    observed_deletions = 0
+    total_additions = 0
+    total_deletions = 0
+    hunk_old_remaining = 0
+    hunk_new_remaining = 0
+    in_hunk = False
+
+    for line in lines:
+        match = hunk_re.fullmatch(line)
+        if match:
+            if in_hunk:
+                _require(hunk_old_remaining == 0 and hunk_new_remaining == 0,
+                         "SOURCE_DIFF_PATCH_HUNK_INCOMPLETE")
+            hunk_old_remaining = int(match.group(2) or 1)
+            hunk_new_remaining = int(match.group(4) or 1)
+            total_deletions += hunk_old_remaining
+            total_additions += hunk_new_remaining
+            _require(total_additions + total_deletions <= MAX_DIFF_LINES,
+                     "SOURCE_DIFF_LINE_COUNTS_INVALID")
+            in_hunk = True
+            continue
+        _require(in_hunk, "SOURCE_DIFF_PATCH_HUNK_INVALID")
+        if line.startswith("\\ "):
+            continue
+        _require(bool(line) and line[0] in {" ", "+", "-"}, "SOURCE_DIFF_PATCH_LINE_INVALID")
+        if line[0] in {" ", "-"}:
+            hunk_old_remaining -= 1
+            _require(hunk_old_remaining >= 0, "SOURCE_DIFF_PATCH_HUNK_OVERFLOW")
+        if line[0] in {" ", "+"}:
+            hunk_new_remaining -= 1
+            _require(hunk_new_remaining >= 0, "SOURCE_DIFF_PATCH_HUNK_OVERFLOW")
+        if line[0] == "+":
+            observed_additions += 1
+        elif line[0] == "-":
+            observed_deletions += 1
+    _require(in_hunk and hunk_old_remaining == 0 and hunk_new_remaining == 0,
+             "SOURCE_DIFF_PATCH_HUNK_INCOMPLETE")
+    _require(
+        observed_additions == additions and observed_deletions == deletions,
+        "SOURCE_DIFF_PATCH_COUNTS_MISMATCH",
+    )
+
+
+def canonical_diff(files: object, *, expected_count: object) -> tuple[list[dict[str, Any]], str]:
     _require(isinstance(expected_count, int) and not isinstance(expected_count, bool),
              "SOURCE_DIFF_COUNT_INVALID")
     _require(0 < expected_count <= MAX_DIFF_FILES, "SOURCE_DIFF_LIMIT_EXCEEDED")
@@ -328,7 +416,11 @@ def canonical_diff(files: object, *, expected_count: object) -> tuple[list[dict[
     paths = set()
     total_bytes = 0
     for file in files:
-        file = _exact_keys(file, {"filename", "previous_filename", "status", "patch"}, "SOURCE_DIFF_FILE")
+        file = _exact_keys(
+            file,
+            {"filename", "previous_filename", "status", "patch", "additions", "deletions"},
+            "SOURCE_DIFF_FILE",
+        )
         filename = file.get("filename")
         previous = file.get("previous_filename")
         status = file.get("status")
@@ -337,6 +429,9 @@ def canonical_diff(files: object, *, expected_count: object) -> tuple[list[dict[
         _require(previous is None or isinstance(previous, str), "SOURCE_DIFF_PATH_INVALID")
         _require(isinstance(status, str) and status, "SOURCE_DIFF_STATUS_INVALID")
         _require(isinstance(patch, str), "SOURCE_DIFF_PATCH_MISSING")
+        _validate_patch_counts(
+            patch, additions=file.get("additions"), deletions=file.get("deletions")
+        )
         _require(filename not in paths, "SOURCE_DIFF_DUPLICATE_PATH")
         paths.add(filename)
         total_bytes += len(patch.encode("utf-8"))
@@ -346,6 +441,8 @@ def canonical_diff(files: object, *, expected_count: object) -> tuple[list[dict[
             "previous_filename": previous,
             "status": status,
             "patch": patch,
+            "additions": file["additions"],
+            "deletions": file["deletions"],
         })
     normalized.sort(key=lambda item: item["filename"])
     canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -590,6 +687,8 @@ def capture_pr_evidence(
             "previous_filename": item.get("previous_filename"),
             "status": item.get("status"),
             "patch": item.get("patch"),
+            "additions": item.get("additions"),
+            "deletions": item.get("deletions"),
         }
         for item in api_files
         if isinstance(item, Mapping)

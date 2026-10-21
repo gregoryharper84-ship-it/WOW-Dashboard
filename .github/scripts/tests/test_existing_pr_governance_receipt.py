@@ -416,6 +416,8 @@ def automated_review_data(data=None, *, now=NOW):
         "previous_filename": None,
         "status": "modified",
         "patch": "@@ -1 +1 @@\n-old\n+new",
+        "additions": 1,
+        "deletions": 1,
     }]
     _, digest = source_review.canonical_diff(files, expected_count=1)
     artifact = source_review.build_artifact(

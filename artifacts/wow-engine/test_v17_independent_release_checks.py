@@ -43,7 +43,14 @@ source_spec.loader.exec_module(source_review)
 def source_review_evidence(files, *, author="wow-engineering[bot]", pr_number=7):
     file_paths = sorted(files or ["artifacts/wow-engine/v17/fixture.py"])
     diff = [
-        {"filename": path, "previous_filename": None, "status": "modified", "patch": "@@ -1 +1 @@\n-old\n+new"}
+        {
+            "filename": path,
+            "previous_filename": None,
+            "status": "modified",
+            "patch": "@@ -1 +1 @@\n-old\n+new",
+            "additions": 1,
+            "deletions": 1,
+        }
         for path in file_paths
     ]
     diff_sha = source_review.canonical_diff(diff, expected_count=len(diff))[1]
