@@ -127,3 +127,19 @@ def test_fetch_pilot_is_explicit_read_only_network_adapter():
 def test_no_unverified_espn_response_grants_source_parity():
     with pytest.raises(CollectionBlocked, match="NFL_PILOT_INDEPENDENT_SOURCE_EMPTY"):
         pilot(espn=[])
+
+
+def test_missing_player_identity_is_quarantined_and_counted_without_fake_outcomes():
+    lines = PLAYER.splitlines()
+    blank = lines[1].replace("00-0030001", "")
+    payload = "\n".join([lines[0], lines[1], blank]) + "\n"
+    result = pilot(player=payload)
+    counts = result["counts"]
+    assert counts["player_rows_in_season"] == 2
+    assert counts["quarantine_missing_player_id"] == 1
+    assert counts["quarantine_missing_game_id"] == 0
+    assert counts["quarantined_identity_rows"] == 1
+    assert counts["joined_player_rows"] == 1
+    assert all(count == 1 for count in counts["normalized_stat_observations"].values())
+    assert result["ready_for_offline_training"] is False
+    assert result["probability_publishable"] is False
