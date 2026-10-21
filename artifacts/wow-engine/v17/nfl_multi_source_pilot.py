@@ -35,6 +35,9 @@ ROUTES = (
     "PASSING_YARDS", "RUSHING_YARDS", "RECEIVING_YARDS",
     "PASSING_TDS", "RUSHING_TDS", "RECEIVING_TDS",
 )
+# These are audited independently of the six settlement outcome fields.
+# All fields must exist before an opportunity-clearance claim is possible.
+OPPORTUNITY_FIELDS = ("attempts", "completions", "carries", "targets", "receptions", "special_teams_tds")
 REQUIRED_PLAYER = frozenset({
     "season", "week", "season_type", "game_id", "player_id", "team",
     "opponent_team", "passing_yards", "rushing_yards",
@@ -147,6 +150,10 @@ def analyze_nfl_pilot(
     quarantined_nonzero_stat_rows = 0
     quarantined_zero_stat_rows = 0
     quarantined_invalid_or_missing_stat_rows = 0
+    opportunity_missing_columns = sorted(set(OPPORTUNITY_FIELDS) - set(players[0]))
+    quarantine_opportunity_nonzero_rows = 0
+    quarantine_opportunity_zero_rows = 0
+    quarantine_opportunity_invalid_rows = 0
     seen: set[tuple[str, str]] = set()
     by_stat: dict[str, int] = {stat: 0 for stat in ROUTES}
     for row in players:
@@ -184,6 +191,20 @@ def analyze_nfl_pilot(
                     quarantined_zero_stat_rows += 1
             except (TypeError, ValueError):
                 quarantined_invalid_or_missing_stat_rows += 1
+            if not opportunity_missing_columns:
+                try:
+                    opportunity_raw = [str(row.get(col) or "").strip() for col in OPPORTUNITY_FIELDS]
+                    if not all(opportunity_raw):
+                        raise ValueError("missing opportunity value")
+                    opportunity = [float(value) for value in opportunity_raw]
+                    if not all(math.isfinite(value) and value >= 0 for value in opportunity):
+                        raise ValueError("invalid opportunity value")
+                    if any(value != 0 for value in opportunity):
+                        quarantine_opportunity_nonzero_rows += 1
+                    else:
+                        quarantine_opportunity_zero_rows += 1
+                except (TypeError, ValueError):
+                    quarantine_opportunity_invalid_rows += 1
             continue
         key = (game_id, player_id)
         if key in seen:
@@ -256,6 +277,20 @@ def analyze_nfl_pilot(
             "quarantined_nonzero_stat_rows": quarantined_nonzero_stat_rows,
             "quarantined_zero_stat_rows": quarantined_zero_stat_rows,
             "quarantined_invalid_or_missing_stat_rows": quarantined_invalid_or_missing_stat_rows,
+            "quarantine_opportunity_audit": {
+                "fields": list(OPPORTUNITY_FIELDS),
+                "missing_columns": opportunity_missing_columns,
+                "status": (
+                    "MISSING_COLUMNS" if opportunity_missing_columns else
+                    "NO_QUARANTINE" if quarantined_identity_rows == 0 else
+                    "NONZERO_OPPORTUNITY_HOLD" if quarantine_opportunity_nonzero_rows else
+                    "INVALID_OPPORTUNITY_HOLD" if quarantine_opportunity_invalid_rows else
+                    "ZERO_OPPORTUNITY_AUDITED"
+                ),
+                "nonzero_rows": quarantine_opportunity_nonzero_rows,
+                "zero_rows": quarantine_opportunity_zero_rows,
+                "invalid_or_missing_rows": quarantine_opportunity_invalid_rows,
+            },
             "normalized_stat_observations": by_stat,
         },
         "independent_espn_identity": comparisons,
