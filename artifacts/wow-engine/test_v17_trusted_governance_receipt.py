@@ -187,6 +187,8 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert 'head_sha="$EVENT_HEAD_SHA"' in artifact_step
     assert '.state == "open" and .head.sha == $sha and .head.repo.full_name == $repo' in gate
     assert '.base.ref == "main" and .base.repo.full_name == $repo' in gate
+    assert '--head-sha "$PR_HEAD_SHA"' in gate
+    assert '--head-ref "$PR_HEAD_REF"' in gate
     assert "verify_engineering_governance_receipt.py" in gate
     assert "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" in gate
     assert '[ "$head_branch" = "main" ]' in gate
