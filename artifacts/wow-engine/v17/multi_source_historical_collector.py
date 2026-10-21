@@ -105,7 +105,7 @@ def _allowed_initial_url(url: str) -> bool:
             r'stats_player/stats_player_week_20[0-9]{2}\.csv', p.path
         ))
     if p.hostname == 'raw.githubusercontent.com':
-        return p.path == '/nflverse/nfldata/master/data/games.csv'
+        return p.path == '/nflverse/nfldata/a2c9f13593a311b09bfd2d00851e55dbdafb3c8d/data/games.csv'
     return False
 
 
