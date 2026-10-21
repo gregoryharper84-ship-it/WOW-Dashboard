@@ -18,6 +18,7 @@ stages; a money-audit failure never revokes a completed probability pass.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -63,13 +64,35 @@ MIN_PUBLICATION_LOWER_BOUND = WINNER_WATCH_MIN_LOWER_BOUND
 NFL_PROP_STATS = frozenset({"PASSING_YARDS", "RUSHING_YARDS", "RECEIVING_YARDS"})
 NBA_PROP_STATS = frozenset({"POINTS", "POINTS_REBOUNDS"})
 
+# receipt_kind selects the typed route adapter in the RECEIPT stage. The prop
+# canary ledger shape (migrations/20260917_prop_action_canary_receipts.sql) is
+# NOT imposed on ML/spread routes, which persist to wow_predictions instead
+# (schema.sql) and have no hash-ledger, action_operation_id, or
+# certification_id columns at all.
 ROUTES: dict[str, dict[str, Any]] = {
-    "NFL_MONEYLINE": {"sport": "NFL", "market": "MONEYLINE", "specialist_kind": "TEAM_EVENT_WIN"},
-    "NFL_PROP": {"sport": "NFL", "market": "PROP", "specialist_kind": "PLAYER_PROP", "stats": NFL_PROP_STATS},
-    "NBA_PROP": {"sport": "NBA", "market": "PROP", "specialist_kind": "PLAYER_PROP", "stats": NBA_PROP_STATS},
-    "NFL_SPREAD": {"sport": "NFL", "market": "SPREAD", "specialist_kind": "SCORE_MARGIN_COVER"},
-    "NCAAF_SPREAD": {"sport": "NCAAF", "market": "SPREAD", "specialist_kind": "SCORE_MARGIN_COVER"},
+    "NFL_MONEYLINE": {
+        "sport": "NFL", "market": "MONEYLINE", "specialist_kind": "TEAM_EVENT_WIN",
+        "receipt_kind": "GOVERNED_PREDICTION",
+    },
+    "NFL_PROP": {
+        "sport": "NFL", "market": "PROP", "specialist_kind": "PLAYER_PROP", "stats": NFL_PROP_STATS,
+        "receipt_kind": "PROP_ACTION_CANARY",
+    },
+    "NBA_PROP": {
+        "sport": "NBA", "market": "PROP", "specialist_kind": "PLAYER_PROP", "stats": NBA_PROP_STATS,
+        "receipt_kind": "PROP_ACTION_CANARY",
+    },
+    "NFL_SPREAD": {
+        "sport": "NFL", "market": "SPREAD", "specialist_kind": "SCORE_MARGIN_COVER",
+        "receipt_kind": "GOVERNED_PREDICTION",
+    },
+    "NCAAF_SPREAD": {
+        "sport": "NCAAF", "market": "SPREAD", "specialist_kind": "SCORE_MARGIN_COVER",
+        "receipt_kind": "GOVERNED_PREDICTION",
+    },
 }
+
+_VALID_IDENTITY_BINDING_STATUS = frozenset({"PASS", "PROVIDER_IDENTITY_ONLY"})
 
 # Coverage the fixture suite (or a canary capture) must exercise.
 REQUIRED_COVERAGE = (
@@ -105,6 +128,9 @@ class RouteResult:
     blockers: list[tuple[str, str]] = field(default_factory=list)
     money_blockers: list[str] = field(default_factory=list)
     money_applicable: bool = True
+    # (immutable_receipt_hash, prediction_id) for PROP_ACTION_CANARY rows only;
+    # used by run_bundle's cross-case replay check, never exported via as_dict.
+    receipt_hash_fingerprint: tuple[str, str] | None = None
 
     @property
     def first_failing_stage(self) -> str | None:
@@ -202,7 +228,194 @@ def classify_model_outcome(http_status: Any, response: Mapping[str, Any]) -> str
     return None
 
 
-def _environment(env: Mapping[str, Any], receipt: Mapping[str, Any], add) -> dict[str, Any]:
+def prop_canary_identity_hash(
+    *, sport: Any, stat_type: Any, model_artifact_version: Any, artifact_checksum: Any,
+    certification_id: Any, prediction_id: Any, calibrated_probability: float, calibrated_lower_bound: float,
+) -> str:
+    """Recompute the prop-canary receipt's identity hash from its own fields.
+
+    Mirrors the identity columns of ``wow_prop_action_canary_receipts``
+    (migrations/20260917_prop_action_canary_receipts.sql): sport, stat_type,
+    model_artifact_version, artifact_checksum, certification_id, prediction_id,
+    plus the calibrated probability/lower-bound pair.
+
+    This is schema-shape verification only. Recomputing a hash from
+    caller-supplied fields can show a receipt is internally self-consistent
+    (not tampered) or tie two cases together (replayed), but it can never
+    prove the database's own `immutable_receipt_hash` unique constraint --
+    that guarantee is enforced by Postgres at write time, not by a fixture.
+    """
+    payload = "|".join([
+        str(sport), str(stat_type), str(model_artifact_version), str(artifact_checksum),
+        str(certification_id), str(prediction_id),
+        format(float(calibrated_probability), ".6f"),
+        format(float(calibrated_lower_bound), ".6f"),
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _evaluate_prop_identity_binding(spec: Mapping[str, Any], req: Mapping[str, Any],
+                                     event: Mapping[str, Any], add) -> None:
+    """Mirror pick_request_runtime.py::_validate_evidence's real role_status contract.
+
+    The real check reads ``row.evidence.role_status`` -- a nested dict with
+    ``canonical_event_id``, ``provider_event_ids`` (keyed by provider, e.g.
+    "ESPN"), ``espn_athlete_id``, ``status``, ``verified_canonical_event_id``
+    and ``identity_binding_status`` -- not a single pre-verified boolean. A
+    fixture carrying a flat `espn_alias_verified: true` can never exercise the
+    actual typed PROP_EVENT_IDENTITY_CONFLICT:* branches below.
+    """
+    role = (req.get("evidence") or {}).get("role_status") or {}
+    request_event_id = str(event.get("event_id") or "").strip()
+
+    bound_event_id = str(role.get("canonical_event_id") or "").strip()
+    if bound_event_id and bound_event_id != request_event_id:
+        add("IDENTITY", "PROP_EVENT_IDENTITY_CONFLICT:CANONICAL_EVENT_ID_MISMATCH")
+
+    if spec.get("sport") == "NFL":
+        provider_event_ids = role.get("provider_event_ids")
+        espn_alias = (
+            str(provider_event_ids.get("ESPN") or "").strip()
+            if isinstance(provider_event_ids, Mapping)
+            else ""
+        )
+        provider_backed = bool(
+            espn_alias
+            or str(role.get("espn_athlete_id") or "").strip()
+            or str(role.get("status") or "").strip().upper() == "ACTIVE_CURRENT_ESPN_ROSTER"
+        )
+        verified_event_id = str(role.get("verified_canonical_event_id") or "").strip()
+        if provider_backed and not verified_event_id:
+            add("IDENTITY", "PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_UNVERIFIED")
+        if verified_event_id and verified_event_id != request_event_id:
+            add("IDENTITY", "PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH")
+
+    identity_status = str(role.get("identity_binding_status") or "").strip().upper()
+    if identity_status and identity_status not in _VALID_IDENTITY_BINDING_STATUS:
+        add("IDENTITY", "PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS")
+
+
+def _evaluate_prop_canary_receipt(
+    receipt: Mapping[str, Any], prediction: Mapping[str, Any], p: float | None, add,
+) -> tuple[str | None, tuple[str, str] | None]:
+    """Validate an NFL/NBA prop receipt against the real
+    ``wow_prop_action_canary_receipts`` column contract, not a self-invented
+    shape. Returns (natural receipt id, hash fingerprint for replay detection).
+
+    Schema-shape checked only: a passing result proves the captured receipt is
+    well-formed, internally self-consistent, and linked to the right
+    prediction/calibration identity. It cannot prove the database's own
+    unique-constraint / RLS-enforced immutability guarantee -- that is a
+    runtime property only Postgres can certify, never a fixture.
+    """
+    required = (
+        "receipt_id", "created_at", "action_operation_id", "action_request_fingerprint",
+        "prediction_id", "sport", "stat_type", "feature_schema_version", "model_family",
+        "model_artifact_version", "artifact_checksum", "calibrator_version",
+        "certification_id", "calibration_evidence_hash", "raw_model_probability",
+        "calibrated_probability", "calibrated_lower_bound", "reconciliation_status",
+        "immutable_receipt_hash",
+    )
+    if not receipt or any(receipt.get(f) in (None, "") for f in required):
+        add("RECEIPT", "RECEIPT_FIELD_MISSING")
+        return receipt.get("receipt_id"), None
+
+    receipt_id = receipt.get("receipt_id")
+    if receipt.get("action_operation_id") not in ("scoreWowPickRequest", "scoreWowV17PickRequest"):
+        add("RECEIPT", "RECEIPT_ACTION_OPERATION_INVALID")
+    if str(receipt.get("reconciliation_status")).upper() != "PASS":
+        add("RECEIPT", "RECEIPT_RECONCILIATION_NOT_PASS")
+    if receipt.get("can_execute") is not False:
+        add("RECEIPT", "RECEIPT_CAN_EXECUTE_INVARIANT_UNVERIFIED")
+
+    raw_p = _num(receipt.get("raw_model_probability"))
+    cal_p = _num(receipt.get("calibrated_probability"))
+    cal_lb = _num(receipt.get("calibrated_lower_bound"))
+    bounds_ok = (
+        raw_p is not None and 0.0 < raw_p < 1.0
+        and cal_p is not None and cal_lb is not None and 0.0 < cal_lb <= cal_p < 1.0
+    )
+    if not bounds_ok:
+        add("RECEIPT", "RECEIPT_CALIBRATED_BOUNDS_INVALID")
+    if cal_p is not None and p is not None and abs(cal_p - p) > 1e-9:
+        add("RECEIPT", "RECEIPT_PERSISTENCE_MISMATCH")
+
+    if prediction.get("prediction_id") and receipt.get("prediction_id") != prediction.get("prediction_id"):
+        add("RECEIPT", "RECEIPT_PREDICTION_LINKAGE_MISMATCH")
+
+    identity_fields = ("certification_id", "calibrator_version", "calibration_evidence_hash")
+    if any(
+        prediction.get(f) is not None and receipt.get(f) != prediction.get(f)
+        for f in identity_fields
+    ):
+        add("RECEIPT", "RECEIPT_CALIBRATION_IDENTITY_INCOMPATIBLE")
+
+    hash_fingerprint = None
+    if bounds_ok:
+        expected_hash = prop_canary_identity_hash(
+            sport=receipt.get("sport"), stat_type=receipt.get("stat_type"),
+            model_artifact_version=receipt.get("model_artifact_version"),
+            artifact_checksum=receipt.get("artifact_checksum"),
+            certification_id=receipt.get("certification_id"),
+            prediction_id=receipt.get("prediction_id"),
+            calibrated_probability=cal_p, calibrated_lower_bound=cal_lb,
+        )
+        if receipt.get("immutable_receipt_hash") != expected_hash:
+            add("RECEIPT", "RECEIPT_HASH_INVALID")
+        else:
+            hash_fingerprint = (receipt.get("immutable_receipt_hash"), str(receipt.get("prediction_id")))
+    return receipt_id, hash_fingerprint
+
+
+def _evaluate_governed_prediction_receipt(
+    receipt: Mapping[str, Any], prediction: Mapping[str, Any], event: Mapping[str, Any],
+    p: float | None, now: datetime, add,
+) -> str | None:
+    """Validate an ML/spread receipt against the real ``wow_predictions`` row
+    contract (schema.sql) -- the calibrated-bounds triple and the
+    ``locked_at`` immutability trigger -- instead of the prop-canary
+    hash-ledger shape, which does not apply to this route family.
+    """
+    # locked_at is excluded here: NULL is a legitimate column value (not yet
+    # locked) on a real wow_predictions row, not a structurally missing field.
+    required = (
+        "prediction_id", "event_id", "sport", "market_type", "calibrated_probability",
+        "calibrated_probability_lower_bound", "calibrated_probability_upper_bound",
+        "probability_publishable", "created_at",
+    )
+    if not receipt or "locked_at" not in receipt or any(receipt.get(f) is None for f in required):
+        add("RECEIPT", "RECEIPT_FIELD_MISSING")
+        return receipt.get("prediction_id")
+
+    receipt_id = receipt.get("prediction_id")
+    if not receipt.get("locked_at"):
+        add("RECEIPT", "RECEIPT_NOT_LOCKED")
+
+    cal_p = _num(receipt.get("calibrated_probability"))
+    lb = _num(receipt.get("calibrated_probability_lower_bound"))
+    ub = _num(receipt.get("calibrated_probability_upper_bound"))
+    # Mirrors schema.sql's chk_calibrated_bounds exactly (strict > 0, strict < 1).
+    bounds_ok = (
+        cal_p is not None and lb is not None and ub is not None
+        and lb > 0.0 and lb <= cal_p <= ub and ub < 1.0
+    )
+    if not bounds_ok:
+        add("RECEIPT", "RECEIPT_CALIBRATED_BOUNDS_INVALID")
+    if cal_p is not None and p is not None and abs(cal_p - p) > 1e-9:
+        add("RECEIPT", "RECEIPT_PERSISTENCE_MISMATCH")
+
+    if prediction.get("prediction_id") and receipt.get("prediction_id") != prediction.get("prediction_id"):
+        add("RECEIPT", "RECEIPT_PREDICTION_LINKAGE_MISMATCH")
+    if receipt.get("event_id") != event.get("event_id"):
+        add("RECEIPT", "RECEIPT_FOREIGN")
+
+    created = _parse_time(receipt.get("created_at"))
+    if created is None or now - created > RECEIPT_MAX_AGE or created > now:
+        add("RECEIPT", "RECEIPT_STALE")
+    return receipt_id
+
+
+def _environment(env: Mapping[str, Any], case_run_sha: Any, add) -> dict[str, Any]:
     mode = env.get("mode")
     github_sha = env.get("github_sha")
     out = {
@@ -227,8 +440,11 @@ def _environment(env: Mapping[str, Any], receipt: Mapping[str, Any], add) -> dic
             add("ENVIRONMENT", "PRODUCTION_BINDING_EVIDENCE_MISSING")
     elif mode != "FIXTURE":
         add("ENVIRONMENT", "UNKNOWN_HARNESS_MODE")
-    run_sha = receipt.get("run_sha")
-    if receipt and run_sha is not None and run_sha != github_sha:
+    # run_sha is captured Action/CI-run provenance for this case (which GitHub
+    # Actions run produced this evidence), not a column on the persisted
+    # receipt -- neither wow_prop_action_canary_receipts nor wow_predictions
+    # has a run_sha field.
+    if case_run_sha is not None and case_run_sha != github_sha:
         add("ENVIRONMENT", "RUN_SHA_MISMATCH")
     return out
 
@@ -249,7 +465,7 @@ def evaluate_case(case: Mapping[str, Any], bundle_env: Mapping[str, Any], now: d
     receipt = case.get("receipt") or {}
     rows = case.get("rows") or {}
 
-    environment = _environment(env, receipt, add)
+    environment = _environment(env, case.get("run_sha"), add)
 
     # ROUTE -----------------------------------------------------------------
     stat = req.get("stat")
@@ -284,8 +500,7 @@ def evaluate_case(case: Mapping[str, Any], bundle_env: Mapping[str, Any], now: d
     if spec and spec["market"] == "PROP":
         if req.get("direction") not in ("MORE", "LESS"):
             add("IDENTITY", "PROP_DIRECTION_MISSING")
-        if route == "NFL_PROP" and resp.get("espn_alias_verified") is not True:
-            add("IDENTITY", "ESPN_ALIAS_UNVERIFIED")
+        _evaluate_prop_identity_binding(spec, req, event, add)
     if spec and spec["market"] == "SPREAD":
         text = str(req.get("line_text") or "")
         line = _num(req.get("line"))
@@ -371,23 +586,28 @@ def evaluate_case(case: Mapping[str, Any], bundle_env: Mapping[str, Any], now: d
     if not held and not publishable and not any(s == "PUBLICATION" for s, _ in blockers):
         add("PUBLICATION", "PROBABILITY_NOT_PUBLISHABLE")
 
-    # RECEIPT ---------------------------------------------------------------
-    receipt_id = receipt.get("receipt_id")
+    # RECEIPT -----------------------------------------------------------
+    # Dispatches to a typed route adapter instead of one shape for every
+    # route: the prop-canary hash ledger does not apply to ML/spread, and the
+    # wow_predictions governed-row contract does not apply to props.
+    receipt_kind = (spec or {}).get("receipt_kind")
+    prediction = case.get("prediction") or {}
+    hash_fingerprint = None
     if not held:
-        if not receipt_id or receipt.get("immutable") is not True:
-            add("RECEIPT", "IMMUTABLE_RECEIPT_MISSING")
+        if receipt_kind == "PROP_ACTION_CANARY":
+            receipt_id, hash_fingerprint = _evaluate_prop_canary_receipt(receipt, prediction, p, add)
+        elif receipt_kind == "GOVERNED_PREDICTION":
+            receipt_id = _evaluate_governed_prediction_receipt(receipt, prediction, event, p, now, add)
         else:
-            if receipt.get("case_id") != case.get("case_id") or receipt.get("event_id") != event.get("event_id"):
-                add("RECEIPT", "RECEIPT_FOREIGN")
-            created = _parse_time(receipt.get("created_at"))
-            if created is None or now - created > RECEIPT_MAX_AGE or created > now:
-                add("RECEIPT", "RECEIPT_STALE")
-            if _num(receipt.get("probability")) != p or _num(receipt.get("line")) != _num(req.get("line")):
-                add("RECEIPT", "RECEIPT_PERSISTENCE_MISMATCH")
+            receipt_id = receipt.get("receipt_id") or receipt.get("prediction_id")
+            if not receipt_id:
+                add("RECEIPT", "RECEIPT_FIELD_MISSING")
         start_t = start
         pred_t = _parse_time(resp.get("prediction_created_at"))
         if phase == "PREGAME" and start_t and pred_t and pred_t >= start_t:
             add("RECEIPT", "CHRONOLOGY_VIOLATION")
+    else:
+        receipt_id = None
 
     # RECONCILIATION --------------------------------------------------------
     rec = reconcile_rows(rows)
@@ -418,21 +638,28 @@ def evaluate_case(case: Mapping[str, Any], bundle_env: Mapping[str, Any], now: d
         blockers=blockers,
         money_blockers=money_blockers,
         money_applicable=not held,
+        receipt_hash_fingerprint=hash_fingerprint,
     )
 
 
 def reconcile_rows(rows: Mapping[str, Any]) -> dict[str, Any]:
-    """rows_in == completed + held + rejected and each row terminates once."""
+    """rows_in == completed + held + rejected and each row terminates once.
+
+    Field names (``row_key`` / ``terminal_status``) match the real per-row
+    outcome shape in pick_request_runtime_core.py and the aggregate
+    rows_in/rows_completed/rows_held/rows_rejected counters persisted by
+    agent_runtime_api.py, not a harness-invented ``row_id`` / ``state`` pair.
+    """
     states = rows.get("terminal_states") or []
-    ids = [r.get("row_id") for r in states]
-    counts = {s: sum(1 for r in states if r.get("state") == s) for s in TERMINAL_STATES}
+    ids = [r.get("row_key") for r in states]
+    counts = {s: sum(1 for r in states if r.get("terminal_status") == s) for s in TERMINAL_STATES}
     rows_in = rows.get("rows_in")
     blockers = []
     if not isinstance(rows_in, int) or rows_in != len(states):
         blockers.append("RECONCILIATION_COUNT_MISMATCH")
     if len(set(ids)) != len(ids):
         blockers.append("ROW_TERMINATED_MORE_THAN_ONCE")
-    if any(r.get("state") not in TERMINAL_STATES for r in states):
+    if any(r.get("terminal_status") not in TERMINAL_STATES for r in states):
         blockers.append("ROW_NOT_TERMINAL")
     return {
         "rows_in": rows_in,
@@ -463,6 +690,7 @@ def run_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     env = bundle.get("environment") or {}
     cases = bundle.get("cases") or []
     results = [evaluate_case(c, env, now) for c in cases]
+
     rows = [r.as_dict() for r in results]
 
     expectation_mismatches = []
@@ -488,12 +716,23 @@ def run_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         totals["cases"] == totals["probability_accepted"] + totals["held_typed"] + totals["rejected"]
     )
     receipt_ids = [r["receipt_id"] for r in rows if r["receipt_id"]]
+    # A PROP_ACTION_CANARY receipt's immutable_receipt_hash can be internally
+    # self-consistent on each case alone and still be a replayed/copy-pasted
+    # receipt -- the same hash (and therefore the same persisted prediction
+    # row, since prediction_id is itself a hash input) backing more than one
+    # case. Only a cross-case comparison catches that, mirroring the
+    # existing duplicate-receipt_id check below.
+    hash_values = [r.receipt_hash_fingerprint[0] for r in results if r.receipt_hash_fingerprint]
     receipts = {
         "receipts": len(receipt_ids),
         "unique": len(set(receipt_ids)),
         "duplicates": sorted({x for x in receipt_ids if receipt_ids.count(x) > 1}),
+        "hash_duplicates": sorted({h for h in hash_values if hash_values.count(h) > 1}),
     }
-    harness_ok = cov["complete"] and totals["reconciled"] and not expectation_mismatches and not receipts["duplicates"]
+    harness_ok = (
+        cov["complete"] and totals["reconciled"] and not expectation_mismatches
+        and not receipts["duplicates"] and not receipts["hash_duplicates"]
+    )
     return {
         "harness_version": HARNESS_VERSION,
         "mode": env.get("mode"),
@@ -503,6 +742,7 @@ def run_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
         "self_certified": False,
         "production_acceptance": "NOT_PERFORMED_REQUIRES_INDEPENDENT_SIRT_QA",
         "harness_status": "HARNESS_FIXTURES_CONSISTENT" if harness_ok else "HARNESS_FAILED",
+        "receipt_evidence_class": "FIXTURE_SCHEMA_SHAPE_CHECKED_NOT_DATABASE_CONSTRAINT_PROVEN",
         "coverage": cov,
         "totals": totals,
         "receipt_reconciliation": receipts,
@@ -540,6 +780,8 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         f"- Harness status: **{report['harness_status']}**",
         f"- Production acceptance: **{report['production_acceptance']}** (self_certified={report['self_certified']})",
         f"- dry_run_only={report['dry_run_only']} · can_execute={report['can_execute']}",
+        f"- Receipt evidence class: **{report['receipt_evidence_class']}** "
+        "(schema-shape checked; never a substitute for the database's own constraint proof)",
         "",
         "## Totals",
         "",

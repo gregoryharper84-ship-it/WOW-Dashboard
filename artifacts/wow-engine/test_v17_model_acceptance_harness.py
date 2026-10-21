@@ -151,7 +151,7 @@ def test_lower_bound_below_declared_threshold_cannot_publish(bundle):
 
 def test_receipt_persistence_must_match_prediction(bundle):
     case = _case(bundle, "nfl-ml-accept")
-    case["receipt"]["probability"] = 0.70
+    case["receipt"]["calibrated_probability"] = 0.70
     assert _run_one(bundle, case)["exact_blocker"] == "RECEIPT_PERSISTENCE_MISMATCH"
 
 
@@ -182,10 +182,20 @@ def test_secrets_are_redacted_from_report(bundle):
 
 
 def test_reconciliation_rejects_non_terminal_rows():
-    rec = h.reconcile_rows({"rows_in": 2, "terminal_states": [{"row_id": "a", "state": "COMPLETED"},
-                                                              {"row_id": "b", "state": "PENDING"}]})
+    rec = h.reconcile_rows({"rows_in": 2, "terminal_states": [{"row_key": "a", "terminal_status": "COMPLETED"},
+                                                              {"row_key": "b", "terminal_status": "PENDING"}]})
     assert rec["balanced"] is False
     assert "ROW_NOT_TERMINAL" in rec["blockers"]
+
+
+def test_reconciliation_uses_real_row_key_and_terminal_status_names():
+    """row_key/terminal_status match pick_request_runtime_core.py and
+    agent_runtime_api.py, not a harness-invented row_id/state pair."""
+    rec = h.reconcile_rows({"rows_in": 1, "terminal_states": [{"row_key": "R1", "terminal_status": "COMPLETED"}]})
+    assert rec == {
+        "rows_in": 1, "rows_completed": 1, "rows_held": 0, "rows_rejected": 0,
+        "balanced": True, "blockers": [],
+    }
 
 
 def test_canary_is_planned_not_run():
@@ -214,3 +224,173 @@ def test_cli_writes_reports_and_exit_code_tracks_harness(tmp_path, bundle):
     bad = tmp_path / "bad.json"
     bad.write_text(json.dumps(bundle))
     assert h.main([str(bad), "--json-out", str(out_json)]) == 1
+
+
+# --- Adversarial receipt-contract tests (review follow-up on #1935) --------
+#
+# These replace the old flat `immutable: true` / `espn_alias_verified: true`
+# booleans with the real persisted contracts: wow_prop_action_canary_receipts
+# (migrations/20260917_prop_action_canary_receipts.sql) for prop routes,
+# wow_predictions (schema.sql) for ML/spread routes, and the nested
+# evidence.role_status shape (pick_request_runtime.py) for the #1894 ESPN
+# alias check. Each test below previously would have passed on a synthetic
+# boolean alone and now must fail against the real field shape.
+
+
+def test_receipt_evidence_class_states_schema_shape_not_db_proof(bundle):
+    """Fixture evidence can prove self-consistency, never the database's own
+    unique-constraint / trigger-enforced immutability guarantee."""
+    report = h.run_bundle(bundle)
+    assert report["receipt_evidence_class"] == "FIXTURE_SCHEMA_SHAPE_CHECKED_NOT_DATABASE_CONSTRAINT_PROVEN"
+
+
+def test_prop_canary_hash_tampering_is_detected(bundle):
+    case = _case(bundle, "nfl-prop-receipt-hash-tampered")
+    row = _run_one(bundle, case)
+    assert row["exact_blocker"] == "RECEIPT_HASH_INVALID"
+    assert row["probability_status"] == "REJECTED"
+
+
+def test_prop_canary_hash_matches_recomputation_for_an_accepted_case(bundle):
+    """A hash merely being present is not enough -- it must equal the
+    recomputation from the receipt's own identity fields."""
+    receipt = _case(bundle, "nfl-prop-passing-accept")["receipt"]
+    recomputed = h.prop_canary_identity_hash(
+        sport=receipt["sport"], stat_type=receipt["stat_type"],
+        model_artifact_version=receipt["model_artifact_version"],
+        artifact_checksum=receipt["artifact_checksum"],
+        certification_id=receipt["certification_id"], prediction_id=receipt["prediction_id"],
+        calibrated_probability=receipt["calibrated_probability"],
+        calibrated_lower_bound=receipt["calibrated_lower_bound"],
+    )
+    assert receipt["immutable_receipt_hash"] == recomputed
+    # Any single-field tamper must change the digest.
+    assert recomputed != h.prop_canary_identity_hash(
+        sport=receipt["sport"], stat_type=receipt["stat_type"],
+        model_artifact_version=receipt["model_artifact_version"],
+        artifact_checksum=receipt["artifact_checksum"],
+        certification_id="SOME-OTHER-CERT", prediction_id=receipt["prediction_id"],
+        calibrated_probability=receipt["calibrated_probability"],
+        calibrated_lower_bound=receipt["calibrated_lower_bound"],
+    )
+
+
+def test_prop_canary_wrong_prediction_linkage_is_detected(bundle):
+    row = _run_one(bundle, _case(bundle, "nfl-prop-receipt-wrong-prediction"))
+    assert row["exact_blocker"] == "RECEIPT_PREDICTION_LINKAGE_MISMATCH"
+    assert row["probability_status"] == "REJECTED"
+
+
+def test_prop_canary_incompatible_calibration_identity_is_detected_even_with_a_self_consistent_hash(bundle):
+    """The receipt's hash is recomputed from its OWN (tampered) certification_id,
+    so it validates against itself -- only the cross-check against the
+    canonical prediction's certification_id/calibrator_version/
+    calibration_evidence_hash catches the forged lineage."""
+    case = _case(bundle, "nfl-prop-receipt-incompatible-calibration")
+    receipt = case["receipt"]
+    recomputed = h.prop_canary_identity_hash(
+        sport=receipt["sport"], stat_type=receipt["stat_type"],
+        model_artifact_version=receipt["model_artifact_version"],
+        artifact_checksum=receipt["artifact_checksum"],
+        certification_id=receipt["certification_id"], prediction_id=receipt["prediction_id"],
+        calibrated_probability=receipt["calibrated_probability"],
+        calibrated_lower_bound=receipt["calibrated_lower_bound"],
+    )
+    assert receipt["immutable_receipt_hash"] == recomputed, "fixture must stay internally self-consistent"
+    row = _run_one(bundle, case)
+    assert row["exact_blocker"] == "RECEIPT_CALIBRATION_IDENTITY_INCOMPATIBLE"
+    assert row["probability_status"] == "REJECTED"
+
+
+def test_duplicate_replayed_receipt_hash_fails_harness_without_tripping_either_rows_own_checks(bundle):
+    """One persisted immutable receipt presented as evidence for two distinct
+    cases is individually well-formed on each side -- only a cross-case
+    comparison (mirroring the existing duplicate-receipt_id check) catches
+    the replay. Exercised against a throwaway copy; the committed bundle
+    itself must stay HARNESS_FIXTURES_CONSISTENT."""
+    original = _case(bundle, "nfl-prop-passing-accept")
+    replay = copy.deepcopy(_case(bundle, "nfl-prop-rushing-accept"))
+    replay["prediction"] = copy.deepcopy(original["prediction"])
+    replay["receipt"] = copy.deepcopy(original["receipt"])
+    bundle["cases"] = [original, replay]
+    report = h.run_bundle(bundle)
+    assert report["receipt_reconciliation"]["hash_duplicates"] == [original["receipt"]["immutable_receipt_hash"]]
+    assert report["harness_status"] == "HARNESS_FAILED"
+    # Neither row's own field-level checks fire -- the replay is invisible
+    # without the cross-case comparison.
+    for row in report["routes"]:
+        assert "RECEIPT_HASH_INVALID" not in row["blockers"]
+        assert "RECEIPT_PREDICTION_LINKAGE_MISMATCH" not in row["blockers"]
+
+
+@pytest.mark.parametrize(
+    "case_id,expected_blocker",
+    [
+        ("nfl-prop-1894-alias-unverified", "PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_UNVERIFIED"),
+        ("nfl-prop-1894-alias-mismatch", "PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH"),
+        ("nfl-prop-1894-canonical-conflict", "PROP_EVENT_IDENTITY_CONFLICT:CANONICAL_EVENT_ID_MISMATCH"),
+        ("nfl-prop-1894-binding-not-pass", "PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS"),
+    ],
+)
+def test_nested_espn_role_status_conflicts_are_typed(bundle, case_id, expected_blocker):
+    """#1894 as the real nested evidence.role_status contract, not a single
+    flat espn_alias_verified boolean a fixture could satisfy without
+    exercising any of pick_request_runtime.py's actual conflict branches."""
+    row = _run_one(bundle, _case(bundle, case_id))
+    assert row["exact_blocker"] == expected_blocker
+    assert row["probability_status"] == "REJECTED"
+
+
+def test_espn_role_status_accepts_a_fully_verified_provider_backed_binding(bundle):
+    accepted = _run_one(bundle, _case(bundle, "nfl-prop-passing-accept"))
+    assert accepted["probability_status"] == "PROBABILITY_ACCEPTED"
+    role = _case(bundle, "nfl-prop-passing-accept")["request"]["evidence"]["role_status"]
+    assert role["provider_event_ids"]["ESPN"]
+    assert role["verified_canonical_event_id"] == role["canonical_event_id"]
+    assert role["identity_binding_status"] == "PASS"
+
+
+def test_espn_role_status_with_no_provider_binding_at_all_is_not_flagged(bundle):
+    """A prop with no ESPN/provider evidence at all (not provider-backed) must
+    not be penalized for an alias it was never given -- only a provider-backed
+    binding that is left unverified, or a verified one that disagrees with the
+    request, is a conflict."""
+    case = copy.deepcopy(_case(bundle, "nfl-prop-passing-accept"))
+    case["request"]["evidence"] = {"role_status": {}}
+    row = _run_one(bundle, case)
+    assert not any(b.startswith("IDENTITY:PROP_EVENT_IDENTITY_CONFLICT") for b in row["blockers"])
+
+
+def test_governed_prediction_not_locked_is_a_typed_receipt_blocker(bundle):
+    """locked_at is the real wow_predictions immutability signal (a
+    before-update trigger blocks edits once set) -- not a self-attested
+    `immutable: true` flag a fixture could set regardless of DB state."""
+    row = _run_one(bundle, _case(bundle, "nfl-ml-receipt-not-locked"))
+    assert row["exact_blocker"] == "RECEIPT_NOT_LOCKED"
+    assert row["probability_status"] == "REJECTED"
+
+
+def test_governed_prediction_calibrated_bounds_mirror_schema_sql_chk_calibrated_bounds(bundle):
+    row = _run_one(bundle, _case(bundle, "nfl-spread-receipt-bounds-invalid"))
+    assert row["exact_blocker"] == "RECEIPT_CALIBRATED_BOUNDS_INVALID"
+    assert row["probability_status"] == "REJECTED"
+
+
+def test_governed_prediction_wrong_prediction_linkage_is_detected(bundle):
+    row = _run_one(bundle, _case(bundle, "nfl-ml-receipt-wrong-prediction"))
+    assert row["exact_blocker"] == "RECEIPT_PREDICTION_LINKAGE_MISMATCH"
+    assert row["probability_status"] == "REJECTED"
+
+
+def test_prop_and_governed_routes_use_distinct_receipt_adapters_not_one_shared_shape(bundle):
+    """The prop-canary hash-ledger shape must not be imposed on ML/spread
+    routes, and vice versa: each route family's receipt is validated against
+    its own real persisted schema."""
+    assert h.ROUTES["NFL_PROP"]["receipt_kind"] == "PROP_ACTION_CANARY"
+    assert h.ROUTES["NBA_PROP"]["receipt_kind"] == "PROP_ACTION_CANARY"
+    for route in ("NFL_MONEYLINE", "NFL_SPREAD", "NCAAF_SPREAD"):
+        assert h.ROUTES[route]["receipt_kind"] == "GOVERNED_PREDICTION"
+    prop_receipt = _case(bundle, "nfl-prop-passing-accept")["receipt"]
+    governed_receipt = _case(bundle, "nfl-ml-accept")["receipt"]
+    assert "immutable_receipt_hash" in prop_receipt and "immutable_receipt_hash" not in governed_receipt
+    assert "locked_at" in governed_receipt and "locked_at" not in prop_receipt
