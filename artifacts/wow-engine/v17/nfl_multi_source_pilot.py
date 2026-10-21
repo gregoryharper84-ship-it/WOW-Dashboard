@@ -142,6 +142,7 @@ def analyze_nfl_pilot(
     held_unsettled_or_unjoined = 0
     quarantine_missing_player_id = 0
     quarantine_missing_game_id = 0
+    quarantined_identity_rows = 0
     seen: set[tuple[str, str]] = set()
     by_stat: dict[str, int] = {stat: 0 for stat in ROUTES}
     for row in players:
@@ -153,6 +154,7 @@ def analyze_nfl_pilot(
         # snapshot to one unidentifiable row. None of these rows enter outcomes.
         # Training remains held whenever any source row is quarantined.
         if not player_id or not game_id:
+            quarantined_identity_rows += 1
             if not player_id:
                 quarantine_missing_player_id += 1
             if not game_id:
@@ -225,11 +227,7 @@ def analyze_nfl_pilot(
             "held_unsettled_or_unjoined": held_unsettled_or_unjoined,
             "quarantine_missing_player_id": quarantine_missing_player_id,
             "quarantine_missing_game_id": quarantine_missing_game_id,
-            "quarantined_identity_rows": quarantine_missing_player_id + quarantine_missing_game_id
-                - sum(1 for row in players if str(row.get("season", "")).strip() == str(season)
-                      and str(row.get("season_type", "")).upper() == "REG"
-                      and not str(row.get("player_id") or "").strip()
-                      and not str(row.get("game_id") or "").strip()),
+            "quarantined_identity_rows": quarantined_identity_rows,
             "normalized_stat_observations": by_stat,
         },
         "independent_espn_identity": comparisons,
