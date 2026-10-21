@@ -12,10 +12,12 @@
   "harness_version": "V17_MODEL_ACCEPTANCE_HARNESS_V1",
   "mode": "FIXTURE",
   "production_acceptance": "NOT_PERFORMED_REQUIRES_INDEPENDENT_SIRT_QA",
+  "receipt_evidence_class": "FIXTURE_SCHEMA_SHAPE_CHECKED_NOT_DATABASE_CONSTRAINT_PROVEN",
   "receipt_reconciliation": {
     "duplicates": [],
-    "receipts": 20,
-    "unique": 20
+    "hash_duplicates": [],
+    "receipts": 29,
+    "unique": 29
   },
   "routes": [
     {
@@ -64,7 +66,7 @@
       "probability_publishable": true,
       "probability_status": "PROBABILITY_ACCEPTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-ml-accept",
+      "receipt_id": "PRED-nfl-ml-accept",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -122,7 +124,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-ml-1896-contradiction",
+      "receipt_id": "PRED-nfl-ml-1896-contradiction",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -309,7 +311,7 @@
         "latency_ms": 840
       },
       "blockers": [
-        "IDENTITY:ESPN_ALIAS_UNVERIFIED"
+        "IDENTITY:PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_UNVERIFIED"
       ],
       "calibration": {
         "calibration_id": "CAL-NFL_PROP-v3",
@@ -336,7 +338,7 @@
         "render_live_sha": null,
         "supabase_project_ref": null
       },
-      "exact_blocker": "ESPN_ALIAS_UNVERIFIED",
+      "exact_blocker": "PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_UNVERIFIED",
       "first_failing_stage": "IDENTITY",
       "model": {
         "model_artifact": "nfl_prop_fitted.joblib",
@@ -351,6 +353,180 @@
       "probability_status": "REJECTED",
       "rank_eligible": true,
       "receipt_id": "RCPT-nfl-prop-1894-alias-unverified",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_PROP"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowPickRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "IDENTITY:PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": null
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": "MORE",
+        "event_id": "EVT-nfl-prop-1894-alias-mismatch",
+        "line": 71.5,
+        "player": "FIXTURE PLAYER",
+        "side": null,
+        "stat": "RECEIVING_YARDS"
+      },
+      "case_id": "nfl-prop-1894-alias-mismatch",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH",
+      "first_failing_stage": "IDENTITY",
+      "model": {
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "RCPT-nfl-prop-1894-alias-mismatch",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_PROP"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowPickRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "IDENTITY:PROP_EVENT_IDENTITY_CONFLICT:CANONICAL_EVENT_ID_MISMATCH"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": null
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": "MORE",
+        "event_id": "EVT-nfl-prop-1894-canonical-conflict",
+        "line": 72.5,
+        "player": "FIXTURE PLAYER",
+        "side": null,
+        "stat": "RECEIVING_YARDS"
+      },
+      "case_id": "nfl-prop-1894-canonical-conflict",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "PROP_EVENT_IDENTITY_CONFLICT:CANONICAL_EVENT_ID_MISMATCH",
+      "first_failing_stage": "IDENTITY",
+      "model": {
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "RCPT-nfl-prop-1894-canonical-conflict",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_PROP"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowPickRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "IDENTITY:PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": null
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": "MORE",
+        "event_id": "EVT-nfl-prop-1894-binding-not-pass",
+        "line": 73.5,
+        "player": "FIXTURE PLAYER",
+        "side": null,
+        "stat": "RECEIVING_YARDS"
+      },
+      "case_id": "nfl-prop-1894-binding-not-pass",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS",
+      "first_failing_stage": "IDENTITY",
+      "model": {
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "RCPT-nfl-prop-1894-binding-not-pass",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -755,7 +931,7 @@
       "probability_publishable": true,
       "probability_status": "PROBABILITY_ACCEPTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-spread-accept-integer-push",
+      "receipt_id": "PRED-nfl-spread-accept-integer-push",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -811,7 +987,7 @@
       "probability_publishable": true,
       "probability_status": "PROBABILITY_ACCEPTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-ncaaf-spread-accept",
+      "receipt_id": "PRED-ncaaf-spread-accept",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -927,7 +1103,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-spread-borrowed-ml",
+      "receipt_id": "PRED-nfl-spread-borrowed-ml",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -985,7 +1161,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-spread-unsigned-line",
+      "receipt_id": "PRED-nfl-spread-unsigned-line",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -1043,7 +1219,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-spread-push-rule-missing",
+      "receipt_id": "PRED-nfl-spread-push-rule-missing",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -1101,7 +1277,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-ml-stale-receipt",
+      "receipt_id": "PRED-nfl-ml-stale-receipt",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -1159,7 +1335,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-ml-foreign-receipt",
+      "receipt_id": "PRED-nfl-ml-foreign-receipt",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -1217,7 +1393,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-ml-run-sha-mismatch",
+      "receipt_id": "PRED-nfl-ml-run-sha-mismatch",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -1334,7 +1510,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-ml-live-unrecognized-event",
+      "receipt_id": "PRED-nfl-ml-live-unrecognized-event",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -1392,7 +1568,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-ml-live-pregame-reuse",
+      "receipt_id": "PRED-nfl-ml-live-pregame-reuse",
       "reconciliation": {
         "balanced": true,
         "rows_completed": 1,
@@ -1510,7 +1686,7 @@
       "probability_publishable": true,
       "probability_status": "REJECTED",
       "rank_eligible": true,
-      "receipt_id": "RCPT-nfl-ml-row-terminated-twice",
+      "receipt_id": "PRED-nfl-ml-row-terminated-twice",
       "reconciliation": {
         "balanced": false,
         "rows_completed": 1,
@@ -1519,15 +1695,364 @@
         "rows_rejected": 0
       },
       "route": "NFL_MONEYLINE"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowPickRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "RECEIPT:RECEIPT_HASH_INVALID"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": null
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": "MORE",
+        "event_id": "EVT-nfl-prop-receipt-hash-tampered",
+        "line": 241.5,
+        "player": "FIXTURE PLAYER",
+        "side": null,
+        "stat": "PASSING_YARDS"
+      },
+      "case_id": "nfl-prop-receipt-hash-tampered",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "RECEIPT_HASH_INVALID",
+      "first_failing_stage": "RECEIPT",
+      "model": {
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "RCPT-nfl-prop-receipt-hash-tampered",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_PROP"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowPickRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "RECEIPT:RECEIPT_PREDICTION_LINKAGE_MISMATCH",
+        "RECEIPT:RECEIPT_HASH_INVALID"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": null
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": "MORE",
+        "event_id": "EVT-nfl-prop-receipt-wrong-prediction",
+        "line": 242.5,
+        "player": "FIXTURE PLAYER",
+        "side": null,
+        "stat": "PASSING_YARDS"
+      },
+      "case_id": "nfl-prop-receipt-wrong-prediction",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "RECEIPT_PREDICTION_LINKAGE_MISMATCH",
+      "first_failing_stage": "RECEIPT",
+      "model": {
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "RCPT-nfl-prop-receipt-wrong-prediction",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_PROP"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowPickRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "RECEIPT:RECEIPT_CALIBRATION_IDENTITY_INCOMPATIBLE"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": null
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": "MORE",
+        "event_id": "EVT-nfl-prop-receipt-incompatible-calibration",
+        "line": 243.5,
+        "player": "FIXTURE PLAYER",
+        "side": null,
+        "stat": "PASSING_YARDS"
+      },
+      "case_id": "nfl-prop-receipt-incompatible-calibration",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "RECEIPT_CALIBRATION_IDENTITY_INCOMPATIBLE",
+      "first_failing_stage": "RECEIPT",
+      "model": {
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "RCPT-nfl-prop-receipt-incompatible-calibration",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_PROP"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowTeamEventRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "RECEIPT:RECEIPT_NOT_LOCKED"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": null
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": null,
+        "event_id": "EVT-nfl-ml-receipt-not-locked",
+        "line": null,
+        "player": null,
+        "side": "HOME",
+        "stat": null
+      },
+      "case_id": "nfl-ml-receipt-not-locked",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "RECEIPT_NOT_LOCKED",
+      "first_failing_stage": "RECEIPT",
+      "model": {
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "PRED-nfl-ml-receipt-not-locked",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_MONEYLINE"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowTeamEventRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "RECEIPT:RECEIPT_CALIBRATED_BOUNDS_INVALID"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_SPREAD-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": "PUSH_VOID_REFUND"
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": null,
+        "event_id": "EVT-nfl-spread-receipt-bounds-invalid",
+        "line": -4.0,
+        "player": null,
+        "side": "HOME",
+        "stat": null
+      },
+      "case_id": "nfl-spread-receipt-bounds-invalid",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "RECEIPT_CALIBRATED_BOUNDS_INVALID",
+      "first_failing_stage": "RECEIPT",
+      "model": {
+        "model_artifact": "nfl_spread_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "SCORE_MARGIN_COVER"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "PRED-nfl-spread-receipt-bounds-invalid",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_SPREAD"
+    },
+    {
+      "action": {
+        "action_route": "scoreWowTeamEventRequest",
+        "http_status": 200,
+        "latency_ms": 840
+      },
+      "blockers": [
+        "RECEIPT:RECEIPT_PREDICTION_LINKAGE_MISMATCH"
+      ],
+      "calibration": {
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "lower_bound": 0.58,
+        "publication_threshold": 0.55,
+        "push_rule": null
+      },
+      "can_execute": false,
+      "canonical": {
+        "direction": null,
+        "event_id": "EVT-nfl-ml-receipt-wrong-prediction",
+        "line": null,
+        "player": null,
+        "side": "HOME",
+        "stat": null
+      },
+      "case_id": "nfl-ml-receipt-wrong-prediction",
+      "environment": {
+        "environment": "ci-fixture",
+        "github_sha": "1111111111111111111111111111111111111111",
+        "mode": "FIXTURE",
+        "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+        "render_deploy_id": null,
+        "render_live_sha": null,
+        "supabase_project_ref": null
+      },
+      "exact_blocker": "RECEIPT_PREDICTION_LINKAGE_MISMATCH",
+      "first_failing_stage": "RECEIPT",
+      "model": {
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "probability": 0.64,
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "money_blockers": [],
+      "money_status": "MONEY_AUDIT_PASSED",
+      "probability_publishable": true,
+      "probability_status": "REJECTED",
+      "rank_eligible": true,
+      "receipt_id": "PRED-some-other-case",
+      "reconciliation": {
+        "balanced": true,
+        "rows_completed": 1,
+        "rows_held": 0,
+        "rows_in": 1,
+        "rows_rejected": 0
+      },
+      "route": "NFL_MONEYLINE"
     }
   ],
   "self_certified": false,
   "totals": {
-    "cases": 26,
+    "cases": 35,
     "held_typed": 5,
     "money_audit_failed": 1,
     "probability_accepted": 6,
     "reconciled": true,
-    "rejected": 15
+    "rejected": 24
   }
 }
