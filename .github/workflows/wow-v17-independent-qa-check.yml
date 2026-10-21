@@ -1,5 +1,5 @@
 name: wow-v17-independent-qa-check
-run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }}
+run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }} head=${{ inputs.head_sha || 'AUTO' }}
 
 # Phase C of #1550. Runs from protected main only and never checks out or executes
 # PR code. Evidence is read with the read-only GITHUB_TOKEN; the check is published
@@ -16,6 +16,11 @@ on:
       pr_number:
         description: Pull request number to evaluate at its current exact head.
         required: true
+        type: string
+      head_sha:
+        description: Optional exact live pull-request head SHA.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -68,6 +73,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           INPUT_PR: ${{ inputs.pr_number }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
           WR_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
         run: |
           set -euo pipefail
@@ -75,6 +81,15 @@ jobs:
           out="$RUNNER_TEMP/decisions"; mkdir -p "$out"
           if [ "$EVENT" = "workflow_dispatch" ]; then
             resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR")
+            if [ -n "${INPUT_HEAD_SHA:-}" ]; then
+              [[ "$INPUT_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+                echo "::error::QA_INPUT_HEAD_SHA_INVALID"; exit 1;
+              }
+              jq -e --arg sha "$INPUT_HEAD_SHA" \
+                '.targets | length == 1 and .[0].head == $sha' <<<"$resolved" >/dev/null || {
+                  echo "::error::QA_INPUT_HEAD_SHA_STALE"; exit 1;
+                }
+            fi
           elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
             resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS")
           else

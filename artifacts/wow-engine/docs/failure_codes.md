@@ -163,6 +163,8 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_EVIDENCE_INCOMPLETE` | independent QA | An evidence input was unreadable, truncated, or malformed (repo, PR, files, check runs, reviews); suffixed with the input. For changed files, both rename destination and `previous_filename` (source) are evaluated; a missing/invalid rename origin emits `QA_EVIDENCE_INCOMPLETE:FILES_RENAME_ORIGIN_MISSING`, invalid names emit `...:FILES_PATH_INVALID`, and rename origins cannot mask `...:FILES_TRUNCATED`. | N/A |
 | `QA_HEAD_INVALID` | independent QA | Expected or current head is not a 40-hex SHA. | N/A |
 | `QA_HEAD_STALE` | independent QA | The PR head moved after the trigger; the check is published only on the superseded SHA. | N/A |
+| `QA_INPUT_HEAD_SHA_INVALID` | independent QA manual dispatch | Optional requested head SHA is not a 40-hex SHA; no decision is published. | N/A |
+| `QA_INPUT_HEAD_SHA_STALE` | independent QA manual dispatch | The live PR head does not match the optional requested SHA; no decision is published. | N/A |
 | `QA_PR_NOT_OPEN` | independent QA | PR is closed or merged. | N/A |
 | `QA_PR_DRAFT` | independent QA | PR is a draft. | N/A |
 | `QA_PR_BASE_NOT_MAIN` | independent QA | PR does not target `main`. | N/A |
@@ -176,6 +178,8 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `RELEASE_TARGETS_UNRESOLVED` | release authority | Release could not resolve any valid (PR, exact head) target. | N/A |
 | `RELEASE_DECISION_INVARIANT_VIOLATED` | release authority | A Release decision file claimed authority; nothing published. | N/A |
 | `RELEASE_CHECK_PUBLISH_FAILED` | release authority | Creating the Release check run with the Release App token failed. | N/A |
+| `RELEASE_INPUT_HEAD_SHA_INVALID` | release authority manual dispatch | Optional requested head SHA is not a 40-hex SHA; no decision is published. | N/A |
+| `RELEASE_INPUT_HEAD_SHA_STALE` | release authority manual dispatch | The live PR head does not match the optional requested SHA; no decision is published. | N/A |
 | `RELEASE_APP_IDENTITY_UNBOUND` | release authority | QA or Release App ID is not configured as a number. | N/A |
 | `RELEASE_IDENTITY_NOT_DISTINCT` | release authority | QA and Release are bound to the same App. | N/A |
 | `RELEASE_QA_MISSING` | release authority | No completed `WOW Independent QA exact-head` run from the QA App at this head. | N/A |
