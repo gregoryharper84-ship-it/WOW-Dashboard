@@ -112,3 +112,17 @@ def test_non_pdf_bytes_rejected(monkeypatch):
     p,s=fixture()
     r=engine.verify_anytime_td_gamebook(p,s,gamebook_url=URL,pdf_bytes=b"<html>not pdf</html>",now=NOW)
     assert r["blocker"]=="GSIS_PDF_MISSING_OR_OVERSIZED"
+
+def test_adjacent_line_never_inherits_exact_touchdown_settlement_authority(monkeypatch):
+    p,s=fixture()
+    for wrong in (1.5, 2.5, -0.5, "NaN", True, None):
+        p["line"]=wrong
+        assert verify(monkeypatch,p,s)["blocker"] in {
+            "ATD_EXACT_LINE_UNSUPPORTED", "ATD_LINE_INVALID",
+        }
+    p["line"]=0.5
+    p["direction"]="TO_SCORE_IN_FIRST_QUARTER"
+    assert verify(monkeypatch,p,s)["blocker"]=="ATD_DIRECTION_UNSUPPORTED"
+    p["direction"]="MORE"
+    p["period"]="FIRST_HALF"
+    assert verify(monkeypatch,p,s)["blocker"]=="ATD_PERIOD_UNSUPPORTED"
