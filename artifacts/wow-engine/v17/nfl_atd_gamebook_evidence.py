@@ -6,6 +6,7 @@ execution. NFL final-stat and DNP/market rules require separate verification.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 import io
 import re
@@ -100,6 +101,18 @@ def verify_anytime_td_gamebook(
         return _hold("NFL_ATD_EXACT_ROUTE_REQUIRED")
     if prediction.get("can_execute") is True or snapshot.get("can_execute") is True:
         return _hold("CAN_EXECUTE_MUST_BE_FALSE")
+    # This scorer parser does not authorize a different threshold, period, or
+    # neighboring touchdown stat. These must each have an exact certified route.
+    if str(prediction.get("direction") or "").upper() not in ("MORE", "LESS"):
+        return _hold("ATD_DIRECTION_UNSUPPORTED")
+    try:
+        line=Decimal(str(prediction.get("line")))
+    except (InvalidOperation, TypeError, ValueError):
+        return _hold("ATD_LINE_INVALID")
+    if not line.is_finite() or line!=Decimal("0.5"):
+        return _hold("ATD_EXACT_LINE_UNSUPPORTED")
+    if prediction.get("period") not in (None, "FULL_GAME"):
+        return _hold("ATD_PERIOD_UNSUPPORTED")
     event_id=str(prediction.get("event_id") or "")
     match=re.fullmatch(r"(20\d{2})_(\d{2})_([A-Z]+)_([A-Z]+)",event_id)
     if not match:
