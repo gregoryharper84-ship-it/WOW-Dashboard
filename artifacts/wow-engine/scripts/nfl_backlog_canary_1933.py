@@ -57,15 +57,18 @@ def run(*, download=download_public_source) -> dict[str, Any]:
     assert pilot["can_execute"] is False
     assert pilot["ready_for_offline_training"] is False
     match = reconcile_reference(reference, pilot["sources"]["nflverse_stats_player"])
+    blockers = []
     if not match["matches_frozen_source"]:
-        status = "SOURCE_REVISION_DRIFT"
-    elif pilot["counts"]["held_unsettled_or_unjoined"] or not pilot["counts"]["joined_player_rows"]:
-        status = "JOIN_INCOMPLETE"
-    else:
-        status = "SOURCE_REFERENCE_AND_JOIN_VERIFIED"
+        blockers.append("SOURCE_REVISION_DRIFT")
+    if pilot["counts"]["quarantined_identity_rows"]:
+        blockers.append("NFL_PILOT_IDENTITY_ROWS_QUARANTINED")
+    if pilot["counts"]["held_unsettled_or_unjoined"] or not pilot["counts"]["joined_player_rows"]:
+        blockers.append("JOIN_INCOMPLETE")
+    status = "SOURCE_REFERENCE_AND_JOIN_VERIFIED" if not blockers else "SOURCE_VALIDATION_HOLD"
     return {
         "schema": "WOW_NFL_BACKLOG_CANARY_RECEIPT_V1",
         "status": status,
+        "blockers": blockers,
         "season": SEASON,
         "captured_at": pilot["source_retrieved_at"],
         "pilot_status": pilot["status"],
