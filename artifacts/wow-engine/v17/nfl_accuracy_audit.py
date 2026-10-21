@@ -231,15 +231,31 @@ def audit_anytime_td(predictions: Sequence[Mapping[str, Any]], outcomes: Sequenc
         if not isinstance(result.get("hit"), bool):
             gaps["INVALID_SETTLEMENT"] += 1
             continue
-        matched.append((base, created, ident, _p(row["calibrated_probability"]), int(result["hit"])))
+        # Convert all directions to the SAME target: did the player exceed
+        # the recorded TD threshold? Never select a side by timestamp.
+        p_direction = _p(row["calibrated_probability"])
+        hit_direction = int(result["hit"])
+        p_more = p_direction if key[-1] == "MORE" else 1.0 - p_direction
+        scored_more = hit_direction if key[-1] == "MORE" else 1 - hit_direction
+        matched.append((base, key[-1], p_more, scored_more))
 
-    # Opposing MORE/LESS sides of the same player/threshold share an outcome.
-    # Pre-committed latest timestamp, never outcome-dependent selection.
-    unique_markets = {}
-    for base, created, ident, p, y in matched:
-        if base not in unique_markets or (created, ident) > unique_markets[base][:2]:
-            unique_markets[base] = (created, ident, p, y)
-    independent = [(p, y) for _, _, p, y in unique_markets.values()]
+    # MORE and LESS on the same exact event/player/stat/line are alternate
+    # expressions of one sporting outcome, not independent forward trials.
+    grouped: dict[tuple[str, str, str, str], list[tuple[str, float, int]]] = defaultdict(list)
+    for base, side, p, y in matched:
+        grouped[base].append((side, p, y))
+    independent = []
+    for base, observations in grouped.items():
+        if len(observations) > 1:
+            if (len(observations) != 2 or {side for side, _, _ in observations} != {"MORE", "LESS"}
+                    or any(y != observations[0][2] for _, _, y in observations)
+                    or any(abs(p - observations[0][1]) > 1e-8 for _, p, _ in observations)):
+                gaps["INCONSISTENT_OPPOSING_DIRECTIONS"] += 1
+                continue
+        # Choose MORE's normalized view when available, independent of
+        # creation order and outcome. The alternate LESS view must agree.
+        canonical = next((item for item in observations if item[0] == "MORE"), observations[0])
+        independent.append((canonical[1], canonical[2]))
     return {
         "prediction_rows": len(filtered),
         "directional_theses": len(canonical),
@@ -250,7 +266,8 @@ def audit_anytime_td(predictions: Sequence[Mapping[str, Any]], outcomes: Sequenc
         "settlement_dispositions": dict(sorted(gaps.items())),
         "settled_directional_theses": len(matched),
         "independent_graded_markets": _metrics(independent),
-        "ungraded_underlying_markets": len(base_markets) - len(unique_markets),
+        "ungraded_underlying_markets": len(base_markets) - len(independent),
+        "metric_target": "MORE_EVENT_OCCURRED_ONE_TRIAL_PER_PLAYER_EVENT_LINE",
         "period_identity_limit": "wow_predictions has no period column; no period-level certification inferred",
         "audit_status": "SETTLEMENT_GAPS" if gaps.get("UNSETTLED_AFTER_KICKOFF") else "READ_ONLY_AUDIT",
     }
