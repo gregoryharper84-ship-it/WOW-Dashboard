@@ -1,12 +1,12 @@
 {
   "schema_version": "NFL_ATD_OFFICIAL_SOURCE_CANDIDATES_V1",
   "observed_date_utc": "2026-10-21",
-  "source_class": "NFL_OR_OFFICIAL_TEAM_GAME_STATISTICS",
+  "source_class": "NFL_OFFICIAL_GAMEBOOK_PDF",
   "status": "RESEARCH_CANDIDATES_ONLY_DO_NOT_SETTLE",
   "persisted_outcomes": 0,
   "can_execute": false,
   "official_settlement_authority": false,
-  "notes": "Five distinct exact-player, line-0.5 markets produced 10 opposing-direction pregame predictions. Game scores/scorer lists and participation verified from official league or official-team sources. Independent official-stat finalization, any-TD offer rules, exact immutable prediction-ID pairing, possible corrections, and protected release must be accepted before database settlement. Do not use as a fitted-model forecast.",
+  "notes": "Five distinct exact-player, line-0.5 markets produced 10 opposing-direction pregame predictions. Game scores/scorer lists and participation verified from official league or official-team sources. Independent official-stat finalization, any-TD offer rules, exact immutable prediction-ID pairing, possible corrections, and protected release must be accepted before database settlement. Do not use as a fitted-model forecast. The CHI_ATL official gamebook is hosted by NFL.com; live byte parsing acceptance is separate and must pass. This file is only a source-bound candidate, not an authenticated NFL settlement receipt.",
   "events": [
     {
       "canonical_event_id": "2026_06_CAR_PHI",
@@ -63,9 +63,9 @@
       "home": "ATL",
       "event_date": "2026-10-18",
       "final_score": "CHI 31, ATL 23",
-      "scoring_evidence_url": "https://www.chicagobears.com/game-day/2026/reg-week6/bears-at-falcons/scoring-summary",
-      "participation_evidence_url": "https://www.chicagobears.com/game-day/2026/reg-week6/bears-at-falcons/box-score",
-      "scoring_source_location": "Official Bears score summary all team touchdowns and official club receiving box score",
+      "scoring_evidence_url": "https://static.www.nfl.com/image/upload/v1792409927/gamecenter/aab577eb-4feb-11f1-abca-2c54536568a9.pdf",
+      "participation_evidence_url": "https://static.www.nfl.com/image/upload/v1792409927/gamecenter/aab577eb-4feb-11f1-abca-2c54536568a9.pdf",
+      "scoring_source_location": "Official NFL.com gamebook PDF p1 scoring plays and lineups, p2 final individual receiving/return statistics, October 18, 2026",
       "players": [
         {
           "name": "Austin Hooper",
