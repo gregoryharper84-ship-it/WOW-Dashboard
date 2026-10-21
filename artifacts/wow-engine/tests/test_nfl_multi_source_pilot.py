@@ -139,7 +139,33 @@ def test_missing_player_identity_is_quarantined_and_counted_without_fake_outcome
     assert counts["quarantine_missing_player_id"] == 1
     assert counts["quarantine_missing_game_id"] == 0
     assert counts["quarantined_identity_rows"] == 1
+    assert counts["quarantined_nonzero_stat_rows"] == 1
+    assert counts["quarantined_zero_stat_rows"] == 0
+    assert counts["quarantined_invalid_or_missing_stat_rows"] == 0
     assert counts["joined_player_rows"] == 1
     assert all(count == 1 for count in counts["normalized_stat_observations"].values())
     assert result["ready_for_offline_training"] is False
     assert result["probability_publishable"] is False
+
+def test_quarantine_distinguishes_zero_from_nonzero_and_missing_label_rows():
+    header, row = PLAYER.splitlines()
+    fields = header.split(",")
+    parts = row.split(",")
+    blank_index = fields.index("player_id")
+    parts[blank_index] = ""
+    zero = parts.copy()
+    for name in ("passing_yards", "rushing_yards", "receiving_yards",
+                 "passing_tds", "rushing_tds", "receiving_tds"):
+        zero[fields.index(name)] = "0"
+    invalid = zero.copy()
+    invalid[fields.index("rushing_tds")] = ""
+    payload = "\n".join([header, row, ",".join(parts), ",".join(zero),
+                         ",".join(invalid)]) + "\n"
+    result = pilot(player=payload)
+    counts = result["counts"]
+    assert counts["quarantined_identity_rows"] == 3
+    assert counts["quarantined_nonzero_stat_rows"] == 1
+    assert counts["quarantined_zero_stat_rows"] == 1
+    assert counts["quarantined_invalid_or_missing_stat_rows"] == 1
+    assert counts["joined_player_rows"] == 1
+    assert result["ready_for_offline_training"] is False
