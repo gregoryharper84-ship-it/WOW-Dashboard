@@ -20,6 +20,8 @@ from v17.nfl_espn_independent_parity_1933 import compare_espn_date, fetch_espn_h
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "data" / "wow_nfl_prop_training_report_v1.json"
 SEASON = 2025
+# Bound to immutable nflverse/nfldata commit a2c9f13593a311b09bfd2d00851e55dbdafb3c8d
+PINNED_SCHEDULE_SHA256 = "6011ae7b41fe3dcea1572b6e508fc8af3b8e03cf063df2681eb9e9a8c19a4332"
 
 
 def reconcile_reference(report: dict[str, Any], source_snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -68,6 +70,8 @@ def run(*, download=download_public_source, espn_download=None) -> dict[str, Any
     blockers = []
     if not match["matches_frozen_source"]:
         blockers.append("SOURCE_REVISION_DRIFT")
+    if pilot["sources"]["nflverse_schedule"]["sha256"] != PINNED_SCHEDULE_SHA256:
+        blockers.append("NFL_PILOT_FROZEN_SCHEDULE_HASH_MISMATCH")
     if pilot["counts"]["quarantined_identity_rows"]:
         blockers.append("NFL_PILOT_IDENTITY_ROWS_QUARANTINED")
     opportunity_status = pilot["counts"]["quarantine_opportunity_audit"]["status"]
@@ -87,6 +91,7 @@ def run(*, download=download_public_source, espn_download=None) -> dict[str, Any
         "pilot_status": pilot["status"],
         "source_rights_state": pilot["source_rights_state"],
         "reference": match,
+        "pinned_schedule_expected_sha256": PINNED_SCHEDULE_SHA256,
         "source_manifest": pilot["sources"],
         "counts": pilot["counts"],
         "independent_espn_identity": pilot["independent_espn_identity"],
