@@ -23,6 +23,19 @@
 
 Names above are proposed, not assertions that tables exist or have been migrated.
 
+## Deterministic research evidence review (backlog implementation)
+
+`v17/nfl_research_evidence_gate_1933.py` evaluates the canary JSON to keep four independent states distinct:
+
+- **Source provenance and capture:** pinned exact SHA-256 and URL for player and schedule assets, frozen training-report consistency and row reconciliation.
+- **Independent identity parity:** 13/13 ESPN finalized games and scores for *2025-09-07 only*; no full-season claim.
+- **Quarantine:** 18 player-ID-missing rows remain excluded, with all 12 audited fields zero. Any nonzero/invalid opportunity, hash mismatch or changed count fails the research audit.
+- **Permissions:** `LICENSE_REVIEW_REQUIRED` and `SOURCE_VALIDATION_HOLD` remain as-is; the gate always emits `storage_write_authorized=false`, `training_ready=false`, `model_certified=false`, `probability_publishable=false`, `can_execute=false`.
+
+`RESEARCH_EVIDENCE_AUDIT_CANDIDATE` means only a structurally coherent *unattested* data receipt. It does **not** authorize staging writes, training, source licensing, model publishing, or wagering. The function cannot validate CI principal/commit provenance from supplied JSON alone and always reports `attestation_verified=false`. A separate independently authenticated importer and reviewed rights agreement would be necessary.
+
+---
+
 ## Access, invariants and source boundaries
 
 - Prefer a **private, unexposed** `wow_research` Postgres schema; no `anon`/`authenticated` table grants. Review Data API exposure configuration and RLS with a dedicated least-privilege ingestion identity before implementing.
