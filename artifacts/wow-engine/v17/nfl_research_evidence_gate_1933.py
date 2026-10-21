@@ -98,6 +98,43 @@ def review_research_evidence(receipt: Mapping[str, Any]) -> dict[str, Any]:
             or espn.get("source") != "ESPN_NFL_SCOREBOARD_INDEPENDENT"
             or len(str(espn.get("source_sha256") or "")) != 64):
         issues.append("RESEARCH_INDEPENDENT_ESPN_PARITY_MISSING")
+    # Only the three explicitly approved game dates count as independent
+    # publisher evidence. A structurally coherent supplied JSON is not a
+    # signed attestation, so these checks remain research-only.
+    expected_extra = ("2025-09-14", "2025-09-21")
+    extras = receipt.get("independent_espn_additional_date_parity")
+    coverage = _mapping(receipt, "independent_espn_coverage")
+    valid_extras = isinstance(extras, list) and len(extras) == len(expected_extra)
+    total_verified = 13
+    if valid_extras:
+        for date, item in zip(expected_extra, extras):
+            if not isinstance(item, dict):
+                valid_extras = False
+                break
+            count = item.get("games_in_scope")
+            if (item.get("date") != date or item.get("status") != "MATCHED"
+                    or item.get("source") != "ESPN_NFL_SCOREBOARD_INDEPENDENT"
+                    or item.get("source_url") != (
+                        "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates="
+                        + date.replace("-", "")
+                    ) or type(count) is not int or count < 1
+                    or type(item.get("matched_final_games")) is not int
+                    or item.get("matched_final_games") != count
+                    or item.get("missing_or_unfinalized_games") != 0
+                    or item.get("score_conflict_games") != 0
+                    or item.get("full_season_parity_established") is not False
+                    or len(str(item.get("source_sha256") or "")) != 64):
+                valid_extras = False
+                break
+            total_verified += count
+    if not valid_extras or (
+        coverage.get("status") != "MATCHED"
+        or coverage.get("dates_requested") != ["2025-09-07", *expected_extra]
+        or coverage.get("dates_matched") != ["2025-09-07", *expected_extra]
+        or coverage.get("games_verified") != total_verified
+        or coverage.get("full_season_parity_established") is not False
+    ):
+        issues.append("RESEARCH_MULTI_DATE_ESPN_PARITY_MISSING")
     blockers = receipt.get("blockers")
     if (not isinstance(blockers, list) or set(blockers) != ALLOWED_RESEARCH_BLOCKERS
             or receipt.get("status") != "SOURCE_VALIDATION_HOLD"):
@@ -111,7 +148,7 @@ def review_research_evidence(receipt: Mapping[str, Any]) -> dict[str, Any]:
         "issues": sorted(set(issues)),
         "audit_coherent": not issues,
         "source_scope": "2025_272_REGULAR_SEASON_GAMES",
-        "independent_parity_scope": "2025-09-07_13_GAMES_ONLY",
+        "independent_parity_scope": "2025-09-07_2025-09-14_2025-09-21_APPROVED_DATES_ONLY",
         "storage_write_authorized": False,
         "training_ready": False,
         "model_certified": False,
