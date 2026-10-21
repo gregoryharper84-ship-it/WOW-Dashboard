@@ -15,6 +15,7 @@ from typing import Any
 
 from v17.multi_source_historical_collector import CollectionBlocked, download_public_source
 from v17.nfl_multi_source_pilot import analyze_nfl_pilot, PLAYER_URL, SCHEDULE_URL
+from v17.nfl_espn_independent_parity_1933 import compare_espn_date, fetch_espn_historical_scoreboard
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "data" / "wow_nfl_prop_training_report_v1.json"
@@ -48,7 +49,7 @@ def reconcile_reference(report: dict[str, Any], source_snapshot: dict[str, Any])
     }
 
 
-def run(*, download=download_public_source) -> dict[str, Any]:
+def run(*, download=download_public_source, espn_download=None) -> dict[str, Any]:
     """Accept injected offline downloader in tests; production fetch is manual."""
     schedule = download(SCHEDULE_URL)
     players = download(PLAYER_URL.format(season=SEASON))
@@ -57,11 +58,23 @@ def run(*, download=download_public_source) -> dict[str, Any]:
     assert pilot["can_execute"] is False
     assert pilot["ready_for_offline_training"] is False
     match = reconcile_reference(reference, pilot["sources"]["nflverse_stats_player"])
+    parity = {"status": "NOT_CHECKED", "scope": "ONE_2025_REGULAR_SEASON_DATE", "full_season_parity_established": False}
+    if espn_download is not None:
+        try:
+            parity = compare_espn_date(schedule_csv=schedule, espn_json=espn_download())
+        except CollectionBlocked as exc:
+            parity = {"status": "SOURCE_PARITY_BLOCKED", "typed_blocker": exc.code,
+                      "scope": "ONE_2025_REGULAR_SEASON_DATE", "full_season_parity_established": False}
     blockers = []
     if not match["matches_frozen_source"]:
         blockers.append("SOURCE_REVISION_DRIFT")
     if pilot["counts"]["quarantined_identity_rows"]:
         blockers.append("NFL_PILOT_IDENTITY_ROWS_QUARANTINED")
+    opportunity_status = pilot["counts"]["quarantine_opportunity_audit"]["status"]
+    if opportunity_status in {"MISSING_COLUMNS", "NONZERO_OPPORTUNITY_HOLD", "INVALID_OPPORTUNITY_HOLD"}:
+        blockers.append("NFL_PILOT_OPPORTUNITY_REVIEW_" + opportunity_status)
+    if parity["status"] != "MATCHED":
+        blockers.append("NFL_ESPN_INDEPENDENT_PARITY_" + parity["status"])
     if pilot["counts"]["held_unsettled_or_unjoined"] or not pilot["counts"]["joined_player_rows"]:
         blockers.append("JOIN_INCOMPLETE")
     status = "SOURCE_REFERENCE_AND_JOIN_VERIFIED" if not blockers else "SOURCE_VALIDATION_HOLD"
@@ -77,6 +90,7 @@ def run(*, download=download_public_source) -> dict[str, Any]:
         "source_manifest": pilot["sources"],
         "counts": pilot["counts"],
         "independent_espn_identity": pilot["independent_espn_identity"],
+        "independent_espn_final_score_parity": parity,
         "research_only": True,
         "probability_publishable": False,
         "training_materialized": False,
@@ -86,7 +100,7 @@ def run(*, download=download_public_source) -> dict[str, Any]:
 
 def main() -> int:
     try:
-        receipt = run()
+        receipt = run(espn_download=fetch_espn_historical_scoreboard)
     except CollectionBlocked as exc:
         print(json.dumps({
             "schema": "WOW_NFL_BACKLOG_CANARY_RECEIPT_V1",
