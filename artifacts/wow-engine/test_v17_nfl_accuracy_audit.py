@@ -119,3 +119,35 @@ def test_read_only_governed_contract_invariant():
     result = audit_nfl([], [], [], [], [], as_of=NOW)
     assert result["can_execute"] is False
     assert result["read_only"] is True
+
+def test_td_probability_calibration_is_normalized_to_more_even_if_less_is_newer():
+    predictions = [td_row("more", "MORE", -30, .40),
+                   td_row("less", "LESS", -10, .60)]
+    settlements = [
+        {"prediction_id":"more","hit":False,"void":False,"push":False},
+        {"prediction_id":"less","hit":True,"void":False,"push":False},
+    ]
+    report = audit_anytime_td(predictions, settlements, as_of=NOW)
+    stats = report["independent_graded_markets"]
+    assert stats["n"] == 1
+    assert stats["mean_probability"] == pytest.approx(.40)
+    assert stats["hit_rate"] == pytest.approx(0)
+    assert stats["brier"] == pytest.approx(.16)
+    assert report["metric_target"] == "MORE_EVENT_OCCURRED_ONE_TRIAL_PER_PLAYER_EVENT_LINE"
+
+
+def test_td_one_settled_less_direction_normalizes_to_scoring_event():
+    result = audit_anytime_td([td_row("less", "LESS", -20, .60)],
+                              [{"prediction_id":"less","hit":True,"void":False,"push":False}], as_of=NOW)
+    assert result["independent_graded_markets"]["n"] == 1
+    assert result["independent_graded_markets"]["mean_probability"] == pytest.approx(.40)
+    assert result["independent_graded_markets"]["hit_rate"] == 0
+
+
+def test_contradictory_more_less_settlements_are_held_not_counted():
+    result = audit_anytime_td([td_row("more", "MORE", -40, .40),
+                               td_row("less", "LESS", -20, .60)],
+                              [{"prediction_id":"more","hit":True,"void":False,"push":False},
+                               {"prediction_id":"less","hit":True,"void":False,"push":False}], as_of=NOW)
+    assert result["settlement_dispositions"] == {"INCONSISTENT_OPPOSING_DIRECTIONS": 1}
+    assert result["independent_graded_markets"]["n"] == 0
