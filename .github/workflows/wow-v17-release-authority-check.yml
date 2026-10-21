@@ -16,6 +16,12 @@ on:
       pr_number:
         description: Pull request number to evaluate at its current exact head.
         required: true
+      qa_run_id:
+        description: Authenticated exact-head QA workflow run that produced the policy receipt.
+        required: true
+      qa_run_attempt:
+        description: Exact attempt number of the producing QA workflow run.
+        required: true
 
 permissions:
   contents: read
@@ -41,7 +47,7 @@ jobs:
       - name: Checkout protected main
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up Python
@@ -68,50 +74,42 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           INPUT_PR: ${{ inputs.pr_number }}
-          WR_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
           QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
           RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
-          REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true' }}
-          SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id || '' }}
-          SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}
+          CURRENT_REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true' }}
+          SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id || inputs.qa_run_id }}
+          SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.qa_run_attempt }}
         run: |
           set -euo pipefail
           tool=artifacts/wow-engine/v17/independent_release_checks.py
           out="$RUNNER_TEMP/decisions"; mkdir -p "$out"
+          [[ "${SOURCE_QA_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "${SOURCE_QA_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::SOURCE_QA_RUN_IDENTITY_INVALID"; exit 1;
+          }
+          policy_args=(resolve-qa-policy --repo "$GITHUB_REPOSITORY"
+            --run-id "$SOURCE_QA_RUN_ID" --run-attempt "$SOURCE_QA_RUN_ATTEMPT")
           if [ "$EVENT" = "workflow_dispatch" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR")
-          elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS")
-          else
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY")
+            [[ "${INPUT_PR:-}" =~ ^[1-9][0-9]*$ ]] || {
+              echo "::error::RELEASE_PR_NUMBER_INVALID"; exit 1;
+            }
+            policy_args+=(--pr "$INPUT_PR")
           fi
-          if [ "$(jq '.errors | length' <<<"$resolved")" != "0" ]; then
-            echo "::error::RELEASE_TARGETS_UNRESOLVED: $(jq -c .errors <<<"$resolved")"
-            exit 1
-          fi
-          i=0
-          while read -r target; do
-            pr=$(jq -r .pr <<<"$target"); head=$(jq -r .head <<<"$target")
-            ev="$out/evidence-$pr.json"
-            gather_args=(gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head")
-            if [ "$REVIEW_ACTIVE" = "true" ]; then
-              if [ -n "$SOURCE_QA_RUN_ID" ]; then
-                [[ "$SOURCE_QA_RUN_ID" =~ ^[1-9][0-9]*$ ]] &&
-                  [[ "$SOURCE_QA_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
-                  echo "::error::SOURCE_QA_RUN_IDENTITY_INVALID"; exit 1;
-                }
-                gather_args+=(--source-review-run-id "$SOURCE_QA_RUN_ID"
-                  --source-review-run-attempt "$SOURCE_QA_RUN_ATTEMPT")
-              fi
-            else
-              gather_args+=(--legacy-review-policy)
-            fi
-            python "$tool" "${gather_args[@]}" > "$ev"
-            python "$tool" decide-release --evidence "$ev" --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" > "$out/decision-$pr.json"
-            i=$((i + 1))
-          done < <(jq -c '.targets[]' <<<"$resolved")
-          echo "count=$i" >> "$GITHUB_OUTPUT"
-          echo "RELEASE decisions: $i" >> "$GITHUB_STEP_SUMMARY"
+          policy_bundle=$(python "$tool" "${policy_args[@]}")
+          policy=$(jq -ce '.policy' <<<"$policy_bundle")
+          printf '%s\n' "$policy" > "$out/qa-policy.json"
+          pr=$(jq -r '.target.pr_number' <<<"$policy")
+          head=$(jq -r '.target.head_sha' <<<"$policy")
+          review_mode=$(jq -r '.mode' <<<"$policy")
+          ev="$out/evidence-$pr.json"
+          gather_args=(gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head"
+            --qa-policy-json "$out/qa-policy.json")
+          [ "${CURRENT_REVIEW_ACTIVE:-false}" != "true" ] || gather_args+=(--current-review-active)
+          [ "$review_mode" != "legacy" ] || gather_args+=(--legacy-review-policy)
+          python "$tool" "${gather_args[@]}" > "$ev"
+          python "$tool" decide-release --evidence "$ev" --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" > "$out/decision-$pr.json"
+          echo "count=1" >> "$GITHUB_OUTPUT"
+          echo "RELEASE decision: PR $pr at $head using QA mode $review_mode" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mint checks-only App token
         id: app_token

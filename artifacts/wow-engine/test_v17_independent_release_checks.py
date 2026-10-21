@@ -126,6 +126,14 @@ def evidence(files=("artifacts/wow-engine/v17/x.py",), author="wow-engineering[b
         "files": list(files),
         "source_review_paths": list(files),
         "source_review": source_review_evidence(files, author=author),
+        "qa_review_policy": {
+            "mode": "independent",
+            "target": {"pr_number": 7, "head_sha": HEAD, "head_ref": "fix/issue-1830"},
+            "canary_scope": None,
+            "source": {"run_id": "12345", "run_attempt": 1},
+        },
+        "independent_review_active": True,
+        "current_review_active": False,
         "check_runs": [run_(n, rid=i) for i, n in enumerate(m.QA_EVIDENCE_CHECKS)],
         "reviews": [],
     }
@@ -149,11 +157,54 @@ def test_ordinary_pr_with_complete_exact_head_evidence_passes():
 
 def test_legacy_policy_requires_trusted_governance_until_review_activation():
     ev = evidence(independent_review_active=False, source_review=None)
+    ev["qa_review_policy"]["mode"] = "legacy"
     assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in m.qa_findings(ev)
     ev["check_runs"].append(run_(m.TRUSTED_GOVERNANCE_CHECK, rid=900))
     assert m.qa_findings(ev) == []
     with_qa(ev)
     assert m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP) == []
+
+
+def test_release_rejects_legacy_qa_after_global_activation_changes():
+    ev = evidence(
+        independent_review_active=False,
+        source_review=None,
+        current_review_active=True,
+    )
+    ev["qa_review_policy"]["mode"] = "legacy"
+    ev["check_runs"].append(run_(m.TRUSTED_GOVERNANCE_CHECK, rid=901))
+    with_qa(ev)
+    findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    assert "RELEASE_QA_REVIEW_POLICY_LEGACY_AFTER_ACTIVATION" in findings
+
+
+def test_release_preserves_independent_qa_mode_after_global_activation_turns_off():
+    ev = evidence(independent_review_active=True, current_review_active=False)
+    ev["check_runs"].append(run_(m.TRUSTED_GOVERNANCE_CHECK, rid=902))
+    with_qa(ev)
+    assert "RELEASE_QA_INDEPENDENT_SOURCE_REVIEW_MISSING" not in m.release_findings(
+        ev, qa_app_id=QA_APP, release_app_id=REL_APP,
+    )
+    ev["source_review"] = None
+    findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    assert "RELEASE_QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in findings
+
+
+def test_canary_policy_is_single_sha_scoped_and_rejects_trust_roots():
+    ev = evidence()
+    ev["qa_review_policy"].update(
+        mode="canary",
+        canary_scope={"pr_number": 7, "head_sha": HEAD},
+    )
+    assert m.qa_findings(ev) == []
+    ev["qa_review_policy"]["canary_scope"]["head_sha"] = OLD
+    assert "QA_REVIEW_CANARY_SCOPE_MISMATCH" in m.qa_findings(ev)
+    ev = evidence(files=TRUST_ROOT_FILES)
+    ev["qa_review_policy"].update(
+        mode="canary",
+        canary_scope={"pr_number": 7, "head_sha": HEAD},
+    )
+    assert "QA_REVIEW_CANARY_TRUST_ROOT" in m.qa_findings(ev)
 
 
 @pytest.mark.parametrize("name", m.QA_EVIDENCE_CHECKS)
@@ -335,7 +386,7 @@ class Fake:
 def test_workflow_run_targets_use_each_prs_own_head_not_the_base():
     live = {
         "number": 7,
-        "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+        "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
         "base": {"ref": "main", "repo": {"full_name": REPO}},
     }
     routes = {f"repos/{REPO}/pulls/7": (200, live)}
@@ -348,7 +399,7 @@ def test_workflow_run_targets_use_each_prs_own_head_not_the_base():
         {"number": 9, "head": {"sha": "zz"}, "base": {"ref": "main"}},
     ]
     out = m.targets(REPO, workflow_run_prs=prs, fetch=Fake(routes))
-    assert out["targets"] == [{"pr": 7, "head": HEAD}]
+    assert out["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "fix/issue-1830"}]
     assert out["errors"] == ["TARGET_HEAD_INVALID:9"]
 
 
@@ -370,10 +421,10 @@ def test_workflow_run_target_holds_when_live_pr_is_stale_or_foreign():
 
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
-    live = {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+    live = {"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
             "base": {"ref": "main", "repo": {"full_name": REPO}}}
     out = m.targets(REPO, pr="7", fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
-    assert out == {"targets": [{"pr": 7, "head": HEAD}], "errors": []}
+    assert out == {"targets": [{"pr": 7, "head": HEAD, "head_ref": "fix/issue-1830"}], "errors": []}
     assert m.targets(REPO, pr="7", fetch=Fake({}))["errors"] == ["TARGET_PR_UNREADABLE:404"]
 
 
@@ -462,7 +513,7 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
     assert not re.search(r"^\s+pull_request(_target|_review)?\s*:", on, re.M), "never run PR-context triggers"
     perms = text.split("\npermissions:\n", 1)[1].split("\n\n", 1)[0]
     assert "write" not in perms, "workflow token stays read-only"
-    expected_checkout = "ref: ${{ github.sha }}" if wf == QA_WF else "ref: main"
+    expected_checkout = "ref: ${{ github.sha }}"
     assert expected_checkout in text and "persist-credentials: false" in text
     assert "github.event.pull_request" not in text
     for use in re.findall(r"uses:\s*(\S+)", text):
@@ -490,6 +541,9 @@ def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
     assert triggers["workflow_run"]["types"] == ["completed"]
     assert triggers["workflow_run"]["workflows"] == upstream
     assert triggers["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "true"
+    if wf == REL_WF:
+        assert triggers["workflow_dispatch"]["inputs"]["qa_run_id"]["required"] == "true"
+        assert triggers["workflow_dispatch"]["inputs"]["qa_run_attempt"]["required"] == "true"
 
 
 # --- workflows: execute the real Bash against a fake gh ------------------------------
@@ -545,6 +599,11 @@ def fake_gh(tmp_path):
                             raise target.SourceReviewError("SOURCE_REVIEW_ARTIFACT_DUPLICATE_OR_MISSING")
                         return json.loads(os.environ["FAKE_SOURCE_REVIEW"])
                     target.resolve_current_source_review = _resolve
+                    def _resolve_policy(**kwargs):
+                        if os.environ.get("FAKE_QA_POLICY_MODE") == "missing":
+                            raise target.SourceReviewError("QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING")
+                        return json.loads(os.environ["FAKE_QA_POLICY"])
+                    target.resolve_qa_review_policy = _resolve_policy
                 loader.exec_module = _exec_module
             return module
         importlib.util.module_from_spec = _patched_module_from_spec
@@ -565,13 +624,30 @@ def _run_decide(tmp, wf, routes, env_extra):
     source = source_review_evidence(["artifacts/x.py"], author="wow-engineering[bot]")
     (runner / "wow-v17-independent-source-review.json").write_text(json.dumps(source["artifact"]))
     (runner / "source-review-run.json").write_text(json.dumps(source["run"]))
+    qa_policy = {
+        "artifact_id": 88,
+        "policy": {
+            "mode": "independent",
+            "target": {"pr_number": 7, "head_sha": HEAD, "head_ref": "fix/issue-1830"},
+            "canary_scope": None,
+            "source": {"run_id": "12345", "run_attempt": 1},
+        },
+        "run": {"id": 12345, "run_attempt": 1, "conclusion": "success"},
+    }
+    review_active = env_extra.get("REVIEW_ACTIVE", "true") == "true"
+    review_mode = env_extra.get("REVIEW_MODE", "independent" if review_active else "legacy")
+    qa_policy["policy"].update(mode=review_mode)
+    qa_policy["policy"]["canary_scope"] = (
+        {"pr_number": 7, "head_sha": HEAD} if review_mode == "canary" else None
+    )
+    (runner / "wow-v17-qa-review-policy.json").write_text(json.dumps(qa_policy["policy"]))
     env = dict(os.environ, PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", FAKE_GH_ROUTES=str(tmp / "routes.json"),
                FAKE_GH_LOG=str(tmp / "gh.log"), GITHUB_REPOSITORY=REPO, RUNNER_TEMP=str(runner),
                GITHUB_OUTPUT=str(tmp / "out.txt"), GITHUB_STEP_SUMMARY=str(tmp / "summary.md"), GH_TOKEN="read-only",
-               PR_NUMBER="7", HEAD_SHA=HEAD, REVIEW_ACTIVE="true", SOURCE_REVIEW_ARTIFACT_ID="99",
-               SOURCE_QA_RUN_ID="", SOURCE_QA_RUN_ATTEMPT="",
+               PR_NUMBER="7", HEAD_SHA=HEAD, REVIEW_ACTIVE="true", CURRENT_REVIEW_ACTIVE="false",
+               SOURCE_REVIEW_ARTIFACT_ID="99", SOURCE_QA_RUN_ID="12345", SOURCE_QA_RUN_ATTEMPT="1",
                PYTHONPATH=f"{tmp}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
-               FAKE_SOURCE_REVIEW=json.dumps(source))
+               FAKE_SOURCE_REVIEW=json.dumps(source), FAKE_QA_POLICY=json.dumps(qa_policy))
     env.update(env_extra)
     proc = subprocess.run(["bash", "-c", _step_script(wf, "Decide at exact head (read-only)")],
                           cwd=ROOT, env=env, capture_output=True, text=True)
@@ -647,7 +723,7 @@ def test_qa_workflow_resolves_minimal_workflow_run_repositories_against_live_pr(
     }
     live_pr = {
         "number": 7,
-        "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+        "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
         "base": {"ref": "main", "repo": {"full_name": REPO}},
     }
     routes = {f"repos/{REPO}/pulls/7": [200, live_pr]}
@@ -666,6 +742,7 @@ def test_qa_workflow_resolves_minimal_workflow_run_repositories_against_live_pr(
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "pr_number=7" in (fake_gh / "resolved.txt").read_text()
     assert f"head_sha={HEAD}" in (fake_gh / "resolved.txt").read_text()
+    assert "head_ref=fix/issue-1830" in (fake_gh / "resolved.txt").read_text()
     routes[f"repos/{REPO}/pulls/7"][1]["head"]["sha"] = OLD
     (fake_gh / "routes.json").write_text(json.dumps(routes))
     proc = subprocess.run(
@@ -694,6 +771,45 @@ def test_release_workflow_end_to_end_requires_qa_from_qa_app(fake_gh):
     assert decision["conclusion"] == "failure" and "RELEASE_QA_FOREIGN_SOURCE" in decision["findings"]
 
 
+def test_release_binds_mode_to_qa_run_across_activation_changes(fake_gh):
+    legacy = {
+        "artifact_id": 88,
+        "policy": {
+            "mode": "legacy",
+            "target": {"pr_number": 7, "head_sha": HEAD, "head_ref": "fix/issue-1830"},
+            "canary_scope": None,
+            "source": {"run_id": "12345", "run_attempt": 1},
+        },
+        "run": {"id": 12345, "run_attempt": 1, "conclusion": "success"},
+    }
+    routes = _routes_for_pr(_evidence_runs([run_(m.QA_CHECK, app=QA_APP)]))
+    routes[f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"][1]["check_runs"].append(
+        run_(m.TRUSTED_GOVERNANCE_CHECK, rid=90)
+    )
+
+    # OFF -> ON: a genuine legacy QA pass cannot satisfy the now-active policy.
+    proc, runner, _ = _run_decide(
+        fake_gh, REL_WF, routes,
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "CURRENT_REVIEW_ACTIVE": "true",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP, "FAKE_QA_POLICY": json.dumps(legacy)},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "failure"
+    assert "RELEASE_QA_REVIEW_POLICY_LEGACY_AFTER_ACTIVATION" in decision["findings"]
+
+    # ON -> OFF: a later flag change cannot downgrade the producing QA run.
+    proc, runner, _ = _run_decide(
+        fake_gh, REL_WF, routes,
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "CURRENT_REVIEW_ACTIVE": "false",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP, "FAKE_SOURCE_REVIEW_MODE": "missing"},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "failure"
+    assert any("SOURCE_REVIEW" in finding for finding in decision["findings"])
+
+
 @pytest.mark.parametrize("wf, code", [(QA_WF, "QA_APP_CREDENTIAL_MISSING"), (REL_WF, "RELEASE_APP_CREDENTIAL_MISSING")])
 @pytest.mark.parametrize("app_id, present", [("", "true"), ("1002", "false"), ("12;x", "true")])
 def test_missing_app_identity_fails_closed_and_publishes_nothing(wf, code, app_id, present):
@@ -711,6 +827,68 @@ def test_activated_qa_review_requires_its_separate_provider_credential():
     )
     assert proc.returncode != 0
     assert "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("global_active", "canary_requested", "canary_pr", "canary_sha", "event", "expected"),
+    [
+        ("false", "false", "", "", "workflow_dispatch", ("legacy", "false")),
+        ("false", "true", "7", HEAD, "workflow_dispatch", ("canary", "true")),
+        ("true", "false", "", "", "workflow_run", ("independent", "true")),
+        ("true", "true", "7", HEAD, "workflow_dispatch", ("independent", "true")),
+    ],
+)
+def test_qa_review_policy_selector_is_scoped_and_staged(
+    tmp_path, global_active, canary_requested, canary_pr, canary_sha, event, expected,
+):
+    output = tmp_path / "outputs"
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
+        env=dict(
+            os.environ,
+            GLOBAL_REVIEW_ACTIVE=global_active,
+            CANARY_REQUESTED=canary_requested,
+            CANARY_PR=canary_pr,
+            CANARY_SHA=canary_sha,
+            EVENT=event,
+            PR_NUMBER="7",
+            HEAD_SHA=HEAD,
+            GITHUB_OUTPUT=str(output),
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert (values["mode"], values["review_active"]) == expected
+
+
+@pytest.mark.parametrize(("event", "pr", "sha"), [
+    ("workflow_run", "7", HEAD),
+    ("workflow_dispatch", "8", HEAD),
+    ("workflow_dispatch", "7", OLD),
+    ("workflow_dispatch", "7", "not-a-sha"),
+])
+def test_qa_canary_policy_selector_rejects_unapproved_target(tmp_path, event, pr, sha):
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
+        env=dict(
+            os.environ,
+            GLOBAL_REVIEW_ACTIVE="false",
+            CANARY_REQUESTED="true",
+            CANARY_PR="7",
+            CANARY_SHA=HEAD,
+            EVENT=event,
+            PR_NUMBER=pr,
+            HEAD_SHA=sha,
+            GITHUB_OUTPUT=str(tmp_path / "outputs"),
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "::error::QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD" in proc.stdout \
+        or "::error::QA_REVIEW_CANARY_REQUIRES_DISPATCH" in proc.stdout
 
 
 def test_publish_refuses_a_decision_that_claims_authority(fake_gh):
@@ -763,7 +941,7 @@ def test_each_app_secret_is_isolated_by_main_only_environment():
     ):
         source = workflow.read_text()
         assert ("    environment: " + environment) in source
-        assert ("ref: ${{ github.sha }}" if workflow == QA_WF else "ref: main") in source
+        assert "ref: ${{ github.sha }}" in source
         assert "vars." + app_id in source
         assert "secrets." + secret in source
         other_secret = "WOW_RELEASE_APP_PRIVATE_KEY" if environment == "wow-qa" else "WOW_QA_APP_PRIVATE_KEY"

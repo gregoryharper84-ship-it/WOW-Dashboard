@@ -29,6 +29,7 @@ MAX_DIFF_BYTES = 512 * 1024
 MAX_DIFF_LINES = 100_000
 MAX_REVIEW_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_ARTIFACT_INVENTORY = 2000
+QA_POLICY_ARTIFACT_NAME = "wow-v17-qa-review-policy.json"
 SHA = re.compile(r"^[a-f0-9]{40}$")
 DIGEST = re.compile(r"^[a-f0-9]{64}$")
 
@@ -965,12 +966,251 @@ def resolve_source_review_run(
     return run
 
 
+def build_qa_review_policy(
+    *,
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    head_ref: str,
+    mode: str,
+    run: Mapping[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    _require(repository == CANONICAL_REPOSITORY, "QA_POLICY_REPOSITORY_MISMATCH")
+    _positive_int(pr_number, "QA_POLICY_PR_NUMBER")
+    _require(bool(SHA.fullmatch(head_sha)), "QA_POLICY_HEAD_INVALID")
+    _require(isinstance(head_ref, str) and bool(head_ref), "QA_POLICY_HEAD_REF_INVALID")
+    _require(mode in {"legacy", "independent", "canary"}, "QA_POLICY_MODE_INVALID")
+    _require(isinstance(run, Mapping), "QA_POLICY_RUN_INVALID")
+    _positive_int(run.get("id"), "QA_POLICY_RUN_ID")
+    attempt = _positive_int(run.get("run_attempt"), "QA_POLICY_RUN_ATTEMPT")
+    _require(
+        run.get("name") == WORKFLOW_NAME
+        and run.get("path") == WORKFLOW_PATH
+        and run.get("event") in {"workflow_dispatch", "workflow_run"}
+        and run.get("head_branch") == "main"
+        and run.get("repository") == repository
+        and isinstance(run.get("head_sha"), str)
+        and bool(SHA.fullmatch(run["head_sha"])),
+        "QA_POLICY_RUN_IDENTITY_INVALID",
+    )
+    _require(mode != "canary" or run.get("event") == "workflow_dispatch",
+             "QA_POLICY_CANARY_REQUIRES_DISPATCH")
+    clock = now or datetime.now(timezone.utc)
+    _require(clock.tzinfo is not None, "QA_POLICY_CLOCK_INVALID")
+    created = clock.astimezone(timezone.utc)
+    return {
+        "schema_version": 1,
+        "repository": repository,
+        "target": {
+            "pr_number": pr_number,
+            "head_sha": head_sha,
+            "head_ref": head_ref,
+        },
+        "mode": mode,
+        "canary_scope": {"pr_number": pr_number, "head_sha": head_sha} if mode == "canary" else None,
+        "source": {
+            "run_id": str(run["id"]),
+            "run_attempt": attempt,
+            "workflow_name": WORKFLOW_NAME,
+            "workflow_path": WORKFLOW_PATH,
+            "event": run["event"],
+            "head_branch": "main",
+            "head_sha": run["head_sha"],
+            "repository": repository,
+        },
+        "created_at_utc": _utc(created),
+        "expires_at_utc": _utc(created + MAX_REVIEW_AGE),
+    }
+
+
+def verify_qa_review_policy(
+    artifact: object,
+    *,
+    run: Mapping[str, Any],
+    expected_repository: str,
+    expected_pr_number: int,
+    expected_head_sha: str,
+    expected_attempt: int,
+    now: datetime | None = None,
+) -> None:
+    artifact = _exact_keys(
+        artifact,
+        {"schema_version", "repository", "target", "mode", "canary_scope", "source",
+         "created_at_utc", "expires_at_utc"},
+        "QA_POLICY_ARTIFACT",
+    )
+    _require(artifact.get("schema_version") == 1, "QA_POLICY_SCHEMA_VERSION_UNSUPPORTED")
+    _require(artifact.get("repository") == expected_repository == CANONICAL_REPOSITORY,
+             "QA_POLICY_REPOSITORY_MISMATCH")
+    target = _exact_keys(artifact.get("target"), {"pr_number", "head_sha", "head_ref"}, "QA_POLICY_TARGET")
+    _require(target.get("pr_number") == expected_pr_number, "QA_POLICY_PR_NUMBER_MISMATCH")
+    _require(target.get("head_sha") == expected_head_sha and bool(SHA.fullmatch(expected_head_sha)),
+             "QA_POLICY_HEAD_MISMATCH")
+    _require(isinstance(target.get("head_ref"), str) and bool(target["head_ref"]),
+             "QA_POLICY_HEAD_REF_INVALID")
+    policy_mode = artifact.get("mode")
+    _require(policy_mode in {"legacy", "independent", "canary"}, "QA_POLICY_MODE_INVALID")
+    scope = artifact.get("canary_scope")
+    if policy_mode == "canary":
+        _require(
+            scope == {"pr_number": expected_pr_number, "head_sha": expected_head_sha},
+            "QA_POLICY_CANARY_SCOPE_MISMATCH",
+        )
+    else:
+        _require(scope is None, "QA_POLICY_CANARY_SCOPE_UNEXPECTED")
+
+    source = _exact_keys(
+        artifact.get("source"),
+        {"run_id", "run_attempt", "workflow_name", "workflow_path", "event", "head_branch",
+         "head_sha", "repository"},
+        "QA_POLICY_SOURCE",
+    )
+    run_id = _positive_int(run.get("id"), "QA_POLICY_RUN_ID")
+    attempt = _positive_int(source.get("run_attempt"), "QA_POLICY_RUN_ATTEMPT")
+    _require(
+        source.get("run_id") == str(run_id)
+        and attempt == expected_attempt == run.get("run_attempt")
+        and source.get("workflow_name") == run.get("name") == WORKFLOW_NAME
+        and source.get("workflow_path") == run.get("path") == WORKFLOW_PATH
+        and source.get("event") == run.get("event")
+        and source.get("event") in {"workflow_dispatch", "workflow_run"}
+        and source.get("head_branch") == run.get("head_branch") == "main"
+        and source.get("head_sha") == run.get("head_sha")
+        and source.get("repository") == expected_repository
+        and (run.get("repository") or {}).get("full_name") == expected_repository
+        and (run.get("head_repository") or {}).get("full_name") == expected_repository
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "success",
+        "QA_POLICY_RUN_PROVENANCE_MISMATCH",
+    )
+    _require(policy_mode != "canary" or source.get("event") == "workflow_dispatch",
+             "QA_POLICY_CANARY_REQUIRES_DISPATCH")
+    created = _timestamp(artifact.get("created_at_utc"), "QA_POLICY_CREATED_AT")
+    expires = _timestamp(artifact.get("expires_at_utc"), "QA_POLICY_EXPIRY")
+    _require(expires == created + MAX_REVIEW_AGE, "QA_POLICY_EXPIRY_MISMATCH")
+    clock = now or datetime.now(timezone.utc)
+    _require(clock.tzinfo is not None, "QA_POLICY_CLOCK_INVALID")
+    _require(created <= clock.astimezone(timezone.utc) < expires, "QA_POLICY_EXPIRED_OR_FUTURE")
+
+
+def resolve_qa_review_policy(
+    *,
+    repository: str,
+    run_id: int,
+    run_attempt: int,
+    token: str,
+    expected_pr_number: int | None = None,
+    now: datetime | None = None,
+    get_json: Any = None,
+    download_artifact: Any = None,
+) -> dict[str, Any]:
+    _require(repository == CANONICAL_REPOSITORY, "QA_POLICY_REPOSITORY_MISMATCH")
+    _positive_int(run_id, "QA_POLICY_RUN_ID")
+    _positive_int(run_attempt, "QA_POLICY_RUN_ATTEMPT")
+    _require(bool(token), "QA_POLICY_GITHUB_TOKEN_MISSING")
+    json_fetch = get_json or (lambda path: _github_get_json(repository=repository, path=path, token=token))
+    artifact_fetch = download_artifact or (
+        lambda artifact_id: _github_download_artifact(
+            repository=repository, artifact_id=artifact_id, token=token
+        )
+    )
+    run = json_fetch(f"/actions/runs/{run_id}")
+    _require(isinstance(run, Mapping), "QA_POLICY_RUN_UNREADABLE")
+    _require(run.get("id") == run_id, "QA_POLICY_RUN_ID_MISMATCH")
+    _require(run.get("run_attempt") == run_attempt, "QA_POLICY_RUN_ATTEMPT_MISMATCH")
+
+    inventory: list[Mapping[str, Any]] = []
+    for page in range(1, 21):
+        response = json_fetch(f"/actions/runs/{run_id}/artifacts?per_page=100&page={page}")
+        _require(isinstance(response, Mapping) and isinstance(response.get("artifacts"), list),
+                 "QA_POLICY_ARTIFACT_INVENTORY_INVALID")
+        rows = response["artifacts"]
+        _require(len(inventory) + len(rows) <= MAX_ARTIFACT_INVENTORY,
+                 "QA_POLICY_ARTIFACT_INVENTORY_LIMIT_EXCEEDED")
+        inventory.extend(row for row in rows if isinstance(row, Mapping))
+        if len(rows) < 100:
+            break
+    else:
+        raise SourceReviewError("QA_POLICY_ARTIFACT_INVENTORY_LIMIT_EXCEEDED")
+
+    expected_name = f"wow-v17-qa-policy-{run_id}-{run_attempt}"
+    matching = [row for row in inventory if row.get("name") == expected_name]
+    _require(len(matching) == 1, "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING")
+    metadata = matching[0]
+    artifact_id = _positive_int(metadata.get("id"), "QA_POLICY_ARTIFACT_ID")
+    _require(metadata.get("expired") is False, "QA_POLICY_ARTIFACT_EXPIRED")
+    created = _timestamp(metadata.get("created_at"), "QA_POLICY_ARTIFACT_CREATED_AT")
+    clock = now or datetime.now(timezone.utc)
+    _require(clock.tzinfo is not None and created <= clock.astimezone(timezone.utc) < created + MAX_REVIEW_AGE,
+             "QA_POLICY_ARTIFACT_STALE_OR_FUTURE")
+    actual_metadata = json_fetch(f"/actions/artifacts/{artifact_id}")
+    _require(
+        isinstance(actual_metadata, Mapping)
+        and actual_metadata.get("id") == artifact_id
+        and actual_metadata.get("name") == expected_name
+        and actual_metadata.get("expired") is False
+        and (actual_metadata.get("workflow_run") or {}).get("id") == run_id,
+        "QA_POLICY_ARTIFACT_PROVENANCE_MISMATCH",
+    )
+    archive = artifact_fetch(artifact_id)
+    _require(isinstance(archive, bytes) and len(archive) <= MAX_REVIEW_ARTIFACT_BYTES,
+             "QA_POLICY_ARTIFACT_LIMIT_EXCEEDED")
+    try:
+        with ZipFile(io.BytesIO(archive)) as archive_file:
+            names = archive_file.namelist()
+            _require(
+                sorted(names) == sorted([QA_POLICY_ARTIFACT_NAME, QA_POLICY_ARTIFACT_NAME + ".sha256"]),
+                "QA_POLICY_ARTIFACT_CONTENTS_INVALID",
+            )
+            payload = archive_file.read(QA_POLICY_ARTIFACT_NAME)
+            checksum = archive_file.read(QA_POLICY_ARTIFACT_NAME + ".sha256").decode("ascii").strip()
+        _require(
+            bool(DIGEST.fullmatch(checksum)) and hashlib.sha256(payload).hexdigest() == checksum,
+            "QA_POLICY_ARTIFACT_CHECKSUM_MISMATCH",
+        )
+        policy = json.loads(payload)
+    except (BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SourceReviewError("QA_POLICY_ARTIFACT_INVALID") from exc
+
+    target = policy.get("target") if isinstance(policy, Mapping) else None
+    pr_number = target.get("pr_number") if isinstance(target, Mapping) else None
+    head_sha = target.get("head_sha") if isinstance(target, Mapping) else None
+    _positive_int(pr_number, "QA_POLICY_PR_NUMBER")
+    _require(expected_pr_number is None or pr_number == expected_pr_number, "QA_POLICY_PR_NUMBER_MISMATCH")
+    verify_qa_review_policy(
+        policy,
+        run=run,
+        expected_repository=repository,
+        expected_pr_number=pr_number,
+        expected_head_sha=head_sha,
+        expected_attempt=run_attempt,
+        now=now,
+    )
+    pr = json_fetch(f"/pulls/{pr_number}")
+    _require(
+        isinstance(pr, Mapping)
+        and pr.get("number") == pr_number
+        and pr.get("state") == "open"
+        and pr.get("draft") is False
+        and not pr.get("merged_at")
+        and (pr.get("head") or {}).get("sha") == head_sha
+        and (pr.get("head") or {}).get("ref") == target.get("head_ref")
+        and ((pr.get("head") or {}).get("repo") or {}).get("full_name") == repository
+        and (pr.get("base") or {}).get("ref") == "main"
+        and ((pr.get("base") or {}).get("repo") or {}).get("full_name") == repository,
+        "QA_POLICY_TARGET_NO_LONGER_CURRENT",
+    )
+    return {"artifact_id": artifact_id, "policy": policy, "run": run}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--capture", action="store_true")
     mode.add_argument("--build", action="store_true")
     mode.add_argument("--verify", action="store_true")
+    mode.add_argument("--write-policy", action="store_true")
     parser.add_argument("--input", type=Path)
     parser.add_argument("--result", type=Path)
     parser.add_argument("--output", type=Path)
@@ -981,6 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--head-ref")
     parser.add_argument("--attempt", type=int)
+    parser.add_argument("--policy-mode", choices=("legacy", "independent", "canary"))
     args = parser.parse_args(argv)
     try:
         if args.capture:
@@ -1022,6 +1263,24 @@ def main(argv: list[str] | None = None) -> int:
                               ),
                               "pr_number": args.pr_number, "head_sha": args.head_sha,
                               "can_execute": False}, sort_keys=True))
+            return 0
+        if args.write_policy:
+            _require(args.output is not None and args.run is not None and args.head_ref is not None
+                     and args.attempt is not None and args.policy_mode is not None,
+                     "QA_POLICY_BUILD_ARGUMENT_MISSING")
+            run = json.loads(args.run.read_text(encoding="utf-8"))
+            artifact = build_qa_review_policy(
+                repository=args.repository,
+                pr_number=args.pr_number,
+                head_sha=args.head_sha,
+                head_ref=args.head_ref,
+                mode=args.policy_mode,
+                run=run,
+            )
+            _require(artifact["source"]["run_attempt"] == args.attempt, "QA_POLICY_RUN_ATTEMPT_MISMATCH")
+            write_artifact(artifact, args.output)
+            print(json.dumps({"status": "QA_REVIEW_POLICY_RECORDED", "mode": args.policy_mode,
+                              "head_sha": args.head_sha}, sort_keys=True))
             return 0
         _require(args.artifact is not None and args.run is not None and args.head_ref is not None,
                  "SOURCE_REVIEW_VERIFY_ARGUMENT_MISSING")

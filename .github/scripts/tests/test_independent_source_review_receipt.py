@@ -468,6 +468,171 @@ def test_artifact_checksum_is_verified_by_cli(tmp_path):
     assert result == 1
 
 
+def qa_policy(mode="independent", *, now=NOW):
+    return review.build_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY,
+        pr_number=1822,
+        head_sha=HEAD,
+        head_ref="copilot/fix",
+        mode=mode,
+        run=PRODUCER_RUN,
+        now=now,
+    )
+
+
+def qa_policy_archive(policy):
+    archive = BytesIO()
+    payload = (json.dumps(policy, sort_keys=True, indent=2) + "\n").encode()
+    with ZipFile(archive, "w") as bundle:
+        bundle.writestr(review.QA_POLICY_ARTIFACT_NAME, payload)
+        bundle.writestr(
+            review.QA_POLICY_ARTIFACT_NAME + ".sha256",
+            __import__("hashlib").sha256(payload).hexdigest() + "\n",
+        )
+    return archive.getvalue()
+
+
+def qa_policy_routes(policy=None):
+    policy = policy or qa_policy(now=datetime.now(timezone.utc) - timedelta(minutes=1))
+    created = policy["created_at_utc"]
+    artifact_id = 778
+    name = f"wow-v17-qa-policy-{PRODUCER_RUN['id']}-{PRODUCER_RUN['run_attempt']}"
+    api_run = {
+        **CONSUMER_RUN,
+        "id": PRODUCER_RUN["id"],
+        "run_attempt": PRODUCER_RUN["run_attempt"],
+    }
+    metadata = {
+        "id": artifact_id,
+        "name": name,
+        "expired": False,
+        "created_at": created,
+        "workflow_run": {"id": PRODUCER_RUN["id"]},
+    }
+    return {
+        f"/actions/runs/{PRODUCER_RUN['id']}": api_run,
+        f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1": {
+            "artifacts": [metadata],
+        },
+        f"/actions/artifacts/{artifact_id}": metadata,
+        "/pulls/1822": pr(),
+    }, qa_policy_archive(policy)
+
+
+def test_qa_policy_artifact_authenticates_exact_run_mode_target_and_freshness():
+    routes, archive = qa_policy_routes()
+    resolved = review.resolve_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"],
+        run_attempt=1,
+        token="read-only",
+        expected_pr_number=1822,
+        now=datetime.now(timezone.utc),
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive if artifact_id == 778 else b"",
+    )
+    assert resolved["artifact_id"] == 778
+    assert resolved["policy"]["mode"] == "independent"
+    assert resolved["policy"]["target"] == {
+        "pr_number": 1822, "head_sha": HEAD, "head_ref": "copilot/fix",
+    }
+
+
+def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path):
+    policy = qa_policy("canary")
+    run_path = tmp_path / "run.json"
+    run_path.write_text(json.dumps(PRODUCER_RUN), encoding="utf-8")
+    output = tmp_path / review.QA_POLICY_ARTIFACT_NAME
+    result = review.main([
+        "--write-policy", "--run", str(run_path), "--output", str(output),
+        "--repository", review.CANONICAL_REPOSITORY, "--pr-number", "1822",
+        "--head-sha", HEAD, "--head-ref", "copilot/fix", "--attempt", "1",
+        "--policy-mode", "canary",
+    ])
+    assert result == 0
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written["mode"] == "canary" and written["canary_scope"] == policy["canary_scope"]
+    assert output.with_suffix(output.suffix + ".sha256").read_text().strip()
+
+
+@pytest.mark.parametrize(("field", "value", "reason"), [
+    ("name", "foreign-workflow", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("path", ".github/workflows/other.yml", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("head_branch", "feature", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("conclusion", "failure", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("run_attempt", 2, "QA_POLICY_RUN_ATTEMPT_MISMATCH"),
+])
+def test_qa_policy_rejects_foreign_failed_or_replayed_producer_run(field, value, reason):
+    routes, archive = qa_policy_routes()
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}"][field] = value
+    with pytest.raises(review.SourceReviewError, match=reason):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=PRODUCER_RUN["id"],
+            run_attempt=1,
+            token="read-only",
+            now=datetime.now(timezone.utc),
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+        )
+
+
+@pytest.mark.parametrize(("mutation", "reason"), [
+    (lambda routes, record: routes.update({
+        f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1": {"artifacts": []},
+    }), "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING"),
+    (lambda routes, record: routes.update({
+        f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1": {"artifacts": [record, record]},
+    }), "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING"),
+    (lambda routes, record: record.update(expired=True), "QA_POLICY_ARTIFACT_EXPIRED"),
+])
+def test_qa_policy_rejects_missing_duplicate_or_expired_artifacts(mutation, reason):
+    routes, archive = qa_policy_routes()
+    key = f"/actions/runs/{PRODUCER_RUN['id']}/artifacts?per_page=100&page=1"
+    record = routes[key]["artifacts"][0]
+    mutation(routes, record)
+    with pytest.raises(review.SourceReviewError, match=reason):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=PRODUCER_RUN["id"],
+            run_attempt=1,
+            token="read-only",
+            now=datetime.now(timezone.utc),
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+        )
+
+
+def test_qa_policy_rejects_pr_movement_checksum_and_canary_scope_replay():
+    routes, archive = qa_policy_routes()
+    moved_pr = pr()
+    moved_pr["head"]["sha"] = MAIN
+    routes["/pulls/1822"] = moved_pr
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_TARGET_NO_LONGER_CURRENT"):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=PRODUCER_RUN["id"],
+            run_attempt=1,
+            token="read-only",
+            now=datetime.now(timezone.utc),
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+        )
+
+    canary = qa_policy("canary")
+    canary["canary_scope"]["head_sha"] = MAIN
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_CANARY_SCOPE_MISMATCH"):
+        review.verify_qa_review_policy(
+            canary,
+            run=CONSUMER_RUN,
+            expected_repository=review.CANONICAL_REPOSITORY,
+            expected_pr_number=1822,
+            expected_head_sha=HEAD,
+            expected_attempt=1,
+            now=NOW,
+        )
+
+
 def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     parsed = __import__("yaml").load(workflow, Loader=__import__("yaml").BaseLoader)
@@ -492,6 +657,11 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_PR" in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA" in workflow
+    assert "Select exact-head review policy" in workflow
+    assert "wow-v17-qa-policy-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert "independent_review_canary" in workflow
     assert "WOW_REVIEW_OPENAI_API_KEY" not in workflow
     assert "wow-review" not in workflow
     assert review_step["with"]["openai_api_key"] == "${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}"

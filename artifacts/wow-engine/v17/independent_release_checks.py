@@ -73,6 +73,8 @@ def gather(
     fetch: Fetch = gh_fetch,
     source_review_resolver: Callable[..., dict[str, Any]] | None = None,
     source_review_data: dict[str, Any] | None = None,
+    qa_review_policy: dict[str, Any] | None = None,
+    current_review_active: bool = False,
     independent_review_active: bool = True,
     source_review_run_id: int | None = None,
     source_review_run_attempt: int | None = None,
@@ -129,6 +131,20 @@ def gather(
     reviews = _paged(fetch, f"repos/{repo}/pulls/{pr_number}/reviews", None, errors, "REVIEWS")
     ev["reviews"] = [{"user": (r.get("user") or {}).get("login"), "state": r.get("state"),
                       "commit_id": r.get("commit_id"), "submitted_at": r.get("submitted_at")} for r in reviews]
+    ev["qa_review_policy"] = qa_review_policy
+    ev["current_review_active"] = current_review_active
+    if qa_review_policy is not None:
+        mode = qa_review_policy.get("mode") if isinstance(qa_review_policy, dict) else None
+        if mode not in {"legacy", "independent", "canary"}:
+            errors.append("QA_REVIEW_POLICY_MODE_INVALID")
+        else:
+            independent_review_active = mode != "legacy"
+            source = qa_review_policy.get("source") or {}
+            try:
+                source_review_run_id = int(source.get("run_id"))
+                source_review_run_attempt = source.get("run_attempt")
+            except (TypeError, ValueError):
+                errors.append("QA_REVIEW_POLICY_RUN_ID_INVALID")
     ev["independent_review_active"] = independent_review_active
     if independent_review_active:
         if source_review_data is not None:
@@ -187,7 +203,7 @@ def targets(repo: str, *, pr: str | None = None,
             ):
                 errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
                 continue
-            out.append({"pr": number, "head": sha})
+            out.append({"pr": number, "head": sha, "head_ref": head.get("ref")})
     elif pr is not None:
         if not str(pr).isdigit():
             errors.append("TARGET_PR_INVALID")
@@ -204,7 +220,7 @@ def targets(repo: str, *, pr: str | None = None,
             ):
                 errors.append("TARGET_PR_IDENTITY_MISMATCH")
             else:
-                out.append({"pr": int(pr), "head": sha})
+                out.append({"pr": int(pr), "head": sha, "head_ref": (body.get("head") or {}).get("ref")})
     else:
         status, body = fetch(f"repos/{repo}/pulls?state=open&base=main&per_page={PER_PAGE}")
         if status != 200 or not isinstance(body, list):
@@ -215,7 +231,8 @@ def targets(repo: str, *, pr: str | None = None,
                     continue
                 sha = (item.get("head") or {}).get("sha")
                 if SHA_RE.match(str(sha or "")):
-                    out.append({"pr": item.get("number"), "head": sha})
+                    out.append({"pr": item.get("number"), "head": sha,
+                                "head_ref": ((item.get("head") or {}).get("ref"))})
             out = out[:MAX_TARGETS]
     return {"targets": out, "errors": errors}
 
@@ -241,6 +258,8 @@ def _owner_approved_at_head(ev: dict, head: str) -> bool:
 
 def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> list[str]:
     findings = [f"QA_EVIDENCE_INCOMPLETE:{e}" for e in ev.get("evidence_errors") or []]
+    if governance_files is None:
+        governance_files = frozenset(governance_trust_roots(REPO_ROOT))
     pr = ev.get("pr") or {}
     head = str(pr.get("head_sha") or "")
     expected = str(ev.get("expected_head_sha") or "")
@@ -295,6 +314,34 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     files = ev.get("files") or []
     if not files:
         findings.append("QA_FILES_EMPTY")
+    policy = ev.get("qa_review_policy")
+    if policy is not None:
+        mode = policy.get("mode") if isinstance(policy, dict) else None
+        target = policy.get("target") if isinstance(policy, dict) else None
+        scope = policy.get("canary_scope") if isinstance(policy, dict) else None
+        if mode not in {"legacy", "independent", "canary"}:
+            findings.append("QA_REVIEW_POLICY_MODE_INVALID")
+        elif mode == "legacy":
+            if ev.get("independent_review_active") is not False:
+                findings.append("QA_REVIEW_POLICY_MODE_CONFLICT")
+            if ev.get("current_review_active") is True:
+                findings.append("QA_REVIEW_POLICY_LEGACY_AFTER_ACTIVATION")
+        else:
+            if ev.get("independent_review_active") is not True:
+                findings.append("QA_REVIEW_POLICY_MODE_CONFLICT")
+            if not isinstance(target, dict) or (
+                target.get("pr_number") != ev.get("pr_number")
+                or target.get("head_sha") != head
+                or target.get("head_ref") != (pr.get("head_ref") or "")
+            ):
+                findings.append("QA_REVIEW_POLICY_TARGET_MISMATCH")
+            if mode == "canary":
+                if scope != {"pr_number": ev.get("pr_number"), "head_sha": head}:
+                    findings.append("QA_REVIEW_CANARY_SCOPE_MISMATCH")
+                if pr.get("author") == ev.get("owner_login"):
+                    findings.append("QA_REVIEW_CANARY_OWNER_AUTHORED")
+                if any(is_trust_root(str(path), governance_files) for path in files):
+                    findings.append("QA_REVIEW_CANARY_TRUST_ROOT")
     runs = ev.get("check_runs") or []
     expected_checks = QA_EVIDENCE_CHECKS
     if review_active is False:
@@ -305,8 +352,6 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
             findings.append(f"QA_EVIDENCE_MISSING:{name}")
         elif run.get("conclusion") != "success":
             findings.append(f"QA_EVIDENCE_FAILED:{name}")
-    if governance_files is None:
-        governance_files = frozenset(governance_trust_roots(REPO_ROOT))
     if any(is_trust_root(str(f), governance_files) for f in files):
         # Trust roots: .github/, .agents/ and every file a governance workflow executes
         # or reads (including this module). Never autonomous: the sole owner's approval
@@ -329,6 +374,11 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
         findings.append("RELEASE_IDENTITY_NOT_DISTINCT")
     # Defence in depth: Release independently re-derives every QA condition.
     findings += [f"RELEASE_{f}" for f in qa_findings(ev, governance_files=governance_files)]
+    policy = ev.get("qa_review_policy")
+    if not isinstance(policy, dict):
+        findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
+    elif policy.get("mode") not in {"legacy", "independent", "canary"}:
+        findings.append("RELEASE_QA_REVIEW_POLICY_INVALID")
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
     qa = _latest(runs, QA_CHECK, head, qa_app_id) if str(qa_app_id).isdigit() else None
@@ -378,6 +428,13 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--source-review-artifact-id", type=int)
     g.add_argument("--source-review-run-id", type=int)
     g.add_argument("--source-review-run-attempt", type=int)
+    g.add_argument("--qa-policy-json", type=Path)
+    g.add_argument("--current-review-active", action="store_true")
+    policy = sub.add_parser("resolve-qa-policy")
+    policy.add_argument("--repo", required=True)
+    policy.add_argument("--run-id", required=True, type=int)
+    policy.add_argument("--run-attempt", required=True, type=int)
+    policy.add_argument("--pr", type=int)
     for name in ("decide-qa", "decide-release"):
         d = sub.add_parser(name)
         d.add_argument("--evidence", required=True)
@@ -389,6 +446,19 @@ def main(argv: list[str] | None = None) -> int:
         prs = json.loads(args.workflow_run_prs) if args.workflow_run_prs else None
         print(json.dumps(targets(args.repo, pr=args.pr, workflow_run_prs=prs)))
         return 0
+    if args.cmd == "resolve-qa-policy":
+        try:
+            resolved = _source_review_module.resolve_qa_review_policy(
+                repository=args.repo,
+                run_id=args.run_id,
+                run_attempt=args.run_attempt,
+                expected_pr_number=args.pr,
+                token=os.environ.get("GH_TOKEN", ""),
+            )
+        except _source_review_module.SourceReviewError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps(resolved, sort_keys=True))
+        return 0
     if args.cmd == "gather":
         review_args = (
             args.source_review_json,
@@ -396,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
             args.source_review_artifact_id,
         )
         source_review_data = None
+        qa_review_policy = None
+        if args.qa_policy_json is not None:
+            qa_review_policy = json.loads(args.qa_policy_json.read_text(encoding="utf-8"))
         if any(value is not None for value in review_args):
             if not all(value is not None for value in review_args):
                 raise SystemExit("SOURCE_REVIEW_EVIDENCE_ARGUMENTS_INCOMPLETE")
@@ -409,6 +482,8 @@ def main(argv: list[str] | None = None) -> int:
             args.pr,
             args.expected_head,
             source_review_data=source_review_data,
+            qa_review_policy=qa_review_policy,
+            current_review_active=args.current_review_active,
             independent_review_active=not args.legacy_review_policy,
             source_review_run_id=args.source_review_run_id,
             source_review_run_attempt=args.source_review_run_attempt,

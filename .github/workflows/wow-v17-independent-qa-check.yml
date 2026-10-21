@@ -16,6 +16,11 @@ on:
       pr_number:
         description: Pull request number to evaluate at its current exact head.
         required: true
+      independent_review_canary:
+        description: Run the owner-allowlisted exact-PR/SHA reviewer canary while global activation is off.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -90,9 +95,82 @@ jobs:
           target=$(jq -c '.targets[0]' <<<"$resolved")
           echo "pr_number=$(jq -r .pr <<<"$target")" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(jq -r .head <<<"$target")" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(jq -r .head_ref <<<"$target")" >> "$GITHUB_OUTPUT"
+
+      - name: Select exact-head review policy
+        id: policy
+        shell: bash
+        env:
+          GLOBAL_REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true' }}
+          CANARY_REQUESTED: ${{ inputs.independent_review_canary }}
+          CANARY_PR: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_PR }}
+          CANARY_SHA: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA }}
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${GLOBAL_REVIEW_ACTIVE:-false}" = "true" ]; then
+            mode=independent
+          elif [ "${CANARY_REQUESTED:-false}" = "true" ]; then
+            [ "$EVENT" = "workflow_dispatch" ] || {
+              echo "::error::QA_REVIEW_CANARY_REQUIRES_DISPATCH"; exit 1;
+            }
+            [[ "${CANARY_PR:-}" =~ ^[1-9][0-9]*$ ]] &&
+              [[ "${CANARY_SHA:-}" =~ ^[a-f0-9]{40}$ ]] &&
+              [ "$PR_NUMBER" = "$CANARY_PR" ] &&
+              [ "$HEAD_SHA" = "$CANARY_SHA" ] || {
+              echo "::error::QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD"; exit 1;
+            }
+            mode=canary
+          else
+            mode=legacy
+          fi
+          active=false
+          [ "$mode" = "legacy" ] || active=true
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "review_active=$active" >> "$GITHUB_OUTPUT"
+          echo "global_review_active=${GLOBAL_REVIEW_ACTIVE:-false}" >> "$GITHUB_OUTPUT"
+
+      - name: Build immutable QA review-policy receipt
+        id: policy_receipt
+        shell: bash
+        env:
+          MODE: ${{ steps.policy.outputs.mode }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          HEAD_REF: ${{ steps.target.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          jq -nce \
+            --arg id "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg name "$GITHUB_WORKFLOW" \
+            --arg path ".github/workflows/wow-v17-independent-qa-check.yml" \
+            --arg event "$GITHUB_EVENT_NAME" --arg branch "$GITHUB_REF_NAME" \
+            --arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA" \
+            '{id:$id|tonumber,run_attempt:$attempt,name:$name,path:$path,event:$event,
+              head_branch:$branch,repository:$repository,head_sha:$head_sha}' \
+            > "$RUNNER_TEMP/qa-review-policy-run.json"
+          python .github/scripts/independent_source_review_receipt.py \
+            --write-policy --run "$RUNNER_TEMP/qa-review-policy-run.json" \
+            --output "$RUNNER_TEMP/wow-v17-qa-review-policy.json" \
+            --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
+            --head-sha "$HEAD_SHA" --head-ref "$HEAD_REF" \
+            --attempt "$GITHUB_RUN_ATTEMPT" --policy-mode "$MODE"
+
+      - name: Upload immutable QA review-policy receipt
+        id: policy_artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-v17-qa-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            ${{ runner.temp }}/wow-v17-qa-review-policy.json
+            ${{ runner.temp }}/wow-v17-qa-review-policy.json.sha256
 
       - name: Require isolated adversarial-review credential
-        if: vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true'
+        if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
           KEY_PRESENT: ${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY != '' }}
@@ -104,7 +182,7 @@ jobs:
 
       - name: Capture complete exact-head source evidence
         id: capture
-        if: vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true'
+        if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -132,7 +210,7 @@ jobs:
 
       - name: Run isolated read-only adversarial review
         id: review
-        if: vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true'
+        if: steps.policy.outputs.review_active == 'true'
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}
@@ -150,7 +228,7 @@ jobs:
           output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"summary":{"type":"string","minLength":1},"reviewed_head_sha":{"type":"string"},"reviewed_diff_sha256":{"type":"string"},"reviewed_files":{"type":"array","items":{"type":"string"}},"assessment":{"type":"object","properties":{"source_review":{"type":"string","enum":["PASS","FAIL"]},"security_review":{"type":"string","enum":["PASS","FAIL"]},"probability_integrity_review":{"type":"string","enum":["PASS","FAIL"]}},"required":["source_review","security_review","probability_integrity_review"],"additionalProperties":false},"findings":{"type":"array","items":{"type":"object","properties":{"severity":{"type":"string","enum":["critical","high","medium","low"]},"file":{"type":"string"},"detail":{"type":"string","minLength":1},"evidence":{"type":"string","minLength":1}},"required":["severity","file","detail","evidence"],"additionalProperties":false}}},"required":["decision","summary","reviewed_head_sha","reviewed_diff_sha256","reviewed_files","assessment","findings"],"additionalProperties":false}'
 
       - name: Recheck PR head and diff after review
-        if: vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true'
+        if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -173,7 +251,7 @@ jobs:
 
       - name: Build versioned exact-head review artifact
         id: source_review
-        if: vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true'
+        if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
@@ -197,7 +275,7 @@ jobs:
 
       - name: Upload short-lived exact-head review receipt
         id: source_review_artifact
-        if: vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true'
+        if: steps.policy.outputs.review_active == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-independent-source-review-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -214,14 +292,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
-          REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true' }}
+          REVIEW_ACTIVE: ${{ steps.policy.outputs.review_active }}
+          REVIEW_MODE: ${{ steps.policy.outputs.mode }}
+          GLOBAL_REVIEW_ACTIVE: ${{ steps.policy.outputs.global_review_active }}
           SOURCE_REVIEW_ARTIFACT_ID: ${{ steps.source_review_artifact.outputs.artifact-id }}
         run: |
           set -euo pipefail
           tool=artifacts/wow-engine/v17/independent_release_checks.py
           out="$RUNNER_TEMP/decisions"; mkdir -p "$out"
           evidence="$out/evidence-$PR_NUMBER.json"
-          args=(gather --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" --expected-head "$HEAD_SHA")
+          args=(gather --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" --expected-head "$HEAD_SHA"
+            --qa-policy-json "$RUNNER_TEMP/wow-v17-qa-review-policy.json")
+          [ "${GLOBAL_REVIEW_ACTIVE:-false}" != "true" ] || args+=(--current-review-active)
           if [ "$REVIEW_ACTIVE" = "true" ]; then
             [[ "$SOURCE_REVIEW_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || {
               echo "::error::SOURCE_REVIEW_ARTIFACT_ID_MISSING"; exit 1;
