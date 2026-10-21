@@ -70,3 +70,37 @@ def test_fixture_network_injection_does_not_pretend_matching_existing_frozen_cor
     assert receipt["reference"]["matches_frozen_source"] is False
     assert receipt["research_only"] and receipt["can_execute"] is False
     assert receipt["independent_espn_identity"]["status"] == "NOT_CHECKED"
+
+
+def test_research_ci_can_pass_without_erasing_model_hold(monkeypatch, capsys):
+    import copy
+    import scripts.nfl_backlog_canary_1933 as module
+    receipt = {
+        "research_evidence_gate": {
+            "status": "RESEARCH_EVIDENCE_AUDIT_CANDIDATE", "audit_coherent": True,
+            "attestation_verified": False, "training_ready": False,
+            "storage_write_authorized": False, "model_certified": False,
+            "can_execute": False,
+        },
+        "status": "SOURCE_VALIDATION_HOLD",
+        "blockers": ["NFL_PILOT_IDENTITY_ROWS_QUARANTINED"],
+        "source_rights_state": "LICENSE_REVIEW_REQUIRED",
+        "training_materialized": False, "probability_publishable": False,
+        "can_execute": False,
+    }
+    monkeypatch.setattr(module, "run", lambda **kwargs: copy.deepcopy(receipt))
+    assert module.main() == 0
+    assert '"SOURCE_VALIDATION_HOLD"' in capsys.readouterr().out
+    for field, value in [
+        ("blockers", []), ("source_rights_state", "V17_APPROVED"),
+        ("can_execute", True), ("training_materialized", True),
+        ("probability_publishable", True), ("status", "APPROVED_FOR_MODEL"),
+    ]:
+        invalid = copy.deepcopy(receipt)
+        invalid[field] = value
+        monkeypatch.setattr(module, "run", lambda **kwargs: copy.deepcopy(invalid))
+        assert module.main() == 1
+    invalid = copy.deepcopy(receipt)
+    invalid["research_evidence_gate"]["audit_coherent"] = False
+    monkeypatch.setattr(module, "run", lambda **kwargs: copy.deepcopy(invalid))
+    assert module.main() == 1
