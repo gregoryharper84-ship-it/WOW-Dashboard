@@ -541,6 +541,59 @@ def test_standalone_automated_review_is_a_separate_versioned_exact_head_receipt(
     assert receipt["can_execute"] is False
 
 
+def test_authenticated_reject_cannot_mint_or_verify_success_receipt():
+    # Source provenance validation deliberately accepts REJECT so QA can retain
+    # its immutable negative evidence. Only success certification must fail.
+    rejected = automated_review_data()
+    rejected["review"]["decision"] = "REJECT"
+    rejected["review"]["assessment"]["security_review"] = "FAIL"
+    source_review.verify_artifact(
+        rejected,
+        run=SOURCE_REVIEW_RUN,
+        expected_repository=REPOSITORY,
+        expected_pr_number=1822,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        now=NOW,
+    )
+    kwargs = dict(
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        source_review_run=SOURCE_REVIEW_RUN,
+        source_review_artifact_id=555,
+        now=NOW,
+    )
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="SOURCE_REVIEW_DECISION_NOT_PASS"):
+        verifier.build_receipt(evidence(), automated_review=rejected, **kwargs)
+
+    # A forged schema-v3 successful receipt cannot launder a valid REJECT by
+    # recomputing the enclosing artifact digest; verification checks decision.
+    accepted = verifier.build_receipt(
+        evidence(), automated_review=automated_review_data(), **kwargs
+    )
+    accepted["independent_review"]["artifact"] = rejected
+    canonical = (json.dumps(rejected, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    accepted["independent_review"]["artifact_sha256"] = verifier.hashlib.sha256(canonical).hexdigest()
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="SOURCE_REVIEW_DECISION_NOT_PASS"):
+        verifier.verify_receipt(
+            accepted,
+            expected_repository=REPOSITORY,
+            expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806",
+            expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME,
+            expected_pr_number=1822,
+            live_reviews=[],
+            source_review_run=SOURCE_REVIEW_RUN,
+            now=NOW,
+        )
+
+
 @pytest.mark.parametrize(
     ("source_run", "reason"),
     [
