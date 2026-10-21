@@ -45,6 +45,14 @@ Names above are proposed, not assertions that tables exist or have been migrated
 - Preserve raw source revisions rather than destructive upserts. A newer source revision creates a new asset record; snapshots consumed in any later fitting must be frozen in the training manifest.
 - `MARKET` and `SPORTING` evidence remain separate. Odds, line histories, and sportsbook probabilities are never accepted as sporting model labels or probabilities.
 
+## Incremental independent-provider pilot — three dates, still research only
+
+The scoped ESPN cross-check is extended from one Sunday to **three distinct 2025 regular-season dates**: `2025-09-07`, `2025-09-14`, `2025-09-21`. Three exact allowlisted ESPN public scoreboard endpoints are fetched separately; every run records each day's raw SHA-256 and per-date settled-game identity/score match counts. The one-date `independent_espn_final_score_parity` receipt remains for backward audit; `independent_espn_additional_date_parity` and `independent_espn_coverage` now carry the extra two and a three-day aggregate. Aggregated counts must never be confused with a full-season independent data review. A missing or conflicting date raises a typed parity hold.
+
+The pure research evidence gate requires valid receipts from **all three approved dates**, exact season/week/teams/kickoffs/final scores, and `full_season_parity_established=false`. It still always returns `training_ready=false`, `storage_write_authorized=false`, `model_certified=false`, and `attestation_verified=false`. This is not a production scoring or training authorization.
+
+---
+
 ## Strict acceptance conditions for next separate PR
 
 1. Document and ratify license/contract state per provider and dataset, including attribution obligations and intended storage/training purpose.
