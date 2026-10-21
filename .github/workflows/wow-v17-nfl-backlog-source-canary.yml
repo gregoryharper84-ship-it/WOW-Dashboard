@@ -54,6 +54,7 @@ jobs:
           echo '### NFL read-only historical data canary — research-only' >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
           echo 'No model weights, scoring, Supabase writes, secrets, scheduling, deployment or wagers.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A passing job only confirms research-evidence coherence; SOURCE_VALIDATION_HOLD, LICENSE_REVIEW_REQUIRED and nonpublishability remain in force.' >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           python -m json.tool "$RUNNER_TEMP/wow-nfl-backlog-canary-receipt.json" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
