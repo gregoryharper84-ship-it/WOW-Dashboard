@@ -10,7 +10,9 @@ on:
       - 'artifacts/wow-engine/scripts/nfl_backlog_canary_1933.py'
       - 'artifacts/wow-engine/tests/test_nfl_backlog_canary_1933.py'
       - 'artifacts/wow-engine/v17/nfl_espn_independent_parity_1933.py'
-      - 'artifacts/wow-engine/tests/test_nfl_espn_independent_parity_1933.py'
+      - 'artifacts/wow-engine/tests/test_nfl_espn_independent_parity_1933.py tests/test_nfl_research_evidence_gate_1933.py'
+      - 'artifacts/wow-engine/v17/nfl_research_evidence_gate_1933.py'
+      - 'artifacts/wow-engine/tests/test_nfl_research_evidence_gate_1933.py'
       - 'artifacts/wow-engine/tests/test_nfl_multi_source_pilot.py'
 
 permissions:
