@@ -16,6 +16,7 @@ from typing import Any
 from v17.multi_source_historical_collector import CollectionBlocked, download_public_source
 from v17.nfl_multi_source_pilot import analyze_nfl_pilot, PLAYER_URL, SCHEDULE_URL
 from v17.nfl_espn_independent_parity_1933 import compare_espn_date, fetch_espn_historical_scoreboard
+from v17.nfl_research_evidence_gate_1933 import review_research_evidence
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "data" / "wow_nfl_prop_training_report_v1.json"
@@ -82,7 +83,7 @@ def run(*, download=download_public_source, espn_download=None) -> dict[str, Any
     if pilot["counts"]["held_unsettled_or_unjoined"] or not pilot["counts"]["joined_player_rows"]:
         blockers.append("JOIN_INCOMPLETE")
     status = "SOURCE_REFERENCE_AND_JOIN_VERIFIED" if not blockers else "SOURCE_VALIDATION_HOLD"
-    return {
+    receipt = {
         "schema": "WOW_NFL_BACKLOG_CANARY_RECEIPT_V1",
         "status": status,
         "blockers": blockers,
@@ -101,6 +102,8 @@ def run(*, download=download_public_source, espn_download=None) -> dict[str, Any
         "training_materialized": False,
         "can_execute": False,
     }
+    receipt["research_evidence_gate"] = review_research_evidence(receipt)
+    return receipt
 
 
 def main() -> int:
