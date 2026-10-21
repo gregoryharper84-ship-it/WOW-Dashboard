@@ -14,7 +14,7 @@ URL="https://www.nflgsis.com/2026/REG/06/60264/Gamebook.pdf"
 def _payload(player):
     return (
         {"event_id":"2026_06_CAR_PHI","player":player,"sport":"NFL",
-         "stat_type":"ANYTIME_TD","created_at":(EVENT_START-timedelta(minutes=40)).isoformat(),
+         "stat_type":"ANYTIME_TD","line":0.5,"direction":"LESS","created_at":(EVENT_START-timedelta(minutes=40)).isoformat(),
          "model_timestamp":(EVENT_START-timedelta(hours=2)).isoformat(),
          "event_start_time":EVENT_START.isoformat(),"can_execute":False},
         {"event_id":"2026_06_CAR_PHI","player":player,
