@@ -867,6 +867,14 @@ def release_evidence():
             "artifact": source_review_artifact,
             "run": SOURCE_REVIEW_RUN,
         },
+        "qa_review_policy": {
+            "mode": "independent",
+            "target": {"pr_number": 1822, "head_sha": HEAD, "head_ref": "fix/issue-1806"},
+            "canary_scope": None,
+            "source": {"run_id": "12345", "run_attempt": 1},
+        },
+        "independent_review_active": True,
+        "current_review_active": False,
         "check_runs": checks,
         "reviews": [],
     }
