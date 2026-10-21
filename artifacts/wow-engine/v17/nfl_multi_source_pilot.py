@@ -30,7 +30,12 @@ PLAYER_URL = (
     "https://github.com/nflverse/nflverse-data/releases/download/"
     "stats_player/stats_player_week_{season}.csv"
 )
-SCHEDULE_URL = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
+# Immutable commit pin: upstream 'master' updates automatically and changed bytes during this pilot.
+SCHEDULE_SOURCE_COMMIT = "a2c9f13593a311b09bfd2d00851e55dbdafb3c8d"
+SCHEDULE_URL = (
+    "https://raw.githubusercontent.com/nflverse/nfldata/"
+    + SCHEDULE_SOURCE_COMMIT + "/data/games.csv"
+)
 ROUTES = (
     "PASSING_YARDS", "RUSHING_YARDS", "RECEIVING_YARDS",
     "PASSING_TDS", "RUSHING_TDS", "RECEIVING_TDS",
