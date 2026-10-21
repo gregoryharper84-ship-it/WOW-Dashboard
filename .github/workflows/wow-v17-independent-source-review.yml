@@ -1,7 +1,10 @@
 name: wow-v17-independent-source-review
-run-name: wow-v17-independent-source-review pr=${{ inputs.pr_number }} head=${{ inputs.head_sha }}
+run-name: wow-v17-independent-source-review pr=${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 'AUTO' }} head=${{ inputs.head_sha || github.event.workflow_run.pull_requests[0].head.sha || 'AUTO' }}
 
 on:
+  workflow_run:
+    workflows: [wow-v17-rapid-repair]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -14,16 +17,17 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
 concurrency:
-  group: wow-v17-independent-source-review-${{ inputs.pr_number }}-${{ inputs.head_sha }}
+  group: wow-v17-independent-source-review-${{ github.event.workflow_run.id || format('{0}-{1}', inputs.pr_number, inputs.head_sha) }}
   cancel-in-progress: false
 
 jobs:
   independent-source-review:
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'))
     name: Independent exact-head source review
     runs-on: ubuntu-latest
     environment: wow-review
@@ -39,6 +43,59 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
+
+      - name: Resolve authorized exact-head review target
+        id: target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR: ${{ inputs.pr_number }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}
+          SOURCE_RUN_NAME: ${{ github.event.workflow_run.name || '' }}
+          SOURCE_RUN_PATH: ${{ github.event.workflow_run.path || '' }}
+          SOURCE_RUN_EVENT: ${{ github.event.workflow_run.event || '' }}
+          SOURCE_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          SOURCE_PR: ${{ toJson(github.event.workflow_run.pull_requests[0]) }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            pr_number="$INPUT_PR"
+            head_sha="$INPUT_HEAD_SHA"
+          else
+            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] && [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
+              echo "::error::SOURCE_REVIEW_UPSTREAM_RUN_ID_INVALID"; exit 1;
+            }
+            upstream="$RUNNER_TEMP/rapid-repair-run.json"
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > "$upstream"
+            jq -e --arg repo "$GITHUB_REPOSITORY" --argjson attempt "$SOURCE_RUN_ATTEMPT" \
+              '.name == "wow-v17-rapid-repair" and
+               .path == ".github/workflows/wow-v17-rapid-repair.yml" and
+               .event == "pull_request" and .head_branch != "" and
+               .head_repository.full_name == $repo and .repository.full_name == $repo and
+               .run_attempt == $attempt and .status == "completed" and .conclusion == "success"' \
+              "$upstream" >/dev/null || {
+                echo "::error::SOURCE_REVIEW_UPSTREAM_RUN_UNTRUSTED"; exit 1;
+              }
+            jq -e --arg repo "$GITHUB_REPOSITORY" \
+              'type == "object" and
+               (.number | type == "number" and . > 0) and
+               .base.ref == "main" and .base.repo.full_name == $repo and
+               .head.repo.full_name == $repo and
+               (.head.sha | type == "string" and test("^[a-f0-9]{40}$"))' \
+              <<<"$SOURCE_PR" >/dev/null || {
+                echo "::error::SOURCE_REVIEW_UPSTREAM_PR_IDENTITY_INVALID"; exit 1;
+              }
+            pr_number=$(jq -r .number <<<"$SOURCE_PR")
+            head_sha=$(jq -r .head.sha <<<"$SOURCE_PR")
+          fi
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] && [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "::error::SOURCE_REVIEW_TARGET_IDENTITY_INVALID"; exit 1;
+          }
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
 
       - name: Require the dedicated review-provider credential
         shell: bash
@@ -56,8 +113,8 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
@@ -106,7 +163,7 @@ jobs:
             an independent review decision and does not replace CI, owner approval, QA, or Release.
             Return PASS only when source, security, and probability-integrity assessments all pass.
             Summarize findings; critical/high findings require REJECT.
-            Exact head SHA: ${{ inputs.head_sha }}
+            Exact head SHA: ${{ steps.target.outputs.head_sha }}
             Exact diff SHA-256: ${{ steps.capture.outputs.diff_sha }}
           output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"summary":{"type":"string","minLength":1},"reviewed_head_sha":{"type":"string"},"reviewed_diff_sha256":{"type":"string"},"reviewed_files":{"type":"array","items":{"type":"string"}},"assessment":{"type":"object","properties":{"source_review":{"type":"string","enum":["PASS","FAIL"]},"security_review":{"type":"string","enum":["PASS","FAIL"]},"probability_integrity_review":{"type":"string","enum":["PASS","FAIL"]}},"required":["source_review","security_review","probability_integrity_review"],"additionalProperties":false},"findings":{"type":"array","items":{"type":"object","properties":{"severity":{"type":"string","enum":["critical","high","medium","low"]},"file":{"type":"string"},"detail":{"type":"string","minLength":1},"evidence":{"type":"string","minLength":1}},"required":["severity","file","detail","evidence"],"additionalProperties":false}}},"required":["decision","summary","reviewed_head_sha","reviewed_diff_sha256","reviewed_files","assessment","findings"],"additionalProperties":false}'
 
@@ -141,8 +198,8 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          HEAD_SHA: ${{ inputs.head_sha }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           HEAD_REF: ${{ steps.capture.outputs.head_ref }}
         run: |
           set -euo pipefail
@@ -163,7 +220,7 @@ jobs:
         if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wow-v17-independent-source-review-${{ inputs.pr_number }}-${{ inputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: wow-v17-independent-source-review-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           retention-days: 1
           path: |

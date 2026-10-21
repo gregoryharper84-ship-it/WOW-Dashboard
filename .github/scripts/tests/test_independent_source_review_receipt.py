@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sys
 from urllib.error import URLError
+from io import BytesIO
+from zipfile import ZipFile
 
 import pytest
 
@@ -114,6 +116,24 @@ def test_source_review_artifact_binds_exact_head_complete_diff_and_trusted_run()
     assert receipt["source"]["credential_scope"] == "WOW_REVIEW_OPENAI_API_KEY"
 
 
+def test_workflow_run_triggered_review_keeps_protected_main_provenance():
+    workflow_run = {**PRODUCER_RUN, "event": "workflow_run"}
+    receipt = review.build_artifact(
+        repository=review.CANONICAL_REPOSITORY,
+        pr=pr(),
+        files=DIFF,
+        commit=COMMIT_METADATA,
+        review_result=RESULT,
+        run=workflow_run,
+        now=NOW,
+    )
+
+    verify(receipt, run={**CONSUMER_RUN, "event": "workflow_run"})
+
+    with pytest.raises(review.SourceReviewError, match="PROVENANCE_MISMATCH|WORKFLOW_RUN_UNTRUSTED"):
+        verify(receipt, run={**CONSUMER_RUN, "event": "pull_request"})
+
+
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
@@ -196,6 +216,58 @@ def test_replayed_or_duplicate_artifact_inventory_holds():
         expected_artifact_id=77,
         now=NOW,
     )
+
+
+def test_current_review_resolution_verifies_zip_run_and_unique_fresh_artifact():
+    receipt = artifact(now=NOW)
+    artifact_bytes = (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode()
+    checksum = review.hashlib.sha256(artifact_bytes).hexdigest()
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("wow-v17-independent-source-review.json", artifact_bytes)
+        zip_file.writestr("wow-v17-independent-source-review.json.sha256", checksum + "\n")
+    name = f"wow-v17-independent-source-review-1822-{HEAD}-12345-1"
+    record = {"id": 77, "name": name, "expired": False, "created_at": NOW.isoformat()}
+    metadata = {
+        "id": 77,
+        "name": name,
+        "expired": False,
+        "workflow_run": {"id": 12345},
+    }
+    routes = {
+        "/actions/artifacts?per_page=100&page=1": {"artifacts": [record]},
+        "/actions/artifacts/77": metadata,
+        "/actions/runs/12345": CONSUMER_RUN,
+    }
+
+    resolved = review.resolve_current_source_review(
+        repository=review.CANONICAL_REPOSITORY,
+        pr_number=1822,
+        head_sha=HEAD,
+        head_ref="copilot/fix",
+        token="read-only",
+        now=NOW,
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive.getvalue() if artifact_id == 77 else b"",
+    )
+    assert resolved["artifact_id"] == 77
+    assert resolved["artifact"] == receipt
+    assert resolved["run"] == CONSUMER_RUN
+
+    routes["/actions/artifacts?per_page=100&page=1"] = {
+        "artifacts": [record, {**record, "id": 78, "name": name + "-duplicate"}]
+    }
+    with pytest.raises(review.SourceReviewError, match="ARTIFACT_DUPLICATE_OR_MISSING"):
+        review.resolve_current_source_review(
+            repository=review.CANONICAL_REPOSITORY,
+            pr_number=1822,
+            head_sha=HEAD,
+            head_ref="copilot/fix",
+            token="read-only",
+            now=NOW,
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive.getvalue(),
+        )
 
 
 def test_review_requires_complete_untruncated_diff_and_exact_file_coverage():
@@ -295,8 +367,14 @@ def test_artifact_checksum_is_verified_by_cli(tmp_path):
 
 def test_workflow_is_main_only_read_only_and_uses_dedicated_provider_secret():
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    parsed = __import__("yaml").load(workflow, Loader=__import__("yaml").BaseLoader)
 
     assert "github.ref == 'refs/heads/main'" in workflow
+    assert parsed["on"]["workflow_run"]["workflows"] == ["wow-v17-rapid-repair"]
+    assert parsed["on"]["workflow_run"]["types"] == ["completed"]
+    assert "SOURCE_REVIEW_UPSTREAM_RUN_UNTRUSTED" in workflow
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow
+    assert "actions: read" in workflow
     assert "environment: wow-review" in workflow
     assert "WOW_REVIEW_OPENAI_API_KEY" in workflow
     assert "REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow

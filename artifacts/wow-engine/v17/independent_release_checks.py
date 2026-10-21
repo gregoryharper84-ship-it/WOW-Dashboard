@@ -12,22 +12,32 @@ authority. Every non-pass is a typed finding. ``can_execute`` is always false.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
+REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
 
+SOURCE_REVIEW_SCRIPT = REPO_ROOT / ".github/scripts/independent_source_review_receipt.py"
+_source_review_spec = importlib.util.spec_from_file_location(
+    "_independent_source_review_receipt", SOURCE_REVIEW_SCRIPT
+)
+_source_review_module = importlib.util.module_from_spec(_source_review_spec)
+assert _source_review_spec and _source_review_spec.loader
+_source_review_spec.loader.exec_module(_source_review_module)
+
 GITHUB_ACTIONS_APP_ID = 15368  # only source trusted for workflow evidence checks
 CHANGE_IMPACT_CHECK = "WOW V17 change impact gate"
 TRUSTED_GOVERNANCE_CHECK = "Trusted exact-head engineering governance"
 QA_EVIDENCE_CHECKS = (*REQUIRED_REGRESSION_CHECKS, CHANGE_IMPACT_CHECK)
-REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_PAGES = 10
 PER_PAGE = 100
@@ -55,7 +65,14 @@ def _paged(fetch: Fetch, path: str, key: str | None, errors: list[str], label: s
     return items
 
 
-def gather(repo: str, pr_number: int, expected_head: str, *, fetch: Fetch = gh_fetch) -> dict[str, Any]:
+def gather(
+    repo: str,
+    pr_number: int,
+    expected_head: str,
+    *,
+    fetch: Fetch = gh_fetch,
+    source_review_resolver: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Read-only exact-head evidence. Unreadable or truncated inputs are typed."""
     errors: list[str] = []
     ev: dict[str, Any] = {"repository": repo, "pr_number": pr_number,
@@ -71,9 +88,11 @@ def gather(repo: str, pr_number: int, expected_head: str, *, fetch: Fetch = gh_f
     ev["pr"] = {
         "state": pr.get("state"), "draft": pr.get("draft"), "merged": pr.get("merged"),
         "head_sha": (pr.get("head") or {}).get("sha"),
+        "head_ref": (pr.get("head") or {}).get("ref"),
         "head_repo": ((pr.get("head") or {}).get("repo") or {}).get("full_name"),
         "base_ref": (pr.get("base") or {}).get("ref"),
         "author": (pr.get("user") or {}).get("login"),
+        "author_id": (pr.get("user") or {}).get("id"),
         "changed_files": pr.get("changed_files"),
     }
     files = _paged(fetch, f"repos/{repo}/pulls/{pr_number}/files", None, errors, "FILES")
@@ -82,11 +101,13 @@ def gather(repo: str, pr_number: int, expected_head: str, *, fetch: Fetch = gh_f
     # Track the number of PR file records separately: including rename origins
     # must not disguise an incomplete paginated file inventory.
     ev["files"] = []
+    ev["source_review_paths"] = []
     for entry in files:
         if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str) or not entry["filename"]:
             errors.append("FILES_PATH_INVALID")
             continue
         ev["files"].append(entry["filename"])
+        ev["source_review_paths"].append(entry["filename"])
         if entry.get("status") == "renamed" or "previous_filename" in entry:
             origin = entry.get("previous_filename")
             if isinstance(origin, str) and origin:
@@ -104,6 +125,19 @@ def gather(repo: str, pr_number: int, expected_head: str, *, fetch: Fetch = gh_f
     reviews = _paged(fetch, f"repos/{repo}/pulls/{pr_number}/reviews", None, errors, "REVIEWS")
     ev["reviews"] = [{"user": (r.get("user") or {}).get("login"), "state": r.get("state"),
                       "commit_id": r.get("commit_id"), "submitted_at": r.get("submitted_at")} for r in reviews]
+    try:
+        resolver = source_review_resolver or _source_review_module.resolve_current_source_review
+        ev["source_review"] = resolver(
+            repository=repo,
+            pr_number=pr_number,
+            head_sha=str(ev["pr"]["head_sha"] or ""),
+            head_ref=str(ev["pr"]["head_ref"] or ""),
+            token=os.environ.get("GH_TOKEN", ""),
+            expected_file_paths=ev["source_review_paths"],
+        )
+    except _source_review_module.SourceReviewError as exc:
+        ev["source_review"] = None
+        errors.append(f"SOURCE_REVIEW_UNAVAILABLE:{exc}")
     return ev
 
 
@@ -187,6 +221,39 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         findings.append("QA_PR_BASE_NOT_MAIN")
     if pr.get("head_repo") != ev.get("repository"):
         findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
+    source_review = ev.get("source_review")
+    if not isinstance(source_review, dict):
+        findings.append("QA_INDEPENDENT_SOURCE_REVIEW_MISSING")
+    else:
+        try:
+            if not isinstance(source_review.get("artifact_id"), int) or isinstance(
+                source_review.get("artifact_id"), bool
+            ):
+                raise _source_review_module.SourceReviewError("SOURCE_REVIEW_ARTIFACT_ID_INVALID")
+            artifact = source_review.get("artifact")
+            target = artifact.get("target") if isinstance(artifact, dict) else None
+            diff = artifact.get("diff") if isinstance(artifact, dict) else None
+            author = target.get("author") if isinstance(target, dict) else None
+            artifact_files = diff.get("file_paths") if isinstance(diff, dict) else None
+            if (
+                not isinstance(target, dict)
+                or target.get("pr_number") != ev.get("pr_number")
+                or not isinstance(author, dict)
+                or author.get("login") != (pr.get("author") or "")
+                or author.get("id") != pr.get("author_id")
+                or artifact_files != sorted(ev.get("source_review_paths") or [])
+            ):
+                raise _source_review_module.SourceReviewError("SOURCE_REVIEW_TARGET_OR_DIFF_MISMATCH")
+            _source_review_module.verify_artifact(
+                artifact,
+                run=source_review.get("run") or {},
+                expected_repository=str(ev.get("repository") or ""),
+                expected_pr_number=int(ev.get("pr_number") or 0),
+                expected_head_sha=head,
+                expected_head_ref=str(pr.get("head_ref") or ""),
+            )
+        except _source_review_module.SourceReviewError as exc:
+            findings.append(f"QA_INDEPENDENT_SOURCE_REVIEW_INVALID:{exc}")
     files = ev.get("files") or []
     if not files:
         findings.append("QA_FILES_EMPTY")
@@ -209,12 +276,6 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
             findings.append("QA_TRUST_ROOT_OWNER_AUTHORED")
         elif not _owner_approved_at_head(ev, head):
             findings.append("QA_TRUST_ROOT_OWNER_APPROVAL_MISSING")
-    else:
-        run = _latest(runs, TRUSTED_GOVERNANCE_CHECK, head, GITHUB_ACTIONS_APP_ID)
-        if run is None:
-            findings.append(f"QA_EVIDENCE_MISSING:{TRUSTED_GOVERNANCE_CHECK}")
-        elif run.get("conclusion") != "success":
-            findings.append(f"QA_EVIDENCE_FAILED:{TRUSTED_GOVERNANCE_CHECK}")
     return sorted(set(findings))
 
 

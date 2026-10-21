@@ -163,6 +163,8 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_EVIDENCE_INCOMPLETE` | independent QA | An evidence input was unreadable, truncated, or malformed (repo, PR, files, check runs, reviews); suffixed with the input. For changed files, both rename destination and `previous_filename` (source) are evaluated; a missing/invalid rename origin emits `QA_EVIDENCE_INCOMPLETE:FILES_RENAME_ORIGIN_MISSING`, invalid names emit `...:FILES_PATH_INVALID`, and rename origins cannot mask `...:FILES_TRUNCATED`. | N/A |
 | `QA_HEAD_INVALID` | independent QA | Expected or current head is not a 40-hex SHA. | N/A |
 | `QA_HEAD_STALE` | independent QA | The PR head moved after the trigger; the check is published only on the superseded SHA. | N/A |
+| `QA_INDEPENDENT_SOURCE_REVIEW_MISSING` | independent QA | No current, authenticated, exact-head source-review artifact is available; CI or a trusted-governance receipt cannot substitute. | N/A |
+| `QA_INDEPENDENT_SOURCE_REVIEW_INVALID` | independent QA | The source-review artifact, workflow provenance, PR author, reviewed file inventory, or exact-head binding is invalid. Release prefixes the finding when independently re-deriving QA. | N/A |
 | `QA_PR_NOT_OPEN` | independent QA | PR is closed or merged. | N/A |
 | `QA_PR_DRAFT` | independent QA | PR is a draft. | N/A |
 | `QA_PR_BASE_NOT_MAIN` | independent QA | PR does not target `main`. | N/A |

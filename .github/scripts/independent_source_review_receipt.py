@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
@@ -13,16 +14,21 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from zipfile import BadZipFile, ZipFile
 
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 WORKFLOW_NAME = "wow-v17-independent-source-review"
 WORKFLOW_PATH = ".github/workflows/wow-v17-independent-source-review.yml"
+UPSTREAM_WORKFLOW_NAME = "wow-v17-rapid-repair"
+UPSTREAM_WORKFLOW_PATH = ".github/workflows/wow-v17-rapid-repair.yml"
 PROVIDER_IDENTITY = "openai-codex-action"
 CREDENTIAL_SCOPE = "WOW_REVIEW_OPENAI_API_KEY"
 MAX_REVIEW_AGE = timedelta(minutes=30)
 MAX_DIFF_FILES = 100
 MAX_DIFF_BYTES = 512 * 1024
+MAX_REVIEW_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_ARTIFACT_INVENTORY = 2000
 SHA = re.compile(r"^[a-f0-9]{40}$")
 DIGEST = re.compile(r"^[a-f0-9]{64}$")
@@ -111,6 +117,165 @@ def _github_get_json(*, repository: str, path: str, token: str) -> Any:
             return json.loads(body)
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         raise SourceReviewError("SOURCE_REVIEW_GITHUB_API_UNAVAILABLE") from exc
+
+
+def _github_download_artifact(*, repository: str, artifact_id: int, token: str) -> bytes:
+    _require(repository == CANONICAL_REPOSITORY, "SOURCE_REVIEW_REPOSITORY_MISMATCH")
+    artifact_id = _positive_int(artifact_id, "SOURCE_REVIEW_ARTIFACT_ID")
+    _require(bool(token), "SOURCE_REVIEW_GITHUB_TOKEN_MISSING")
+    request = Request(
+        f"https://api.github.com/repos/{repository}/actions/artifacts/{artifact_id}/zip",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": "token " + token,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = build_opener(NoRedirect())
+    try:
+        with opener.open(request, timeout=30) as response:
+            body = response.read(MAX_REVIEW_ARTIFACT_BYTES + 1)
+    except HTTPError as exc:
+        if exc.code not in {301, 302, 303, 307, 308}:
+            raise SourceReviewError("SOURCE_REVIEW_ARTIFACT_DOWNLOAD_FAILED") from exc
+        location = exc.headers.get("Location")
+        parsed = urlparse(location or "")
+        host = (parsed.hostname or "").lower()
+        allowed_host = (
+            host.endswith(".blob.core.windows.net")
+            or host == "github.com"
+            or host.endswith(".githubusercontent.com")
+        )
+        _require(parsed.scheme == "https" and allowed_host, "SOURCE_REVIEW_ARTIFACT_REDIRECT_UNTRUSTED")
+        try:
+            with urlopen(Request(location, headers={"User-Agent": "wow-v17-source-review"}), timeout=30) as response:
+                body = response.read(MAX_REVIEW_ARTIFACT_BYTES + 1)
+        except (HTTPError, URLError, TimeoutError, OSError) as download_error:
+            raise SourceReviewError("SOURCE_REVIEW_ARTIFACT_DOWNLOAD_FAILED") from download_error
+    except (URLError, TimeoutError, OSError) as exc:
+        raise SourceReviewError("SOURCE_REVIEW_ARTIFACT_DOWNLOAD_FAILED") from exc
+    _require(len(body) <= MAX_REVIEW_ARTIFACT_BYTES, "SOURCE_REVIEW_ARTIFACT_LIMIT_EXCEEDED")
+    return body
+
+
+def resolve_current_source_review(
+    *,
+    repository: str,
+    pr_number: int,
+    head_sha: str,
+    head_ref: str,
+    token: str,
+    expected_file_paths: list[str] | None = None,
+    now: datetime | None = None,
+    get_json: Any = None,
+    download_artifact: Any = None,
+) -> dict[str, Any]:
+    _require(repository == CANONICAL_REPOSITORY, "SOURCE_REVIEW_REPOSITORY_MISMATCH")
+    _positive_int(pr_number, "SOURCE_REVIEW_PR_NUMBER")
+    _require(bool(SHA.fullmatch(head_sha)), "SOURCE_REVIEW_HEAD_INVALID")
+    _require(isinstance(head_ref, str) and bool(head_ref), "SOURCE_REVIEW_HEAD_REF_INVALID")
+    _require(bool(token), "SOURCE_REVIEW_GITHUB_TOKEN_MISSING")
+    json_fetch = get_json or (lambda path: _github_get_json(repository=repository, path=path, token=token))
+    artifact_fetch = download_artifact or (
+        lambda artifact_id: _github_download_artifact(
+            repository=repository, artifact_id=artifact_id, token=token
+        )
+    )
+
+    prefix = f"wow-v17-independent-source-review-{pr_number}-{head_sha}-"
+    records: list[dict[str, Any]] = []
+    for page in range(1, 21):
+        response = json_fetch(f"/actions/artifacts?per_page=100&page={page}")
+        _require(isinstance(response, Mapping) and isinstance(response.get("artifacts"), list),
+                 "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID")
+        page_records = response["artifacts"]
+        records.extend(page_records)
+        _require(len(records) <= MAX_ARTIFACT_INVENTORY, "SOURCE_REVIEW_ARTIFACT_INVENTORY_LIMIT_EXCEEDED")
+        if len(page_records) < 100:
+            break
+    else:
+        raise SourceReviewError("SOURCE_REVIEW_ARTIFACT_INVENTORY_LIMIT_EXCEEDED")
+
+    clock = now or datetime.now(timezone.utc)
+    _require(clock.tzinfo is not None, "SOURCE_REVIEW_CLOCK_INVALID")
+    matching = []
+    for record in records:
+        _require(isinstance(record, Mapping), "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID")
+        if not isinstance(record.get("name"), str) or not record["name"].startswith(prefix):
+            continue
+        _require(isinstance(record.get("expired"), bool), "SOURCE_REVIEW_ARTIFACT_EXPIRY_UNKNOWN")
+        if not record["expired"]:
+            created = _timestamp(record.get("created_at"), "SOURCE_REVIEW_ARTIFACT_CREATED_AT")
+            if created <= clock.astimezone(timezone.utc) < created + MAX_REVIEW_AGE:
+                matching.append(record)
+    _require(len(matching) == 1, "SOURCE_REVIEW_ARTIFACT_DUPLICATE_OR_MISSING")
+    artifact_meta = matching[0]
+    artifact_id = _positive_int(artifact_meta.get("id"), "SOURCE_REVIEW_ARTIFACT_ID")
+    artifact_name = artifact_meta.get("name")
+    name_match = re.fullmatch(
+        re.escape(prefix) + r"([1-9][0-9]*)-([1-9][0-9]*)", str(artifact_name)
+    )
+    _require(name_match is not None, "SOURCE_REVIEW_ARTIFACT_NAME_INVALID")
+    run_id, attempt = name_match.groups()
+
+    verify_unique_artifact_inventory(
+        records, prefix=prefix, expected_artifact_id=artifact_id, now=clock
+    )
+    actual_meta = json_fetch(f"/actions/artifacts/{artifact_id}")
+    _require(
+        isinstance(actual_meta, Mapping)
+        and actual_meta.get("id") == artifact_id
+        and actual_meta.get("expired") is False
+        and actual_meta.get("name") == artifact_name
+        and (actual_meta.get("workflow_run") or {}).get("id") == int(run_id),
+        "SOURCE_REVIEW_ARTIFACT_PROVENANCE_MISMATCH",
+    )
+    archive = artifact_fetch(artifact_id)
+    try:
+        with ZipFile(io.BytesIO(archive)) as zip_file:
+            names = zip_file.namelist()
+            expected_names = [
+                "wow-v17-independent-source-review.json",
+                "wow-v17-independent-source-review.json.sha256",
+            ]
+            _require(sorted(names) == sorted(expected_names), "SOURCE_REVIEW_ARTIFACT_CONTENT_INVALID")
+            infos = {info.filename: info for info in zip_file.infolist()}
+            _require(
+                all(infos[name].file_size <= MAX_REVIEW_ARTIFACT_BYTES for name in expected_names),
+                "SOURCE_REVIEW_ARTIFACT_LIMIT_EXCEEDED",
+            )
+            artifact_bytes = zip_file.read(expected_names[0])
+            checksum = zip_file.read(expected_names[1]).decode("ascii").strip()
+    except (BadZipFile, KeyError, UnicodeDecodeError, OSError) as exc:
+        raise SourceReviewError("SOURCE_REVIEW_ARTIFACT_CONTENT_INVALID") from exc
+    _require(
+        bool(DIGEST.fullmatch(checksum)) and hashlib.sha256(artifact_bytes).hexdigest() == checksum,
+        "SOURCE_REVIEW_ARTIFACT_CHECKSUM_MISMATCH",
+    )
+    try:
+        artifact = json.loads(artifact_bytes)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise SourceReviewError("SOURCE_REVIEW_ARTIFACT_CONTENT_INVALID") from exc
+    if expected_file_paths is not None:
+        diff = artifact.get("diff") if isinstance(artifact, Mapping) else None
+        paths = diff.get("file_paths") if isinstance(diff, Mapping) else None
+        _require(
+            paths == sorted(set(expected_file_paths)),
+            "SOURCE_REVIEW_DIFF_INVENTORY_MISMATCH",
+        )
+    run = resolve_source_review_run(
+        artifact,
+        artifact_id=artifact_id,
+        repository=repository,
+        token=token,
+        now=clock,
+        get_json=json_fetch,
+    )
+    return {"artifact_id": artifact_id, "artifact": artifact, "run": run}
 
 
 def _commit_metadata(value: object, *, expected_head_sha: str) -> dict[str, Any]:
@@ -303,12 +468,19 @@ def build_artifact(
 
     run_id = _positive_int(run.get("id"), "SOURCE_REVIEW_RUN_ID")
     attempt = _positive_int(run.get("run_attempt"), "SOURCE_REVIEW_RUN_ATTEMPT")
+    source_event = run.get("event")
+    run_repository = run.get("repository")
+    run_repository_name = (
+        run_repository if isinstance(run_repository, str)
+        else run_repository.get("full_name") if isinstance(run_repository, Mapping)
+        else None
+    )
     _require(
         run.get("name") == WORKFLOW_NAME
         and run.get("path") == WORKFLOW_PATH
-        and run.get("event") == "workflow_dispatch"
+        and source_event in {"workflow_dispatch", "workflow_run"}
         and run.get("head_branch") == "main"
-        and run.get("repository") == repository,
+        and run_repository_name == repository,
         "SOURCE_REVIEW_WORKFLOW_IDENTITY_MISMATCH",
     )
     source_head_sha = run.get("head_sha")
@@ -339,7 +511,7 @@ def build_artifact(
             "run_attempt": attempt,
             "workflow_name": WORKFLOW_NAME,
             "workflow_path": WORKFLOW_PATH,
-            "event": "workflow_dispatch",
+            "event": source_event,
             "head_branch": "main",
             "head_sha": source_head_sha,
             "provider_identity": PROVIDER_IDENTITY,
@@ -556,7 +728,7 @@ def verify_artifact(
     _require(
         source.get("workflow_name") == WORKFLOW_NAME
         and source.get("workflow_path") == WORKFLOW_PATH
-        and source.get("event") == "workflow_dispatch"
+        and source.get("event") in {"workflow_dispatch", "workflow_run"}
         and source.get("head_branch") == "main"
         and source.get("head_sha") == run.get("head_sha")
         and source.get("provider_identity") == PROVIDER_IDENTITY
@@ -566,7 +738,7 @@ def verify_artifact(
     _require(
         run.get("name") == WORKFLOW_NAME
         and run.get("path") == WORKFLOW_PATH
-        and run.get("event") == "workflow_dispatch"
+        and run.get("event") == source.get("event")
         and run.get("head_branch") == "main"
         and (run.get("head_repository") or {}).get("full_name") == expected_repository
         and (run.get("repository") or {}).get("full_name") == expected_repository
@@ -597,6 +769,7 @@ def resolve_source_review_run(
     repository: str,
     token: str,
     now: datetime | None = None,
+    get_json: Any = None,
 ) -> Mapping[str, Any]:
     _require(bool(token), "SOURCE_REVIEW_GITHUB_TOKEN_MISSING")
     _require(isinstance(artifact, Mapping), "SOURCE_REVIEW_ARTIFACT_INVALID")
@@ -616,12 +789,9 @@ def resolve_source_review_run(
     _require(isinstance(head_ref, str) and bool(head_ref), "SOURCE_REVIEW_HEAD_REF_INVALID")
     artifact_id = _positive_int(artifact_id, "SOURCE_REVIEW_ARTIFACT_ID")
 
-    run = _github_get_json(
-        repository=repository, path=f"/actions/runs/{run_id}", token=token
-    )
-    artifact_meta = _github_get_json(
-        repository=repository, path=f"/actions/artifacts/{artifact_id}", token=token
-    )
+    json_fetch = get_json or (lambda path: _github_get_json(repository=repository, path=path, token=token))
+    run = json_fetch(f"/actions/runs/{run_id}")
+    artifact_meta = json_fetch(f"/actions/artifacts/{artifact_id}")
     expected_name = (
         f"wow-v17-independent-source-review-{pr_number}-{head_sha}-{run_id}-{attempt}"
     )
@@ -636,11 +806,7 @@ def resolve_source_review_run(
 
     records = []
     for page in range(1, 21):
-        response = _github_get_json(
-            repository=repository,
-            path=f"/actions/artifacts?per_page=100&page={page}",
-            token=token,
-        )
+        response = json_fetch(f"/actions/artifacts?per_page=100&page={page}")
         _require(isinstance(response, Mapping) and isinstance(response.get("artifacts"), list),
                  "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID")
         page_records = response["artifacts"]

@@ -9,7 +9,7 @@ run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inp
 
 on:
   workflow_run:
-    workflows: [wow-verify, wow-engine-verify, wow-v17-change-impact-gate, wow-v17-trusted-governance-gate]
+    workflows: [wow-verify, wow-engine-verify, wow-v17-rapid-repair, wow-v17-change-impact-gate, wow-v17-independent-source-review]
     types: [completed]
   workflow_dispatch:
     inputs:

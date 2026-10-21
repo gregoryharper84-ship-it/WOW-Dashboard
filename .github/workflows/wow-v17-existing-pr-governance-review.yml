@@ -67,7 +67,7 @@ jobs:
           jq -e --arg repo "$GITHUB_REPOSITORY" --argjson attempt "$SOURCE_ATTEMPT" \
             '.name == "wow-v17-independent-source-review" and
              .path == ".github/workflows/wow-v17-independent-source-review.yml" and
-             .event == "workflow_dispatch" and .head_branch == "main" and
+             (.event == "workflow_dispatch" or .event == "workflow_run") and .head_branch == "main" and
              .head_repository.full_name == $repo and .repository.full_name == $repo and
              .run_attempt == $attempt and .status == "completed" and .conclusion == "success"' \
             "$source_run" >/dev/null || {
@@ -83,7 +83,7 @@ jobs:
           }
           artifact_id=$(jq -r '.[0].id' <<<"$matches")
           artifact_name=$(jq -r '.[0].name' <<<"$matches")
-          [[ "$artifact_name" =~ ^wow-v17-independent-source-review-[1-9][0-9]*-[a-f0-9]{40}-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}$ ]] || {
+          [[ "$artifact_name" =~ ^wow-v17-independent-source-review-([1-9][0-9]*)-([a-f0-9]{40})-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}$ ]] || {
             echo "SOURCE_REVIEW_ARTIFACT_NAME_INVALID" >&2; exit 1;
           }
           source_pr="${BASH_REMATCH[1]}"

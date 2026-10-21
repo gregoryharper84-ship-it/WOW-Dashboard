@@ -72,6 +72,63 @@ def test_certifier_consumes_only_authenticated_standalone_review_run_artifacts()
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
 
 
+def test_source_review_artifact_name_regex_captures_pr_and_head_under_bash_nounset():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    regex_line = next(
+        line.strip()
+        for line in workflow.splitlines()
+        if line.strip().startswith("[[ \"$artifact_name\" =~ ")
+    ).removesuffix(" || {")
+    regex_line += " || exit 1"
+    valid_name = f"wow-v17-independent-source-review-1822-{'a' * 40}-54321-1"
+    accepted = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            "\n".join(
+                (
+                    f'artifact_name="{valid_name}"',
+                    'SOURCE_RUN_ID=54321',
+                    'SOURCE_ATTEMPT=1',
+                    regex_line,
+                    'source_pr="${BASH_REMATCH[1]}"',
+                    'source_sha="${BASH_REMATCH[2]}"',
+                    'printf "%s %s\\n" "$source_pr" "$source_sha"',
+                )
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    assert accepted.stdout.strip() == f"1822 {'a' * 40}"
+
+    rejected = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            "\n".join(
+                (
+                    'artifact_name="wow-v17-independent-source-review-1822-not-a-sha-54321-1"',
+                    'SOURCE_RUN_ID=54321',
+                    'SOURCE_ATTEMPT=1',
+                    regex_line,
+                    'source_pr="${BASH_REMATCH[1]}"',
+                )
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+
+
 @pytest.fixture
 def run_identity_step(tmp_path):
     workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -773,8 +830,14 @@ def release_evidence():
             (*release_checks.QA_EVIDENCE_CHECKS, release_checks.TRUSTED_GOVERNANCE_CHECK)
         )
     ]
+    source_pr_evidence = evidence(author={"id": 77, "login": "wow-engineering[bot]", "type": "Bot"})
+    source_review_artifact = automated_review_data(
+        source_pr_evidence,
+        now=datetime.now(timezone.utc),
+    )
     return {
         "repository": verifier.CANONICAL_REPOSITORY,
+        "pr_number": 1822,
         "expected_head_sha": HEAD,
         "owner_login": verifier.OWNER_LOGIN,
         "evidence_errors": [],
@@ -783,12 +846,20 @@ def release_evidence():
             "draft": False,
             "merged": False,
             "head_sha": HEAD,
+            "head_ref": "fix/issue-1806",
             "head_repo": verifier.CANONICAL_REPOSITORY,
             "base_ref": "main",
             "author": "wow-engineering[bot]",
+            "author_id": 77,
             "changed_files": 1,
         },
         "files": ["src/fix.py"],
+        "source_review_paths": ["src/fix.py"],
+        "source_review": {
+            "artifact_id": 555,
+            "artifact": source_review_artifact,
+            "run": SOURCE_REVIEW_RUN,
+        },
         "check_runs": checks,
         "reviews": [],
     }

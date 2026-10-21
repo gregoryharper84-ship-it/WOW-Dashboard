@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import dedent
 
@@ -19,6 +20,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = ROOT / "artifacts/wow-engine/v17/independent_release_checks.py"
+SOURCE_REVIEW_MODULE = ROOT / ".github/scripts/independent_source_review_receipt.py"
 QA_WF = ROOT / ".github/workflows/wow-v17-independent-qa-check.yml"
 REL_WF = ROOT / ".github/workflows/wow-v17-release-authority-check.yml"
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
@@ -31,6 +33,75 @@ spec = importlib.util.spec_from_file_location("independent_release_checks", MODU
 m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
+source_spec = importlib.util.spec_from_file_location("independent_source_review_receipt_for_qa", SOURCE_REVIEW_MODULE)
+source_review = importlib.util.module_from_spec(source_spec)
+assert source_spec and source_spec.loader
+sys.modules[source_spec.name] = source_review
+source_spec.loader.exec_module(source_review)
+
+
+def source_review_evidence(files, *, author="wow-engineering[bot]", pr_number=7):
+    file_paths = sorted(files or ["artifacts/wow-engine/v17/fixture.py"])
+    diff = [
+        {"filename": path, "previous_filename": None, "status": "modified", "patch": "@@ -1 +1 @@\n-old\n+new"}
+        for path in file_paths
+    ]
+    diff_sha = source_review.canonical_diff(diff, expected_count=len(diff))[1]
+    author_id = 285088163 if author == OWNER else 9001
+    run = {
+        "id": 12345,
+        "run_attempt": 1,
+        "name": source_review.WORKFLOW_NAME,
+        "path": source_review.WORKFLOW_PATH,
+        "event": "workflow_run",
+        "head_branch": "main",
+        "repository": REPO,
+        "head_sha": OLD,
+    }
+    receipt = source_review.build_artifact(
+        repository=REPO,
+        pr={
+            "number": pr_number,
+            "state": "open",
+            "draft": False,
+            "merged_at": None,
+            "changed_files": len(diff),
+            "user": {"id": author_id, "login": author},
+            "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}},
+        },
+        files=diff,
+        commit={
+            "sha": HEAD,
+            "commit": {"tree": {"sha": "d" * 40}, "message": "Fixture review"},
+            "parents": [{"sha": "e" * 40}],
+            "author": {"login": "copilot-swe-agent"},
+            "committer": {"login": "copilot-swe-agent"},
+        },
+        review_result={
+            "decision": "PASS",
+            "summary": "Reviewed all changed files.",
+            "reviewed_head_sha": HEAD,
+            "reviewed_diff_sha256": diff_sha,
+            "reviewed_files": file_paths,
+            "assessment": {
+                "source_review": "PASS",
+                "security_review": "PASS",
+                "probability_integrity_review": "PASS",
+            },
+            "findings": [],
+        },
+        run=run,
+        now=datetime.now(timezone.utc),
+    )
+    source_run = {
+        **run,
+        "repository": {"full_name": REPO},
+        "head_repository": {"full_name": REPO},
+        "status": "completed",
+        "conclusion": "success",
+    }
+    return {"artifact_id": 99, "artifact": receipt, "run": source_run}
 
 
 def run_(name, conclusion="success", head=HEAD, app=GHA, at="2026-10-09T03:00:00Z", rid=1):
@@ -43,9 +114,12 @@ def evidence(files=("artifacts/wow-engine/v17/x.py",), author="wow-engineering[b
         "repository": REPO, "pr_number": 7, "expected_head_sha": HEAD, "evidence_errors": [],
         "owner_login": OWNER,
         "pr": {"state": "open", "draft": False, "merged": False, "head_sha": HEAD, "head_repo": REPO,
-               "base_ref": "main", "author": author, "changed_files": len(files)},
+               "head_ref": "fix/issue-1830", "base_ref": "main", "author": author,
+               "author_id": 285088163 if author == OWNER else 9001, "changed_files": len(files)},
         "files": list(files),
-        "check_runs": [run_(n, rid=i) for i, n in enumerate((*m.QA_EVIDENCE_CHECKS, m.TRUSTED_GOVERNANCE_CHECK))],
+        "source_review_paths": list(files),
+        "source_review": source_review_evidence(files, author=author),
+        "check_runs": [run_(n, rid=i) for i, n in enumerate(m.QA_EVIDENCE_CHECKS)],
         "reviews": [],
     }
     for key, value in over.items():
@@ -66,7 +140,7 @@ def test_ordinary_pr_with_complete_exact_head_evidence_passes():
     assert m.qa_findings(evidence()) == []
 
 
-@pytest.mark.parametrize("name", [*m.QA_EVIDENCE_CHECKS, m.TRUSTED_GOVERNANCE_CHECK])
+@pytest.mark.parametrize("name", m.QA_EVIDENCE_CHECKS)
 def test_each_missing_or_failed_evidence_check_holds(name):
     ev = evidence()
     ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != name]
@@ -78,8 +152,8 @@ def test_each_missing_or_failed_evidence_check_holds(name):
 def test_same_named_check_from_another_app_is_ignored():
     ev = evidence()
     name = m.TRUSTED_GOVERNANCE_CHECK
-    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != name] + [run_(name, app=424242, rid=50)]
-    assert f"QA_EVIDENCE_MISSING:{name}" in m.qa_findings(ev)
+    ev["check_runs"].append(run_(name, app=424242, rid=50))
+    assert m.qa_findings(ev) == []
 
 
 def test_evidence_at_another_commit_does_not_count():
@@ -166,36 +240,31 @@ def with_qa(ev, conclusion="success", app=QA_APP):
     return ev
 
 
-def test_green_ci_without_trusted_review_decision_holds_qa_and_release():
+def test_green_ci_and_trusted_gate_without_source_review_hold_qa_and_release():
     ev = evidence()
-    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
-    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in m.qa_findings(ev)
+    ev["check_runs"].append(run_(m.TRUSTED_GOVERNANCE_CHECK, rid=400))
+    ev["source_review"] = None
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in m.qa_findings(ev)
 
     with_qa(ev)
     findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
-    assert f"RELEASE_QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in findings
+    assert "RELEASE_QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in findings
     assert m.decision("release", findings, ev)["conclusion"] == "failure"
 
 
-@pytest.mark.parametrize("bad_receipt", [
-    run_("Trusted exact-head engineering governance", "failure", rid=401),
-    run_("Trusted exact-head engineering governance", app=424242, rid=402),
-    run_("Trusted exact-head engineering governance", head=OLD, rid=403),
+@pytest.mark.parametrize("mutation, expected", [
+    (lambda proof: proof["artifact"]["target"].update(head_sha=OLD), "HEAD_MISMATCH"),
+    (lambda proof: proof["artifact"]["review"].update(decision="REJECT"), "REJECTED"),
+    (lambda proof: proof["run"].update(event="pull_request_target"), "WORKFLOW_RUN_UNTRUSTED"),
 ])
-def test_failed_foreign_or_stale_review_receipt_holds_release_even_with_qa_success(bad_receipt):
+def test_rejected_stale_or_untrusted_source_review_holds_release_even_with_qa_success(mutation, expected):
     ev = evidence()
-    ev["check_runs"] = [
-        run_(name, rid=index)
-        for index, name in enumerate(m.QA_EVIDENCE_CHECKS)
-    ] + [bad_receipt]
-    assert any(
-        finding.startswith("QA_EVIDENCE_")
-        for finding in m.qa_findings(ev)
-    )
+    mutation(ev["source_review"])
+    assert any(expected in finding for finding in m.qa_findings(ev))
 
     with_qa(ev)
     findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
-    assert any(finding.startswith("RELEASE_QA_EVIDENCE_") for finding in findings)
+    assert any("INDEPENDENT_SOURCE_REVIEW" in finding for finding in findings)
     assert m.decision("release", findings, ev)["conclusion"] == "failure"
 
 
@@ -277,8 +346,8 @@ def _gather_routes(files=None, runs=None, changed=None):
                                           "conclusion": "success", "app": {"id": GHA}}]
     return {
         f"repos/{REPO}": (200, {"owner": {"login": OWNER}}),
-        f"repos/{REPO}/pulls/7": (200, {"state": "open", "draft": False, "head": {"sha": HEAD, "repo": {"full_name": REPO}},
-                                        "base": {"ref": "main"}, "user": {"login": "bot"},
+        f"repos/{REPO}/pulls/7": (200, {"state": "open", "draft": False, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
+                                        "base": {"ref": "main"}, "user": {"id": 9001, "login": "bot"},
                                         "changed_files": changed if changed is not None else len(files)}),
         f"repos/{REPO}/pulls/7/files?per_page=100&page=1": (200, files),
         f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1": (200, {"total_count": len(runs), "check_runs": runs}),
@@ -286,8 +355,22 @@ def _gather_routes(files=None, runs=None, changed=None):
     }
 
 
+def _source_review_resolver(**kwargs):
+    return source_review_evidence(
+        kwargs["expected_file_paths"],
+        author="bot",
+        pr_number=kwargs["pr_number"],
+    )
+
+
 def test_gather_collects_exact_head_evidence():
-    ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes()))
+    ev = m.gather(
+        REPO,
+        7,
+        HEAD,
+        fetch=Fake(_gather_routes()),
+        source_review_resolver=_source_review_resolver,
+    )
     assert ev["evidence_errors"] == [] and ev["files"] == ["artifacts/x.py"]
     assert ev["check_runs"][0]["app_id"] == GHA and ev["owner_login"] == OWNER
 
@@ -302,11 +385,18 @@ def test_gather_collects_exact_head_evidence():
 def test_gather_types_unreadable_and_truncated_inputs(mutate, error):
     routes = _gather_routes()
     mutate(routes)
-    assert error in m.gather(REPO, 7, HEAD, fetch=Fake(routes))["evidence_errors"]
+    ev = m.gather(REPO, 7, HEAD, fetch=Fake(routes), source_review_resolver=_source_review_resolver)
+    assert error in ev["evidence_errors"]
 
 
 def test_gather_detects_file_list_shorter_than_changed_files():
-    ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(changed=3)))
+    ev = m.gather(
+        REPO,
+        7,
+        HEAD,
+        fetch=Fake(_gather_routes(changed=3)),
+        source_review_resolver=_source_review_resolver,
+    )
     assert "FILES_TRUNCATED" in ev["evidence_errors"]
 
 
@@ -341,7 +431,10 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
 
 
 @pytest.mark.parametrize("wf, upstream", [
-    (QA_WF, ["wow-verify", "wow-engine-verify", "wow-v17-change-impact-gate", "wow-v17-trusted-governance-gate"]),
+    (QA_WF, [
+        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
+        "wow-v17-change-impact-gate", "wow-v17-independent-source-review",
+    ]),
     (REL_WF, ["wow-v17-independent-qa-check"]),
 ])
 def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
@@ -389,12 +482,33 @@ def fake_gh(tmp_path):
     gh = bindir / "gh"
     gh.write_text(FAKE_GH)
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+    (tmp_path / "sitecustomize.py").write_text(dedent("""
+        import importlib.util
+        import json
+        import os
+        _module_from_spec = importlib.util.module_from_spec
+        def _patched_module_from_spec(spec):
+            module = _module_from_spec(spec)
+            if spec.name == "_independent_source_review_receipt":
+                loader = spec.loader
+                original_exec = loader.exec_module
+                def _exec_module(target):
+                    original_exec(target)
+                    def _resolve(**kwargs):
+                        if os.environ.get("FAKE_SOURCE_REVIEW_MODE") == "missing":
+                            raise target.SourceReviewError("SOURCE_REVIEW_ARTIFACT_DUPLICATE_OR_MISSING")
+                        return json.loads(os.environ["FAKE_SOURCE_REVIEW"])
+                    target.resolve_current_source_review = _resolve
+                loader.exec_module = _exec_module
+            return module
+        importlib.util.module_from_spec = _patched_module_from_spec
+    """))
     return tmp_path
 
 
 def _routes_for_pr(runs):
     routes = _gather_routes(runs=runs)
-    routes[f"repos/{REPO}/pulls/7"][1]["user"] = {"login": "wow-engineering[bot]"}
+    routes[f"repos/{REPO}/pulls/7"][1]["user"] = {"id": 9001, "login": "wow-engineering[bot]"}
     return {k: list(v) for k, v in routes.items()}
 
 
@@ -404,7 +518,11 @@ def _run_decide(tmp, wf, routes, env_extra):
     runner.mkdir(exist_ok=True)
     env = dict(os.environ, PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", FAKE_GH_ROUTES=str(tmp / "routes.json"),
                FAKE_GH_LOG=str(tmp / "gh.log"), GITHUB_REPOSITORY=REPO, RUNNER_TEMP=str(runner),
-               GITHUB_OUTPUT=str(tmp / "out.txt"), GITHUB_STEP_SUMMARY=str(tmp / "summary.md"), GH_TOKEN="read-only")
+               GITHUB_OUTPUT=str(tmp / "out.txt"), GITHUB_STEP_SUMMARY=str(tmp / "summary.md"), GH_TOKEN="read-only",
+               PYTHONPATH=f"{tmp}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
+               FAKE_SOURCE_REVIEW=json.dumps(source_review_evidence(
+                   ["artifacts/x.py"], author="wow-engineering[bot]"
+               )))
     env.update(env_extra)
     proc = subprocess.run(["bash", "-c", _step_script(wf, "Decide at exact head (read-only)")],
                           cwd=ROOT, env=env, capture_output=True, text=True)
@@ -414,7 +532,7 @@ def _run_decide(tmp, wf, routes, env_extra):
 def _evidence_runs(extra=()):
     runs = [{"id": i, "name": n, "head_sha": HEAD, "status": "completed", "conclusion": "success",
              "app": {"id": GHA}, "completed_at": "2026-10-09T03:00:00Z"}
-            for i, n in enumerate((*m.QA_EVIDENCE_CHECKS, m.TRUSTED_GOVERNANCE_CHECK))]
+            for i, n in enumerate(m.QA_EVIDENCE_CHECKS)]
     return runs + list(extra)
 
 
@@ -439,12 +557,21 @@ def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, ev
 
 
 def test_qa_workflow_publishes_failure_when_evidence_is_missing(fake_gh):
-    runs = [r for r in _evidence_runs() if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
-    proc, runner, _ = _run_decide(fake_gh, QA_WF, _routes_for_pr(runs), {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null"})
+    proc, runner, _ = _run_decide(
+        fake_gh,
+        QA_WF,
+        _routes_for_pr(_evidence_runs()),
+        {
+            "EVENT": "workflow_dispatch",
+            "INPUT_PR": "7",
+            "WR_PRS": "null",
+            "FAKE_SOURCE_REVIEW_MODE": "missing",
+        },
+    )
     assert proc.returncode == 0, proc.stderr
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "failure"
-    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in decision["findings"]
+    assert any("QA_EVIDENCE_INCOMPLETE:SOURCE_REVIEW_UNAVAILABLE:" in finding for finding in decision["findings"])
 
 
 def test_invalid_dispatch_target_fails_without_publishing(fake_gh):
@@ -556,7 +683,13 @@ def test_unactivated_role_is_skipped_not_red(wf, var):
 def test_rename_out_of_trust_root_holds_both_qa_and_release(source):
     renamed = [{"filename": "docs/relocated-unprotected-file.md",
                 "status": "renamed", "previous_filename": source}]
-    ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(files=renamed, changed=1)))
+    ev = m.gather(
+        REPO,
+        7,
+        HEAD,
+        fetch=Fake(_gather_routes(files=renamed, changed=1)),
+        source_review_resolver=_source_review_resolver,
+    )
     assert ev["evidence_errors"] == []
     assert ev["files"] == ["docs/relocated-unprotected-file.md", source]
     ev["check_runs"] = evidence()["check_runs"]
