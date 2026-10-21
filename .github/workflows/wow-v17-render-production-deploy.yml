@@ -520,7 +520,15 @@ jobs:
               if not missing and not pending:
                   break
               if time.time() >= check_deadline:
-                  raise RuntimeError("RENDER_DEPLOY_REQUIRED_CHECK_TIMEOUT:" + ",".join(missing + pending))
+                  emit_receipt({
+                      "status": "RELEASE_REQUIRED_CHECKS_TIMEOUT_NO_DEPLOY",
+                      "target_sha": target_sha,
+                      "missing_required_checks": missing,
+                      "pending_required_checks": pending,
+                      "hold_reason": "RENDER_DEPLOY_REQUIRED_CHECK_TIMEOUT",
+                      "can_execute": False,
+                  })
+                  raise SystemExit(0)
               time.sleep(15)
 
           # Verify the independent QA and Release App checks on the exact
@@ -1059,6 +1067,7 @@ jobs:
               "RELEASE_AUTHORIZATION_HOLD_NO_DEPLOY",
               "RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY",
               "RELEASE_RENDER_CREDENTIAL_SCOPE_UNATTESTED",
+              "RELEASE_REQUIRED_CHECKS_TIMEOUT_NO_DEPLOY",
               "RELEASE_JOURNAL_RECONCILE_HOLD_NO_SECOND_POST",
               "RELEASE_INTENT_RESERVED_POST_UNCERTAIN",
               "SECRET_ENV_CHANGED_RELEASE_REQUEST_HOLD_NO_DEPLOY",
