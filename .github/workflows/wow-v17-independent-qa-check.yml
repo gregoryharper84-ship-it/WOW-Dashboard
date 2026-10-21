@@ -101,7 +101,7 @@ jobs:
         id: policy
         shell: bash
         env:
-          GLOBAL_REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true' }}
+          REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
           CANARY_REQUESTED: ${{ inputs.independent_review_canary }}
           CANARY_PR: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_PR }}
           CANARY_SHA: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA }}
@@ -110,7 +110,12 @@ jobs:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
-          if [ "${GLOBAL_REVIEW_ACTIVE:-false}" = "true" ]; then
+          case "${REVIEW_ACTIVATION:-}" in
+            true) global_active=true ;;
+            ""|false) global_active=false ;;
+            *) echo "::error::QA_REVIEW_POLICY_INVALID"; exit 1 ;;
+          esac
+          if [ "$global_active" = "true" ]; then
             mode=independent
           elif [ "${CANARY_REQUESTED:-false}" = "true" ]; then
             [ "$EVENT" = "workflow_dispatch" ] || {
@@ -130,7 +135,7 @@ jobs:
           [ "$mode" = "legacy" ] || active=true
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "review_active=$active" >> "$GITHUB_OUTPUT"
-          echo "global_review_active=${GLOBAL_REVIEW_ACTIVE:-false}" >> "$GITHUB_OUTPUT"
+          echo "global_review_active=$global_active" >> "$GITHUB_OUTPUT"
 
       - name: Build immutable QA review-policy receipt
         id: policy_receipt

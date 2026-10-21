@@ -76,7 +76,7 @@ jobs:
           INPUT_PR: ${{ inputs.pr_number }}
           QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
           RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
-          CURRENT_REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true' }}
+          REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
           SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id || inputs.qa_run_id }}
           SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.qa_run_attempt }}
         run: |
@@ -101,10 +101,15 @@ jobs:
           pr=$(jq -r '.target.pr_number' <<<"$policy")
           head=$(jq -r '.target.head_sha' <<<"$policy")
           review_mode=$(jq -r '.mode' <<<"$policy")
+          case "${REVIEW_ACTIVATION:-}" in
+            true) current_review_active=true ;;
+            ""|false) current_review_active=false ;;
+            *) echo "::error::QA_REVIEW_POLICY_INVALID"; exit 1 ;;
+          esac
           ev="$out/evidence-$pr.json"
           gather_args=(gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head"
             --qa-policy-json "$out/qa-policy.json")
-          [ "${CURRENT_REVIEW_ACTIVE:-false}" != "true" ] || gather_args+=(--current-review-active)
+          [ "$current_review_active" != "true" ] || gather_args+=(--current-review-active)
           [ "$review_mode" != "legacy" ] || gather_args+=(--legacy-review-policy)
           python "$tool" "${gather_args[@]}" > "$ev"
           python "$tool" decide-release --evidence "$ev" --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" > "$out/decision-$pr.json"

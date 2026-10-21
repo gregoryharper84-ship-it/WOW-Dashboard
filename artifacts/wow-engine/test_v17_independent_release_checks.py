@@ -644,7 +644,7 @@ def _run_decide(tmp, wf, routes, env_extra):
     env = dict(os.environ, PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", FAKE_GH_ROUTES=str(tmp / "routes.json"),
                FAKE_GH_LOG=str(tmp / "gh.log"), GITHUB_REPOSITORY=REPO, RUNNER_TEMP=str(runner),
                GITHUB_OUTPUT=str(tmp / "out.txt"), GITHUB_STEP_SUMMARY=str(tmp / "summary.md"), GH_TOKEN="read-only",
-               PR_NUMBER="7", HEAD_SHA=HEAD, REVIEW_ACTIVE="true", CURRENT_REVIEW_ACTIVE="false",
+               PR_NUMBER="7", HEAD_SHA=HEAD, REVIEW_ACTIVE="true", REVIEW_ACTIVATION="false",
                SOURCE_REVIEW_ARTIFACT_ID="99", SOURCE_QA_RUN_ID="12345", SOURCE_QA_RUN_ATTEMPT="1",
                PYTHONPATH=f"{tmp}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
                FAKE_SOURCE_REVIEW=json.dumps(source), FAKE_QA_POLICY=json.dumps(qa_policy))
@@ -790,7 +790,7 @@ def test_release_binds_mode_to_qa_run_across_activation_changes(fake_gh):
     # OFF -> ON: a genuine legacy QA pass cannot satisfy the now-active policy.
     proc, runner, _ = _run_decide(
         fake_gh, REL_WF, routes,
-        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "CURRENT_REVIEW_ACTIVE": "true",
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "true",
          "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP, "FAKE_QA_POLICY": json.dumps(legacy)},
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -801,7 +801,7 @@ def test_release_binds_mode_to_qa_run_across_activation_changes(fake_gh):
     # ON -> OFF: a later flag change cannot downgrade the producing QA run.
     proc, runner, _ = _run_decide(
         fake_gh, REL_WF, routes,
-        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "CURRENT_REVIEW_ACTIVE": "false",
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "false",
          "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP, "FAKE_SOURCE_REVIEW_MODE": "missing"},
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -846,7 +846,7 @@ def test_qa_review_policy_selector_is_scoped_and_staged(
         ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
         env=dict(
             os.environ,
-            GLOBAL_REVIEW_ACTIVE=global_active,
+            REVIEW_ACTIVATION=global_active,
             CANARY_REQUESTED=canary_requested,
             CANARY_PR=canary_pr,
             CANARY_SHA=canary_sha,
@@ -874,7 +874,7 @@ def test_qa_canary_policy_selector_rejects_unapproved_target(tmp_path, event, pr
         ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
         env=dict(
             os.environ,
-            GLOBAL_REVIEW_ACTIVE="false",
+            REVIEW_ACTIVATION="false",
             CANARY_REQUESTED="true",
             CANARY_PR="7",
             CANARY_SHA=HEAD,
@@ -889,6 +889,36 @@ def test_qa_canary_policy_selector_rejects_unapproved_target(tmp_path, event, pr
     assert proc.returncode != 0
     assert "::error::QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD" in proc.stdout \
         or "::error::QA_REVIEW_CANARY_REQUIRES_DISPATCH" in proc.stdout
+
+
+@pytest.mark.parametrize("activation", ["True", "enabled", "false "])
+def test_qa_review_policy_selector_rejects_unknown_global_activation(tmp_path, activation):
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Select exact-head review policy")],
+        env=dict(
+            os.environ,
+            REVIEW_ACTIVATION=activation,
+            CANARY_REQUESTED="false",
+            EVENT="workflow_dispatch",
+            PR_NUMBER="7",
+            HEAD_SHA=HEAD,
+            GITHUB_OUTPUT=str(tmp_path / "outputs"),
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0 and "::error::QA_REVIEW_POLICY_INVALID" in proc.stdout
+
+
+def test_release_review_policy_selector_rejects_unknown_activation(fake_gh):
+    proc, runner, _ = _run_decide(
+        fake_gh, REL_WF, _routes_for_pr(_evidence_runs()),
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "REVIEW_ACTIVATION": "enabled",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode != 0
+    assert "::error::QA_REVIEW_POLICY_INVALID" in proc.stdout
+    assert not (runner / "decisions" / "decision-7.json").exists()
 
 
 def test_publish_refuses_a_decision_that_claims_authority(fake_gh):

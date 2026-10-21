@@ -162,7 +162,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_REVIEW_CANARY_REQUIRES_DISPATCH` | independent QA canary | Canary policy was requested from an event other than an explicit protected workflow dispatch. | N/A |
 | `QA_TARGETS_UNRESOLVED` | independent QA | QA could not resolve any valid (PR, exact head) target; details in the annotation. | N/A |
 | `QA_TARGET_COUNT_INVALID` | independent QA | A protected QA invocation resolved anything other than one exact (PR, head) target; no source review or check is published. | N/A |
-| `QA_REVIEW_POLICY_INVALID` | independent QA | The evidence does not contain a boolean indicating whether automated review is activated. | N/A |
+| `QA_REVIEW_POLICY_INVALID` | independent QA / release | Independent-review activation is not one of the accepted empty, `false`, or `true` states; no decision/check is published. | N/A |
 | `QA_REVIEW_POLICY_MODE_INVALID` | independent QA | The authenticated producing QA run has no supported immutable review mode. | N/A |
 | `QA_REVIEW_POLICY_MODE_CONFLICT` | independent QA | The evidence mode and review requirement disagree. | N/A |
 | `QA_REVIEW_POLICY_RUN_ID_INVALID` | independent QA | The authenticated QA policy receipt has no valid producing run identity. | N/A |
