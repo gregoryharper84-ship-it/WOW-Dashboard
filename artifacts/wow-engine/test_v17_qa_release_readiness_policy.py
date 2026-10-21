@@ -233,3 +233,17 @@ def test_qa_artifact_arrival_can_reenter_release_after_ci_already_ready():
                            previous_qa_receipt_verified=False)
     assert after.state == "READY_FOR_EXTERNAL_DISPATCH"
     assert not after.can_publish_check
+
+def test_caller_cannot_omit_mandatory_regression_or_change_impact():
+    for omitted in range(len(REQUIRED)):
+        selected = tuple(item for i, item in enumerate(REQUIRED) if i != omitted)
+        result = decision(requirements=selected)
+        assert result.state == "HOLD_EVIDENCE"
+        assert result.reasons == ("MANDATORY_REQUIREMENTS_OMITTED",)
+
+
+def test_caller_cannot_reassign_mandatory_check_to_wrong_app():
+    selected = ((REQUIRED[0][0], 5245832),) + REQUIRED[1:]
+    result = decision(requirements=selected)
+    assert result.state == "HOLD_EVIDENCE"
+    assert result.reasons == ("MANDATORY_REQUIREMENTS_OMITTED",)
