@@ -104,18 +104,23 @@ jobs:
             echo "GOVERNANCE_PR_EVENT_IDENTITY_INVALID" >&2; exit 1;
           }
           artifact_name="wow-v17-engineering-governance-${head_sha}"
-          artifact_id=""
-          run_id=""
+          artifact_matches='[]'
 
           for _ in $(seq 1 180); do
             artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
-            artifact_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .id // ""' <<<"$artifacts")
-            run_id=$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | reverse | first | .workflow_run.id // ""' <<<"$artifacts")
-            if [ -n "$artifact_id" ] && [ -n "$run_id" ]; then
+            artifact_matches=$(jq -c --arg name "$artifact_name" \
+              '[.artifacts[] | select(.expired == false and .name == $name)]' <<<"$artifacts")
+            if [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ]; then
               break
             fi
             sleep 10
           done
+          [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ] || {
+            echo "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE: no unique exact-head artifact for ${head_sha}." >&2
+            exit 1
+          }
+          artifact_id=$(jq -r '.[0].id' <<<"$artifact_matches")
+          run_id=$(jq -r '.[0].workflow_run.id // ""' <<<"$artifact_matches")
           fi
 
           if [ -z "$artifact_id" ] || [ -z "$run_id" ]; then

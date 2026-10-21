@@ -1,7 +1,12 @@
 import importlib.util
+import json
+import os
 from pathlib import Path
+import subprocess
+import zipfile
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -164,7 +169,24 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
 
     assert "pull_request_target:" in gate
     assert "ref: main" in gate
-    assert 'artifact_name="wow-v17-engineering-governance-${PR_HEAD_SHA}"' in gate
+    artifact_step = gate.split("- name: Resolve trusted exact-head governance artifact", 1)[1].split(
+        "- name: Verify trusted workflow identity and completion", 1
+    )[0]
+    assert 'artifact_name="wow-v17-engineering-governance-${head_sha}"' in artifact_step
+    assert '.name == $name' in artifact_step
+    assert '[ "$(jq \'length\' <<<"$artifact_matches")" -eq 1 ]' in artifact_step
+    assert '.name | test("^wow-v17-engineering-governance-[a-f0-9]{40}$")' in artifact_step
+    assert '.event == "workflow_run"' in artifact_step
+    assert '.head_branch == "main"' in artifact_step
+    assert '.head_repository.full_name == $repo and .repository.full_name == $repo' in artifact_step
+    assert '.status == "completed" and .conclusion == "success"' in artifact_step
+    assert '.target.head_sha == $sha and .repository == $repo' in artifact_step
+    assert '.workflow_run_id == ($run_id | tostring)' in artifact_step
+    assert "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" in artifact_step
+    assert 'artifact_name="wow-v17-engineering-governance-${head_sha}"' in gate
+    assert 'head_sha="$EVENT_HEAD_SHA"' in artifact_step
+    assert '.state == "open" and .head.sha == $sha and .head.repo.full_name == $repo' in gate
+    assert '.base.ref == "main" and .base.repo.full_name == $repo' in gate
     assert "verify_engineering_governance_receipt.py" in gate
     assert "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" in gate
     assert '[ "$head_branch" = "main" ]' in gate
@@ -193,6 +215,178 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert '--workflow-name "$name"' in morning_green
     assert "steps.governance.outputs.approved == 'true'" in morning_green
     assert "GOVERNANCE_REWORK" in morning_green
+
+
+def _run_gate_artifact_resolution(tmp_path, *, event, artifacts, run=None, receipt=None, event_head=None):
+    workflow = yaml.load(GATE.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    step = next(
+        item for item in workflow["jobs"]["trusted-governance"]["steps"]
+        if item.get("name") == "Resolve trusted exact-head governance artifact"
+    )
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "gh").write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, pathlib, sys\n"
+        "routes=json.loads(pathlib.Path(os.environ['FAKE_GH_ROUTES']).read_text())\n"
+        "path=sys.argv[-1]\n"
+        "value=routes[path]\n"
+        "if isinstance(value, dict) and '__file' in value:\n"
+        "    sys.stdout.buffer.write(pathlib.Path(value['__file']).read_bytes())\n"
+        "else:\n"
+        "    print(json.dumps(value))\n",
+        encoding="utf-8",
+    )
+    (bindir / "gh").chmod(0o755)
+    (bindir / "seq").write_text("#!/bin/sh\nprintf '1\\n'\n", encoding="utf-8")
+    (bindir / "seq").chmod(0o755)
+    (bindir / "sleep").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (bindir / "sleep").chmod(0o755)
+
+    routes = {}
+    env = {
+        "EVENT_NAME": event,
+        "EVENT_PR_NUMBER": "42" if event != "workflow_run" else "",
+        "EVENT_HEAD_SHA": event_head or ("a" * 40),
+        "EVENT_HEAD_REF": "fix/exact-head",
+        "SOURCE_RUN_ID": "123" if event == "workflow_run" else "",
+    }
+    if event == "workflow_run":
+        routes["/repos/owner/repo/actions/runs/123"] = run
+        routes["/repos/owner/repo/actions/runs/123/artifacts?per_page=100"] = {
+            "artifacts": artifacts,
+        }
+        zip_path = tmp_path / "receipt.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            payload = json.dumps(receipt, sort_keys=True).encode()
+            archive.writestr("wow-engineering-governance-receipt.json", payload)
+            import hashlib
+            archive.writestr(
+                "wow-engineering-governance-receipt.sha256",
+                hashlib.sha256(payload).hexdigest(),
+            )
+        routes["/repos/owner/repo/actions/artifacts/55/zip"] = {"__file": str(zip_path)}
+    else:
+        routes[
+            f"/repos/owner/repo/actions/artifacts?name=wow-v17-engineering-governance-{env['EVENT_HEAD_SHA']}&per_page=20"
+        ] = {"artifacts": artifacts}
+    routes_path = tmp_path / "routes.json"
+    routes_path.write_text(json.dumps(routes), encoding="utf-8")
+    output = tmp_path / "output"
+    process_env = dict(
+        os.environ,
+        **env,
+        GITHUB_REPOSITORY="owner/repo",
+        GITHUB_OUTPUT=str(output),
+        RUNNER_TEMP=str(runner_temp),
+        FAKE_GH_ROUTES=str(routes_path),
+        PATH=f"{bindir}:{os.environ['PATH']}",
+    )
+    proc = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=ROOT,
+        env=process_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc, output.read_text(encoding="utf-8") if output.exists() else ""
+
+
+def _certifier_fixture(*, run_overrides=None, artifact_sha=None, receipt_sha=None):
+    sha_from_name = artifact_sha or ("a" * 40)
+    target_sha = receipt_sha or sha_from_name
+    run = {
+        "id": 123,
+        "name": "wow-v17-existing-pr-governance-review",
+        "path": ".github/workflows/wow-v17-existing-pr-governance-review.yml",
+        "event": "workflow_run",
+        "head_branch": "main",
+        "head_repository": {"full_name": "owner/repo"},
+        "repository": {"full_name": "owner/repo"},
+        "status": "completed",
+        "conclusion": "success",
+    }
+    run.update(run_overrides or {})
+    receipt = {
+        "receipt_schema_version": 3,
+        "repository": "owner/repo",
+        "workflow_name": "wow-v17-existing-pr-governance-review",
+        "workflow_run_id": "123",
+        "target": {"pr_number": 42, "head_sha": target_sha, "head_ref": "fix/exact-head"},
+    }
+    artifact = {
+        "id": 55,
+        "name": f"wow-v17-engineering-governance-{sha_from_name}",
+        "expired": False,
+        "workflow_run": {"id": 123},
+    }
+    return run, receipt, artifact
+
+
+@pytest.mark.parametrize(
+    ("run_overrides", "artifact_sha", "receipt_sha", "reason"),
+    [
+        ({"event": "pull_request"}, None, None, "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL"),
+        ({"head_repository": {"full_name": "fork/repo"}}, None, None,
+         "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL"),
+        (None, "b" * 40, "a" * 40, "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH"),
+    ],
+)
+def test_workflow_run_certifier_rejects_forged_or_stale_source(
+    tmp_path, run_overrides, artifact_sha, receipt_sha, reason
+):
+    run, receipt, artifact = _certifier_fixture(
+        run_overrides=run_overrides,
+        artifact_sha=artifact_sha,
+        receipt_sha=receipt_sha,
+    )
+    proc, _ = _run_gate_artifact_resolution(
+        tmp_path,
+        event="workflow_run",
+        artifacts=[artifact],
+        run=run,
+        receipt=receipt,
+    )
+
+    assert proc.returncode != 0
+    assert reason in proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "duplicate", "expected_success"),
+    [
+        ("wow-v17-engineering-governance-" + "a" * 40, False, True),
+        ("wow-v17-engineering-governance-" + "b" * 40, False, False),
+        ("wow-v17-engineering-governance-" + "a" * 40, True, False),
+    ],
+)
+def test_pull_request_target_fallback_selects_only_exact_head_artifact(
+    tmp_path, artifact_name, duplicate, expected_success
+):
+    artifacts = [{
+        "id": 55,
+        "name": artifact_name,
+        "expired": False,
+        "workflow_run": {"id": 123},
+    }]
+    if duplicate:
+        artifacts.append({**artifacts[0], "id": 56})
+    proc, output = _run_gate_artifact_resolution(
+        tmp_path,
+        event="pull_request_target",
+        artifacts=artifacts,
+        event_head="a" * 40,
+    )
+
+    assert (proc.returncode == 0) is expected_success
+    if expected_success:
+        assert "head_sha=" + "a" * 40 in output
+        assert "artifact_id=55" in output
+    else:
+        assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in proc.stderr
 
 
 def test_release_verification_requires_trusted_exact_head_governance_and_exact_merge_sha():
