@@ -39,13 +39,106 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quota-safe-deterministic:
+    name: WOW governed deterministic recovery (no OpenAI API)
+    if: >-
+      vars.WOW_OPENAI_PROVIDER_MODE != 'PAID' && (
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Validate immutable engineering dispatch policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_dispatch_queue.py validate \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json
+
+      - name: Build issue-grounded queue and typed provider deferral
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_INCIDENT: ${{ inputs.target_incident }}
+          REQUESTED_LEASE_GROUP: ${{ inputs.lease_group }}
+        run: |
+          set -euo pipefail
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 500 \
+            --json number,title,body,state,updatedAt > "$RUNNER_TEMP/issues.json"
+          python artifacts/wow-engine/v17/engineering_dispatch_queue.py build \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --issues "$RUNNER_TEMP/issues.json" --output "$RUNNER_TEMP/dispatch.json" >/dev/null
+          python - "$RUNNER_TEMP/dispatch.json" "$TARGET_INCIDENT" "${REQUESTED_LEASE_GROUP:-GLOBAL}" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+          queue = json.loads(Path(sys.argv[1]).read_text())
+          target = sys.argv[2].strip()
+          requested_lease = sys.argv[3].strip().upper()
+          if queue.get("can_execute") is not False or queue.get("terminal_authority") != "V17_TERMINAL_REDUCER":
+              raise SystemExit("GOVERNANCE_INVARIANT_VIOLATION")
+          records = queue["records"]
+          if target:
+              matched = [r for r in records if r["incident_id"] == target]
+              if len(matched) != 1:
+                  raise SystemExit("TARGET_INCIDENT_NOT_ACTIONABLE:" + target)
+              record = matched[0]
+              expected_lease = record["lease_group"] or "GLOBAL"
+              if requested_lease != expected_lease:
+                  raise SystemExit("TARGET_INCIDENT_LEASE_MISMATCH:" + target)
+          else:
+              records = sorted(records, key=lambda r: (int(r["priority_rank"]), int(r["issue_number"])))
+              record = records[0] if records else None
+          receipt = {
+              "state": "DEFERRED_PROVIDER_QUOTA" if record else "NO_ACTION",
+              "reason": "OPENAI_API_CREDITS_UNAVAILABLE_OR_NOT_OPTED_IN" if record else "NO_OPEN_ACTIONABLE_INCIDENT",
+              "incident_id": record["incident_id"] if record else None,
+              "severity": record["severity"] if record else None,
+              "lease_group": (record["lease_group"] or "GLOBAL") if record else None,
+              "queue_depth": queue["queue_depth"],
+              "provider_mode": "FREE_DETERMINISTIC",
+              "can_execute": False,
+              "terminal_authority": "V17_TERMINAL_REDUCER",
+              "dry_run_only": True,
+              "repair_dispatched": False,
+              "pr_created": False,
+              "production_verified": False,
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "source_sha": os.environ["GITHUB_SHA"],
+          }
+          Path("wow-provider-deferral.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("### WOW provider-safe engineering dispatch\n")
+              summary.write("Deterministic issue validation succeeded. No AI request, merge or deployment attempted.\n\n")
+              summary.write("```json\n" + json.dumps(receipt, indent=2) + "\n```\n")
+          print(json.dumps(receipt))
+          PY
+
+      - name: Publish durable typed receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-provider-deferral-${{ github.run_id }}-${{ github.run_attempt }}
+          path: wow-provider-deferral.json
+          retention-days: 30
+          if-no-files-found: error
+
   multi-agent-engineering:
     name: WOW V17 ChatGPT engineering team
     if: >-
+      vars.WOW_OPENAI_PROVIDER_MODE == 'PAID' && (
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
       (github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion != 'cancelled') ||
-      (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.conclusion != 'cancelled')
+      (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.conclusion != 'cancelled'))
     runs-on: ubuntu-latest
     timeout-minutes: 180
     environment: wow-engineering
