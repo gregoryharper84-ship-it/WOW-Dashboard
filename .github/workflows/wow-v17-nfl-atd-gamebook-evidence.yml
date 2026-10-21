@@ -21,6 +21,10 @@ on:
       - "artifacts/wow-engine/research/nfl_atd_2026_wk06_official_candidate_evidence.json"
       - ".github/workflows/wow-v17-nfl-atd-gamebook-evidence.yml"
 
+concurrency:
+  group: wow-v17-nfl-atd-gamebook-evidence-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
