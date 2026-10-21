@@ -14,6 +14,10 @@ on:
         description: Optional canonical incident override
         required: false
         type: string
+  workflow_run:
+    workflows: [wow-v17-independent-source-review]
+    types: [completed]
+    branches: [main]
 
 permissions:
   actions: read
@@ -23,7 +27,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-existing-pr-governance-${{ github.event.pull_request.number || inputs.pr_number }}
+  group: wow-v17-existing-pr-governance-${{ github.event.workflow_run.id || github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
 
 jobs:
@@ -45,6 +49,103 @@ jobs:
           python -m pip install --disable-pip-version-check pytest==9.1.1
           python -m pytest -q .github/scripts/tests/test_existing_pr_governance_receipt.py
 
+      - name: Resolve exact standalone source-review artifact
+        id: source_review
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] && [[ "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
+            echo "SOURCE_REVIEW_RUN_ID_OR_ATTEMPT_INVALID" >&2; exit 1;
+          }
+          source_run="$RUNNER_TEMP/source-review-run.json"
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > "$source_run"
+          jq -e --arg repo "$GITHUB_REPOSITORY" --argjson attempt "$SOURCE_ATTEMPT" \
+            '.name == "wow-v17-independent-source-review" and
+             .path == ".github/workflows/wow-v17-independent-source-review.yml" and
+             .event == "workflow_dispatch" and .head_branch == "main" and
+             .head_repository.full_name == $repo and .repository.full_name == $repo and
+             .run_attempt == $attempt and .status == "completed" and .conclusion == "success"' \
+            "$source_run" >/dev/null || {
+              echo "SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" >&2; exit 1;
+            }
+          artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")
+          matches=$(jq -c --arg suffix "-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}" \
+            '[.artifacts[] | select(.expired == false and
+              (.name | startswith("wow-v17-independent-source-review-")) and
+              (.name | endswith($suffix)))]' <<<"$artifacts")
+          [ "$(jq 'length' <<<"$matches")" -eq 1 ] || {
+            echo "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" >&2; exit 1;
+          }
+          artifact_id=$(jq -r '.[0].id' <<<"$matches")
+          artifact_name=$(jq -r '.[0].name' <<<"$matches")
+          [[ "$artifact_name" =~ ^wow-v17-independent-source-review-[1-9][0-9]*-[a-f0-9]{40}-${SOURCE_RUN_ID}-${SOURCE_ATTEMPT}$ ]] || {
+            echo "SOURCE_REVIEW_ARTIFACT_NAME_INVALID" >&2; exit 1;
+          }
+          source_pr="${BASH_REMATCH[1]}"
+          source_sha="${BASH_REMATCH[2]}"
+          inventory='[]'
+          for page in $(seq 1 20); do
+            response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}")
+            items=$(jq -ce '.artifacts' <<<"$response") || {
+              echo "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
+            }
+            count=$(jq 'length' <<<"$items")
+            inventory=$(jq -cn --argjson old "$inventory" --argjson new "$items" '$old + $new')
+            [ "$count" -lt 100 ] && break
+            [ "$page" -lt 20 ] || {
+              echo "SOURCE_REVIEW_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1;
+            }
+          done
+          printf '%s\n' "$inventory" > "$RUNNER_TEMP/source-review-artifact-inventory.json"
+          python - "$RUNNER_TEMP/source-review-artifact-inventory.json" \
+            "wow-v17-independent-source-review-${source_pr}-${source_sha}-" "$artifact_id" <<'PY'
+          import json, pathlib, sys
+          sys.path.insert(0, ".github/scripts")
+          from independent_source_review_receipt import (
+              SourceReviewError, verify_unique_artifact_inventory,
+          )
+          try:
+              verify_unique_artifact_inventory(
+                  json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")),
+                  prefix=sys.argv[2],
+                  expected_artifact_id=int(sys.argv[3]),
+              )
+          except (OSError, json.JSONDecodeError, ValueError) as exc:
+              print(f"SOURCE_REVIEW_ARTIFACT_INVENTORY_HOLD:{exc}", file=sys.stderr)
+              raise SystemExit(1)
+          PY
+          mkdir -p "$RUNNER_TEMP/source-review"
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            > "$RUNNER_TEMP/source-review/decision.zip"
+          unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
+            wow-v17-independent-source-review.json > "$RUNNER_TEMP/source-review/decision.json"
+          unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
+            wow-v17-independent-source-review.json.sha256 > "$RUNNER_TEMP/source-review/decision.json.sha256"
+          pr_number=$(jq -er '.target.pr_number | select(type == "number" and . > 0)' \
+            "$RUNNER_TEMP/source-review/decision.json")
+          head_sha=$(jq -er '.target.head_sha | select(type == "string")' \
+            "$RUNNER_TEMP/source-review/decision.json")
+          head_ref=$(jq -er '.target.head_ref | select(type == "string")' \
+            "$RUNNER_TEMP/source-review/decision.json")
+          python .github/scripts/independent_source_review_receipt.py \
+            --verify \
+            --artifact "$RUNNER_TEMP/source-review/decision.json" \
+            --run "$source_run" \
+            --repository "$GITHUB_REPOSITORY" \
+            --pr-number "$pr_number" \
+            --head-sha "$head_sha" \
+            --head-ref "$head_ref" \
+            --attempt "$SOURCE_ATTEMPT"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
+          echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+
       - name: Resolve exact PR identity and incident
         id: target
         shell: bash
@@ -53,9 +154,12 @@ jobs:
           EVENT_PR: ${{ github.event.pull_request.number || '' }}
           INPUT_PR: ${{ inputs.pr_number || '' }}
           INPUT_INCIDENT: ${{ inputs.incident_id || '' }}
+          SOURCE_PR: ${{ steps.source_review.outputs.pr_number || '' }}
+          SOURCE_HEAD_SHA: ${{ steps.source_review.outputs.head_sha || '' }}
+          SOURCE_HEAD_REF: ${{ steps.source_review.outputs.head_ref || '' }}
         run: |
           set -euo pipefail
-          pr_number="${EVENT_PR:-${INPUT_PR:-}}"
+          pr_number="${EVENT_PR:-${INPUT_PR:-${SOURCE_PR:-}}}"
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || { echo "EXISTING_PR_NUMBER_INVALID" >&2; exit 1; }
 
           mkdir -p .governance-review-evidence
@@ -80,6 +184,11 @@ jobs:
           [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] && [ -n "$head_ref" ] || {
             echo "EXISTING_PR_IDENTITY_INCOMPLETE" >&2; exit 1;
           }
+          if [ -n "${SOURCE_HEAD_SHA:-}" ]; then
+            [ "$head_sha" = "$SOURCE_HEAD_SHA" ] && [ "$head_ref" = "$SOURCE_HEAD_REF" ] || {
+              echo "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" >&2; exit 1;
+            }
+          fi
 
           incident="${INPUT_INCIDENT:-}"
           if [ -z "$incident" ]; then
@@ -88,6 +197,7 @@ jobs:
           body=sys.argv[1]
           patterns=[
               r'(?im)^\s*(?:fixes|closes|resolves)\s+#(\d+)\b',
+              r'(?im)^\s*(?:refs?|related to)\s+#(\d+)\b',
               r'(?im)^\s*incident\s*:\s*#?(\d+)\b',
               r'(?im)\bissue\s+#(\d+)\b',
           ]
@@ -239,6 +349,7 @@ jobs:
           HEAD_REF: ${{ steps.target.outputs.head_ref }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
           INCIDENT: ${{ steps.target.outputs.incident }}
+          SOURCE_REVIEW_ARTIFACT_ID: ${{ steps.source_review.outputs.artifact_id || '' }}
         run: |
           set -euo pipefail
           evidence=".governance-review-evidence/evidence.json"
@@ -349,13 +460,22 @@ jobs:
           if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then
             python .github/scripts/verify_existing_pr_governance_receipt.py "${common[@]}" --bootstrap
           else
-            if [ -z "${TRUSTED_REVIEWERS_JSON}" ] || [ "${TRUSTED_REVIEWERS_JSON}" = "null" ]; then
-              echo "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING" >&2
+            if [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then
+              python .github/scripts/verify_existing_pr_governance_receipt.py \
+                "${common[@]}" \
+                --trusted-reviewers-json "$TRUSTED_REVIEWERS_JSON"
+            elif [ -n "${SOURCE_REVIEW_ARTIFACT_ID:-}" ] && \
+                 [ -f "$RUNNER_TEMP/source-review/decision.json" ] && \
+                 [ -f "$RUNNER_TEMP/source-review-run.json" ]; then
+              python .github/scripts/verify_existing_pr_governance_receipt.py \
+                "${common[@]}" \
+                --source-review-json "$RUNNER_TEMP/source-review/decision.json" \
+                --source-review-run-json "$RUNNER_TEMP/source-review-run.json" \
+                --source-review-artifact-id "$SOURCE_REVIEW_ARTIFACT_ID"
+            else
+              echo "INDEPENDENT_REVIEW_EVIDENCE_MISSING: no allowlisted human approval or authenticated exact-head automated review." >&2
               exit 1
             fi
-            python .github/scripts/verify_existing_pr_governance_receipt.py \
-              "${common[@]}" \
-              --trusted-reviewers-json "$TRUSTED_REVIEWERS_JSON"
           fi
           sha256sum "$receipt" | awk '{print $1}' > "$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
 

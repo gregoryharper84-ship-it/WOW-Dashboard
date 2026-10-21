@@ -4,13 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+_source_review_spec = importlib.util.spec_from_file_location(
+    "_independent_source_review_receipt", Path(__file__).with_name("independent_source_review_receipt.py")
+)
+_source_review_module = importlib.util.module_from_spec(_source_review_spec)
+assert _source_review_spec and _source_review_spec.loader
+_source_review_spec.loader.exec_module(_source_review_module)
 
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 WORKFLOW_NAME = "wow-v17-existing-pr-governance-review"
@@ -267,6 +276,35 @@ def _protected_paths(repo_root: Path) -> set[str]:
     return set(roots) | set(declared) | set(PROTECTED_PATHS)
 
 
+def _validate_automated_review(
+    artifact: object,
+    run: Mapping[str, Any] | None,
+    *,
+    expected_repository: str,
+    expected_head_sha: str,
+    expected_head_ref: str,
+    expected_pr_number: int,
+    now: datetime | None = None,
+) -> str:
+    _require(isinstance(artifact, Mapping), "SOURCE_REVIEW_ARTIFACT_INVALID")
+    _require(isinstance(run, Mapping), "SOURCE_REVIEW_RUN_METADATA_MISSING")
+    try:
+        _source_review_module.verify_artifact(
+            artifact,
+            run=run,
+            expected_repository=expected_repository,
+            expected_pr_number=expected_pr_number,
+            expected_head_sha=expected_head_sha,
+            expected_head_ref=expected_head_ref,
+            now=now,
+        )
+    except _source_review_module.SourceReviewError as exc:
+        raise ExistingPrGovernanceReceiptError(str(exc)) from exc
+    return hashlib.sha256(
+        (json.dumps(artifact, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    ).hexdigest()
+
+
 def _validate_protected_diff(files: Sequence[Mapping[str, Any]], *, repo_root: Path) -> None:
     protected = _protected_paths(repo_root)
     for file in files:
@@ -288,7 +326,10 @@ def build_receipt(
     expected_incident_id: str,
     expected_workflow_run_id: str,
     expected_workflow_run_attempt: int,
-    trusted_reviewers: object,
+    trusted_reviewers: object | None = None,
+    automated_review: object | None = None,
+    source_review_run: Mapping[str, Any] | None = None,
+    source_review_artifact_id: int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     clock = now or datetime.now(timezone.utc)
@@ -307,7 +348,6 @@ def build_receipt(
     _require(bool(re.fullmatch(r"[1-9][0-9]*", expected_incident_id)), "INCIDENT_ID_INVALID")
     _require(evidence.get("complete_inventory") is True, "REVIEW_OR_CI_INVENTORY_INCOMPLETE")
 
-    allowlist = _reviewer_allowlist(trusted_reviewers)
     pr = evidence.get("pr")
     _require(isinstance(pr, Mapping), "PR_EVIDENCE_INVALID")
     head = pr.get("head") or {}
@@ -342,13 +382,47 @@ def build_receipt(
     _require(isinstance(reviews, list), "REVIEW_INVENTORY_INVALID")
     _require(isinstance(check_runs, list), "CHECK_INVENTORY_INVALID")
     _require(isinstance(workflow_runs, list), "WORKFLOW_INVENTORY_INVALID")
-    review = _independent_approval(
-        reviews,
-        author_login=author_login,
-        author_id=author_id,
-        head_sha=expected_head_sha,
-        allowlist=allowlist,
-    )
+    if automated_review is None:
+        allowlist = _reviewer_allowlist(trusted_reviewers)
+        review = _independent_approval(
+            reviews,
+            author_login=author_login,
+            author_id=author_id,
+            head_sha=expected_head_sha,
+            allowlist=allowlist,
+        )
+        receipt_schema_version = 2
+    else:
+        _require(trusted_reviewers is None, "SOURCE_REVIEW_AND_HUMAN_ALLOWLIST_CONFLICT")
+        artifact_digest = _validate_automated_review(
+            automated_review,
+            source_review_run,
+            expected_repository=expected_repository,
+            expected_head_sha=expected_head_sha,
+            expected_head_ref=expected_head_ref,
+            expected_pr_number=expected_pr_number,
+            now=clock,
+        )
+        _require(
+            (automated_review.get("target") or {}).get("author")
+            == {"id": author_id, "login": author_login},
+            "SOURCE_REVIEW_AUTHOR_MISMATCH",
+        )
+        reviewed_paths = (automated_review.get("diff") or {}).get("file_paths")
+        _require(
+            isinstance(reviewed_paths, list)
+            and reviewed_paths == sorted(file["filename"] for file in changed_files),
+            "SOURCE_REVIEW_DIFF_INVENTORY_MISMATCH",
+        )
+        _require(source_review_artifact_id is not None, "SOURCE_REVIEW_ARTIFACT_ID_MISSING")
+        review = {
+            "type": "AUTOMATED_SOURCE_REVIEW",
+            "artifact_id": _positive_int(source_review_artifact_id, "SOURCE_REVIEW_ARTIFACT_ID_INVALID"),
+            "artifact_sha256": artifact_digest,
+            "artifact": dict(automated_review),
+        }
+        allowlist = []
+        receipt_schema_version = 3
 
     verified_workflows = []
     for name, path in REQUIRED_WORKFLOWS.items():
@@ -376,7 +450,7 @@ def build_receipt(
         }
 
     return {
-        "receipt_schema_version": 2,
+        "receipt_schema_version": receipt_schema_version,
         "workflow_name": WORKFLOW_NAME,
         "repository": expected_repository,
         "workflow_run_id": str(expected_workflow_run_id),
@@ -416,6 +490,7 @@ def verify_receipt(
     expected_workflow_name: str,
     expected_pr_number: int,
     live_reviews: Sequence[Mapping[str, Any]],
+    source_review_run: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> None:
     keys = {
@@ -426,7 +501,8 @@ def verify_receipt(
         "terminal_authority", "can_execute",
     }
     _exact_keys(receipt, keys, "RECEIPT")
-    _require(receipt.get("receipt_schema_version") == 2, "RECEIPT_SCHEMA_VERSION_UNSUPPORTED")
+    schema_version = receipt.get("receipt_schema_version")
+    _require(schema_version in {2, 3}, "RECEIPT_SCHEMA_VERSION_UNSUPPORTED")
     _require(expected_workflow_name == WORKFLOW_NAME and receipt.get("workflow_name") == WORKFLOW_NAME,
              "RECEIPT_WORKFLOW_IDENTITY_MISMATCH")
     _require(receipt.get("certification_mode") == CERTIFICATION_MODE, "CERTIFICATION_MODE_MISMATCH")
@@ -468,55 +544,91 @@ def verify_receipt(
         and target.get("head_repository") == expected_repository,
         "RECEIPT_TARGET_MISMATCH",
     )
-
-    allowlist = _reviewer_allowlist(receipt.get("trusted_reviewers"))
-    review = _exact_keys(
-        receipt.get("independent_review"),
-        {"state", "reviewer", "review_id", "commit_id", "submitted_at"},
-        "INDEPENDENT_REVIEW",
-    )
-    reviewer = _exact_keys(review.get("reviewer"), {"id", "login", "type"}, "REVIEWER")
-    reviewer_id = _positive_int(reviewer.get("id"), "REVIEWER_ID")
-    reviewer_login = _login(reviewer.get("login"), "REVIEWER_LOGIN")
-    _require(
-        any(item["id"] == reviewer_id and item["login"].casefold() == reviewer_login.casefold()
-            for item in allowlist),
-        "REVIEWER_NOT_ALLOWLISTED",
-    )
-    _require(
-        reviewer_id != author["id"]
-        and reviewer_login.casefold() != author["login"].casefold()
-        and reviewer_id != OWNER_ID
-        and reviewer_login.casefold() != OWNER_LOGIN.casefold()
-        and reviewer.get("type") == "User"
-        and review.get("state") == "APPROVED"
-        and review.get("commit_id") == expected_head_sha,
-        "INDEPENDENT_REVIEW_INVALID",
-    )
-    _positive_int(review.get("review_id"), "REVIEW_ID")
-    _timestamp(review.get("submitted_at"), "REVIEW_SUBMITTED_AT")
-
     changed_files = receipt.get("changed_files")
     _require(isinstance(changed_files, list), "DIFF_INVENTORY_INVALID")
     files = _validate_changed_files(changed_files, len(changed_files))
     _require(files == receipt.get("changed_files"), "DIFF_INVENTORY_INVALID")
     _validate_protected_diff(files, repo_root=Path.cwd())
 
+    review = receipt.get("independent_review")
+    if schema_version == 2:
+        allowlist = _reviewer_allowlist(receipt.get("trusted_reviewers"))
+        review = _exact_keys(
+            review,
+            {"state", "reviewer", "review_id", "commit_id", "submitted_at"},
+            "INDEPENDENT_REVIEW",
+        )
+        reviewer = _exact_keys(review.get("reviewer"), {"id", "login", "type"}, "REVIEWER")
+        reviewer_id = _positive_int(reviewer.get("id"), "REVIEWER_ID")
+        reviewer_login = _login(reviewer.get("login"), "REVIEWER_LOGIN")
+        _require(
+            any(item["id"] == reviewer_id and item["login"].casefold() == reviewer_login.casefold()
+                for item in allowlist),
+            "REVIEWER_NOT_ALLOWLISTED",
+        )
+        _require(
+            reviewer_id != author["id"]
+            and reviewer_login.casefold() != author["login"].casefold()
+            and reviewer_id != OWNER_ID
+            and reviewer_login.casefold() != OWNER_LOGIN.casefold()
+            and reviewer.get("type") == "User"
+            and review.get("state") == "APPROVED"
+            and review.get("commit_id") == expected_head_sha,
+            "INDEPENDENT_REVIEW_INVALID",
+        )
+        _positive_int(review.get("review_id"), "REVIEW_ID")
+        _timestamp(review.get("submitted_at"), "REVIEW_SUBMITTED_AT")
+    else:
+        _require(receipt.get("trusted_reviewers") == [], "AUTOMATED_REVIEW_MUST_NOT_CARRY_HUMAN_ALLOWLIST")
+        review = _exact_keys(
+            review,
+            {"type", "artifact_id", "artifact_sha256", "artifact"},
+            "AUTOMATED_INDEPENDENT_REVIEW",
+        )
+        _require(review.get("type") == "AUTOMATED_SOURCE_REVIEW", "AUTOMATED_REVIEW_TYPE_INVALID")
+        _positive_int(review.get("artifact_id"), "SOURCE_REVIEW_ARTIFACT_ID_INVALID")
+        digest = review.get("artifact_sha256")
+        _require(isinstance(digest, str) and bool(re.fullmatch(r"[a-f0-9]{64}", digest)),
+                 "SOURCE_REVIEW_ARTIFACT_DIGEST_INVALID")
+        artifact_bytes = (json.dumps(review.get("artifact"), indent=2, sort_keys=True) + "\n").encode("utf-8")
+        _require(hashlib.sha256(artifact_bytes).hexdigest() == digest,
+                 "SOURCE_REVIEW_ARTIFACT_DIGEST_MISMATCH")
+        _validate_automated_review(
+            review.get("artifact"),
+            source_review_run,
+            expected_repository=expected_repository,
+            expected_head_sha=expected_head_sha,
+            expected_head_ref=expected_head_ref,
+            expected_pr_number=expected_pr_number,
+            now=clock,
+        )
+        reviewed_paths = (review["artifact"].get("diff") or {}).get("file_paths")
+        _require(
+            isinstance(reviewed_paths, list)
+            and reviewed_paths == sorted(file["filename"] for file in files),
+            "SOURCE_REVIEW_DIFF_INVENTORY_MISMATCH",
+        )
+        _require(
+            (review["artifact"].get("target") or {}).get("author") == dict(author),
+            "SOURCE_REVIEW_AUTHOR_MISMATCH",
+        )
+
     _require(isinstance(live_reviews, Sequence) and not isinstance(live_reviews, (str, bytes)),
              "LIVE_REVIEW_INVENTORY_INVALID")
-    live_approval = _independent_approval(
-        live_reviews,
-        author_login=author["login"],
-        author_id=author["id"],
-        head_sha=expected_head_sha,
-        allowlist=allowlist,
-    )
-    _require(
-        live_approval["reviewer"]["id"] == reviewer_id
-        and live_approval["reviewer"]["login"].casefold() == reviewer_login.casefold()
-        and live_approval["review_id"] == review.get("review_id"),
-        "INDEPENDENT_REVIEW_WITHDRAWN_OR_CHANGED",
-    )
+    if schema_version == 2:
+        live_approval = _independent_approval(
+            live_reviews,
+            author_login=author["login"],
+            author_id=author["id"],
+            head_sha=expected_head_sha,
+            allowlist=allowlist,
+        )
+        _require(
+            live_approval["reviewer"]["id"] == reviewer_id
+            and live_approval["reviewer"]["login"].casefold() == reviewer_login.casefold()
+            and live_approval["review_id"] == review.get("review_id"),
+            "INDEPENDENT_REVIEW_WITHDRAWN_OR_CHANGED",
+        )
 
     workflows = receipt.get("required_workflows")
     _require(isinstance(workflows, list) and len(workflows) == len(REQUIRED_WORKFLOWS),
@@ -826,6 +938,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pr-number", type=int)
     parser.add_argument("--live-reviews-json", type=Path)
     parser.add_argument("--live-checks-json", type=Path)
+    parser.add_argument("--source-review-json", type=Path)
+    parser.add_argument("--source-review-run-json", type=Path)
+    parser.add_argument("--source-review-artifact-id", type=int)
     parser.add_argument("--incident-id")
     parser.add_argument("--workflow-run-attempt", type=int)
     parser.add_argument("--classify", action="store_true")
@@ -858,6 +973,7 @@ def main(argv: list[str] | None = None) -> int:
             payload = load_json(args.evidence)
             if args.bootstrap:
                 _require(args.trusted_reviewers_json is None, "BOOTSTRAP_MUST_NOT_USE_ALLOWLIST")
+                _require(args.source_review_json is None, "BOOTSTRAP_MUST_NOT_USE_SOURCE_REVIEW")
                 receipt = build_trust_root_bootstrap(
                     payload,
                     expected_repository=args.repository,
@@ -883,22 +999,50 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 verified_status = "TRUST_ROOT_BOOTSTRAP_VERIFIED"
             else:
-                _require(args.trusted_reviewers_json is not None, "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING")
-                try:
-                    allowlist = json.loads(args.trusted_reviewers_json)
-                except json.JSONDecodeError as exc:
-                    raise ExistingPrGovernanceReceiptError("INDEPENDENT_REVIEWER_ALLOWLIST_INVALID") from exc
-                receipt = build_receipt(
-                    payload,
-                    expected_repository=args.repository,
-                    expected_head_sha=args.head_sha,
-                    expected_head_ref=args.head_ref,
-                    expected_pr_number=args.pr_number,
-                    expected_incident_id=args.incident_id,
-                    expected_workflow_run_id=args.workflow_run_id,
-                    expected_workflow_run_attempt=args.workflow_run_attempt,
-                    trusted_reviewers=allowlist,
-                )
+                if args.source_review_json is not None:
+                    _require(args.trusted_reviewers_json is None,
+                             "SOURCE_REVIEW_AND_HUMAN_ALLOWLIST_CONFLICT")
+                    _require(args.source_review_run_json is not None,
+                             "SOURCE_REVIEW_RUN_METADATA_MISSING")
+                    _require(args.source_review_run_json.is_file(),
+                             "SOURCE_REVIEW_RUN_METADATA_MISSING")
+                    _require(args.source_review_artifact_id is not None,
+                             "SOURCE_REVIEW_ARTIFACT_ID_MISSING")
+                    source_review = load_json(args.source_review_json)
+                    source_run = load_json(args.source_review_run_json)
+                    receipt = build_receipt(
+                        payload,
+                        expected_repository=args.repository,
+                        expected_head_sha=args.head_sha,
+                        expected_head_ref=args.head_ref,
+                        expected_pr_number=args.pr_number,
+                        expected_incident_id=args.incident_id,
+                        expected_workflow_run_id=args.workflow_run_id,
+                        expected_workflow_run_attempt=args.workflow_run_attempt,
+                        automated_review=source_review,
+                        source_review_run=source_run,
+                        source_review_artifact_id=args.source_review_artifact_id,
+                    )
+                else:
+                    _require(args.trusted_reviewers_json is not None,
+                             "INDEPENDENT_REVIEWER_ALLOWLIST_MISSING")
+                    try:
+                        allowlist = json.loads(args.trusted_reviewers_json)
+                    except json.JSONDecodeError as exc:
+                        raise ExistingPrGovernanceReceiptError(
+                            "INDEPENDENT_REVIEWER_ALLOWLIST_INVALID"
+                        ) from exc
+                    receipt = build_receipt(
+                        payload,
+                        expected_repository=args.repository,
+                        expected_head_sha=args.head_sha,
+                        expected_head_ref=args.head_ref,
+                        expected_pr_number=args.pr_number,
+                        expected_incident_id=args.incident_id,
+                        expected_workflow_run_id=args.workflow_run_id,
+                        expected_workflow_run_attempt=args.workflow_run_attempt,
+                        trusted_reviewers=allowlist,
+                    )
                 verify_receipt(
                     receipt,
                     expected_repository=args.repository,
@@ -908,6 +1052,10 @@ def main(argv: list[str] | None = None) -> int:
                     expected_workflow_name=args.workflow_name,
                     expected_pr_number=args.pr_number,
                     live_reviews=payload["reviews"],
+                    source_review_run=(
+                        load_json(args.source_review_run_json)
+                        if args.source_review_run_json is not None else None
+                    ),
                 )
                 verified_status = "REVIEW_EVIDENCE_VERIFIED"
             args.output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -932,6 +1080,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 verified_status = "TRUST_ROOT_BOOTSTRAP_VERIFIED"
             else:
+                source_run = None
+                if isinstance(receipt, Mapping) and receipt.get("receipt_schema_version") == 3:
+                    if args.source_review_run_json is not None:
+                        _require(args.source_review_run_json.is_file(),
+                                 "SOURCE_REVIEW_RUN_METADATA_MISSING")
+                        source_run = load_json(args.source_review_run_json)
+                    else:
+                        try:
+                            source_run = _source_review_module.resolve_source_review_run(
+                                receipt["independent_review"]["artifact"],
+                                artifact_id=receipt["independent_review"]["artifact_id"],
+                                repository=args.repository,
+                                token=os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", ""),
+                            )
+                        except _source_review_module.SourceReviewError as exc:
+                            raise ExistingPrGovernanceReceiptError(str(exc)) from exc
                 verify_receipt(
                     receipt,
                     expected_repository=args.repository,
@@ -941,6 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
                     expected_workflow_name=args.workflow_name,
                     expected_pr_number=args.pr_number,
                     live_reviews=live_reviews,
+                    source_review_run=source_run,
                 )
                 verified_status = "REVIEW_EVIDENCE_VERIFIED"
     except ExistingPrGovernanceReceiptError as exc:
