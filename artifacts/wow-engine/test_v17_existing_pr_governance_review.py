@@ -142,6 +142,13 @@ def test_existing_pr_certifier_is_protected_main_read_only_and_same_repo_only():
     assert data["name"] == "wow-v17-existing-pr-governance-review"
 
 
+def test_existing_pr_github_cli_steps_have_authentication():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    for step in workflow["jobs"]["certify-existing-pr"]["steps"]:
+        if "gh api " in step.get("run", ""):
+            assert step.get("env", {}).get("GH_TOKEN") == "${{ github.token }}", step["name"]
+
+
 def test_existing_pr_ci_selector_compiles_and_matches_exact_workflow_path():
     jq = shutil.which("jq")
     if jq is None:

@@ -351,6 +351,7 @@ jobs:
       - name: Build and verify review-evidence receipt
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           HEAD_REF: ${{ steps.target.outputs.head_ref }}
