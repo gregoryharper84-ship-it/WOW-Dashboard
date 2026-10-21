@@ -25,6 +25,7 @@ concurrency:
 jobs:
   route:
     if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    environment: wow-dispatch
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -56,6 +57,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          WOW_DISPATCH_JOURNAL_HMAC_KEY: ${{ secrets.WOW_DISPATCH_JOURNAL_HMAC_KEY }}
         run: |
           set -euo pipefail
           python artifacts/wow-engine/v17/governance_dispatcher_github.py \

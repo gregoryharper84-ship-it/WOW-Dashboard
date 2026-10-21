@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
+import hashlib
+import hmac
 import json
 from pathlib import Path
 import sys
@@ -71,6 +74,36 @@ def all_ci_checks():
         *(make_check(name, id=index + 1) for index, name in enumerate(policy.QA_EVIDENCE_CHECKS)),
         make_check(policy.TRUSTED_GOVERNANCE_CHECK, id=10),
     ]
+
+
+def journal_test_key():
+    return hashlib.sha256(b"dispatcher journal test key").hexdigest()
+
+
+@pytest.mark.parametrize("value", ["", "0" * 63, "g" * 64, "0" * 65])
+def test_journal_key_requires_exactly_64_hex_characters(value):
+    with pytest.raises(transport.DispatchError, match="DISPATCH_JOURNAL_KEY_MISSING_OR_INVALID"):
+        transport._journal_key(value)
+
+
+def signed_marker(payload, key=None):
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    signature = hmac.new(bytes.fromhex(key or journal_test_key()), encoded.encode(), hashlib.sha256).hexdigest()
+    return f"{transport.SIGNED_RESERVATION_PREFIX}{encoded}.{signature} -->"
+
+
+def dispatcher_run(run_id="12345", run_attempt=1, **overrides):
+    return {
+        "id": int(run_id),
+        "path": transport.DISPATCHER_WORKFLOW_PATH,
+        "repository": {"full_name": REPOSITORY},
+        "head_branch": "main",
+        "event": "schedule",
+        "run_attempt": run_attempt,
+        **overrides,
+    }
 
 
 def classify(**overrides):
@@ -495,7 +528,9 @@ def test_active_work_in_progress_is_counted_per_role():
     }
 
 
-def test_dispatch_reservation_is_bounded_and_contains_no_token():
+def test_dispatch_reservation_is_signed_canonical_and_contains_no_token(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+
     class FakeClient:
         def __init__(self):
             self.posts = []
@@ -515,39 +550,86 @@ def test_dispatch_reservation_is_bounded_and_contains_no_token():
 
     path, body = client.posts[0]
     assert path == f"/repos/{REPOSITORY}/issues/41/comments"
-    reservation = json.loads(body["body"][len(transport.RESERVATION_PREFIX):-3])
+    marker = body["body"][len(transport.SIGNED_RESERVATION_PREFIX):-3].strip()
+    encoded, signature = marker.split(".")
+    raw_payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+    reservation = json.loads(raw_payload)
     assert reservation == {
-        "schema_version": 1,
+        "schema": 2,
         "role": "release",
         "pr_number": 41,
         "head_sha": HEAD,
-        "workflow_path": transport.WORKFLOWS["release"]["path"],
-        "controller_run_id": "12345",
+        "run_id": "12345",
         "attempt": 1,
     }
+    assert raw_payload == json.dumps(reservation, sort_keys=True, separators=(",", ":")).encode()
+    assert hmac.compare_digest(
+        signature,
+        hmac.new(bytes.fromhex(journal_test_key()), encoded.encode(), hashlib.sha256).hexdigest(),
+    )
     assert "token" not in body["body"].lower()
 
 
-def test_reservation_journal_ignores_non_controller_authors():
+def test_reservation_journal_ignores_non_controller_authors(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    payload = {
+        "schema": 2,
+        "role": "qa",
+        "pr_number": 41,
+        "head_sha": HEAD,
+        "run_id": "12345",
+        "attempt": 1,
+    }
+
     class FakeClient:
-        def get(self, _):
+        def get(self, path):
+            if "/actions/runs/" in path:
+                return dispatcher_run()
             return [
                 {
-                    "user": {"login": "random-user", "type": "User"},
-                    "body": transport.RESERVATION_PREFIX + "{} -->",
+                    "user": {"login": "other-workflow[bot]", "type": "Bot"},
+                    "body": signed_marker(payload),
                 }
             ]
 
     assert transport.list_reservations(FakeClient(), 41) == []
 
 
-def test_reservation_journal_rejects_malformed_controller_record():
+def test_authenticated_reservation_requires_real_protected_dispatcher_run(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    payload = {
+        "schema": 2,
+        "role": "release",
+        "pr_number": 41,
+        "head_sha": HEAD,
+        "run_id": "12345",
+        "attempt": 2,
+    }
+
+    class FakeClient:
+        def get(self, path):
+            if "/actions/runs/" in path:
+                return dispatcher_run(run_attempt=2, event="workflow_dispatch")
+            comment = {
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+                "body": signed_marker(payload),
+            }
+            return [comment, comment]
+
+    reservations = transport.list_reservations(FakeClient(), 41)
+    assert reservations == [payload]
+    assert transport.reservation_attempts(reservations, "release", 41, HEAD) == [1]
+
+
+def test_reservation_journal_rejects_authenticated_malformed_record(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+
     class FakeClient:
         def get(self, _):
             return [
                 {
                     "user": {"login": "github-actions[bot]", "type": "Bot"},
-                    "body": transport.RESERVATION_PREFIX + "{} -->",
+                    "body": signed_marker({"unknown": 1}),
                 }
             ]
 
@@ -555,29 +637,139 @@ def test_reservation_journal_rejects_malformed_controller_record():
         transport.list_reservations(FakeClient(), 41)
 
 
-def test_reservation_journal_rejects_wrong_role_path_binding():
-    reservation = {
-        "schema_version": 1,
+def test_forged_or_tampered_reservation_is_not_accepted(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    payload = {
+        "schema": 2,
         "role": "qa",
         "pr_number": 41,
         "head_sha": HEAD,
-        "workflow_path": transport.WORKFLOWS["release"]["path"],
-        "controller_run_id": "12345",
+        "run_id": "12345",
+        "attempt": 1,
+    }
+    genuine = signed_marker(payload)
+    encoded, signature = genuine[len(transport.SIGNED_RESERVATION_PREFIX):-3].strip().split(".")
+    tampered_payload = payload | {"head_sha": OTHER_HEAD}
+    tampered_encoded = base64.urlsafe_b64encode(
+        json.dumps(tampered_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    tampered = f"{transport.SIGNED_RESERVATION_PREFIX}{tampered_encoded}.{signature} -->"
+    forged = genuine.rsplit(".", 1)[0] + "." + "0" * 64 + " -->"
+    unsigned = f"{transport.SIGNED_RESERVATION_PREFIX}{encoded} -->"
+    malformed = f"{transport.SIGNED_RESERVATION_PREFIX}☃.{signature} -->"
+
+    class FakeClient:
+        run_lookups = 0
+
+        def get(self, _):
+            if "/actions/runs/" in _:
+                self.run_lookups += 1
+                return dispatcher_run()
+            return [
+                {"user": {"login": "github-actions[bot]", "type": "Bot"}, "body": forged},
+                {"user": {"login": "github-actions[bot]", "type": "Bot"}, "body": tampered},
+                {"user": {"login": "github-actions[bot]", "type": "Bot"}, "body": unsigned},
+                {"user": {"login": "github-actions[bot]", "type": "Bot"}, "body": malformed},
+            ]
+
+    client = FakeClient()
+    assert transport.list_reservations(client, 41) == []
+    assert client.run_lookups == 0
+
+
+def test_signed_reservation_requires_exact_dispatcher_run_provenance(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    payload = {
+        "schema": 2,
+        "role": "qa",
+        "pr_number": 41,
+        "head_sha": HEAD,
+        "run_id": "12345",
+        "attempt": 2,
+    }
+
+    class FakeClient:
+        def get(self, path):
+            if "/actions/runs/" in path:
+                return dispatcher_run(run_attempt=1)
+            return [{
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+                "body": signed_marker(payload),
+            }]
+
+    with pytest.raises(transport.DispatchError, match="DISPATCH_JOURNAL_PROVENANCE_INVALID"):
+        transport.list_reservations(FakeClient(), 41)
+
+
+def test_missing_or_rotated_journal_key_cannot_authorize_a_reservation(monkeypatch):
+    monkeypatch.delenv(transport.JOURNAL_KEY_ENV, raising=False)
+    with pytest.raises(transport.DispatchError, match="DISPATCH_JOURNAL_KEY_MISSING_OR_INVALID"):
+        transport.list_reservations(object(), 41)
+
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    payload = {
+        "schema": 2,
+        "role": "qa",
+        "pr_number": 41,
+        "head_sha": HEAD,
+        "run_id": "12345",
+        "attempt": 1,
+    }
+    rotated = hashlib.sha256(b"rotated test key").hexdigest()
+    marker = signed_marker(payload, key=rotated)
+
+    class FakeClient:
+        def get(self, _):
+            return [{"user": {"login": "github-actions[bot]", "type": "Bot"}, "body": marker}]
+
+    assert transport.list_reservations(FakeClient(), 41) == []
+
+
+def test_reconcile_holds_before_github_reads_when_journal_key_is_missing(monkeypatch):
+    monkeypatch.delenv(transport.JOURNAL_KEY_ENV, raising=False)
+
+    with pytest.raises(transport.DispatchError, match="DISPATCH_JOURNAL_KEY_MISSING_OR_INVALID"):
+        transport.reconcile(
+            client=object(),
+            input_pr="41",
+            run_number=7,
+            controller_run_id="12345",
+            source_sha=OTHER_HEAD,
+        )
+
+
+@pytest.mark.parametrize(
+    "run_override",
+    [
+        {"path": ".github/workflows/another.yml"},
+        {"repository": {"full_name": "another/repository"}},
+        {"head_branch": "candidate-branch"},
+        {"event": "pull_request"},
+        {"id": 12346},
+        {"run_attempt": 2},
+    ],
+)
+def test_signed_journal_rejects_invalid_dispatcher_provenance_fields(monkeypatch, run_override):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    payload = {
+        "schema": 2,
+        "role": "qa",
+        "pr_number": 41,
+        "head_sha": HEAD,
+        "run_id": "12345",
         "attempt": 1,
     }
 
     class FakeClient:
-        def get(self, _):
-            return [
-                {
-                    "user": {"login": "github-actions[bot]", "type": "Bot"},
-                    "body": transport.RESERVATION_PREFIX
-                    + json.dumps(reservation)
-                    + " -->",
-                }
-            ]
+        def get(self, path):
+            if "/actions/runs/" in path:
+                return dispatcher_run(**run_override)
+            return [{
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+                "body": signed_marker(payload),
+            }]
 
-    with pytest.raises(transport.DispatchError, match="DISPATCH_JOURNAL_ROLE_INVALID"):
+    with pytest.raises(transport.DispatchError, match="DISPATCH_JOURNAL_PROVENANCE_INVALID"):
         transport.list_reservations(FakeClient(), 41)
 
 
@@ -826,6 +1018,7 @@ def test_ambiguous_non_idempotent_write_is_not_retried(monkeypatch):
 
 
 def test_reconcile_reserves_before_dispatch(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
     events = []
     pr = make_pull()
     workflows = {
@@ -842,6 +1035,7 @@ def test_reconcile_reserves_before_dispatch(monkeypatch):
     monkeypatch.setattr(transport, "pull_files", lambda *_: [make_file()])
     monkeypatch.setattr(transport, "check_runs", lambda *_: checks)
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
+    monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
     monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
     monkeypatch.setattr(transport, "source_review_status", lambda *_args, **_kwargs: "PASS")
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
@@ -864,6 +1058,7 @@ def test_reconcile_reserves_before_dispatch(monkeypatch):
 
 
 def test_reconcile_does_not_overfill_singleton_role_workflow_queue(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
     events = []
     first = make_pull()
     second = {**make_pull(), "number": 42}
@@ -880,6 +1075,7 @@ def test_reconcile_does_not_overfill_singleton_role_workflow_queue(monkeypatch):
     monkeypatch.setattr(transport, "pull_files", lambda *_: [make_file()])
     monkeypatch.setattr(transport, "check_runs", lambda *_: all_ci_checks())
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
+    monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
     monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
     monkeypatch.setattr(transport, "source_review_status", lambda *_args, **_kwargs: "PASS")
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
@@ -900,6 +1096,7 @@ def test_reconcile_does_not_overfill_singleton_role_workflow_queue(monkeypatch):
 
 
 def test_reconcile_does_not_fetch_reviewer_artifact_before_ci_is_ready(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
     pr = make_pull()
     workflows = {
         role: {"id": index + 1, **details}
@@ -914,6 +1111,7 @@ def test_reconcile_does_not_fetch_reviewer_artifact_before_ci_is_ready(monkeypat
     monkeypatch.setattr(transport, "pull_files", lambda *_: [make_file()])
     monkeypatch.setattr(transport, "check_runs", lambda *_: [])
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
+    monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
     monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
     monkeypatch.setattr(
         transport,
@@ -934,6 +1132,7 @@ def test_reconcile_does_not_fetch_reviewer_artifact_before_ci_is_ready(monkeypat
 
 
 def test_reconcile_does_not_dispatch_when_reservation_is_ambiguous(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
     events = []
     pr = make_pull()
     workflows = {
@@ -949,6 +1148,7 @@ def test_reconcile_does_not_dispatch_when_reservation_is_ambiguous(monkeypatch):
     monkeypatch.setattr(transport, "pull_files", lambda *_: [make_file()])
     monkeypatch.setattr(transport, "check_runs", lambda *_: all_ci_checks())
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
+    monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
     monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
     monkeypatch.setattr(transport, "source_review_status", lambda *_args, **_kwargs: "PASS")
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
@@ -977,6 +1177,184 @@ def test_reconcile_does_not_dispatch_when_reservation_is_ambiguous(monkeypatch):
     assert result["decisions"][0]["findings"] == ["GITHUB_WRITE_RESULT_UNCERTAIN"]
 
 
+@pytest.mark.parametrize("status", [401, 403, 429, 500, 503])
+def test_workflow_lookup_only_treats_http_404_as_not_installed(status):
+    class FakeClient:
+        def request(self, *_args, **_kwargs):
+            return status, None
+
+    if status == 404:
+        assert transport.main_workflow_available(FakeClient(), transport.WORKFLOWS["source_review"]) is None
+    else:
+        with pytest.raises(transport.DispatchError, match=f"GITHUB_READ_FAILED:{status}"):
+            transport.main_workflow_available(FakeClient(), transport.WORKFLOWS["source_review"])
+
+
+def test_workflow_lookup_preserves_transport_failure():
+    class FakeClient:
+        def request(self, *_args, **_kwargs):
+            raise transport.DispatchError("GITHUB_READ_FAILED")
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_READ_FAILED"):
+        transport.main_workflow_available(FakeClient(), transport.WORKFLOWS["qa"])
+
+
+def test_source_review_api_failure_keeps_http_status_as_a_typed_hold():
+    class FakeClient:
+        token = "test-token"
+
+        def get(self, _path):
+            raise transport.DispatchError("GITHUB_READ_FAILED:403")
+
+    module = type(
+        "FakeSourceReviewModule",
+        (),
+        {
+            "SourceReviewError": FakeSourceReviewError,
+            "resolve_current_source_review": staticmethod(
+                lambda **kwargs: kwargs["get_json"]("/actions/runs/12345")
+            ),
+        },
+    )
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_READ_FAILED:403"):
+        transport.source_review_status(
+            FakeClient(),
+            module=module,
+            pr=make_pull(),
+            files=[make_file()],
+        )
+
+
+def test_same_sha_ancillary_action_required_is_a_typed_certifier_hold():
+    certifier = {
+        "id": 800,
+        "path": transport.LEGACY_CERTIFIER_PATH,
+        "head_sha": HEAD,
+        "head_repository": {"full_name": REPOSITORY},
+        "pull_requests": [41],
+        "created_at": "2026-10-21T03:00:00Z",
+        "event": "pull_request_target",
+        "status": "completed",
+        "conclusion": "failure",
+    }
+    ancillary_path = transport.LEGACY_CERTIFIER_ANCILLARY[
+        "wow-v17-release-production-verification-agent"
+    ]
+    same_sha_runs = [
+        certifier,
+        {
+            "id": 700,
+            "path": ancillary_path,
+            "head_sha": HEAD,
+            "head_repository": {"full_name": REPOSITORY},
+            "pull_requests": [41],
+            "created_at": "2026-10-21T02:00:00Z",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "success",
+        },
+        {
+            "id": 801,
+            "path": ancillary_path,
+            "head_sha": HEAD,
+            "head_repository": {"full_name": REPOSITORY},
+            "pull_requests": [41],
+            "created_at": "2026-10-21T03:01:00Z",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "action_required",
+        },
+    ]
+
+    class FakeClient:
+        def get(self, path):
+            if "/actions/runs/801/jobs" in path:
+                return {"total_count": 0, "jobs": []}
+            return {"workflow_runs": same_sha_runs}
+
+    finding = transport.legacy_certifier_ancillary_hold(FakeClient(), HEAD, 41)
+    assert finding == (
+        "ANCILLARY_CI_EVENT_POLICY_HOLD:"
+        "workflow=wow-v17-release-production-verification-agent:run_id=801:"
+        "owner_action=review_protected_certifier_failure"
+    )
+
+    blocked = classify(check_runs=all_ci_checks(), ancillary_ci_hold=finding)
+    assert blocked["action"] == "HOLD"
+    assert blocked["findings"] == [finding]
+
+    failed_required = all_ci_checks()
+    failed_required[0] = make_check(policy.QA_EVIDENCE_CHECKS[0], conclusion="failure")
+    genuine_failure = classify(check_runs=failed_required, ancillary_ci_hold=finding)
+    assert genuine_failure["action"] == "HOLD"
+    assert genuine_failure["findings"] == [
+        f"REQUIRED_CHECK_FAILED:{policy.QA_EVIDENCE_CHECKS[0]}"
+    ]
+
+
+def test_ancillary_certifier_hold_requires_same_pr_and_head_identity():
+    class FakeClient:
+        def get(self, path):
+            if "/jobs?" in path:
+                pytest.fail("runs for another PR must not trigger this hold")
+            return {"workflow_runs": [
+                {
+                    "id": 800,
+                    "path": transport.LEGACY_CERTIFIER_PATH,
+                    "head_sha": HEAD,
+                    "head_repository": {"full_name": REPOSITORY},
+                    "pull_requests": [42],
+                    "created_at": "2026-10-21T03:00:00Z",
+                    "event": "pull_request_target",
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+            ]}
+
+    assert transport.legacy_certifier_ancillary_hold(FakeClient(), HEAD, 41) is None
+
+
+def test_ancillary_action_required_never_enters_a_dispatch_retry_loop(monkeypatch):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    pr = make_pull()
+    workflows = {
+        role: {"id": index + 1, **details}
+        for index, (role, details) in enumerate(transport.WORKFLOWS.items())
+    }
+    calls = []
+    monkeypatch.setattr(transport, "_owner", lambda _: (OWNER_ID, OWNER))
+    monkeypatch.setattr(transport, "list_workflows", lambda _: workflows)
+    monkeypatch.setattr(transport, "count_wip", lambda *_: {role: 0 for role in transport.WORKFLOWS})
+    monkeypatch.setattr(transport, "_source_review_module", lambda: object())
+    monkeypatch.setattr(transport, "_target_list", lambda *_: [pr])
+    monkeypatch.setattr(transport, "_target_pull", lambda *_: pr)
+    monkeypatch.setattr(transport, "pull_files", lambda *_: [make_file()])
+    monkeypatch.setattr(transport, "check_runs", lambda *_: all_ci_checks())
+    monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
+    monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: "ANCILLARY_CI_EVENT_POLICY_HOLD:workflow=wow-v17-release-production-verification-agent:run_id=801:owner_action=review_protected_certifier_failure")
+    monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(
+        transport,
+        "source_review_status",
+        lambda *_args, **_kwargs: pytest.fail("held target must not enter role retry or dispatch"),
+    )
+    monkeypatch.setattr(transport, "reserve_dispatch", lambda *_args, **_kwargs: calls.append("reserve"))
+    monkeypatch.setattr(transport, "dispatch", lambda *_args, **_kwargs: calls.append("dispatch"))
+
+    result = transport.reconcile(
+        client=object(),
+        input_pr="41",
+        run_number=7,
+        controller_run_id="12345",
+        source_sha=OTHER_HEAD,
+    )
+
+    assert result["dispatch_count"] == 0
+    assert calls == []
+    assert result["decisions"][0]["findings"][0].startswith("ANCILLARY_CI_EVENT_POLICY_HOLD:")
+
+
 def test_controller_workflow_is_scheduled_manual_and_singleton():
     workflow = (ROOT / ".github/workflows/wow-v17-governance-dispatcher.yml").read_text()
 
@@ -991,6 +1369,8 @@ def test_controller_workflow_is_scheduled_manual_and_singleton():
     assert "contents: read" in workflow
     assert "pull-requests: read" in workflow
     assert "issues: write" in workflow
+    assert "environment: wow-dispatch" in workflow
+    assert "WOW_DISPATCH_JOURNAL_HMAC_KEY" in workflow
     assert "checks: write" not in workflow
     assert "pull-requests: write" not in workflow
 
@@ -1006,6 +1386,7 @@ def test_controller_workflow_is_valid_yaml_and_has_only_main_safe_triggers():
     assert workflow["permissions"]["actions"] == "write"
     assert workflow["permissions"]["checks"] == "read"
     assert workflow["jobs"]["route"]["if"].endswith("github.ref == 'refs/heads/main'")
+    assert workflow["jobs"]["route"]["environment"] == "wow-dispatch"
 
 
 @pytest.mark.parametrize(

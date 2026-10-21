@@ -106,6 +106,7 @@ def classify_target(
     source_review: str,
     available_roles: set[str],
     completed_role_runs: dict[str, str] | None = None,
+    ancillary_ci_hold: str | None = None,
 ) -> dict[str, Any]:
     """Return one next allowlisted role or a typed HOLD/DONE decision."""
     findings: list[str] = []
@@ -178,6 +179,8 @@ def classify_target(
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_PENDING:{name}"], "head_sha": head}
         if check.get("conclusion") != "success":
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_FAILED:{name}"], "head_sha": head}
+    if ancillary_ci_hold:
+        return {"action": "HOLD", "findings": [ancillary_ci_hold], "head_sha": head}
     if not protected:
         trusted = latest_check(checks, TRUSTED_GOVERNANCE_CHECK, head, GITHUB_ACTIONS_APP_ID)
         if trusted is None:

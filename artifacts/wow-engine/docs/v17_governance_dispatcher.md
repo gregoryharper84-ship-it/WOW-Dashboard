@@ -20,6 +20,11 @@ approve or merge a PR, deploy, or change model/governance behavior.
   prerequisite; if the merged role workflows do not enforce it, keep rollout
   blocked.
 - Preserve ruleset `24907422` and all required check names/App identities.
+- Configure the `wow-dispatch` environment to allow only protected `main`, and
+  define its `WOW_DISPATCH_JOURNAL_HMAC_KEY` secret as a randomly generated
+  256-bit key represented by exactly 64 hexadecimal characters. The controller
+  holds before any dispatch if that key is absent or malformed. Do not reuse
+  this secret for QA, Release, or GitHub App signing.
 - `wow-qa` and `wow-release` remain the only environments holding their
   respective QA and Release signing credentials. The dispatcher never reads
   those credentials.
@@ -29,12 +34,30 @@ approve or merge a PR, deploy, or change model/governance behavior.
   `issues: write` is used only to post a PR+head+role reservation before the
   dispatch POST.
 
-Do not call the reservation comment an atomic lease. A fixed workflow
-concurrency group serializes this controller, but does not exclude other
-writers. A reservation with no corresponding protected-main role run is
-ambiguous and must remain HOLD; there is no blind dispatch retry. The comment
-journal's provenance and external-writer race limits require independent
-security review before describing this as fully autonomous closure.
+Each schema-2 journal marker contains canonical JSON authenticated with
+HMAC-SHA256. A marker is accepted only when its signature matches the protected
+environment key and the referenced run is the exact protected-main dispatcher
+workflow, repository, event, run ID, and run attempt. Unsigned, forged, or
+tampered markers are not reservations. A valid marker with inconsistent run
+provenance holds. Never print or expose the key.
+
+Do not call the reservation comment an atomic lease. HMAC proves marker
+authenticity, not distributed compare-and-swap. A fixed workflow concurrency
+group serializes this controller, but does not exclude other writers. A
+reservation with no corresponding protected-main role run is ambiguous and
+must remain HOLD; there is no blind dispatch retry. Disable the controller and
+manually reconcile existing reservations before any journal-key rotation.
+Atomic per-intent `(PR, head SHA, role)` reservation, multi-controller exclusion,
+and restart/key-rotation reconciliation still require independent proof before
+describing this as fully autonomous closure.
+
+When the legacy protected certifier fails alongside a newer same-head
+zero-job `action_required` ancillary workflow run, the router reports
+`ANCILLARY_CI_EVENT_POLICY_HOLD` with the workflow and run ID. This is not a
+successful check and is not retried. The three actual required regression
+checks and change-impact evidence remain separately enforced; changing the
+legacy certifier's ancillary-workflow policy is a separate protected-gate
+change requiring independent review.
 
 ## Reconciliation order
 

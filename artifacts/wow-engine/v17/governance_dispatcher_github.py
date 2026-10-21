@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -33,8 +36,21 @@ WORKFLOWS = {
         "path": ".github/workflows/wow-v17-release-authority-check.yml",
     },
 }
-RESERVATION_PREFIX = "<!-- wow-v17-governance-dispatch-reservation-v1:"
+SIGNED_RESERVATION_PREFIX = "<!-- wow-v17-governance-dispatch-reservation-v2:"
+DISPATCHER_WORKFLOW_PATH = ".github/workflows/wow-v17-governance-dispatcher.yml"
+JOURNAL_KEY_ENV = "WOW_DISPATCH_JOURNAL_HMAC_KEY"
+LEGACY_CERTIFIER_PATH = ".github/workflows/wow-v17-existing-pr-governance-review.yml"
+LEGACY_CERTIFIER_ANCILLARY = {
+    "wow-verify": ".github/workflows/wow-verify.yml",
+    "wow-engine-verify": ".github/workflows/wow-engine-verify.yml",
+    "wow-v17-rapid-repair": ".github/workflows/wow-v17-rapid-repair.yml",
+    "wow-v17-change-impact-gate": ".github/workflows/wow-v17-change-impact-gate.yml",
+    "wow-v17-engineering-auditor-code-health": ".github/workflows/wow-v17-engineering-auditor-code-health.yml",
+    "wow-v17-spread-forward-shadow": ".github/workflows/wow-v17-spread-forward-shadow.yml",
+    "wow-v17-release-production-verification-agent": ".github/workflows/wow-v17-release-production-verification-agent.yml",
+}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+JOURNAL_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_COMMENT_PAGES = 5
 MAX_RUN_PAGES = 5
 MAX_ARTIFACT_PAGES = 20
@@ -126,19 +142,35 @@ def _paged(client: GitHub, path: str, key: str | None = None, max_pages: int = p
 
 
 def list_workflows(client: GitHub) -> dict[str, dict]:
-    rows = _paged(client, "/repos/{}/actions/workflows".format(REPOSITORY), "workflows")
-    by_path = {row.get("path"): row for row in rows if isinstance(row, dict)}
     result = {}
     for role, expected in WORKFLOWS.items():
-        workflow = by_path.get(expected["path"])
-        if (
-            isinstance(workflow, dict)
-            and workflow.get("name") == expected["name"]
-            and workflow.get("state") == "active"
-            and isinstance(workflow.get("id"), int)
-        ):
+        workflow = main_workflow_available(client, expected)
+        if workflow:
             result[role] = workflow
     return result
+
+
+def main_workflow_available(client: GitHub, expected: dict) -> dict | None:
+    filename = Path(expected["path"]).name
+    status, workflow = client.request(
+        "GET",
+        f"/repos/{REPOSITORY}/actions/workflows/{filename}",
+    )
+    if status == 404:
+        return None
+    if status != 200:
+        raise DispatchError(f"GITHUB_READ_FAILED:{status}")
+    if not isinstance(workflow, dict):
+        raise DispatchError("GITHUB_WORKFLOW_INVENTORY_INVALID")
+    if (
+        workflow.get("path") == expected["path"]
+        and workflow.get("name") == expected["name"]
+        and workflow.get("state") == "active"
+        and isinstance(workflow.get("id"), int)
+        and not isinstance(workflow.get("id"), bool)
+    ):
+        return workflow
+    return None
 
 
 def list_pulls(client: GitHub) -> list[dict]:
@@ -239,6 +271,78 @@ def count_wip(client: GitHub, workflows: dict[str, dict]) -> dict[str, int]:
             if isinstance(run, dict) and run.get("status") in {"queued", "in_progress", "waiting", "pending", "requested"}
         )
     return active
+
+
+def legacy_certifier_ancillary_hold(client: GitHub, head_sha: str, pr_number: int) -> str | None:
+    rows = _paged(
+        client,
+        f"/repos/{REPOSITORY}/actions/runs?head_sha={head_sha}",
+        "workflow_runs",
+        MAX_RUN_PAGES,
+    )
+    matching: dict[str, list[dict]] = {}
+    known_paths = set(LEGACY_CERTIFIER_ANCILLARY.values()) | {LEGACY_CERTIFIER_PATH}
+    for run in rows:
+        if (
+            not isinstance(run, dict)
+            or run.get("path") not in known_paths
+            or run.get("head_sha") != head_sha
+            or ((run.get("head_repository") or {}).get("full_name")) != REPOSITORY
+            or not isinstance(run.get("pull_requests"), list)
+            or run.get("event") not in {"pull_request", "pull_request_target"}
+            or not any(
+                pull == pr_number
+                or (
+                    isinstance(pull, dict)
+                    and pull.get("number") == pr_number
+                    and ((pull.get("head") or {}).get("sha")) == head_sha
+                )
+                for pull in run.get("pull_requests", [])
+            )
+        ):
+            continue
+        matching.setdefault(run["path"], []).append(run)
+    latest = {
+        path: max(
+            path_runs,
+            key=lambda run: (
+                str(run.get("created_at") or ""),
+                int(run.get("id") or 0),
+            ),
+        )
+        for path, path_runs in matching.items()
+    }
+    certifier = latest.get(LEGACY_CERTIFIER_PATH)
+    if (
+        not certifier
+        or certifier.get("status") != "completed"
+        or certifier.get("conclusion") != "failure"
+        or certifier.get("event") != "pull_request_target"
+    ):
+        return None
+    for workflow, path in LEGACY_CERTIFIER_ANCILLARY.items():
+        run = latest.get(path)
+        if (
+            not run
+            or run.get("status") != "completed"
+            or run.get("conclusion") != "action_required"
+            or run.get("event") != "pull_request"
+            or not isinstance(run.get("id"), int)
+            or isinstance(run.get("id"), bool)
+        ):
+            continue
+        jobs = client.get(f"/repos/{REPOSITORY}/actions/runs/{run['id']}/jobs?per_page=100&page=1")
+        if (
+            isinstance(jobs, dict)
+            and jobs.get("total_count") == 0
+            and jobs.get("jobs") == []
+        ):
+            return (
+                "ANCILLARY_CI_EVENT_POLICY_HOLD:"
+                f"workflow={workflow}:run_id={run['id']}:"
+                "owner_action=review_protected_certifier_failure"
+            )
+    return None
 
 
 def _source_review_module() -> Any | None:
@@ -350,6 +454,8 @@ def source_review_status(
                     stale = False
             return "STALE" if stale else "INVALID"
         return "INVALID"
+    except DispatchError:
+        raise
     except Exception:
         return "INVALID"
 
@@ -358,64 +464,124 @@ def pull_reviews(client: GitHub, number: int) -> list[dict]:
     return _paged(client, f"/repos/{REPOSITORY}/pulls/{number}/reviews", max_pages=MAX_COMMENT_PAGES)
 
 
+def _journal_key(value: str | None = None) -> bytes:
+    raw = os.getenv(JOURNAL_KEY_ENV, "") if value is None else value
+    if not isinstance(raw, str) or not JOURNAL_KEY_RE.fullmatch(raw):
+        raise DispatchError("DISPATCH_JOURNAL_KEY_MISSING_OR_INVALID")
+    return bytes.fromhex(raw)
+
+
+def _canonical_payload(value: dict) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _signed_reservation(value: dict, key: bytes) -> str:
+    payload = base64.urlsafe_b64encode(_canonical_payload(value)).decode("ascii").rstrip("=")
+    signature = hmac.new(key, payload.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{SIGNED_RESERVATION_PREFIX}{payload}.{signature} -->"
+
+
+def _verified_reservation(client: GitHub, marker: str, key: bytes) -> dict | None:
+    encoded, separator, signature = marker.partition(".")
+    if (
+        not separator
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", encoded)
+        or not re.fullmatch(r"[0-9a-f]{64}", signature)
+    ):
+        return None
+    expected = hmac.new(key, encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        value = json.loads(payload)
+    except (ValueError, json.JSONDecodeError):
+        raise DispatchError("DISPATCH_JOURNAL_PAYLOAD_INVALID")
+    if not isinstance(value, dict) or _canonical_payload(value) != payload:
+        raise DispatchError("DISPATCH_JOURNAL_PAYLOAD_NOT_CANONICAL")
+    if set(value) != {"schema", "pr_number", "head_sha", "role", "run_id", "attempt"}:
+        raise DispatchError("DISPATCH_JOURNAL_SCHEMA_INVALID")
+    if value.get("schema") != 2 or value.get("role") not in WORKFLOWS:
+        raise DispatchError("DISPATCH_JOURNAL_SCHEMA_INVALID")
+    if (
+        not isinstance(value.get("pr_number"), int)
+        or isinstance(value.get("pr_number"), bool)
+        or value["pr_number"] < 1
+        or not SHA_RE.fullmatch(str(value.get("head_sha") or ""))
+        or not isinstance(value.get("run_id"), str)
+        or not re.fullmatch(r"[1-9][0-9]*", value.get("run_id", ""))
+        or not isinstance(value.get("attempt"), int)
+        or isinstance(value.get("attempt"), bool)
+        or value["attempt"] < 1
+    ):
+        raise DispatchError("DISPATCH_JOURNAL_IDENTITY_INVALID")
+
+    run = client.get(f"/repos/{REPOSITORY}/actions/runs/{value['run_id']}")
+    if (
+        not isinstance(run, dict)
+        or str(run.get("id")) != value["run_id"]
+        or run.get("path") != DISPATCHER_WORKFLOW_PATH
+        or ((run.get("repository") or {}).get("full_name")) != REPOSITORY
+        or run.get("head_branch") != "main"
+        or run.get("event") not in {"schedule", "workflow_dispatch"}
+        or not isinstance(run.get("run_attempt"), int)
+        or isinstance(run.get("run_attempt"), bool)
+        or run.get("run_attempt") != value["attempt"]
+    ):
+        raise DispatchError("DISPATCH_JOURNAL_PROVENANCE_INVALID")
+    return value
+
+
 def list_reservations(client: GitHub, number: int) -> list[dict]:
+    key = _journal_key()
     rows = _paged(
         client,
         f"/repos/{REPOSITORY}/issues/{number}/comments",
         max_pages=MAX_COMMENT_PAGES,
     )
     reservations = []
+    verified_runs: set[tuple[str, int, int, str, str]] = set()
     for row in rows:
         if not isinstance(row, dict):
             continue
         user = row.get("user") or {}
         body = row.get("body")
-        if (
-            user.get("login") != "github-actions[bot]"
-            or user.get("type") != "Bot"
-            or not isinstance(body, str)
-            or not body.startswith(RESERVATION_PREFIX)
-            or not body.endswith("-->")
-        ):
+        if not isinstance(body, str) or not body.startswith(SIGNED_RESERVATION_PREFIX) or not body.endswith("-->"):
             continue
+        marker = body[len(SIGNED_RESERVATION_PREFIX):-3].strip()
         try:
-            value = json.loads(body[len(RESERVATION_PREFIX):-3].strip())
-        except json.JSONDecodeError:
-            raise DispatchError("DISPATCH_JOURNAL_INVALID")
-        required = {
-            "schema_version", "role", "pr_number", "head_sha", "workflow_path",
-            "controller_run_id", "attempt",
-        }
-        if not isinstance(value, dict) or set(value) != required or value.get("schema_version") != 1:
-            raise DispatchError("DISPATCH_JOURNAL_SCHEMA_INVALID")
-        role = value.get("role")
-        if role not in WORKFLOWS or value.get("workflow_path") != WORKFLOWS[role]["path"]:
-            raise DispatchError("DISPATCH_JOURNAL_ROLE_INVALID")
-        if (
-            not isinstance(value.get("pr_number"), int)
-            or isinstance(value.get("pr_number"), bool)
-            or value["pr_number"] < 1
-            or not SHA_RE.fullmatch(str(value.get("head_sha") or ""))
-            or not re.fullmatch(r"[1-9][0-9]*", str(value.get("controller_run_id") or ""))
-        ):
-            raise DispatchError("DISPATCH_JOURNAL_IDENTITY_INVALID")
-        if not isinstance(value.get("attempt"), int) or isinstance(value.get("attempt"), bool) or value["attempt"] < 1:
-            raise DispatchError("DISPATCH_JOURNAL_ATTEMPT_INVALID")
+            value = _verified_reservation(client, marker, key)
+        except DispatchError:
+            raise
+        if value is None or user.get("login") != "github-actions[bot]" or user.get("type") != "Bot":
+            continue
+        if value["pr_number"] != number:
+            continue
+        run_identity = (
+            value["run_id"],
+            value["attempt"],
+            value["pr_number"],
+            value["head_sha"],
+            value["role"],
+        )
+        if run_identity in verified_runs:
+            continue
+        verified_runs.add(run_identity)
         reservations.append(value)
     return reservations
 
 
 def reservation_attempts(reservations: list[dict], role: str, pr_number: int, head_sha: str) -> list[int]:
-    attempts = [
-        row["attempt"]
+    matching = [
+        (row["run_id"], row["attempt"])
         for row in reservations
         if row.get("role") == role
         and row.get("pr_number") == pr_number
         and row.get("head_sha") == head_sha
     ]
-    if len(attempts) != len(set(attempts)):
+    if len(matching) != len(set(matching)):
         raise DispatchError("DISPATCH_JOURNAL_DUPLICATE_ATTEMPT")
-    return sorted(attempts)
+    return list(range(1, len(matching) + 1))
 
 
 def next_dispatch_attempt(
@@ -448,15 +614,14 @@ def reserve_dispatch(
     attempt: int = 1,
 ) -> None:
     reservation = {
-        "schema_version": 1,
+        "schema": 2,
         "role": role,
         "pr_number": pr_number,
         "head_sha": head_sha,
-        "workflow_path": WORKFLOWS[role]["path"],
-        "controller_run_id": controller_run_id,
+        "run_id": controller_run_id,
         "attempt": attempt,
     }
-    body = RESERVATION_PREFIX + json.dumps(reservation, sort_keys=True, separators=(",", ":")) + " -->"
+    body = _signed_reservation(reservation, _journal_key())
     client.post(f"/repos/{REPOSITORY}/issues/{pr_number}/comments", {"body": body})
 
 
@@ -501,16 +666,47 @@ def _role_run_state(runs: dict[str, dict], role: str) -> str | None:
     return str(run.get("conclusion") or run.get("status") or "")
 
 
+def required_evidence_ready(check_runs_for_head: list[dict], head_sha: str) -> bool:
+    for name in policy.QA_EVIDENCE_CHECKS:
+        check = policy.latest_check(
+            check_runs_for_head,
+            name,
+            head_sha,
+            policy.GITHUB_ACTIONS_APP_ID,
+        )
+        if (
+            check is None
+            or check.get("_foreign_source")
+            or check.get("status") != "completed"
+            or check.get("conclusion") != "success"
+        ):
+            return False
+    return True
+
+
 def reconcile(
     *,
     client: GitHub,
     input_pr: str | None,
     run_number: int,
     controller_run_id: str,
+    controller_run_attempt: int = 1,
     source_sha: str,
 ) -> dict[str, Any]:
     if not SHA_RE.fullmatch(source_sha):
         raise DispatchError("CONTROLLER_SOURCE_SHA_INVALID")
+    if (
+        not isinstance(controller_run_id, str)
+        or not re.fullmatch(r"[1-9][0-9]*", controller_run_id)
+    ):
+        raise DispatchError("CONTROLLER_RUN_ID_INVALID")
+    if (
+        not isinstance(controller_run_attempt, int)
+        or isinstance(controller_run_attempt, bool)
+        or controller_run_attempt < 1
+    ):
+        raise DispatchError("CONTROLLER_RUN_ATTEMPT_INVALID")
+    _journal_key()
     owner_id, owner_login = _owner(client)
     workflows = list_workflows(client)
     wip_by_role = count_wip(client, workflows) if workflows else {role: 0 for role in WORKFLOWS}
@@ -534,6 +730,11 @@ def reconcile(
             files = pull_files(client, number, pr.get("changed_files"))
             checks = check_runs(client, head_sha)
             reviews = pull_reviews(client, number)
+            ancillary_ci_hold = (
+                legacy_certifier_ancillary_hold(client, head_sha, number)
+                if required_evidence_ready(checks, head_sha)
+                else None
+            )
             role_runs = matching_role_runs(client, workflows, number, head_sha)
             statuses = role_run_statuses(role_runs)
             available_roles = set(workflows)
@@ -546,6 +747,7 @@ def reconcile(
                 "file_records": files,
                 "check_runs": checks,
                 "reviews": reviews,
+                "ancillary_ci_hold": ancillary_ci_hold,
                 "available_roles": available_roles,
                 "completed_role_runs": statuses,
             }
@@ -625,7 +827,7 @@ def reconcile(
                 pr_number=number,
                 head_sha=head_sha,
                 controller_run_id=controller_run_id,
-                attempt=attempt,
+                attempt=controller_run_attempt,
             )
             dispatch(client, role, workflows[role], number, head_sha)
             dispatches += 1
@@ -676,12 +878,18 @@ def main() -> int:
     if os.getenv("GITHUB_EVENT_NAME") not in {"schedule", "workflow_dispatch"}:
         print(json.dumps({"action": "HOLD", "finding": "CONTROLLER_EVENT_NOT_ALLOWLISTED"}))
         return 2
+    try:
+        _journal_key()
+    except DispatchError as exc:
+        print(json.dumps({"action": "HOLD", "finding": str(exc), "can_execute": False}))
+        return 2
     token = os.getenv("GH_TOKEN", "")
     run_number = os.getenv("GITHUB_RUN_NUMBER", "")
     run_id = os.getenv("GITHUB_RUN_ID", "")
+    run_attempt = os.getenv("GITHUB_RUN_ATTEMPT", "")
     source_sha = os.getenv("GITHUB_SHA", "")
     input_pr = os.getenv("INPUT_PR_NUMBER", "").strip() or None
-    if not run_number.isdigit() or not run_id.isdigit():
+    if not run_number.isdigit() or not run_id.isdigit() or not run_attempt.isdigit():
         print(json.dumps({"action": "HOLD", "finding": "CONTROLLER_RUN_IDENTITY_INVALID"}))
         return 2
     try:
@@ -690,6 +898,7 @@ def main() -> int:
             input_pr=input_pr,
             run_number=int(run_number),
             controller_run_id=run_id,
+            controller_run_attempt=int(run_attempt),
             source_sha=source_sha,
         )
     except DispatchError as exc:
