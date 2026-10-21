@@ -35,7 +35,7 @@ jobs:
       - name: Run offline safety fixtures
         working-directory: artifacts/wow-engine
         run: |
-          python -m pip install --disable-pip-version-check pytest
+          python -m pip install --disable-pip-version-check pytest httpx
           python -m pytest --confcutdir=tests -q tests/test_nfl_backlog_canary_1933.py tests/test_nfl_multi_source_pilot.py
       - name: Fetch pinned 2025 nflverse inputs; publish typed, read-only receipt
         id: canary
