@@ -12,8 +12,14 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from v17.agent_identity_policy import REQUIRED_REGRESSION_CHECKS
+
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _PENDING = frozenset(("queued", "in_progress", "requested", "waiting", "pending"))
+_GITHUB_ACTIONS_APP_ID = 15368
+_MANDATORY = frozenset((name, _GITHUB_ACTIONS_APP_ID) for name in (
+    *REQUIRED_REGRESSION_CHECKS, "WOW V17 change impact gate"
+))
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,9 @@ def evaluate_exact_head(
         for item in requirements
     ) or len(set(requirements)) != len(requirements) or len({x[0] for x in requirements}) != len(requirements):
         return _verdict(repository, pr_number, head_sha, "HOLD_EVIDENCE", ("REQUIREMENTS_INVALID",))
+
+    if not _MANDATORY.issubset(set(requirements)):
+        return _verdict(repository, pr_number, head_sha, "HOLD_EVIDENCE", ("MANDATORY_REQUIREMENTS_OMITTED",))
 
     holds: list[str] = []
     pending: list[str] = []
