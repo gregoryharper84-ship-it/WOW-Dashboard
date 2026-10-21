@@ -1,0 +1,58 @@
+name: wow-v17-nfl-atd-proposal-review
+
+on:
+  pull_request:
+    paths:
+      - "artifacts/wow-engine/v17/nfl_atd_official_settlement_proposals.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_official_settlement_proposals.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_official_proposals_live_source.py"
+      - ".github/workflows/wow-v17-nfl-atd-proposal-review.yml"
+  push:
+    branches: [main]
+    paths:
+      - "artifacts/wow-engine/v17/nfl_atd_official_settlement_proposals.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_official_settlement_proposals.py"
+      - "artifacts/wow-engine/test_v17_nfl_atd_official_proposals_live_source.py"
+      - ".github/workflows/wow-v17-nfl-atd-proposal-review.yml"
+
+concurrency:
+  group: wow-v17-nfl-atd-proposal-review-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  proposal-regressions:
+    name: Typed statistical proposal / fail-closed tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install local test dependencies
+        run: python -m pip install "pytest==8.4.2" "pypdf>=5.0"
+      - name: Assert no-write proposal behavior
+        run: python -m pytest --noconftest -q test_v17_nfl_atd_official_settlement_proposals.py
+
+  live-official-outcome-proposals:
+    name: All five players on two real official NFL PDFs
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install source parser tests
+        run: python -m pip install "pytest==8.4.2" "pypdf>=5.0"
+      - name: Verify both directions with exact gamebook player appearance
+        run: python -m pytest --noconftest -q test_v17_nfl_atd_official_proposals_live_source.py
