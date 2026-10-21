@@ -149,6 +149,8 @@ def advise_reentry(
     *, previous: Readiness | None, current: Readiness, role: str,
     active_lease: bool, already_completed: bool = False,
     provider_state: str = "available", qa_receipt_verified: bool = False,
+    previous_provider_state: str = "available",
+    previous_qa_receipt_verified: bool = False,
 ) -> Reentry:
     """Suggest a wakeup to an *independently authorized* dispatcher only.
 
@@ -177,7 +179,11 @@ def advise_reentry(
     if provider_state != "available":
         return Reentry("HOLD", "REVIEW_PROVIDER_IDENTITY_OR_STATE_INVALID")
     if previous is not None and previous.state == "READY_FOR_INDEPENDENT_REVIEW":
-        return Reentry("WAIT", "NO_NEW_UPSTREAM_TRANSITION")
+        provider_recovered = role == "qa" and previous_provider_state in ("quota_exceeded", "timeout")
+        qa_evidence_arrived = (role == "release" and qa_receipt_verified is True
+                               and previous_qa_receipt_verified is not True)
+        if not (provider_recovered or qa_evidence_arrived):
+            return Reentry("WAIT", "NO_NEW_UPSTREAM_TRANSITION")
 
     # Lease key is data for an external CAS, not an acquired lease.
     lease_key = ":".join((current.repository, str(current.pr_number), current.head_sha, role))
