@@ -40,7 +40,14 @@ sys.modules[source_spec.name] = source_review
 source_spec.loader.exec_module(source_review)
 
 
-def source_review_evidence(files, *, author="wow-engineering[bot]", pr_number=7):
+def source_review_evidence(
+    files,
+    *,
+    author="wow-engineering[bot]",
+    pr_number=7,
+    producer_context=False,
+    review_result=None,
+):
     file_paths = sorted(files or ["artifacts/wow-engine/v17/fixture.py"])
     diff = [
         {
@@ -85,7 +92,7 @@ def source_review_evidence(files, *, author="wow-engineering[bot]", pr_number=7)
             "author": {"login": "copilot-swe-agent"},
             "committer": {"login": "copilot-swe-agent"},
         },
-        review_result={
+        review_result=review_result or {
             "decision": "PASS",
             "summary": "Reviewed all changed files.",
             "reviewed_head_sha": HEAD,
@@ -101,7 +108,7 @@ def source_review_evidence(files, *, author="wow-engineering[bot]", pr_number=7)
         run=run,
         now=datetime.now(timezone.utc),
     )
-    source_run = {
+    source_run = run if producer_context else {
         **run,
         "repository": {"full_name": REPO},
         "head_repository": {"full_name": REPO},
@@ -163,6 +170,78 @@ def test_legacy_policy_requires_trusted_governance_until_review_activation():
     assert m.qa_findings(ev) == []
     with_qa(ev)
     assert m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP) == []
+
+
+def test_inactive_legacy_trust_root_bootstrap_does_not_wait_for_its_own_receipt():
+    ev = evidence(
+        files=TRUST_ROOT_FILES,
+        independent_review_active=False,
+        source_review=None,
+    )
+    ev["qa_review_policy"]["mode"] = "legacy"
+    ev["reviews"] = [{
+        "user": OWNER,
+        "state": "APPROVED",
+        "commit_id": HEAD,
+        "submitted_at": "2026-10-09T02:00:00Z",
+    }]
+    ev["check_runs"] = [r for r in ev["check_runs"] if r["name"] != m.TRUSTED_GOVERNANCE_CHECK]
+    assert m.qa_findings(ev) == []
+
+
+def test_capture_build_producer_context_reaches_local_qa_decision():
+    review = source_review_evidence(
+        ["artifacts/wow-engine/v17/x.py"],
+        producer_context=True,
+    )
+    ev = evidence(source_review=review)
+    ev["source_review"]["producer_context"] = True
+
+    assert m.qa_findings(ev) == []
+
+    ev["source_review"].pop("producer_context")
+    assert any(
+        finding.startswith("QA_INDEPENDENT_SOURCE_REVIEW_INVALID:SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED")
+        for finding in m.qa_findings(ev)
+    )
+
+
+def test_rejected_review_receipt_supersedes_prior_pass_for_same_head():
+    files = ["artifacts/wow-engine/v17/x.py"]
+    diff_sha = source_review.canonical_diff([{
+        "filename": files[0],
+        "previous_filename": None,
+        "status": "modified",
+        "patch": "@@ -1 +1 @@\n-old\n+new",
+        "additions": 1,
+        "deletions": 1,
+    }], expected_count=1)[1]
+    rejected = source_review_evidence(
+        files,
+        producer_context=True,
+        review_result={
+            "decision": "REJECT",
+            "summary": "A blocking security defect is present.",
+            "reviewed_head_sha": HEAD,
+            "reviewed_diff_sha256": diff_sha,
+            "reviewed_files": files,
+            "assessment": {
+                "source_review": "FAIL",
+                "security_review": "FAIL",
+                "probability_integrity_review": "PASS",
+            },
+            "findings": [{
+                "severity": "high",
+                "file": files[0],
+                "detail": "Unsafe trust boundary.",
+                "evidence": "The handler accepts untrusted authority.",
+            }],
+        },
+    )
+    ev = evidence(source_review=rejected)
+    ev["source_review"]["producer_context"] = True
+
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_REJECTED" in m.qa_findings(ev)
 
 
 def test_release_rejects_legacy_qa_after_global_activation_changes():
@@ -321,7 +400,8 @@ def test_green_ci_and_trusted_gate_without_source_review_hold_qa_and_release():
 
 @pytest.mark.parametrize("mutation, expected", [
     (lambda proof: proof["artifact"]["target"].update(head_sha=OLD), "HEAD_MISMATCH"),
-    (lambda proof: proof["artifact"]["review"].update(decision="REJECT"), "REJECTED"),
+    (lambda proof: proof["artifact"]["review"].update(decision="REJECT"),
+     "SOURCE_REVIEW_REJECTION_EVIDENCE_MISSING"),
     (lambda proof: proof["run"].update(event="pull_request_target"), "WORKFLOW_RUN_UNTRUSTED"),
 ])
 def test_rejected_stale_or_untrusted_source_review_holds_release_even_with_qa_success(mutation, expected):
@@ -530,7 +610,7 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
 @pytest.mark.parametrize("wf, upstream", [
     (QA_WF, [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
-        "wow-v17-change-impact-gate",
+        "wow-v17-change-impact-gate", "wow-v17-trusted-governance-gate",
     ]),
     (REL_WF, ["wow-v17-independent-qa-check"]),
 ])
@@ -541,6 +621,9 @@ def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
     assert triggers["workflow_run"]["types"] == ["completed"]
     assert triggers["workflow_run"]["workflows"] == upstream
     assert triggers["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "true"
+    if wf == QA_WF:
+        workflow = yaml.load(wf.read_text(), Loader=yaml.BaseLoader)
+        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in workflow["jobs"]["qa"]["if"]
     if wf == REL_WF:
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_id"]["required"] == "true"
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_attempt"]["required"] == "true"
@@ -670,6 +753,24 @@ def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, ev
     assert proc.returncode == 0, proc.stdout + proc.stderr
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "success" and decision["check_name"] == m.QA_CHECK
+    env.update({
+        "PR_NUMBER": "7",
+        "HEAD_SHA": HEAD,
+        "POLICY_OUTCOME": "success",
+        "POLICY_RECEIPT_OUTCOME": "success",
+        "POLICY_ARTIFACT_OUTCOME": "success",
+        "CAPTURE_OUTCOME": "success",
+        "REVIEW_OUTCOME": "success",
+        "RECHECK_OUTCOME": "success",
+        "SOURCE_REVIEW_OUTCOME": "success",
+        "SOURCE_REVIEW_ARTIFACT_OUTCOME": "success",
+        "DECIDE_OUTCOME": "success",
+    })
+    terminal = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Preserve terminal QA decision for every resolved target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert terminal.returncode == 0, terminal.stdout + terminal.stderr
     env["GH_TOKEN"] = "qa-app-token"
     pub = subprocess.run(["bash", "-c", _step_script(QA_WF, "Publish exact-head check")], cwd=ROOT, env=env,
                          capture_output=True, text=True)
@@ -702,6 +803,7 @@ def test_qa_workflow_publishes_failure_when_evidence_is_missing(fake_gh):
 def test_invalid_dispatch_target_fails_without_publishing(fake_gh):
     proc = subprocess.run(
         ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        cwd=ROOT,
         env=dict(os.environ, PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
                  FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
                  GITHUB_REPOSITORY=REPO, GITHUB_OUTPUT=str(fake_gh / "out"),
@@ -711,6 +813,54 @@ def test_invalid_dispatch_target_fails_without_publishing(fake_gh):
     )
     assert proc.returncode != 0
     assert "::error::QA_TARGETS_UNRESOLVED" in proc.stdout
+
+
+def test_provider_failure_publishes_exact_head_qa_app_failure_after_prior_pass(fake_gh):
+    runner = fake_gh / "runner"
+    runner.mkdir()
+    (fake_gh / "routes.json").write_text(json.dumps(_routes_for_pr(_evidence_runs([
+        run_(m.QA_CHECK, app=QA_APP, rid=900),
+    ]))))
+    env = dict(
+        os.environ,
+        PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+        FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+        FAKE_GH_LOG=str(fake_gh / "gh.log"),
+        GITHUB_REPOSITORY=REPO,
+        RUNNER_TEMP=str(runner),
+        GITHUB_OUTPUT=str(fake_gh / "out"),
+        GITHUB_STEP_SUMMARY=str(fake_gh / "summary"),
+        GH_TOKEN="qa-app-token",
+        PR_NUMBER="7",
+        HEAD_SHA=HEAD,
+        POLICY_OUTCOME="success",
+        POLICY_RECEIPT_OUTCOME="success",
+        POLICY_ARTIFACT_OUTCOME="success",
+        CAPTURE_OUTCOME="success",
+        REVIEW_OUTCOME="failure",
+        RECHECK_OUTCOME="skipped",
+        SOURCE_REVIEW_OUTCOME="skipped",
+        SOURCE_REVIEW_ARTIFACT_OUTCOME="skipped",
+        DECIDE_OUTCOME="skipped",
+    )
+    terminal = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Preserve terminal QA decision for every resolved target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert terminal.returncode == 0, terminal.stdout + terminal.stderr
+    result = json.loads((runner / "wow-v17-qa-terminal-decision.json").read_text())
+    assert result["head_sha"] == HEAD and result["conclusion"] == "failure"
+    assert "QA_REVIEW_EXECUTION_FAILED:review" in result["findings"]
+
+    publish = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Publish exact-head check")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert publish.returncode == 0, publish.stdout + publish.stderr
+    posted = [json.loads(line) for line in (fake_gh / "gh.log").read_text().splitlines()]
+    assert len(posted) == 1
+    assert posted[0]["payload"]["head_sha"] == HEAD
+    assert posted[0]["payload"]["conclusion"] == "failure"
 
 
 def test_qa_workflow_resolves_minimal_workflow_run_repositories_against_live_pr(fake_gh):
@@ -769,6 +919,34 @@ def test_release_workflow_end_to_end_requires_qa_from_qa_app(fake_gh):
                                                            "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP})
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "failure" and "RELEASE_QA_FOREIGN_SOURCE" in decision["findings"]
+
+
+def test_automatic_release_uses_only_the_authenticated_qa_run_target(fake_gh):
+    routes = _routes_for_pr(_evidence_runs([run_(m.QA_CHECK, app=QA_APP)]))
+    routes[f"repos/{REPO}/pulls?state=open&base=main&per_page=100"] = [200, [
+        {"number": 7, "draft": False, "head": {"sha": HEAD, "repo": {"full_name": REPO}}},
+        {"number": 8, "draft": False, "head": {"sha": OLD, "repo": {"full_name": REPO}}},
+    ]]
+
+    proc, runner, _ = _run_decide(
+        fake_gh,
+        REL_WF,
+        routes,
+        {
+            "EVENT": "workflow_run",
+            "INPUT_PR": "",
+            "WR_PRS": "null",
+            "SOURCE_QA_RUN_ID": "12345",
+            "SOURCE_QA_RUN_ATTEMPT": "1",
+            "QA_APP_ID": QA_APP,
+            "RELEASE_APP_ID": REL_APP,
+        },
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    decisions = sorted(path.name for path in (runner / "decisions").glob("decision-*.json"))
+    assert decisions == ["decision-7.json"]
+    assert json.loads((runner / "decisions" / "decision-7.json").read_text())["head_sha"] == HEAD
 
 
 def test_release_binds_mode_to_qa_run_across_activation_changes(fake_gh):

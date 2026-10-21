@@ -742,6 +742,7 @@ def verify_artifact(
     expected_head_ref: str,
     expected_attempt: int | None = None,
     now: datetime | None = None,
+    producer_context: bool = False,
 ) -> None:
     keys = {
         "schema_version", "repository", "target", "diff", "commit", "review", "source",
@@ -803,7 +804,8 @@ def verify_artifact(
         {"decision", "summary", "assessment", "findings", "reviewed_files"},
         "SOURCE_REVIEW_DECISION",
     )
-    _require(review.get("decision") == "PASS", "SOURCE_REVIEW_REJECTED")
+    decision = review.get("decision")
+    _require(decision in {"PASS", "REJECT"}, "SOURCE_REVIEW_DECISION_INVALID")
     _require(
         isinstance(review.get("summary"), str)
         and review["summary"].strip()
@@ -815,8 +817,10 @@ def verify_artifact(
         {"source_review", "security_review", "probability_integrity_review"},
         "SOURCE_REVIEW_ASSESSMENT",
     )
-    _require(all(value == "PASS" for value in assessment.values()), "SOURCE_REVIEW_ASSESSMENT_FAILED")
     _require(review.get("reviewed_files") == paths, "SOURCE_REVIEW_FILE_COVERAGE_INCOMPLETE")
+    if decision == "PASS":
+        _require(all(value == "PASS" for value in assessment.values()),
+                 "SOURCE_REVIEW_ASSESSMENT_FAILED")
     findings = review.get("findings")
     _require(isinstance(findings, list) and len(findings) <= 50, "SOURCE_REVIEW_FINDINGS_INVALID")
     for finding in findings:
@@ -828,8 +832,15 @@ def verify_artifact(
                      for key in ("detail", "evidence")), "SOURCE_REVIEW_FINDING_INCOMPLETE")
         _require(all(len(finding[key]) <= 4000 for key in ("detail", "evidence")),
                  "SOURCE_REVIEW_FINDING_LIMIT_EXCEEDED")
-        _require(finding.get("severity") not in {"critical", "high"},
-                 "SOURCE_REVIEW_HIGH_FINDING_NOT_REJECTED")
+        _require(
+            decision == "REJECT" or finding.get("severity") not in {"critical", "high"},
+            "SOURCE_REVIEW_HIGH_FINDING_NOT_REJECTED",
+        )
+    if decision == "REJECT":
+        _require(
+            any(value == "FAIL" for value in assessment.values()) or bool(findings),
+            "SOURCE_REVIEW_REJECTION_EVIDENCE_MISSING",
+        )
 
     source = _exact_keys(
         artifact.get("source"),
@@ -859,17 +870,37 @@ def verify_artifact(
         and source.get("credential_scope") == CREDENTIAL_SCOPE,
         "SOURCE_REVIEW_PROVENANCE_MISMATCH",
     )
-    _require(
-        run.get("name") == WORKFLOW_NAME
-        and run.get("path") == WORKFLOW_PATH
-        and run.get("event") == source.get("event")
-        and run.get("head_branch") == "main"
-        and (run.get("head_repository") or {}).get("full_name") == expected_repository
-        and (run.get("repository") or {}).get("full_name") == expected_repository
-        and run.get("status") == "completed"
-        and run.get("conclusion") == "success",
-        "SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED",
-    )
+    if producer_context:
+        repository = run.get("repository")
+        repository_name = (
+            repository if isinstance(repository, str)
+            else repository.get("full_name") if isinstance(repository, Mapping)
+            else None
+        )
+        _require(
+            run.get("name") == WORKFLOW_NAME
+            and run.get("path") == WORKFLOW_PATH
+            and run.get("event") == source.get("event")
+            and run.get("head_branch") == "main"
+            and repository_name == expected_repository,
+            "SOURCE_REVIEW_PRODUCER_CONTEXT_UNTRUSTED",
+        )
+    else:
+        repository = run.get("repository")
+        head_repository = run.get("head_repository")
+        _require(
+            run.get("name") == WORKFLOW_NAME
+            and run.get("path") == WORKFLOW_PATH
+            and run.get("event") == source.get("event")
+            and run.get("head_branch") == "main"
+            and isinstance(head_repository, Mapping)
+            and head_repository.get("full_name") == expected_repository
+            and isinstance(repository, Mapping)
+            and repository.get("full_name") == expected_repository
+            and run.get("status") == "completed"
+            and run.get("conclusion") == "success",
+            "SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED",
+        )
     created = _timestamp(artifact.get("created_at_utc"), "SOURCE_REVIEW_CREATED_AT")
     expires = _timestamp(artifact.get("expires_at_utc"), "SOURCE_REVIEW_EXPIRY")
     _require(expires == created + MAX_REVIEW_AGE, "SOURCE_REVIEW_EXPIRY_MISMATCH")
@@ -1081,7 +1112,7 @@ def verify_qa_review_policy(
         and (run.get("repository") or {}).get("full_name") == expected_repository
         and (run.get("head_repository") or {}).get("full_name") == expected_repository
         and run.get("status") == "completed"
-        and run.get("conclusion") == "success",
+        and run.get("conclusion") in {"success", "failure"},
         "QA_POLICY_RUN_PROVENANCE_MISMATCH",
     )
     _require(policy_mode != "canary" or source.get("event") == "workflow_dispatch",

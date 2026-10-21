@@ -180,6 +180,22 @@ def test_workflow_run_triggered_review_keeps_protected_main_provenance():
         verify(receipt, run={**CONSUMER_RUN, "event": "pull_request"})
 
 
+def test_current_producer_context_is_validated_without_weakening_completed_run_authentication():
+    receipt = artifact()
+    review.verify_artifact(
+        receipt,
+        run=PRODUCER_RUN,
+        expected_repository=review.CANONICAL_REPOSITORY,
+        expected_pr_number=1822,
+        expected_head_sha=HEAD,
+        expected_head_ref="copilot/fix",
+        producer_context=True,
+        now=NOW,
+    )
+    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED"):
+        verify(receipt, run=PRODUCER_RUN)
+
+
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
@@ -190,7 +206,7 @@ def test_workflow_run_triggered_review_keeps_protected_main_provenance():
         (lambda value: value["source"].update(run_attempt=2), "RUN_ATTEMPT_MISMATCH"),
         (lambda value: value["source"].update(provider_identity="owner-claim"), "PROVENANCE_MISMATCH"),
         (lambda value: value["source"].update(workflow_path=".github/workflows/other.yml"), "PROVENANCE_MISMATCH"),
-        (lambda value: value["review"].update(decision="REJECT"), "REJECTED"),
+        (lambda value: value["review"].update(decision="REJECT"), "REJECTION_EVIDENCE_MISSING"),
         (lambda value: value["diff"].update(sha256="not-a-digest"), "DIGEST_INVALID"),
         (lambda value: value["review"].update(reviewed_files=[]), "FILE_COVERAGE_INCOMPLETE"),
     ],
@@ -416,7 +432,7 @@ def test_critical_finding_requires_reject():
         )
 
 
-def test_rejection_is_recorded_but_cannot_be_verified_as_a_pass():
+def test_authenticated_rejection_receipt_remains_verifiable_for_downstream_failure():
     rejected = {
         **RESULT,
         "decision": "REJECT",
@@ -441,8 +457,7 @@ def test_rejection_is_recorded_but_cannot_be_verified_as_a_pass():
         now=NOW,
     )
     assert result["review"]["decision"] == "REJECT"
-    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_REJECTED"):
-        verify(result)
+    verify(result)
 
 
 def test_artifact_checksum_is_verified_by_cli(tmp_path):
@@ -559,7 +574,7 @@ def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path
     ("name", "foreign-workflow", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("path", ".github/workflows/other.yml", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("head_branch", "feature", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
-    ("conclusion", "failure", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("conclusion", "cancelled", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("run_attempt", 2, "QA_POLICY_RUN_ATTEMPT_MISMATCH"),
 ])
 def test_qa_policy_rejects_foreign_failed_or_replayed_producer_run(field, value, reason):
@@ -575,6 +590,25 @@ def test_qa_policy_rejects_foreign_failed_or_replayed_producer_run(field, value,
             get_json=routes.__getitem__,
             download_artifact=lambda artifact_id: archive,
         )
+
+
+def test_qa_policy_can_be_resolved_from_completed_failed_run_to_report_qa_failure():
+    routes, archive = qa_policy_routes()
+    routes[f"/actions/runs/{PRODUCER_RUN['id']}"]["conclusion"] = "failure"
+
+    resolved = review.resolve_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"],
+        run_attempt=1,
+        token="read-only",
+        expected_pr_number=1822,
+        now=datetime.now(timezone.utc),
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive if artifact_id == 778 else b"",
+    )
+
+    assert resolved["policy"]["mode"] == "independent"
+    assert resolved["run"]["conclusion"] == "failure"
 
 
 @pytest.mark.parametrize(("mutation", "reason"), [
@@ -647,6 +681,7 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "github.ref == 'refs/heads/main'" in workflow
     assert parsed["on"]["workflow_run"]["workflows"] == [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
+        "wow-v17-trusted-governance-gate",
     ]
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow

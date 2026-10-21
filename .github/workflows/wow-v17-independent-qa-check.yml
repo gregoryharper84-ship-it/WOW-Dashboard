@@ -9,7 +9,7 @@ run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inp
 
 on:
   workflow_run:
-    workflows: [wow-verify, wow-engine-verify, wow-v17-rapid-repair, wow-v17-change-impact-gate]
+    workflows: [wow-verify, wow-engine-verify, wow-v17-rapid-repair, wow-v17-change-impact-gate, wow-v17-trusted-governance-gate]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -38,7 +38,7 @@ jobs:
   qa:
     # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
     # not red. Once bound, a missing key fails closed in the identity step below.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != ''
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true')
     environment: wow-qa
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -96,6 +96,16 @@ jobs:
           echo "pr_number=$(jq -r .pr <<<"$target")" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(jq -r .head <<<"$target")" >> "$GITHUB_OUTPUT"
           echo "head_ref=$(jq -r .head_ref <<<"$target")" >> "$GITHUB_OUTPUT"
+
+      - name: Mint checks-only App token
+        id: app_token
+        if: steps.target.outputs.pr_number != ''
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.WOW_QA_APP_ID }}
+          private-key: ${{ secrets.WOW_QA_APP_PRIVATE_KEY }}
+          repositories: WOW-Dashboard
+          permission-checks: write
 
       - name: Select exact-head review policy
         id: policy
@@ -233,6 +243,7 @@ jobs:
           output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"summary":{"type":"string","minLength":1},"reviewed_head_sha":{"type":"string"},"reviewed_diff_sha256":{"type":"string"},"reviewed_files":{"type":"array","items":{"type":"string"}},"assessment":{"type":"object","properties":{"source_review":{"type":"string","enum":["PASS","FAIL"]},"security_review":{"type":"string","enum":["PASS","FAIL"]},"probability_integrity_review":{"type":"string","enum":["PASS","FAIL"]}},"required":["source_review","security_review","probability_integrity_review"],"additionalProperties":false},"findings":{"type":"array","items":{"type":"object","properties":{"severity":{"type":"string","enum":["critical","high","medium","low"]},"file":{"type":"string"},"detail":{"type":"string","minLength":1},"evidence":{"type":"string","minLength":1}},"required":["severity","file","detail","evidence"],"additionalProperties":false}}},"required":["decision","summary","reviewed_head_sha","reviewed_diff_sha256","reviewed_files","assessment","findings"],"additionalProperties":false}'
 
       - name: Recheck PR head and diff after review
+        id: recheck
         if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
@@ -275,7 +286,7 @@ jobs:
             --head-sha "$HEAD_SHA" --head-ref "$HEAD_REF"
           decision=$(jq -r .review.decision "$RUNNER_TEMP/wow-v17-independent-source-review.json")
           [ "$decision" = "PASS" ] || {
-            echo "::error::INDEPENDENT_SOURCE_REVIEW_REJECTED"; exit 1;
+            echo "::error::INDEPENDENT_SOURCE_REVIEW_REJECTED";
           }
 
       - name: Upload short-lived exact-head review receipt
@@ -315,7 +326,8 @@ jobs:
             }
             args+=(--source-review-json "$RUNNER_TEMP/wow-v17-independent-source-review.json"
               --source-review-run-json "$RUNNER_TEMP/source-review-run.json"
-              --source-review-artifact-id "$SOURCE_REVIEW_ARTIFACT_ID")
+              --source-review-artifact-id "$SOURCE_REVIEW_ARTIFACT_ID"
+              --source-review-producer-context)
           else
             args+=(--legacy-review-policy)
           fi
@@ -324,24 +336,79 @@ jobs:
           echo "count=1" >> "$GITHUB_OUTPUT"
           echo "QA decision prepared for PR $PR_NUMBER at $HEAD_SHA" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Mint checks-only App token
-        id: app_token
-        if: steps.decide.outputs.count != '0'
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+      - name: Preserve terminal QA decision for every resolved target
+        id: terminal_decision
+        if: always() && steps.target.outputs.pr_number != ''
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          POLICY_RECEIPT_OUTCOME: ${{ steps.policy_receipt.outcome }}
+          POLICY_ARTIFACT_OUTCOME: ${{ steps.policy_artifact.outcome }}
+          CAPTURE_OUTCOME: ${{ steps.capture.outcome }}
+          REVIEW_OUTCOME: ${{ steps.review.outcome }}
+          RECHECK_OUTCOME: ${{ steps.recheck.outcome }}
+          SOURCE_REVIEW_OUTCOME: ${{ steps.source_review.outcome }}
+          SOURCE_REVIEW_ARTIFACT_OUTCOME: ${{ steps.source_review_artifact.outcome }}
+          DECIDE_OUTCOME: ${{ steps.decide.outcome }}
+        run: |
+          set -euo pipefail
+          decision="$RUNNER_TEMP/decisions/decision-$PR_NUMBER.json"
+          if [ ! -s "$decision" ]; then
+            failed_step=qa_decision_unavailable
+            for step in policy capture review recheck source_review decide; do
+              case "$step" in
+                policy) outcome="${POLICY_OUTCOME:-skipped}" ;;
+                capture) outcome="${CAPTURE_OUTCOME:-skipped}" ;;
+                review) outcome="${REVIEW_OUTCOME:-skipped}" ;;
+                recheck) outcome="${RECHECK_OUTCOME:-skipped}" ;;
+                source_review) outcome="${SOURCE_REVIEW_OUTCOME:-skipped}" ;;
+                decide) outcome="${DECIDE_OUTCOME:-skipped}" ;;
+              esac
+              if [ "$outcome" = "failure" ]; then failed_step=$step; break; fi
+            done
+            if [ "$failed_step" = "qa_decision_unavailable" ]; then
+              if [ "$POLICY_RECEIPT_OUTCOME" = "failure" ]; then failed_step=policy_receipt
+              elif [ "$POLICY_ARTIFACT_OUTCOME" = "failure" ]; then failed_step=policy_artifact
+              elif [ "$SOURCE_REVIEW_ARTIFACT_OUTCOME" = "failure" ]; then failed_step=source_review_artifact
+              fi
+            fi
+            echo "::error::QA_REVIEW_EXECUTION_FAILED:$failed_step"
+            mkdir -p "$RUNNER_TEMP/decisions"
+            PYTHONPATH=artifacts/wow-engine/v17 python - "$HEAD_SHA" "$failed_step" > "$decision" <<'PY'
+          import json
+          import sys
+          import independent_release_checks as checks
+          print(json.dumps(checks.decision(
+              "qa", [f"QA_REVIEW_EXECUTION_FAILED:{sys.argv[2]}"],
+              {"expected_head_sha": sys.argv[1]},
+          )))
+          PY
+          fi
+          cp "$decision" "$RUNNER_TEMP/wow-v17-qa-terminal-decision.json"
+          sha256sum "$RUNNER_TEMP/wow-v17-qa-terminal-decision.json" \
+            | cut -d' ' -f1 > "$RUNNER_TEMP/wow-v17-qa-terminal-decision.json.sha256"
+
+      - name: Upload terminal QA outcome
+        if: always() && steps.target.outputs.pr_number != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          app-id: ${{ vars.WOW_QA_APP_ID }}
-          private-key: ${{ secrets.WOW_QA_APP_PRIVATE_KEY }}
-          repositories: WOW-Dashboard
-          permission-checks: write
+          name: wow-v17-qa-outcome-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            ${{ runner.temp }}/wow-v17-qa-terminal-decision.json
+            ${{ runner.temp }}/wow-v17-qa-terminal-decision.json.sha256
 
       - name: Publish exact-head check
-        if: steps.decide.outputs.count != '0'
+        if: always() && steps.target.outputs.pr_number != ''
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
-          for decision in "$RUNNER_TEMP"/decisions/decision-*.json; do
+          for decision in "$RUNNER_TEMP"/wow-v17-qa-terminal-decision.json; do
             jq -e '.can_execute == false and .merge_or_release_authorized == false' "$decision" >/dev/null || {
               echo "::error::QA_DECISION_INVARIANT_VIOLATED: $decision"; exit 1; }
             payload=$(jq '{name: .check_name, head_sha: .head_sha, status: "completed",

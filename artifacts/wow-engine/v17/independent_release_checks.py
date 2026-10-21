@@ -76,6 +76,7 @@ def gather(
     qa_review_policy: dict[str, Any] | None = None,
     current_review_active: bool = False,
     independent_review_active: bool = True,
+    source_review_producer_context: bool = False,
     source_review_run_id: int | None = None,
     source_review_run_attempt: int | None = None,
 ) -> dict[str, Any]:
@@ -148,7 +149,10 @@ def gather(
     ev["independent_review_active"] = independent_review_active
     if independent_review_active:
         if source_review_data is not None:
-            ev["source_review"] = source_review_data
+            ev["source_review"] = {
+                **source_review_data,
+                "producer_context": source_review_producer_context,
+            }
         else:
             try:
                 resolver = source_review_resolver or _source_review_module.resolve_current_source_review
@@ -308,7 +312,11 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
                 expected_pr_number=int(ev.get("pr_number") or 0),
                 expected_head_sha=head,
                 expected_head_ref=str(pr.get("head_ref") or ""),
+                producer_context=source_review.get("producer_context") is True,
             )
+            review = artifact.get("review") if isinstance(artifact, dict) else None
+            if isinstance(review, dict) and review.get("decision") == "REJECT":
+                findings.append("QA_INDEPENDENT_SOURCE_REVIEW_REJECTED")
         except _source_review_module.SourceReviewError as exc:
             findings.append(f"QA_INDEPENDENT_SOURCE_REVIEW_INVALID:{exc}")
     files = ev.get("files") or []
@@ -344,7 +352,8 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
                     findings.append("QA_REVIEW_CANARY_TRUST_ROOT")
     runs = ev.get("check_runs") or []
     expected_checks = QA_EVIDENCE_CHECKS
-    if review_active is False:
+    trust_root_change = any(is_trust_root(str(f), governance_files) for f in files)
+    if review_active is False and not trust_root_change:
         expected_checks = (*expected_checks, TRUSTED_GOVERNANCE_CHECK)
     for name in expected_checks:
         run = _latest(runs, name, head, GITHUB_ACTIONS_APP_ID)
@@ -352,7 +361,7 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
             findings.append(f"QA_EVIDENCE_MISSING:{name}")
         elif run.get("conclusion") != "success":
             findings.append(f"QA_EVIDENCE_FAILED:{name}")
-    if any(is_trust_root(str(f), governance_files) for f in files):
+    if trust_root_change:
         # Trust roots: .github/, .agents/ and every file a governance workflow executes
         # or reads (including this module). Never autonomous: the sole owner's approval
         # of this exact head is required, and an owner-authored PR can never be
@@ -428,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--source-review-artifact-id", type=int)
     g.add_argument("--source-review-run-id", type=int)
     g.add_argument("--source-review-run-attempt", type=int)
+    g.add_argument("--source-review-producer-context", action="store_true")
     g.add_argument("--qa-policy-json", type=Path)
     g.add_argument("--current-review-active", action="store_true")
     policy = sub.add_parser("resolve-qa-policy")
@@ -485,6 +495,7 @@ def main(argv: list[str] | None = None) -> int:
             qa_review_policy=qa_review_policy,
             current_review_active=args.current_review_active,
             independent_review_active=not args.legacy_review_policy,
+            source_review_producer_context=args.source_review_producer_context,
             source_review_run_id=args.source_review_run_id,
             source_review_run_attempt=args.source_review_run_attempt,
         ), indent=2))
