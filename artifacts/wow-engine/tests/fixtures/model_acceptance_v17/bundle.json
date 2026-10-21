@@ -1,0 +1,1703 @@
+{
+  "can_execute": false,
+  "cases": [
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-ml-accept",
+      "event": {
+        "event_id": "EVT-nfl-ml-accept",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": null,
+        "first_failing_stage": null,
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "PROBABILITY_ACCEPTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-ml-accept",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-ml-accept",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-ml-accept",
+        "immutable": true,
+        "line": null,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-ml-accept",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-ml-accept",
+        "line": null,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": "HOME",
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "route": "NFL_MONEYLINE",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-ml-accept",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-ml-1896-contradiction",
+      "event": {
+        "event_id": "EVT-nfl-ml-1896-contradiction",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "PUBLISHABILITY_CONTRADICTION",
+        "first_failing_stage": "PUBLICATION",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-ml-1896-contradiction",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-ml-1896-contradiction",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-ml-1896-contradiction",
+        "immutable": true,
+        "line": null,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-ml-1896-contradiction",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": false,
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-ml-1896-contradiction",
+        "line": null,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": "HOME",
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "route": "NFL_MONEYLINE",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-ml-1896-contradiction",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nfl-prop-passing-accept",
+      "event": {
+        "event_id": "EVT-nfl-prop-passing-accept",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": null,
+        "first_failing_stage": null,
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "PROBABILITY_ACCEPTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-prop-passing-accept",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-prop-passing-accept",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-prop-passing-accept",
+        "immutable": true,
+        "line": 245.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-prop-passing-accept",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "direction": "MORE",
+        "line": 245.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "PASSING_YARDS"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "direction": "MORE",
+        "espn_alias_verified": true,
+        "event_id": "EVT-nfl-prop-passing-accept",
+        "line": 245.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NFL_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-prop-passing-accept",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nfl-prop-rushing-accept",
+      "event": {
+        "event_id": "EVT-nfl-prop-rushing-accept",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": null,
+        "first_failing_stage": null,
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "PROBABILITY_ACCEPTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-prop-rushing-accept",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-prop-rushing-accept",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-prop-rushing-accept",
+        "immutable": true,
+        "line": 62.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-prop-rushing-accept",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "direction": "LESS",
+        "line": 62.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "RUSHING_YARDS"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "direction": "LESS",
+        "espn_alias_verified": true,
+        "event_id": "EVT-nfl-prop-rushing-accept",
+        "line": 62.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NFL_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-prop-rushing-accept",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nfl-prop-receiving-money-absent",
+      "event": {
+        "event_id": "EVT-nfl-prop-receiving-money-absent",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "MONEY_EVIDENCE_ABSENT",
+        "first_failing_stage": "MONEY_AUDIT",
+        "money_status": "MONEY_AUDIT_FAILED",
+        "probability_status": "PROBABILITY_ACCEPTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": null,
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-prop-receiving-money-absent",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-prop-receiving-money-absent",
+        "immutable": true,
+        "line": 54.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-prop-receiving-money-absent",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "direction": "MORE",
+        "line": 54.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "RECEIVING_YARDS"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "direction": "MORE",
+        "espn_alias_verified": true,
+        "event_id": "EVT-nfl-prop-receiving-money-absent",
+        "line": 54.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NFL_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-prop-receiving-money-absent",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nfl-prop-1894-alias-unverified",
+      "event": {
+        "event_id": "EVT-nfl-prop-1894-alias-unverified",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "ESPN_ALIAS_UNVERIFIED",
+        "first_failing_stage": "IDENTITY",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-prop-1894-alias-unverified",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-prop-1894-alias-unverified",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-prop-1894-alias-unverified",
+        "immutable": true,
+        "line": 70.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-prop-1894-alias-unverified",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "direction": "MORE",
+        "line": 70.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "RECEIVING_YARDS"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "direction": "MORE",
+        "espn_alias_verified": false,
+        "event_id": "EVT-nfl-prop-1894-alias-unverified",
+        "line": 70.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NFL_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-prop-1894-alias-unverified",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nfl-prop-threshold-weakened",
+      "event": {
+        "event_id": "EVT-nfl-prop-threshold-weakened",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "PUBLICATION_THRESHOLD_WEAKENED",
+        "first_failing_stage": "CALIBRATION",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-prop-threshold-weakened",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-prop-threshold-weakened",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-prop-threshold-weakened",
+        "immutable": true,
+        "line": 230.5,
+        "probability": 0.57,
+        "receipt_id": "RCPT-nfl-prop-threshold-weakened",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "direction": "MORE",
+        "line": 230.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "PASSING_YARDS"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "direction": "MORE",
+        "espn_alias_verified": true,
+        "event_id": "EVT-nfl-prop-threshold-weakened",
+        "line": 230.5,
+        "lower_bound": 0.5,
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.57,
+        "probability_publishable": true,
+        "publication_threshold": 0.45,
+        "rank_eligible": true,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NFL_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-prop-threshold-weakened",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nfl-prop-malformed-output",
+      "event": {
+        "event_id": "EVT-nfl-prop-malformed-output",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "MODEL_OUTPUT_INVALID",
+        "first_failing_stage": "MODEL",
+        "money_status": "MONEY_AUDIT_NOT_RUN",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": null,
+      "phase": "PREGAME",
+      "receipt": {},
+      "request": {
+        "direction": "MORE",
+        "line": 48.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "RUSHING_YARDS"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "direction": "MORE",
+        "espn_alias_verified": true,
+        "event_id": "EVT-nfl-prop-malformed-output",
+        "line": 48.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": "0.61x",
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NFL_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-prop-malformed-output",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nba-points-200-model-unavailable",
+      "event": {
+        "event_id": "EVT-nba-points-200-model-unavailable",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "MODEL_UNAVAILABLE",
+        "first_failing_stage": "MODEL",
+        "money_status": "MONEY_AUDIT_NOT_RUN",
+        "probability_status": "HELD_TYPED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": null,
+      "phase": "PREGAME",
+      "receipt": {},
+      "request": {
+        "direction": "MORE",
+        "line": 24.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "POINTS"
+      },
+      "response": {
+        "artifact_publishable": false,
+        "calibration_id": "CAL-NBA_PROP-v3",
+        "direction": "MORE",
+        "event_id": "EVT-nba-points-200-model-unavailable",
+        "line": 24.5,
+        "lower_bound": null,
+        "model_artifact": null,
+        "model_status": "MODEL_UNAVAILABLE",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": null,
+        "probability_publishable": false,
+        "publication_threshold": 0.55,
+        "rank_eligible": false,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NBA_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nba-points-200-model-unavailable",
+            "state": "HELD"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nba-pra-200-model-unavailable",
+      "event": {
+        "event_id": "EVT-nba-pra-200-model-unavailable",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "MODEL_UNAVAILABLE",
+        "first_failing_stage": "MODEL",
+        "money_status": "MONEY_AUDIT_NOT_RUN",
+        "probability_status": "HELD_TYPED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": null,
+      "phase": "PREGAME",
+      "receipt": {},
+      "request": {
+        "direction": "MORE",
+        "line": 33.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "POINTS_REBOUNDS"
+      },
+      "response": {
+        "artifact_publishable": false,
+        "calibration_id": "CAL-NBA_PROP-v3",
+        "direction": "MORE",
+        "event_id": "EVT-nba-pra-200-model-unavailable",
+        "line": 33.5,
+        "lower_bound": null,
+        "model_artifact": null,
+        "model_status": "MODEL_UNAVAILABLE",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": null,
+        "probability_publishable": false,
+        "publication_threshold": 0.55,
+        "rank_eligible": false,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NBA_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nba-pra-200-model-unavailable",
+            "state": "HELD"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nba-points-scorer-failed",
+      "event": {
+        "event_id": "EVT-nba-points-scorer-failed",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "MODEL_SCORER_FAILED",
+        "first_failing_stage": "MODEL",
+        "money_status": "MONEY_AUDIT_NOT_RUN",
+        "probability_status": "HELD_TYPED"
+      },
+      "http_status": 503,
+      "latency_ms": 840,
+      "money": null,
+      "phase": "PREGAME",
+      "receipt": {},
+      "request": {
+        "direction": "MORE",
+        "line": 19.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "POINTS"
+      },
+      "response": {
+        "artifact_publishable": false,
+        "calibration_id": "CAL-NBA_PROP-v3",
+        "direction": "MORE",
+        "event_id": "EVT-nba-points-scorer-failed",
+        "line": 19.5,
+        "lower_bound": null,
+        "model_artifact": null,
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": null,
+        "probability_publishable": false,
+        "publication_threshold": 0.55,
+        "rank_eligible": false,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NBA_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nba-points-scorer-failed",
+            "state": "HELD"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nba-points-inputs-insufficient",
+      "event": {
+        "event_id": "EVT-nba-points-inputs-insufficient",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "MODEL_INPUTS_INSUFFICIENT",
+        "first_failing_stage": "MODEL",
+        "money_status": "MONEY_AUDIT_NOT_RUN",
+        "probability_status": "HELD_TYPED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": null,
+      "phase": "PREGAME",
+      "receipt": {},
+      "request": {
+        "direction": "MORE",
+        "line": 21.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "POINTS"
+      },
+      "response": {
+        "artifact_publishable": false,
+        "calibration_id": "CAL-NBA_PROP-v3",
+        "direction": "MORE",
+        "event_id": "EVT-nba-points-inputs-insufficient",
+        "line": 21.5,
+        "lower_bound": null,
+        "model_artifact": null,
+        "model_status": "MODEL_INPUTS_INSUFFICIENT",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": null,
+        "probability_publishable": false,
+        "publication_threshold": 0.55,
+        "rank_eligible": false,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NBA_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nba-points-inputs-insufficient",
+            "state": "HELD"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-spread-accept-integer-push",
+      "event": {
+        "event_id": "EVT-nfl-spread-accept-integer-push",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": null,
+        "first_failing_stage": null,
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "PROBABILITY_ACCEPTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-spread-accept-integer-push",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-spread-accept-integer-push",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-spread-accept-integer-push",
+        "immutable": true,
+        "line": -3.0,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-spread-accept-integer-push",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "line": -3.0,
+        "line_text": "-3",
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_SPREAD-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-spread-accept-integer-push",
+        "line": -3.0,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_spread_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "probability_source": "SCORE_MARGIN_COVER",
+        "publication_threshold": 0.55,
+        "push_rule": "PUSH_VOID_REFUND",
+        "rank_eligible": true,
+        "settlement_rule": "FULL_GAME_INCL_OT",
+        "side": "HOME",
+        "specialist_kind": "SCORE_MARGIN_COVER"
+      },
+      "route": "NFL_SPREAD",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-spread-accept-integer-push",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "ncaaf-spread-accept",
+      "event": {
+        "event_id": "EVT-ncaaf-spread-accept",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": null,
+        "first_failing_stage": null,
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "PROBABILITY_ACCEPTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-ncaaf-spread-accept",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "ncaaf-spread-accept",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-ncaaf-spread-accept",
+        "immutable": true,
+        "line": -6.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-ncaaf-spread-accept",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "line": -6.5,
+        "line_text": "-6.5",
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NCAAF_SPREAD-v3",
+        "direction": null,
+        "event_id": "EVT-ncaaf-spread-accept",
+        "line": -6.5,
+        "lower_bound": 0.58,
+        "model_artifact": "ncaaf_spread_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "probability_source": "SCORE_MARGIN_COVER",
+        "publication_threshold": 0.55,
+        "push_rule": "PUSH_VOID_REFUND",
+        "rank_eligible": true,
+        "settlement_rule": "FULL_GAME_INCL_OT",
+        "side": "HOME",
+        "specialist_kind": "SCORE_MARGIN_COVER"
+      },
+      "route": "NCAAF_SPREAD",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-ncaaf-spread-accept",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "ncaaf-1h-spread-unsupported-hold",
+      "event": {
+        "event_id": "EVT-ncaaf-1h-spread-unsupported-hold",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "UNSUPPORTED_ROUTE_HOLD",
+        "first_failing_stage": "ROUTE",
+        "money_status": "MONEY_AUDIT_NOT_RUN",
+        "probability_status": "HELD_TYPED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": null,
+      "phase": "PREGAME",
+      "receipt": {},
+      "request": {
+        "line": -3.5,
+        "line_text": "-3.5",
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": false,
+        "calibration_id": "CAL-NCAAF_SPREAD-v3",
+        "direction": null,
+        "event_id": "EVT-ncaaf-1h-spread-unsupported-hold",
+        "line": -3.5,
+        "lower_bound": null,
+        "model_artifact": "ncaaf_spread_fitted.joblib",
+        "model_status": null,
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": null,
+        "probability_publishable": false,
+        "probability_source": "SCORE_MARGIN_COVER",
+        "publication_threshold": 0.55,
+        "push_rule": "PUSH_VOID_REFUND",
+        "rank_eligible": false,
+        "route_status": "UNSUPPORTED",
+        "settlement_rule": "FULL_GAME_INCL_OT",
+        "side": "HOME",
+        "specialist_kind": "SCORE_MARGIN_COVER"
+      },
+      "route": "NCAAF_SPREAD",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-ncaaf-1h-spread-unsupported-hold",
+            "state": "HELD"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-spread-borrowed-ml",
+      "event": {
+        "event_id": "EVT-nfl-spread-borrowed-ml",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "PROBABILITY_BORROWED",
+        "first_failing_stage": "MODEL",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-spread-borrowed-ml",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-spread-borrowed-ml",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-spread-borrowed-ml",
+        "immutable": true,
+        "line": -2.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-spread-borrowed-ml",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "line": -2.5,
+        "line_text": "-2.5",
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_SPREAD-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-spread-borrowed-ml",
+        "line": -2.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_spread_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "probability_source": "MONEYLINE",
+        "publication_threshold": 0.55,
+        "push_rule": "PUSH_VOID_REFUND",
+        "rank_eligible": true,
+        "settlement_rule": "FULL_GAME_INCL_OT",
+        "side": "HOME",
+        "specialist_kind": "SCORE_MARGIN_COVER"
+      },
+      "route": "NFL_SPREAD",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-spread-borrowed-ml",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-spread-unsigned-line",
+      "event": {
+        "event_id": "EVT-nfl-spread-unsigned-line",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "SPREAD_LINE_UNSIGNED",
+        "first_failing_stage": "IDENTITY",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-spread-unsigned-line",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-spread-unsigned-line",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-spread-unsigned-line",
+        "immutable": true,
+        "line": 3.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-spread-unsigned-line",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "line": 3.5,
+        "line_text": "3.5",
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_SPREAD-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-spread-unsigned-line",
+        "line": 3.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_spread_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "probability_source": "SCORE_MARGIN_COVER",
+        "publication_threshold": 0.55,
+        "push_rule": "PUSH_VOID_REFUND",
+        "rank_eligible": true,
+        "settlement_rule": "FULL_GAME_INCL_OT",
+        "side": "HOME",
+        "specialist_kind": "SCORE_MARGIN_COVER"
+      },
+      "route": "NFL_SPREAD",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-spread-unsigned-line",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-spread-push-rule-missing",
+      "event": {
+        "event_id": "EVT-nfl-spread-push-rule-missing",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "PUSH_RULE_MISSING",
+        "first_failing_stage": "CALIBRATION",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-spread-push-rule-missing",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-spread-push-rule-missing",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-spread-push-rule-missing",
+        "immutable": true,
+        "line": -7.0,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-spread-push-rule-missing",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "line": -7.0,
+        "line_text": "-7",
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_SPREAD-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-spread-push-rule-missing",
+        "line": -7.0,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_spread_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "probability_source": "SCORE_MARGIN_COVER",
+        "publication_threshold": 0.55,
+        "push_rule": null,
+        "rank_eligible": true,
+        "settlement_rule": "FULL_GAME_INCL_OT",
+        "side": "HOME",
+        "specialist_kind": "SCORE_MARGIN_COVER"
+      },
+      "route": "NFL_SPREAD",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-spread-push-rule-missing",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-ml-stale-receipt",
+      "event": {
+        "event_id": "EVT-nfl-ml-stale-receipt",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "RECEIPT_STALE",
+        "first_failing_stage": "RECEIPT",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-ml-stale-receipt",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-ml-stale-receipt",
+        "created_at": "2026-10-20T01:00:00Z",
+        "event_id": "EVT-nfl-ml-stale-receipt",
+        "immutable": true,
+        "line": null,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-ml-stale-receipt",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-ml-stale-receipt",
+        "line": null,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-20T01:00:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": "HOME",
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "route": "NFL_MONEYLINE",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-ml-stale-receipt",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-ml-foreign-receipt",
+      "event": {
+        "event_id": "EVT-nfl-ml-foreign-receipt",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "RECEIPT_FOREIGN",
+        "first_failing_stage": "RECEIPT",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-ml-foreign-receipt",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "some-other-case",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-ml-foreign-receipt",
+        "immutable": true,
+        "line": null,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-ml-foreign-receipt",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-ml-foreign-receipt",
+        "line": null,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": "HOME",
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "route": "NFL_MONEYLINE",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-ml-foreign-receipt",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-ml-run-sha-mismatch",
+      "event": {
+        "event_id": "EVT-nfl-ml-run-sha-mismatch",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "RUN_SHA_MISMATCH",
+        "first_failing_stage": "ENVIRONMENT",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-ml-run-sha-mismatch",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-ml-run-sha-mismatch",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-ml-run-sha-mismatch",
+        "immutable": true,
+        "line": null,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-ml-run-sha-mismatch",
+        "run_sha": "2222222222222222222222222222222222222222"
+      },
+      "request": {
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-ml-run-sha-mismatch",
+        "line": null,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": "HOME",
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "route": "NFL_MONEYLINE",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-ml-run-sha-mismatch",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nfl-prop-identity-conflict",
+      "event": {
+        "event_id": "EVT-nfl-prop-identity-conflict",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "IDENTITY_CONFLICT",
+        "first_failing_stage": "IDENTITY",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-prop-identity-conflict",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-prop-identity-conflict",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-prop-identity-conflict",
+        "immutable": true,
+        "line": 260.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-prop-identity-conflict",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "direction": "MORE",
+        "line": 260.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "PASSING_YARDS"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "direction": "MORE",
+        "espn_alias_verified": true,
+        "event_id": "EVT-OTHER",
+        "line": 260.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NFL_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-prop-identity-conflict",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-ml-live-unrecognized-event",
+      "event": {
+        "event_id": "EVT-nfl-ml-live-unrecognized-event",
+        "live_event_recognized": false,
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "IN_PROGRESS"
+      },
+      "expect": {
+        "exact_blocker": "LIVE_EVENT_UNRECOGNIZED",
+        "first_failing_stage": "LIFECYCLE",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-ml-live-unrecognized-event",
+        "wager_placed": false
+      },
+      "phase": "LIVE",
+      "receipt": {
+        "case_id": "nfl-ml-live-unrecognized-event",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-ml-live-unrecognized-event",
+        "immutable": true,
+        "line": null,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-ml-live-unrecognized-event",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-ml-live-unrecognized-event",
+        "line": null,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": "HOME",
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "route": "NFL_MONEYLINE",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-ml-live-unrecognized-event",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-ml-live-pregame-reuse",
+      "event": {
+        "event_id": "EVT-nfl-ml-live-pregame-reuse",
+        "live_event_recognized": true,
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "IN_PROGRESS"
+      },
+      "expect": {
+        "exact_blocker": "PREGAME_REUSED_IN_LIVE",
+        "first_failing_stage": "LIFECYCLE",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-ml-live-pregame-reuse",
+        "wager_placed": false
+      },
+      "phase": "LIVE",
+      "receipt": {
+        "case_id": "nfl-ml-live-pregame-reuse",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-ml-live-pregame-reuse",
+        "immutable": true,
+        "line": null,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-ml-live-pregame-reuse",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-ml-live-pregame-reuse",
+        "line": null,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": "HOME",
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "route": "NFL_MONEYLINE",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-ml-live-pregame-reuse",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowPickRequest",
+      "case_id": "nfl-prop-pregame-event-started",
+      "event": {
+        "event_id": "EVT-nfl-prop-pregame-event-started",
+        "start_time": "2026-10-21T13:00:00Z",
+        "status": "IN_PROGRESS"
+      },
+      "expect": {
+        "exact_blocker": "EVENT_STARTED_INVALIDATED",
+        "first_failing_stage": "LIFECYCLE",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-prop-pregame-event-started",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-prop-pregame-event-started",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-prop-pregame-event-started",
+        "immutable": true,
+        "line": 70.5,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-prop-pregame-event-started",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "direction": "MORE",
+        "line": 70.5,
+        "player": "FIXTURE PLAYER",
+        "stat": "RUSHING_YARDS"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_PROP-v3",
+        "direction": "MORE",
+        "espn_alias_verified": true,
+        "event_id": "EVT-nfl-prop-pregame-event-started",
+        "line": 70.5,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_prop_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": null,
+        "specialist_kind": "PLAYER_PROP"
+      },
+      "route": "NFL_PROP",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "ROW-nfl-prop-pregame-event-started",
+            "state": "COMPLETED"
+          }
+        ]
+      }
+    },
+    {
+      "action_route": "scoreWowTeamEventRequest",
+      "case_id": "nfl-ml-row-terminated-twice",
+      "event": {
+        "event_id": "EVT-nfl-ml-row-terminated-twice",
+        "start_time": "2026-10-25T17:00:00Z",
+        "status": "SCHEDULED"
+      },
+      "expect": {
+        "exact_blocker": "RECONCILIATION_COUNT_MISMATCH",
+        "first_failing_stage": "RECONCILIATION",
+        "money_status": "MONEY_AUDIT_PASSED",
+        "probability_status": "REJECTED"
+      },
+      "http_status": 200,
+      "latency_ms": 840,
+      "money": {
+        "price": -120,
+        "price_snapshot_id": "PX-nfl-ml-row-terminated-twice",
+        "wager_placed": false
+      },
+      "phase": "PREGAME",
+      "receipt": {
+        "case_id": "nfl-ml-row-terminated-twice",
+        "created_at": "2026-10-21T14:30:00Z",
+        "event_id": "EVT-nfl-ml-row-terminated-twice",
+        "immutable": true,
+        "line": null,
+        "probability": 0.64,
+        "receipt_id": "RCPT-nfl-ml-row-terminated-twice",
+        "run_sha": "1111111111111111111111111111111111111111"
+      },
+      "request": {
+        "side": "HOME"
+      },
+      "response": {
+        "artifact_publishable": true,
+        "calibration_id": "CAL-NFL_MONEYLINE-v3",
+        "direction": null,
+        "event_id": "EVT-nfl-ml-row-terminated-twice",
+        "line": null,
+        "lower_bound": 0.58,
+        "model_artifact": "nfl_moneyline_fitted.joblib",
+        "model_status": "OK",
+        "model_version": "v17.3.0",
+        "prediction_created_at": "2026-10-21T14:30:00Z",
+        "prediction_phase": "PREGAME",
+        "probability": 0.64,
+        "probability_publishable": true,
+        "publication_threshold": 0.55,
+        "rank_eligible": true,
+        "side": "HOME",
+        "specialist_kind": "TEAM_EVENT_WIN"
+      },
+      "route": "NFL_MONEYLINE",
+      "rows": {
+        "rows_in": 1,
+        "terminal_states": [
+          {
+            "row_id": "R1",
+            "state": "COMPLETED"
+          },
+          {
+            "row_id": "R1",
+            "state": "HELD"
+          }
+        ]
+      }
+    }
+  ],
+  "environment": {
+    "can_execute": false,
+    "dry_run": true,
+    "environment": "ci-fixture",
+    "github_sha": "1111111111111111111111111111111111111111",
+    "mode": "FIXTURE",
+    "production_binding_evidence": "NOT_PRODUCTION_EVIDENCE_FIXTURE_ONLY",
+    "render_deploy_id": null,
+    "render_live_sha": null,
+    "supabase_project_ref": null
+  },
+  "evaluated_at": "2026-10-21T15:00:00Z",
+  "harness_version": "V17_MODEL_ACCEPTANCE_HARNESS_V1"
+}
