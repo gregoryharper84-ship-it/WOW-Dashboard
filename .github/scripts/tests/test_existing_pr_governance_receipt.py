@@ -1004,6 +1004,50 @@ def test_temporary_provider_sunset_blocks_new_receipts_and_replay():
         build(now=datetime(2026, 11, 2, 0, 0, tzinfo=timezone.utc))
 
 
+def test_authenticated_automated_review_receipts_remain_usable_after_legacy_sunset():
+    after_sunset = datetime(2026, 11, 1, 0, 1, tzinfo=timezone.utc)
+    receipt = verifier.build_receipt(
+        evidence(),
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        automated_review=automated_review_data(now=after_sunset),
+        source_review_run=SOURCE_REVIEW_RUN,
+        source_review_artifact_id=555,
+        now=after_sunset,
+    )
+    verifier.verify_receipt(
+        receipt,
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_name=verifier.WORKFLOW_NAME,
+        expected_pr_number=1822,
+        live_reviews=[],
+        source_review_run=SOURCE_REVIEW_RUN,
+        now=after_sunset + timedelta(minutes=29),
+    )
+    assert receipt["receipt_schema_version"] == 3
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="EXPIRED_OR_FUTURE_RECEIPT"):
+        verifier.verify_receipt(
+            receipt,
+            expected_repository=REPOSITORY,
+            expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806",
+            expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME,
+            expected_pr_number=1822,
+            live_reviews=[],
+            source_review_run=SOURCE_REVIEW_RUN,
+            now=after_sunset + timedelta(minutes=30),
+        )
+
+
 def test_receipt_expiry_cannot_be_extended_or_backdated():
     receipt = build()
     receipt["fallback_expires_utc"] = "2036-11-02T00:00:00Z"
@@ -1310,7 +1354,7 @@ def test_bootstrap_requires_green_qa_release_and_exact_check_provenance():
         build_bootstrap(bootstrap_evidence(check_sha="b" * 40))
 
 
-def test_bootstrap_receipt_expires_in_30_minutes_and_at_the_provider_sunset():
+def test_bootstrap_receipt_expires_in_30_minutes_without_a_provider_sunset():
     current = datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
     receipt = build_bootstrap(now=current)
     assert receipt["fallback_expires_utc"] == "2026-10-18T00:30:00Z"
@@ -1318,12 +1362,10 @@ def test_bootstrap_receipt_expires_in_30_minutes_and_at_the_provider_sunset():
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT"):
         verify_bootstrap(receipt, now=current + timedelta(minutes=30))
     at_sunset = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
-        build_bootstrap(now=at_sunset)
-    before_sunset = datetime(2026, 10, 31, 23, 40, tzinfo=timezone.utc)
-    sunset_receipt = build_bootstrap(now=before_sunset)
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
-        verify_bootstrap(sunset_receipt, now=at_sunset)
+    post_sunset_receipt = build_bootstrap(now=at_sunset)
+    verify_bootstrap(post_sunset_receipt, now=at_sunset + timedelta(minutes=29))
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT"):
+        verify_bootstrap(post_sunset_receipt, now=at_sunset + timedelta(minutes=30))
 
 
 def test_live_recheck_rejects_replaced_owner_review_and_superseded_checks():

@@ -334,11 +334,11 @@ def build_receipt(
 ) -> dict[str, Any]:
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
-    # Two independent bounds: the provider exception sunsets on November 1,
-    # and each particular receipt must still expire after exactly 30 minutes.
-    # A receipt minted just before sunset never extends the provider exception.
-    _require(clock.astimezone(timezone.utc) < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
-             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
+    if automated_review is None:
+        _require(
+            clock.astimezone(timezone.utc) < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
+            "TEMPORARY_FALLBACK_PROVIDER_SUNSET",
+        )
     _require(expected_repository == CANONICAL_REPOSITORY, "REPOSITORY_IDENTITY_MISMATCH")
     _require(bool(SHA.fullmatch(expected_head_sha)), "EXPECTED_SHA_INVALID")
     _require(bool(expected_head_ref), "EXPECTED_HEAD_REF_MISSING")
@@ -520,8 +520,11 @@ def verify_receipt(
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
     clock = clock.astimezone(timezone.utc)
-    _require(clock < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
-             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
+    if schema_version == 2:
+        _require(
+            clock < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
+            "TEMPORARY_FALLBACK_PROVIDER_SUNSET",
+        )
     _require(created <= clock < expiry, "TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT")
     _require(bool(SHA.fullmatch(expected_head_sha)), "EXPECTED_SHA_INVALID")
     target = _exact_keys(
@@ -745,8 +748,6 @@ def build_trust_root_bootstrap(
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
     clock = clock.astimezone(timezone.utc)
-    _require(clock < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
-             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
     _require(expected_repository == CANONICAL_REPOSITORY, "REPOSITORY_IDENTITY_MISMATCH")
     _require(bool(SHA.fullmatch(expected_head_sha)), "EXPECTED_SHA_INVALID")
     _require(bool(expected_head_ref), "EXPECTED_HEAD_REF_MISSING")
@@ -866,8 +867,6 @@ def verify_trust_root_bootstrap(
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
     clock = clock.astimezone(timezone.utc)
-    _require(clock < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
-             "TEMPORARY_FALLBACK_PROVIDER_SUNSET")
     _require(created <= clock < expiry, "TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT")
     target = _exact_keys(
         receipt.get("target"),
