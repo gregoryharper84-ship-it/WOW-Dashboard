@@ -10,6 +10,7 @@ import argparse
 import csv
 import hashlib
 import io
+import math
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -143,6 +144,9 @@ def analyze_nfl_pilot(
     quarantine_missing_player_id = 0
     quarantine_missing_game_id = 0
     quarantined_identity_rows = 0
+    quarantined_nonzero_stat_rows = 0
+    quarantined_zero_stat_rows = 0
+    quarantined_invalid_or_missing_stat_rows = 0
     seen: set[tuple[str, str]] = set()
     by_stat: dict[str, int] = {stat: 0 for stat in ROUTES}
     for row in players:
@@ -159,6 +163,27 @@ def analyze_nfl_pilot(
                 quarantine_missing_player_id += 1
             if not game_id:
                 quarantine_missing_game_id += 1
+            # Audit sporting-label presence without pretending this row belongs
+            # to a resolved person or manufacturing missing zero outcomes.
+            try:
+                raw_stats = [
+                    str(row.get(col) or "").strip()
+                    for col in (
+                        "passing_yards", "rushing_yards", "receiving_yards",
+                        "passing_tds", "rushing_tds", "receiving_tds",
+                    )
+                ]
+                if not all(raw_stats):
+                    raise ValueError("missing label")
+                observed = [float(value) for value in raw_stats]
+                if not all(math.isfinite(value) for value in observed):
+                    raise ValueError("nonfinite label")
+                if any(value != 0 for value in observed):
+                    quarantined_nonzero_stat_rows += 1
+                else:
+                    quarantined_zero_stat_rows += 1
+            except (TypeError, ValueError):
+                quarantined_invalid_or_missing_stat_rows += 1
             continue
         key = (game_id, player_id)
         if key in seen:
@@ -228,6 +253,9 @@ def analyze_nfl_pilot(
             "quarantine_missing_player_id": quarantine_missing_player_id,
             "quarantine_missing_game_id": quarantine_missing_game_id,
             "quarantined_identity_rows": quarantined_identity_rows,
+            "quarantined_nonzero_stat_rows": quarantined_nonzero_stat_rows,
+            "quarantined_zero_stat_rows": quarantined_zero_stat_rows,
+            "quarantined_invalid_or_missing_stat_rows": quarantined_invalid_or_missing_stat_rows,
             "normalized_stat_observations": by_stat,
         },
         "independent_espn_identity": comparisons,
