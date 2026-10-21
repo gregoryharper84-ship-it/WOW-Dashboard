@@ -63,6 +63,23 @@ def _receipt():
             "source": "ESPN_NFL_SCOREBOARD_INDEPENDENT",
             "source_sha256": "a" * 64,
         },
+        "independent_espn_additional_date_parity": [
+            {
+                "status": "MATCHED", "date": date,
+                "source": "ESPN_NFL_SCOREBOARD_INDEPENDENT",
+                "source_url": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=" + date.replace("-", ""),
+                "source_sha256": "b" * 64,
+                "games_in_scope": 1, "matched_final_games": 1,
+                "missing_or_unfinalized_games": 0, "score_conflict_games": 0,
+                "full_season_parity_established": False,
+            } for date in ("2025-09-14", "2025-09-21")
+        ],
+        "independent_espn_coverage": {
+            "status": "MATCHED",
+            "dates_requested": ["2025-09-07", "2025-09-14", "2025-09-21"],
+            "dates_matched": ["2025-09-07", "2025-09-14", "2025-09-21"],
+            "games_verified": 15, "full_season_parity_established": False,
+        },
     }
 
 
@@ -133,3 +150,18 @@ def test_not_an_authenticated_attestation_even_with_passing_payload():
     assert result["audit_coherent"] is True
     assert result["attestation_verified"] is False
     assert result["storage_write_authorized"] is False
+
+
+def test_second_and_third_espn_dates_are_mandatory_and_not_full_season_authority():
+    good = _receipt()
+    good["independent_espn_additional_date_parity"][1]["status"] = "PARTIAL_HOLD"
+    assert "RESEARCH_MULTI_DATE_ESPN_PARITY_MISSING" in review_research_evidence(good)["issues"]
+    good = _receipt()
+    good["independent_espn_additional_date_parity"][0]["date"] = "2025-09-16"
+    assert "RESEARCH_MULTI_DATE_ESPN_PARITY_MISSING" in review_research_evidence(good)["issues"]
+    good = _receipt()
+    good["independent_espn_coverage"]["full_season_parity_established"] = True
+    assert "RESEARCH_MULTI_DATE_ESPN_PARITY_MISSING" in review_research_evidence(good)["issues"]
+    good = _receipt()
+    good["independent_espn_additional_date_parity"][0]["source_url"] += "&limit=999"
+    assert "RESEARCH_MULTI_DATE_ESPN_PARITY_MISSING" in review_research_evidence(good)["issues"]
