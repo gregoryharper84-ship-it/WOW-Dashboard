@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import shutil
 import subprocess
 import sys
+import textwrap
 from datetime import timedelta
 from pathlib import Path
 
@@ -25,6 +28,98 @@ def _load_verifier():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _provenance_guard(workflow: Path, step_name: str, start: str, end: str) -> str:
+    text = workflow.read_text(encoding="utf-8")
+    step = text.split(f"      - name: {step_name}\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    return start + script.split(start, 1)[1].split(end, 1)[0]
+
+
+@pytest.mark.parametrize(
+    ("workflow", "step_name", "start", "end"),
+    [
+        (
+            MORNING_GREEN,
+            "Verify trusted exact-head governance receipt",
+            "trusted_worker=false\n",
+            "zip_path=",
+        ),
+        (
+            RELEASE,
+            "Verify governance-producing workflow provenance",
+            "protected_main_source=false\n",
+            'echo "name=$name"',
+        ),
+    ],
+)
+def test_downstream_consumers_accept_only_successful_protected_workflow_run_receipts(
+    workflow, step_name, start, end, tmp_path
+):
+    guard = "set -euo pipefail\n" + _provenance_guard(workflow, step_name, start, end)
+    env = {
+        "GITHUB_REPOSITORY": "gregoryharper84-ship-it/WOW-Dashboard",
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "name": "wow-v17-existing-pr-governance-review",
+        "path": ".github/workflows/wow-v17-existing-pr-governance-review.yml",
+        "event": "workflow_run",
+        "head_branch": "main",
+        "head_repo": "gregoryharper84-ship-it/WOW-Dashboard",
+        "status": "completed",
+        "conclusion": "success",
+    }
+
+    accepted = subprocess.run(
+        ["bash", "-c", guard], env=os.environ | env,
+        capture_output=True, text=True, check=False,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+    for field, value in (
+        ("head_branch", "feature"),
+        ("head_repo", "attacker/fork"),
+        ("status", "in_progress"),
+        ("conclusion", "failure"),
+        ("event", "push"),
+    ):
+        rejected = subprocess.run(
+            ["bash", "-c", guard], env=os.environ | (env | {field: value}),
+            capture_output=True, text=True, check=False,
+        )
+        assert rejected.returncode != 0, (workflow, field, value)
+
+
+def test_schema_one_worker_receipt_is_not_rejected_by_existing_pr_schema_guard(tmp_path):
+    workflow = GATE.read_text(encoding="utf-8")
+    step = workflow.split("      - name: Download and verify exact-head receipt\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    guard = "cert_mode=$(" + script.split("cert_mode=$(", 1)[1].split(
+        'verifier=".github/scripts/verify_engineering', 1
+    )[0]
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(json.dumps({
+        "receipt_schema_version": 1,
+        "certification_mode": "ORDINARY_ENGINEERING",
+    }), encoding="utf-8")
+
+    def run(workflow_name):
+        return subprocess.run(
+            ["bash", "-c", 'set -euo pipefail\nreceipt="$RECEIPT"\n' + guard],
+            env=os.environ | {
+                "RECEIPT": str(receipt),
+                "WORKFLOW_NAME": workflow_name,
+                "RUNNER_TEMP": str(tmp_path),
+            },
+            capture_output=True, text=True, check=False,
+        )
+
+    worker = run("wow-v17-chatgpt-engineering-worker")
+    assert worker.returncode == 0, worker.stderr
+    existing_pr_certifier = run("wow-v17-existing-pr-governance-review")
+    assert existing_pr_certifier.returncode != 0
+    assert "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" in existing_pr_certifier.stderr
 
 
 def test_existing_pr_certifier_is_protected_main_read_only_and_same_repo_only():

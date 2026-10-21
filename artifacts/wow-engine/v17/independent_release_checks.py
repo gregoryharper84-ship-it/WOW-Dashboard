@@ -72,6 +72,10 @@ def gather(
     *,
     fetch: Fetch = gh_fetch,
     source_review_resolver: Callable[..., dict[str, Any]] | None = None,
+    source_review_data: dict[str, Any] | None = None,
+    independent_review_active: bool = True,
+    source_review_run_id: int | None = None,
+    source_review_run_attempt: int | None = None,
 ) -> dict[str, Any]:
     """Read-only exact-head evidence. Unreadable or truncated inputs are typed."""
     errors: list[str] = []
@@ -125,19 +129,28 @@ def gather(
     reviews = _paged(fetch, f"repos/{repo}/pulls/{pr_number}/reviews", None, errors, "REVIEWS")
     ev["reviews"] = [{"user": (r.get("user") or {}).get("login"), "state": r.get("state"),
                       "commit_id": r.get("commit_id"), "submitted_at": r.get("submitted_at")} for r in reviews]
-    try:
-        resolver = source_review_resolver or _source_review_module.resolve_current_source_review
-        ev["source_review"] = resolver(
-            repository=repo,
-            pr_number=pr_number,
-            head_sha=str(ev["pr"]["head_sha"] or ""),
-            head_ref=str(ev["pr"]["head_ref"] or ""),
-            token=os.environ.get("GH_TOKEN", ""),
-            expected_file_paths=ev["source_review_paths"],
-        )
-    except _source_review_module.SourceReviewError as exc:
+    ev["independent_review_active"] = independent_review_active
+    if independent_review_active:
+        if source_review_data is not None:
+            ev["source_review"] = source_review_data
+        else:
+            try:
+                resolver = source_review_resolver or _source_review_module.resolve_current_source_review
+                ev["source_review"] = resolver(
+                    repository=repo,
+                    pr_number=pr_number,
+                    head_sha=str(ev["pr"]["head_sha"] or ""),
+                    head_ref=str(ev["pr"]["head_ref"] or ""),
+                    token=os.environ.get("GH_TOKEN", ""),
+                    expected_file_paths=ev["source_review_paths"],
+                    expected_workflow_run_id=source_review_run_id,
+                    expected_workflow_run_attempt=source_review_run_attempt,
+                )
+            except _source_review_module.SourceReviewError as exc:
+                ev["source_review"] = None
+                errors.append(f"SOURCE_REVIEW_UNAVAILABLE:{exc}")
+    else:
         ev["source_review"] = None
-        errors.append(f"SOURCE_REVIEW_UNAVAILABLE:{exc}")
     return ev
 
 
@@ -159,6 +172,21 @@ def targets(repo: str, *, pr: str | None = None,
             if not SHA_RE.match(str(sha or "")):
                 errors.append(f"TARGET_HEAD_INVALID:{number}")
                 continue
+            status, live = fetch(f"repos/{repo}/pulls/{number}")
+            head = (live or {}).get("head") or {}
+            base = (live or {}).get("base") or {}
+            if status != 200 or not isinstance(live, dict):
+                errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
+                continue
+            if (
+                live.get("number") != number
+                or head.get("sha") != sha
+                or (head.get("repo") or {}).get("full_name") != repo
+                or base.get("ref") != "main"
+                or (base.get("repo") or {}).get("full_name") != repo
+            ):
+                errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
+                continue
             out.append({"pr": number, "head": sha})
     elif pr is not None:
         if not str(pr).isdigit():
@@ -168,6 +196,13 @@ def targets(repo: str, *, pr: str | None = None,
             sha = ((body or {}).get("head") or {}).get("sha") if status == 200 and isinstance(body, dict) else None
             if not SHA_RE.match(str(sha or "")):
                 errors.append(f"TARGET_PR_UNREADABLE:{status}")
+            elif (
+                body.get("number") != int(pr)
+                or ((body.get("head") or {}).get("repo") or {}).get("full_name") != repo
+                or (body.get("base") or {}).get("ref") != "main"
+                or ((body.get("base") or {}).get("repo") or {}).get("full_name") != repo
+            ):
+                errors.append("TARGET_PR_IDENTITY_MISMATCH")
             else:
                 out.append({"pr": int(pr), "head": sha})
     else:
@@ -221,10 +256,13 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         findings.append("QA_PR_BASE_NOT_MAIN")
     if pr.get("head_repo") != ev.get("repository"):
         findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
+    review_active = ev.get("independent_review_active", True)
+    if not isinstance(review_active, bool):
+        findings.append("QA_REVIEW_POLICY_INVALID")
     source_review = ev.get("source_review")
-    if not isinstance(source_review, dict):
+    if review_active and not isinstance(source_review, dict):
         findings.append("QA_INDEPENDENT_SOURCE_REVIEW_MISSING")
-    else:
+    elif review_active and isinstance(source_review, dict):
         try:
             if not isinstance(source_review.get("artifact_id"), int) or isinstance(
                 source_review.get("artifact_id"), bool
@@ -258,7 +296,10 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     if not files:
         findings.append("QA_FILES_EMPTY")
     runs = ev.get("check_runs") or []
-    for name in QA_EVIDENCE_CHECKS:
+    expected_checks = QA_EVIDENCE_CHECKS
+    if review_active is False:
+        expected_checks = (*expected_checks, TRUSTED_GOVERNANCE_CHECK)
+    for name in expected_checks:
         run = _latest(runs, name, head, GITHUB_ACTIONS_APP_ID)
         if run is None:
             findings.append(f"QA_EVIDENCE_MISSING:{name}")
@@ -331,6 +372,12 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--repo", required=True)
     g.add_argument("--pr", required=True, type=int)
     g.add_argument("--expected-head", required=True)
+    g.add_argument("--legacy-review-policy", action="store_true")
+    g.add_argument("--source-review-json", type=Path)
+    g.add_argument("--source-review-run-json", type=Path)
+    g.add_argument("--source-review-artifact-id", type=int)
+    g.add_argument("--source-review-run-id", type=int)
+    g.add_argument("--source-review-run-attempt", type=int)
     for name in ("decide-qa", "decide-release"):
         d = sub.add_parser(name)
         d.add_argument("--evidence", required=True)
@@ -343,7 +390,29 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(targets(args.repo, pr=args.pr, workflow_run_prs=prs)))
         return 0
     if args.cmd == "gather":
-        print(json.dumps(gather(args.repo, args.pr, args.expected_head), indent=2))
+        review_args = (
+            args.source_review_json,
+            args.source_review_run_json,
+            args.source_review_artifact_id,
+        )
+        source_review_data = None
+        if any(value is not None for value in review_args):
+            if not all(value is not None for value in review_args):
+                raise SystemExit("SOURCE_REVIEW_EVIDENCE_ARGUMENTS_INCOMPLETE")
+            source_review_data = {
+                "artifact_id": args.source_review_artifact_id,
+                "artifact": json.loads(args.source_review_json.read_text(encoding="utf-8")),
+                "run": json.loads(args.source_review_run_json.read_text(encoding="utf-8")),
+            }
+        print(json.dumps(gather(
+            args.repo,
+            args.pr,
+            args.expected_head,
+            source_review_data=source_review_data,
+            independent_review_active=not args.legacy_review_policy,
+            source_review_run_id=args.source_review_run_id,
+            source_review_run_attempt=args.source_review_run_attempt,
+        ), indent=2))
         return 0
     ev = json.loads(Path(args.evidence).read_text())
     if args.cmd == "decide-qa":

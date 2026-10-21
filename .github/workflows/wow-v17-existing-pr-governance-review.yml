@@ -15,7 +15,7 @@ on:
         required: false
         type: string
   workflow_run:
-    workflows: [wow-v17-independent-source-review]
+    workflows: [wow-v17-independent-qa-check]
     types: [completed]
     branches: [main]
 
@@ -51,7 +51,7 @@ jobs:
 
       - name: Resolve exact standalone source-review artifact
         id: source_review
-        if: github.event_name == 'workflow_run'
+        if: github.event_name == 'workflow_run' && vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -65,8 +65,8 @@ jobs:
           source_run="$RUNNER_TEMP/source-review-run.json"
           gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > "$source_run"
           jq -e --arg repo "$GITHUB_REPOSITORY" --argjson attempt "$SOURCE_ATTEMPT" \
-            '.name == "wow-v17-independent-source-review" and
-             .path == ".github/workflows/wow-v17-independent-source-review.yml" and
+            '.name == "wow-v17-independent-qa-check" and
+             .path == ".github/workflows/wow-v17-independent-qa-check.yml" and
              (.event == "workflow_dispatch" or .event == "workflow_run") and .head_branch == "main" and
              .head_repository.full_name == $repo and .repository.full_name == $repo and
              .run_attempt == $attempt and .status == "completed" and .conclusion == "success"' \
@@ -103,16 +103,23 @@ jobs:
           done
           printf '%s\n' "$inventory" > "$RUNNER_TEMP/source-review-artifact-inventory.json"
           python - "$RUNNER_TEMP/source-review-artifact-inventory.json" \
-            "wow-v17-independent-source-review-${source_pr}-${source_sha}-" "$artifact_id" <<'PY'
+            "wow-v17-independent-source-review-${source_pr}-${source_sha}-" "$artifact_id" \
+            "$SOURCE_RUN_ID" "$SOURCE_ATTEMPT" <<'PY'
           import json, pathlib, sys
           sys.path.insert(0, ".github/scripts")
           from independent_source_review_receipt import (
               SourceReviewError, verify_unique_artifact_inventory,
           )
           try:
+              prefix, run_id, attempt = sys.argv[2], sys.argv[4], sys.argv[5]
+              records = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+              records = [item for item in records if
+                         isinstance(item, dict) and isinstance(item.get("name"), str)
+                         and item["name"].startswith(prefix)
+                         and item["name"].endswith(f"-{run_id}-{attempt}")]
               verify_unique_artifact_inventory(
-                  json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")),
-                  prefix=sys.argv[2],
+                  records,
+                  prefix=prefix,
                   expected_artifact_id=int(sys.argv[3]),
               )
           except (OSError, json.JSONDecodeError, ValueError) as exc:

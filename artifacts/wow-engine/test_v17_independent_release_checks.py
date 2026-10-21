@@ -147,6 +147,15 @@ def test_ordinary_pr_with_complete_exact_head_evidence_passes():
     assert m.qa_findings(evidence()) == []
 
 
+def test_legacy_policy_requires_trusted_governance_until_review_activation():
+    ev = evidence(independent_review_active=False, source_review=None)
+    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in m.qa_findings(ev)
+    ev["check_runs"].append(run_(m.TRUSTED_GOVERNANCE_CHECK, rid=900))
+    assert m.qa_findings(ev) == []
+    with_qa(ev)
+    assert m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP) == []
+
+
 @pytest.mark.parametrize("name", m.QA_EVIDENCE_CHECKS)
 def test_each_missing_or_failed_evidence_check_holds(name):
     ev = evidence()
@@ -324,17 +333,46 @@ class Fake:
 
 
 def test_workflow_run_targets_use_each_prs_own_head_not_the_base():
-    prs = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}},
-           {"number": 8, "head": {"sha": OLD}, "base": {"ref": "release"}},
-           {"number": 9, "head": {"sha": "zz"}, "base": {"ref": "main"}}]
-    out = m.targets(REPO, workflow_run_prs=prs, fetch=Fake({}))
+    live = {
+        "number": 7,
+        "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    routes = {f"repos/{REPO}/pulls/7": (200, live)}
+    prs = [
+        {"number": 7, "head": {"sha": HEAD, "repo": {"id": 1, "name": "WOW-Dashboard",
+             "url": "https://api.github.com/repos/" + REPO}},
+         "base": {"ref": "main", "repo": {"id": 1, "name": "WOW-Dashboard",
+             "url": "https://api.github.com/repos/" + REPO}}},
+        {"number": 8, "head": {"sha": OLD}, "base": {"ref": "release"}},
+        {"number": 9, "head": {"sha": "zz"}, "base": {"ref": "main"}},
+    ]
+    out = m.targets(REPO, workflow_run_prs=prs, fetch=Fake(routes))
     assert out["targets"] == [{"pr": 7, "head": HEAD}]
     assert out["errors"] == ["TARGET_HEAD_INVALID:9"]
 
 
+def test_workflow_run_target_holds_when_live_pr_is_stale_or_foreign():
+    event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    stale = {"number": 7, "head": {"sha": OLD, "repo": {"full_name": REPO}},
+             "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    assert m.targets(
+        REPO, workflow_run_prs=event_pr,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, stale)}),
+    )["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    foreign = {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "fork/WOW-Dashboard"}},
+               "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    assert m.targets(
+        REPO, workflow_run_prs=event_pr,
+        fetch=Fake({f"repos/{REPO}/pulls/7": (200, foreign)}),
+    )["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+
+
 def test_dispatch_target_is_validated_and_resolved():
     assert m.targets(REPO, pr="7;rm", fetch=Fake({}))["errors"] == ["TARGET_PR_INVALID"]
-    out = m.targets(REPO, pr="7", fetch=Fake({f"repos/{REPO}/pulls/7": (200, {"head": {"sha": HEAD}})}))
+    live = {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+            "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    out = m.targets(REPO, pr="7", fetch=Fake({f"repos/{REPO}/pulls/7": (200, live)}))
     assert out == {"targets": [{"pr": 7, "head": HEAD}], "errors": []}
     assert m.targets(REPO, pr="7", fetch=Fake({}))["errors"] == ["TARGET_PR_UNREADABLE:404"]
 
@@ -353,8 +391,8 @@ def _gather_routes(files=None, runs=None, changed=None):
                                           "conclusion": "success", "app": {"id": GHA}}]
     return {
         f"repos/{REPO}": (200, {"owner": {"login": OWNER}}),
-        f"repos/{REPO}/pulls/7": (200, {"state": "open", "draft": False, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
-                                        "base": {"ref": "main"}, "user": {"id": 9001, "login": "bot"},
+        f"repos/{REPO}/pulls/7": (200, {"number": 7, "state": "open", "draft": False, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
+                                        "base": {"ref": "main", "repo": {"full_name": REPO}}, "user": {"id": 9001, "login": "bot"},
                                         "changed_files": changed if changed is not None else len(files)}),
         f"repos/{REPO}/pulls/7/files?per_page=100&page=1": (200, files),
         f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1": (200, {"total_count": len(runs), "check_runs": runs}),
@@ -424,10 +462,11 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
     assert not re.search(r"^\s+pull_request(_target|_review)?\s*:", on, re.M), "never run PR-context triggers"
     perms = text.split("\npermissions:\n", 1)[1].split("\n\n", 1)[0]
     assert "write" not in perms, "workflow token stays read-only"
-    assert "ref: main" in text and "persist-credentials: false" in text
-    assert "github.event.pull_request" not in text and "head_ref" not in text
+    expected_checkout = "ref: ${{ github.sha }}" if wf == QA_WF else "ref: main"
+    assert expected_checkout in text and "persist-credentials: false" in text
+    assert "github.event.pull_request" not in text
     for use in re.findall(r"uses:\s*(\S+)", text):
-        assert re.search(r"@[0-9a-f]{40}$", use), f"unpinned action {use}"
+        assert use.startswith("./") or re.search(r"@[0-9a-f]{40}$", use), f"unpinned action {use}"
     assert "permission-checks: write" in text
     for step in text.split("      - name: ")[1:]:
         if "run: |" in step:
@@ -440,7 +479,7 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
 @pytest.mark.parametrize("wf, upstream", [
     (QA_WF, [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
-        "wow-v17-change-impact-gate", "wow-v17-independent-source-review",
+        "wow-v17-change-impact-gate",
     ]),
     (REL_WF, ["wow-v17-independent-qa-check"]),
 ])
@@ -523,13 +562,16 @@ def _run_decide(tmp, wf, routes, env_extra):
     (tmp / "routes.json").write_text(json.dumps(routes))
     runner = tmp / "runner"
     runner.mkdir(exist_ok=True)
+    source = source_review_evidence(["artifacts/x.py"], author="wow-engineering[bot]")
+    (runner / "wow-v17-independent-source-review.json").write_text(json.dumps(source["artifact"]))
+    (runner / "source-review-run.json").write_text(json.dumps(source["run"]))
     env = dict(os.environ, PATH=f"{tmp / 'bin'}:{os.environ['PATH']}", FAKE_GH_ROUTES=str(tmp / "routes.json"),
                FAKE_GH_LOG=str(tmp / "gh.log"), GITHUB_REPOSITORY=REPO, RUNNER_TEMP=str(runner),
                GITHUB_OUTPUT=str(tmp / "out.txt"), GITHUB_STEP_SUMMARY=str(tmp / "summary.md"), GH_TOKEN="read-only",
+               PR_NUMBER="7", HEAD_SHA=HEAD, REVIEW_ACTIVE="true", SOURCE_REVIEW_ARTIFACT_ID="99",
+               SOURCE_QA_RUN_ID="", SOURCE_QA_RUN_ATTEMPT="",
                PYTHONPATH=f"{tmp}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
-               FAKE_SOURCE_REVIEW=json.dumps(source_review_evidence(
-                   ["artifacts/x.py"], author="wow-engineering[bot]"
-               )))
+               FAKE_SOURCE_REVIEW=json.dumps(source))
     env.update(env_extra)
     proc = subprocess.run(["bash", "-c", _step_script(wf, "Decide at exact head (read-only)")],
                           cwd=ROOT, env=env, capture_output=True, text=True)
@@ -572,21 +614,66 @@ def test_qa_workflow_publishes_failure_when_evidence_is_missing(fake_gh):
             "EVENT": "workflow_dispatch",
             "INPUT_PR": "7",
             "WR_PRS": "null",
-            "FAKE_SOURCE_REVIEW_MODE": "missing",
+            "REVIEW_ACTIVE": "false",
         },
     )
     assert proc.returncode == 0, proc.stderr
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "failure"
-    assert any("QA_EVIDENCE_INCOMPLETE:SOURCE_REVIEW_UNAVAILABLE:" in finding for finding in decision["findings"])
+    assert f"QA_EVIDENCE_MISSING:{m.TRUSTED_GOVERNANCE_CHECK}" in decision["findings"]
 
 
 def test_invalid_dispatch_target_fails_without_publishing(fake_gh):
-    proc, runner, _ = _run_decide(fake_gh, QA_WF, _routes_for_pr(_evidence_runs()),
-                                  {"EVENT": "workflow_dispatch", "INPUT_PR": "7;id", "WR_PRS": "null"})
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        env=dict(os.environ, PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+                 FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+                 GITHUB_REPOSITORY=REPO, GITHUB_OUTPUT=str(fake_gh / "out"),
+                 GH_TOKEN="read-only", EVENT="workflow_dispatch", INPUT_PR="7;id", WR_PRS="null"),
+        capture_output=True,
+        text=True,
+    )
     assert proc.returncode != 0
     assert "::error::QA_TARGETS_UNRESOLVED" in proc.stdout
-    assert not (runner / "decisions" / "decision-7.json").exists()
+
+
+def test_qa_workflow_resolves_minimal_workflow_run_repositories_against_live_pr(fake_gh):
+    minimal_pr = {
+        "number": 7,
+        "head": {"sha": HEAD, "repo": {"id": 1, "name": "WOW-Dashboard",
+                  "url": f"https://api.github.com/repos/{REPO}"}},
+        "base": {"ref": "main", "repo": {"id": 1, "name": "WOW-Dashboard",
+                  "url": f"https://api.github.com/repos/{REPO}"}},
+    }
+    live_pr = {
+        "number": 7,
+        "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+    routes = {f"repos/{REPO}/pulls/7": [200, live_pr]}
+    (fake_gh / "routes.json").write_text(json.dumps(routes))
+    env = dict(os.environ, PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+               FAKE_GH_ROUTES=str(fake_gh / "routes.json"), GITHUB_REPOSITORY=REPO,
+               FAKE_GH_LOG=str(fake_gh / "gh.log"),
+               GITHUB_OUTPUT=str(fake_gh / "resolved.txt"), GH_TOKEN="read-only",
+               EVENT="workflow_run", INPUT_PR="", WR_PRS=json.dumps([minimal_pr]))
+
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "pr_number=7" in (fake_gh / "resolved.txt").read_text()
+    assert f"head_sha={HEAD}" in (fake_gh / "resolved.txt").read_text()
+    routes[f"repos/{REPO}/pulls/7"][1]["head"]["sha"] = OLD
+    (fake_gh / "routes.json").write_text(json.dumps(routes))
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    assert "TARGET_PR_IDENTITY_MISMATCH:7" in proc.stdout
 
 
 def test_release_workflow_end_to_end_requires_qa_from_qa_app(fake_gh):
@@ -613,6 +700,17 @@ def test_missing_app_identity_fails_closed_and_publishes_nothing(wf, code, app_i
     proc = subprocess.run(["bash", "-c", _step_script(wf, "Require this role's App identity")],
                           env=dict(os.environ, APP_ID=app_id, KEY_PRESENT=present), capture_output=True, text=True)
     assert proc.returncode != 0 and f"::error::{code}:" in proc.stdout
+
+
+def test_activated_qa_review_requires_its_separate_provider_credential():
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Require isolated adversarial-review credential")],
+        env=dict(os.environ, KEY_PRESENT="false"),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in proc.stdout
 
 
 def test_publish_refuses_a_decision_that_claims_authority(fake_gh):
@@ -665,7 +763,7 @@ def test_each_app_secret_is_isolated_by_main_only_environment():
     ):
         source = workflow.read_text()
         assert ("    environment: " + environment) in source
-        assert "ref: main" in source
+        assert ("ref: ${{ github.sha }}" if workflow == QA_WF else "ref: main") in source
         assert "vars." + app_id in source
         assert "secrets." + secret in source
         other_secret = "WOW_RELEASE_APP_PRIVATE_KEY" if environment == "wow-qa" else "WOW_QA_APP_PRIVATE_KEY"

@@ -10,7 +10,7 @@ from zipfile import ZipFile
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "independent_source_review_receipt.py"
-WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "wow-v17-independent-source-review.yml"
+WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "wow-v17-independent-qa-check.yml"
 spec = importlib.util.spec_from_file_location("independent_source_review_receipt", SCRIPT)
 review = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
@@ -159,7 +159,7 @@ def test_source_review_artifact_binds_exact_head_complete_diff_and_trusted_run()
     assert receipt["review"]["decision"] == "PASS"
     assert receipt["diff"]["sha256"] == RESULT["reviewed_diff_sha256"]
     assert receipt["source"]["provider_identity"] == "openai-codex-action"
-    assert receipt["source"]["credential_scope"] == "WOW_REVIEW_OPENAI_API_KEY"
+    assert receipt["source"]["credential_scope"] == "WOW_QA_REVIEW_OPENAI_API_KEY"
 
 
 def test_workflow_run_triggered_review_keeps_protected_main_provenance():
@@ -221,6 +221,13 @@ def test_foreign_or_failed_workflow_run_holds():
         verify(artifact(), run=run)
 
 
+def test_protected_main_source_checkout_drift_cannot_match_receipt():
+    receipt = artifact()
+    changed_main = {**CONSUMER_RUN, "head_sha": "c" * 40}
+    with pytest.raises(review.SourceReviewError, match="PROVENANCE_MISMATCH"):
+        verify(receipt, run=changed_main)
+
+
 def test_expired_and_future_source_reviews_hold():
     with pytest.raises(review.SourceReviewError, match="EXPIRED_OR_FUTURE"):
         verify(artifact(), now=NOW + timedelta(minutes=30))
@@ -236,9 +243,7 @@ def test_replayed_or_duplicate_artifact_inventory_holds():
     )
     with pytest.raises(review.SourceReviewError, match="ARTIFACT_DUPLICATE_OR_MISSING"):
         review.verify_unique_artifact_inventory(
-            single + [{
-                "id": 78, "name": name + "-2", "expired": False, "created_at": NOW.isoformat(),
-            }],
+            single + [{**single[0], "id": 78}],
             prefix=f"wow-v17-independent-source-review-1822-{HEAD}-",
             expected_artifact_id=77,
             now=NOW,
@@ -301,7 +306,7 @@ def test_current_review_resolution_verifies_zip_run_and_unique_fresh_artifact():
     assert resolved["run"] == CONSUMER_RUN
 
     routes["/actions/artifacts?per_page=100&page=1"] = {
-        "artifacts": [record, {**record, "id": 78, "name": name + "-duplicate"}]
+        "artifacts": [record, {**record, "id": 78}]
     }
     with pytest.raises(review.SourceReviewError, match="ARTIFACT_DUPLICATE_OR_MISSING"):
         review.resolve_current_source_review(
@@ -314,6 +319,55 @@ def test_current_review_resolution_verifies_zip_run_and_unique_fresh_artifact():
             get_json=routes.__getitem__,
             download_artifact=lambda artifact_id: archive.getvalue(),
         )
+
+
+def test_review_resolution_ignores_prior_distinct_run_artifacts():
+    latest = review.build_artifact(
+        repository=review.CANONICAL_REPOSITORY,
+        pr=pr(),
+        files=DIFF,
+        commit=COMMIT_METADATA,
+        review_result=RESULT,
+        run={**PRODUCER_RUN, "id": 12346},
+        now=NOW,
+    )
+    payload = (json.dumps(latest, sort_keys=True, indent=2) + "\n").encode()
+    archive = BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("wow-v17-independent-source-review.json", payload)
+        zip_file.writestr(
+            "wow-v17-independent-source-review.json.sha256",
+            review.hashlib.sha256(payload).hexdigest() + "\n",
+        )
+    records = [
+        {"id": 77, "name": f"wow-v17-independent-source-review-1822-{HEAD}-12345-1",
+         "expired": False, "created_at": (NOW - timedelta(minutes=2)).isoformat()},
+        {"id": 78, "name": f"wow-v17-independent-source-review-1822-{HEAD}-12346-1",
+         "expired": False, "created_at": NOW.isoformat()},
+    ]
+    run = {**CONSUMER_RUN, "id": 12346}
+    routes = {
+        "/actions/artifacts?per_page=100&page=1": {"artifacts": records},
+        "/actions/artifacts/78": {
+            "id": 78, "name": records[1]["name"], "expired": False,
+            "workflow_run": {"id": 12346},
+        },
+        "/actions/runs/12346": run,
+    }
+
+    resolved = review.resolve_current_source_review(
+        repository=review.CANONICAL_REPOSITORY,
+        pr_number=1822,
+        head_sha=HEAD,
+        head_ref="copilot/fix",
+        token="read-only",
+        now=NOW,
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive.getvalue() if artifact_id == 78 else b"",
+    )
+
+    assert resolved["artifact_id"] == 78
+    assert resolved["artifact"] == latest
 
 
 def test_review_requires_complete_untruncated_diff_and_exact_file_coverage():
@@ -414,25 +468,35 @@ def test_artifact_checksum_is_verified_by_cli(tmp_path):
     assert result == 1
 
 
-def test_workflow_is_main_only_read_only_and_uses_dedicated_provider_secret():
+def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     parsed = __import__("yaml").load(workflow, Loader=__import__("yaml").BaseLoader)
+    steps = parsed["jobs"]["qa"]["steps"]
     recheck = next(
-        step for step in parsed["jobs"]["independent-source-review"]["steps"]
+        step for step in steps
         if step.get("name") == "Recheck PR head and diff after review"
     )
+    review_step = next(step for step in steps if step.get("name") == "Run isolated read-only adversarial review")
+    publisher_step = next(step for step in steps if step.get("name") == "Mint checks-only App token")
 
     assert "github.ref == 'refs/heads/main'" in workflow
-    assert parsed["on"]["workflow_run"]["workflows"] == ["wow-v17-rapid-repair"]
+    assert parsed["on"]["workflow_run"]["workflows"] == [
+        "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
+    ]
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
-    assert "SOURCE_REVIEW_UPSTREAM_RUN_UNTRUSTED" in workflow
-    assert "github.event.workflow_run.conclusion == 'success'" in workflow
     assert "actions: read" in workflow
-    assert "environment: wow-review" in workflow
-    assert "WOW_REVIEW_OPENAI_API_KEY" in workflow
-    assert "REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
+    assert "environment: wow-qa" in workflow
+    assert "WOW_QA_REVIEW_OPENAI_API_KEY" in workflow
+    assert "QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
     assert 'permission_profile: ":read-only"' in workflow
-    assert "ref: main" in workflow
+    assert "ref: ${{ github.sha }}" in workflow
+    assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
+    assert "WOW_REVIEW_OPENAI_API_KEY" not in workflow
+    assert "wow-review" not in workflow
+    assert review_step["with"]["openai_api_key"] == "${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}"
+    assert "WOW_QA_APP_PRIVATE_KEY" not in review_step["with"].values()
+    assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in str(publisher_step)
     assert "contents: write" not in workflow
     assert "pull-requests: write" not in workflow
     assert "actions: write" not in workflow

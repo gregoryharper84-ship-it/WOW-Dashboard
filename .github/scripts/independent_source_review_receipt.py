@@ -19,12 +19,10 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from zipfile import BadZipFile, ZipFile
 
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
-WORKFLOW_NAME = "wow-v17-independent-source-review"
-WORKFLOW_PATH = ".github/workflows/wow-v17-independent-source-review.yml"
-UPSTREAM_WORKFLOW_NAME = "wow-v17-rapid-repair"
-UPSTREAM_WORKFLOW_PATH = ".github/workflows/wow-v17-rapid-repair.yml"
+WORKFLOW_NAME = "wow-v17-independent-qa-check"
+WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
 PROVIDER_IDENTITY = "openai-codex-action"
-CREDENTIAL_SCOPE = "WOW_REVIEW_OPENAI_API_KEY"
+CREDENTIAL_SCOPE = "WOW_QA_REVIEW_OPENAI_API_KEY"
 MAX_REVIEW_AGE = timedelta(minutes=30)
 MAX_DIFF_FILES = 100
 MAX_DIFF_BYTES = 512 * 1024
@@ -171,6 +169,8 @@ def resolve_current_source_review(
     head_ref: str,
     token: str,
     expected_file_paths: list[str] | None = None,
+    expected_workflow_run_id: int | None = None,
+    expected_workflow_run_attempt: int | None = None,
     now: datetime | None = None,
     get_json: Any = None,
     download_artifact: Any = None,
@@ -213,6 +213,26 @@ def resolve_current_source_review(
             created = _timestamp(record.get("created_at"), "SOURCE_REVIEW_ARTIFACT_CREATED_AT")
             if created <= clock.astimezone(timezone.utc) < created + MAX_REVIEW_AGE:
                 matching.append(record)
+    if expected_workflow_run_id is not None:
+        expected_workflow_run_id = _positive_int(
+            expected_workflow_run_id, "SOURCE_REVIEW_RUN_ID"
+        )
+        expected_workflow_run_attempt = _positive_int(
+            expected_workflow_run_attempt, "SOURCE_REVIEW_RUN_ATTEMPT"
+        )
+        suffix = f"-{expected_workflow_run_id}-{expected_workflow_run_attempt}"
+        matching = [record for record in matching if str(record.get("name", "")).endswith(suffix)]
+    else:
+        matching.sort(key=lambda record: (_timestamp(record.get("created_at"), "SOURCE_REVIEW_ARTIFACT_CREATED_AT"),
+                                          int(record.get("id") or 0)), reverse=True)
+        if matching:
+            latest_name = matching[0].get("name")
+            name_match = re.fullmatch(
+                re.escape(prefix) + r"([1-9][0-9]*)-([1-9][0-9]*)", str(latest_name)
+            )
+            _require(name_match is not None, "SOURCE_REVIEW_ARTIFACT_NAME_INVALID")
+            suffix = f"-{name_match.group(1)}-{name_match.group(2)}"
+            matching = [record for record in matching if str(record.get("name", "")).endswith(suffix)]
     _require(len(matching) == 1, "SOURCE_REVIEW_ARTIFACT_DUPLICATE_OR_MISSING")
     artifact_meta = matching[0]
     artifact_id = _positive_int(artifact_meta.get("id"), "SOURCE_REVIEW_ARTIFACT_ID")
@@ -224,7 +244,11 @@ def resolve_current_source_review(
     run_id, attempt = name_match.groups()
 
     verify_unique_artifact_inventory(
-        records, prefix=prefix, expected_artifact_id=artifact_id, now=clock
+        [record for record in records if str(record.get("name", "")).startswith(prefix)
+         and str(record.get("name", "")).endswith(f"-{run_id}-{attempt}")],
+        prefix=prefix,
+        expected_artifact_id=artifact_id,
+        now=clock,
     )
     actual_meta = json_fetch(f"/actions/artifacts/{artifact_id}")
     _require(
@@ -917,7 +941,13 @@ def resolve_source_review_run(
     else:
         raise SourceReviewError("SOURCE_REVIEW_ARTIFACT_INVENTORY_LIMIT_EXCEEDED")
     verify_unique_artifact_inventory(
-        records,
+        [
+            record for record in records
+            if isinstance(record, Mapping)
+            and isinstance(record.get("name"), str)
+            and record["name"].startswith(f"wow-v17-independent-source-review-{pr_number}-{head_sha}-")
+            and record["name"].endswith(f"-{run_id}-{attempt}")
+        ],
         prefix=f"wow-v17-independent-source-review-{pr_number}-{head_sha}-",
         expected_artifact_id=artifact_id,
         now=now,

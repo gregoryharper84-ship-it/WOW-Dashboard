@@ -42,14 +42,17 @@ REVIEWER = {"id": 9001, "login": "independent-reviewer"}
 ALLOWLIST = [REVIEWER]
 
 
-def test_certifier_workflow_uses_no_claude_or_write_permissions():
+def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permissions():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "uses: ./.github/actions/wow-claude-agent" not in workflow
     assert "ANTHROPIC_API_KEY" not in workflow
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in workflow
     assert "TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}" in workflow
-    assert "workflows: [wow-v17-independent-source-review]" in workflow
+    assert "workflows: [wow-v17-independent-qa-check]" in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
+    assert "wow-v17-independent-source-review" in workflow
+    assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
     assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow
     assert "--source-review-json" in workflow
     assert "TRUST_ROOT_BOOTSTRAP" in workflow
@@ -59,17 +62,19 @@ def test_certifier_workflow_uses_no_claude_or_write_permissions():
     assert "pull-requests: write" not in workflow
 
 
-def test_certifier_consumes_only_authenticated_standalone_review_run_artifacts():
+def test_certifier_consumes_only_authenticated_qa_review_run_artifacts():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "workflow_run:" in workflow
-    assert "workflows: [wow-v17-independent-source-review]" in workflow
+    assert "workflows: [wow-v17-independent-qa-check]" in workflow
     assert "SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" in workflow
     assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow
     assert "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" in workflow
     assert "refs?|related to" in workflow
     assert "--source-review-artifact-id" in workflow
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
+    assert ".event == \"workflow_dispatch\" or .event == \"workflow_run\"" in workflow
+    assert "ref: main" in workflow
 
 
 def test_source_review_artifact_name_regex_captures_pr_and_head_under_bash_nounset():

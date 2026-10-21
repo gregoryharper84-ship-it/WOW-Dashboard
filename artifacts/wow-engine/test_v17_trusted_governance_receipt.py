@@ -1,9 +1,13 @@
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+import textwrap
 import zipfile
+from datetime import datetime, timezone
 
 import pytest
 import yaml
@@ -18,12 +22,22 @@ MORNING_GREEN = ROOT / ".github" / "workflows" / "wow-v17-morning-green-continua
 RELEASE = ROOT / ".github" / "workflows" / "wow-v17-release-production-verification-agent.yml"
 EXISTING_PR_REVIEW = ROOT / ".github" / "workflows" / "wow-v17-existing-pr-governance-review.yml"
 EXISTING_PR_VERIFIER = ROOT / ".github" / "scripts" / "verify_existing_pr_governance_receipt.py"
+SOURCE_REVIEW_VERIFIER = ROOT / ".github" / "scripts" / "independent_source_review_receipt.py"
 
 
 def _load_verifier():
     spec = importlib.util.spec_from_file_location("verify_engineering_governance_receipt", VERIFIER_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_source_review_verifier():
+    spec = importlib.util.spec_from_file_location("independent_source_review_receipt_for_gate", SOURCE_REVIEW_VERIFIER)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -326,6 +340,190 @@ def _certifier_fixture(*, run_overrides=None, artifact_sha=None, receipt_sha=Non
         "workflow_run": {"id": 123},
     }
     return run, receipt, artifact
+
+
+def test_trusted_gate_consumes_authenticated_automatic_qa_review_run(tmp_path):
+    source_review = _load_source_review_verifier()
+    head = "a" * 40
+    main_sha = "c" * 40
+    paths = ["artifacts/wow-engine/v17/fixture.py"]
+    files = [{
+        "filename": paths[0],
+        "previous_filename": None,
+        "status": "modified",
+        "patch": "@@ -1 +1 @@\n-old\n+new",
+        "additions": 1,
+        "deletions": 1,
+    }]
+    diff_sha = source_review.canonical_diff(files, expected_count=1)[1]
+    qa_run = {
+        "id": 456,
+        "run_attempt": 2,
+        "name": source_review.WORKFLOW_NAME,
+        "path": source_review.WORKFLOW_PATH,
+        "event": "workflow_run",
+        "head_branch": "main",
+        "repository": source_review.CANONICAL_REPOSITORY,
+        "head_sha": main_sha,
+    }
+    review_artifact = source_review.build_artifact(
+        repository=source_review.CANONICAL_REPOSITORY,
+        pr={
+            "number": 42,
+            "state": "open",
+            "draft": False,
+            "merged_at": None,
+            "changed_files": 1,
+            "user": {"id": 9001, "login": "wow-engineering[bot]"},
+            "head": {
+                "sha": head,
+                "ref": "fix/exact-head",
+                "repo": {"full_name": source_review.CANONICAL_REPOSITORY},
+            },
+            "base": {
+                "ref": "main",
+                "repo": {"full_name": source_review.CANONICAL_REPOSITORY},
+            },
+        },
+        files=files,
+        commit={
+            "sha": head,
+            "commit": {"tree": {"sha": "d" * 40}, "message": "Fixture review"},
+            "parents": [{"sha": "e" * 40}],
+            "author": {"login": "copilot-swe-agent"},
+            "committer": {"login": "copilot-swe-agent"},
+        },
+        review_result={
+            "decision": "PASS",
+            "summary": "Reviewed the exact source diff.",
+            "reviewed_head_sha": head,
+            "reviewed_diff_sha256": diff_sha,
+            "reviewed_files": paths,
+            "assessment": {
+                "source_review": "PASS",
+                "security_review": "PASS",
+                "probability_integrity_review": "PASS",
+            },
+            "findings": [],
+        },
+        run=qa_run,
+        now=datetime.now(timezone.utc),
+    )
+    artifact_path = tmp_path / "source-review.json"
+    source_review.write_artifact(review_artifact, artifact_path)
+    artifact_bytes = artifact_path.read_bytes()
+    artifact_digest = hashlib.sha256(artifact_bytes).hexdigest()
+    source_run = {
+        **qa_run,
+        "head_repository": {"full_name": source_review.CANONICAL_REPOSITORY},
+        "repository": {"full_name": source_review.CANONICAL_REPOSITORY},
+        "status": "completed",
+        "conclusion": "success",
+    }
+    artifact_name = (
+        f"wow-v17-independent-source-review-42-{head}-456-2"
+    )
+    artifact_meta = {
+        "id": 77,
+        "name": artifact_name,
+        "expired": False,
+        "created_at": review_artifact["created_at_utc"],
+        "workflow_run": {"id": 456},
+    }
+    receipt = {
+        "receipt_schema_version": 3,
+        "certification_mode": "ORDINARY_ENGINEERING",
+        "target": {"pr_number": 42, "head_sha": head, "head_ref": "fix/exact-head"},
+        "independent_review": {
+            "artifact": review_artifact,
+            "artifact_id": 77,
+            "artifact_sha256": artifact_digest,
+        },
+    }
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    archive_path = tmp_path / "source-review.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.write(artifact_path, "wow-v17-independent-source-review.json")
+        archive.writestr(
+            "wow-v17-independent-source-review.json.sha256",
+            artifact_digest + "\n",
+        )
+    routes_path = tmp_path / "routes.json"
+    routes_path.write_text(json.dumps({
+        f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/runs/456": source_run,
+        f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/artifacts/77": artifact_meta,
+        f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/artifacts?per_page=100&page=1": {
+            "artifacts": [artifact_meta],
+        },
+        f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/artifacts/77/zip": {
+            "__file": str(archive_path),
+        },
+    }), encoding="utf-8")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "gh").write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, pathlib, sys\n"
+        "routes=json.loads(pathlib.Path(os.environ['FAKE_GH_ROUTES']).read_text())\n"
+        "value=routes[sys.argv[-1]]\n"
+        "if isinstance(value, dict) and '__file' in value:\n"
+        "    sys.stdout.buffer.write(pathlib.Path(value['__file']).read_bytes())\n"
+        "else:\n"
+        "    print(json.dumps(value))\n",
+        encoding="utf-8",
+    )
+    (bindir / "gh").chmod(0o755)
+    step = GATE.read_text(encoding="utf-8").split(
+        "      - name: Download and verify exact-head receipt\n", 1
+    )[1]
+    script = textwrap.dedent(
+        step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
+    )
+    consumer = (
+        'set -euo pipefail\nreceipt="$RECEIPT"\n'
+        "cert_mode=ORDINARY_ENGINEERING\nreceipt_schema=3\n"
+        + "source_review_run="
+        + script.split("source_review_run=", 1)[1].split(
+            'elif [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]', 1
+        )[0]
+        + "fi\n"
+    )
+    env = os.environ | {
+        "GITHUB_REPOSITORY": source_review.CANONICAL_REPOSITORY,
+        "WORKFLOW_NAME": "wow-v17-existing-pr-governance-review",
+        "RUNNER_TEMP": str(tmp_path / "runner"),
+        "RECEIPT": str(receipt_path),
+        "FAKE_GH_ROUTES": str(routes_path),
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "GH_TOKEN": "read-only",
+    }
+    Path(env["RUNNER_TEMP"]).mkdir()
+
+    accepted = subprocess.run(
+        ["bash", "-c", consumer], cwd=ROOT, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+    for field, value in (
+        ("event", "pull_request_target"),
+        ("head_branch", "feature"),
+        ("status", "in_progress"),
+        ("conclusion", "failure"),
+    ):
+        changed_run = source_run | {field: value}
+        changed_routes = json.loads(routes_path.read_text(encoding="utf-8"))
+        changed_routes[
+            f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/runs/456"
+        ] = changed_run
+        routes_path.write_text(json.dumps(changed_routes), encoding="utf-8")
+        rejected = subprocess.run(
+            ["bash", "-c", consumer], cwd=ROOT, env=env,
+            capture_output=True, text=True, check=False,
+        )
+        assert rejected.returncode != 0, (field, value)
+        assert "GOVERNANCE_SOURCE_REVIEW_RUN_UNTRUSTED" in rejected.stderr
 
 
 @pytest.mark.parametrize(

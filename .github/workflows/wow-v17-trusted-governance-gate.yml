@@ -285,7 +285,7 @@ jobs:
           fi
 
           source_review_run="$RUNNER_TEMP/source-review-run.json"
-          if [ "$receipt_schema" = "3" ]; then
+          if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" = "3" ]; then
             source_run_id=$(jq -er '.independent_review.artifact.source.run_id | select(type == "string" and test("^[1-9][0-9]*$"))' "$receipt")
             source_attempt=$(jq -er '.independent_review.artifact.source.run_attempt | select(type == "number" and . > 0)' "$receipt")
             source_artifact_id=$(jq -er '.independent_review.artifact_id | select(type == "number" and . > 0)' "$receipt")
@@ -296,9 +296,9 @@ jobs:
 
             gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_run_id}" > "$source_review_run"
             jq -e --arg repo "$GITHUB_REPOSITORY" --argjson attempt "$source_attempt" \
-              '.name == "wow-v17-independent-source-review" and
-               .path == ".github/workflows/wow-v17-independent-source-review.yml" and
-               .event == "workflow_dispatch" and .head_branch == "main" and
+              '.name == "wow-v17-independent-qa-check" and
+               .path == ".github/workflows/wow-v17-independent-qa-check.yml" and
+               (.event == "workflow_dispatch" or .event == "workflow_run") and .head_branch == "main" and
                .head_repository.full_name == $repo and .repository.full_name == $repo and
                .run_attempt == $attempt and .status == "completed" and .conclusion == "success"' \
               "$source_review_run" >/dev/null || {
@@ -325,16 +325,23 @@ jobs:
             done
             printf '%s\n' "$source_inventory" > "$RUNNER_TEMP/source-review-artifact-inventory.json"
             python - "$RUNNER_TEMP/source-review-artifact-inventory.json" \
-              "wow-v17-independent-source-review-${source_pr}-${source_sha}-" "$source_artifact_id" <<'PY'
+              "wow-v17-independent-source-review-${source_pr}-${source_sha}-" "$source_artifact_id" \
+              "$source_run_id" "$source_attempt" <<'PY'
           import json, pathlib, sys
           sys.path.insert(0, ".github/scripts")
           from independent_source_review_receipt import (
               SourceReviewError, verify_unique_artifact_inventory,
           )
           try:
+              prefix, run_id, attempt = sys.argv[2], sys.argv[4], sys.argv[5]
+              records = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+              records = [item for item in records if
+                         isinstance(item, dict) and isinstance(item.get("name"), str)
+                         and item["name"].startswith(prefix)
+                         and item["name"].endswith(f"-{run_id}-{attempt}")]
               verify_unique_artifact_inventory(
-                  json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")),
-                  prefix=sys.argv[2],
+                  records,
+                  prefix=prefix,
                   expected_artifact_id=int(sys.argv[3]),
               )
           except (OSError, json.JSONDecodeError, ValueError) as exc:
@@ -375,7 +382,7 @@ jobs:
               --head-sha "$source_sha" \
               --head-ref "$source_ref" \
               --attempt "$source_attempt"
-          elif [ "$receipt_schema" != "2" ]; then
+          elif [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" != "2" ]; then
             echo "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" >&2
             exit 1
           fi

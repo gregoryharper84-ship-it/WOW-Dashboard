@@ -71,6 +71,9 @@ jobs:
           WR_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
           QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
           RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+          REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true' }}
+          SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}
         run: |
           set -euo pipefail
           tool=artifacts/wow-engine/v17/independent_release_checks.py
@@ -90,7 +93,20 @@ jobs:
           while read -r target; do
             pr=$(jq -r .pr <<<"$target"); head=$(jq -r .head <<<"$target")
             ev="$out/evidence-$pr.json"
-            python "$tool" gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head" > "$ev"
+            gather_args=(gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head")
+            if [ "$REVIEW_ACTIVE" = "true" ]; then
+              if [ -n "$SOURCE_QA_RUN_ID" ]; then
+                [[ "$SOURCE_QA_RUN_ID" =~ ^[1-9][0-9]*$ ]] &&
+                  [[ "$SOURCE_QA_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
+                  echo "::error::SOURCE_QA_RUN_IDENTITY_INVALID"; exit 1;
+                }
+                gather_args+=(--source-review-run-id "$SOURCE_QA_RUN_ID"
+                  --source-review-run-attempt "$SOURCE_QA_RUN_ATTEMPT")
+              fi
+            else
+              gather_args+=(--legacy-review-policy)
+            fi
+            python "$tool" "${gather_args[@]}" > "$ev"
             python "$tool" decide-release --evidence "$ev" --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" > "$out/decision-$pr.json"
             i=$((i + 1))
           done < <(jq -c '.targets[]' <<<"$resolved")
