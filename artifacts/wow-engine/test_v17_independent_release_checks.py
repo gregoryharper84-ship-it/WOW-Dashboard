@@ -177,6 +177,28 @@ def test_green_ci_without_trusted_review_decision_holds_qa_and_release():
     assert m.decision("release", findings, ev)["conclusion"] == "failure"
 
 
+@pytest.mark.parametrize("bad_receipt", [
+    run_("Trusted exact-head engineering governance", "failure", rid=401),
+    run_("Trusted exact-head engineering governance", app=424242, rid=402),
+    run_("Trusted exact-head engineering governance", head=OLD, rid=403),
+])
+def test_failed_foreign_or_stale_review_receipt_holds_release_even_with_qa_success(bad_receipt):
+    ev = evidence()
+    ev["check_runs"] = [
+        run_(name, rid=index)
+        for index, name in enumerate(m.QA_EVIDENCE_CHECKS)
+    ] + [bad_receipt]
+    assert any(
+        finding.startswith("QA_EVIDENCE_")
+        for finding in m.qa_findings(ev)
+    )
+
+    with_qa(ev)
+    findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    assert any(finding.startswith("RELEASE_QA_EVIDENCE_") for finding in findings)
+    assert m.decision("release", findings, ev)["conclusion"] == "failure"
+
+
 def test_release_passes_only_on_qa_app_success_at_exact_head():
     assert m.release_findings(with_qa(evidence()), qa_app_id=QA_APP, release_app_id=REL_APP) == []
 
