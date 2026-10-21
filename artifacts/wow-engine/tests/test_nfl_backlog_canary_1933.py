@@ -64,7 +64,8 @@ def test_fixture_network_injection_does_not_pretend_matching_existing_frozen_cor
     ).encode()
     from v17.nfl_multi_source_pilot import SCHEDULE_URL
     receipt = run(download=lambda url: schedule if url == SCHEDULE_URL else player)
-    assert receipt["status"] == "SOURCE_REVISION_DRIFT"
+    assert receipt["status"] == "SOURCE_VALIDATION_HOLD"
+    assert "SOURCE_REVISION_DRIFT" in receipt["blockers"]
     assert receipt["reference"]["matches_frozen_source"] is False
     assert receipt["research_only"] and receipt["can_execute"] is False
     assert receipt["independent_espn_identity"]["status"] == "NOT_CHECKED"
