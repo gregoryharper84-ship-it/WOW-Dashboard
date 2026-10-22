@@ -513,7 +513,7 @@ def _goalie_snapshot(
     return {
         "official_event_id": "nhl-event-1",
         "source_id": SOURCE_ID,
-        "source_snapshot_id": "official-snapshot-1",
+        "source_snapshot_id": f"official-snapshot-{as_of}",
         "source_payload_sha256": "c" * 64,
         "as_of": as_of,
         "event_start_time_utc": kickoff,
@@ -597,6 +597,15 @@ def test_goalie_handoff_accepts_unchanged_source_pinned_inputs_without_authority
     assert result["status"] == "NHL_GOALIE_STATUS_UNCHANGED"
     assert result["as_of"] == "2026-10-22T18:00:00Z"
     assert result["can_execute"] is False
+
+
+def test_goalie_handoff_rejects_relabelled_timestamp_on_identical_source_receipt():
+    frozen = _goalie_snapshot()
+    current = _goalie_snapshot(as_of="2026-10-22T18:00:00Z")
+    current["source_snapshot_id"] = frozen["source_snapshot_id"]
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(frozen, current)
+    assert caught.value.code == "NHL_GOALIE_SOURCE_NOT_REFRESHED"
 
 
 def test_goalie_handoff_rejects_unpinned_source():
