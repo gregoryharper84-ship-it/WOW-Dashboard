@@ -647,6 +647,45 @@ def test_qa_policy_artifact_authenticates_exact_run_mode_target_and_freshness():
     }
 
 
+
+@pytest.mark.parametrize(("event", "pr_display"), [
+    ("workflow_dispatch", "1822"),
+    ("workflow_run", "AUTO"),
+])
+def test_qa_policy_accepts_real_github_dynamic_run_name(event, pr_display):
+    # GitHub REST run.name reflects workflow run-name, whereas GITHUB_WORKFLOW
+    # in the immutable policy is the canonical workflow name.
+    produced = review.build_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY,
+        pr_number=1822, head_sha=HEAD, head_ref="copilot/fix",
+        mode="legacy", run={**PRODUCER_RUN, "event": event},
+        now=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    routes, archive = qa_policy_routes(produced)
+    rest_run = routes[f"/actions/runs/{PRODUCER_RUN['id']}"]
+    rest_run["event"] = event
+    rest_run["name"] = f"{review.WORKFLOW_NAME} event={event} pr={pr_display}"
+    resolved = review.resolve_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"], run_attempt=1, token="read-only",
+        expected_pr_number=1822, now=datetime.now(timezone.utc),
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive if artifact_id == 778 else b"",
+    )
+    assert resolved["policy"]["source"]["workflow_name"] == review.WORKFLOW_NAME
+    assert resolved["run"]["path"] == review.WORKFLOW_PATH
+
+
+def test_source_review_consumer_accepts_real_github_dynamic_run_name():
+    rest_run = {
+        **CONSUMER_RUN,
+        "name": f"{review.WORKFLOW_NAME} event=workflow_dispatch pr=1822",
+    }
+    verify(artifact(), run=rest_run)
+    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED"):
+        verify(artifact(), run={**rest_run, "path": ".github/workflows/foreign.yml"})
+
+
 def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path):
     policy = qa_policy("canary")
     run_path = tmp_path / "run.json"
@@ -665,7 +704,7 @@ def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path
 
 
 @pytest.mark.parametrize(("field", "value", "reason"), [
-    ("name", "foreign-workflow", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("head_sha", "c" * 40, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("path", ".github/workflows/other.yml", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("head_branch", "feature", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("conclusion", "cancelled", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
