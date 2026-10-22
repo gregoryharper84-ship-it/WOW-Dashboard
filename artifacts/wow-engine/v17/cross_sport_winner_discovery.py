@@ -1245,15 +1245,27 @@ def route_discovered_slate(
         try:
             result = score_row(event, model)
         except Exception as exc:  # noqa: BLE001 - per-row fail-closed boundary
-            payload = {
-                "code": MODEL_SCORER_FAILED,
-                "reason": "DISCOVERED_ROW_SCORER_EXCEPTION",
-                "error_type": type(exc).__name__,
-                "scoring_attempted": True,
-                "probability_publishable": False,
-                "rank_eligible": False,
-                "can_execute": False,
-            }
+            # A specialist may raise a typed HTTPException with a native
+            # model/input/identity code. Preserve it instead of inventing an
+            # invocation failure; only untyped exceptions become scorer failures.
+            native_detail = getattr(exc, "detail", None)
+            if isinstance(native_detail, Mapping) and native_detail.get("code"):
+                payload = {
+                    **dict(native_detail),
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+            else:
+                payload = {
+                    "code": MODEL_SCORER_FAILED,
+                    "reason": "DISCOVERED_ROW_SCORER_EXCEPTION",
+                    "error_type": type(exc).__name__,
+                    "scoring_attempted": True,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
         else:
             if result is None or (isinstance(result, Mapping) and not result):
                 payload = {
