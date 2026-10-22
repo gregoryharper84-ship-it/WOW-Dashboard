@@ -252,5 +252,42 @@ class NCAAFReplayTests(unittest.TestCase):
         self.block("NCAAF_REPLAY_TIMESTAMP_INVALID")
 
 
+    def test_db_adapter_only_reads_candidate_bound_rows(self):
+        calls = []
+        candidate, rows = self.c, self.rows
+        class Query:
+            def __init__(self, table): self.table=table; self.start=0; self.stop=999
+            def select(self, *_): return self
+            def eq(self, *_): return self
+            def lte(self, *_): return self
+            def order(self, *_): return self
+            def limit(self, *_): return self
+            def range(self, start, stop): self.start=start; self.stop=stop; return self
+            def execute(self):
+                calls.append((self.table,self.start,self.stop))
+                data = ([candidate] if self.table == 'wow_d1_candidate_artifacts'
+                        else rows[self.start:self.stop+1])
+                return SimpleNamespace(data=data)
+        class DB:
+            def table(self,name):
+                assert name in {'wow_d1_candidate_artifacts','wow_d1_training_rows'}
+                return Query(name)
+        output=a.audit_from_db(DB(),candidate['candidate_id'])
+        self.assertEqual(output['deterministic_replay_status'],'PASS')
+        self.assertEqual(output['source_attestation_status'],'HOLD')
+        self.assertEqual(calls,[('wow_d1_candidate_artifacts',0,999),('wow_d1_training_rows',0,999)])
+
+    def test_db_adapter_missing_candidate_typed_not_unavailable_model(self):
+        class DB:
+            def table(self,name): return self
+            def select(self,*_): return self
+            def eq(self,*_): return self
+            def limit(self,*_): return self
+            def execute(self): return SimpleNamespace(data=[])
+        result=a.audit_from_db(DB(),'missing-candidate')
+        self.assertEqual(result['code'],'NCAAF_REPLAY_CANDIDATE_NOT_FOUND')
+        self.assertFalse(result['certification_granted'])
+
+
 if __name__ == "__main__":
     unittest.main()
