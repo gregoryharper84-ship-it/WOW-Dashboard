@@ -21,6 +21,9 @@ from zipfile import BadZipFile, ZipFile
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 WORKFLOW_NAME = "wow-v17-independent-qa-check"
 WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
+# Stable GitHub Actions workflow identity. A run's ``name`` is its mutable
+# ``run-name`` display title, so consumers bind runs by workflow_id and path.
+WORKFLOW_ID = 380562324
 PROVIDER_IDENTITY = "openai-codex-action"
 CREDENTIAL_SCOPE = "WOW_QA_REVIEW_OPENAI_API_KEY"
 MAX_REVIEW_AGE = timedelta(minutes=30)
@@ -84,6 +87,16 @@ def _exact_keys(value: object, keys: set[str], name: str) -> Mapping[str, Any]:
 def _positive_int(value: object, name: str) -> int:
     _require(isinstance(value, int) and not isinstance(value, bool) and value > 0, f"{name}_INVALID")
     return value
+
+
+def _is_qa_workflow_run(run: Mapping[str, Any]) -> bool:
+    """Bind an API-read run to the QA workflow by stable id and path, never by display name."""
+    workflow_id = run.get("workflow_id")
+    return (
+        isinstance(workflow_id, int) and not isinstance(workflow_id, bool)
+        and workflow_id == WORKFLOW_ID
+        and run.get("path") == WORKFLOW_PATH
+    )
 
 
 def _timestamp(value: object, name: str) -> datetime:
@@ -889,8 +902,7 @@ def verify_artifact(
         repository = run.get("repository")
         head_repository = run.get("head_repository")
         _require(
-            run.get("name") == WORKFLOW_NAME
-            and run.get("path") == WORKFLOW_PATH
+            _is_qa_workflow_run(run)
             and run.get("event") == source.get("event")
             and run.get("head_branch") == "main"
             and isinstance(head_repository, Mapping)
@@ -1102,8 +1114,9 @@ def verify_qa_review_policy(
     _require(
         source.get("run_id") == str(run_id)
         and attempt == expected_attempt == run.get("run_attempt")
-        and source.get("workflow_name") == run.get("name") == WORKFLOW_NAME
-        and source.get("workflow_path") == run.get("path") == WORKFLOW_PATH
+        and source.get("workflow_name") == WORKFLOW_NAME
+        and source.get("workflow_path") == WORKFLOW_PATH
+        and _is_qa_workflow_run(run)
         and source.get("event") == run.get("event")
         and source.get("event") in {"workflow_dispatch", "workflow_run"}
         and source.get("head_branch") == run.get("head_branch") == "main"
