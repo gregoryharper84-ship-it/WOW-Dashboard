@@ -1,7 +1,7 @@
 """Evidence-only preflight for NHL candidate cohorts and current-game inputs."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 import math
@@ -346,9 +346,9 @@ def preflight_nhl_candidate_package(package: Mapping[str, Any]) -> dict[str, Any
 
 
 def validate_nhl_goalie_status_handoff(
-    frozen: Mapping[str, Any], current: Mapping[str, Any]
+    frozen: Mapping[str, Any], current: Mapping[str, Any], *, checked_at: str
 ) -> dict[str, Any]:
-    """Compare pinned snapshots for drift; this does not qualify or invoke a scorer."""
+    """Verify confirmed goalies and source freshness; never qualify or invoke a scorer."""
     frozen_event = str(frozen.get("official_event_id") or "").strip()
     current_event = str(current.get("official_event_id") or "").strip()
     if not frozen_event or frozen_event != current_event:
@@ -364,6 +364,25 @@ def validate_nhl_goalie_status_handoff(
             raise NHLCandidatePreflightError(
                 "NHL_GOALIE_SOURCE_PIN_MISSING", "official source and payload hash required"
             )
+    try:
+        inspected_at = _parse_time(checked_at, event_id=frozen_event)
+        kickoff = _parse_time(frozen.get("event_start_time"), event_id=frozen_event)
+        current_kickoff = _parse_time(current.get("event_start_time"), event_id=frozen_event)
+        frozen_source_at = _parse_time(frozen.get("source_evidence_timestamp"), event_id=frozen_event)
+        current_source_at = _parse_time(current.get("source_evidence_timestamp"), event_id=frozen_event)
+    except NHLCandidatePreflightError as exc:
+        raise NHLCandidatePreflightError("NHL_GOALIE_SOURCE_TIME_INVALID") from exc
+    if kickoff != current_kickoff:
+        raise NHLCandidatePreflightError("NHL_GOALIE_EVENT_TIME_MISMATCH")
+    if inspected_at >= kickoff:
+        raise NHLCandidatePreflightError("NHL_GOALIE_EVENT_ALREADY_STARTED")
+    if frozen_source_at > inspected_at or current_source_at > inspected_at or current_source_at >= kickoff:
+        raise NHLCandidatePreflightError("NHL_GOALIE_SOURCE_FROM_FUTURE")
+    if current_source_at < frozen_source_at:
+        raise NHLCandidatePreflightError("NHL_GOALIE_SOURCE_TIME_REGRESSION")
+    # Conservative advisory-only freshness requirement; not a model certification.
+    if inspected_at - current_source_at > timedelta(hours=2):
+        raise NHLCandidatePreflightError("NHL_GOALIE_SOURCE_STALE")
     for side in ("home", "away"):
         frozen_goalie = frozen.get(side)
         current_goalie = current.get(side)
@@ -387,6 +406,8 @@ def validate_nhl_goalie_status_handoff(
             raise NHLCandidatePreflightError(
                 "NHL_STARTING_STATUS_CHANGED", side
             )
+        if current_status not in {"CONFIRMED", "OFFICIAL", "STARTING"}:
+            raise NHLCandidatePreflightError("NHL_GOALIE_NOT_CONFIRMED", side)
     if str(frozen["home"]["goalie_id"]).strip() == str(frozen["away"]["goalie_id"]).strip():
         raise NHLCandidatePreflightError(
             "NHL_GOALIE_IDENTITY_INVALID", "home and away goalie identities must differ"
