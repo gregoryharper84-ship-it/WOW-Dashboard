@@ -168,6 +168,7 @@ def _public_schedule_fetch(
 ) -> tuple[bool, list[Mapping[str, Any]], str | None]:
     """Use the existing research-only ESPN scoreboard where configured."""
     from v17 import cross_sport_resilience_overlay as resilience
+    from v17 import cross_sport_winner_discovery as slate_discovery
     from v17 import scout_secondary_source as secondary
 
     sport_key = resilience._ESPN_FAMILY_KEYS.get(str(family or "").upper())
@@ -179,12 +180,13 @@ def _public_schedule_fetch(
         context["public_discovery_requests"] += 1
 
     end = started + timedelta(hours=horizon_hours)
+    window_start, window_end = slate_discovery.slate_bounded_window(started, end)
     result = secondary.secondary_for_request(
         f"/odds-api/v4/sports/{sport_key}/events",
         {
             "dateFormat": "iso",
-            "commenceTimeFrom": started.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            "commenceTimeTo": end.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "commenceTimeFrom": window_start.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "commenceTimeTo": window_end.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         },
         {},
         primary_failure=None,
