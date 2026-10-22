@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 import pytest
 
+import nhl_candidate_pipeline as nhl
 import v17.nhl_model_maintenance as maintenance
 from nhl_candidate_pipeline import (
     FEATURE_NAMES,
@@ -157,8 +158,9 @@ def fake_package(rows_n=400):
             "positive_outcome": positive_outcome,
         })
     train_n = int(rows_n * 0.60)
-    calibration_n = int(rows_n * 0.20)
-    test_n = rows_n - train_n - calibration_n
+    calibration_end = int(rows_n * 0.80)
+    calibration_n = calibration_end - train_n
+    test_n = rows_n - calibration_end
     hash_rows = [
         {
             "event_id": row["official_event_id"],
@@ -180,7 +182,7 @@ def fake_package(rows_n=400):
         "feature_names": list(FEATURE_NAMES),
         "split_policy": "CHRONOLOGICAL_60_20_20",
         "train_end_index": train_n,
-        "calibration_end_index": train_n + calibration_n,
+        "calibration_end_index": calibration_end,
     }
     return {
         "status": "CANDIDATE_BUILT",
@@ -306,6 +308,22 @@ def test_candidate_preflight_rejects_dataset_hash_drift():
     assert caught.value.code == "NHL_CANDIDATE_DATASET_HASH_MISMATCH"
 
 
+def test_candidate_preflight_rejects_source_payload_mutation():
+    package = fake_package()
+    package["games"][50]["source_payload_sha256"] = "f" * 64
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        preflight_nhl_candidate_package(package)
+    assert caught.value.code == "NHL_CANDIDATE_SOURCE_IDENTITY_MISMATCH"
+
+
+def test_candidate_preflight_rejects_feature_time_at_or_after_event_start():
+    package = fake_package()
+    package["feature_rows"][50]["feature_as_of"] = package["feature_rows"][50]["event_start_time"]
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        preflight_nhl_candidate_package(package)
+    assert caught.value.code == "NHL_CANDIDATE_TEMPORAL_LEAKAGE"
+
+
 def test_candidate_preflight_hash_matches_binary_lifecycle():
     package = fake_package()
     rows = [
@@ -341,6 +359,96 @@ def test_candidate_preflight_hash_matches_binary_lifecycle():
     result = preflight_nhl_candidate_package(package)
     assert result["training_dataset_hash"] == fitted.dataset_hash
     assert result["feature_schema_version"] == FEATURE_SCHEMA_VERSION
+
+
+def test_6128_cohort_accepts_true_disjoint_3676_1226_1226_partitions():
+    package = fake_package(rows_n=6128)
+    candidate = package["candidate"]
+    assert (
+        candidate["training_rows"],
+        candidate["calibration_rows"],
+        candidate["test_rows"],
+    ) == (3676, 1226, 1226)
+    result = preflight_nhl_candidate_package(package)
+    assert result["training_feature_n"] == 6128
+    assert result["can_execute"] is False
+    assert result["probability_publishable"] is False
+
+
+def _deterministic_nhl_games():
+    teams = ("BOS", "NYR", "TOR", "MTL", "TBL", "FLA", "CAR", "NJD")
+    games = []
+    game_index = 0
+    for season_offset, season_id in enumerate((20212022, 20222023)):
+        first_year = 2021 + season_offset
+        base = datetime(first_year, 10, 1, tzinfo=timezone.utc)
+        local_index = 0
+        for cycle in range(15):
+            for home_index in range(len(teams)):
+                for away_index in range(home_index + 1, len(teams)):
+                    home = teams[home_index] if (cycle + home_index + away_index) % 2 == 0 else teams[away_index]
+                    away = teams[away_index] if home == teams[home_index] else teams[home_index]
+                    home_win = (game_index % 7) < 4
+                    if game_index % 17 == 0:
+                        home_win = not home_win
+                    start = base + timedelta(hours=local_index * 6)
+                    raw = {
+                        "id": 20_000_000 + game_index,
+                        "season": season_id,
+                        "gameType": 2,
+                        "gameState": "FINAL",
+                        "neutralSite": False,
+                        "startTimeUTC": start.isoformat().replace("+00:00", "Z"),
+                        "homeTeam": {
+                            "id": home_index + 1,
+                            "abbrev": home,
+                            "score": 4 if home_win else 2,
+                        },
+                        "awayTeam": {
+                            "id": away_index + 1,
+                            "abbrev": away,
+                            "score": 2 if home_win else 4,
+                        },
+                    }
+                    parsed = nhl.normalize_game(
+                        raw,
+                        source_uri=(
+                            "https://api-web.nhle.com/v1/club-schedule-season/"
+                            f"{home}/{season_id}"
+                        ),
+                        retrieved_at="2026-10-22T00:00:00+00:00",
+                    )
+                    assert parsed is not None
+                    games.append(parsed)
+                    game_index += 1
+                    local_index += 1
+    return sorted(games, key=lambda row: (row.event_start_time, row.game_id))
+
+
+def test_real_build_candidate_shape_passes_after_partition_fix(monkeypatch):
+    games = _deterministic_nhl_games()
+    monkeypatch.setattr(
+        nhl,
+        "fetch_historical_games",
+        lambda years, session=nhl.requests: games,
+    )
+    package = nhl.build_candidate(
+        (2021, 2022), training_code_sha="a" * 40
+    )
+    candidate = package["candidate"]
+    assert candidate["training_rows"] != candidate["validation_metrics"]["train_n"]
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        preflight_nhl_candidate_package(package)
+    assert caught.value.code == "NHL_CANDIDATE_PARTITION_MISMATCH"
+
+    # Model the metadata-only correction from the still-unmerged #1612 without
+    # changing this branch's protected candidate pipeline.
+    candidate["training_rows"] = candidate["validation_metrics"]["train_n"]
+    maintenance._attach_training_outcomes(package)
+    result = preflight_nhl_candidate_package(package)
+    assert result["training_feature_n"] == len(package["feature_rows"])
+    assert result["training_dataset_hash"] == candidate["training_dataset_hash"]
+    assert result["can_execute"] is False
 
 
 def test_candidate_preflight_rejects_feature_schema_drift():
@@ -394,12 +502,20 @@ def test_candidate_preflight_rejects_wrong_source_policy_and_reconstruction():
     assert caught.value.code == "NHL_CANDIDATE_SOURCE_MANIFEST_INVALID"
 
 
-def _goalie_snapshot(home_status="CONFIRMED", away_status="CONFIRMED"):
+def _goalie_snapshot(
+    home_status="CONFIRMED_STARTER",
+    away_status="CONFIRMED_STARTER",
+    *,
+    as_of="2026-10-22T17:00:00Z",
+    kickoff="2026-10-22T20:00:00Z",
+):
     return {
         "official_event_id": "nhl-event-1",
         "source_id": SOURCE_ID,
         "source_snapshot_id": "official-snapshot-1",
         "source_payload_sha256": "c" * 64,
+        "as_of": as_of,
+        "event_start_time_utc": kickoff,
         "home": {"goalie_id": "goalie-home", "starting_status": home_status},
         "away": {"goalie_id": "goalie-away", "starting_status": away_status},
     }
@@ -407,7 +523,7 @@ def _goalie_snapshot(home_status="CONFIRMED", away_status="CONFIRMED"):
 
 def test_goalie_handoff_rejects_missing_starting_goalie():
     frozen = _goalie_snapshot()
-    current = _goalie_snapshot()
+    current = _goalie_snapshot(as_of="2026-10-22T18:00:00Z")
     current["away"]["goalie_id"] = ""
     with pytest.raises(NHLCandidatePreflightError) as caught:
         validate_nhl_goalie_status_handoff(frozen, current)
@@ -416,23 +532,75 @@ def test_goalie_handoff_rejects_missing_starting_goalie():
 
 def test_goalie_handoff_rejects_changed_starting_status():
     frozen = _goalie_snapshot()
-    current = _goalie_snapshot(home_status="SCRATCHED")
+    current = _goalie_snapshot(
+        home_status="CONFIRMED", as_of="2026-10-22T18:00:00Z"
+    )
     with pytest.raises(NHLCandidatePreflightError) as caught:
         validate_nhl_goalie_status_handoff(frozen, current)
     assert caught.value.code == "NHL_STARTING_STATUS_CHANGED"
 
 
-def test_goalie_handoff_accepts_unchanged_source_pinned_inputs_without_authority():
+@pytest.mark.parametrize("status", ["SCRATCHED", "OUT", "UNKNOWN", "QUESTIONABLE"])
+def test_goalie_handoff_rejects_nonconfirmed_starter_even_when_both_snapshots_match(status):
+    frozen = _goalie_snapshot(home_status=status)
+    current = _goalie_snapshot(home_status=status, as_of="2026-10-22T18:00:00Z")
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(frozen, current)
+    assert caught.value.code == "NHL_STARTING_GOALIE_NOT_CONFIRMED"
+
+
+def test_goalie_handoff_rejects_changed_official_starter_designation_for_same_player():
+    frozen = _goalie_snapshot(home_status="CONFIRMED")
+    current = _goalie_snapshot(
+        home_status="OFFICIAL_STARTER",
+        as_of="2026-10-22T18:00:00Z",
+    )
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(frozen, current)
+    assert caught.value.code == "NHL_STARTING_STATUS_CHANGED"
+
+
+@pytest.mark.parametrize(
+    ("frozen_as_of", "current_as_of", "expected_code"),
+    [
+        ("2026-10-22T17:00:00Z", "2026-10-22T17:00:00Z", "NHL_GOALIE_CURRENT_RECEIPT_STALE"),
+        ("2026-10-22T18:00:00Z", "2026-10-22T17:30:00Z", "NHL_GOALIE_CURRENT_RECEIPT_STALE"),
+        ("2026-10-22T15:00:00Z", "2026-10-22T15:59:00Z", "NHL_GOALIE_CURRENT_RECEIPT_STALE"),
+        ("2026-10-22T20:00:00Z", "2026-10-22T20:01:00Z", "NHL_GOALIE_EVIDENCE_AFTER_KICKOFF"),
+        ("2026-10-22T17:00:00Z", "2026-10-22T20:00:00Z", "NHL_GOALIE_EVIDENCE_AFTER_KICKOFF"),
+    ],
+)
+def test_goalie_handoff_rejects_stale_or_post_start_evidence(
+    frozen_as_of, current_as_of, expected_code
+):
+    frozen = _goalie_snapshot(as_of=frozen_as_of)
+    current = _goalie_snapshot(as_of=current_as_of)
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(frozen, current)
+    assert caught.value.code == expected_code
+
+
+def test_goalie_handoff_accepts_current_receipt_at_four_hour_freshness_boundary():
     result = validate_nhl_goalie_status_handoff(
-        _goalie_snapshot(), _goalie_snapshot()
+        _goalie_snapshot(as_of="2026-10-22T15:59:00Z"),
+        _goalie_snapshot(as_of="2026-10-22T16:00:00Z"),
     )
     assert result["status"] == "NHL_GOALIE_STATUS_UNCHANGED"
+
+
+def test_goalie_handoff_accepts_unchanged_source_pinned_inputs_without_authority():
+    result = validate_nhl_goalie_status_handoff(
+        _goalie_snapshot(),
+        _goalie_snapshot(as_of="2026-10-22T18:00:00Z"),
+    )
+    assert result["status"] == "NHL_GOALIE_STATUS_UNCHANGED"
+    assert result["as_of"] == "2026-10-22T18:00:00Z"
     assert result["can_execute"] is False
 
 
 def test_goalie_handoff_rejects_unpinned_source():
     frozen = _goalie_snapshot()
-    current = _goalie_snapshot()
+    current = _goalie_snapshot(as_of="2026-10-22T18:00:00Z")
     current["source_id"] = "UNTRUSTED"
     with pytest.raises(NHLCandidatePreflightError) as caught:
         validate_nhl_goalie_status_handoff(frozen, current)

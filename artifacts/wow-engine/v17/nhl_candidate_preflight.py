@@ -1,7 +1,7 @@
 """Evidence-only preflight for NHL candidate cohorts and current-game inputs."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 import math
@@ -16,6 +16,10 @@ from nhl_candidate_pipeline import (
 )
 
 CAN_EXECUTE = False
+MAX_GOALIE_SNAPSHOT_AGE = timedelta(hours=4)
+CONFIRMED_STARTING_STATUSES = frozenset(
+    {"CONFIRMED", "CONFIRMED_STARTER", "OFFICIAL_STARTER"}
+)
 
 
 class NHLCandidatePreflightError(ValueError):
@@ -348,12 +352,43 @@ def preflight_nhl_candidate_package(package: Mapping[str, Any]) -> dict[str, Any
 def validate_nhl_goalie_status_handoff(
     frozen: Mapping[str, Any], current: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Compare pinned snapshots for drift; this does not qualify or invoke a scorer."""
+    """Compare source-pinned pregame snapshots; this does not qualify or invoke a scorer."""
     frozen_event = str(frozen.get("official_event_id") or "").strip()
     current_event = str(current.get("official_event_id") or "").strip()
     if not frozen_event or frozen_event != current_event:
         raise NHLCandidatePreflightError(
             "NHL_GOALIE_EVENT_IDENTITY_MISMATCH", current_event or "event id missing"
+        )
+    try:
+        frozen_kickoff = _aware_snapshot_time(
+            frozen.get("event_start_time_utc"), "NHL_GOALIE_KICKOFF_INVALID"
+        )
+        current_kickoff = _aware_snapshot_time(
+            current.get("event_start_time_utc"), "NHL_GOALIE_KICKOFF_INVALID"
+        )
+        frozen_as_of = _aware_snapshot_time(
+            frozen.get("as_of"), "NHL_GOALIE_AS_OF_INVALID"
+        )
+        current_as_of = _aware_snapshot_time(
+            current.get("as_of"), "NHL_GOALIE_AS_OF_INVALID"
+        )
+    except NHLCandidatePreflightError:
+        raise
+    if frozen_kickoff != current_kickoff:
+        raise NHLCandidatePreflightError(
+            "NHL_GOALIE_KICKOFF_MISMATCH", frozen_event
+        )
+    if frozen_as_of >= frozen_kickoff or current_as_of >= current_kickoff:
+        raise NHLCandidatePreflightError(
+            "NHL_GOALIE_EVIDENCE_AFTER_KICKOFF", frozen_event
+        )
+    if current_as_of <= frozen_as_of:
+        raise NHLCandidatePreflightError(
+            "NHL_GOALIE_CURRENT_RECEIPT_STALE", frozen_event
+        )
+    if current_kickoff - current_as_of > MAX_GOALIE_SNAPSHOT_AGE:
+        raise NHLCandidatePreflightError(
+            "NHL_GOALIE_CURRENT_RECEIPT_STALE", frozen_event
         )
     for snapshot in (frozen, current):
         if (
@@ -383,6 +418,13 @@ def validate_nhl_goalie_status_handoff(
             raise NHLCandidatePreflightError(
                 "NHL_GOALIE_STATUS_MISSING", side
             )
+        if (
+            frozen_status not in CONFIRMED_STARTING_STATUSES
+            or current_status not in CONFIRMED_STARTING_STATUSES
+        ):
+            raise NHLCandidatePreflightError(
+                "NHL_STARTING_GOALIE_NOT_CONFIRMED", side
+            )
         if frozen_status != current_status:
             raise NHLCandidatePreflightError(
                 "NHL_STARTING_STATUS_CHANGED", side
@@ -394,12 +436,26 @@ def validate_nhl_goalie_status_handoff(
     return {
         "status": "NHL_GOALIE_STATUS_UNCHANGED",
         "official_event_id": frozen_event,
+        "event_start_time_utc": current.get("event_start_time_utc"),
+        "as_of": current.get("as_of"),
         "can_execute": False,
     }
 
 
+def _aware_snapshot_time(value: Any, code: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise NHLCandidatePreflightError(code, str(value or "missing")) from exc
+    if parsed.utcoffset() is None:
+        raise NHLCandidatePreflightError(code, str(value or "missing"))
+    return parsed
+
+
 __all__ = [
     "CAN_EXECUTE",
+    "CONFIRMED_STARTING_STATUSES",
+    "MAX_GOALIE_SNAPSHOT_AGE",
     "NHLCandidatePreflightError",
     "preflight_nhl_candidate_package",
     "validate_nhl_goalie_status_handoff",
