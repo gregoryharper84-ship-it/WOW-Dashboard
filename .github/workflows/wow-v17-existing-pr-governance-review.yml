@@ -65,7 +65,7 @@ jobs:
           source_run="$RUNNER_TEMP/source-review-run.json"
           gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > "$source_run"
           jq -e --arg repo "$GITHUB_REPOSITORY" --argjson attempt "$SOURCE_ATTEMPT" \
-            '.name == "wow-v17-independent-qa-check" and
+            '.workflow_id == 380562324 and
              .path == ".github/workflows/wow-v17-independent-qa-check.yml" and
              (.event == "workflow_dispatch" or .event == "workflow_run") and .head_branch == "main" and
              .head_repository.full_name == $repo and .repository.full_name == $repo and
