@@ -19,8 +19,8 @@ from owner_release_recovery import (
     checks_from_ruleset, canonical,
 )
 
-def write_ready(ready: Path, pid: int, digest: str):
-    obj = {"pid":pid,"intent_digest":digest}
+def write_ready(ready: Path, pid: int, digest: str, expires_monotonic: float):
+    obj = {"pid":pid,"intent_digest":digest,"expires_monotonic":expires_monotonic}
     tmp = ready.with_name(ready.name + ".tmp")
     fd = os.open(tmp, os.O_CREAT|os.O_EXCL|os.O_WRONLY, 0o600)
     with os.fdopen(fd,"wb") as f:
@@ -37,7 +37,7 @@ def watch(api, intent: dict, baseline: dict, ready: Path, intent_digest: str, *,
             "WATCHDOG_NOT_ARMED_BEFORE_CHANGE")
     started = clock()
     deadline = started + intent["window_seconds"]
-    write_ready(ready,os.getpid(),intent_digest)
+    write_ready(ready,os.getpid(),intent_digest,deadline)
     print("WATCHDOG_ARMED_INDEPENDENT_PROCESS",flush=True)
     observed_change = False
     while True:
