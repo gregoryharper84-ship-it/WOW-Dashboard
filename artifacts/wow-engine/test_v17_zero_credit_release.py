@@ -206,3 +206,39 @@ def test_release_dispatch_requires_real_qa_run_identity():
                        qa_run_id=120118553031, qa_run_attempt=2)
     assert client.body["inputs"]["qa_run_id"] == "120118553031"
     assert client.body["inputs"]["qa_run_attempt"] == "2"
+
+
+def test_source_review_lookup_narrows_to_exact_run_name_and_holds_if_missing():
+    import pytest
+    import independent_source_review_receipt as receipt
+
+    calls = []
+    def get_json(path):
+        calls.append(path)
+        return {"artifacts": []}
+
+    with pytest.raises(receipt.SourceReviewError, match="SOURCE_REVIEW_ARTIFACT_DUPLICATE_OR_MISSING"):
+        receipt.resolve_current_source_review(
+            repository=REPO, pr_number=1974, head_sha=SHA, head_ref="fix/nfl",
+            token="placeholder", expected_workflow_run_id=12345,
+            expected_workflow_run_attempt=2, get_json=get_json,
+        )
+    assert calls == [
+        f"/actions/artifacts?name=wow-v17-independent-source-review-1974-{SHA}-12345-2&per_page=100&page=1"
+    ]
+
+
+def test_unscoped_legacy_artifact_lookup_retains_bounded_full_inventory():
+    import pytest
+    import independent_source_review_receipt as receipt
+
+    calls = []
+    def get_json(path):
+        calls.append(path)
+        return {"artifacts": []}
+    with pytest.raises(receipt.SourceReviewError, match="SOURCE_REVIEW_ARTIFACT_DUPLICATE_OR_MISSING"):
+        receipt.resolve_current_source_review(
+            repository=REPO, pr_number=1974, head_sha=SHA, head_ref="fix/nfl",
+            token="placeholder", get_json=get_json,
+        )
+    assert calls == ["/actions/artifacts?per_page=100&page=1"]

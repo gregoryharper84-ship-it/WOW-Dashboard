@@ -200,9 +200,19 @@ def resolve_current_source_review(
     )
 
     prefix = f"wow-v17-independent-source-review-{pr_number}-{head_sha}-"
+    # GitHub artifact ?name= is an exact-name query, not a prefix filter.
+    # When the policy has authenticated the producer run/attempt, this exact
+    # repository-wide query preserves duplicate detection and avoids the
+    # unbounded unrelated repo inventory that previously failed >2000 rows.
+    listing = "/actions/artifacts?"
+    if expected_workflow_run_id is not None:
+        exact_run_id = _positive_int(expected_workflow_run_id, "SOURCE_REVIEW_RUN_ID")
+        exact_attempt = _positive_int(expected_workflow_run_attempt, "SOURCE_REVIEW_RUN_ATTEMPT")
+        exact_name = f"{prefix}{exact_run_id}-{exact_attempt}"
+        listing = f"/actions/artifacts?name={exact_name}&"
     records: list[dict[str, Any]] = []
     for page in range(1, 21):
-        response = json_fetch(f"/actions/artifacts?per_page=100&page={page}")
+        response = json_fetch(f"{listing}per_page=100&page={page}")
         _require(isinstance(response, Mapping) and isinstance(response.get("artifacts"), list),
                  "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID")
         page_records = response["artifacts"]
