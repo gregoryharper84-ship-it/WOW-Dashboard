@@ -305,31 +305,134 @@ def _final_refresh_state(row: Mapping[str, Any]) -> tuple[bool, str | None]:
     return legacy, blocker
 
 
+
+def _governed_nfl_bridge_stages(row: Mapping[str, Any]) -> dict[str, bool]:
+    """Translate *bound* NFL SQL reducer receipts, not presentation labels.
+
+    NFL's certified bridge returns postmodel/final-gate and calibration statuses
+    rather than the older generic per-stage booleans. Accept that native dialect
+    only when score snapshot, prediction, event and reducer identities all match.
+    A FINAL_APPROVED label by itself is never evidence of a passing stage.
+    """
+    if _upper(row.get("sport")) != "NFL":
+        return {}
+    governance = row.get("llp_governance")
+    envelope = row.get("candidate_envelope")
+    terminal = governance.get("terminal") if isinstance(governance, Mapping) else None
+    if not (isinstance(governance, Mapping) and isinstance(envelope, Mapping)
+            and isinstance(terminal, Mapping)):
+        return {}
+    if not (
+        row.get("score_snapshot_id")
+        and row.get("score_snapshot_id") == governance.get("score_snapshot_id")
+        and row.get("event_prediction_id")
+        and row.get("event_prediction_id") == governance.get("event_prediction_id")
+        and row.get("official_event_id")
+        and row.get("official_event_id") == envelope.get("official_event_id")
+        and row.get("event_key")
+        and row.get("event_key") == envelope.get("event_key")
+        and _upper(governance.get("global_terminal_reducer")) == GLOBAL_TERMINAL_AUTHORITY
+        and _upper(terminal.get("global_terminal_reducer")) == GLOBAL_TERMINAL_AUTHORITY
+        and governance.get("can_execute") is False
+        and terminal.get("can_execute") is False
+    ):
+        return {}
+
+    def timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+        except ValueError:
+            return None
+
+    model_at = timestamp(row.get("model_timestamp"))
+    updated_at = timestamp(envelope.get("latest_material_update_timestamp"))
+    starts_at = timestamp(envelope.get("event_start_time_utc"))
+    fresh = bool(
+        model_at and updated_at and starts_at
+        and updated_at <= model_at < starts_at
+        and _upper(row.get("event_status")) in {"PREGAME", "SCHEDULED", "NOT_STARTED"}
+    )
+    audit_pass = _upper(governance.get("probability_audit_result")) == "PASS_PROBABILITY_AUDIT"
+    postmodel_pass = _upper(governance.get("postmodel_gates_status")) == "PASS"
+    calibration_pass = (
+        _upper(row.get("calibration_health_status")) == "PASS"
+        and _upper(governance.get("calibration_health_status")) == "PASS"
+        and bool(row.get("calibration_method"))
+        and bool(row.get("model_artifact_id"))
+    )
+    reducer_pass = bool(
+        _upper(governance.get("status")) == "PASS"
+        and not governance.get("blockers")
+        and _upper(governance.get("final_gates_status")) == "PASS"
+        and _upper(terminal.get("status")) == "PASS"
+        and not terminal.get("blockers")
+        and _upper(terminal.get("terminal_label")) == "FINAL_APPROVED"
+        and terminal.get("rank_eligible") is True
+        and terminal.get("probability_publishable") is True
+        and fresh
+    )
+    return {
+        "probability_package_valid": bool(
+            audit_pass and postmodel_pass
+            and row.get("sporting_probability_completed") is True
+            and row.get("model_probability_available") is True
+        ),
+        "dynamic_calibration_complete": bool(calibration_pass and postmodel_pass),
+        "probability_audit_passed": audit_pass,
+        "event_governor_complete": _upper(governance.get("event_mutex_status")) == "PASS",
+        # NFL SQL final reduction checks pregame status, model freshness and
+        # active artifacts. This is its native route-specific final gate, NOT
+        # a generic PREGAME-status shortcut.
+        "final_refresh_passed": reducer_pass,
+    }
+
+
+def _explicit_or_native_pass(
+    row: Mapping[str, Any], native: Mapping[str, bool], field: str,
+    *, status_field: str | None = None, pass_statuses: frozenset[str] = frozenset({"PASS", "COMPLETE"}),
+) -> bool:
+    # Explicit FALSE always wins over a competing PASS alias or native receipt.
+    if field in row:
+        return row.get(field) is True
+    if status_field is not None and status_field in row:
+        return _upper(row.get(status_field)) in pass_statuses
+    return native.get(field) is True
+
+
 def publication_chain_audit(row: Mapping[str, Any]) -> PublicationChainAudit:
     """Explain the first failed sporting-publication stage without guessing.
 
     The audit is diagnostic only. It never upgrades a row to rank eligible unless
     every required boolean/status already proves completion in the supplied row.
     """
-    calibration_ok = bool(
-        row.get("dynamic_calibration_complete") is True
-        or _upper(row.get("calibration_status")) in {"PASS", "COMPLETE"}
+    native = _governed_nfl_bridge_stages(row)
+    calibration_ok = _explicit_or_native_pass(
+        row, native, "dynamic_calibration_complete", status_field="calibration_status"
     )
-    package_ok = bool(
-        row.get("probability_package_valid") is True
-        or _upper(row.get("probability_validity_status")) in {"PASS", "COMPLETE"}
+    package_ok = _explicit_or_native_pass(
+        row, native, "probability_package_valid", status_field="probability_validity_status"
     )
-    probability_audit_ok = bool(
-        row.get("probability_audit_passed") is True
-        or _upper(row.get("llp_probability_audit_result")) in {
-            "PASS", "PASS_PROBABILITY_AUDIT"
-        }
+    probability_audit_ok = _explicit_or_native_pass(
+        row, native, "probability_audit_passed",
+        status_field="llp_probability_audit_result",
+        pass_statuses=frozenset({"PASS", "PASS_PROBABILITY_AUDIT"}),
     )
-    event_governor_ok = bool(
-        row.get("event_governor_complete") is True
-        or _upper(row.get("event_mutex_status")) == "PASS"
+    event_governor_ok = _explicit_or_native_pass(
+        row, native, "event_governor_complete", status_field="event_mutex_status"
     )
     final_refresh_ok, final_refresh_blocker = _final_refresh_state(row)
+    if (
+        "final_refresh_passed" not in row
+        and "final_refresh_status" not in row
+        and not (isinstance(row.get("llp_governance"), Mapping)
+                 and "final_refresh" in row["llp_governance"])
+        and native
+    ):
+        final_refresh_ok = native["final_refresh_passed"]
+        final_refresh_blocker = None if final_refresh_ok else "FINAL_REFRESH_NOT_COMPLETE"
     terminal_ok = bool(
         _upper(row.get("global_terminal_authority") or row.get("terminal_authority"))
         in {GLOBAL_TERMINAL_AUTHORITY, ""}
