@@ -30,6 +30,7 @@ def baseline():
             "conditions": {"ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]}},
             "bypass_actors": [], "rules": [
                 {"type": "deletion"}, {"type": "non_fast_forward"},
+                {"type": "pull_request", "parameters": {"required_approving_review_count": 0}},
                 {"type": "required_status_checks", "parameters": {
                     "strict_required_status_checks_policy": False,
                     "required_status_checks": [dict(context=n, integration_id=a) for n,a in recovery.CHECK_CONTEXTS]}}
@@ -82,7 +83,8 @@ class FakeGitHub:
         if suffix.startswith("pulls/"):
             return {"state":"open","draft":False,"merged":self.merged,
                     "head":{"sha":self.head,"repo":{"full_name":recovery.CANONICAL_REPO}},
-                    "base":{"ref":"main"},"changed_files":len(self.file_rows)}
+                    "base":{"ref":"main"},"user":{"login":getattr(self,"author","Copilot")},
+                    "changed_files":len(self.file_rows)}
         raise AssertionError(suffix)
     def pages(self, suffix, collection=None):
         if suffix.endswith("/files"):
@@ -236,3 +238,18 @@ def test_witness_rejects_started_too_late():
     api=FakeGitHub();api.ruleset=recovery.temporary_ruleset(baseline())
     with pytest.raises(recovery.RecoveryHold,match="WITNESS_WAS_NOT_ARMED_BEFORE_RULESET_CHANGE"):
         witness.watch(api,intent(),baseline())
+
+
+def test_author_cannot_be_sirt_reviewer():
+    api=FakeGitHub();api.author="security-reviewer"
+    with pytest.raises(recovery.RecoveryHold,match="PR_AUTHOR_CANNOT_BE_SIRT_REVIEWER"):
+        recovery.preflight(api,intent())
+
+
+def test_missing_pull_request_or_default_branch_protection_rejected():
+    b=baseline();b["rules"]=[r for r in b["rules"] if r["type"]!="pull_request"]
+    with pytest.raises(recovery.RecoveryHold,match="RULESET_PROTECTION_TYPES_MISSING"):
+        recovery.temporary_ruleset(b)
+    b=baseline();b["conditions"]["ref_name"]["include"]=["refs/heads/feature"]
+    with pytest.raises(recovery.RecoveryHold,match="RULESET_BRANCH_SCOPE_CHANGED"):
+        recovery.temporary_ruleset(b)
