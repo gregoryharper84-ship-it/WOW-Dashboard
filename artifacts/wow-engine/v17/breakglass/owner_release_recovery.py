@@ -152,6 +152,17 @@ def write_intent(api: GitHub, args) -> None:
     print("BASELINE", baseline)
     print("BASELINE_SHA256", sha256(rs))
 
+def watchdog_ready_healthy(ready: Path, proc, expected_digest: str, *, min_seconds: int = 45) -> None:
+    require(proc.poll() is None and ready.is_file(), "WATCHDOG_PROCESS_NOT_ALIVE")
+    obj = json.loads(ready.read_bytes())
+    require(isinstance(obj, dict) and set(obj) ==
+            {"pid", "intent_digest", "expires_monotonic"}, "WATCHDOG_READY_SCHEMA_INVALID")
+    require(obj["pid"] == proc.pid and obj["intent_digest"] == expected_digest,
+            "WATCHDOG_READY_MISMATCH")
+    deadline = obj["expires_monotonic"]
+    require(type(deadline) in (int, float) and deadline - time.monotonic() >= min_seconds,
+            "WATCHDOG_ROLLBACK_DEADLINE_TOO_NEAR")
+
 def _watchdog_process(intent: Path, baseline: Path, ready: Path, log: Path):
     cmd = [sys.executable, str(Path(__file__).with_name("owner_release_watchdog.py")),
            "--intent", str(intent), "--baseline", str(baseline), "--ready", str(ready)]
@@ -162,10 +173,7 @@ def _watchdog_process(intent: Path, baseline: Path, ready: Path, log: Path):
         if proc.poll() is not None:
             raise RecoveryHold("WATCHDOG_EXITED_BEFORE_READY")
         if ready.exists():
-            obj = json.loads(ready.read_bytes())
-            require(obj == {"pid": proc.pid,
-                             "intent_digest": hashlib.sha256(intent.read_bytes()).hexdigest()},
-                    "WATCHDOG_READY_MISMATCH")
+            watchdog_ready_healthy(ready, proc, hashlib.sha256(intent.read_bytes()).hexdigest())
             return proc
         time.sleep(0.2)
     raise RecoveryHold("WATCHDOG_READY_TIMEOUT")
@@ -197,6 +205,8 @@ def execute(api: GitHub, intent: dict, intent_path: Path, checkpoint: Path) -> N
         require(sha256(preflight(api, intent)) == sha256(baseline), "PREWRITE_DRIFT")
         require(watchdog.poll() is None, "WATCHDOG_DIED_BEFORE_MUTATION")
         parse_intent(intent)  # reject expiry while preflight/witness was starting
+        watchdog_ready_healthy(checkpoint/"watchdog.ready", watchdog,
+                               hashlib.sha256(intent_copy.read_bytes()).hexdigest())
         started = True
         temporary = temporary_ruleset(baseline)
         api.put(f"rulesets/{RULESET_ID}", temporary)
