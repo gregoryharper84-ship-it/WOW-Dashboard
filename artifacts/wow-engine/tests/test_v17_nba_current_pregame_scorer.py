@@ -6,6 +6,7 @@ import pytest
 
 from basketball_team_event_specialist import FEATURE_NAMES, FEATURE_SCHEMA_VERSION, MODEL_FAMILY
 from v17.fitted_team_event_certification import TeamEventCertificationError
+from v17.multisport_team_event_calibration import CalibrationArtifactInvalid
 from v17.nba_current_pregame_scorer import (
     prepare_nba_current_pregame_scorer_receipt,
     resolve_nba_champion_artifact,
@@ -274,6 +275,54 @@ def test_resolved_calibrator_still_holds_until_nba_bounds_policy_is_approved():
     assert result["can_execute"] is False
 
 
+@pytest.mark.parametrize(
+    ("resolver_error", "expected_code", "expected_blocker"),
+    [
+        (
+            CalibrationArtifactInvalid(["CALIBRATION_CERTIFICATION_NOT_PASS"]),
+            "MODEL_INPUTS_INSUFFICIENT",
+            "CALIBRATION_CERTIFICATION_NOT_PASS",
+        ),
+        (
+            ValueError("malformed calibration response"),
+            "MODEL_OUTPUT_INVALID",
+            "NBA_CERTIFIED_CALIBRATOR_INVALID",
+        ),
+    ],
+)
+def test_invalid_calibration_resolution_preserves_failure_class(
+    resolver_error,
+    expected_code,
+    expected_blocker,
+):
+    certification = _certification()
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=_feature_package(),
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: certification,
+        champion_artifact_resolver=lambda _client, _cert: {
+            "model_artifact_version": certification.model_version
+        },
+        calibration_artifact_resolver=lambda *_args: _raise_calibration_error(
+            resolver_error
+        ),
+    )
+
+    assert result["code"] == expected_code
+    assert result["typed_failure"] == expected_code
+    assert result["blockers"] == [expected_blocker]
+    assert result["raw_probability"] is None
+    assert result["calibrated_probability"] is None
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
 class _Response:
     def __init__(self, data):
         self.data = data
@@ -400,3 +449,7 @@ def _raise_not_certified():
 
 def _raise_certification_error(code):
     raise TeamEventCertificationError(code, "NBA")
+
+
+def _raise_calibration_error(error):
+    raise error

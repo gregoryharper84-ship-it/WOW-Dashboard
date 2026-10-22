@@ -13,6 +13,7 @@ from v17.fitted_team_event_certification import (
     TeamEventCertificationError,
     resolve_certification,
 )
+from v17.multisport_team_event_calibration import CalibrationArtifactInvalid
 from v17.nba_event_identity import (
     NBAEventIdentityError,
     resolve_nba_current_event_identity,
@@ -34,7 +35,7 @@ def _timestamp(value: Any) -> datetime | None:
 
 def _hold(
     code: str,
-    blocker: str,
+    blocker: str | tuple[str, ...],
     *,
     identity: Mapping[str, Any] | None = None,
     feature_package: Mapping[str, Any] | None = None,
@@ -54,7 +55,7 @@ def _hold(
         "status": "HOLD",
         "code": code,
         "typed_failure": typed_failure,
-        "blockers": [blocker],
+        "blockers": [blocker] if isinstance(blocker, str) else list(blocker),
         "sport": "NBA",
         "official_event_id": identity.get("event_id") or feature_package.get("official_event_id"),
         "home_team_id": identity.get("home_team_id") or feature_package.get("home_team_id"),
@@ -365,6 +366,17 @@ def prepare_nba_current_pregame_scorer_receipt(
         )
     try:
         calibration_artifact = calibration_artifact_resolver(client, certification)
+    except CalibrationArtifactInvalid as exc:
+        return _hold(
+            "MODEL_INPUTS_INSUFFICIENT",
+            exc.blockers,
+            identity=identity,
+            feature_package=current_feature_package,
+            source_snapshot_id=source_snapshot_id,
+            typed_failure="MODEL_INPUTS_INSUFFICIENT",
+            certification=certification,
+            champion_artifact=champion_artifact,
+        )
     except LookupError:
         return _hold(
             "MODEL_INPUTS_INSUFFICIENT",
@@ -378,12 +390,12 @@ def prepare_nba_current_pregame_scorer_receipt(
         )
     except ValueError:
         return _hold(
-            "MODEL_INPUTS_INSUFFICIENT",
+            "MODEL_OUTPUT_INVALID",
             "NBA_CERTIFIED_CALIBRATOR_INVALID",
             identity=identity,
             feature_package=current_feature_package,
             source_snapshot_id=source_snapshot_id,
-            typed_failure="MODEL_INPUTS_INSUFFICIENT",
+            typed_failure="MODEL_OUTPUT_INVALID",
             certification=certification,
             champion_artifact=champion_artifact,
         )
