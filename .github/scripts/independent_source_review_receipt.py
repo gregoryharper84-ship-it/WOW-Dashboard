@@ -878,9 +878,8 @@ def verify_artifact(
             else None
         )
         _require(
-            # REST run.name is a dynamic display title; authenticate the
-            # protected workflow path, producer receipt and source metadata.
-            run.get("path") == WORKFLOW_PATH
+            run.get("name") == WORKFLOW_NAME
+            and run.get("path") == WORKFLOW_PATH
             and run.get("event") == source.get("event")
             and run.get("head_branch") == "main"
             and repository_name == expected_repository,
@@ -890,8 +889,9 @@ def verify_artifact(
         repository = run.get("repository")
         head_repository = run.get("head_repository")
         _require(
-            run.get("name") == WORKFLOW_NAME
-            and run.get("path") == WORKFLOW_PATH
+            # REST run.name contains dynamic run-name text; only canonical
+            # workflow path, run ID/attempt, source receipt and repository are authoritative.
+            run.get("path") == WORKFLOW_PATH
             and run.get("event") == source.get("event")
             and run.get("head_branch") == "main"
             and isinstance(head_repository, Mapping)
