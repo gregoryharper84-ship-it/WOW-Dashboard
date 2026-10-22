@@ -1,0 +1,54 @@
+name: WOW V17 NFL Backlog Full-Season Research Shadow
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '.github/workflows/wow-v17-nfl-backlog-full-season-shadow.yml'
+      - 'artifacts/wow-engine/v17/nfl_espn_full_regular_shadow_1933.py'
+      - 'artifacts/wow-engine/scripts/nfl_full_regular_shadow_canary_1933.py'
+      - 'artifacts/wow-engine/tests/test_nfl_espn_full_regular_shadow_1933.py'
+      - 'artifacts/wow-engine/NFL_MULTI_SOURCE_STAGING_ACCEPTANCE_1933.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-nfl-full-shadow-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  full-regular-season-research-shadow:
+    if: >-
+      github.event.pull_request.number == 1937 &&
+      github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.head_ref == 'backlog/1933-multi-source-historical-collectors'
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate full-season safety and negative fixtures
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m pip install --disable-pip-version-check pytest httpx
+          python -m pytest --confcutdir=tests -q tests/test_nfl_espn_full_regular_shadow_1933.py
+      - name: Audit 18 NFL regular-season weeks from public historical ESPN scoreboards
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set +e
+          python -m scripts.nfl_full_regular_shadow_canary_1933 > "$RUNNER_TEMP/wow-nfl-full-regular-shadow-1933.json"
+          RESULT=$?
+          set -e
+          echo '### NFL full-regular-season historical source audit — research only' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No wagers, secrets, Supabase access, deployments, training or production probability changes. Public ESPN use remains subject to separate source-rights review.' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          python -m json.tool "$RUNNER_TEMP/wow-nfl-full-regular-shadow-1933.json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/wow-nfl-full-regular-shadow-1933.json"
+          exit "$RESULT"
