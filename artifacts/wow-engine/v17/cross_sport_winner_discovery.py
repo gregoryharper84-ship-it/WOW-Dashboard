@@ -1291,6 +1291,22 @@ def route_discovered_slate(
         completed = (
             payload.get("probability_publishable") is True and payload.get("rank_eligible") is True
         )
+        # Contradictory success booleans never override a typed hard failure.
+        if completed and _text(code).upper() in {
+            MODEL_UNAVAILABLE,
+            MODEL_INPUTS_INSUFFICIENT,
+            MODEL_SCORER_FAILED,
+            MODEL_OUTPUT_INVALID,
+            "STALE_MODEL_OUTPUT",
+            "MODEL_ROUTE_UNSUPPORTED",
+        }:
+            completed = False
+            payload = {
+                **payload,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
         if completed:
             package_audit = validate_governed_scoring_package(payload)
             if package_audit.status != MODEL_PACKAGE_PASS:
