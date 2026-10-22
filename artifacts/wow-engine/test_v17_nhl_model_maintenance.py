@@ -400,6 +400,8 @@ def _goalie_snapshot(home_status="CONFIRMED", away_status="CONFIRMED"):
         "source_id": SOURCE_ID,
         "source_snapshot_id": "official-snapshot-1",
         "source_payload_sha256": "c" * 64,
+        "event_start_time": "2026-10-22T23:00:00Z",
+        "source_evidence_timestamp": "2026-10-22T20:00:00Z",
         "home": {"goalie_id": "goalie-home", "starting_status": home_status},
         "away": {"goalie_id": "goalie-away", "starting_status": away_status},
     }
@@ -410,7 +412,7 @@ def test_goalie_handoff_rejects_missing_starting_goalie():
     current = _goalie_snapshot()
     current["away"]["goalie_id"] = ""
     with pytest.raises(NHLCandidatePreflightError) as caught:
-        validate_nhl_goalie_status_handoff(frozen, current)
+        validate_nhl_goalie_status_handoff(frozen, current, checked_at="2026-10-22T20:30:00Z")
     assert caught.value.code == "NHL_GOALIE_MISSING"
 
 
@@ -418,13 +420,13 @@ def test_goalie_handoff_rejects_changed_starting_status():
     frozen = _goalie_snapshot()
     current = _goalie_snapshot(home_status="SCRATCHED")
     with pytest.raises(NHLCandidatePreflightError) as caught:
-        validate_nhl_goalie_status_handoff(frozen, current)
+        validate_nhl_goalie_status_handoff(frozen, current, checked_at="2026-10-22T20:30:00Z")
     assert caught.value.code == "NHL_STARTING_STATUS_CHANGED"
 
 
 def test_goalie_handoff_accepts_unchanged_source_pinned_inputs_without_authority():
     result = validate_nhl_goalie_status_handoff(
-        _goalie_snapshot(), _goalie_snapshot()
+        _goalie_snapshot(), _goalie_snapshot(), checked_at="2026-10-22T20:30:00Z"
     )
     assert result["status"] == "NHL_GOALIE_STATUS_UNCHANGED"
     assert result["can_execute"] is False
@@ -435,8 +437,60 @@ def test_goalie_handoff_rejects_unpinned_source():
     current = _goalie_snapshot()
     current["source_id"] = "UNTRUSTED"
     with pytest.raises(NHLCandidatePreflightError) as caught:
-        validate_nhl_goalie_status_handoff(frozen, current)
+        validate_nhl_goalie_status_handoff(frozen, current, checked_at="2026-10-22T20:30:00Z")
     assert caught.value.code == "NHL_GOALIE_SOURCE_PIN_MISSING"
+
+
+
+@pytest.mark.parametrize("status", ["SCRATCHED", "UNKNOWN", "QUESTIONABLE", "OUT"])
+def test_goalie_handoff_rejects_matching_but_unconfirmed_status(status):
+    frozen = _goalie_snapshot(home_status=status)
+    current = _goalie_snapshot(home_status=status)
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(
+            frozen, current, checked_at="2026-10-22T20:30:00Z"
+        )
+    assert caught.value.code == "NHL_GOALIE_NOT_CONFIRMED"
+
+
+def test_goalie_handoff_rejects_future_and_stale_source_receipts():
+    frozen, current = _goalie_snapshot(), _goalie_snapshot()
+    current["source_evidence_timestamp"] = "2026-10-22T20:40:00Z"
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(
+            frozen, current, checked_at="2026-10-22T20:30:00Z"
+        )
+    assert caught.value.code == "NHL_GOALIE_SOURCE_FROM_FUTURE"
+
+    frozen, current = _goalie_snapshot(), _goalie_snapshot()
+    current["source_evidence_timestamp"] = "2026-10-22T19:00:00Z"
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(
+            frozen, current, checked_at="2026-10-22T21:30:00Z"
+        )
+    assert caught.value.code == "NHL_GOALIE_SOURCE_TIME_REGRESSION"
+
+    frozen, current = _goalie_snapshot(), _goalie_snapshot()
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(
+            frozen, current, checked_at="2026-10-22T22:10:00Z"
+        )
+    assert caught.value.code == "NHL_GOALIE_SOURCE_STALE"
+
+
+def test_goalie_handoff_rejects_started_event_and_naive_source_time():
+    frozen, current = _goalie_snapshot(), _goalie_snapshot()
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(
+            frozen, current, checked_at="2026-10-22T23:00:00Z"
+        )
+    assert caught.value.code == "NHL_GOALIE_EVENT_ALREADY_STARTED"
+    current["source_evidence_timestamp"] = "2026-10-22T20:00:00"
+    with pytest.raises(NHLCandidatePreflightError) as caught:
+        validate_nhl_goalie_status_handoff(
+            frozen, current, checked_at="2026-10-22T20:30:00Z"
+        )
+    assert caught.value.code == "NHL_GOALIE_SOURCE_TIME_INVALID"
 
 
 def test_maintenance_blocks_invalid_candidate_before_persistence(monkeypatch):
