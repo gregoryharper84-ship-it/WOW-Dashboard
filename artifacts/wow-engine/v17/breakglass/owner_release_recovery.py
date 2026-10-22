@@ -21,13 +21,17 @@ import sys
 import time
 
 from release_breakglass import (
-    CANONICAL_REPO, RULESET_ID, PINNED_OWNER_KEY_FINGERPRINT,
+    CANONICAL_REPO, RULESET_ID,
     CHECK_CONTEXTS, GitHub, RecoveryHold, require, run, canonical, sha256,
     snapshot, checks_from_ruleset, expected_check_set, temporary_ruleset,
     verify_latest_app_checks, restore, save_private,
 )
 
 OWNER = "gregoryharper84-ship-it"
+# Recovery-only public trust root registered by repository owner on Oct 22, 2026.
+# Do not rotate the legacy release signing key or its protected allow-signers.
+OWNER_RECOVERY_PUBLIC_KEY_B64 = "AAAAC3NzaC1lZDI1NTE5AAAAIDiytM9wxpABQP9/Phcgn8icCCZiGKUn7emfNkaQDM9q"
+OWNER_RECOVERY_KEY_FINGERPRINT = "SHA256:m7bmGrVu1BmS7JzlquMSLfF2YmqJlxeuqptpckXD4dA"
 MODE = "WOW_OWNER_SIGNED_BREAKGLASS_V1"
 RISK = "OWNER_AUTHORIZES_REPOSITORY_WIDE_TEMPORARY_RELEASE_EXCEPTION"
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -78,7 +82,8 @@ def owner_signer_file(path: Path) -> None:
         digest = base64.b64encode(hashlib.sha256(base64.b64decode(key, validate=True)).digest()).decode().rstrip("=")
     except (ValueError, IndexError, StopIteration, binascii.Error) as exc:
         raise RecoveryHold("OWNER_SIGNER_KEY_INVALID") from exc
-    require("SHA256:" + digest == PINNED_OWNER_KEY_FINGERPRINT, "OWNER_FINGERPRINT_MISMATCH")
+    require(key == OWNER_RECOVERY_PUBLIC_KEY_B64, "OWNER_PUBLIC_KEY_NOT_PINNED")
+    require("SHA256:" + digest == OWNER_RECOVERY_KEY_FINGERPRINT, "OWNER_FINGERPRINT_MISMATCH")
 
 def verify_owner_signature(raw: bytes, signature: Path, signers: Path) -> None:
     owner_signer_file(signers)
@@ -243,6 +248,10 @@ def main():
     a.add_argument("--incident", type=int, required=True)
     a.add_argument("--allowed-file", action="append", required=True)
     a.add_argument("--output", type=Path, required=True)
+    a = sub.add_parser("verify")
+    a.add_argument("--intent", type=Path, required=True)
+    a.add_argument("--owner-signature", type=Path, required=True)
+    a.add_argument("--owner-signers", type=Path, required=True)
     a = sub.add_parser("execute")
     a.add_argument("--intent", type=Path, required=True)
     a.add_argument("--owner-signature", type=Path, required=True)
@@ -272,6 +281,14 @@ def main():
     require(raw == canonical(intent), "INTENT_BYTES_NOT_CANONICAL")
     verify_owner_signature(raw,args.owner_signature,args.owner_signers)
     authenticate_admin(api)
+    if args.mode == "verify":
+        verified_baseline = preflight(api, intent)
+        require(sha256(verified_baseline) == intent["baseline_ruleset_sha256"],
+                "SIGNED_BASELINE_DRIFT")
+        print("OWNER_SIGNED_READ_ONLY_VERIFICATION_PASSED")
+        print("PR_HEAD_SHA", intent["head_sha"])
+        print("RULESET_SHA256", sha256(verified_baseline))
+        return
     if args.mode == "restore":
         baseline = json.loads(args.baseline.read_bytes())
         require(sha256(baseline) == intent["baseline_ruleset_sha256"],
