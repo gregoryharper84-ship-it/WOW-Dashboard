@@ -255,10 +255,10 @@ def test_wrong_watchdog_pid_or_digest_rejected(tmp_path):
 def test_rotated_owner_public_key_is_pinned_and_old_or_other_keys_hold(tmp_path):
     signer=tmp_path/"signers"
     signer.write_text('wow-owner namespaces="wow-breakglass" ssh-ed25519 '
-                      +recovery.OWNER_RECOVERY_PUBLIC_KEY_B64+' recovery-v2\\n')
+                      +recovery.OWNER_RECOVERY_PUBLIC_KEY_B64+' recovery-v2\n')
     recovery.owner_signer_file(signer)
     signer.write_text('wow-owner namespaces="wow-breakglass" ssh-ed25519 '
-                      +'AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'+' impostor\\n')
+                      +'AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'+' impostor\n')
     with pytest.raises(recovery.RecoveryHold):
         recovery.owner_signer_file(signer)
 
