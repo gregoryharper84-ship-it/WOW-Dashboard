@@ -4,16 +4,24 @@ Receipts from this module are engineering holds, not terminal-reducer inputs.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 import math
 from typing import Any, Callable, Mapping
 
-from basketball_team_event_specialist import FEATURE_NAMES, FEATURE_SCHEMA_VERSION, MODEL_FAMILY
+from basketball_team_event_specialist import (
+    FEATURE_NAMES,
+    FEATURE_SCHEMA_VERSION,
+    MODEL_FAMILY,
+    LogisticArtifact,
+)
 from v17.fitted_team_event_certification import (
     TeamEventCertificationError,
     resolve_certification,
 )
 from v17.multisport_team_event_calibration import CalibrationArtifactInvalid
+from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
 from v17.nba_event_identity import (
     NBAEventIdentityError,
     resolve_nba_current_event_identity,
@@ -44,6 +52,7 @@ def _hold(
     certification: Any = None,
     champion_artifact: Mapping[str, Any] | None = None,
     calibration_artifact: Mapping[str, Any] | None = None,
+    research_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     identity = identity if isinstance(identity, Mapping) else {}
     feature_package = feature_package if isinstance(feature_package, Mapping) else {}
@@ -79,6 +88,7 @@ def _hold(
         "calibrated_probability": None,
         "calibrated_lower_bound": None,
         "calibrated_upper_bound": None,
+        "research_receipt": dict(research_receipt) if isinstance(research_receipt, Mapping) else None,
         "probability_publishable": False,
         "rank_eligible": False,
         "can_execute": False,
@@ -127,7 +137,8 @@ def _feature_blocker(
         return "NBA_FEATURE_LINEAGE_MISSING"
     if not source_snapshot_id or feature_package.get("source_snapshot_id") != source_snapshot_id:
         return "NBA_SOURCE_SNAPSHOT_ID_MISMATCH"
-    if _timestamp(feature_package.get("source_snapshot_timestamp")) is None:
+    source_at = _timestamp(feature_package.get("source_snapshot_timestamp"))
+    if source_at is None:
         return "NBA_SOURCE_SNAPSHOT_PROVENANCE_MISSING"
     if not audit.get("dataset_id"):
         return "NBA_FEATURE_DATASET_ID_MISSING"
@@ -137,6 +148,27 @@ def _feature_blocker(
         return "NBA_FEATURE_TIMESTAMP_MISSING"
     if event_at is None or feature_at >= event_at:
         return "NBA_FEATURE_TIMESTAMP_INVALID_FOR_PREGAME"
+    if source_at >= event_at:
+        return "NBA_SOURCE_SNAPSHOT_AFTER_KICKOFF"
+    if source_at > feature_at:
+        return "NBA_SOURCE_SNAPSHOT_AFTER_FEATURE"
+    feature_as_of = audit.get("feature_as_of")
+    try:
+        as_of_value = str(feature_as_of)
+        as_of_datetime = datetime.fromisoformat(as_of_value.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return "NBA_FEATURE_AS_OF_INVALID"
+    if as_of_datetime.utcoffset() is None:
+        if len(as_of_value) != 10:
+            return "NBA_FEATURE_AS_OF_INVALID"
+        if (
+            as_of_datetime.date() > source_at.date()
+            or as_of_datetime.date() > feature_at.date()
+            or as_of_datetime.date() > event_at.date()
+        ):
+            return "NBA_FEATURE_AS_OF_AFTER_CUTOFF"
+    elif as_of_datetime.astimezone(timezone.utc) > min(source_at, feature_at, event_at):
+        return "NBA_FEATURE_AS_OF_AFTER_CUTOFF"
     return None
 
 
@@ -165,9 +197,105 @@ def _rotation_blocker(
     if latest_material_at > feature_at:
         return "NBA_STARTER_CHANGED_AFTER_FEATURE_HYDRATION"
     rotation = str(lineup_evidence.get("expected_starters_rotation") or "").upper()
-    if rotation not in CONFIRMED_ROTATION_STATES and rotation != "CHANGED":
+    if rotation == "CHANGED":
+        return "NBA_CHANGED_STARTERS_RECEIPT_UNVERIFIED"
+    if rotation not in CONFIRMED_ROTATION_STATES:
         return "NBA_STARTING_ROTATION_NOT_CONFIRMED"
     return None
+
+
+def _research_receipt(
+    artifact: Mapping[str, Any],
+    certification: Any,
+    feature_package: Mapping[str, Any],
+) -> dict[str, Any]:
+    payload = artifact.get("artifact_payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("NBA_CERTIFIED_MODEL_ARTIFACT_PAYLOAD_INVALID")
+    fields = (
+        "sport",
+        "model_family",
+        "model_artifact_version",
+        "feature_schema_version",
+        "feature_names",
+        "intercept",
+        "coefficients",
+        "means",
+        "scales",
+    )
+    if any(field not in payload for field in fields):
+        raise ValueError("NBA_CERTIFIED_MODEL_ARTIFACT_PAYLOAD_INVALID")
+    checksum_payload = {field: payload[field] for field in fields}
+    try:
+        checksum = hashlib.sha256(
+            json.dumps(checksum_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    except (TypeError, ValueError) as exc:
+        raise ValueError("NBA_CERTIFIED_MODEL_ARTIFACT_PAYLOAD_INVALID") from exc
+    if (
+        str(payload.get("sport") or "").upper() != "NBA"
+        or payload.get("model_family") != MODEL_FAMILY
+        or payload.get("model_artifact_version") != certification.model_version
+        or payload.get("feature_schema_version") != FEATURE_SCHEMA_VERSION
+        or tuple(payload.get("feature_names") or ()) != tuple(FEATURE_NAMES)
+        or checksum != certification.artifact_sha256
+    ):
+        raise ValueError("NBA_CERTIFIED_MODEL_ARTIFACT_PAYLOAD_MISMATCH")
+    try:
+        fitted = LogisticArtifact(
+            sport=str(payload["sport"]),
+            model_family=str(payload["model_family"]),
+            model_artifact_version=str(payload["model_artifact_version"]),
+            feature_schema_version=str(payload["feature_schema_version"]),
+            feature_names=tuple(payload["feature_names"]),
+            intercept=float(payload["intercept"]),
+            coefficients=tuple(float(value) for value in payload["coefficients"]),
+            means=tuple(float(value) for value in payload["means"]),
+            scales=tuple(float(value) for value in payload["scales"]),
+            training_row_count=int(payload["training_row_count"]),
+            holdout_row_count=int(payload["holdout_row_count"]),
+            train_start_date=str(payload["train_start_date"]),
+            train_end_date=str(payload["train_end_date"]),
+            holdout_brier=float(payload["holdout_brier"]),
+            holdout_log_loss=float(payload["holdout_log_loss"]),
+            holdout_accuracy=float(payload["holdout_accuracy"]),
+            artifact_checksum=checksum,
+        )
+        values = tuple(float(feature_package["features"][name]) for name in FEATURE_NAMES)
+        raw_probability = fitted.raw_probability(values)
+    except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError) as exc:
+        raise ValueError("NBA_CERTIFIED_MODEL_ARTIFACT_PAYLOAD_INVALID") from exc
+    if (
+        len(fitted.coefficients) != len(FEATURE_NAMES)
+        or len(fitted.means) != len(FEATURE_NAMES)
+        or len(fitted.scales) != len(FEATURE_NAMES)
+        or any(not math.isfinite(value) for value in (*fitted.coefficients, *fitted.means, *fitted.scales))
+        or any(value <= 0 for value in fitted.scales)
+        or not math.isfinite(fitted.intercept)
+        or not math.isfinite(raw_probability)
+        or not 0 < raw_probability < 1
+    ):
+        raise ValueError("NBA_CERTIFIED_MODEL_OUTPUT_INVALID")
+    audit = feature_package["feature_audit"]
+    return {
+        "status": "RESEARCH_ONLY_NOT_FOR_PUBLICATION",
+        "raw_probability": raw_probability,
+        "certification_id": certification.certification_id,
+        "model_artifact_id": certification.artifact_id,
+        "model_artifact_version": certification.model_version,
+        "model_artifact_sha256": certification.artifact_sha256,
+        "calibration_artifact_id": certification.calibration_artifact_id,
+        "calibration_artifact_sha256": certification.calibration_sha256,
+        "official_event_id": feature_package["official_event_id"],
+        "source_snapshot_id": feature_package["source_snapshot_id"],
+        "source_snapshot_timestamp": feature_package["source_snapshot_timestamp"],
+        "feature_timestamp": audit["feature_timestamp"],
+        "feature_as_of": audit["feature_as_of"],
+        "dataset_id": audit["dataset_id"],
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
 
 
 def resolve_nba_champion_artifact(client: Any, certification: Any) -> Mapping[str, Any]:
@@ -274,6 +402,17 @@ def prepare_nba_current_pregame_scorer_receipt(
             typed_failure="MODEL_INPUTS_INSUFFICIENT",
         )
 
+    controlling_specialist = CERTIFIED_TEAM_EVENT_SPORTS.get("NBA")
+    if not controlling_specialist:
+        return _hold(
+            "MODEL_UNAVAILABLE",
+            "NBA_CONTROLLING_SPECIALIST_NOT_CERTIFIED",
+            identity=identity,
+            feature_package=current_feature_package,
+            source_snapshot_id=source_snapshot_id,
+            typed_failure="MODEL_UNAVAILABLE",
+        )
+
     try:
         certification = certification_resolver(client, sport="NBA", league_scope="NBA")
     except TeamEventCertificationError as exc:
@@ -308,12 +447,14 @@ def prepare_nba_current_pregame_scorer_receipt(
 
     if (
         certification.sport != "NBA"
+        or certification.league_scope != "NBA"
+        or certification.controlling_specialist != controlling_specialist
         or certification.model_family != MODEL_FAMILY
         or certification.feature_schema_version != FEATURE_SCHEMA_VERSION
     ):
         return _hold(
             "MODEL_UNAVAILABLE",
-            "NBA_CERTIFICATION_CONTRACT_MISMATCH",
+            "NBA_CERTIFICATION_SPECIALIST_SCOPE_OR_MODEL_MISMATCH",
             identity=identity,
             feature_package=current_feature_package,
             source_snapshot_id=source_snapshot_id,
@@ -353,6 +494,35 @@ def prepare_nba_current_pregame_scorer_receipt(
             certification=certification,
         )
 
+    try:
+        research_receipt = _research_receipt(
+            champion_artifact,
+            certification,
+            current_feature_package,
+        )
+    except ValueError as exc:
+        return _hold(
+            "MODEL_OUTPUT_INVALID",
+            str(exc),
+            identity=identity,
+            feature_package=current_feature_package,
+            source_snapshot_id=source_snapshot_id,
+            typed_failure="MODEL_OUTPUT_INVALID",
+            certification=certification,
+            champion_artifact=champion_artifact,
+        )
+    except Exception:
+        return _hold(
+            "MODEL_SCORER_FAILED",
+            "NBA_FITTED_RESEARCH_SCORER_FAILED",
+            identity=identity,
+            feature_package=current_feature_package,
+            source_snapshot_id=source_snapshot_id,
+            typed_failure="MODEL_SCORER_FAILED",
+            certification=certification,
+            champion_artifact=champion_artifact,
+        )
+
     if calibration_artifact_resolver is None:
         return _hold(
             "MODEL_INPUTS_INSUFFICIENT",
@@ -363,6 +533,7 @@ def prepare_nba_current_pregame_scorer_receipt(
             typed_failure="MODEL_INPUTS_INSUFFICIENT",
             certification=certification,
             champion_artifact=champion_artifact,
+            research_receipt=research_receipt,
         )
     try:
         calibration_artifact = calibration_artifact_resolver(client, certification)
@@ -376,6 +547,7 @@ def prepare_nba_current_pregame_scorer_receipt(
             typed_failure="MODEL_INPUTS_INSUFFICIENT",
             certification=certification,
             champion_artifact=champion_artifact,
+            research_receipt=research_receipt,
         )
     except LookupError:
         return _hold(
@@ -387,6 +559,7 @@ def prepare_nba_current_pregame_scorer_receipt(
             typed_failure="MODEL_INPUTS_INSUFFICIENT",
             certification=certification,
             champion_artifact=champion_artifact,
+            research_receipt=research_receipt,
         )
     except ValueError:
         return _hold(
@@ -398,6 +571,7 @@ def prepare_nba_current_pregame_scorer_receipt(
             typed_failure="MODEL_OUTPUT_INVALID",
             certification=certification,
             champion_artifact=champion_artifact,
+            research_receipt=research_receipt,
         )
     except Exception:
         return _hold(
@@ -409,6 +583,7 @@ def prepare_nba_current_pregame_scorer_receipt(
             typed_failure="MODEL_SCORER_FAILED",
             certification=certification,
             champion_artifact=champion_artifact,
+            research_receipt=research_receipt,
         )
 
     return _hold(
@@ -421,6 +596,7 @@ def prepare_nba_current_pregame_scorer_receipt(
         certification=certification,
         champion_artifact=champion_artifact,
         calibration_artifact=calibration_artifact,
+        research_receipt=research_receipt,
     )
 
 
