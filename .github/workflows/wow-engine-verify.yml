@@ -88,7 +88,22 @@ jobs:
             echo "No files assigned to shard; fail closed."
             exit 1
           fi
-          python -m pytest -q --tb=short -rs "${tests[@]}"
+          python -m pytest -q --tb=short -rs --junitxml="$RUNNER_TEMP/junit.xml" "${tests[@]}" || true
+      - name: Probe - surface failures as annotations
+        run: |
+          python - <<'PY'
+          import os, xml.etree.ElementTree as ET
+          root = ET.parse(os.path.join(os.environ["RUNNER_TEMP"], "junit.xml")).getroot()
+          n = 0
+          for case in root.iter("testcase"):
+              for kind in ("failure", "error"):
+                  for node in case.findall(kind):
+                      n += 1
+                      msg = (node.get("message") or "")[:300] + " || " + (node.text or "")[-900:]
+                      msg = msg.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+                      print(f"::error title=PROBE {case.get('classname')}::{case.get('name')} :: {msg}")
+          print(f"probe failures={n}")
+          PY
 
   agent-runtime-integration:
     name: WOW durable Agent Runtime integration
