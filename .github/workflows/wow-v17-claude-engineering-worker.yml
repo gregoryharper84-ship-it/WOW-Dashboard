@@ -13,6 +13,14 @@ on:
         description: Primary/dispatcher workflow run that caused this fallback.
         required: false
         default: ""
+      repair_pr:
+        description: Exact existing Engineering-App PR for targeted same-branch repair.
+        required: false
+        default: ""
+      repair_head_sha:
+        description: Expected exact PR head SHA for a guarded same-branch repair.
+        required: false
+        default: ""
       target_incident:
         description: Optional exact P0 incident selected by domain-scoped rapid dispatch.
         required: false
@@ -30,7 +38,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-implementation-single-writer
   cancel-in-progress: false
 
 jobs:
@@ -82,6 +90,67 @@ jobs:
           python artifacts/wow-engine/v17/engineering_dispatch_queue.py validate \
             --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json
 
+      - name: Validate bound existing Engineering App PR repair target
+        id: repair_target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPAIR_PR: ${{ inputs.repair_pr }}
+          REPAIR_SHA: ${{ inputs.repair_head_sha }}
+          TARGET_INCIDENT: ${{ inputs.target_incident }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REPAIR_PR:-}" ] && [ -z "${REPAIR_SHA:-}" ]; then
+            echo "bound=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$REPAIR_PR" =~ ^[1-9][0-9]*$ ]] && [[ "$REPAIR_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+            [[ "$TARGET_INCIDENT" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::CLAUDE_REPAIR_TARGET_INCOMPLETE_OR_INVALID"; exit 1;
+          }
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${REPAIR_PR}")
+          jq -e --arg sha "$REPAIR_SHA" --arg repo "$GITHUB_REPOSITORY" \
+            '.head.sha == $sha and .state == "open" and .draft == false and
+             .base.ref == "main" and .head.repo.full_name == $repo and
+             .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || {
+            echo "::error::CLAUDE_REPAIR_TARGET_STALE_OR_UNTRUSTED"; exit 1;
+          }
+          body=$(jq -r '.body // ""' <<<"$pr")
+          # Require exactly one same incident in the original bot PR body.
+          incident=$(printf '%s\n' "$body" | python artifacts/wow-engine/v17/engineering_incident_identity.py) || {
+            echo "::error::CLAUDE_REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1;
+          }
+          [ "$incident" = "$TARGET_INCIDENT" ] || {
+            echo "::error::CLAUDE_REPAIR_INCIDENT_MISMATCH"; exit 1;
+          }
+          # Fail closed before checkout: never source new trusted workflows/actions
+          # from an Engineering App PR prior to owner and QA/Release approval.
+          changed_count=$(jq -r '.changed_files // 999999' <<<"$pr")
+          [[ "$changed_count" =~ ^[1-9][0-9]*$ ]] && [ "$changed_count" -le 100 ] || {
+            echo "::error::CLAUDE_REPAIR_SCOPE_UNBOUNDED"; exit 1;
+          }
+          paths=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${REPAIR_PR}/files?per_page=100"             | jq -c '[.[].filename]')
+          PATHS="$paths" PYTHONPATH=artifacts/wow-engine python - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          from v17.agent_identity_policy import governance_trust_roots, is_trust_root
+          paths = json.loads(os.environ["PATHS"])
+          if not paths or len(paths) > 100 or any(not isinstance(p,str) for p in paths):
+              raise SystemExit("CLAUDE_REPAIR_SCOPE_INVALID")
+          guards = frozenset(governance_trust_roots(Path.cwd()))
+          if any(is_trust_root(p, guards) for p in paths):
+              raise SystemExit("CLAUDE_REPAIR_PROTECTED_TRUST_ROOT_DENIED")
+          PYCODE
+          branch=$(jq -r '.head.ref' <<<"$pr")
+          [[ "$branch" =~ ^[A-Za-z0-9_./-]+$ ]] && [[ "$branch" != -* ]] &&
+            [[ "$branch" != *..* ]] && [[ "$branch" != main ]] || {
+            echo "::error::CLAUDE_REPAIR_BRANCH_INVALID"; exit 1;
+          }
+          echo "bound=true" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$REPAIR_SHA" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$REPAIR_PR" >> "$GITHUB_OUTPUT"
+
       - name: Build live dual-stream dispatch plan
         id: dispatch
         shell: bash
@@ -116,6 +185,13 @@ jobs:
               target_reason="Domain-scoped exact P0 target."
               target_hold="DOMAIN_SCOPED_P0_LEASE"
             elif [ "$severity" = "P1" ] && [ "$lane" = "STANDARD" ]; then
+              python artifacts/wow-engine/v17/engineering_dispatch_queue.py check-standard \
+                --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+                --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+                --incident "$TARGET_INCIDENT" > /dev/null || {
+                echo "::error::STANDARD_TARGET_CONFLICTS_WITH_OPEN_RAPID_P0:$TARGET_INCIDENT"
+                exit 1
+              }
               [ -z "$lease_group" ] || [ "$lease_group" = "GLOBAL" ] || {
                 echo "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE:$TARGET_INCIDENT" >&2; exit 1;
               }
@@ -138,8 +214,10 @@ jobs:
               terminal_authority:"V17_TERMINAL_REDUCER"
             }')
           else
-            jq '.records |= map(select(.severity != "P0" or .execution_lane != "RAPID"))' \
-              "$RUNNER_TEMP/wow-dispatch-queue.json" > "$RUNNER_TEMP/wow-standard-dispatch-queue.json"
+            python artifacts/wow-engine/v17/engineering_dispatch_queue.py standard \
+              --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+              --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+              --output "$RUNNER_TEMP/wow-standard-dispatch-queue.json" > /dev/null
             decision=$(python artifacts/wow-engine/v17/engineering_agent_team.py dual-priority \
               --ledger "$RUNNER_TEMP/wow-standard-dispatch-queue.json")
           fi
@@ -153,6 +231,21 @@ jobs:
           lease_group=$(jq -r --arg id "$restoration" '[.records[] | select(.incident_id == $id)] | first | .lease_group // "GLOBAL"' "$RUNNER_TEMP/wow-dispatch-queue.json")
           echo "queue_depth=$queue_depth" >> "$GITHUB_OUTPUT"
           echo "lease_group=$lease_group" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact existing repair head under fence
+        if: steps.repair_target.outputs.bound == 'true'
+        shell: bash
+        env:
+          REPAIR_SHA: ${{ steps.repair_target.outputs.head_sha }}
+          REPAIR_BRANCH: ${{ steps.repair_target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "refs/heads/${REPAIR_BRANCH}:refs/remotes/origin/${REPAIR_BRANCH}"
+          test "$(git rev-parse "refs/remotes/origin/${REPAIR_BRANCH}")" = "$REPAIR_SHA" || {
+            echo "::error::CLAUDE_REPAIR_HEAD_MOVED"; exit 1;
+          }
+          git switch --detach "$REPAIR_SHA"
+          echo "Same-branch Claude repair bound to ${REPAIR_BRANCH}@${REPAIR_SHA}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Initialize persistent-worker safety state
         id: safety
@@ -542,6 +635,10 @@ jobs:
             artifacts/wow-engine/v17/.agent-handoff/specialist.json.
             Implement only the proven root cause and acceptance criteria. Do not diagnose another
             incident, edit .github/workflows/**, or touch .agent-handoff/**.
+            If repair target is bound (${{ steps.repair_target.outputs.bound }}), edit the
+            existing original PR #${{ steps.repair_target.outputs.pr_number }} at exact
+            head ${{ steps.repair_target.outputs.head_sha }}. Keep its original branch;
+            never replace the PR, alter another incident, or delete/skip failing tests.
             Run the narrowest reproduction first and relevant regressions. Preserve can_execute=false,
             DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true, exact typed failures, exact-once
             behavior, V17_TERMINAL_REDUCER, and all probability governance. No Class C change is authorized.
@@ -556,6 +653,9 @@ jobs:
           GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}
           EXPECTED_INCIDENT: ${{ steps.triage.outputs.incident }}
           EXPECTED_RISK: ${{ steps.triage.outputs.risk }}
+          REPAIR_BOUND: ${{ steps.repair_target.outputs.bound }}
+          REPAIR_SHA: ${{ steps.repair_target.outputs.head_sha }}
+          REPAIR_BRANCH: ${{ steps.repair_target.outputs.branch }}
         run: |
           set -euo pipefail
           changed=$(jq -r '.changed' <<<"$RESULT")
@@ -578,14 +678,25 @@ jobs:
           if [ "$changed" = "true" ]; then
             # git diff ignores untracked files; a repair that only adds files is a real change (#1021).
             [ -z "$(git status --porcelain)" ] && { echo "::error::Claude reported changes but returned no working-tree diff."; exit 1; }
-            branch="claude/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git switch -c "$branch"
+            git config user.name "wow-engineering[bot]"
+            git config user.email "339932922+wow-engineering[bot]@users.noreply.github.com"
+            if [ "${REPAIR_BOUND:-false}" = "true" ]; then
+              branch="$REPAIR_BRANCH"
+              test "$(git rev-parse HEAD)" = "$REPAIR_SHA" || {
+                echo "::error::CLAUDE_REPAIR_CHECKOUT_STALE"; exit 1;
+              }
+            else
+              branch="claude/engineering/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+              git switch -c "$branch"
+            fi
             git add --all
             git commit -m "Claude Engineering: ${incident:-fallback-repair}"
             git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-            git push --set-upstream origin "$branch"
+            if [ "${REPAIR_BOUND:-false}" = "true" ]; then
+              git push --force-with-lease="refs/heads/$branch:$REPAIR_SHA" origin "HEAD:refs/heads/$branch"
+            else
+              git push --set-upstream origin "$branch"
+            fi
             head_sha=$(git rev-parse HEAD)
           fi
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
@@ -801,7 +912,7 @@ jobs:
             ${{ runner.temp }}/wow-engineering-governance-receipt.sha256
 
       - name: Open governed engineering PR
-        if: steps.impl.outputs.changed == 'true'
+        if: steps.impl.outputs.changed == 'true' && steps.repair_target.outputs.bound != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
@@ -891,6 +1002,8 @@ jobs:
           CHANGED: ${{ steps.impl.outputs.changed }}
           BRANCH: ${{ steps.impl.outputs.branch }}
           EXPECTED_HEAD: ${{ steps.impl.outputs.head_sha }}
+          REPAIR_BOUND: ${{ steps.repair_target.outputs.bound }}
+          REPAIR_PR: ${{ steps.repair_target.outputs.pr_number }}
         run: |
           set -euo pipefail
           # Disposition per sole-owner ruling (2026-10-08): a governance policy boundary is
@@ -964,7 +1077,11 @@ jobs:
           if ! [[ "${EXPECTED_HEAD:-}" =~ ^[0-9a-f]{40}$ ]]; then
             fail ACTIONABLE_REPAIR_HEAD_INVALID "implementation head SHA missing or malformed."
           fi
-          if ! [[ "$BRANCH" =~ ^claude/engineering/[0-9]+-[0-9]+$ ]]; then
+          if [ "${REPAIR_BOUND:-false}" = "true" ]; then
+            if ! [[ "$BRANCH" =~ ^[A-Za-z0-9_./-]+$ ]] || [[ "$BRANCH" == *..* ]]; then
+              fail ACTIONABLE_REPAIR_BRANCH_INVALID "invalid bound repair branch."
+            fi
+          elif ! [[ "$BRANCH" =~ ^claude/engineering/[0-9]+-[0-9]+$ ]]; then
             fail ACTIONABLE_REPAIR_BRANCH_INVALID "unexpected implementation branch name."
           fi
           if ! prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --base main --head "$BRANCH" --json number,isDraft,headRefOid); then
@@ -978,6 +1095,9 @@ jobs:
             fail ACTIONABLE_REPAIR_PR_AMBIGUOUS "branch=$BRANCH matched $count open PRs."
           fi
           pr=$(jq -r '.[0].number' <<<"$prs")
+          if [ "${REPAIR_BOUND:-false}" = "true" ] && [ "$pr" != "$REPAIR_PR" ]; then
+            fail ACTIONABLE_REPAIR_WRONG_PR "expected original PR #$REPAIR_PR, got #$pr."
+          fi
           is_draft=$(jq -r '.[0].isDraft' <<<"$prs")
           pr_head=$(jq -r '.[0].headRefOid' <<<"$prs")
           if [ "$pr_head" != "$EXPECTED_HEAD" ]; then

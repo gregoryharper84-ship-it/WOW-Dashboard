@@ -100,6 +100,7 @@ Emitted by the protected Claude engineering worker (`wow-v17-claude-engineering-
 | `ACTIONABLE_REPAIR_PR_MISSING` | engineering delivery | No open PR to `main` exists for the implementation branch. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_PR_AMBIGUOUS` | engineering delivery | More than one open PR matches the implementation branch. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_PR_HEAD_MISMATCH` | engineering delivery | The PR head differs from the implementation head SHA. | `UNRESOLVED_TYPED_FAILURE` |
+| `ACTIONABLE_REPAIR_WRONG_PR` | engineering delivery | Bound same-branch repair resolved a different open PR number than the original Engine-App target. No substitute PR is authorized. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_DELIVERY_UNVERIFIED` | engineering persistence | `REPAIR` run whose delivery gate produced no code (cancelled/skipped); suffixed with the gate outcome. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_RECEIPT_INCIDENT_INVALID` | engineering persistence | Incident identity is not a numeric issue number; receipt not written. | `UNRESOLVED_TYPED_FAILURE` |
 | `ACTIONABLE_REPAIR_RECEIPT_PERSIST_FAILED` | engineering persistence | Incident issue lookup or append-only receipt write failed. | `UNRESOLVED_TYPED_FAILURE` |
@@ -156,12 +157,29 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | Code | Owning lane/stage | Exact condition | Rank eligible? |
 |---|---|---|---:|
 | `QA_APP_CREDENTIAL_MISSING` | independent QA | `WOW_QA_APP_ID` is not numeric or `WOW_QA_APP_PRIVATE_KEY` is absent; no QA check is published (the required check stays missing, so merges block). | N/A |
+| `QA_REVIEW_PROVIDER_CREDENTIAL_MISSING` | independent QA | Independent-review activation is enabled but the separate `WOW_QA_REVIEW_OPENAI_API_KEY` is absent; no QA decision/check is published. | N/A |
+| `QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD` | independent QA canary | Dispatch requested a canary but its PR number and head SHA do not exactly match the owner-configured single-PR/SHA admission. | N/A |
+| `QA_REVIEW_CANARY_REQUIRES_DISPATCH` | independent QA canary | Canary policy was requested from an event other than an explicit protected workflow dispatch. | N/A |
 | `QA_TARGETS_UNRESOLVED` | independent QA | QA could not resolve any valid (PR, exact head) target; details in the annotation. | N/A |
+| `QA_TARGET_COUNT_INVALID` | independent QA | A protected QA invocation resolved anything other than one exact (PR, head) target; no source review or check is published. | N/A |
+| `QA_REVIEW_POLICY_INVALID` | independent QA / release | Independent-review activation is not one of the accepted empty, `false`, or `true` states; no decision/check is published. | N/A |
+| `QA_REVIEW_POLICY_MODE_INVALID` | independent QA | The authenticated producing QA run has no supported immutable review mode. | N/A |
+| `QA_REVIEW_POLICY_MODE_CONFLICT` | independent QA | The evidence mode and review requirement disagree. | N/A |
+| `QA_REVIEW_POLICY_RUN_ID_INVALID` | independent QA | The authenticated QA policy receipt has no valid producing run identity. | N/A |
+| `QA_REVIEW_POLICY_TARGET_MISMATCH` | independent QA | Policy receipt PR, head SHA, or head ref differs from the evidence target. | N/A |
+| `QA_REVIEW_POLICY_LEGACY_AFTER_ACTIVATION` | independent QA / release | A legacy-mode QA receipt is presented after global independent-review activation; it cannot satisfy the active policy. | N/A |
+| `QA_REVIEW_CANARY_SCOPE_MISMATCH` | independent QA canary | Canary receipt does not bind the exact admitted PR number and head SHA. | N/A |
+| `QA_REVIEW_CANARY_OWNER_AUTHORED` | independent QA canary | Owner-authored PR is not eligible for the ordinary inert canary path. | N/A |
+| `QA_REVIEW_CANARY_TRUST_ROOT` | independent QA canary | Trust-root changes are not eligible for the ordinary inert canary path. | N/A |
 | `QA_DECISION_INVARIANT_VIOLATED` | independent QA | A QA decision file claimed merge/release or execution authority; nothing published. | N/A |
 | `QA_CHECK_PUBLISH_FAILED` | independent QA | Creating the QA check run with the QA App token failed. | N/A |
+| `QA_REVIEW_EXECUTION_FAILED` | independent QA | Review capture, provider, receipt, or decision execution failed after an exact target was resolved; the QA App publishes a failure and a run-scoped outcome artifact is retained. Suffixed with the failed step. | N/A |
 | `QA_EVIDENCE_INCOMPLETE` | independent QA | An evidence input was unreadable, truncated, or malformed (repo, PR, files, check runs, reviews); suffixed with the input. For changed files, both rename destination and `previous_filename` (source) are evaluated; a missing/invalid rename origin emits `QA_EVIDENCE_INCOMPLETE:FILES_RENAME_ORIGIN_MISSING`, invalid names emit `...:FILES_PATH_INVALID`, and rename origins cannot mask `...:FILES_TRUNCATED`. | N/A |
 | `QA_HEAD_INVALID` | independent QA | Expected or current head is not a 40-hex SHA. | N/A |
 | `QA_HEAD_STALE` | independent QA | The PR head moved after the trigger; the check is published only on the superseded SHA. | N/A |
+| `QA_INDEPENDENT_SOURCE_REVIEW_MISSING` | independent QA | No current, authenticated, exact-head source-review artifact is available; CI or a trusted-governance receipt cannot substitute. | N/A |
+| `QA_INDEPENDENT_SOURCE_REVIEW_INVALID` | independent QA | The source-review artifact, workflow provenance, PR author, reviewed file inventory, or exact-head binding is invalid. Release prefixes the finding when independently re-deriving QA. | N/A |
+| `QA_INDEPENDENT_SOURCE_REVIEW_REJECTED` | independent QA | The authenticated exact-head adversarial review explicitly rejected the source; Release independently preserves the rejection. | N/A |
 | `QA_PR_NOT_OPEN` | independent QA | PR is closed or merged. | N/A |
 | `QA_PR_DRAFT` | independent QA | PR is a draft. | N/A |
 | `QA_PR_BASE_NOT_MAIN` | independent QA | PR does not target `main`. | N/A |
@@ -172,7 +190,9 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING` | independent QA | The PR changes a trust root (`.github/`, `.agents/`, or a file a governance workflow executes or reads) and the owner's latest review is not APPROVED on this exact head. | N/A |
 | `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; it can never be independently approved (re-propose from the Engineering App). | N/A |
 | `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
-| `RELEASE_TARGETS_UNRESOLVED` | release authority | Release could not resolve any valid (PR, exact head) target. | N/A |
+| `RELEASE_PR_NUMBER_INVALID` | release authority | Manual Release re-entry did not provide a valid PR number to bind to its QA receipt. | N/A |
+| `RELEASE_QA_REVIEW_POLICY_MISSING` | release authority | Release has no authenticated policy receipt from the exact producing QA workflow run. | N/A |
+| `RELEASE_QA_REVIEW_POLICY_INVALID` | release authority | The producing QA receipt has an unsupported review mode. | N/A |
 | `RELEASE_DECISION_INVARIANT_VIOLATED` | release authority | A Release decision file claimed authority; nothing published. | N/A |
 | `RELEASE_CHECK_PUBLISH_FAILED` | release authority | Creating the Release check run with the Release App token failed. | N/A |
 | `RELEASE_APP_IDENTITY_UNBOUND` | release authority | QA or Release App ID is not configured as a number. | N/A |
@@ -183,6 +203,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `TARGET_HEAD_INVALID` | check targeting | A workflow_run pull request entry has no valid 40-hex head SHA; suffixed `:<pr>`. | N/A |
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
 | `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
+| `TARGET_PR_IDENTITY_MISMATCH` | check targeting | The fresh canonical PR does not match the workflow_run PR number/head, canonical head repository, or main base repository/ref. | N/A |
 | `TARGET_SWEEP_UNREADABLE` | check targeting | Open-PR sweep listing could not be read; suffixed with HTTP status. | N/A |
 
 ## Exact-target bootstrap and Claude structured-output codes (PR #1531)

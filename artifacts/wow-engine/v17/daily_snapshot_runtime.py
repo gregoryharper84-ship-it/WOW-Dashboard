@@ -37,6 +37,7 @@ from v17.daily_response_contract import (
     persist_row_detail,
     read_acquisition_detail_page,
     read_row_detail_page,
+    summarize_acquisition_by_family,
 )
 from v17.daily_terminal_reduction import (
     assert_no_terminal_upgrade,
@@ -593,10 +594,21 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             )
             cross_sport_audit["acquisition_detail_persistence"] = acquisition_persistence
             cross_sport_audit["acquisition_detail_ref"] = acquisition_ref
+            cross_sport_audit["acquisition_family_summary"] = summarize_acquisition_by_family(
+                acquisition_details
+            )
             reconciliation = dict(cross_sport_audit.get("reconciliation") or {})
+            detail_accounted = acquisition_persistence.get("detail_available") is True and not (
+                acquisition_persistence.get("blockers")
+            )
             if acquisition_persistence.get("board_completeness") is True:
                 reconciliation["acquisition_detail_reconciliation"] = "PASS"
                 reconciliation["board_completeness"] = "PASS"
+            elif detail_accounted:
+                # #823: every target is accounted for, but some failed. Truthful
+                # partial board; not a run blocker and no row is changed.
+                reconciliation["acquisition_detail_reconciliation"] = "PASS"
+                reconciliation["board_completeness"] = "INCOMPLETE"
             else:
                 reconciliation["acquisition_detail_reconciliation"] = "BLOCKED"
                 reconciliation["board_completeness"] = "BLOCKED"

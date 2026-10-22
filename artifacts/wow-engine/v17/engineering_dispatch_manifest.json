@@ -45,20 +45,51 @@
       "lease_group": "P0_LLP_RESTORE"
     },
     {
-      "issue_number": 823,
-      "severity": "P1",
+      "issue_number": 1688,
+      "severity": "P0",
       "priority_rank": 4,
-      "execution_lane": "STANDARD",
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "ENGINEERING_AUTONOMY",
+        "WORKFLOW_TRUST_ROOT",
+        "RECOVERY_CONTROL_PLANE"
+      ],
+      "rapid_stream": "AUTONOMY_RESTORE",
+      "lease_group": "P0_AUTONOMY_RESTORE"
+    },
+    {
+      "issue_number": 823,
+      "severity": "P0",
+      "priority_rank": 5,
+      "execution_lane": "RAPID",
       "conflict_keys": [
         "SPORT_DISCOVERY",
         "ACQUISITION",
-        "ALL_SPORTS_MONEYLINE"
-      ]
+        "ALL_SPORTS_MONEYLINE",
+        "CROSS_SPORT_MONEYLINE",
+        "LLP_USER_PATH"
+      ],
+      "rapid_stream": "B",
+      "lease_group": "P0_LLP_RESTORE"
+    },
+    {
+      "issue_number": 1806,
+      "severity": "P0",
+      "priority_rank": 6,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "ALL_SPORTS_MONEYLINE",
+        "CROSS_SPORT_MONEYLINE",
+        "OFFICIAL_PUBLICATION",
+        "LLP_USER_PATH"
+      ],
+      "rapid_stream": "B",
+      "lease_group": "P0_LLP_RESTORE"
     },
     {
       "issue_number": 1309,
       "severity": "P1",
-      "priority_rank": 5,
+      "priority_rank": 7,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "TEAM_MARKET_CERTIFICATION",
@@ -69,7 +100,7 @@
     {
       "issue_number": 487,
       "severity": "P1",
-      "priority_rank": 6,
+      "priority_rank": 8,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "PROP_LIFECYCLE",
@@ -81,7 +112,7 @@
     {
       "issue_number": 491,
       "severity": "P1",
-      "priority_rank": 7,
+      "priority_rank": 9,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "PROP_FORWARD_EVIDENCE",
@@ -92,7 +123,7 @@
     {
       "issue_number": 1087,
       "severity": "P1",
-      "priority_rank": 8,
+      "priority_rank": 10,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "PRODUCTION_RUNTIME",
@@ -102,7 +133,7 @@
     {
       "issue_number": 1150,
       "severity": "P1",
-      "priority_rank": 9,
+      "priority_rank": 11,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "ACTION_SCHEMA",
@@ -113,12 +144,23 @@
     {
       "issue_number": 1152,
       "severity": "P1",
-      "priority_rank": 10,
+      "priority_rank": 12,
       "execution_lane": "STANDARD",
       "conflict_keys": [
         "NCAAF_TEAM_STATE",
         "SPREAD_FORWARD",
         "ALL_SPORTS_SPREADS"
+      ]
+    },
+    {
+      "issue_number": 1779,
+      "severity": "P1",
+      "priority_rank": 13,
+      "execution_lane": "STANDARD",
+      "conflict_keys": [
+        "ENGINEERING_AUTONOMY",
+        "AGENT_INSTRUCTION_TRUST_ROOT",
+        "RELEASE_SECURITY"
       ]
     }
   ],

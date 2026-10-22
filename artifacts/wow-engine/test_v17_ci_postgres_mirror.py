@@ -1,6 +1,6 @@
-"""Keep all required PostgreSQL CI service shards off Docker Hub rate limits.
+"""Pin required PostgreSQL CI services to a working official image source.
 
-Incident: #1388 (P0 memory exact-head verification blocked).
+Incidents: #1388 and #1688. Public ECR returned toomanyrequests/Data limit exceeded.
 Only the distribution registry changes, not PostgreSQL major version,
 job matrices, test selection, authorization checks, or protected summaries.
 """
@@ -10,10 +10,10 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-OFFICIAL_MIRROR = "public.ecr.aws/docker/library/postgres:16"
+OFFICIAL_IMAGE = "postgres:16"
 
 
-def test_all_required_postgres_services_use_official_public_ecr_mirror():
+def test_all_required_postgres_services_use_verified_official_image():
     expected = {
         ".github/workflows/wow-verify.yml": 3,
         ".github/workflows/wow-engine-verify.yml": 2,
@@ -28,17 +28,17 @@ def test_all_required_postgres_services_use_official_public_ecr_mirror():
         assert len(service_jobs) == required, (relative, len(service_jobs))
         for job in service_jobs:
             service = job["services"]["postgres"]
-            assert service["image"] == OFFICIAL_MIRROR
+            assert service["image"] == OFFICIAL_IMAGE
             assert service["env"]["POSTGRES_USER"]
             assert service["env"]["POSTGRES_DB"]
             assert service["env"]["POSTGRES_PASSWORD"]
             assert "pg_isready" in service["options"]
             assert job.get("steps"), "No test steps remain"
         text = (ROOT / relative).read_text()
-        assert "image: postgres:16" not in text
+        assert "image: public.ecr.aws/docker/library/postgres:16" not in text
 
 
-def test_ci_mirror_does_not_remove_protected_aggregate_gates():
+def test_ci_image_source_does_not_remove_protected_aggregate_gates():
     verify = yaml.safe_load((ROOT / ".github/workflows/wow-verify.yml").read_text())
     engine = yaml.safe_load((ROOT / ".github/workflows/wow-engine-verify.yml").read_text())
     assert "required-three" in " ".join(verify["jobs"])

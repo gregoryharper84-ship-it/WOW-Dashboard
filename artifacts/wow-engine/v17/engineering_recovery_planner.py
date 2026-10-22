@@ -18,7 +18,7 @@ import json
 import re
 from typing import Any
 
-_FINDING_CODE_RE = re.compile(r"`([A-Z][A-Z0-9_]*)`")
+_FINDING_CODE_RE = re.compile(r"`([A-Z][A-Z0-9_]*(?::[^`\r\n]{1,160})?)`")
 
 MAX_REPAIR_ATTEMPTS = 3
 NEEDS_OWNER_LABEL = "needs-owner"
@@ -29,6 +29,13 @@ NEEDS_OWNER_LABEL = "needs-owner"
 # owner-approval gaps, etc. These are ownership/approval facts, not repairable code defects.
 NON_REPAIRABLE_PREFIXES = ("QA_TRUST_ROOT_",)
 NON_REPAIRABLE_SUFFIXES = ("_OWNER_APPROVAL_MISSING",)
+# A missing upstream check is not a code defect. Wait for that check to finish,
+# then independent QA/Release will publish a fresh exact-head verdict.
+EVIDENCE_PENDING_PREFIXES = (
+    "QA_EVIDENCE_MISSING:", "QA_EVIDENCE_INCOMPLETE:",
+    "RELEASE_QA_EVIDENCE_MISSING:", "RELEASE_QA_EVIDENCE_INCOMPLETE:",
+)
+EVIDENCE_PENDING_CODES = frozenset({"RELEASE_QA_MISSING", "RELEASE_QA_FAILED"})
 
 
 def parse_findings_from_summary(summary: str) -> list[str]:
@@ -85,6 +92,20 @@ def plan_recovery(
             "action": "WAITING_ON_OWNER",
             "findings": list(findings),
             "non_repairable_findings": non_repairable,
+            "attempts": attempts,
+            "can_execute": False,
+        }
+
+    # Do not burn the recovery budget because QA evaluated before CI finished,
+    # or because Release observed a not-yet-passing QA check.
+    pending = [f for f in findings if f in EVIDENCE_PENDING_CODES or
+               any(f.startswith(prefix) for prefix in EVIDENCE_PENDING_PREFIXES)]
+    if pending:
+        return {
+            "pr_number": pr_number,
+            "action": "WAITING_ON_EVIDENCE",
+            "findings": list(findings),
+            "pending_findings": pending,
             "attempts": attempts,
             "can_execute": False,
         }
