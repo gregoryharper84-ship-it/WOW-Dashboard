@@ -1,0 +1,65 @@
+name: WOW Research NCAAF NHL Identity Check (One Shot)
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/wow-research-ncaaf-nhl-feature-identity-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  read-only-official-nhl-crosswalk:
+    if: ${{ github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' && github.event.pull_request.head.ref == 'research/ncaaf-nhl-fitted-feature-identity-audit-20261022' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact research source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install read-only resolver and test libraries
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check "requests==2.32.3" "pytest==8.3.5"
+
+      - name: Run identity boundary tests (offline)
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m pytest -q tests/test_forward_model_identity_audit.py tests/test_nhl_forward_official_crosswalk.py
+
+      - name: Resolve canonical NHL IDs from first-party NHL schedule
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/wow-nhl-identity-evidence"
+          python scripts/nhl_forward_official_crosswalk.py \
+            --fixture data/research/frozen_20261022_ncaaf_nhl_identities.json \
+            --out "$RUNNER_TEMP/wow-nhl-identity-evidence/canonical_nhl_crosswalk.json"
+          {
+            echo "github_run_id=$GITHUB_RUN_ID"
+            echo "source_head_sha=${{ github.event.pull_request.head.sha }}"
+            echo "runner_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "status=SOURCE_IDENTITY_ONLY_NOT_MODEL_CERTIFICATION"
+            echo "can_execute=false"
+          } > "$RUNNER_TEMP/wow-nhl-identity-evidence/context.txt"
+          sha256sum "$RUNNER_TEMP/wow-nhl-identity-evidence/canonical_nhl_crosswalk.json" \
+            > "$RUNNER_TEMP/wow-nhl-identity-evidence/crosswalk.sha256"
+
+      - name: Preserve immutable snapshot of crosswalk output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-nhl-canonical-event-identity-${{ github.run_id }}
+          path: ${{ runner.temp }}/wow-nhl-identity-evidence/
+          if-no-files-found: error
+          retention-days: 30
