@@ -148,3 +148,31 @@ def test_wrong_or_ambiguous_event_identity_does_not_count_as_match():
     assert report["status"] == "PARTIAL_HOLD"
     assert report["matched_games"] == 271
     assert report["problems"][0]["issue"] == "MISSING_OR_UNFINALIZED"
+
+
+def test_one_shot_canary_rejects_wrong_pinned_schedule_bytes(monkeypatch):
+    from scripts import nfl_full_regular_shadow_canary_1933 as script
+    schedule, weekly = fixture_corpus()
+    with pytest.raises(CollectionBlocked, match="NFL_ESPN_FULL_PINNED_SCHEDULE_HASH_MISMATCH"):
+        script.run(fetch_schedule=lambda _: schedule, fetch_week=lambda week: weekly[week])
+
+
+def test_one_shot_fixture_canary_publishes_research_success_not_model_authority(monkeypatch):
+    import hashlib
+    from scripts import nfl_full_regular_shadow_canary_1933 as script
+    schedule, weekly = fixture_corpus()
+    monkeypatch.setattr(script, "PINNED_SCHEDULE_SHA256",
+                        hashlib.sha256(schedule).hexdigest())
+    report = script.run(fetch_schedule=lambda _: schedule, fetch_week=lambda week: weekly[week])
+    assert report["status"] == "RESEARCH_SOURCE_VERIFIED"
+    assert report["matched_games"] == 272
+    assert report["unresolved_games"] == 0
+    assert report["crosswalk_count"] == 272
+    assert len(report["crosswalk_sha256"]) == 64
+    assert report["source_rights_state"] == "LICENSE_REVIEW_REQUIRED"
+    assert report["espn_rights_state"] == "UNREVIEWED_FOR_STAGING_OR_TRAINING"
+    assert report["model_certified"] is False
+    assert report["storage_write_authorized"] is False
+    assert report["training_ready"] is False
+    assert report["attestation_verified"] is False
+    assert report["can_execute"] is False
