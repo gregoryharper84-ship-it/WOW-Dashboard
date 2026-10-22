@@ -227,7 +227,11 @@ def build_current_event_feature_snapshot(
                 "NCAAF_CURRENT_EVENT_CONTEXT_INCOMPLETE", field
             )
     injury_time = _aware(context.get("injury_evidence_timestamp"), "injury_evidence_timestamp")
-    if injury_time >= kickoff or injury_time.isoformat() != receipts_by_purpose["INJURY_REPORT"]["evidence_timestamp"]:
+    if injury_time >= kickoff or injury_time > current_time:
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE", "INJURY_REPORT"
+        )
+    if injury_time.isoformat() != receipts_by_purpose["INJURY_REPORT"]["evidence_timestamp"]:
         raise NCAAFEventFeatureHandoffUnavailable("NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE", "INJURY_REPORT")
 
     rows = [dict(row) for row in evidence_rows]
@@ -331,6 +335,96 @@ def persist_current_event_feature_snapshot(db: Any, row: Mapping[str, Any]) -> d
     }
 
 
+def _validate_refreshed_context(
+    row: Mapping[str, Any],
+    context: Mapping[str, Any],
+    *,
+    event_id: str,
+    kickoff: datetime,
+    current_time: datetime,
+) -> None:
+    if not isinstance(context, Mapping):
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
+        )
+    raw_receipts = context.get("receipts")
+    if not isinstance(raw_receipts, Iterable) or isinstance(
+        raw_receipts, (str, bytes, Mapping)
+    ):
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
+        )
+    fresh_receipts: dict[str, dict[str, str]] = {}
+    for raw in raw_receipts:
+        purpose = str(raw.get("purpose") or "").strip().upper() if isinstance(raw, Mapping) else ""
+        if purpose not in CURRENT_CONTEXT_RECEIPT_PURPOSES or purpose in fresh_receipts:
+            raise NCAAFEventFeatureHandoffUnavailable(
+                "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_INVALID", purpose
+            )
+        fresh_receipts[purpose] = _receipt(
+            raw,
+            purpose=purpose,
+            event_id=event_id,
+            kickoff=kickoff,
+            current_time=current_time,
+        )
+    if set(fresh_receipts) != set(CURRENT_CONTEXT_RECEIPT_PURPOSES):
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
+        )
+
+    manifest = row.get("source_manifest")
+    stored_receipts = (
+        manifest.get("current_context_receipts") if isinstance(manifest, Mapping) else None
+    )
+    if not isinstance(stored_receipts, list):
+        raise NCAAFEventFeatureHandoffUnavailable("NCAAF_SOURCE_MANIFEST_INVALID")
+    stored_by_purpose = {
+        str(receipt.get("purpose") or ""): receipt
+        for receipt in stored_receipts
+        if isinstance(receipt, Mapping)
+    }
+    for purpose in CURRENT_CONTEXT_RECEIPT_PURPOSES:
+        prior = stored_by_purpose.get(purpose)
+        if prior is None:
+            raise NCAAFEventFeatureHandoffUnavailable("NCAAF_SOURCE_MANIFEST_INVALID")
+        prior_time = _aware(prior.get("evidence_timestamp"), purpose)
+        fresh_time = _aware(fresh_receipts[purpose]["evidence_timestamp"], purpose)
+        if prior_time > current_time or fresh_time < prior_time:
+            raise NCAAFEventFeatureHandoffUnavailable(
+                "NCAAF_CURRENT_EVENT_CONTEXT_STALE", purpose
+            )
+
+    for field in (
+        "starting_qb_status_home",
+        "starting_qb_status_away",
+        "depth_chart_status",
+        "lineup_status",
+    ):
+        value = str(context.get(field) or "").strip()
+        if not value:
+            raise NCAAFEventFeatureHandoffUnavailable(
+                "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED", field
+            )
+        if value != str(row.get(field) or "").strip():
+            raise NCAAFEventFeatureHandoffUnavailable(
+                "NCAAF_CURRENT_EVENT_CONTEXT_CHANGED", field
+            )
+    injury_time = _aware(context.get("injury_evidence_timestamp"), "injury_evidence_timestamp")
+    if injury_time > current_time or injury_time >= kickoff:
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE", "INJURY_REPORT"
+        )
+    if injury_time.isoformat() != fresh_receipts["INJURY_REPORT"]["evidence_timestamp"]:
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_INVALID", "INJURY_REPORT"
+        )
+    if injury_time.isoformat() != str(row.get("injury_evidence_timestamp") or ""):
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_CHANGED", "injury_evidence_timestamp"
+        )
+
+
 def score_current_event_snapshot(
     db: Any,
     *,
@@ -339,10 +433,20 @@ def score_current_event_snapshot(
     home_team: str,
     away_team: str,
     expected_source_manifest_sha256: str,
+    current_context: Mapping[str, Any] | None = None,
+    now: Any | None = None,
     scorer: Callable[..., Any] | None = None,
     calibrator: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Score the exact immutable row, withholding publication absent dynamic bounds."""
+    kickoff = _aware(event_start_time, "event_start_time")
+    current_time = _aware(now or datetime.now(timezone.utc), "now")
+    if kickoff <= current_time:
+        raise NCAAFEventFeatureHandoffUnavailable("NCAAF_EVENT_NOT_PREGAME")
+    if current_context is None:
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
+        )
     if not _HEX_SHA256.fullmatch(str(expected_source_manifest_sha256 or "").lower()):
         raise NCAAFEventFeatureHandoffUnavailable("NCAAF_SOURCE_MANIFEST_MISMATCH")
     try:
@@ -376,7 +480,6 @@ def score_current_event_snapshot(
         != _aware(event_start_time, "event_start_time")
     ):
         raise NCAAFEventFeatureHandoffUnavailable("NCAAF_EVENT_FEATURE_COHORT_MISMATCH")
-    kickoff = _aware(event_start_time, "event_start_time")
     feature_as_of = _aware(row.get("feature_as_of"), "feature_as_of")
     if feature_as_of >= kickoff:
         raise NCAAFEventFeatureHandoffUnavailable(
@@ -385,6 +488,13 @@ def score_current_event_snapshot(
     actual_digest = _verify_snapshot_manifest(row)
     if actual_digest != str(expected_source_manifest_sha256).lower():
         raise NCAAFEventFeatureHandoffUnavailable("NCAAF_SOURCE_MANIFEST_MISMATCH")
+    _validate_refreshed_context(
+        row,
+        current_context,
+        event_id=official_event_id,
+        kickoff=kickoff,
+        current_time=current_time,
+    )
 
     inference_request = NCAAFInferenceRequest(
         official_event_id=official_event_id,

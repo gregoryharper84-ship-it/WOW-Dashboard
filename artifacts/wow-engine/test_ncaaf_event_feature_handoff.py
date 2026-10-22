@@ -114,6 +114,13 @@ def _snapshot():
     )
 
 
+def _score_context():
+    return {
+        "current_context": _context(),
+        "now": KICKOFF - timedelta(minutes=30),
+    }
+
+
 class _RPC:
     def __init__(self, data):
         self.data = data
@@ -191,6 +198,7 @@ def test_missing_current_snapshot_fails_closed():
             home_team="Louisville",
             away_team="Florida State",
             expected_source_manifest_sha256="a" * 64,
+            **_score_context(),
         )
     assert exc.value.code == "NCAAF_EVENT_FEATURE_SNAPSHOT_NOT_FOUND"
 
@@ -213,6 +221,21 @@ def test_evidence_newer_than_snapshot_as_of_is_rejected_even_before_kickoff():
             _event(),
             rows,
             current_context=_context(),
+            now=KICKOFF - timedelta(minutes=30),
+        )
+    assert exc.value.code == "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE"
+
+
+def test_future_injury_timestamp_is_rejected_during_snapshot_build():
+    context = _context()
+    context["injury_evidence_timestamp"] = (
+        KICKOFF - timedelta(minutes=15)
+    ).isoformat()
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        build_current_event_feature_snapshot(
+            _event(),
+            _evidence(),
+            current_context=context,
             now=KICKOFF - timedelta(minutes=30),
         )
     assert exc.value.code == "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE"
@@ -245,6 +268,7 @@ def test_source_manifest_mismatch_blocks_scorer_before_invocation():
             away_team="Florida State",
             expected_source_manifest_sha256="f" * 64,
             scorer=lambda *args, **kwargs: invoked.append(True),
+            **_score_context(),
         )
     assert exc.value.code == "NCAAF_SOURCE_MANIFEST_MISMATCH"
     assert invoked == []
@@ -262,8 +286,74 @@ def test_row_cohort_mismatch_blocks_scorer():
             away_team="Florida State",
             expected_source_manifest_sha256=row["source_manifest"]["snapshot_sha256"],
             scorer=lambda *args, **kwargs: pytest.fail("cohort mismatch reached scorer"),
+            **_score_context(),
         )
     assert exc.value.code == "NCAAF_EVENT_FEATURE_COHORT_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    "current_time",
+    [KICKOFF, KICKOFF + timedelta(seconds=1)],
+)
+def test_scoring_started_or_live_event_fails_before_database_or_scorer(current_time):
+    client = _Client({})
+    invoked = []
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        score_current_event_snapshot(
+            client,
+            official_event_id=EVENT_ID,
+            event_start_time=KICKOFF.isoformat(),
+            home_team="Louisville",
+            away_team="Florida State",
+            expected_source_manifest_sha256="a" * 64,
+            current_context=_context(),
+            now=current_time,
+            scorer=lambda *args, **kwargs: invoked.append(True),
+        )
+    assert exc.value.code == "NCAAF_EVENT_NOT_PREGAME"
+    assert client.calls == []
+    assert invoked == []
+
+
+def test_scoring_requires_refreshed_current_context_before_database_or_scorer():
+    client = _Client({})
+    invoked = []
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        score_current_event_snapshot(
+            client,
+            official_event_id=EVENT_ID,
+            event_start_time=KICKOFF.isoformat(),
+            home_team="Louisville",
+            away_team="Florida State",
+            expected_source_manifest_sha256="a" * 64,
+            now=KICKOFF - timedelta(minutes=30),
+            scorer=lambda *args, **kwargs: invoked.append(True),
+        )
+    assert exc.value.code == "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
+    assert client.calls == []
+    assert invoked == []
+
+
+def test_changed_current_qb_status_holds_before_scorer_invocation():
+    snapshot = {**_snapshot(), "ok": True}
+    client = _Client(snapshot)
+    current_context = _context()
+    current_context["starting_qb_status_home"] = "QUESTIONABLE"
+    invoked = []
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        score_current_event_snapshot(
+            client,
+            official_event_id=EVENT_ID,
+            event_start_time=KICKOFF.isoformat(),
+            home_team="Louisville",
+            away_team="Florida State",
+            expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
+            current_context=current_context,
+            now=KICKOFF - timedelta(minutes=30),
+            scorer=lambda *args, **kwargs: invoked.append(True),
+        )
+    assert exc.value.code == "NCAAF_CURRENT_EVENT_CONTEXT_CHANGED"
+    assert invoked == []
 
 
 def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
@@ -296,6 +386,7 @@ def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
         expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
         scorer=lambda *args, **kwargs: raw,
         calibrator=lambda *args, **kwargs: calibrated,
+        **_score_context(),
     )
     assert result["static_calibration_lower_diagnostic"] == 0.41
     assert result["calibrated_lower_bound"] is None
@@ -321,6 +412,7 @@ def test_invoked_scorer_failure_is_not_collapsed_to_model_unavailable():
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=fail,
+            **_score_context(),
         )
     assert exc.value.code == "MODEL_SCORER_FAILED"
 
@@ -343,5 +435,6 @@ def test_typed_invalid_model_output_keeps_output_failure_semantics():
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=invalid_output,
+            **_score_context(),
         )
     assert exc.value.code == "MODEL_OUTPUT_INVALID"
