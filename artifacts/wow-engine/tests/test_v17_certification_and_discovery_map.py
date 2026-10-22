@@ -451,13 +451,56 @@ def test_the_full_family_sweep_terminates_every_family_exactly_once():
     assert unconfigured == ["BOXING"]
 
 
-def test_duplicate_fixtures_across_provider_ids_are_suppressed_and_counted():
-    # One fixture surfacing under two competition ids is one event, and the
-    # suppression is recorded rather than silent.
+def test_duplicate_fixtures_across_provider_ids_stay_until_one_canonical_score():
+    # Two competition feeds of one official id are distinct sources. Discovery
+    # keeps both. Routing scores once and retains the other as a typed hold.
+    from datetime import datetime, timezone
+
     targets = {"SOCCER": discovery.rundown_discovery_targets("SOCCER")[:2]}
 
     def fetch(family, target=None):
         return [_event("soc-shared")]
+
+    inventory = discovery.discover_winner_slate(
+        requested_slate_date=SLATE_DATE,
+        requested_timezone=SLATE_TZ,
+        fetch_sport_events=fetch,
+        supported_sports=("SOCCER",),
+        discovery_targets=targets,
+        now=datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc),
+    )
+    assert len(inventory.events) == 2
+    audit = _audit_for(inventory, "SOCCER")
+    assert audit["events_returned"] == 2
+    assert audit["duplicate_rows_suppressed"] == 0
+    assert audit["provider_sport_ids_attempted"] == [10, 11]
+    calls = []
+    rows = discovery.route_discovered_slate(
+        inventory,
+        resolve_model=lambda _event: SimpleNamespace(supported_regimes=("REGULAR_SEASON",)),
+        score_row=lambda event, _model: calls.append(event.provider_sport_id) or {
+            "probability_publishable": True,
+            "rank_eligible": True,
+        },
+        now=datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc),
+    )
+    assert calls == [10]
+    assert [row.bucket for row in rows] == [
+        discovery.MODEL_COMPLETED,
+        discovery.OTHER_GOVERNED_HOLD,
+    ]
+    assert rows[1].detail["reason"] == "DUPLICATE_CANONICAL_EVENT_HELD"
+    assert rows[1].identity["official_event_id"] is None
+    assert rows[1].probability_publishable is False
+    assert all(row.as_dict()["can_execute"] is False for row in rows)
+
+
+def test_exact_duplicate_raw_record_on_one_target_is_suppressed_once():
+    targets = {"SOCCER": discovery.rundown_discovery_targets("SOCCER")[:1]}
+    row = _event("soc-shared")
+
+    def fetch(family, target=None):
+        return [row, dict(reversed(list(row.items())))]
 
     inventory = discovery.discover_winner_slate(
         requested_slate_date=SLATE_DATE,
@@ -470,7 +513,7 @@ def test_duplicate_fixtures_across_provider_ids_are_suppressed_and_counted():
     audit = _audit_for(inventory, "SOCCER")
     assert audit["events_returned"] == 1
     assert audit["duplicate_rows_suppressed"] == 1
-    assert audit["provider_sport_ids_attempted"] == [10, 11]
+    assert audit["provider_sport_ids_attempted"] == [10]
 
 
 def test_the_discovery_registry_is_inspectable_without_a_provider_call():

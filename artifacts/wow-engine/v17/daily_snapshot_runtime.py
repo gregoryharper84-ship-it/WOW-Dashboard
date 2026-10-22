@@ -327,6 +327,80 @@ def _settlement_basis(sport: str) -> str:
     }.get(sport, "FULL_GAME_OUTRIGHT")
 
 
+_FULL_BOARD_REQUIRED_STAGES = (
+    "probability_package_valid",
+    "dynamic_calibration_complete",
+    "probability_audit_passed",
+    "event_governor_complete",
+    "numerical_bounds_present",
+    "final_refresh_passed",
+    "terminal_authority_preserved",
+)
+
+
+def _cross_sport_audited_terminal_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Never let a scored-but-unpublished full-board row masquerade as complete.
+
+    The fitted model's evidence remains attached to the row. Only the Daily
+    publication claim and terminal status are held when full-board stage proof
+    is absent, malformed or blocked. This does not infer a new probability.
+    """
+    payload = dict(row)
+    audit = payload.get("publication_chain_audit")
+    model_completed = payload.get("bucket") == discovery.MODEL_COMPLETED
+    audit_stages = audit.get("stages") if isinstance(audit, dict) else None
+    audit_passed = bool(
+        isinstance(audit, dict)
+        and audit.get("status") == "PASS"
+        and audit.get("rank_eligible") is True
+        and audit.get("global_terminal_authority") == "V17_TERMINAL_REDUCER"
+        and audit.get("can_execute") is False
+        and isinstance(audit_stages, dict)
+        and all(audit_stages.get(stage) is True for stage in _FULL_BOARD_REQUIRED_STAGES)
+    )
+    complete = bool(
+        model_completed
+        and audit_passed
+        and payload.get("rank_eligible") is True
+        and payload.get("probability_publishable") is True
+        and payload.get("can_execute") is False
+    )
+    if model_completed and not complete:
+        payload["prepublication_claim"] = {
+            "probability_publishable": payload.get("probability_publishable"),
+            "rank_eligible": payload.get("rank_eligible"),
+        }
+        payload["probability_publishable"] = False
+        payload["rank_eligible"] = False
+        payload["publication_disposition"] = "HELD"
+        if not isinstance(audit, dict):
+            blocker = "PUBLICATION_CHAIN_AUDIT_MISSING"
+        elif audit.get("status") != "PASS" or audit.get("rank_eligible") is not True:
+            blocker = str(audit.get("first_blocker") or "PUBLICATION_CHAIN_NOT_APPROVED")
+        elif not isinstance(audit_stages, dict) or not all(
+            audit_stages.get(stage) is True for stage in _FULL_BOARD_REQUIRED_STAGES
+        ):
+            blocker = "PUBLICATION_CHAIN_STAGES_INCOMPLETE"
+        elif audit.get("global_terminal_authority") != "V17_TERMINAL_REDUCER" or audit.get("can_execute") is not False or payload.get("can_execute") is not False:
+            blocker = "PUBLICATION_CHAIN_TERMINAL_INVARIANT_INVALID"
+        else:
+            blocker = "PUBLICATION_CLAIM_NOT_PROVEN"
+        payload["publication_blocker"] = blocker
+
+    reduction = assert_no_terminal_upgrade(
+        reduce_row_terminal(["COMPLETED" if complete else "HELD"])
+    )
+    return _terminal_row(
+        "MONEYLINE",
+        {
+            key: payload.get(key)
+            for key in ("official_event_id", "commence_time_utc", "home_team", "away_team", "sport")
+        },
+        payload,
+        reduction,
+    )
+
+
 def _cross_sport_moneyline_rows(
     req: DailySnapshotRequest,
     *,
@@ -357,7 +431,10 @@ def _cross_sport_moneyline_rows(
         return bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
     def score(event: discovery.DiscoveredEvent, _model: Any) -> dict[str, Any]:
-        if str(event.official_event_id or "") in covered_event_ids:
+        # A canonical MLB ID never owns the same raw ID in another sport.
+        # Cross-sport source aliases are only unique within their own sport:
+        # suppress genuine MLB duplicate scoring without losing NHL/NBA/etc.
+        if event.sport == "MLB" and str(event.official_event_id or "") in covered_event_ids:
             return {
                 "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
                 "probability_publishable": False,
@@ -395,11 +472,11 @@ def _cross_sport_moneyline_rows(
             # The registered bridge owns its own canonical acquisition, so a
             # discovered row that cannot be hydrated terminates as
             # MODEL_INPUTS_INSUFFICIENT rather than as a missing model.
-            return score_team_event_request(
+            scored = score_team_event_request(
                 request, event_api=event_api, canonical_hydration_required=True
             )
         except HTTPException as exc:
-            return _detail(exc)
+            return _accept_cross_sport_moneyline_score(_detail(exc))
         except Exception as exc:  # noqa: BLE001 - an invoked scorer that throws
             return {
                 "code": "MODEL_SCORER_FAILED",
@@ -409,6 +486,7 @@ def _cross_sport_moneyline_rows(
                 "rank_eligible": False,
                 "can_execute": False,
             }
+        return _accept_cross_sport_moneyline_score(scored)
 
     scan = discovery.run_cross_sport_winner_scan(
         requested_slate_date=req.requested_slate_date,
@@ -423,21 +501,10 @@ def _cross_sport_moneyline_rows(
         include_regime_variants=True,
     )
     rows = [
-        _terminal_row(
-            "MONEYLINE",
-            {
-                key: row.get(key)
-                for key in ("official_event_id", "commence_time_utc", "home_team", "away_team", "sport")
-            },
-            row,
-            assert_no_terminal_upgrade(
-                reduce_row_terminal(
-                    ["COMPLETED" if row.get("bucket") == discovery.MODEL_COMPLETED else "HELD"]
-                )
-            ),
-        )
+        _cross_sport_audited_terminal_row(row)
         for row in scan["rows"]
-        if str(row.get("official_event_id") or "") not in covered_event_ids
+        if row.get("sport") != "MLB"
+        or str(row.get("official_event_id") or "") not in covered_event_ids
     ]
     return rows, scan
 
@@ -462,6 +529,25 @@ def _guard_moneyline_result(result: dict[str, Any]) -> tuple[dict[str, Any], str
         guarded["rank_eligible"] = False
         return guarded, inner_status if inner_status in ("REJECTED", "PURGED") else "HELD"
     return guarded, "COMPLETED"
+
+
+def _accept_cross_sport_moneyline_score(scored: Any) -> dict[str, Any]:
+    """Gate cross-sport publishability on official publication evidence.
+
+    Preserve sport-specific fitted output and typed scorer failures. Do not
+    fabricate a model probability when scorer output is malformed.
+    """
+    if not isinstance(scored, dict):
+        return {
+            "code": "MODEL_OUTPUT_INVALID",
+            "error_type": type(scored).__name__,
+            "model_invoked": True,
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "can_execute": False,
+        }
+    guarded, _stage_status = _guard_moneyline_result(scored)
+    return guarded
 
 
 def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: Any, event_api: Any) -> dict[str, Any]:

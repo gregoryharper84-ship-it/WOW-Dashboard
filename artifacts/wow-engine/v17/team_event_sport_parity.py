@@ -278,6 +278,15 @@ def canonicalize_nfl_discovery_identity(
         or raw.get("id")
         or ""
     ).strip()
+    # The normalized event can carry an alias only in official_event_id (for
+    # example provider event_uuid). Save it as PRIVATE acquisition provenance
+    # before any failed ledger lookup clears the falsely-official field.
+    # An alias is never promoted to a canonical identifier by this copy.
+    if provider_event_id and not any(
+        str(raw.get(key) or "").strip()
+        for key in ("provider_event_id", "_wow_secondary_event_id", "event_id", "event_uuid", "id")
+    ):
+        raw["provider_event_id"] = provider_event_id
     get_client = getattr(event_api, "get_client", None)
     db = get_client() if callable(get_client) else None
     if not provider_event_id or db is None:
@@ -287,7 +296,7 @@ def canonicalize_nfl_discovery_identity(
             if not provider_event_id
             else "NFL_EVENT_LEDGER_CLIENT_UNAVAILABLE"
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence
 
@@ -307,14 +316,14 @@ def canonicalize_nfl_discovery_identity(
         raw["canonical_identity_blocker"] = str(
             getattr(exc, "code", None) or type(exc).__name__
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     if resolution.get("ok") is not True:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = str(
             resolution.get("code") or "NFL_CANONICAL_IDENTITY_UNRESOLVED"
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
@@ -355,7 +364,7 @@ def canonicalize_mlb_discovery_identity(
     if not provider_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "MLB_PROVIDER_EVENT_ID_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     from v17.mlb_team_event_hydration import resolve_mlb_team_event_evidence
 
@@ -377,14 +386,14 @@ def canonicalize_mlb_discovery_identity(
         raw["canonical_identity_blocker"] = str(
             getattr(exc, "code", None) or type(exc).__name__
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     if resolution.get("ok") is not True:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = str(
             resolution.get("code") or "MLB_CANONICAL_IDENTITY_UNRESOLVED"
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     canonical_event_id = str(
         resolution.get("canonical_official_event_id") or ""
@@ -392,7 +401,7 @@ def canonicalize_mlb_discovery_identity(
     if not canonical_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "MLB_CANONICAL_EVENT_ID_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
@@ -581,11 +590,11 @@ def canonicalize_wnba_discovery_identity(event: Any) -> Any:
     if not provider_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "WNBA_PROVIDER_EVENT_ID_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
     if not home_alias or not away_alias:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "WNBA_PROVIDER_TEAM_ALIAS_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     event_alias = (
         provider_event_id
@@ -609,13 +618,13 @@ def canonicalize_wnba_discovery_identity(event: Any) -> Any:
         raw["canonical_identity_blocker"] = str(
             getattr(exc, "code", None) or type(exc).__name__
         )
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     canonical_event_id = str(resolution.get("event_id") or "").strip()
     if not canonical_event_id:
         raw["canonical_identity_status"] = "ALIAS_ONLY_UNRESOLVED"
         raw["canonical_identity_blocker"] = "WNBA_CANONICAL_EVENT_ID_MISSING"
-        return replace(event, raw=raw)
+        return replace(event, official_event_id=None, raw=raw)
 
     raw["provider_event_id"] = provider_event_id
     raw["canonical_identity_status"] = "CANONICAL_RESOLVED"
@@ -740,7 +749,10 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             return daily.bridge_runtime.TEAM_EVENT_BRIDGES.get(event.sport)
 
         def score(event: Any, model: Any) -> dict[str, Any]:
-            if str(event.official_event_id or "") in covered_event_ids:
+            # Covered IDs belong to the *canonical MLB* lane only.
+            # Sports may reuse provider IDs. Do not suppress NHL/NBA/NFL/etc
+            # whose raw ID happens to match an unrelated MLB official ID.
+            if event.sport == "MLB" and str(event.official_event_id or "") in covered_event_ids:
                 return {
                     "code": "ALREADY_SCORED_IN_CANONICAL_LANE",
                     "probability_publishable": False,
@@ -785,13 +797,13 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                     "can_execute": False,
                 }
             try:
-                return daily.score_team_event_request(
+                scored = daily.score_team_event_request(
                     request,
                     event_api=event_api,
                     canonical_hydration_required=True,
                 )
             except HTTPException as exc:
-                return daily._detail(exc)
+                return daily._accept_cross_sport_moneyline_score(daily._detail(exc))
             except Exception as exc:  # noqa: BLE001
                 return {
                     "code": "MODEL_SCORER_FAILED",
@@ -801,6 +813,7 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                     "rank_eligible": False,
                     "can_execute": False,
                 }
+            return daily._accept_cross_sport_moneyline_score(scored)
 
         scan = dict(daily.discovery.run_cross_sport_winner_scan(
             requested_slate_date=req.requested_slate_date,
@@ -809,6 +822,11 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
             resolve_model=resolve_model,
             score_row=score,
             canonicalize_identity=canonicalize_identity,
+            # Same complete inventory as the non-installed Daily runtime.
+            # Variant regimes stay in distinct model eligibility buckets;
+            # discovery does not authorize regular-season fitted scorers for
+            # preseason, playoffs, spring training, or summer league.
+            include_regime_variants=True,
         ))
         scan["model_coverage"] = cross_sport_model_coverage(
             scan.get("rows"),
@@ -839,7 +857,8 @@ def install_cross_sport_discovery_evidence_handoff() -> bool:
                 ),
             )
             for row in scan["rows"]
-            if str(row.get("official_event_id") or "") not in covered_event_ids
+            if row.get("sport") != "MLB"
+            or str(row.get("official_event_id") or "") not in covered_event_ids
         ]
         return rows, scan
 

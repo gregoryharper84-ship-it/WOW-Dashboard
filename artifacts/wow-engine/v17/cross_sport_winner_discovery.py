@@ -23,8 +23,11 @@ price, a public projection or generic reasoning for an absent fitted model, and
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -552,6 +555,67 @@ class DiscoveredEvent:
         return f"{self.sport}:{self.official_event_id or 'UNRESOLVED'}"
 
     def identity(self) -> dict[str, Any]:
+        # Provider aliases belong in private acquisition provenance, never in
+        # immutable terminal fields named "official". Even when a caller
+        # accidentally leaves official_event_id populated after a failed
+        # canonical lookup, held/output identity must not assert authenticity.
+        alias_only = (
+            isinstance(self.raw, Mapping)
+            and self.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
+        )
+        event_id = None if alias_only else self.official_event_id
+        event_key = self.event_key
+        if alias_only or not event_id:
+            # Keep multiple held events distinct without presenting public
+            # provider IDs as official ids. A canonical JSON digest binds the
+            # *unverified* source identity + fixture evidence for reconciliation.
+            # It is neither an official game id nor model-scoring authority.
+            # Canonicalization clears official_event_id on identity failure.
+            # Bind the opaque HOLD key to the original provider alias kept in
+            # private acquisition evidence, or distinct unverified candidates
+            # for the same fixture collapse into one terminal event_key.
+            raw = self.raw if isinstance(self.raw, Mapping) else {}
+            # One source field is not a sufficient unique identifier: two
+            # candidates may share provider_event_id yet have different id,
+            # or share id while retaining different secondary aliases.
+            # Bind *all* available private identifiers, in stable field order.
+            # They are hashed only and never published as official IDs.
+            # This also preserves source candidates across canonicalizer
+            # failure paths which clear the unverified official_event_id.
+            alias_keys = (
+                "id", "event_id", "official_event_id", "event_uuid",
+                "provider_event_id", "_wow_secondary_event_id",
+                "_wow_terminal_duplicate_ordinal",
+                # A shared provider alias can still name two games. game_id is
+                # private evidence and is hashed, never published.
+                "game_id",
+            )
+            source_alias_evidence = [
+                (key, str(raw[key]).strip())
+                for key in alias_keys
+                if raw.get(key) is not None and str(raw[key]).strip()
+            ]
+            if not source_alias_evidence and self.official_event_id:
+                source_alias_evidence = [
+                    ("event_alias", str(self.official_event_id).strip())
+                ]
+            elif not source_alias_evidence:
+                # No provider identifier exists. A stable digest of the full
+                # private row distinguishes separately discovered idless
+                # fixtures without serializing any provider evidence publicly.
+                raw_digest = hashlib.sha256(
+                    json.dumps(raw, sort_keys=True, default=str, ensure_ascii=True).encode("utf-8")
+                ).hexdigest()
+                source_alias_evidence = [("private_row_digest", raw_digest)]
+            binding = [
+                self.sport, self.league, self.regime, self.provider,
+                source_alias_evidence, self.home_team, self.away_team,
+                self.commence_time_utc,
+            ]
+            fingerprint = hashlib.sha256(
+                json.dumps(binding, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+            ).hexdigest()[:24]
+            event_key = f"{self.sport}:UNRESOLVED:{fingerprint}"
         return {
             "sport": self.sport,
             "league": self.league,
@@ -559,8 +623,8 @@ class DiscoveredEvent:
             "regime": self.regime,
             "provider": self.provider,
             "provider_sport_id": self.provider_sport_id,
-            "event_key": self.event_key,
-            "official_event_id": self.official_event_id,
+            "event_key": event_key,
+            "official_event_id": event_id,
             "home_team": self.home_team,
             "away_team": self.away_team,
             "commence_time_utc": self.commence_time_utc,
@@ -611,21 +675,39 @@ def classify_event_status(raw_status: Any, commence_time: Any, *, now: datetime 
     return "UNKNOWN"
 
 
-def _dedupe_identity(event: DiscoveredEvent) -> tuple[str, str, str]:
-    """Identity for suppressing the same fixture seen under two provider ids."""
-    if event.official_event_id:
-        return ("ID", event.sport, str(event.official_event_id))
-    return (
-        "TEAMS",
-        event.sport,
-        "|".join(
-            (
-                _text(event.home_team).lower(),
-                _text(event.away_team).lower(),
-                _text(event.commence_time_utc)[:16],
-            )
-        ),
+def _raw_record_token(raw: Mapping[str, Any] | None) -> str:
+    """Canonical digest of one provider payload. Key order does not matter."""
+    if not isinstance(raw, Mapping):
+        return ""
+    encoded = json.dumps(raw, sort_keys=True, default=str, ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _dedupe_identity(event: DiscoveredEvent) -> tuple[str, ...]:
+    """Suppress only an exact repeated provider record.
+
+    Regime and provider source stay in the key. An unsupported playoff copy of
+    a verified id must not erase the regular-season row before eligibility.
+    Distinct sources of one official game are retained for the later canonical
+    owner, which scores once and holds the rest. An unverified row, including
+    one without any provider id, cannot share the constant SPORT:UNRESOLVED
+    identity with every other game. A provider alias marked ALIAS_ONLY must
+    not be promoted into an official id.
+    """
+    alias_only = isinstance(event.raw, Mapping) and (
+        event.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
     )
+    if event.official_event_id and not alias_only:
+        return (
+            "ID",
+            event.sport,
+            str(event.regime or ""),
+            str(event.provider or ""),
+            "" if event.provider_sport_id is None else str(event.provider_sport_id),
+            str(event.official_event_id),
+            _raw_record_token(event.raw),
+        )
+    return ("HELD", event.sport, event.identity()["event_key"])
 
 
 def _slate_date_matches(commence_time: Any, slate_date: str, tz_name: str) -> bool:
@@ -885,7 +967,7 @@ def discover_winner_slate(
                 )
             continue
 
-        seen_identities: set[tuple[str, str, str]] = set()
+        seen_identities: set[tuple[str, ...]] = set()
         duplicates = 0
         for target in family_targets:
             if monotonic() >= deadline:
@@ -1007,11 +1089,9 @@ def discover_winner_slate(
                     now=now,
                     target=target,
                 )
-                # A family is queried across several provider ids (twelve soccer
-                # competitions; regular season alongside a regime variant). The
-                # same fixture surfacing under two of them is one event, not two
-                # — counting it twice would inflate the board and break
-                # reconciliation against the real slate.
+                # Exact repeated payloads on one target are one record. A different
+                # regime or provider source of the same official id is a separate
+                # candidate until eligibility and canonical ownership run.
                 identity = _dedupe_identity(event)
                 if identity in seen_identities:
                     duplicates += 1
@@ -1115,6 +1195,15 @@ def _purge_bucket(event: DiscoveredEvent, *, slate_date: str, tz_name: str) -> s
         event.commence_time_utc, slate_date, tz_name
     ):
         return WRONG_DATE
+    # This is a second, independent trust fence: upstream canonicalizers
+    # may accidentally leave a provider alias in official_event_id on error.
+    # A verified 'ALIAS_ONLY_UNRESOLVED' hold always takes precedence over
+    # a nonempty ID and cannot invoke a fitted specialist.
+    if (
+        isinstance(event.raw, Mapping)
+        and event.raw.get("canonical_identity_status") == "ALIAS_ONLY_UNRESOLVED"
+    ):
+        return IDENTITY_UNRESOLVED
     if not event.official_event_id or not event.home_team or not event.away_team:
         return IDENTITY_UNRESOLVED
     if event.event_status != REQUIRED_EVENT_STATE:
@@ -1163,17 +1252,30 @@ def route_discovered_slate(
     blocker rather than being invoked outside its calibration contract.
     """
     rows: list[RoutedRow] = []
+    seen_canonical_events: set[tuple[str, str]] = set()
     for event in inventory.events:
         purge = _purge_bucket(
             event, slate_date=inventory.requested_slate_date, tz_name=inventory.requested_timezone
         )
         if purge is not None:
+            detail = {"reason": purge, "model_invoked": False}
+            # Preserve one safe typed source blocker for actual restoration
+            # diagnosis. Never serialize the provider row, exception text,
+            # URL, credentials, aliases, names or odds into this receipt.
+            if purge == IDENTITY_UNRESOLVED and isinstance(event.raw, Mapping):
+                blocker = event.raw.get("canonical_identity_blocker")
+                if (
+                    isinstance(blocker, str)
+                    and len(blocker) <= 96
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]{2,95}", blocker)
+                ):
+                    detail["canonical_identity_blocker"] = blocker
             rows.append(
                 RoutedRow(
                     identity=event.identity(),
                     bucket=purge,
                     model_status=None,
-                    detail={"reason": purge, "model_invoked": False},
+                    detail=detail,
                 )
             )
             continue
@@ -1233,6 +1335,37 @@ def route_discovered_slate(
                 )
             )
             continue
+
+        # Only reserve the canonical game when a fitted specialist is about to
+        # be invoked. A wrong-regime or missing-model row MUST NOT preempt a
+        # later valid row resolving to the same official game.
+        # Canonical resolution can map multiple distinct provider aliases to
+        # ONE official game. Never invoke a fitted scorer twice for that row.
+        # Retain each redundant acquisition candidate as a distinct, opaque,
+        # unpublishable terminal hold rather than dropping it or publishing
+        # another copy of the same sporting probability.
+        if event.official_event_id:
+            canonical_key = (event.sport, str(event.official_event_id))
+            if canonical_key in seen_canonical_events:
+                raw = dict(event.raw) if isinstance(event.raw, Mapping) else {}
+                raw.update({
+                    "official_event_id": event.official_event_id,
+                    "canonical_identity_status": "ALIAS_ONLY_UNRESOLVED",
+                    "canonical_identity_blocker": "DUPLICATE_CANONICAL_EVENT_HELD",
+                    "_wow_terminal_duplicate_ordinal": len(rows),
+                })
+                duplicate = replace(event, official_event_id=None, raw=raw)
+                rows.append(RoutedRow(
+                    identity=duplicate.identity(),
+                    bucket=OTHER_GOVERNED_HOLD,
+                    model_status=None,
+                    detail={
+                        "reason": "DUPLICATE_CANONICAL_EVENT_HELD",
+                        "model_invoked": False,
+                    },
+                ))
+                continue
+            seen_canonical_events.add(canonical_key)
 
         result = score_row(event, model)
         payload = dict(result or {})
