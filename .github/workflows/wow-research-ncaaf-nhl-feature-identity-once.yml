@@ -63,3 +63,5 @@ jobs:
           path: ${{ runner.temp }}/wow-nhl-identity-evidence/
           if-no-files-found: error
           retention-days: 30
+
+# One-shot source identity trigger for research PR 1975.
