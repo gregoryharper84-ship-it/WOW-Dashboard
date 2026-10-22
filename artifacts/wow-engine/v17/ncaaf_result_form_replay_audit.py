@@ -277,8 +277,26 @@ def audit_from_db(db: Any, candidate_id: str) -> dict:
                      detail={"error_type": type(exc).__name__})
 
 
+def install_ncaaf_result_form_replay_route(app: Any, *, auth_dependency: Any, db_client_fn: Any) -> None:
+    """Authenticated SELECT-only research diagnostic; no writer or certifier."""
+    from github_actions_oidc import scout_route_auth_dependency
+
+    path = "/internal/v17/ncaaf-result-form-candidate-replay/{candidate_id}"
+    if any(getattr(route, "path", None) == path for route in app.router.routes):
+        return
+
+    @app.post(
+        path,
+        dependencies=[scout_route_auth_dependency(auth_dependency)],
+        operation_id="auditWowV17NcaafResultFormCandidateReplayResearch",
+    )
+    def audit(candidate_id: str) -> dict[str, Any]:
+        return audit_from_db(db_client_fn(), candidate_id)
+
+
 __all__ = [
     "CAN_EXECUTE", "PROBABILITY_PUBLISHABLE", "VERIFIER_VERSION", "SOURCE_HOLD",
     "MODEL_FAMILY", "FEATURE_SCHEMA", "FEATURE_NAMES",
     "ReplayAuditError", "frozen_latest_rows", "audit_candidate", "audit_from_db",
+    "install_ncaaf_result_form_replay_route",
 ]
