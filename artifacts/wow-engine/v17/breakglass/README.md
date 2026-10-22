@@ -15,7 +15,7 @@ There is **no per-PR scope** for a GitHub ruleset change. The temporary four-che
 1. **Owner offline key**: pin the existing owner release public-key fingerprint `SHA256:BGiNe5ggZrgozxmFBXsFEEyn8szHPHFmZSCN5nJ/+SM`. This is an existing public trust root only; never copy the private key to Actions, agents, CI or the repository. For this CLI the corresponding allow-signers record must use SSH namespace `wow-breakglass`, and an offline owner signature must cover the exact canonical JSON intent.
 2. **Independent SIRT key**: a **different**, independently controlled key, registered outside the candidate PR; the owner-signed intent binds the exact authorized SIRT GitHub login. The reviewer also must submit a real GitHub `APPROVED` PR review on the exact SHA containing `SIRT_SECURITY_PASS`, the complete head SHA, ruleset ID `24907422` and the exact baseline ruleset digest. Comments, AI research, owner reviews and passing checks are not substitutes.
 3. **Operator admin credential**: a repository administrator with genuine permission to read/update ruleset #24907422 and merge the protected PR, on an independent workstation; no GitHub App check-publication credential is used.
-4. **Independent restoration witness**: separate administrator credential and host, separately authenticated signed intent and full snapshot, with continuous monitoring. It must report `WITNESS_ARMED` **before** any mutation. If the operator dies or the local `finally` fails, it restores at the bounded deadline. If **both** independent hosts or their network/credentials fail, automatic rollback is **not guaranteed**. This is a P0 incident requiring manual recovery from the snapshot. Do not claim a perfect atomic merge-window lock.
+4. **Independent restoration witness**: separate administrator credential and host, separately authenticated signed intent and full snapshot, with continuous monitoring and an independently signed fresh startup attestation. It must report `WITNESS_ARMED` and issue a freshly signed readiness receipt **before** any mutation. The operator rechecks the independent SIRT signature, distinct witness GitHub login and short receipt expiry immediately before the ruleset PUT. A signed start receipt is not a continuous liveness guarantee; the independent host must remain operating. If the operator dies or the local `finally` fails, it restores at the bounded deadline. If **both** independent hosts or their network/credentials fail, automatic rollback is **not guaranteed**. This is a P0 incident requiring manual recovery from the snapshot. Do not claim a perfect atomic merge-window lock.
 5. **Immutable baseline**: full ruleset snapshot (including protection clauses and bypass actors), SHA-256 digest bound into both offline signatures, frozen main/PR SHA, exact changed-file allowlist, exact App identities, and a 15–120-second maintenance interval. No write occurs during `inspect` or `prepare`.
 
 ## One-time #1932 repair walkthrough (no implicit approvals)
@@ -46,8 +46,12 @@ Have the distinct SIRT reviewer use GitHub's native **Approve** action for #1932
 python3 release_breakglass_witness.py \
   --intent intent.json --baseline intent.baseline.json \
   --owner-signature owner-intent.sig --sirt-signature sirt-intent.sig \
-  --owner-signers owner_allowed_signers --sirt-signers sirt_allowed_signers
-# Keep running until FULL_FIVE_CHECK_RESTORATION or deadline recovery receipt.
+  --owner-signers owner_allowed_signers --sirt-signers sirt_allowed_signers \
+  --witness-signing-key /secure/sirt-private-key \
+  --ready-output /secure/witness-ready.json
+# The independently held SIRT key signs witness-ready.json.sig.
+# Transmit both readiness files to the admin host promptly without disclosing
+# the private key. Keep this process running through verified restoration.
 ```
 
 Only after checking witness readiness and a genuinely exclusive repository-wide merge window, use a distinct authenticated administrator workstation to run:
@@ -58,10 +62,12 @@ python3 release_breakglass.py execute \
   --sirt-signature sirt-intent.sig \
   --owner-signers owner_allowed_signers --sirt-signers sirt_allowed_signers \
   --checkpoint "$HOME/wow1932/recovery-journal" \
-  --independent-witness-live --exclusive-window-verified
+  --witness-ready /secure/witness-ready.json \
+  --witness-ready-signature /secure/witness-ready.json.sig \
+  --exclusive-window-verified
 ```
 
-**Important:** The two boolean command flags are *operator attestations*, not cryptographic proof that a witness is still alive or that other humans cannot merge. Run them only after actual verification. Source-only tests and this README are not a SIRT decision, a live witness, an administrator authorization or a merge.
+**Important:** The witness readiness is an independently signed, time-limited start receipt, bound to the signed intent and ruleset digest. It authenticates the watcher startup and a separate GitHub login, but it cannot guarantee continued liveness after signing. If the receipt expires while preflight runs, stop and restart the witness rather than reuse the old token. The remaining `--exclusive-window-verified` boolean is an operator attestation, **not** a cryptographic repository-wide writer lock. Run only after independently assuring exclusivity and rollback. Source-only tests and this README are not a SIRT security approval, administrator authorization or merge.
 
 The CLI reads evidence twice; refuses missing/revoked independent review, wrong-App/failing latest required checks, PR/main/ruleset drift, foreign branch, renamed protected path, armed GitHub auto-merge and snapshot mismatch; persists the original ruleset with fsync before mutation; makes exactly one native exact-head merge attempt; restores the original five-check ruleset in `finally` and independently reads it back. No automatic retry after an ambiguous merge response.
 
