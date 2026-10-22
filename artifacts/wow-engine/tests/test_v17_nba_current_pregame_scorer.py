@@ -166,7 +166,7 @@ def test_refreshed_features_after_starter_change_pass_freshness_gate():
         current_feature_package=package,
         lineup_evidence=_lineup(
             update_at="2026-10-22T16:01:00Z",
-            rotation="CHANGED",
+            rotation="CONFIRMED",
         ),
         source_snapshot_id="snapshot-1",
         client=object(),
@@ -213,6 +213,55 @@ def test_current_feature_hydration_requires_bound_timestamped_lineage(field, exp
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
 
+
+
+@pytest.mark.parametrize(
+    "source_time",
+    [
+        "2026-10-22T16:00:01Z",  # source later than claimed frozen features
+        "2026-10-22T23:00:00Z",  # source at kickoff
+        "2026-10-22T23:05:00Z",  # source after kickoff
+    ],
+)
+def test_nba_source_evidence_after_fitted_feature_freeze_must_hold(source_time):
+    package = _feature_package()
+    package["source_snapshot_timestamp"] = source_time
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=package,
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+    )
+    assert result["blockers"] == ["NBA_SOURCE_SNAPSHOT_TIME_INVALID_FOR_PREGAME"]
+    assert result["raw_probability"] is None
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_nba_changed_but_unconfirmed_rotation_does_not_score_even_if_features_refreshed():
+    package = _feature_package()
+    package["feature_audit"]["feature_timestamp"] = "2026-10-22T16:02:00Z"
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=package,
+        lineup_evidence=_lineup(update_at="2026-10-22T16:01:00Z", rotation="CHANGED"),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: pytest.fail(
+            "an unconfirmed replacement rotation cannot reach model resolution"
+        ),
+    )
+    assert result["blockers"] == ["NBA_STARTING_ROTATION_NOT_CONFIRMED"]
+    assert result["calibrated_lower_bound"] is None
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False
 
 def test_certified_artifact_without_current_calibrator_resolver_remains_typed_hold():
     certification = _certification()
