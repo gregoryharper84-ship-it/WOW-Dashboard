@@ -1,0 +1,80 @@
+name: WOW NCAAF Result Form Candidate Replay Evidence (One Shot)
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/wow-research-ncaaf-result-form-candidate-replay-once.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  offline-result-form-replay:
+    if: ${{ github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' && github.event.pull_request.head.ref == 'research/ncaaf-nhl-fitted-feature-identity-audit-20261022' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pinned PR source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Compile read-only verifier
+        working-directory: artifacts/wow-engine
+        run: |
+          python3 -m py_compile v17/ncaaf_result_form_replay_audit.py
+          python3 -m py_compile tests/test_ncaaf_result_form_replay_audit.py
+
+      - name: Verify precise first-party research route wiring
+        working-directory: artifacts/wow-engine
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          source=Path("v17/ncaaf_model_maintenance.py").read_text()
+          verifier=Path("v17/ncaaf_result_form_replay_audit.py").read_text()
+          assert "install_ncaaf_result_form_replay_route" in source
+          assert "dependencies=[scout_route_auth_dependency(auth_dependency)]" in verifier
+          assert ".select(\"*\").eq(\"candidate_id\"" in verifier
+          assert "NCAAF_RESULT_FORM_DETERMINISTIC_REPLAY_PASS_SOURCE_HOLD" in verifier
+          assert '"certification_granted": False' in verifier
+          assert '"probability_publishable": False' in verifier
+          assert '"can_execute": False' in verifier
+          print("RESEARCH_AUTHENTICATED_READ_ONLY_ROUTE_CONTRACT_PASS")
+          PY
+
+      - name: Test deterministic replay and 25 fail-closed cases
+        working-directory: artifacts/wow-engine
+        run: |
+          PYTHONPATH=. python3 -m unittest discover -s tests \
+            -p 'test_ncaaf_result_form_replay_audit.py' -v \
+            > "$RUNNER_TEMP/ncaaf_result_form_replay_tests.txt" 2>&1
+          tail -45 "$RUNNER_TEMP/ncaaf_result_form_replay_tests.txt"
+
+      - name: Preserve source replay and status evidence
+        if: always()
+        working-directory: artifacts/wow-engine
+        run: |
+          mkdir -p "$RUNNER_TEMP/ncaaf-result-form-replay-evidence"
+          cp "$RUNNER_TEMP/ncaaf_result_form_replay_tests.txt" "$RUNNER_TEMP/ncaaf-result-form-replay-evidence/test-results.txt" || :
+          sha256sum v17/ncaaf_result_form_replay_audit.py \
+                    tests/test_ncaaf_result_form_replay_audit.py \
+                    v17/ncaaf_model_maintenance.py \
+            > "$RUNNER_TEMP/ncaaf-result-form-replay-evidence/source-hashes.txt"
+          printf "head_sha=%s\nsource_attestation=HOLD\nmodel_replay_on_live_db=NOT_RUN\ncertification_granted=false\ncan_execute=false\n" \
+            "${{ github.event.pull_request.head.sha }}" > "$RUNNER_TEMP/ncaaf-result-form-replay-evidence/context.txt"
+
+      - name: Retain research evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-ncaaf-result-form-replay-research-${{ github.run_id }}
+          path: ${{ runner.temp }}/ncaaf-result-form-replay-evidence/
+          retention-days: 30
+          if-no-files-found: error

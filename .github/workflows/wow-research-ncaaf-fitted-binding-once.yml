@@ -1,0 +1,64 @@
+name: WOW NCAAF Exact Candidate Binding Research Test (One Shot)
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/wow-research-ncaaf-fitted-binding-once.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-binding:
+    if: ${{ github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' && github.event.pull_request.head.ref == 'research/ncaaf-nhl-fitted-feature-identity-audit-20261022' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact candidate-binding research SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run fail-closed candidate binding tests
+        working-directory: artifacts/wow-engine
+        run: |
+          PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_ncaaf_result_form_candidate_binding_audit.py' -v
+
+      - name: Validate frozen 44-game candidate metadata
+        working-directory: artifacts/wow-engine
+        run: |
+          python3 scripts/ncaaf_result_form_candidate_binding_audit.py \
+            --binding data/research/ncaaf_result_form_candidate_binding_20261022.json \
+            --features data/research/ncaaf_result_form_forward_features_20261022.json \
+            > "$RUNNER_TEMP/ncaaf_candidate_binding.json"
+          cat "$RUNNER_TEMP/ncaaf_candidate_binding.json"
+
+      - name: Preserve immutable read-only audit output
+        if: always()
+        working-directory: artifacts/wow-engine
+        run: |
+          mkdir -p "$RUNNER_TEMP/ncaaf-binding-audit"
+          if [ -f "$RUNNER_TEMP/ncaaf_candidate_binding.json" ]; then
+            cp "$RUNNER_TEMP/ncaaf_candidate_binding.json" "$RUNNER_TEMP/ncaaf-binding-audit/report.json"
+          fi
+          sha256sum data/research/ncaaf_result_form_candidate_binding_20261022.json \
+                    data/research/ncaaf_result_form_forward_features_20261022.json \
+            > "$RUNNER_TEMP/ncaaf-binding-audit/source_hashes.txt"
+          printf "head_sha=%s\nmodel_certified=false\nprobability_publishable=false\ncan_execute=false\n" \
+            "${{ github.event.pull_request.head.sha }}" > "$RUNNER_TEMP/ncaaf-binding-audit/context.txt"
+
+      - name: Upload research audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-ncaaf-exact-candidate-binding-${{ github.run_id }}
+          path: ${{ runner.temp }}/ncaaf-binding-audit/
+          if-no-files-found: error
+          retention-days: 30

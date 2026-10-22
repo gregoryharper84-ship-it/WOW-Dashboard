@@ -1,0 +1,98 @@
+name: WOW NHL Prospective Research Candidate Hydration (One Shot)
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/wow-research-nhl-forward-hydration-once.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  source-feature-research:
+    if: ${{ github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' && github.event.pull_request.head.ref == 'research/ncaaf-nhl-fitted-feature-identity-audit-20261022' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Checkout exact research PR SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install isolated testing dependency
+        run: python -m pip install --disable-pip-version-check "pytest==8.3.5"
+
+      - name: Verify existing NHL candidate feature vector contract
+        working-directory: artifacts/wow-engine
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          candidate = ast.parse(Path("nhl_candidate_pipeline.py").read_text())
+          forward = ast.parse(Path("scripts/nhl_forward_candidate_feature_hydrator.py").read_text())
+          keys = ["FEATURE_NAMES", "FEATURE_SCHEMA_VERSION", "ELO_K", "ELO_INITIAL", "MIN_PRIOR_GAMES", "RECENT_WINDOW", "RECONSTRUCTION_VERSION"]
+          def values(tree):
+              result = {}
+              for node in tree.body:
+                  if isinstance(node, ast.Assign):
+                      for target in node.targets:
+                          if isinstance(target, ast.Name):
+                              try: result[target.id] = ast.literal_eval(node.value)
+                              except (ValueError, TypeError, KeyError): pass
+              return result
+          old=values(candidate); new=values(forward)
+          for name in keys:
+              other = "FEATURE_RECONSTRUCTION_VERSION" if name=="RECONSTRUCTION_VERSION" else name
+              assert other in old and name in new and old[other] == new[name], f"candidate contract drift: {name}"
+          print("NHL_CANDIDATE_FROZEN_FEATURE_CONTRACT_MATCH")
+          PY
+
+      - name: Test conservative forward transform (no network)
+        working-directory: artifacts/wow-engine
+        run: python -m pytest --noconftest -q tests/test_nhl_forward_candidate_feature_hydrator.py
+
+      - name: Capture official NHL 32-team pregame history
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set +e
+          DIR="$RUNNER_TEMP/nhl-prospective-candidate-evidence"
+          mkdir -p "$DIR"
+          {
+            echo "github_run_id=$GITHUB_RUN_ID"
+            echo "head_sha=${{ github.event.pull_request.head.sha }}"
+            echo "runner_started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "status=RESEARCH_ONLY_NO_PROBABILITIES"
+            echo "can_execute=false"
+          } > "$DIR/runner_context.txt"
+          python scripts/nhl_forward_candidate_feature_hydrator.py \
+            --crosswalk data/research/nhl_official_crosswalk_20261022.json \
+            --outdir "$DIR/raw-and-features" \
+            > "$DIR/hydration_output.json"
+          rc=$?
+          echo "hydration_exit_code=$rc" >> "$DIR/runner_context.txt"
+          echo "runner_finished_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$DIR/runner_context.txt"
+          find "$DIR" -type f -print0 | sort -z | xargs -0 -r sha256sum > "$DIR/file_hashes.txt"
+          cat "$DIR/hydration_output.json"
+          exit "$rc"
+
+      - name: Preserve research raw bytes and typed candidate receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-nhl-32-club-forward-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/nhl-prospective-candidate-evidence/
+          retention-days: 30
+          if-no-files-found: warn

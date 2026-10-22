@@ -1,0 +1,590 @@
+{
+  "audit_version": "WOW_FORWARD_MODEL_INPUT_IDENTITY_AUDIT_V1",
+  "blocker_counts": {
+    "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND": 44,
+    "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED": 12
+  },
+  "can_execute": false,
+  "disposition": "SOURCE_VERIFIED_MODEL_INPUTS_NOT_CERTIFIED",
+  "event_count": 56,
+  "feature_consumption_verified": false,
+  "full_slate_completeness_attested": false,
+  "ncaaf_expected_feature_schema": "NCAAF_FEATURES_V1",
+  "nhl_candidate_feature_schema": "NHL_REGULAR_SEASON_FEATURES_V1",
+  "nhl_candidate_only_feature_count": 10,
+  "probability_publishable": false,
+  "rows": [
+    {
+      "away_espn_team_id": "221",
+      "can_execute": false,
+      "espn_event_id": "401858274",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "2390",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "84",
+      "can_execute": false,
+      "espn_event_id": "401858496",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "130",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2641",
+      "can_execute": false,
+      "espn_event_id": "401856840",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "2132",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "99",
+      "can_execute": false,
+      "espn_event_id": "401856728",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "2",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "25",
+      "can_execute": false,
+      "espn_event_id": "401858270",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "2567",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "164",
+      "can_execute": false,
+      "espn_event_id": "401858498",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "77",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "277",
+      "can_execute": false,
+      "espn_event_id": "401856841",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "2628",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "242",
+      "can_execute": false,
+      "espn_event_id": "401862809",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "2226",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2711",
+      "can_execute": false,
+      "espn_event_id": "401866450",
+      "event_start_utc": "2026-10-24T16:00:00+00:00",
+      "home_espn_team_id": "2649",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "239",
+      "can_execute": false,
+      "espn_event_id": "401856834",
+      "event_start_utc": "2026-10-24T17:00:00+00:00",
+      "home_espn_team_id": "2305",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2006",
+      "can_execute": false,
+      "espn_event_id": "401866446",
+      "event_start_utc": "2026-10-24T17:00:00+00:00",
+      "home_espn_team_id": "2309",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "193",
+      "can_execute": false,
+      "espn_event_id": "401866476",
+      "event_start_utc": "2026-10-24T17:00:00+00:00",
+      "home_espn_team_id": "2117",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2483",
+      "can_execute": false,
+      "espn_event_id": "401858495",
+      "event_start_utc": "2026-10-24T19:00:00+00:00",
+      "home_espn_team_id": "356",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "252",
+      "can_execute": false,
+      "espn_event_id": "401856835",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "2116",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "127",
+      "can_execute": false,
+      "espn_event_id": "401858499",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "26",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2633",
+      "can_execute": false,
+      "espn_event_id": "401856731",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "2579",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "245",
+      "can_execute": false,
+      "espn_event_id": "401856727",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "333",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2294",
+      "can_execute": false,
+      "espn_event_id": "401858497",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "135",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "201",
+      "can_execute": false,
+      "espn_event_id": "401856730",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "344",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "103",
+      "can_execute": false,
+      "espn_event_id": "401858273",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "59",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "249",
+      "can_execute": false,
+      "espn_event_id": "401862810",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "2426",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "62",
+      "can_execute": false,
+      "espn_event_id": "401864526",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "2459",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "16",
+      "can_execute": false,
+      "espn_event_id": "401866447",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "2050",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "189",
+      "can_execute": false,
+      "espn_event_id": "401866448",
+      "event_start_utc": "2026-10-24T19:30:00+00:00",
+      "home_espn_team_id": "2084",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2306",
+      "can_execute": false,
+      "espn_event_id": "401856839",
+      "event_start_utc": "2026-10-24T19:45:00+00:00",
+      "home_espn_team_id": "9",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2199",
+      "can_execute": false,
+      "espn_event_id": "401866449",
+      "event_start_utc": "2026-10-24T20:00:00+00:00",
+      "home_espn_team_id": "195",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2433",
+      "can_execute": false,
+      "espn_event_id": "401871094",
+      "event_start_utc": "2026-10-24T20:00:00+00:00",
+      "home_espn_team_id": "2653",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "23",
+      "can_execute": false,
+      "espn_event_id": "401864528",
+      "event_start_utc": "2026-10-24T21:00:00+00:00",
+      "home_espn_team_id": "2440",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "309",
+      "can_execute": false,
+      "espn_event_id": "401869967",
+      "event_start_utc": "2026-10-24T21:00:00+00:00",
+      "home_espn_team_id": "2572",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "295",
+      "can_execute": false,
+      "espn_event_id": "401871093",
+      "event_start_utc": "2026-10-24T21:00:00+00:00",
+      "home_espn_team_id": "2348",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "68",
+      "can_execute": false,
+      "espn_event_id": "401860907",
+      "event_start_utc": "2026-10-24T22:00:00+00:00",
+      "home_espn_team_id": "265",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "21",
+      "can_execute": false,
+      "espn_event_id": "401860905",
+      "event_start_utc": "2026-10-24T22:30:00+00:00",
+      "home_espn_team_id": "36",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "38",
+      "can_execute": false,
+      "espn_event_id": "401856836",
+      "event_start_utc": "2026-10-24T23:00:00+00:00",
+      "home_espn_team_id": "197",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "259",
+      "can_execute": false,
+      "espn_event_id": "401858276",
+      "event_start_utc": "2026-10-24T23:00:00+00:00",
+      "home_espn_team_id": "228",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2247",
+      "can_execute": false,
+      "espn_event_id": "401869935",
+      "event_start_utc": "2026-10-24T23:00:00+00:00",
+      "home_espn_team_id": "2032",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "145",
+      "can_execute": false,
+      "espn_event_id": "401856732",
+      "event_start_utc": "2026-10-24T23:30:00+00:00",
+      "home_espn_team_id": "251",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "238",
+      "can_execute": false,
+      "espn_event_id": "401856729",
+      "event_start_utc": "2026-10-24T23:30:00+00:00",
+      "home_espn_team_id": "96",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "30",
+      "can_execute": false,
+      "espn_event_id": "401858500",
+      "event_start_utc": "2026-10-24T23:30:00+00:00",
+      "home_espn_team_id": "275",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "66",
+      "can_execute": false,
+      "espn_event_id": "401856838",
+      "event_start_utc": "2026-10-24T23:30:00+00:00",
+      "home_espn_team_id": "12",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "183",
+      "can_execute": false,
+      "espn_event_id": "401858275",
+      "event_start_utc": "2026-10-24T23:30:00+00:00",
+      "home_espn_team_id": "153",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "328",
+      "can_execute": false,
+      "espn_event_id": "401860906",
+      "event_start_utc": "2026-10-24T23:30:00+00:00",
+      "home_espn_team_id": "326",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2636",
+      "can_execute": false,
+      "espn_event_id": "401862811",
+      "event_start_utc": "2026-10-25T00:00:00+00:00",
+      "home_espn_team_id": "2655",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "2449",
+      "can_execute": false,
+      "espn_event_id": "401864527",
+      "event_start_utc": "2026-10-25T02:00:00+00:00",
+      "home_espn_team_id": "167",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "248",
+      "can_execute": false,
+      "espn_event_id": "401856837",
+      "event_start_utc": "2026-10-25T02:15:00+00:00",
+      "home_espn_team_id": "254",
+      "model_feature_disposition": "NCAAF_FEATURE_SNAPSHOT_NOT_FOUND",
+      "sport": "NCAAF",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "27",
+      "can_execute": false,
+      "espn_event_id": "401892552",
+      "event_start_utc": "2026-10-22T23:00:00+00:00",
+      "home_espn_team_id": "1",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "13",
+      "can_execute": false,
+      "espn_event_id": "401892553",
+      "event_start_utc": "2026-10-22T23:00:00+00:00",
+      "home_espn_team_id": "21",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "18",
+      "can_execute": false,
+      "espn_event_id": "401892554",
+      "event_start_utc": "2026-10-22T23:00:00+00:00",
+      "home_espn_team_id": "14",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "25",
+      "can_execute": false,
+      "espn_event_id": "401892555",
+      "event_start_utc": "2026-10-22T23:00:00+00:00",
+      "home_espn_team_id": "11",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "26",
+      "can_execute": false,
+      "espn_event_id": "401892556",
+      "event_start_utc": "2026-10-22T23:00:00+00:00",
+      "home_espn_team_id": "16",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "8",
+      "can_execute": false,
+      "espn_event_id": "401892557",
+      "event_start_utc": "2026-10-22T23:30:00+00:00",
+      "home_espn_team_id": "12",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "37",
+      "can_execute": false,
+      "espn_event_id": "401892558",
+      "event_start_utc": "2026-10-23T00:00:00+00:00",
+      "home_espn_team_id": "19",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "28",
+      "can_execute": false,
+      "espn_event_id": "401892559",
+      "event_start_utc": "2026-10-23T00:00:00+00:00",
+      "home_espn_team_id": "9",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "30",
+      "can_execute": false,
+      "espn_event_id": "401892560",
+      "event_start_utc": "2026-10-23T01:00:00+00:00",
+      "home_espn_team_id": "3",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "7",
+      "can_execute": false,
+      "espn_event_id": "401892561",
+      "event_start_utc": "2026-10-23T01:00:00+00:00",
+      "home_espn_team_id": "6",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "129764",
+      "can_execute": false,
+      "espn_event_id": "401892562",
+      "event_start_utc": "2026-10-23T02:00:00+00:00",
+      "home_espn_team_id": "124292",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    },
+    {
+      "away_espn_team_id": "5",
+      "can_execute": false,
+      "espn_event_id": "401892563",
+      "event_start_utc": "2026-10-23T02:00:00+00:00",
+      "home_espn_team_id": "22",
+      "model_feature_disposition": "NHL_CANONICAL_FIRST_PARTY_IDENTITY_NOT_RECONCILED",
+      "sport": "NHL",
+      "sporting_probability_available": false
+    }
+  ],
+  "source_verification": {
+    "NCAAF": {
+      "events_reconciled": 44,
+      "result": "RAW_AND_IDENTITY_REPLAY_PASS",
+      "source_sha256": "976d8ac562a9eaaa8011fdaf4158b06d2e908a05a28a97f66223d8dafa5f3428"
+    },
+    "NHL": {
+      "events_reconciled": 12,
+      "result": "RAW_AND_IDENTITY_REPLAY_PASS",
+      "source_sha256": "224e2f7f1c2592eedadb236322bf5f1661c408f4554cb8facd13aa8df2e28199"
+    }
+  }
+}
