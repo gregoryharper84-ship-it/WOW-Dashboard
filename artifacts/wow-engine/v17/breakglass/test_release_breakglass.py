@@ -206,7 +206,7 @@ def test_failed_merge_always_restores_all_five_checks(tmp_path):
     api=FakeGitHub();api.fail_merge=True
     with patch.object(recovery,"save_private", wraps=recovery.save_private):
         with pytest.raises(recovery.RecoveryHold,match="MERGE_UNCONFIRMED"):
-            recovery.execute(api,intent(),tmp_path/"attempt")
+            recovery.execute(api,intent(),tmp_path/"attempt",verify_witness=lambda: None)
     assert recovery.checks_from_ruleset(api.ruleset)==set(recovery.CHECK_CONTEXTS)
     assert (tmp_path/"attempt/original-ruleset.json").exists()
     calls=[x[0] for x in api.calls if x[0] in {"put","merge"}]
@@ -215,7 +215,7 @@ def test_failed_merge_always_restores_all_five_checks(tmp_path):
 
 def test_successful_merge_restores_before_reporting(tmp_path):
     api=FakeGitHub()
-    recovery.execute(api,intent(),tmp_path/"attempt")
+    recovery.execute(api,intent(),tmp_path/"attempt",verify_witness=lambda: None)
     assert api.merged and recovery.checks_from_ruleset(api.ruleset)==set(recovery.CHECK_CONTEXTS)
     assert (tmp_path/"attempt/merge-receipt.json").exists()
 
@@ -253,3 +253,47 @@ def test_missing_pull_request_or_default_branch_protection_rejected():
     b=baseline();b["conditions"]["ref_name"]["include"]=["refs/heads/feature"]
     with pytest.raises(recovery.RecoveryHold,match="RULESET_BRANCH_SCOPE_CHANGED"):
         recovery.temporary_ruleset(b)
+
+def test_unsigned_witness_readiness_blocks_even_with_valid_pr(tmp_path):
+    api=FakeGitHub()
+    with pytest.raises(recovery.RecoveryHold, match="WITNESS_ATTESTATION_REQUIRED"):
+        recovery.execute(api,intent(),tmp_path/"attempt")
+    assert not any(x[0] in {"put","merge"} for x in api.calls)
+
+
+def test_expired_or_false_witness_identity_rejected(tmp_path):
+    signed=recovery.witness_ready_payload(intent(),"another-admin",issued=now(),pid=12)
+    ready=tmp_path/"ready.json"
+    ready.write_bytes(recovery.canonical(signed))
+    sig=tmp_path/"ready.sig";sig.write_text("fake")
+    with patch.object(recovery,"verify_signature") as verifier:
+        assert recovery.verify_witness_ready(intent(),ready,sig,tmp_path/"signers","owner-admin",
+                                              now=now()+dt.timedelta(seconds=10)) == signed
+        verifier.assert_called_once()
+    with pytest.raises(recovery.RecoveryHold,match="WITNESS_AND_EXECUTOR_NOT_SEPARATE"):
+        recovery.verify_witness_ready(intent(),ready,sig,tmp_path/"signers","another-admin",now=now())
+    with pytest.raises(recovery.RecoveryHold,match="WITNESS_READY_EXPIRED_OR_FUTURE"):
+        recovery.verify_witness_ready(intent(),ready,sig,tmp_path/"signers","owner-admin",
+                                      now=now()+dt.timedelta(seconds=80))
+
+
+def test_mismatched_witness_intent_or_unsigned_schema_fails(tmp_path):
+    signed=recovery.witness_ready_payload(intent(),"another-admin",issued=now(),pid=12)
+    ready=tmp_path/"ready.json";sig=tmp_path/"ready.sig";sig.write_text("fake")
+    signed["baseline_ruleset_sha256"]="0"*64
+    ready.write_bytes(recovery.canonical(signed))
+    with pytest.raises(recovery.RecoveryHold,match="WITNESS_READY_INTENT_MISMATCH"):
+        recovery.verify_witness_ready(intent(),ready,sig,tmp_path/"signers","owner-admin",now=now())
+    signed=recovery.witness_ready_payload(intent(),"another-admin",issued=now(),pid=12)
+    signed["new_permission"]="admin"
+    ready.write_bytes(recovery.canonical(signed))
+    with pytest.raises(recovery.RecoveryHold,match="WITNESS_READY_RECEIPT_SCHEMA_INVALID"):
+        recovery.verify_witness_ready(intent(),ready,sig,tmp_path/"signers","owner-admin",now=now())
+
+
+def test_witness_reverified_after_second_preflight(tmp_path):
+    api=FakeGitHub();calls=[]
+    def confirm():
+        calls.append("fresh")
+    recovery.execute(api,intent(),tmp_path/"attempt",verify_witness=confirm)
+    assert calls==["fresh","fresh"]
