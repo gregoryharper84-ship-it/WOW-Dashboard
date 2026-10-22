@@ -657,12 +657,22 @@ def reserve_dispatch(
     client.post(f"/repos/{REPOSITORY}/issues/{pr_number}/comments", {"body": body})
 
 
-def dispatch(client: GitHub, role: str, workflow: dict, pr_number: int, head_sha: str) -> None:
+def dispatch(client: GitHub, role: str, workflow: dict, pr_number: int, head_sha: str, *,
+             qa_run_id: int | None = None, qa_run_attempt: int | None = None) -> None:
     if role not in WORKFLOWS or workflow.get("path") != WORKFLOWS[role]["path"]:
         raise DispatchError("DISPATCH_TARGET_NOT_ALLOWLISTED")
+    inputs = {"pr_number": str(pr_number), "head_sha": head_sha}
+    if role == "release":
+        if (
+            not isinstance(qa_run_id, int) or isinstance(qa_run_id, bool) or qa_run_id <= 0
+            or not isinstance(qa_run_attempt, int) or isinstance(qa_run_attempt, bool)
+            or qa_run_attempt <= 0
+        ):
+            raise DispatchError("RELEASE_QA_RUN_IDENTITY_MISSING")
+        inputs.update({"qa_run_id": str(qa_run_id), "qa_run_attempt": str(qa_run_attempt)})
     client.post(
         f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/dispatches",
-        {"ref": "main", "inputs": {"pr_number": str(pr_number), "head_sha": head_sha}},
+        {"ref": "main", "inputs": inputs},
     )
 
 
@@ -813,6 +823,21 @@ def reconcile(
                 decisions.append(decision)
                 continue
             role = decision["role"]
+            qa_source = (role_runs.get("qa") or {}) if role == "release" else {}
+            if role == "release" and (
+                not isinstance(qa_source, dict)
+                or qa_source.get("status") != "completed"
+                or qa_source.get("conclusion") != "success"
+                or not isinstance(qa_source.get("id"), int)
+                or not isinstance(qa_source.get("run_attempt"), int)
+            ):
+                decisions.append({
+                    "pr_number": number,
+                    "action": "HOLD",
+                    "head_sha": head_sha,
+                    "findings": ["RELEASE_QA_RUN_PROVENANCE_MISSING"],
+                })
+                continue
             reservations = list_reservations(client, number)
             prior_attempts = reservation_attempts(reservations, role, number, head_sha)
             try:
@@ -866,7 +891,10 @@ def reconcile(
                 controller_run_id=controller_run_id,
                 attempt=controller_run_attempt,
             )
-            dispatch(client, role, workflows[role], number, head_sha)
+            dispatch(
+                client, role, workflows[role], number, head_sha,
+                qa_run_id=qa_source.get("id"), qa_run_attempt=qa_source.get("run_attempt"),
+            )
             dispatches += 1
             wip_count += 1
             wip_by_role[role] = wip_by_role.get(role, 0) + 1
