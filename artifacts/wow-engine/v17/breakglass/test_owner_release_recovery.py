@@ -210,7 +210,8 @@ def test_actual_owner_signature_and_tamper(tmp_path, monkeypatch):
                    check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     pub=key.with_suffix(".pub").read_text().split()
     digest="SHA256:"+base64.b64encode(hashlib.sha256(base64.b64decode(pub[1])).digest()).decode().rstrip("=")
-    monkeypatch.setattr(recovery,"PINNED_OWNER_KEY_FINGERPRINT",digest)
+    monkeypatch.setattr(recovery,"OWNER_RECOVERY_KEY_FINGERPRINT",digest)
+    monkeypatch.setattr(recovery,"OWNER_RECOVERY_PUBLIC_KEY_B64",pub[1])
     signers=tmp_path/"allowed_signers"
     signers.write_text('wow-owner namespaces="wow-breakglass" '+pub[0]+' '+pub[1]+' owner-test\\n')
     payload=tmp_path/"intent.json"
@@ -249,3 +250,51 @@ def test_wrong_watchdog_pid_or_digest_rejected(tmp_path):
                                 "expires_monotonic":time.monotonic()+100}))
     with pytest.raises(recovery.RecoveryHold,match="WATCHDOG_READY_MISMATCH"):
         recovery.watchdog_ready_healthy(path,Active(),"d"*64)
+
+
+def test_rotated_owner_public_key_is_pinned_and_old_or_other_keys_hold(tmp_path):
+    signer=tmp_path/"signers"
+    signer.write_text('wow-owner namespaces="wow-breakglass" ssh-ed25519 '
+                      +recovery.OWNER_RECOVERY_PUBLIC_KEY_B64+' recovery-v2\\n')
+    recovery.owner_signer_file(signer)
+    signer.write_text('wow-owner namespaces="wow-breakglass" ssh-ed25519 '
+                      +'AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'+' impostor\\n')
+    with pytest.raises(recovery.RecoveryHold):
+        recovery.owner_signer_file(signer)
+
+
+def test_signed_verify_is_readonly_and_checks_live_preflight(tmp_path, monkeypatch, capsys):
+    api=FakeAPI()
+    local=tmp_path/"intent.json"
+    local.write_bytes(recovery.canonical(intent()))
+    monkeypatch.setattr(recovery,"GitHub",lambda:api)
+    monkeypatch.setattr(recovery,"authenticate_admin",lambda a:None)
+    monkeypatch.setattr(recovery,"verify_owner_signature",lambda raw,signature,signers:None)
+    monkeypatch.setattr(sys,"argv",["owner_release_recovery.py","verify",
+                                  "--intent",str(local),
+                                  "--owner-signature",str(tmp_path/"intent.json.sig"),
+                                  "--owner-signers",str(tmp_path/"owner_allowed_signers")])
+    recovery.main()
+    assert "OWNER_SIGNED_READ_ONLY_VERIFICATION_PASSED" in capsys.readouterr().out
+    assert api.puts == [] and api.merged is False and api.rules == baseline()
+    api.main="d"*40
+    with pytest.raises(recovery.RecoveryHold,match="MAIN_MOVED"):
+        recovery.main()
+    assert api.puts == [] and api.merged is False
+
+
+def test_signed_verify_refuses_signature_failure_without_mutation(tmp_path, monkeypatch):
+    api=FakeAPI()
+    local=tmp_path/"intent.json"
+    local.write_bytes(recovery.canonical(intent()))
+    monkeypatch.setattr(recovery,"GitHub",lambda:api)
+    monkeypatch.setattr(recovery,"verify_owner_signature",
+                        lambda raw,signature,signers: (_ for _ in ()).throw(
+                            recovery.RecoveryHold("SIGNATURE_INVALID")))
+    monkeypatch.setattr(sys,"argv",["owner_release_recovery.py","verify",
+                                  "--intent",str(local),
+                                  "--owner-signature",str(tmp_path/"intent.json.sig"),
+                                  "--owner-signers",str(tmp_path/"owner_allowed_signers")])
+    with pytest.raises(recovery.RecoveryHold,match="SIGNATURE_INVALID"):
+        recovery.main()
+    assert api.puts == [] and api.merged is False
