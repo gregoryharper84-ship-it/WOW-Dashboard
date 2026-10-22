@@ -47,6 +47,7 @@ def _feature_package(event_id="espn-401999001"):
         "event_start_time_utc": EVENT_START,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": {name: 0.5 for name in FEATURE_NAMES},
+        "source_snapshot_id": "snapshot-1",
         "source_snapshot_timestamp": "2026-10-22T15:55:00Z",
         "feature_audit": {
             "feature_as_of": "2026-10-22",
@@ -153,10 +154,48 @@ def test_changed_starter_after_feature_snapshot_holds_before_model_resolution():
     assert result["can_execute"] is False
 
 
-def test_feature_hydrator_current_main_shape_lacks_required_stable_lineage_and_holds():
+def test_refreshed_features_after_starter_change_pass_freshness_gate():
+    certification = _certification()
     package = _feature_package()
-    package["feature_audit"].pop("feature_timestamp")
-    package["feature_audit"].pop("dataset_id")
+    package["feature_audit"]["feature_timestamp"] = "2026-10-22T16:02:00Z"
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=package,
+        lineup_evidence=_lineup(
+            update_at="2026-10-22T16:01:00Z",
+            rotation="CHANGED",
+        ),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: certification,
+        champion_artifact_resolver=lambda _client, _cert: {
+            "model_artifact_version": certification.model_version
+        },
+    )
+
+    assert result["blockers"] == ["NBA_CALIBRATOR_PAYLOAD_RESOLVER_UNAVAILABLE"]
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "expected_blocker"),
+    [
+        ("source_snapshot_id", "NBA_SOURCE_SNAPSHOT_ID_MISMATCH"),
+        ("source_snapshot_timestamp", "NBA_SOURCE_SNAPSHOT_PROVENANCE_MISSING"),
+        ("dataset_id", "NBA_FEATURE_DATASET_ID_MISSING"),
+        ("feature_timestamp", "NBA_FEATURE_TIMESTAMP_MISSING"),
+    ],
+)
+def test_current_feature_hydration_requires_bound_timestamped_lineage(field, expected_blocker):
+    package = _feature_package()
+    if field in {"source_snapshot_id", "source_snapshot_timestamp"}:
+        package.pop(field)
+    else:
+        package["feature_audit"].pop(field)
 
     result = prepare_nba_current_pregame_scorer_receipt(
         event_start_time=EVENT_START,
@@ -169,8 +208,7 @@ def test_feature_hydrator_current_main_shape_lacks_required_stable_lineage_and_h
         identity_resolver=_identity_resolver([_schedule_row()]),
     )
 
-    assert result["blockers"] == ["NBA_FEATURE_DATASET_ID_MISSING"]
-    assert result["feature_timestamp"] is None
+    assert result["blockers"] == [expected_blocker]
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
 
@@ -322,8 +360,43 @@ def test_uncertified_artifact_is_not_converted_to_scorer_failure():
     assert result["can_execute"] is False
 
 
+@pytest.mark.parametrize(
+    ("error_code", "expected_failure"),
+    [
+        ("TEAM_EVENT_CERTIFICATION_REGISTRY_UNAVAILABLE", "MODEL_SCORER_FAILED"),
+        ("TEAM_EVENT_CERTIFICATION_REGISTRY_INVALID_RESPONSE", "MODEL_OUTPUT_INVALID"),
+    ],
+)
+def test_certification_resolution_failures_keep_their_typed_class(
+    error_code,
+    expected_failure,
+):
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=_feature_package(),
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: (
+            _raise_certification_error(error_code)
+        ),
+    )
+
+    assert result["typed_failure"] == expected_failure
+    assert result["code"] == expected_failure
+    assert result["blockers"] == [error_code]
+    assert result["can_execute"] is False
+
+
 def _raise_not_certified():
     raise TeamEventCertificationError(
         "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED",
         "NBA",
     )
+
+
+def _raise_certification_error(code):
+    raise TeamEventCertificationError(code, "NBA")

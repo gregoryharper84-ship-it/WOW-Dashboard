@@ -1,4 +1,7 @@
-"""Fail-closed NBA current-pregame fitted scorer integration seam."""
+"""Unregistered fail-closed NBA current-pregame scorer integration seam.
+
+Receipts from this module are engineering holds, not terminal-reducer inputs.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -50,7 +53,6 @@ def _hold(
     return {
         "status": "HOLD",
         "code": code,
-        "terminal_label": typed_failure or code,
         "typed_failure": typed_failure,
         "blockers": [blocker],
         "sport": "NBA",
@@ -122,10 +124,9 @@ def _feature_blocker(
     audit = feature_package.get("feature_audit")
     if not isinstance(audit, Mapping):
         return "NBA_FEATURE_LINEAGE_MISSING"
-    if (
-        not source_snapshot_id
-        or _timestamp(feature_package.get("source_snapshot_timestamp")) is None
-    ):
+    if not source_snapshot_id or feature_package.get("source_snapshot_id") != source_snapshot_id:
+        return "NBA_SOURCE_SNAPSHOT_ID_MISMATCH"
+    if _timestamp(feature_package.get("source_snapshot_timestamp")) is None:
         return "NBA_SOURCE_SNAPSHOT_PROVENANCE_MISSING"
     if not audit.get("dataset_id"):
         return "NBA_FEATURE_DATASET_ID_MISSING"
@@ -152,12 +153,6 @@ def _rotation_blocker(
     }:
         return "NBA_INJURY_REPORT_NOT_CURRENT"
 
-    rotation = str(lineup_evidence.get("expected_starters_rotation") or "").upper()
-    if rotation == "CHANGED":
-        return "NBA_STARTER_CHANGED_AFTER_FEATURE_HYDRATION"
-    if rotation not in CONFIRMED_ROTATION_STATES:
-        return "NBA_STARTING_ROTATION_NOT_CONFIRMED"
-
     feature_audit = feature_package.get("feature_audit")
     feature_audit = feature_audit if isinstance(feature_audit, Mapping) else {}
     feature_at = _timestamp(feature_audit.get("feature_timestamp"))
@@ -168,6 +163,9 @@ def _rotation_blocker(
         return "NBA_FEATURE_TIMESTAMP_MISSING"
     if latest_material_at > feature_at:
         return "NBA_STARTER_CHANGED_AFTER_FEATURE_HYDRATION"
+    rotation = str(lineup_evidence.get("expected_starters_rotation") or "").upper()
+    if rotation not in CONFIRMED_ROTATION_STATES and rotation != "CHANGED":
+        return "NBA_STARTING_ROTATION_NOT_CONFIRMED"
     return None
 
 
@@ -278,13 +276,19 @@ def prepare_nba_current_pregame_scorer_receipt(
     try:
         certification = certification_resolver(client, sport="NBA", league_scope="NBA")
     except TeamEventCertificationError as exc:
-        unavailable = exc.code in {
+        if exc.code in {
             "TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED",
             "TEAM_EVENT_SPECIALIST_CERTIFICATION_REVOKED",
-        }
-        typed = "MODEL_UNAVAILABLE" if unavailable else None
+        }:
+            typed = "MODEL_UNAVAILABLE"
+        elif exc.code == "TEAM_EVENT_CERTIFICATION_REGISTRY_UNAVAILABLE":
+            typed = "MODEL_SCORER_FAILED"
+        elif exc.code == "TEAM_EVENT_CERTIFICATION_REGISTRY_INVALID_RESPONSE":
+            typed = "MODEL_OUTPUT_INVALID"
+        else:
+            typed = "MODEL_OUTPUT_INVALID"
         return _hold(
-            "MODEL_UNAVAILABLE" if unavailable else exc.code,
+            typed,
             exc.code,
             identity=identity,
             feature_package=current_feature_package,
