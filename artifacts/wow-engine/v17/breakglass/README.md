@@ -29,11 +29,13 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install pytest
 
-python -m pytest -q artifacts/wow-engine/v17/breakglass/test_owner_release_recovery.py
+python -m pytest --noconftest -q artifacts/wow-engine/v17/breakglass/test_owner_release_recovery.py
 
 SCRIPT="artifacts/wow-engine/v17/breakglass/owner_release_recovery.py"
 python "$SCRIPT" inspect --pr 1932
 ```
+
+**Why `--noconftest`?** The parent `artifacts/wow-engine/conftest.py` autoloads `agent_runtime.queue` and Celery for unrelated model/worker integration tests. This standalone emergency Release test module has no Celery dependency. Without `--noconftest`, a minimal Mac venv can fail all recovery tests during fixture setup with `ModuleNotFoundError: No module named 'celery'` before a single recovery assertion runs. Keep model/worker fixture suites separate; do not install the full agent runtime merely to test recovery.
 
 ### Owner-only intent preparation (READ ONLY)
 
