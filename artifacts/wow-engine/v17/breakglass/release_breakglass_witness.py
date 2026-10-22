@@ -8,6 +8,7 @@ policy at the signed time limit even when the operator process disappears.
 from __future__ import annotations
 
 import argparse
+import os
 import datetime as dt
 import json
 from pathlib import Path
@@ -16,7 +17,8 @@ import time
 
 from release_breakglass import (
     GitHub, RecoveryHold, RULESET_ID, canonical, checks_from_ruleset, expected_check_set,
-    parse_intent, require, restore, sha256, snapshot, temporary_ruleset,
+    parse_intent, require, restore, run, save_private, sha256, snapshot, temporary_ruleset,
+    witness_ready_payload,
     verify_separate_principals, verify_signature,
 )
 
@@ -69,6 +71,9 @@ def main() -> None:
     parser.add_argument("--sirt-signature", type=Path, required=True)
     parser.add_argument("--owner-signers", type=Path, required=True)
     parser.add_argument("--sirt-signers", type=Path, required=True)
+    parser.add_argument("--witness-signing-key", type=Path, required=True,
+                        help="Independently held SIRT private key (never the owner key)")
+    parser.add_argument("--ready-output", type=Path, required=True)
     args = parser.parse_args()
     data = args.intent.read_bytes()
     intent = parse_intent(json.loads(data))
@@ -78,7 +83,23 @@ def main() -> None:
     verify_signature(data, args.sirt_signature, args.sirt_signers,
                      "wow-sirt-" + intent["reviewer_login"])
     baseline_data = json.loads(args.baseline.read_bytes())
-    watch(GitHub(), intent, baseline_data)
+    api = GitHub()
+    witness_identity = json.loads(run("gh", "api", "user")).get("login", "")
+    require(witness_identity and witness_identity.lower() != "gregoryharper84-ship-it",
+            "WITNESS_IDENTITY_MUST_DIFFER_FROM_OWNER")
+
+    def publish_ready(message: str) -> None:
+        if message.startswith("WITNESS_ARMED"):
+            payload = witness_ready_payload(intent, witness_identity)
+            save_private(args.ready_output, canonical(payload))
+            # ssh-keygen creates the adjacent <filename>.sig using the separate
+            # SIRT private key, whose public part was already verified above.
+            run("ssh-keygen", "-Y", "sign", "-f", str(args.witness_signing_key),
+                "-n", "wow-breakglass", str(args.ready_output))
+            print("WITNESS_SIGNED_READY_RECEIPT", str(args.ready_output), flush=True)
+        print(message, flush=True)
+
+    watch(api, intent, baseline_data, ready=publish_ready)
 
 
 if __name__ == "__main__":
