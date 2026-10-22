@@ -1,5 +1,8 @@
 # WOW Ecosystem Conductor / Control Plane — V1
 
+
+**Cross-team engineering mission:** [DEBUG. DISSOLVE. DEPLOY.](../../../docs/wow/engineering/WOW_ENGINEERING_MISSION_DOCTRINE.md) Engineering repairs; AMRT restores; WOW Betting Intelligence validates real, fitted model capability; SIRT independently verifies. The Conductor preserves deduplicated ownership and truthful closure evidence; this doctrine does not create an alternate authority, competing writer, or publication path.
+
 **Status:** CLASS_A_FOUNDATION  
 **Runtime:** V17_ACTIVE  
 **Probability authority:** NONE  
