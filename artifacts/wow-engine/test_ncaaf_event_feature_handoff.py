@@ -466,6 +466,32 @@ def test_changed_current_qb_status_holds_before_scorer_invocation():
     assert invoked == []
 
 
+def test_changed_injury_receipt_payload_holds_before_scorer_invocation():
+    snapshot = _stored_snapshot()
+    client = _Client(snapshot)
+    current_context = _context()
+    injury_receipt = next(
+        receipt
+        for receipt in current_context["receipts"]
+        if receipt["purpose"] == "INJURY_REPORT"
+    )
+    injury_receipt["payload_sha256"] = _sha({"injury_report": "changed"})
+    invoked = []
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        score_current_event_snapshot(
+            client,
+            official_event_id=EVENT_ID,
+            event_start_time=KICKOFF.isoformat(),
+            home_team="Louisville",
+            away_team="Florida State",
+            expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
+            **_score_context(snapshot, current_context),
+            scorer=lambda *args, **kwargs: invoked.append(True),
+        )
+    assert exc.value.code == "NCAAF_CURRENT_EVENT_CONTEXT_CHANGED"
+    assert invoked == []
+
+
 def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
     snapshot = _stored_snapshot()
     client = _Client(snapshot)

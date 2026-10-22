@@ -427,6 +427,10 @@ def _validate_refreshed_context(
             raise NCAAFEventFeatureHandoffUnavailable(
                 "NCAAF_CURRENT_EVENT_CONTEXT_STALE", purpose
             )
+        if str(prior.get("payload_sha256") or "").lower() != fresh_receipts[purpose]["payload_sha256"]:
+            raise NCAAFEventFeatureHandoffUnavailable(
+                "NCAAF_CURRENT_EVENT_CONTEXT_CHANGED", purpose
+            )
 
     for field in (
         "starting_qb_status_home",
