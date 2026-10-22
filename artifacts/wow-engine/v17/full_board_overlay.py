@@ -87,7 +87,7 @@ def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "source_bucket": row.get("bucket"),
         "model_status": row.get("model_status") or detail.get("model_status") or detail.get("code"),
         "market_acquisition_status": _market_status(detail),
-        "governance_status": _governance_status(detail),
+        "governance_status": row.get("governance_status") or _governance_status(detail),
         "rank_eligible": row.get("rank_eligible") is True,
         "probability_publishable": row.get("probability_publishable") is True,
         "calibrated_probability": _first_numeric(
@@ -275,8 +275,37 @@ def enrich_full_board_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     discovery = payload.get("discovery") if isinstance(payload.get("discovery"), Mapping) else {}
     inventoried_sports = list(discovery.get("sports_queried") or [])
 
-    discovered_rows = _discovery_rows(base_rows)
-    terminal_rows = [_flat_terminal_row(row) for row in base_rows]
+    enriched_rows: list[dict[str, Any]] = []
+    for row in base_rows:
+        item = dict(row)
+        detail = dict(item.get("detail") or {}) if isinstance(item.get("detail"), Mapping) else {}
+        item["market_acquisition_status"] = _market_status(detail)
+        item["governance_status"] = _governance_status(detail)
+        audit = _publication_audit_for_row(item)
+        item["publication_chain_audit"] = audit
+        if audit is not None and audit["status"] != "PASS":
+            # Diagnostic output may only lower the presentation ceiling. Preserve
+            # the model's numerical package and the original terminal receipt,
+            # but never display a failed audit as FINAL_APPROVED/rank eligible.
+            item["rank_eligible"] = False
+            item["probability_publishable"] = False
+            item["official_leaderboard_eligible"] = False
+            item["publication_blocker"] = audit["first_blocker"]
+            prior_terminal = str(detail.get("terminal_label") or item.get("governance_status") or "")
+            item["upstream_terminal_label"] = prior_terminal
+            if _upper(prior_terminal) == "FINAL_APPROVED":
+                item["governance_status"] = "MODEL_QUALIFIED_HOLD"
+                item["terminal_label"] = "MODEL_QUALIFIED_HOLD"
+            item["detail"] = {**detail, "rank_eligible": False, "probability_publishable": False,
+                              "upstream_terminal_label": prior_terminal,
+                              "terminal_label": item.get("terminal_label", prior_terminal)}
+        item["can_execute"] = False
+        enriched_rows.append(item)
+
+    # Reconcile the *effective* audited terminal rows, never the stale rows
+    # produced before the audit was applied.
+    discovered_rows = _discovery_rows(enriched_rows)
+    terminal_rows = [_flat_terminal_row(row) for row in enriched_rows]
     reconciled = reconcile_full_board(
         discovered_rows,
         terminal_rows,
@@ -285,16 +314,6 @@ def enrich_full_board_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     reconciled["sport_coverage"] = _enhance_sport_coverage(
         payload, list(reconciled.get("sport_coverage") or [])
     )
-
-    enriched_rows: list[dict[str, Any]] = []
-    for row in base_rows:
-        item = dict(row)
-        detail = dict(item.get("detail") or {}) if isinstance(item.get("detail"), Mapping) else {}
-        item["market_acquisition_status"] = _market_status(detail)
-        item["governance_status"] = _governance_status(detail)
-        item["publication_chain_audit"] = _publication_audit_for_row(item)
-        item["can_execute"] = False
-        enriched_rows.append(item)
 
     capability_checked = sum(
         1
