@@ -272,6 +272,46 @@ def test_odds_proxy_feed_queries_the_slate_day(monkeypatch):
     assert calls[0]["commenceTimeTo"] == "2026-10-23T04:59:59Z"
 
 
+def test_fairness_owner_used_in_production_also_bounds_the_window():
+    """v17_observability installs fair_discover_winner_slate as THE discovery owner.
+
+    It reimplements the pass and never calls ``discover_winner_slate``, so it must
+    publish the slate window itself (regression: the fix was inert in production).
+    """
+    from v17 import cross_sport_acquisition_fairness as fairness
+
+    calls: list[dict] = []
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def proxy_get(path, params=None, *args, **kwargs):
+        if path.endswith("/sports"):
+            return _Resp([{"key": "icehockey_nhl", "active": True}])
+        calls.append(dict(params or {}))
+        return _Resp([])
+
+    fetch = discovery_feed.odds_proxy_feed(
+        proxy_get=proxy_get, now=RUN_START, sport_keys={"NHL": ("icehockey_nhl",)}
+    )
+    fairness.fair_discover_winner_slate(
+        requested_slate_date="2026-10-22",
+        requested_timezone=CHICAGO,
+        fetch_sport_events=fetch,
+        supported_sports=("NHL",),
+        now=RUN_START,
+    )
+    assert calls
+    assert calls[0]["commenceTimeTo"] == "2026-10-23T04:59:59Z"
+    assert discovery._SLATE_FETCH_WINDOW.get() is None
+
+
 # ------------------------------------------- classification is untouched
 
 

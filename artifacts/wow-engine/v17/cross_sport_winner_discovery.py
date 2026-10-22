@@ -24,6 +24,7 @@ price, a public projection or generic reasoning for an absent fitted model, and
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date as _date
@@ -798,6 +799,21 @@ def discovery_budget_seconds() -> float:
     return max(0.5, min(configured, 120.0))
 
 
+@contextmanager
+def slate_window_context(requested_slate_date: Any, requested_timezone: Any):
+    """Publish the requested slate for one discovery pass (reset on exit).
+
+    Every production discovery entry point (this module's wrapper and the
+    acquisition-fairness owner installed by ``v17_observability``) must run its
+    pass inside this context so feed adapters bound their query window.
+    """
+    token = _SLATE_FETCH_WINDOW.set((str(requested_slate_date), str(requested_timezone)))
+    try:
+        yield
+    finally:
+        _SLATE_FETCH_WINDOW.reset(token)
+
+
 def discover_winner_slate(
     *,
     requested_slate_date: str,
@@ -811,13 +827,9 @@ def discover_winner_slate(
 ) -> DiscoveryInventory:
     """Discover the slate with feed query windows bound to the requested local day.
 
-    Thin wrapper over ``_discover_winner_slate``: it publishes the requested
-    slate for the duration of the pass so feed adapters query the requested local
-    day instead of a rolling horizon from "now" (``slate_bounded_window``).
-    Classification is unchanged.
+    Thin wrapper over ``_discover_winner_slate``; classification is unchanged.
     """
-    token = _SLATE_FETCH_WINDOW.set((str(requested_slate_date), str(requested_timezone)))
-    try:
+    with slate_window_context(requested_slate_date, requested_timezone):
         return _discover_winner_slate(
             requested_slate_date=requested_slate_date,
             requested_timezone=requested_timezone,
@@ -828,8 +840,6 @@ def discover_winner_slate(
             now=now,
             budget_seconds=budget_seconds,
         )
-    finally:
-        _SLATE_FETCH_WINDOW.reset(token)
 
 
 def _discover_winner_slate(
