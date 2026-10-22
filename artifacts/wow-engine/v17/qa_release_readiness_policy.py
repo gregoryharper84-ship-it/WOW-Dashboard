@@ -132,7 +132,26 @@ def evaluate_exact_head(
             else:
                 pending.append("WAIT_UPSTREAM:" + name)
             continue
-        latest = max(authentic, key=lambda row: row["id"])
+        by_id: dict[int, list[Mapping[str, Any]]] = {}
+        for row in authentic:
+            by_id.setdefault(row["id"], []).append(row)
+        collapsed: list[Mapping[str, Any]] = []
+        collided = False
+        for group in by_id.values():
+            first = group[0]
+            if any(
+                row.get("status") != first.get("status")
+                or row.get("conclusion") != first.get("conclusion")
+                or row.get("app", {}).get("id") != first.get("app", {}).get("id")
+                for row in group[1:]
+            ):
+                collided = True
+                break
+            collapsed.append(first)
+        if collided:
+            holds.append("CHECK_ID_COLLISION:" + name)
+            continue
+        latest = max(collapsed, key=lambda row: row["id"])
         used.append(latest["id"])
         status = latest.get("status")
         conclusion = latest.get("conclusion")

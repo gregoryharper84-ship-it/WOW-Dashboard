@@ -247,3 +247,36 @@ def test_caller_cannot_reassign_mandatory_check_to_wrong_app():
     result = decision(requirements=selected)
     assert result.state == "HOLD_EVIDENCE"
     assert result.reasons == ("MANDATORY_REQUIREMENTS_OMITTED",)
+
+
+def test_duplicate_replayed_check_row_with_identical_evidence_dedupes_safely():
+    rows = checks()
+    rows.append(check(REQUIRED[0][0], id=1))
+    assert decision(rows=rows).state == "READY_FOR_INDEPENDENT_REVIEW"
+
+
+def test_conflicting_duplicate_check_id_never_resolves_to_a_pass():
+    rows = checks()
+    rows[0] = check(REQUIRED[0][0], id=1, conclusion="success")
+    rows.append(check(REQUIRED[0][0], id=1, conclusion="failure"))
+    got = decision(rows=rows)
+    assert got.state == "HOLD_CI_OR_EVIDENCE"
+    assert "CHECK_ID_COLLISION:WOW required-three regression" in got.reasons
+
+
+def test_conflicting_duplicate_check_id_holds_regardless_of_list_order():
+    rows = checks()
+    rows[0] = check(REQUIRED[0][0], id=1, conclusion="failure")
+    rows.append(check(REQUIRED[0][0], id=1, conclusion="success"))
+    got = decision(rows=rows)
+    assert got.state == "HOLD_CI_OR_EVIDENCE"
+    assert "CHECK_ID_COLLISION:WOW required-three regression" in got.reasons
+
+
+def test_duplicate_id_with_mismatched_app_also_collides():
+    rows = checks()
+    rows[0] = check(REQUIRED[0][0], id=1, app=APP)
+    rows.append(check(REQUIRED[0][0], id=1, app=APP, status="in_progress", conclusion=None))
+    got = decision(rows=rows)
+    assert got.state == "HOLD_CI_OR_EVIDENCE"
+    assert "CHECK_ID_COLLISION:WOW required-three regression" in got.reasons
