@@ -93,6 +93,11 @@ def _eligible_row(
         return False, "EVIDENCE_TIMESTAMP_INVALID"
     if evidence_at >= event_start:
         return False, "EVIDENCE_NOT_PREGAME"
+    try:
+        if _aware(row.get("event_start_time")) != event_start:
+            return False, "EVENT_START_TIME_MISMATCH"
+    except Exception:
+        return False, "EVENT_START_TIME_INVALID"
 
     scope = str(row.get("scope") or "").upper()
     expected_team = None
@@ -145,14 +150,16 @@ def _manifest_entry(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def compile_training_feature_row(
+def _compile_feature_row(
     game: Mapping[str, Any],
     evidence_rows: Iterable[Mapping[str, Any]],
+    *,
+    training_game_id: str | None,
 ) -> dict[str, Any]:
     event_id = str(game.get("official_event_id") or "").strip()
     home_team = str(game.get("home_team") or "").strip()
     away_team = str(game.get("away_team") or "").strip()
-    if not event_id or not home_team or not away_team or not game.get("training_game_id"):
+    if not event_id or not home_team or not away_team:
         raise NCAAFFeatureCompileBlocked("NCAAF_FEATURE_IDENTITY_INCOMPLETE", [event_id or "EVENT_ID_MISSING"])
 
     try:
@@ -166,13 +173,14 @@ def compile_training_feature_row(
         raise NCAAFFeatureCompileBlocked("NCAAF_MODEL_FEATURE_EVIDENCE_INCOMPLETE", missing)
 
     out: dict[str, Any] = {
-        "training_game_id": str(game["training_game_id"]),
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "market_home_no_vig": None,
         "market_away_no_vig": None,
         "market_timestamp": None,
         "can_execute": False,
     }
+    if training_game_id is not None:
+        out["training_game_id"] = training_game_id
     used: list[Mapping[str, Any]] = []
     blockers: list[str] = []
 
@@ -241,6 +249,27 @@ def compile_training_feature_row(
         "can_execute": False,
     }
     return out
+
+
+def compile_training_feature_row(
+    game: Mapping[str, Any],
+    evidence_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    training_game_id = str(game.get("training_game_id") or "").strip()
+    if not training_game_id:
+        raise NCAAFFeatureCompileBlocked(
+            "NCAAF_FEATURE_IDENTITY_INCOMPLETE",
+            [str(game.get("official_event_id") or "TRAINING_GAME_ID_MISSING")],
+        )
+    return _compile_feature_row(game, evidence_rows, training_game_id=training_game_id)
+
+
+def compile_official_event_feature_row(
+    game: Mapping[str, Any],
+    evidence_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Compile the shared fitted feature schema for a current official event."""
+    return _compile_feature_row(game, evidence_rows, training_game_id=None)
 
 
 def _paged(db: Any, table: str, columns: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
@@ -335,6 +364,7 @@ __all__ = [
     "COMPILER_VERSION",
     "FEATURE_SCHEMA_VERSION",
     "NCAAFFeatureCompileBlocked",
+    "compile_official_event_feature_row",
     "compile_training_feature_row",
     "materialize_complete_training_features",
 ]
