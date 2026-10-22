@@ -1,0 +1,57 @@
+{
+  "schema_version": "WOW_NCAAF_RESULT_FORM_INDEPENDENT_NUMERICAL_REFIT_V1",
+  "observation_date": "2026-10-22",
+  "environment": "wow-engine-validation (read-only Supabase queries; ephemeral private JS model fitting)",
+  "corpus": {
+    "rows": 3691,
+    "unique_official_events": 3691,
+    "chronological_training": 2214,
+    "chronological_calibration": 738,
+    "untouched_test": 739,
+    "source_policy": "NCAAF_SETTLED_PRIOR_RESULTS_RECONSTRUCTION_V1"
+  },
+  "exact_candidate": {
+    "candidate_id": "44d3dec0-e775-483f-b948-930214b69034",
+    "model_family": "NCAAF_RESULT_FORM_LOGIT_V1",
+    "feature_schema_version": "NCAAF_RESULT_FORM_PRIOR_V1",
+    "model_artifact_checksum": "0de8ed68a96e48dcd60773b292c5a46401a090aa21dbdb32de0f5ef4f0f25c1a",
+    "calibrator_method": "IDENTITY_RAW_PROBABILITY_V1"
+  },
+  "method": {
+    "optimizer": "INDEPENDENT_NEWTON_SECOND_ORDER_FULL_BATCH_LOGISTIC",
+    "feature_standardization": "STANDARD_SCALER_TRAIN_BLOCK_ONLY",
+    "objective": "MEAN_LOGISTIC_CROSS_ENTROPY_PLUS_0.5/(C*N_TRAIN)*SUM(W^2) on nine standardized features; intercept unpenalized; C=1.0",
+    "source_first_party_sklearn_optimizer_executed": false,
+    "training_data_transferred_to_public_repo": false,
+    "training_data_transferred_to_external_docs": false
+  },
+  "numerical_fit": {
+    "converged": true,
+    "iterations": 5,
+    "maximum_gradient_abs": 1.3251280498241536e-11,
+    "scaler_mean_max_abs_difference_from_stored": 0,
+    "scaler_scale_max_abs_difference_from_stored": 0,
+    "coefficient_max_abs_difference_from_stored": 0.0010602114298642329,
+    "intercept_abs_difference_from_stored": 0.0000029186469311937024
+  },
+  "holdout": {
+    "independent_refit_brier": 0.17362854795399055,
+    "stored_model_brier": 0.17363038587498056,
+    "independent_refit_logloss": 0.5182624638401807,
+    "stored_model_logloss": 0.5182707270915038
+  },
+  "interpretation": "Independent numerical re-optimization on exact real corpus converged close to stored sklearn solution. Not byte-identical sklearn artifact, fresh dataset SHA256 or independently certified probability package.",
+  "unrelated_completed_evidence": "Stored-model prediction replay on all 3691 rows matched previously recorded Brier/logloss/ECE to floating-point precision.",
+  "remaining": {
+    "exact_first_party_sklearn_retrain": "NOT_EXECUTED",
+    "exact_training_dataset_hash_recomputed": false,
+    "candidate_bound_production_diagnostic_invoked": false,
+    "historical_pregame_source_attestation": "HOLD: 3691 retrospectively reconstructed rows, no independently archived pregame snapshots",
+    "certified_calibrated_lower_bounds": false,
+    "candidate_certified": false,
+    "terminal_publishability": false
+  },
+  "can_execute": false,
+  "probability_publishable": false,
+  "rank_eligible": false
+}
