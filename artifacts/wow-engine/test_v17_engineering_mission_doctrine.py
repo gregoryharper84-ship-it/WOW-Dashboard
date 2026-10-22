@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DOCTRINE = ROOT / "docs/wow/engineering/WOW_ENGINEERING_MISSION_DOCTRINE.md"
 REFERENCING_DOCS = (
+    ROOT / "AGENTS.md",
+    ROOT / ".github/copilot-instructions.md",
     ROOT / "CLAUDE.md",
     ROOT / "docs/wow/engineering/WOW_AMRT_RECOVERY_TEAM.md",
     ROOT / "docs/wow/engineering/WOW_SIRT_INDEPENDENT_ASSURANCE.md",
