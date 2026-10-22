@@ -8,6 +8,7 @@ must be authorized separately by the offline owner signature.
 """
 from __future__ import annotations
 import argparse
+import binascii
 import datetime as dt
 import hashlib
 import json
@@ -75,7 +76,7 @@ def owner_signer_file(path: Path) -> None:
         key = fields[idx + 1]
         import base64
         digest = base64.b64encode(hashlib.sha256(base64.b64decode(key, validate=True)).digest()).decode().rstrip("=")
-    except (ValueError, IndexError, StopIteration, Exception) as exc:
+    except (ValueError, IndexError, StopIteration, binascii.Error) as exc:
         raise RecoveryHold("OWNER_SIGNER_KEY_INVALID") from exc
     require("SHA256:" + digest == PINNED_OWNER_KEY_FINGERPRINT, "OWNER_FINGERPRINT_MISMATCH")
 
