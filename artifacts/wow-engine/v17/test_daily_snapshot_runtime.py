@@ -30,12 +30,17 @@ class Query:
 
 
 class DB:
-    def __init__(self): self.acquisition_rows = []
+    def __init__(self):
+        self.acquisition_rows = []
+        self.row_detail_rows = []
+
     def table(self, name):
         if name == "wow_prop_evidence_snapshots":
             return Query([{"source_snapshot_id":"snap-prop","event_id":"p1","event_start_time":FUTURE,"sport":"MLB","player":"P","stat_type":"strikeouts","line":4.5,"hydration_status":"PASS","blockers":[]}])
         if name == "wow_v17_daily_run_acquisition_detail":
             return Query(self.acquisition_rows)
+        if name == "wow_v17_daily_run_row_detail":
+            return Query(self.row_detail_rows)
         return Query([{"official_event_id":"1","official_date":SLATE_DATE,"event_start_time":FUTURE,"home_team":"Home","away_team":"Away","venue_name":"Park","home_probable_pitcher":"H","away_probable_pitcher":"A","snapshot_id":"snap-event","snapshot_timestamp":FUTURE,"feature_hydration_status":"PASS"}])
 
 
@@ -103,6 +108,31 @@ def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatc
         "rows_purged":0,"rows_invalid":0,"rows_unclassified":0,"balanced":True,
     }
     assert result["rows"][1]["result"]["official_publication_guard"]["status"]=="PASS"
+
+
+def test_missing_daily_detail_readback_is_a_real_completion_blocker(monkeypatch):
+    # Simulate a successful write with no durable readback. The production
+    # contract must keep the typed persistence blocker instead of publishing
+    # a falsely clean COMPLETED run.
+    class LostWriteDB(DB):
+        def table(self, name):
+            if name == "wow_v17_daily_run_row_detail":
+                return Query([])
+            return super().table(name)
+
+    monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_a, **_kw: governed_team_result())
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["MONEYLINE"],
+            response_mode="FULL",
+        ),
+        db=LostWriteDB(), market_api=Market(), event_api=Event(),
+    )
+    assert result["run_status"] == "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert "DAILY_ROW_DETAIL_PERSISTED_SET_MISMATCH" in result["blockers"]
+    assert result["row_detail_persistence"]["detail_available"] is False
 
 
 def test_moneyline_normal_hold_is_not_completed(monkeypatch):
