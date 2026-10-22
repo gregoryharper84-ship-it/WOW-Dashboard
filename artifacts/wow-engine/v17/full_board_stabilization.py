@@ -394,6 +394,10 @@ def _explicit_or_native_pass(
     row: Mapping[str, Any], native: Mapping[str, bool], field: str,
     *, status_field: str | None = None, pass_statuses: frozenset[str] = frozenset({"PASS", "COMPLETE"}),
 ) -> bool:
+    # The bound native SQL receipt is an independent downgrade veto.
+    # Neither a legacy alias nor a positive presentation label can override it.
+    if native and native.get(field) is False:
+        return False
     # Explicit FALSE always wins over a competing PASS alias or native receipt.
     if field in row:
         return row.get(field) is True
@@ -433,6 +437,13 @@ def publication_chain_audit(row: Mapping[str, Any]) -> PublicationChainAudit:
     ):
         final_refresh_ok = native["final_refresh_passed"]
         final_refresh_blocker = None if final_refresh_ok else "FINAL_REFRESH_NOT_COMPLETE"
+    if native and native.get("final_refresh_passed") is False:
+        # A contrary legacy PASS cannot conceal a failed bound SQL final gate.
+        final_refresh_blocker = (
+            "FINAL_REFRESH_EVIDENCE_CONFLICT" if final_refresh_ok
+            else "FINAL_REFRESH_NOT_COMPLETE"
+        )
+        final_refresh_ok = False
     terminal_ok = bool(
         _upper(row.get("global_terminal_authority") or row.get("terminal_authority"))
         in {GLOBAL_TERMINAL_AUTHORITY, ""}
