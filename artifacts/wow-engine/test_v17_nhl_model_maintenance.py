@@ -436,14 +436,15 @@ def test_real_build_candidate_shape_passes_after_partition_fix(monkeypatch):
         (2021, 2022), training_code_sha="a" * 40
     )
     candidate = package["candidate"]
-    assert candidate["training_rows"] != candidate["validation_metrics"]["train_n"]
-    with pytest.raises(NHLCandidatePreflightError) as caught:
-        preflight_nhl_candidate_package(package)
-    assert caught.value.code == "NHL_CANDIDATE_PARTITION_MISMATCH"
-
-    # Model the metadata-only correction from the still-unmerged #1612 without
-    # changing this branch's protected candidate pipeline.
-    candidate["training_rows"] = candidate["validation_metrics"]["train_n"]
+    # The exact #1612 cohort fix is part of this stacked branch. Do not
+    # reproduce the old total-as-training bug or rewrite persisted artifacts.
+    assert candidate["training_rows"] == candidate["validation_metrics"]["train_n"]
+    assert candidate["calibration_rows"] == candidate["validation_metrics"]["calibration_n"]
+    assert candidate["test_rows"] == candidate["validation_metrics"]["test_n"]
+    assert (
+        candidate["training_rows"] + candidate["calibration_rows"] + candidate["test_rows"]
+        == len(package["feature_rows"])
+    )
     maintenance._attach_training_outcomes(package)
     result = preflight_nhl_candidate_package(package)
     assert result["training_feature_n"] == len(package["feature_rows"])
