@@ -158,3 +158,24 @@ def test_unrelated_sport_not_admitted_via_nfl_bridge():
     row, _ = _one(receipt)
     assert row["publication_chain_audit"]["status"] == "BLOCKED"
     assert row["rank_eligible"] is False
+
+
+def test_native_mutex_failure_vetoes_stale_positive_alias():
+    receipt = _bears_receipt()
+    receipt["rows"][0]["detail"]["llp_governance"]["event_mutex_status"] = "FAIL"
+    # The scorer's old, flattened convenience alias must not outrank the
+    # snapshot-bound native SQL bridge.
+    row, _ = _one(receipt)
+    assert row["publication_chain_audit"]["status"] == "BLOCKED"
+    assert row["publication_chain_audit"]["stages"]["event_governor_complete"] is False
+    assert row["rank_eligible"] is False
+
+
+def test_native_refresh_failure_vetoes_explicit_legacy_pass():
+    receipt = _bears_receipt()
+    receipt["rows"][0]["detail"]["final_refresh_passed"] = True
+    receipt["rows"][0]["detail"]["llp_governance"]["final_gates_status"] = "HOLD"
+    row, _ = _one(receipt)
+    assert row["publication_chain_audit"]["status"] == "BLOCKED"
+    assert row["publication_chain_audit"]["first_blocker"] == "FINAL_REFRESH_EVIDENCE_CONFLICT"
+    assert row["rank_eligible"] is False
