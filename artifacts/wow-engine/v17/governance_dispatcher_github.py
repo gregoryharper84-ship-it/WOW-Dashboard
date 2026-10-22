@@ -926,6 +926,14 @@ def main() -> int:
     run_attempt = os.getenv("GITHUB_RUN_ATTEMPT", "")
     source_sha = os.getenv("GITHUB_SHA", "")
     input_pr = os.getenv("INPUT_PR_NUMBER", "").strip() or None
+    zero_credit_setting = os.getenv("WOW_QA_ZERO_CREDIT_MODE", "")
+    paid_review_setting = os.getenv("WOW_QA_INDEPENDENT_REVIEW_ACTIVE", "")
+    if zero_credit_setting not in {"", "false", "true"} or paid_review_setting not in {"", "false", "true"}:
+        print(json.dumps({"action": "HOLD", "finding": "REVIEW_POLICY_SETTING_INVALID", "can_execute": False}))
+        return 2
+    if zero_credit_setting == "true" and paid_review_setting == "true":
+        print(json.dumps({"action": "HOLD", "finding": "REVIEW_POLICY_MODES_CONFLICT", "can_execute": False}))
+        return 2
     if not run_number.isdigit() or not run_id.isdigit() or not run_attempt.isdigit():
         print(json.dumps({"action": "HOLD", "finding": "CONTROLLER_RUN_IDENTITY_INVALID"}))
         return 2
@@ -937,6 +945,7 @@ def main() -> int:
             controller_run_id=run_id,
             controller_run_attempt=int(run_attempt),
             source_sha=source_sha,
+            zero_credit_mode=(zero_credit_setting == "true"),
         )
     except DispatchError as exc:
         print(json.dumps({"action": "HOLD", "finding": str(exc), "can_execute": False}))
