@@ -36,7 +36,7 @@ permissions:
 concurrency:
   # One serialized queue per role: later runs see later evidence, so the newest
   # published check always reflects the most complete evidence for that head.
-  group: wow-v17-independent-qa-${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.workflow_run.id }}
+  group: wow-v17-independent-qa-check
   cancel-in-progress: false
 
 jobs:
