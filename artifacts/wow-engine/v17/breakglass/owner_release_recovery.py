@@ -75,7 +75,7 @@ def owner_signer_file(path: Path) -> None:
         key = fields[idx + 1]
         import base64
         digest = base64.b64encode(hashlib.sha256(base64.b64decode(key, validate=True)).digest()).decode().rstrip("=")
-    except (ValueError, IndexError, StopIteration) as exc:
+    except (ValueError, IndexError, StopIteration, Exception) as exc:
         raise RecoveryHold("OWNER_SIGNER_KEY_INVALID") from exc
     require("SHA256:" + digest == PINNED_OWNER_KEY_FINGERPRINT, "OWNER_FINGERPRINT_MISMATCH")
 
@@ -124,7 +124,7 @@ def preflight(api: GitHub, intent: dict) -> dict:
 def authenticate_admin(api: GitHub) -> None:
     require(json.loads(run("gh", "api", "user")).get("login") == OWNER,
             "OWNER_ACCOUNT_REQUIRED")
-    repo = api.get("")
+    repo = json.loads(run("gh", "api", f"repos/{CANONICAL_REPO}"))
     require((repo.get("permissions") or {}).get("admin") is True, "ADMIN_PERMISSION_REQUIRED")
 
 def write_intent(api: GitHub, args) -> None:
@@ -195,6 +195,7 @@ def execute(api: GitHub, intent: dict, intent_path: Path, checkpoint: Path) -> N
         require(watchdog.poll() is None, "WATCHDOG_DIED_BEFORE_MUTATION")
         require(sha256(preflight(api, intent)) == sha256(baseline), "PREWRITE_DRIFT")
         require(watchdog.poll() is None, "WATCHDOG_DIED_BEFORE_MUTATION")
+        parse_intent(intent)  # reject expiry while preflight/witness was starting
         started = True
         temporary = temporary_ruleset(baseline)
         api.put(f"rulesets/{RULESET_ID}", temporary)
