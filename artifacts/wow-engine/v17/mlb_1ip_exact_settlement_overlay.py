@@ -147,7 +147,13 @@ def install() -> None:
     settlement.SEPARATE_SETTLEMENT_ROUTES = frozenset(
         key for key in settlement.SEPARATE_SETTLEMENT_ROUTES if key != ROUTE
     )
-    settlement.SUPPORTED_SETTLEMENT_ROUTES = settlement.MLB_SUPPORTED | settlement.WNBA_SUPPORTED
+    # Other sport overlays may already have registered certified settlement
+    # adapters. Installation is additive and must not erase their exact routes.
+    settlement.SUPPORTED_SETTLEMENT_ROUTES = frozenset(
+        set(settlement.SUPPORTED_SETTLEMENT_ROUTES))
+        | set(settlement.MLB_SUPPORTED)
+        | set(settlement.WNBA_SUPPORTED)
+    )
     settlement.settle_mlb_scalar = _settle_mlb_1ip_or_delegate
 
 
