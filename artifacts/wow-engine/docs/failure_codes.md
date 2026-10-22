@@ -317,6 +317,32 @@ Research-only ownership assumptions. These codes never authorize production stra
 
 | `PICKEM_EQUITY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION` | NFL Pick'em full-pool research preflight | Opponent card asserts availability to the user before it was submitted; impossible provenance timeline, reject. | No |
 
+
+## NFL Pick'em private visible-pool snapshot receipt codes (#1703, PR #1680)
+
+| Code | Owning lane/stage | Condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_VISIBLE_AUDIENCE_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Snapshot is not expressly all-visible-entries research evidence. | No |
+| `PICKEM_VISIBLE_AVAILABILITY_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Missing or invalid timezone-aware user-visible copy receipt timestamp. | No |
+| `PICKEM_VISIBLE_COPY_ID_REQUIRED` | NFL Pick'em pre-kickoff research evidence capture | Private copied-source file identity is missing. | No |
+| `PICKEM_VISIBLE_COPY_MODIFIED` | NFL Pick'em pre-kickoff research evidence capture | Drive copy modification time differs from frozen creation time. | No |
+| `PICKEM_VISIBLE_COPY_NOT_INDEPENDENT` | NFL Pick'em pre-kickoff research evidence capture | Source sheet and retained copy have identical identities. | No |
+| `PICKEM_VISIBLE_COPY_TIMESTAMP_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Missing or invalid provider creation/modification timestamp. | No |
+| `PICKEM_VISIBLE_CUTOFF_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Missing or invalid earliest game kickoff cutoff. | No |
+| `PICKEM_VISIBLE_EVENT_ID_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Invalid or duplicate certified official event identifier. | No |
+| `PICKEM_VISIBLE_EVENT_SET_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Observed game set is empty, oversized, incomplete or mismatches certified events. | No |
+| `PICKEM_VISIBLE_NOT_BEFORE_KICKOFF` | NFL Pick'em pre-kickoff research evidence capture | Capture was not provably visible before the first game kickoff. | No |
+| `PICKEM_VISIBLE_PARTIAL_OR_DUPLICATE_VOTES` | NFL Pick'em pre-kickoff research evidence capture | One event's observed home and away votes do not equal the declared visible row count. | No |
+| `PICKEM_VISIBLE_PRIVACY_UNVERIFIED` | NFL Pick'em pre-kickoff research evidence capture | Private owner-only copy access has not been verified. | No |
+| `PICKEM_VISIBLE_ROW_COUNT_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Visible participant-row count is missing, zero, noninteger or exceeds research cap. | No |
+| `PICKEM_VISIBLE_SNAPSHOT_REQUIRED` | NFL Pick'em pre-kickoff research evidence capture | Snapshot evidence payload is missing or malformed. | No |
+| `PICKEM_VISIBLE_SOURCE_ID_REQUIRED` | NFL Pick'em pre-kickoff research evidence capture | Original source sheet identity is missing. | No |
+| `PICKEM_VISIBLE_SOURCE_KIND_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Evidence is not a separately preserved Google Drive copy. | No |
+| `PICKEM_VISIBLE_TEAM_COUNTS_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Team-vote keys are wrong, counts nonintegers or unknown team choice. | No |
+| `PICKEM_VISIBLE_TEAM_ID_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Official home/away team identity missing. | No |
+
+`PICKEM_VISIBLE_SAMPLE_RECORDED` is a **research evidence status**, not an approved pick, proven opponent-only forecast, verified full pool, or modeled first-place probability. Participant names and individual rows are not persisted in this aggregate contract. The digest detects aggregate changes but is not a provider signature.
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
