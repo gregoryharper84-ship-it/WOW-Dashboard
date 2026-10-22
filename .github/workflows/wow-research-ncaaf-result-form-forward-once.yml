@@ -1,0 +1,57 @@
+name: WOW Research NCAAF Result Form Forward Verification (One Shot)
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/wow-research-ncaaf-result-form-forward-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  ncaaf-frozen-forward-inputs:
+    if: ${{ github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' && github.event.pull_request.head.ref == 'research/ncaaf-nhl-fitted-feature-identity-audit-20261022' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - name: Checkout exact feature-identity PR SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Run adversarial frozen forward checks
+        working-directory: artifacts/wow-engine
+        run: python3 -m unittest discover -s tests -p 'test_ncaaf_frozen_result_form_20261022.py' -v
+
+      - name: Verify 44 forward candidate input records against frozen ESPN identity
+        working-directory: artifacts/wow-engine
+        run: |
+          python3 scripts/ncaaf_frozen_result_form_audit.py \
+            --features data/research/ncaaf_result_form_forward_features_20261022.json \
+            --espn-fixture data/research/frozen_20261022_ncaaf_nhl_identities.json \
+            > "$RUNNER_TEMP/ncaaf_forward_verification.json"
+          cat "$RUNNER_TEMP/ncaaf_forward_verification.json"
+
+      - name: Archive exact-SHA verification receipt
+        if: always()
+        working-directory: artifacts/wow-engine
+        run: |
+          mkdir -p "$RUNNER_TEMP/ncaaf-forward-evidence"
+          cp "$RUNNER_TEMP/ncaaf_forward_verification.json" "$RUNNER_TEMP/ncaaf-forward-evidence/verification.json" || :
+          sha256sum data/research/ncaaf_result_form_forward_features_20261022.json \
+                    data/research/frozen_20261022_ncaaf_nhl_identities.json \
+            > "$RUNNER_TEMP/ncaaf-forward-evidence/source_hashes.txt"
+          printf "head_sha=%s\ncan_execute=false\nprobability_publishable=false\nresearch_only=true\n" \
+            "${{ github.event.pull_request.head.sha }}" > "$RUNNER_TEMP/ncaaf-forward-evidence/context.txt"
+
+      - name: Retain research replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-ncaaf-forward-result-form-${{ github.run_id }}
+          path: ${{ runner.temp }}/ncaaf-forward-evidence/
+          if-no-files-found: error
+          retention-days: 30
