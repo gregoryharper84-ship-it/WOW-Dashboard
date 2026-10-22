@@ -158,6 +158,69 @@ def verify_separate_principals(owner_file: Path, sirt_file: Path, reviewer: str)
     require(fingerprint == PINNED_OWNER_KEY_FINGERPRINT, "OWNER_SIGNER_FINGERPRINT_NOT_PINNED")
 
 
+def witness_ready_payload(intent: dict, witness_login: str, *, issued: dt.datetime | None = None, pid: int | None = None) -> dict:
+    """Cryptographically attest that a distinct operator armed the watcher.
+
+    This is a short-lived start receipt, NOT a proof that the process can never
+    crash; the separately operated watchdog and exclusive maintenance window
+    remain operational prerequisites.
+    """
+    t = issued or dt.datetime.now(dt.timezone.utc)
+    require(t.tzinfo is not None and t.utcoffset() == dt.timedelta(0), "WITNESS_CLOCK_INVALID")
+    require(isinstance(witness_login, str) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", witness_login)),
+            "WITNESS_LOGIN_INVALID")
+    require(type(pid or os.getpid()) is int and (pid or os.getpid()) > 0, "WITNESS_PID_INVALID")
+    return {"schema": "WOW_BREAKGLASS_WITNESS_READY_V1", "repo": CANONICAL_REPO,
+            "intent_sha256": sha256(intent), "baseline_ruleset_sha256": intent["baseline_ruleset_sha256"],
+            "reviewer_login": intent["reviewer_login"], "witness_login": witness_login,
+            "witness_pid": pid or os.getpid(),
+            "issued_utc": t.isoformat().replace("+00:00", "Z"),
+            "expires_utc": (t + dt.timedelta(seconds=min(intent["window_seconds"], 90))).isoformat().replace("+00:00", "Z")}
+
+
+def verify_witness_ready(intent: dict, ready_path: Path, ready_signature: Path,
+                         sirt_signers: Path, executor_login: str, *,
+                         now: dt.datetime | None = None) -> dict:
+    """Require a freshly signed, separately identified watchdog start receipt."""
+    require(ready_path.is_file(), "WITNESS_READY_RECEIPT_MISSING")
+    raw = ready_path.read_bytes()
+    require(len(raw) <= 4096, "WITNESS_READY_RECEIPT_OVERSIZED")
+    try:
+        proof = json.loads(raw)
+    except (UnicodeError, ValueError) as exc:
+        raise RecoveryHold("WITNESS_READY_RECEIPT_INVALID") from exc
+    require(isinstance(proof, dict) and set(proof) == {
+        "schema", "repo", "intent_sha256", "baseline_ruleset_sha256", "reviewer_login",
+        "witness_login", "witness_pid", "issued_utc", "expires_utc"
+    }, "WITNESS_READY_RECEIPT_SCHEMA_INVALID")
+    require(raw == canonical(proof), "WITNESS_READY_RECEIPT_NOT_CANONICAL")
+    require(proof["schema"] == "WOW_BREAKGLASS_WITNESS_READY_V1"
+            and proof["repo"] == CANONICAL_REPO
+            and proof["intent_sha256"] == sha256(intent)
+            and proof["baseline_ruleset_sha256"] == intent["baseline_ruleset_sha256"]
+            and proof["reviewer_login"] == intent["reviewer_login"],
+            "WITNESS_READY_INTENT_MISMATCH")
+    witness_login = proof["witness_login"]
+    require(isinstance(witness_login, str)
+            and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", witness_login))
+            and isinstance(executor_login, str)
+            and witness_login.lower() != executor_login.lower(),
+            "WITNESS_AND_EXECUTOR_NOT_SEPARATE")
+    require(type(proof["witness_pid"]) is int and proof["witness_pid"] > 0, "WITNESS_PID_INVALID")
+    try:
+        issued = dt.datetime.fromisoformat(proof["issued_utc"].replace("Z", "+00:00"))
+        expires = dt.datetime.fromisoformat(proof["expires_utc"].replace("Z", "+00:00"))
+        intent_expires = dt.datetime.fromisoformat(intent["expires_utc"].replace("Z", "+00:00"))
+    except (TypeError, AttributeError, ValueError) as exc:
+        raise RecoveryHold("WITNESS_READY_TIME_INVALID") from exc
+    clock = now or dt.datetime.now(dt.timezone.utc)
+    require(issued.utcoffset() == expires.utcoffset() == dt.timedelta(0)
+            and issued <= clock <= expires and 0 < (expires - issued).total_seconds() <= 90
+            and expires <= intent_expires, "WITNESS_READY_EXPIRED_OR_FUTURE")
+    verify_signature(raw, ready_signature, sirt_signers, "wow-sirt-" + intent["reviewer_login"])
+    return proof
+
+
 def expected_check_set() -> set[tuple[str, int]]:
     return set(CHECK_CONTEXTS)
 
@@ -289,8 +352,10 @@ def restore(api: GitHub, baseline: dict) -> None:
     raise RecoveryHold("P0_RESTORE_FAILED_WITNESS_MUST_RESTORE:" + error)
 
 
-def execute(api: GitHub, intent: dict, checkpoint: Path) -> None:
+def execute(api: GitHub, intent: dict, checkpoint: Path, *, verify_witness: Any = None) -> None:
     baseline = preflight(api, intent)
+    require(callable(verify_witness), "WITNESS_ATTESTATION_REQUIRED")
+    verify_witness()
     require(not checkpoint.exists(), "CHECKPOINT_ALREADY_EXISTS")
     checkpoint.mkdir(parents=True, mode=0o700)
     save_private(checkpoint / "original-ruleset.json", canonical(baseline))
@@ -299,6 +364,7 @@ def execute(api: GitHub, intent: dict, checkpoint: Path) -> None:
     print("RESTORE_NOW: python3 release_breakglass.py restore --baseline", checkpoint / "original-ruleset.json", flush=True)
     # Re-read immediately before write. A signature doesn't make GitHub state immutable.
     require(sha256(preflight(api, intent)) == sha256(baseline), "PREWRITE_DRIFT")
+    verify_witness()  # freshness MUST still hold at the mutation boundary
     old_handlers = {}
     def interrupted(signum, _frame):
         raise RecoveryHold("SIGNAL_INTERRUPTED:" + str(signum))
@@ -350,7 +416,8 @@ def main() -> None:
     go.add_argument("--owner-signers", type=Path, required=True)
     go.add_argument("--sirt-signers", type=Path, required=True)
     go.add_argument("--checkpoint", type=Path, required=True)
-    go.add_argument("--independent-witness-live", action="store_true", required=True)
+    go.add_argument("--witness-ready", type=Path, required=True)
+    go.add_argument("--witness-ready-signature", type=Path, required=True)
     go.add_argument("--exclusive-window-verified", action="store_true", required=True)
     restore_parser = sub.add_parser("restore", help="Independent witness restoration, even if operator host fails")
     restore_parser.add_argument("--baseline", type=Path, required=True)
@@ -403,12 +470,14 @@ def main() -> None:
             raise RecoveryHold("ADMIN_IDENTITY_UNREADABLE") from exc
         require(executor_login and executor_login.lower() != intent["reviewer_login"].lower(),
                 "SIRT_REVIEWER_CANNOT_BE_ADMIN_EXECUTOR")
-        require(args.independent_witness_live and args.exclusive_window_verified,
-                "EXTERNAL_RESTORATION_WITNESS_AND_EXCLUSIVE_WINDOW_REQUIRED")
+        require(args.exclusive_window_verified, "EXCLUSIVE_MERGE_WINDOW_ATTESTATION_REQUIRED")
         # Flags represent OPERATOR attestations only, not automated evidence.
         # The independent witness must have a DIFFERENT administrator credential
         # and a copy of the exact baseline snapshot before the operator proceeds.
-        execute(api, intent, args.checkpoint)
+        def verify_witness():
+            verify_witness_ready(intent, args.witness_ready, args.witness_ready_signature,
+                                 args.sirt_signers, executor_login)
+        execute(api, intent, args.checkpoint, verify_witness=verify_witness)
 
 
 if __name__ == "__main__":
