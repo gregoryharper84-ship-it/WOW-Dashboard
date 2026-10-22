@@ -219,6 +219,21 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 | `STANDARD_TARGET_MUST_USE_GLOBAL_LEASE` | engineering worker target selection | An exact P1 STANDARD target was dispatched with a domain lease group instead of the GLOBAL writer lease. Suffixed `:<incident>`. | N/A |
 | `TARGET_INCIDENT_NOT_SUPPORTED` | engineering worker target selection | Exact target is neither P0 RAPID nor P1 STANDARD. Suffixed `:<incident>:<severity>:<lane>`. | N/A |
 
+## NFL governed final-refresh proof (October 2026)
+
+These are evidence/freshness publication holds, **not** fitted-model unavailability. Each withholds rank eligibility without erasing completed sporting probabilities. Regression coverage: `tests/test_v17_nfl_final_refresh_proof.py`.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `FINAL_REFRESH_EVENT_NOT_PREGAME` | NFL team-event / final refresh | Event start is at or before the verification instant, or a valid timezone-aware kickoff is absent. | No |
+| `FINAL_REFRESH_SCORED_SOURCE_PROVENANCE_MISSING` | NFL team-event / final refresh | Scored canonical schedule snapshot ID, content hash or capture timestamp is absent. | No |
+| `FINAL_REFRESH_MODEL_TIMESTAMP_NOT_CURRENT` | NFL team-event / final refresh | Model timestamp is missing/invalid or precedes the scored material-update timestamp. | No |
+| `FINAL_REFRESH_SOURCE_UNAVAILABLE` | NFL team-event / final refresh | Re-reading the latest canonical NFL schedule raises or cannot be completed. | No |
+| `FINAL_REFRESH_CANONICAL_EVENT_UNRESOLVED` | NFL team-event / final refresh | The canonical source requery cannot resolve a single matching eligible event. | No |
+| `FINAL_REFRESH_EVENT_IDENTITY_CHANGED` | NFL team-event / final refresh | Canonical event/team identity no longer matches the fitted-model event. | No |
+| `FINAL_REFRESH_MATERIAL_SOURCE_CHANGED` | NFL team-event / final refresh | Canonical NFL schedule content hash differs from that used for the scored prediction; rerun required. | No |
+| `FINAL_REFRESH_SOURCE_STALE_OR_INVALID` | NFL team-event / final refresh | Latest canonical schedule capture lacks a valid UTC timestamp, is future-dated, or exceeds the 24-hour publication freshness window. | No |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
