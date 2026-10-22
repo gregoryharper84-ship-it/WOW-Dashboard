@@ -244,6 +244,11 @@ def test_quota_aware_public_fetch_is_unchanged_outside_a_discovery_pass(monkeypa
 
 
 def test_odds_proxy_feed_queries_the_slate_day(monkeypatch):
+    # The resilience overlay (when installed by another test or by production
+    # startup) routes NHL through the schedule-first/ESPN path instead of this
+    # proxy. Stub the secondary source so no test touches the network, and require
+    # the slate window on whichever path the installed overlays select.
+    params_seen = _capture_secondary(monkeypatch)
     calls = []
 
     class _Resp:
@@ -268,11 +273,12 @@ def test_odds_proxy_feed_queries_the_slate_day(monkeypatch):
         supported_sports=("NHL",),
         now=RUN_START,
     )
-    assert calls
-    assert calls[0]["commenceTimeTo"] == "2026-10-23T04:59:59Z"
+    windows = [*params_seen, *calls]
+    assert windows
+    assert all(w["commenceTimeTo"] == "2026-10-23T04:59:59Z" for w in windows)
 
 
-def test_fairness_owner_used_in_production_also_bounds_the_window():
+def test_fairness_owner_used_in_production_also_bounds_the_window(monkeypatch):
     """v17_observability installs fair_discover_winner_slate as THE discovery owner.
 
     It reimplements the pass and never calls ``discover_winner_slate``, so it must
@@ -280,6 +286,7 @@ def test_fairness_owner_used_in_production_also_bounds_the_window():
     """
     from v17 import cross_sport_acquisition_fairness as fairness
 
+    params_seen = _capture_secondary(monkeypatch)  # never reach the real network
     calls: list[dict] = []
 
     class _Resp:
@@ -307,8 +314,9 @@ def test_fairness_owner_used_in_production_also_bounds_the_window():
         supported_sports=("NHL",),
         now=RUN_START,
     )
-    assert calls
-    assert calls[0]["commenceTimeTo"] == "2026-10-23T04:59:59Z"
+    windows = [*params_seen, *calls]
+    assert windows
+    assert all(w["commenceTimeTo"] == "2026-10-23T04:59:59Z" for w in windows)
     assert discovery._SLATE_FETCH_WINDOW.get() is None
 
 
