@@ -1,94 +1,110 @@
-# WOW V17 — independently authorized release break-glass recovery
+# WOW V17 — Owner-signed emergency Release recovery (one human)
 
-**State:** Candidate, source-only. This package does not install a bypass actor, update a rule, approve a PR, deploy production, issue a sportsbook order or publish a model probability. `can_execute=false` remains invariant. The V17 terminal reducer remains the sole model publisher.
+## Status and controlling policy
 
-## Problem and ownership
+This is a **new, explicit owner-only emergency policy candidate**, requested by the repository owner on 2026-10-22. It **replaces the former requirement for a second human/SIRT reviewer for this narrow release-compatibility recovery**. Do not describe an owner approval as independent SIRT approval. The normal five GitHub App-pinned required checks remain enforced outside an authorized maintenance interval.
 
-Current normal policy uses five App-pinned required checks. The Release check itself is required to merge a repair to the QA/Release workflow that creates that check. This is a **bootstrap dependency**, not a valid reason to invent a Release PASS, reuse old QA receipts or remove controls indefinitely.
+Use **`owner_release_recovery.py`**. Its companion **`owner_release_watchdog.py`** is launched automatically as a separate OS process; no second human, GitHub reviewer account, SIRT signature or independently held key is needed. The older `release_breakglass.py` and `release_breakglass_witness.py` are legacy two-principal implementation helpers and are **not** the owner's chosen runbook.
 
-This package is an **out-of-band administrator CLI**, not a GitHub Actions job. It works even if GitHub's Release workflow does not. It can temporarily remove **only** the `WOW Release Authority exact-head` requirement (App 5245853) and preserve the three GitHub Actions App 15368 checks and QA App 5245832. It immediately restores the exact full ruleset snapshot after a successful or unsuccessful native GitHub merge. A separate witness on another machine/credential restores after a crashed operator reaches the signed deadline.
+The new owner-only path is **not a routine merge bypass**, standing GitHub ruleset exception, independent QA/Release App publisher, betting action or deployment. It affects *only* ruleset #24907422, temporarily drops *only* Release App 5245853 while keeping the three GitHub Actions App 15368 checks and QA App 5245832 unchanged, performs **one exact-SHA native merge**, and immediately restores the complete original policy. The existing V17 scoring/governance terminal reducer is unchanged; `can_execute=false` for wagers.
 
-There is **no per-PR scope** for a GitHub ruleset change. The temporary four-check state changes eligibility across the whole repository. Neither a clean PR nor disabled auto-merge **proves exclusive access**. An authorized administrator must independently freeze other writers/merges during the short window. If that cannot be guaranteed, **do not execute**; use a separately approved alternative break-glass governance mechanism.
+## Key safety trade-offs
 
-## Trust boundaries
+- **One human, one offline authorization**: The repository owner's existing offline ED25519 key is pinned to fingerprint `SHA256:BGiNe5ggZrgozxmFBXsFEEyn8szHPHFmZSCN5nJ/+SM`. `ssh-keygen -Y sign` signs the exact canonical `intent.json` with namespace `wow-breakglass`. Signer identity cannot be replaced by an arbitrary local `allowed_signers` key.
+- **One-time, narrow scope**: The signed intent freezes repository, PR, head and main 40-character SHAs, exact changed-file inventory, incident ID, full ruleset SHA256, bounded deadline, Release check identity and explicit `OWNER_AUTHORIZES_REPOSITORY_WIDE_TEMPORARY_RELEASE_EXCEPTION`. It expires in 30 minutes. Stale evidence, missing owner exact-head APPROVED, wrong-App/latest failed CI/QA, incomplete PR files, drift, armed auto-merges or changed rules are refused.
+- **Crash recovery without another person**: After persisting a private original snapshot, the operator starts a separate watchdog process which verifies the baseline, signals ready and attempts to restore the five checks after the configured deadline if the operator dies. The operator also restores in `finally` after any merge success, failure or ambiguous PUT, and independently re-reads GitHub.
+- **Residual risk is real**: Both operator and watchdog use the same machine and authenticated administrator capability. If the whole machine, GitHub API or credentials fail simultaneously, **automatic restoration is not guaranteed**. Manual recovery from the signed original backup is mandatory when service returns. A separate managed host may be added for machine-level resilience; **no second human reviewer is required**.
+- **Repository-wide exposure**: GitHub required-check rules do not provide an atomic per-PR exception. The `--exclusive-window-verified` flag records the owner's operational attestation, **not a technical lock**. The owner must freeze/constrain other merges and writers, check queued automation and commit identity and maintain the short interval. If the exclusive window cannot be established, do not execute.
 
-1. **Owner offline key**: pin the existing owner release public-key fingerprint `SHA256:BGiNe5ggZrgozxmFBXsFEEyn8szHPHFmZSCN5nJ/+SM`. This is an existing public trust root only; never copy the private key to Actions, agents, CI or the repository. For this CLI the corresponding allow-signers record must use SSH namespace `wow-breakglass`, and an offline owner signature must cover the exact canonical JSON intent.
-2. **Independent SIRT key**: a **different**, independently controlled key, registered outside the candidate PR; the owner-signed intent binds the exact authorized SIRT GitHub login. The reviewer also must submit a real GitHub `APPROVED` PR review on the exact SHA containing `SIRT_SECURITY_PASS`, the complete head SHA, ruleset ID `24907422` and the exact baseline ruleset digest. Comments, AI research, owner reviews and passing checks are not substitutes.
-3. **Operator admin credential**: a repository administrator with genuine permission to read/update ruleset #24907422 and merge the protected PR, on an independent workstation; no GitHub App check-publication credential is used.
-4. **Independent restoration witness**: separate administrator credential and host, separately authenticated signed intent and full snapshot, with continuous monitoring and an independently signed fresh startup attestation. It must report `WITNESS_ARMED` and issue a freshly signed readiness receipt **before** any mutation. The operator rechecks the independent SIRT signature, distinct witness GitHub login and short receipt expiry immediately before the ruleset PUT. A signed start receipt is not a continuous liveness guarantee; the independent host must remain operating. If the operator dies or the local `finally` fails, it restores at the bounded deadline. If **both** independent hosts or their network/credentials fail, automatic rollback is **not guaranteed**. This is a P0 incident requiring manual recovery from the snapshot. Do not claim a perfect atomic merge-window lock.
-5. **Immutable baseline**: full ruleset snapshot (including protection clauses and bypass actors), SHA-256 digest bound into both offline signatures, frozen main/PR SHA, exact changed-file allowlist, exact App identities, and a 15–120-second maintenance interval. No write occurs during `inspect` or `prepare`.
+## Mac CLI — install and test
 
-## One-time #1932 repair walkthrough (no implicit approvals)
-
-First verify current GitHub state, existing CI and a genuinely independent reviewer. **At the last pre-build inspection #1932 had no independent SIRT review; that means execution must fail closed.**
+Prerequisites: `gh` authenticated as `gregoryharper84-ship-it` with repository admin, `ssh-keygen`, Python 3.10+, local offline owner private key (do not upload it), and a trusted checkout of this reviewed PR. The source PR itself is a **Draft candidate** and must pass tests and owner approval before it is treated as operationally qualified.
 
 ```bash
-python3 artifacts/wow-engine/v17/breakglass/release_breakglass.py inspect --pr 1932
+REPO="gregoryharper84-ship-it/WOW-Dashboard"
+cd "$HOME/wow-v17-recovery"
+gh pr checkout 1961
 
-# Use an actual independent qualified GitHub reviewer's login, not the repo owner,
-# Copilot author or a source-only bot. This command makes local files only.
-python3 artifacts/wow-engine/v17/breakglass/release_breakglass.py prepare \
-  --pr 1932 --incident 1930 --reviewer ACTUAL_SIRT_LOGIN \
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install pytest
+
+python -m pytest -q artifacts/wow-engine/v17/breakglass/test_owner_release_recovery.py
+
+SCRIPT="artifacts/wow-engine/v17/breakglass/owner_release_recovery.py"
+python "$SCRIPT" inspect --pr 1932
+```
+
+### Owner-only intent preparation (READ ONLY)
+
+```bash
+REC="$HOME/wow1932-owner-recovery"
+mkdir -p "$REC" && chmod 700 "$REC"
+umask 077
+
+python "$SCRIPT" prepare --pr 1932 --incident 1930 \
   --allowed-file .github/workflows/wow-v17-independent-qa-check.yml \
   --allowed-file .github/scripts/tests/test_independent_source_review_receipt.py \
-  --output "$HOME/wow1932/intent.json"
+  --output "$REC/intent.json"
+
+# IMPORTANT: preparation must have succeeded and the intent must exist:
+test -s "$REC/intent.json" || { echo "NO SIGNABLE INTENT"; exit 1; }
 ```
 
-`prepare` writes `intent.json` and `intent.baseline.json` with 0600 permissions. Review the exact intent and baseline in a trusted terminal. The intent expires in 45 minutes and binds current main/head/ruleset; if state changes, discard it and start over. Keep the original snapshot off GitHub, and **transfer it to the separately controlled witness host before anything is changed**.
+Expected `OWNER_INTENT_PREPARED_NO_GITHUB_MUTATION`. Do not sign on a failed `prepare`.
 
-On each independently controlled machine, sign **the unchanged bytes** of `intent.json` using `ssh-keygen -Y sign -n wow-breakglass -f /path/to/offline-private-key intent.json`. This writes `intent.json.sig`; collect the two separate signatures without ever transferring private keys. Configure the authorized allow-signers files from their *previously verified public keys*, with principals exactly `wow-owner` and `wow-sirt-ACTUAL_SIRT_LOGIN` and `namespaces="wow-breakglass"`. It is not sufficient to invent a public key or use two aliases for the same private key.
-
-Have the distinct SIRT reviewer use GitHub's native **Approve** action for #1932 at the frozen head, after independently inspecting the diff and snapshot, merge exposure, writer freeze, witness readiness, crash tests and re-entry. Its review body must include the four tokens noted above. Do not self-approve with the owner GitHub identity.
-
-**Independent witness machine (first):**
+### Owner offline signature (NO SECOND PERSON)
 
 ```bash
-python3 release_breakglass_witness.py \
-  --intent intent.json --baseline intent.baseline.json \
-  --owner-signature owner-intent.sig --sirt-signature sirt-intent.sig \
-  --owner-signers owner_allowed_signers --sirt-signers sirt_allowed_signers \
-  --witness-signing-key /secure/sirt-private-key \
-  --ready-output /secure/witness-ready.json
-# The independently held SIRT key signs witness-ready.json.sig.
-# Transmit both readiness files to the admin host promptly without disclosing
-# the private key. Keep this process running through verified restoration.
+sed 's/namespaces="wow-release"/namespaces="wow-breakglass"/' \
+  .github/release/owner_allowed_signers > "$REC/owner_allowed_signers"
+ssh-keygen -lf "$HOME/.ssh/wow_owner_release.pub" -E sha256
+# Must be SHA256:BGiNe5ggZrgozxmFBXsFEEyn8szHPHFmZSCN5nJ/+SM
+
+ssh-keygen -Y sign -f "$HOME/.ssh/wow_owner_release" \
+  -n wow-breakglass "$REC/intent.json"
+
+# The signature is created at "$REC/intent.json.sig".
+# Type the SSH key passphrase only in the Mac terminal, never in chat.
 ```
 
-Only after checking witness readiness and a genuinely exclusive repository-wide merge window, use a distinct authenticated administrator workstation to run:
+### EXECUTE — only after a real exclusive writer/merge freeze
+
+If any state changes, discard the old intent, make a new one, and re-sign. Confirm no queued automation or other merge writer can land during the temporary repo-wide ruleset change.
 
 ```bash
-python3 release_breakglass.py execute \
-  --intent intent.json --owner-signature owner-intent.sig \
-  --sirt-signature sirt-intent.sig \
-  --owner-signers owner_allowed_signers --sirt-signers sirt_allowed_signers \
-  --checkpoint "$HOME/wow1932/recovery-journal" \
-  --witness-ready /secure/witness-ready.json \
-  --witness-ready-signature /secure/witness-ready.json.sig \
+python "$SCRIPT" execute \
+  --intent "$REC/intent.json" \
+  --owner-signature "$REC/intent.json.sig" \
+  --owner-signers "$REC/owner_allowed_signers" \
+  --checkpoint "$REC/journal" \
   --exclusive-window-verified
 ```
 
-**Important:** The witness readiness is an independently signed, time-limited start receipt, bound to the signed intent and ruleset digest. It authenticates the watcher startup and a separate GitHub login, but it cannot guarantee continued liveness after signing. If the receipt expires while preflight runs, stop and restart the witness rather than reuse the old token. The remaining `--exclusive-window-verified` boolean is an operator attestation, **not** a cryptographic repository-wide writer lock. Run only after independently assuring exclusivity and rollback. Source-only tests and this README are not a SIRT security approval, administrator authorization or merge.
+The command first performs another preflight, snapshots the ruleset to `journal/baseline.json`, starts the independent OS watchdog and verifies readiness before PUT. It makes exactly one conditional merge attempt. An uncertain merge outcome **is not retried**. A successful source workflow is not equivalent to a successful Release App check.
 
-The CLI reads evidence twice; refuses missing/revoked independent review, wrong-App/failing latest required checks, PR/main/ruleset drift, foreign branch, renamed protected path, armed GitHub auto-merge and snapshot mismatch; persists the original ruleset with fsync before mutation; makes exactly one native exact-head merge attempt; restores the original five-check ruleset in `finally` and independently reads it back. No automatic retry after an ambiguous merge response.
+### Emergency five-check restoration (signed original snapshot)
 
-If the operator loses network or crashes, the witness independently attempts restoration at its signed deadline. To manually restore from a verified on-disk snapshot:
+If the operator or watchdog reports a P0 restore failure and the GitHub API is reachable, use the last verified signed baseline. The owner intent can be expired for restoration only.
 
 ```bash
-python3 release_breakglass.py restore --baseline intent.baseline.json
+python "$SCRIPT" restore \
+  --intent "$REC/intent.json" \
+  --owner-signature "$REC/intent.json.sig" \
+  --owner-signers "$REC/owner_allowed_signers" \
+  --baseline "$REC/intent.baseline.json"
 ```
 
-`restore` deliberately does not require a completed PR merge, current main SHA or still-valid intent: restoring full five-check protection is the emergency priority.
+## Acceptance — do not declare closure prematurely
 
-## Acceptance before returning to normal flow
+1. The exact signed #1932 PR head is merged by GitHub's native merge API, not by direct branch rewrite.
+2. A fresh read of ruleset #24907422 matches the original **full** SHA256 and all five expected App identities; no bypass actors, altered branch scope, deleted protections or broader exemptions.
+3. New protected-main QA workflow runs use static `run-name: wow-v17-independent-qa-check`; no old QA run receipt is reused.
+4. Against an **eligible open PR at its current exact SHA**, a fresh QA App 5245832 PASS is followed by a real Release App 5245853 PASS, with correct run ID/attempt/provenance. The original merged #1932 cannot be re-scored as an open PR.
+5. GitHub audit log, checkpoint and watchdog log are inspected. Current Render SHA and model production capability are assessed separately.
 
-* GitHub native PR #1932 merge shows **the exact signed head** and the current main contains the static `run-name: wow-v17-independent-qa-check`.
-* Ruleset #24907422 is read back as the **exact original five-check policy**; no bypass actor was installed, deletion and non-fast-forward protections remain intact, and the independent witness confirms restoration. Review the recovery journal and GitHub audit log.
-* Run fresh protected-main QA **after the merge**; its actual workflow run `.name` must be the static pinned string. A fresh Release App 5245853 check on the exact resulting PR head must genuinely publish `success`. Neither a GitHub Actions workflow `success` nor a legacy QA PASS proves Release acceptance.
-* Only then process waiting model PRs through independent certified production acceptance and current Render/Action receipts. Never conflate model capability with Release repo governance, runtime status or GPT editor synchronization.
+## Regression suite
 
-## Preventing recurrence
+`test_owner_release_recovery.py` includes owner-only intent positive/negative cases, unauthorized file/ruleset/check removal rejection, real SSH signature tamper verification, missing/non-pinned signer rejection, latest authentic App-check failure overriding earlier green, latest owner disapproval, branch drift, armed auto-merge, failed merge restoration, ambiguous PUT restoration, watchdog recovery after operator death and refusal to arm on a mismatched baseline.
 
-- Keep a source-based producer/verifier contract test to assert exact `run-name`, workflow path, event types, attempt identity and negative mismatches. #1932 already adds focused tests; do not duplicate them here.
-- Make the independent maintenance CLI/witness independently testable with synthetic GitHub API fixtures; this package's negative cases cover stale PRs, revoked reviews, mistaken App IDs, missing checks, policy drift, incomplete file inventory, failure after mutation and operator process loss.
-- Before adding/changing a mandatory GitHub required check, stage and rehearse an independently verifiable recovery using protected-main truth and an authenticated witness. Do not require the broken check to certify its own recovery.
-- This tool does **not** become an auto-merge bot, a persistent four-check bypass, a second global terminal authority or a producer of GitHub App QA/Release results.
+The **prior two-principal suite remains as legacy source tests**, not a prerequisite or authorization for the owner-only emergency policy. Never claim an independent SIRT signoff, and never remove regular QA/Release required contexts permanently.
