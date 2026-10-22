@@ -214,3 +214,18 @@ def test_persistence_readback_ignores_other_runs():
     result = persist_row_detail(db, run_id="run-c", rows=[_row(0)])
     assert result["status"] == "PERSISTED"
     assert result["rows_persisted"] == 1
+
+def test_typed_hard_blocker_cannot_be_overridden_by_success_flags():
+    payload = {**_valid_package(), "code": "MODEL_SCORER_FAILED"}
+    row = _route(lambda *_: payload)
+    assert row.bucket == discovery.MODEL_SCORER_FAILED
+    assert row.probability_publishable is False
+    assert row.rank_eligible is False
+
+
+def test_row_detail_readback_paginates_beyond_one_page():
+    db = _DB()
+    result = persist_row_detail(db, run_id="run-many", rows=[_row(i) for i in range(275)])
+    assert result["status"] == "PERSISTED"
+    assert result["rows_persisted"] == 275
+    assert len(db.stored) == 275
