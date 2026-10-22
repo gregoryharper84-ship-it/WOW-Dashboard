@@ -321,3 +321,44 @@ def test_sirt_resident_monitor_configuration_remains_explicit():
     assert "WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT" in script
     assert "dispatcher_runtime = read_auditor_runtime" in script
     assert 'auditor_id=DISPATCHER_ID' in script
+
+
+AMRT_1841 = {
+    "issue_number": 1841, "severity": "P0", "priority_rank": 7,
+    "execution_lane": "RAPID", "rapid_stream": "LLP_RESTORE",
+    "lease_group": "P0_LLP_RESTORE",
+    "conflict_keys": ["STAGE_PROOF", "FULL_SLATE_ACCEPTANCE"],
+    "amrt_owned": True, "change_class": "B", "can_execute": False,
+}
+
+
+class AMRTClient(FakeClient):
+    def get(self, suffix):
+        if suffix == "issues/1841":
+            return {"state": "open"}
+        if suffix.startswith("pulls?"):
+            return [{"body": "Incident: #1841"}] if self.open_pr else []
+        return super().get(suffix)
+
+
+def test_amrt_1841_is_admitted_by_existing_dispatcher_not_parallel_worker():
+    manifest = {**MANIFEST, "restoration": [AMRT_1841]}
+    client = AMRTClient(open_pr=False)
+    assert dispatch_once(client, FakeRedis(), manifest) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+    assert len(client.sent) == 1
+    assert client.sent[0]["issue_number"] == 1841
+    assert client.sent[0]["lease_group"] == "P0_LLP_RESTORE"
+
+
+def test_amrt_1841_existing_pr_1842_blocks_duplicate_writer():
+    manifest = {**MANIFEST, "restoration": [AMRT_1841]}
+    client = AMRTClient(open_pr=True)
+    assert dispatch_once(client, FakeRedis(), manifest) == "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR"
+    assert not client.sent
+
+
+def test_amrt_1841_wrong_change_class_blocks_new_source_dispatch():
+    manifest = {**MANIFEST, "restoration": [{**AMRT_1841, "change_class": "C"}]}
+    client = AMRTClient(open_pr=False)
+    assert dispatch_once(client, FakeRedis(), manifest) == "NO_APPROVED_OPEN_ENGINEERING_TASK"
+    assert not client.sent

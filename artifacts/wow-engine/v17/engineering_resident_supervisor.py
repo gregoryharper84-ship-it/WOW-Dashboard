@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from v17.engineering_dispatch_queue import _validate_manifest
+from v17.amrt_operational_lanes import dispatch_preflight
 
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
@@ -171,6 +172,15 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
             needs_p1_bootstrap = True
             skipped.add(issue_number)
             continue
+        # AMRT incidents share the same worker and lease; no alternative
+        # dispatcher, background provider, or synthetic approval authority.
+        if issue.get("amrt_owned") is True:
+            admission = dispatch_preflight(issue)
+            if admission.state != "READY":
+                LOG.warning("AMRT admission held for issue %d reason=%s",
+                            issue_number, ",".join(admission.reasons))
+                skipped.add(issue_number)
+                continue
         if pending_pr_for_issue(client, issue_number):
             has_pending_pr = True
             skipped.add(issue_number)
