@@ -167,6 +167,11 @@ def status_rule(rs: dict) -> dict:
     require(rs.get("target") == "branch" and rs.get("enforcement") == "active"
             and rs.get("bypass_actors") == [] and isinstance(rs.get("rules"), list),
             "RULESET_NOT_ENFORCED_OR_BYPASSED")
+    require(rs.get("conditions") == {"ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]}},
+            "RULESET_BRANCH_SCOPE_CHANGED")
+    kinds = {r.get("type") for r in rs["rules"] if isinstance(r, dict)}
+    require({"deletion", "non_fast_forward", "pull_request", "required_status_checks"} <= kinds,
+            "RULESET_PROTECTION_TYPES_MISSING")
     status = [r for r in rs["rules"] if r.get("type") == "required_status_checks"]
     require(len(status) == 1 and isinstance(status[0].get("parameters"), dict), "RULESET_STATUS_RULE_AMBIGUOUS")
     return status[0]
@@ -230,6 +235,8 @@ def preflight(api: GitHub, intent: dict) -> dict:
             and ((pr.get("head") or {}).get("repo") or {}).get("full_name") == CANONICAL_REPO,
             "PR_HEAD_MOVED_OR_FORK")
     require((pr.get("base") or {}).get("ref") == "main", "PR_BASE_INVALID")
+    require((pr.get("user") or {}).get("login", "").lower() != intent["reviewer_login"].lower(),
+            "PR_AUTHOR_CANNOT_BE_SIRT_REVIEWER")
     require(api.get("git/ref/heads/main")["object"]["sha"] == intent["main_sha"], "MAIN_MOVED")
     rs_live = api.get(f"rulesets/{intent['ruleset_id']}")
     rs = snapshot(rs_live)
@@ -388,6 +395,14 @@ def main() -> None:
         verify_signature(raw_bytes, args.owner_signature, args.owner_signers, "wow-owner")
         verify_signature(raw_bytes, args.sirt_signature, args.sirt_signers,
                          "wow-sirt-" + intent["reviewer_login"])
+        # The same credential may be repository owner, but must never also be
+        # the registered independent SIRT reviewer.
+        try:
+            executor_login = json.loads(run("gh", "api", "user")).get("login", "")
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise RecoveryHold("ADMIN_IDENTITY_UNREADABLE") from exc
+        require(executor_login and executor_login.lower() != intent["reviewer_login"].lower(),
+                "SIRT_REVIEWER_CANNOT_BE_ADMIN_EXECUTOR")
         require(args.independent_witness_live and args.exclusive_window_verified,
                 "EXTERNAL_RESTORATION_WITNESS_AND_EXCLUSIVE_WINDOW_REQUIRED")
         # Flags represent OPERATOR attestations only, not automated evidence.
