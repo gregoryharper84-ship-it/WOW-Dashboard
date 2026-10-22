@@ -127,7 +127,8 @@ def _feature_blocker(
         return "NBA_FEATURE_LINEAGE_MISSING"
     if not source_snapshot_id or feature_package.get("source_snapshot_id") != source_snapshot_id:
         return "NBA_SOURCE_SNAPSHOT_ID_MISMATCH"
-    if _timestamp(feature_package.get("source_snapshot_timestamp")) is None:
+    source_at = _timestamp(feature_package.get("source_snapshot_timestamp"))
+    if source_at is None:
         return "NBA_SOURCE_SNAPSHOT_PROVENANCE_MISSING"
     if not audit.get("dataset_id"):
         return "NBA_FEATURE_DATASET_ID_MISSING"
@@ -137,6 +138,10 @@ def _feature_blocker(
         return "NBA_FEATURE_TIMESTAMP_MISSING"
     if event_at is None or feature_at >= event_at:
         return "NBA_FEATURE_TIMESTAMP_INVALID_FOR_PREGAME"
+    # Evidence must already exist when its dependent fitted feature vector is frozen.
+    # A syntactically valid later source receipt cannot authenticate an earlier vector.
+    if source_at > feature_at or source_at >= event_at:
+        return "NBA_SOURCE_SNAPSHOT_TIME_INVALID_FOR_PREGAME"
     return None
 
 
@@ -165,7 +170,9 @@ def _rotation_blocker(
     if latest_material_at > feature_at:
         return "NBA_STARTER_CHANGED_AFTER_FEATURE_HYDRATION"
     rotation = str(lineup_evidence.get("expected_starters_rotation") or "").upper()
-    if rotation not in CONFIRMED_ROTATION_STATES and rotation != "CHANGED":
+    # CHANGED is not an affirmative confirmation of the replacement starters.
+    # Even after refreshed features, publication needs an explicit confirmed status.
+    if rotation not in CONFIRMED_ROTATION_STATES:
         return "NBA_STARTING_ROTATION_NOT_CONFIRMED"
     return None
 
