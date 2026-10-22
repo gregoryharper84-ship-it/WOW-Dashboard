@@ -415,6 +415,8 @@ def test_trusted_gate_consumes_authenticated_automatic_qa_review_run(tmp_path):
     artifact_digest = hashlib.sha256(artifact_bytes).hexdigest()
     source_run = {
         **qa_run,
+        "name": f"{source_review.WORKFLOW_NAME} event=workflow_run pr=AUTO",
+        "workflow_id": source_review.WORKFLOW_ID,
         "head_repository": {"full_name": source_review.CANONICAL_REPOSITORY},
         "repository": {"full_name": source_review.CANONICAL_REPOSITORY},
         "status": "completed",
