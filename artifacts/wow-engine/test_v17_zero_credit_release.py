@@ -4,6 +4,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "artifacts/wow-engine/v17"))
+sys.path.insert(0, str(ROOT / ".github/scripts"))
 import independent_release_checks as policy
 
 SHA = "a" * 40
