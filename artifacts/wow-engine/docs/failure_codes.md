@@ -246,3 +246,34 @@ These are **research feature preparation** failures, not certified model inferen
 | `NCAAF_FORWARD_PRIOR_FORM_INSUFFICIENT` | NCAAF research forward feature builder | One or both teams lack the model's minimum three source-eligible settled prior games; no baseline imputation. | No |
 | `NCAAF_FORWARD_FEATURE_SCHEMA_INVALID` | NCAAF research forward feature builder | Computed numeric features do not exactly match the candidate model schema or finite-number contract. | No |
 | `NCAAF_FORWARD_FEATURE_NOT_PREGAME` | NCAAF research forward feature builder | Latest evidence acquisition timestamp is not strictly before the target event start. | No |
+
+## NBA ESPN research one-shot source-capture codes (2026-10-22)
+
+These local research-only typed errors belong to `artifacts/wow-engine/scripts/nba_one_shot_espn_capture.py`. They do not flow to sporting scorer, calibration, or the terminal reducer; no model capability is implied. `can_execute=false`.
+
+| Code | Owning lane/stage | Meaning | Rank eligible? |
+|---|---|---|---:|
+| `BAD_TARGET_DATE` | NBA ESPN raw source capture / evidence validation | Capture date is not canonical YYYY-MM-DD. | No |
+| `CAPTURE_CLOCK_NAIVE` | NBA ESPN raw source capture / evidence validation | Capture host time is missing UTC offset. | No |
+| `BAD_MIN_LEAD` | NBA ESPN raw source capture / evidence validation | Requested pregame lead threshold is below ten minutes. | No |
+| `SOURCE_REDIRECT_REFUSED` | NBA ESPN raw source capture / evidence validation | Source response redirects or resolves to a different URL. | No |
+| `SOURCE_HTTP_UNEXPECTED_STATUS` | NBA ESPN raw source capture / evidence validation | Source HTTP status is not 200. | No |
+| `SOURCE_HTTP_ERROR` | NBA ESPN raw source capture / evidence validation | Source returns a non-redirect HTTP error. | No |
+| `SOURCE_FETCH_FAILED` | NBA ESPN raw source capture / evidence validation | HTTPS fetch fails before valid response receipt. | No |
+| `SOURCE_CONTENT_TYPE_INVALID` | NBA ESPN raw source capture / evidence validation | Content-Type is not JSON. | No |
+| `SOURCE_HTTP_DATE_MISSING` | NBA ESPN raw source capture / evidence validation | Source HTTP Date header is absent. | No |
+| `SOURCE_HTTP_DATE_INVALID` | NBA ESPN raw source capture / evidence validation | Source HTTP Date header is malformed or timezone-free. | No |
+| `SOURCE_HTTP_DATE_STALE_OR_SKEWED` | NBA ESPN raw source capture / evidence validation | Source HTTP Date and capture host clock differ beyond bound. | No |
+| `SOURCE_BODY_TOO_LARGE` | NBA ESPN raw source capture / evidence validation | Raw source payload exceeds bounded read size. | No |
+| `SOURCE_BODY_EMPTY` | NBA ESPN raw source capture / evidence validation | Raw source payload is empty. | No |
+| `SOURCE_JSON_INVALID` | NBA ESPN raw source capture / evidence validation | Raw source bytes are not valid JSON. | No |
+| `SOURCE_EVENTS_MALFORMED` | NBA ESPN raw source capture / evidence validation | Expected ESPN scoreboard event array is absent or malformed. | No |
+| `SOURCE_EVENT_IDENTITY_MALFORMED` | NBA ESPN raw source capture / evidence validation | An event has no valid source event identity. | No |
+| `SOURCE_EVENT_IDENTITY_DUPLICATE` | NBA ESPN raw source capture / evidence validation | Raw response repeats the same event identity. | No |
+| `SOURCE_EVENT_TIME_MALFORMED` | NBA ESPN raw source capture / evidence validation | An event has invalid/missing timezone-qualified start. | No |
+| `SOURCE_EVENT_STATUS_MALFORMED` | NBA ESPN raw source capture / evidence validation | An event is missing a declared ESPN state. | No |
+| `CAPTURE_OUTPUT_ALREADY_EXISTS` | NBA ESPN raw source capture / evidence validation | One-shot output path already contains an immutable capture or receipt. | No |
+| `CAPTURE_RECEIPT_UNREADABLE` | NBA ESPN raw source capture / evidence validation | Capture evidence files cannot be read or parsed. | No |
+| `CAPTURE_RECEIPT_MALFORMED` | NBA ESPN raw source capture / evidence validation | Capture receipt's schema, date, or no-execution controls are invalid. | No |
+| `CAPTURE_RAW_HASH_MISMATCH` | NBA ESPN raw source capture / evidence validation | Archived source bytes mismatch receipt digest or length. | No |
+| `CAPTURE_RECEIPT_EVENT_MISMATCH` | NBA ESPN raw source capture / evidence validation | Recomputed event reconciliation disagrees with receipt. | No |
