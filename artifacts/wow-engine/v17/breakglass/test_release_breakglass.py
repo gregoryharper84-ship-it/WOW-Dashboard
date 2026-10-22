@@ -297,3 +297,33 @@ def test_witness_reverified_after_second_preflight(tmp_path):
         calls.append("fresh")
     recovery.execute(api,intent(),tmp_path/"attempt",verify_witness=confirm)
     assert calls==["fresh","fresh"]
+
+
+def test_real_ssh_signed_witness_startup_and_tamper_detection(tmp_path):
+    """Exercise actual ssh-keygen signature verification, not only a mocked API."""
+    import subprocess
+    import shutil
+    if not shutil.which("ssh-keygen"):
+        pytest.skip("ssh-keygen not installed in this test environment")
+    private = tmp_path / "ephemeral-test-sirt"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private)],
+                   check=True, capture_output=True)
+    pub = private.with_suffix(".pub").read_text(encoding="utf-8").strip().split()
+    signers = tmp_path / "sirt-signers"
+    signers.write_text(f'wow-sirt-security-reviewer namespaces="wow-breakglass" {pub[0]} {pub[1]}\n',
+                       encoding="utf-8")
+    signed = recovery.witness_ready_payload(intent(), "independent-admin", issued=now(), pid=123)
+    ready = tmp_path / "ready.json"
+    ready.write_bytes(recovery.canonical(signed))
+    subprocess.run(["ssh-keygen", "-Y", "sign", "-f", str(private), "-n", "wow-breakglass", str(ready)],
+                   check=True, capture_output=True)
+    signature = tmp_path / "ready.json.sig"
+    result = recovery.verify_witness_ready(intent(), ready, signature, signers, "owner-admin",
+                                            now=now() + dt.timedelta(seconds=5))
+    assert result["witness_login"] == "independent-admin"
+    # Freshness alone is insufficient: editing even one signed byte must HOLD.
+    tampered = dict(signed, witness_login="another-admin")
+    ready.write_bytes(recovery.canonical(tampered))
+    with pytest.raises(recovery.RecoveryHold, match="EXTERNAL_COMMAND_FAILED"):
+        recovery.verify_witness_ready(intent(), ready, signature, signers, "owner-admin",
+                                      now=now() + dt.timedelta(seconds=5))
