@@ -123,6 +123,36 @@ def _nfl_final_refresh(
     }
 
 
+def _apply_nfl_final_refresh_ceiling(
+    governed: dict[str, Any], refresh: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach independent refresh proof and never upgrade a SQL HOLD."""
+    out = dict(governed)
+    out["llp_governance"] = {
+        **dict(out.get("llp_governance") or {}),
+        "final_refresh": refresh,
+    }
+    if refresh["final_refresh_status"] == "PASS":
+        return out
+
+    # Preserve the completed numerical sporting model and original SQL evidence.
+    out["rank_eligible"] = False
+    out["probability_publishable"] = False
+    out["terminal_label"] = "MODEL_QUALIFIED_HOLD"
+    out["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
+    out["code"] = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    out["blockers"] = sorted(set([
+        *(str(x) for x in out.get("blockers", [])),
+        *(str(x) for x in refresh["reasons"]),
+    ]))
+    out["terminal_reducer_input"] = {
+        "status": "HOLD",
+        "terminal_output": "MODEL_QUALIFIED_HOLD",
+        "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+    }
+    return out
+
+
 def _nfl_sport(req: Any) -> bool:
     return str(getattr(req, "sport", "") or "").strip().upper() in NFL_ALIASES and str(
         getattr(req, "league", "") or ""
@@ -376,27 +406,7 @@ def score_nfl_team_event_request(
         raise _typed_failure(team_event_module, effective_req, exc) from exc
 
     refresh = _nfl_final_refresh(effective_req, result, db=db)
-    governed["llp_governance"] = {
-        **governed["llp_governance"],
-        "final_refresh": refresh,
-    }
-    if refresh["final_refresh_status"] != "PASS":
-        # Keep fitted sporting probabilities and the original SQL receipt. Only
-        # final user-facing eligibility is withdrawn; never override a prior HOLD.
-        governed["rank_eligible"] = False
-        governed["probability_publishable"] = False
-        governed["terminal_label"] = "MODEL_QUALIFIED_HOLD"
-        governed["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
-        governed["code"] = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
-        governed["blockers"] = sorted(set([
-            *(str(x) for x in governed.get("blockers", [])),
-            *refresh["reasons"],
-        ]))
-        governed["terminal_reducer_input"] = {
-            "status": "HOLD",
-            "terminal_output": "MODEL_QUALIFIED_HOLD",
-            "global_terminal_reducer": "V17_TERMINAL_REDUCER",
-        }
+    governed = _apply_nfl_final_refresh_ceiling(governed, refresh)
     governed["scout_research_barrier"] = scout_research_barrier
     evidence = dict(effective_req.sport_specific_evidence or {})
     governed["canonical_acquisition"] = {
