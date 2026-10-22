@@ -60,7 +60,7 @@ Expected `OWNER_INTENT_PREPARED_NO_GITHUB_MUTATION`. Do not sign on a failed `pr
 ```bash
 # Create a recovery-specific signer file from the newly registered public key.
 # This does not modify the legacy .github/release/owner_allowed_signers.
-printf 'wow-owner namespaces="wow-breakglass" %s\\n' \
+printf 'wow-owner namespaces="wow-breakglass" %s\n' \
   "$(cat "$HOME/.ssh/wow_owner_release_v2.pub")" > "$REC/owner_allowed_signers"
 
 ssh-keygen -lf "$HOME/.ssh/wow_owner_release_v2.pub" -E sha256
