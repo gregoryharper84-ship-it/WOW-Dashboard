@@ -105,6 +105,35 @@ def evaluate_exact_head(
     if not _MANDATORY.issubset(set(requirements)):
         return _verdict(repository, pr_number, head_sha, "HOLD_EVIDENCE", ("MANDATORY_REQUIREMENTS_OMITTED",))
 
+    # GitHub check-run IDs are globally unique per repository/installation, never
+    # scoped to a single check name or App. Two rows sharing an id at this head
+    # SHA can only be a byte-identical pagination repeat (safe to collapse) or
+    # corrupted/replayed/tampered evidence (must hold) — checked here, across
+    # every row and every App, *before* any per-requirement App filtering, so a
+    # same-ID row from a different (wrong) App cannot be silently dropped by the
+    # App filter and leave the collision undetected.
+    by_id: dict[int, list[Mapping[str, Any]]] = {}
+    for row in checks:
+        if not isinstance(row, Mapping):
+            continue
+        if type(row.get("id")) is not int or row["id"] <= 0:
+            continue
+        if row.get("head_sha") != head_sha:
+            continue
+        by_id.setdefault(row["id"], []).append(row)
+    collision_names: set[str] = set()
+    for group in by_id.values():
+        first = group[0]
+        if any(
+            row.get("name") != first.get("name")
+            or row.get("status") != first.get("status")
+            or row.get("conclusion") != first.get("conclusion")
+            or (row.get("app") if isinstance(row.get("app"), Mapping) else {}).get("id")
+               != (first.get("app") if isinstance(first.get("app"), Mapping) else {}).get("id")
+            for row in group[1:]
+        ):
+            collision_names.update(row.get("name") for row in group if isinstance(row.get("name"), str))
+
     holds: list[str] = []
     pending: list[str] = []
     used: list[int] = []
@@ -113,6 +142,9 @@ def evaluate_exact_head(
         if any(not isinstance(row, Mapping) for row in checks):
             holds.append("CHECK_INVENTORY_MALFORMED")
             break
+        if name in collision_names:
+            holds.append("CHECK_ID_COLLISION:" + name)
+            continue
         authentic = []
         wrong_source = False
         for row in candidates:
@@ -132,26 +164,7 @@ def evaluate_exact_head(
             else:
                 pending.append("WAIT_UPSTREAM:" + name)
             continue
-        by_id: dict[int, list[Mapping[str, Any]]] = {}
-        for row in authentic:
-            by_id.setdefault(row["id"], []).append(row)
-        collapsed: list[Mapping[str, Any]] = []
-        collided = False
-        for group in by_id.values():
-            first = group[0]
-            if any(
-                row.get("status") != first.get("status")
-                or row.get("conclusion") != first.get("conclusion")
-                or row.get("app", {}).get("id") != first.get("app", {}).get("id")
-                for row in group[1:]
-            ):
-                collided = True
-                break
-            collapsed.append(first)
-        if collided:
-            holds.append("CHECK_ID_COLLISION:" + name)
-            continue
-        latest = max(collapsed, key=lambda row: row["id"])
+        latest = max(authentic, key=lambda row: row["id"])
         used.append(latest["id"])
         status = latest.get("status")
         conclusion = latest.get("conclusion")

@@ -273,10 +273,55 @@ def test_conflicting_duplicate_check_id_holds_regardless_of_list_order():
     assert "CHECK_ID_COLLISION:WOW required-three regression" in got.reasons
 
 
-def test_duplicate_id_with_mismatched_app_also_collides():
+def test_same_app_same_id_differing_status_also_collides():
     rows = checks()
     rows[0] = check(REQUIRED[0][0], id=1, app=APP)
     rows.append(check(REQUIRED[0][0], id=1, app=APP, status="in_progress", conclusion=None))
     got = decision(rows=rows)
     assert got.state == "HOLD_CI_OR_EVIDENCE"
     assert "CHECK_ID_COLLISION:WOW required-three regression" in got.reasons
+
+
+def test_cross_app_same_id_collision_cannot_be_masked_by_app_filtering():
+    # Same name/id/head_sha, but one row claims GitHub Actions (the mandatory
+    # App) and the other claims a different App entirely. Check-run ids are
+    # globally unique, so this can only be forged/corrupted evidence -- the
+    # App-correct row must not be allowed to look authentic on its own just
+    # because the wrong-App row would otherwise be filtered out first.
+    rows = checks()
+    rows[0] = check(REQUIRED[0][0], id=1, app=APP, conclusion="success")
+    rows.append(check(REQUIRED[0][0], id=1, app=5245832, conclusion="success"))
+    got = decision(rows=rows)
+    assert got.state == "HOLD_CI_OR_EVIDENCE"
+    assert "CHECK_ID_COLLISION:WOW required-three regression" in got.reasons
+
+
+def test_cross_app_same_id_collision_holds_regardless_of_row_order():
+    rows = checks()
+    rows[0] = check(REQUIRED[0][0], id=1, app=5245832, conclusion="success")
+    rows.append(check(REQUIRED[0][0], id=1, app=APP, conclusion="success"))
+    got = decision(rows=rows)
+    assert got.state == "HOLD_CI_OR_EVIDENCE"
+    assert "CHECK_ID_COLLISION:WOW required-three regression" in got.reasons
+
+
+def test_cross_name_same_id_collision_holds_both_requirements():
+    # GitHub check-run ids are unique across the whole repository, not scoped
+    # to a single check name -- two different required checks claiming the
+    # same id at this head is itself proof of corrupted/forged evidence.
+    rows = checks()
+    rows[0] = check(REQUIRED[0][0], id=99)
+    rows[1] = check(REQUIRED[1][0], id=99)
+    got = decision(rows=rows)
+    assert got.state == "HOLD_CI_OR_EVIDENCE"
+    assert "CHECK_ID_COLLISION:" + REQUIRED[0][0] in got.reasons
+    assert "CHECK_ID_COLLISION:" + REQUIRED[1][0] in got.reasons
+
+
+def test_distinct_ids_across_apps_remain_a_plain_mismatch_not_a_collision():
+    rows = checks()
+    rows[0] = check(REQUIRED[0][0], id=777, app=5245832)
+    got = decision(rows=rows)
+    assert got.state == "HOLD_CI_OR_EVIDENCE"
+    assert "CHECK_APP_MISMATCH:WOW required-three regression" in got.reasons
+    assert not any(reason.startswith("CHECK_ID_COLLISION") for reason in got.reasons)
