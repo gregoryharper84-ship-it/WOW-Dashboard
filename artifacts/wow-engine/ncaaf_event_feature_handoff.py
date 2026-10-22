@@ -124,6 +124,18 @@ def current_event_receipt_dependencies() -> dict[str, Any]:
         ],
         "model_feature_evidence": [f"{kind}:{scope}" for kind, scope in REQUIRED_SCOPED_KEYS],
         "current_context_receipts": list(CURRENT_CONTEXT_RECEIPT_PURPOSES),
+        "scoring_refresh_receipt": {
+            "purpose": "CURRENT_CONTEXT_REFRESH",
+            "must_postdate_snapshot": True,
+            "payload_sha256_binds": [
+                "starting_qb_status_home",
+                "starting_qb_status_away",
+                "depth_chart_status",
+                "injury_evidence_timestamp",
+                "lineup_status",
+                "current_context_receipts",
+            ],
+        },
         "market_features": "PROHIBITED",
         "receipt_fields": [
             "source_provider",
@@ -373,12 +385,33 @@ def _validate_refreshed_context(
             "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
         )
 
+    if context.get("refresh_receipt") is None:
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
+        )
+    refresh_receipt = _receipt(
+        context["refresh_receipt"],
+        purpose="CURRENT_CONTEXT_REFRESH",
+        event_id=event_id,
+        kickoff=kickoff,
+        current_time=current_time,
+    )
     manifest = row.get("source_manifest")
     stored_receipts = (
         manifest.get("current_context_receipts") if isinstance(manifest, Mapping) else None
     )
     if not isinstance(stored_receipts, list):
         raise NCAAFEventFeatureHandoffUnavailable("NCAAF_SOURCE_MANIFEST_INVALID")
+    try:
+        snapshot_created_at = _aware(row.get("created_at"), "created_at")
+    except NCAAFEventFeatureHandoffUnavailable as exc:
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED", "snapshot created_at"
+        ) from exc
+    if _aware(refresh_receipt["evidence_timestamp"], "CURRENT_CONTEXT_REFRESH") <= snapshot_created_at:
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED", "refresh must follow snapshot"
+        )
     stored_by_purpose = {
         str(receipt.get("purpose") or ""): receipt
         for receipt in stored_receipts
@@ -423,6 +456,23 @@ def _validate_refreshed_context(
         raise NCAAFEventFeatureHandoffUnavailable(
             "NCAAF_CURRENT_EVENT_CONTEXT_CHANGED", "injury_evidence_timestamp"
         )
+    refresh_payload = {
+        field: str(context.get(field) or "").strip()
+        for field in (
+            "starting_qb_status_home",
+            "starting_qb_status_away",
+            "depth_chart_status",
+            "lineup_status",
+        )
+    }
+    refresh_payload["injury_evidence_timestamp"] = injury_time.isoformat()
+    refresh_payload["receipts"] = [
+        fresh_receipts[purpose] for purpose in CURRENT_CONTEXT_RECEIPT_PURPOSES
+    ]
+    if refresh_receipt["payload_sha256"] != _hash(refresh_payload):
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_INVALID", "payload hash mismatch"
+        )
 
 
 def score_current_event_snapshot(
@@ -435,12 +485,16 @@ def score_current_event_snapshot(
     expected_source_manifest_sha256: str,
     current_context: Mapping[str, Any] | None = None,
     now: Any | None = None,
+    clock: Callable[[], Any] | None = None,
     scorer: Callable[..., Any] | None = None,
     calibrator: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    """Score the exact immutable row, withholding publication absent dynamic bounds."""
+    """Score only pregame rows with a post-snapshot bound current-context refresh."""
     kickoff = _aware(event_start_time, "event_start_time")
-    current_time = _aware(now or datetime.now(timezone.utc), "now")
+    current_time = _aware(
+        now if now is not None else (clock() if clock is not None else datetime.now(timezone.utc)),
+        "now",
+    )
     if kickoff <= current_time:
         raise NCAAFEventFeatureHandoffUnavailable("NCAAF_EVENT_NOT_PREGAME")
     if current_context is None:
@@ -508,6 +562,12 @@ def score_current_event_snapshot(
         from ncaaf_fitted_provider import infer_raw_probability
 
         scorer = infer_raw_probability
+    scoring_time = _aware(
+        clock() if clock is not None else datetime.now(timezone.utc),
+        "now",
+    )
+    if kickoff <= scoring_time:
+        raise NCAAFEventFeatureHandoffUnavailable("NCAAF_EVENT_NOT_PREGAME")
     try:
         raw = scorer(db, request=inference_request, features=row)
     except NCAAFFittedProviderUnavailable as exc:

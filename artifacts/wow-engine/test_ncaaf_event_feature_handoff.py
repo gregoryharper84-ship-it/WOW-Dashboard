@@ -114,9 +114,57 @@ def _snapshot():
     )
 
 
-def _score_context():
+def _stored_snapshot():
     return {
-        "current_context": _context(),
+        **_snapshot(),
+        "ok": True,
+        "code": "NCAAF_EVENT_FEATURE_SNAPSHOT_READY",
+        "probability_publishable": False,
+        "feature_snapshot_id": "snapshot-1",
+        "created_at": (KICKOFF - timedelta(minutes=35)).isoformat(),
+    }
+
+
+def _score_context(snapshot=None, context=None, *, refreshed_at=None):
+    context = context or _context()
+    normalized_receipts = [
+        {
+            "purpose": receipt["purpose"],
+            "source_provider": receipt["source_provider"],
+            "source_record_id": receipt["source_record_id"],
+            "evidence_timestamp": datetime.fromisoformat(
+                receipt["evidence_timestamp"].replace("Z", "+00:00")
+            ).astimezone(timezone.utc).isoformat(),
+            "payload_sha256": receipt["payload_sha256"],
+        }
+        for receipt in context["receipts"]
+    ]
+    injury_timestamp = datetime.fromisoformat(
+        context["injury_evidence_timestamp"].replace("Z", "+00:00")
+    ).astimezone(timezone.utc).isoformat()
+    refresh_payload = {
+        field: str(context[field]).strip()
+        for field in (
+            "starting_qb_status_home",
+            "starting_qb_status_away",
+            "depth_chart_status",
+            "lineup_status",
+        )
+    }
+    refresh_payload["injury_evidence_timestamp"] = injury_timestamp
+    refresh_payload["receipts"] = normalized_receipts
+    context["refresh_receipt"] = {
+        "purpose": "CURRENT_CONTEXT_REFRESH",
+        "official_event_id": EVENT_ID,
+        "source_provider": "TEST_OFFICIAL_NCAAF_SOURCE",
+        "source_record_id": "context-refresh-1",
+        "evidence_timestamp": (
+            refreshed_at or (KICKOFF - timedelta(minutes=32))
+        ).isoformat(),
+        "payload_sha256": _sha(refresh_payload),
+    }
+    return {
+        "current_context": context,
         "now": KICKOFF - timedelta(minutes=30),
     }
 
@@ -181,6 +229,7 @@ def test_known_ncaaf_fixture_builds_and_inserts_one_immutable_market_free_snapsh
     assert len(dependencies["model_feature_evidence"]) == 29
     assert "MARKET_NO_VIG:EVENT" not in dependencies["model_feature_evidence"]
     assert dependencies["market_features"] == "PROHIBITED"
+    assert dependencies["scoring_refresh_receipt"]["purpose"] == "CURRENT_CONTEXT_REFRESH"
 
 
 def test_missing_current_snapshot_fails_closed():
@@ -315,6 +364,29 @@ def test_scoring_started_or_live_event_fails_before_database_or_scorer(current_t
     assert invoked == []
 
 
+def test_scoring_rechecks_kickoff_after_snapshot_read_before_scorer():
+    snapshot = _stored_snapshot()
+    client = _Client(snapshot)
+    clock_values = iter([KICKOFF])
+    invoked = []
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        score_current_event_snapshot(
+            client,
+            official_event_id=EVENT_ID,
+            event_start_time=KICKOFF.isoformat(),
+            home_team="Louisville",
+            away_team="Florida State",
+            expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
+            current_context=_score_context(snapshot)["current_context"],
+            now=KICKOFF - timedelta(minutes=30),
+            clock=lambda: next(clock_values),
+            scorer=lambda *args, **kwargs: invoked.append(True),
+        )
+    assert exc.value.code == "NCAAF_EVENT_NOT_PREGAME"
+    assert len(client.calls) == 1
+    assert invoked == []
+
+
 def test_scoring_requires_refreshed_current_context_before_database_or_scorer():
     client = _Client({})
     invoked = []
@@ -334,8 +406,47 @@ def test_scoring_requires_refreshed_current_context_before_database_or_scorer():
     assert invoked == []
 
 
+def test_scoring_rejects_context_without_a_post_snapshot_refresh_receipt():
+    snapshot = _stored_snapshot()
+    client = _Client(snapshot)
+    invoked = []
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        score_current_event_snapshot(
+            client,
+            official_event_id=EVENT_ID,
+            event_start_time=KICKOFF.isoformat(),
+            home_team="Louisville",
+            away_team="Florida State",
+            expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
+            current_context=_context(),
+            now=KICKOFF - timedelta(minutes=30),
+            scorer=lambda *args, **kwargs: invoked.append(True),
+        )
+    assert exc.value.code == "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
+    assert invoked == []
+
+
+def test_scoring_refresh_receipt_must_follow_persisted_snapshot():
+    snapshot = _stored_snapshot()
+    client = _Client(snapshot)
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        score_current_event_snapshot(
+            client,
+            official_event_id=EVENT_ID,
+            event_start_time=KICKOFF.isoformat(),
+            home_team="Louisville",
+            away_team="Florida State",
+            expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
+            **_score_context(
+                snapshot,
+                refreshed_at=KICKOFF - timedelta(minutes=35),
+            ),
+        )
+    assert exc.value.code == "NCAAF_CURRENT_EVENT_CONTEXT_REFRESH_REQUIRED"
+
+
 def test_changed_current_qb_status_holds_before_scorer_invocation():
-    snapshot = {**_snapshot(), "ok": True}
+    snapshot = _stored_snapshot()
     client = _Client(snapshot)
     current_context = _context()
     current_context["starting_qb_status_home"] = "QUESTIONABLE"
@@ -348,8 +459,7 @@ def test_changed_current_qb_status_holds_before_scorer_invocation():
             home_team="Louisville",
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
-            current_context=current_context,
-            now=KICKOFF - timedelta(minutes=30),
+            **_score_context(snapshot, current_context),
             scorer=lambda *args, **kwargs: invoked.append(True),
         )
     assert exc.value.code == "NCAAF_CURRENT_EVENT_CONTEXT_CHANGED"
@@ -357,14 +467,7 @@ def test_changed_current_qb_status_holds_before_scorer_invocation():
 
 
 def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
-    snapshot = {
-        **_snapshot(),
-        "ok": True,
-        "code": "NCAAF_EVENT_FEATURE_SNAPSHOT_READY",
-        "probability_publishable": False,
-        "feature_snapshot_id": "snapshot-1",
-        "created_at": "2026-10-31T20:00:00+00:00",
-    }
+    snapshot = _stored_snapshot()
     client = _Client(snapshot)
     raw = RawNCAAFWinProbability(
         home_probability=0.62,
@@ -386,7 +489,7 @@ def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
         expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
         scorer=lambda *args, **kwargs: raw,
         calibrator=lambda *args, **kwargs: calibrated,
-        **_score_context(),
+        **_score_context(snapshot),
     )
     assert result["static_calibration_lower_diagnostic"] == 0.41
     assert result["calibrated_lower_bound"] is None
@@ -397,7 +500,7 @@ def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
 
 
 def test_invoked_scorer_failure_is_not_collapsed_to_model_unavailable():
-    snapshot = {**_snapshot(), "ok": True}
+    snapshot = _stored_snapshot()
     client = _Client(snapshot)
 
     def fail(*_args, **_kwargs):
@@ -412,13 +515,13 @@ def test_invoked_scorer_failure_is_not_collapsed_to_model_unavailable():
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=fail,
-            **_score_context(),
+            **_score_context(snapshot),
         )
     assert exc.value.code == "MODEL_SCORER_FAILED"
 
 
 def test_typed_invalid_model_output_keeps_output_failure_semantics():
-    snapshot = {**_snapshot(), "ok": True}
+    snapshot = _stored_snapshot()
     client = _Client(snapshot)
 
     def invalid_output(*_args, **_kwargs):
@@ -435,6 +538,6 @@ def test_typed_invalid_model_output_keeps_output_failure_semantics():
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=invalid_output,
-            **_score_context(),
+            **_score_context(snapshot),
         )
     assert exc.value.code == "MODEL_OUTPUT_INVALID"
