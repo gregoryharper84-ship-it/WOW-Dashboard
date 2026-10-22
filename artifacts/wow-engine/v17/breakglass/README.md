@@ -10,7 +10,7 @@ The new owner-only path is **not a routine merge bypass**, standing GitHub rules
 
 ## Key safety trade-offs
 
-- **One human, one offline authorization**: The repository owner's existing offline ED25519 key is pinned to fingerprint `SHA256:BGiNe5ggZrgozxmFBXsFEEyn8szHPHFmZSCN5nJ/+SM`. `ssh-keygen -Y sign` signs the exact canonical `intent.json` with namespace `wow-breakglass`. Signer identity cannot be replaced by an arbitrary local `allowed_signers` key.
+- **One human, one offline authorization**: The recovery-only owner ED25519 public key (v2) is pinned to fingerprint `SHA256:m7bmGrVu1BmS7JzlquMSLfF2YmqJlxeuqptpckXD4dA`. Its public key is `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDiytM9wxpABQP9/Phcgn8icCCZiGKUn7emfNkaQDM9q wow-owner-release-v2`. The old release trust-root registration is deliberately left untouched. `ssh-keygen -Y sign` signs the exact canonical `intent.json` with namespace `wow-breakglass`. Signer identity cannot be replaced by an arbitrary local `allowed_signers` key.
 - **One-time, narrow scope**: The signed intent freezes repository, PR, head and main 40-character SHAs, exact changed-file inventory, incident ID, full ruleset SHA256, bounded deadline, Release check identity and explicit `OWNER_AUTHORIZES_REPOSITORY_WIDE_TEMPORARY_RELEASE_EXCEPTION`. It expires in 30 minutes. Stale evidence, missing owner exact-head APPROVED, wrong-App/latest failed CI/QA, incomplete PR files, drift, armed auto-merges or changed rules are refused.
 - **Crash recovery without another person**: After persisting a private original snapshot, the operator starts a separate watchdog process which verifies the baseline, signals ready and attempts to restore the five checks after the configured deadline if the operator dies. The operator also restores in `finally` after any merge success, failure or ambiguous PUT, and independently re-reads GitHub.
 - **Residual risk is real**: Both operator and watchdog use the same machine and authenticated administrator capability. If the whole machine, GitHub API or credentials fail simultaneously, **automatic restoration is not guaranteed**. Manual recovery from the signed original backup is mandatory when service returns. A separate managed host may be added for machine-level resilience; **no second human reviewer is required**.
@@ -25,8 +25,8 @@ REPO="gregoryharper84-ship-it/WOW-Dashboard"
 cd "$HOME/wow-v17-recovery"
 gh pr checkout 1961
 
-python3 -m venv .venv
-source .venv/bin/activate
+$(brew --prefix python@3.11)/bin/python3.11 -m venv .venv311
+source .venv311/bin/activate
 python -m pip install pytest
 
 python -m pytest --noconftest -q artifacts/wow-engine/v17/breakglass/test_owner_release_recovery.py
@@ -40,8 +40,8 @@ python "$SCRIPT" inspect --pr 1932
 ### Owner-only intent preparation (READ ONLY)
 
 ```bash
-REC="$HOME/wow1932-owner-recovery"
-mkdir -p "$REC" && chmod 700 "$REC"
+REC="$HOME/wow1932-owner-recovery-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -m 700 "$REC"
 umask 077
 
 python "$SCRIPT" prepare --pr 1932 --incident 1930 \
@@ -58,17 +58,35 @@ Expected `OWNER_INTENT_PREPARED_NO_GITHUB_MUTATION`. Do not sign on a failed `pr
 ### Owner offline signature (NO SECOND PERSON)
 
 ```bash
-sed 's/namespaces="wow-release"/namespaces="wow-breakglass"/' \
-  .github/release/owner_allowed_signers > "$REC/owner_allowed_signers"
-ssh-keygen -lf "$HOME/.ssh/wow_owner_release.pub" -E sha256
-# Must be SHA256:BGiNe5ggZrgozxmFBXsFEEyn8szHPHFmZSCN5nJ/+SM
+# Create a recovery-specific signer file from the newly registered public key.
+# This does not modify the legacy .github/release/owner_allowed_signers.
+printf 'wow-owner namespaces="wow-breakglass" %s\\n' \
+  "$(cat "$HOME/.ssh/wow_owner_release_v2.pub")" > "$REC/owner_allowed_signers"
 
-ssh-keygen -Y sign -f "$HOME/.ssh/wow_owner_release" \
+ssh-keygen -lf "$HOME/.ssh/wow_owner_release_v2.pub" -E sha256
+# Must be SHA256:m7bmGrVu1BmS7JzlquMSLfF2YmqJlxeuqptpckXD4dA
+
+ssh-keygen -Y sign -f "$HOME/.ssh/wow_owner_release_v2" \
   -n wow-breakglass "$REC/intent.json"
+
+ssh-keygen -Y verify \
+  -f "$REC/owner_allowed_signers" -I wow-owner -n wow-breakglass \
+  -s "$REC/intent.json.sig" < "$REC/intent.json"
 
 # The signature is created at "$REC/intent.json.sig".
 # Type the SSH key passphrase only in the Mac terminal, never in chat.
 ```
+
+### Signed, no-mutation verification (mandatory before any execute)
+
+```bash
+python "$SCRIPT" verify \
+  --intent "$REC/intent.json" \
+  --owner-signature "$REC/intent.json.sig" \
+  --owner-signers "$REC/owner_allowed_signers"
+```
+
+This verifies the exact signed bytes, registered public key, authenticated administrator identity, current PR HEAD/base/main, protected ruleset digest and App-signed checks. It prints `OWNER_SIGNED_READ_ONLY_VERIFICATION_PASSED` and never changes the ruleset, merges a PR or starts the watchdog. **Verify is not authorization to execute.** The owner must independently qualify the host/watchdog restoration path and establish a genuine repository-wide merge freeze.
 
 ### EXECUTE — only after a real exclusive writer/merge freeze
 
