@@ -78,16 +78,16 @@ class GitHubTransport:
     def get(self, suffix: str) -> Any:
         return self.call(f"/repos/{self.repo}/{suffix}")
 
-    def get_open_pull_request_page(self, page: int) -> tuple[Any, bool]:
+    def get_open_pull_request_page(self, page: int) -> tuple[Any, bool, bool]:
         if isinstance(page, bool) or not isinstance(page, int) or page < 1:
             raise ValueError("OPEN_PR_PAGE_INVALID")
         result, headers = self.call_with_headers(
             f"/repos/{self.repo}/pulls?state=open&per_page={OPEN_PR_PAGE_SIZE}&page={page}",
         )
-        has_next = _open_pr_page_has_next(
+        has_next, has_pagination_link = _open_pr_page_pagination(
             headers, page=page, repo=self.repo,
         )
-        return result, has_next
+        return result, has_next, has_pagination_link
 
     def dispatch(self, issue: dict[str, Any]) -> None:
         group = str(issue.get("lease_group") or "GLOBAL")
@@ -145,15 +145,15 @@ def next_approved_issue(
     return None
 
 
-def _open_pr_page_has_next(
+def _open_pr_page_pagination(
     headers: dict[str, str], *, page: int, repo: str,
-) -> bool:
+) -> tuple[bool, bool]:
     link_header = next(
         (value for key, value in headers.items() if key.lower() == "link"),
         None,
     )
     if link_header is None:
-        return False
+        return False, False
     if not isinstance(link_header, str):
         raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
 
@@ -169,7 +169,7 @@ def _open_pr_page_has_next(
     if len(next_links) > 1:
         raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
     if not next_links:
-        return False
+        return False, True
 
     next_url = urlparse(next_links[0])
     query = parse_qs(next_url.query, keep_blank_values=True)
@@ -184,7 +184,7 @@ def _open_pr_page_has_next(
         or query.get("page") != [str(page + 1)]
     ):
         raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
-    return True
+    return True, True
 
 
 def _validate_open_pr(pr: Any, *, repo: str) -> dict[str, Any]:
@@ -218,10 +218,14 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
     matches_issue = False
 
     for page in range(1, MAX_OPEN_PR_PAGES + 1):
-        result, has_next = client.get_open_pull_request_page(page)
+        result, has_next, has_pagination_link = client.get_open_pull_request_page(page)
         if not isinstance(result, list) or len(result) > OPEN_PR_PAGE_SIZE:
             raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
-        if not isinstance(has_next, bool) or (has_next and len(result) != OPEN_PR_PAGE_SIZE):
+        if (
+            not isinstance(has_next, bool)
+            or not isinstance(has_pagination_link, bool)
+            or (has_next and len(result) != OPEN_PR_PAGE_SIZE)
+        ):
             raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
 
         for raw_pr in result:
@@ -235,6 +239,8 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
                 matches_issue = True
 
         if len(result) < OPEN_PR_PAGE_SIZE:
+            return matches_issue
+        if has_pagination_link and not has_next:
             return matches_issue
         if page == MAX_OPEN_PR_PAGES:
             raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")

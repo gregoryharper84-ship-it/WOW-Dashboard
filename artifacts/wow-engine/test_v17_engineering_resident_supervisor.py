@@ -83,7 +83,7 @@ class FakeClient:
         if self.fail_open_pr_page == page:
             raise RuntimeError("SIMULATED_GITHUB_PAGINATION_FAILURE")
         rows = self.open_pr_pages[page - 1] if page <= len(self.open_pr_pages) else []
-        return rows, page < len(self.open_pr_pages)
+        return rows, page < len(self.open_pr_pages), len(self.open_pr_pages) > 1
 
     def dispatch(self, issue):
         self.sent.append(issue)
@@ -314,8 +314,8 @@ def test_full_page_requires_empty_sentinel_page():
         def get_open_pull_request_page(self, page):
             self.open_pr_calls.append(page)
             if page == 1:
-                return rows, False
-            return [], False
+                return rows, False, False
+            return [], False, False
 
     client = NoLink(open_pr_pages=[rows, []])
     assert not pending_pr_for_issue(client, 1841)
@@ -333,6 +333,16 @@ def test_open_pr_inventory_page_limit_is_fail_closed():
     assert client.open_pr_calls == list(range(1, 11))
 
 
+def test_exact_page_limit_with_explicit_end_is_complete():
+    pages = [
+        [open_pr_record(10000 + page * 100 + index) for index in range(100)]
+        for page in range(10)
+    ]
+    client = FakeClient(open_pr_pages=pages)
+    assert not pending_pr_for_issue(client, 1841)
+    assert client.open_pr_calls == list(range(1, 11))
+
+
 def test_transport_validates_open_pr_next_link(monkeypatch):
     client = GitHubTransport("placeholder")
     calls = []
@@ -345,9 +355,10 @@ def test_transport_validates_open_pr_next_link(monkeypatch):
         client, "call_with_headers",
         lambda path: (calls.append(path) or rows, {"Link": next_link}),
     )
-    result, has_next = client.get_open_pull_request_page(1)
+    result, has_next, has_pagination_link = client.get_open_pull_request_page(1)
     assert len(result) == 100
     assert has_next is True
+    assert has_pagination_link is True
     assert calls == [
         "/repos/gregoryharper84-ship-it/WOW-Dashboard/pulls?state=open&per_page=100&page=1",
     ]
