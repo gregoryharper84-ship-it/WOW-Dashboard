@@ -110,7 +110,7 @@ def _snapshot():
         _event(),
         _evidence(),
         current_context=_context(),
-        now=KICKOFF - timedelta(days=1),
+        now=KICKOFF - timedelta(minutes=30),
     )
 
 
@@ -203,6 +203,32 @@ def test_future_evidence_is_a_typed_temporal_leakage_blocker():
             _event(), rows, current_context=_context(), now=KICKOFF - timedelta(days=1)
         )
     assert exc.value.code == "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE"
+
+
+def test_evidence_newer_than_snapshot_as_of_is_rejected_even_before_kickoff():
+    rows = _evidence()
+    rows[0]["evidence_timestamp"] = (KICKOFF - timedelta(minutes=15)).isoformat()
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        build_current_event_feature_snapshot(
+            _event(),
+            rows,
+            current_context=_context(),
+            now=KICKOFF - timedelta(minutes=30),
+        )
+    assert exc.value.code == "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE"
+
+
+def test_event_receipt_must_be_bound_to_the_requested_event():
+    event = _event()
+    event["source_receipt"].pop("official_event_id")
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        build_current_event_feature_snapshot(
+            event,
+            _evidence(),
+            current_context=_context(),
+            now=KICKOFF - timedelta(minutes=30),
+        )
+    assert exc.value.code == "NCAAF_CURRENT_SOURCE_RECEIPT_INVALID"
 
 
 def test_source_manifest_mismatch_blocks_scorer_before_invocation():

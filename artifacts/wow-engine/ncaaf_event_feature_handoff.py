@@ -75,6 +75,7 @@ def _receipt(
     purpose: str,
     event_id: str,
     kickoff: datetime,
+    current_time: datetime,
 ) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise NCAAFEventFeatureHandoffUnavailable(
@@ -82,7 +83,7 @@ def _receipt(
         )
     provider = str(value.get("source_provider") or value.get("provider") or "").strip()
     record_id = str(value.get("source_record_id") or value.get("receipt_id") or "").strip()
-    receipt_event = str(value.get("official_event_id") or event_id).strip()
+    receipt_event = str(value.get("official_event_id") or "").strip()
     payload_hash = str(value.get("payload_sha256") or "").lower()
     timestamp = _aware(value.get("evidence_timestamp") or value.get("timestamp"), purpose)
     if not provider or not record_id or receipt_event != event_id or not _HEX_SHA256.fullmatch(payload_hash):
@@ -92,6 +93,10 @@ def _receipt(
     if timestamp >= kickoff:
         raise NCAAFEventFeatureHandoffUnavailable(
             "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE", purpose
+        )
+    if timestamp > current_time:
+        raise NCAAFEventFeatureHandoffUnavailable(
+            "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE", f"{purpose}:AFTER_SNAPSHOT_AS_OF"
         )
     return {
         "purpose": purpose,
@@ -186,6 +191,7 @@ def build_current_event_feature_snapshot(
         purpose="OFFICIAL_EVENT",
         event_id=event_id,
         kickoff=kickoff,
+        current_time=current_time,
     )
     context = dict(current_context or {})
     context_receipts = context.get("receipts")
@@ -199,7 +205,11 @@ def build_current_event_feature_snapshot(
         if purpose not in CURRENT_CONTEXT_RECEIPT_PURPOSES:
             raise NCAAFEventFeatureHandoffUnavailable("NCAAF_CURRENT_SOURCE_RECEIPT_UNEXPECTED", purpose)
         receipts_by_purpose[purpose] = _receipt(
-            raw, purpose=purpose, event_id=event_id, kickoff=kickoff
+            raw,
+            purpose=purpose,
+            event_id=event_id,
+            kickoff=kickoff,
+            current_time=current_time,
         )
     if set(receipts_by_purpose) != set(CURRENT_CONTEXT_RECEIPT_PURPOSES):
         missing = sorted(set(CURRENT_CONTEXT_RECEIPT_PURPOSES) - set(receipts_by_purpose))
@@ -232,6 +242,11 @@ def build_current_event_feature_snapshot(
             raise NCAAFEventFeatureHandoffUnavailable(
                 "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE",
                 str(row.get("evidence_kind") or "EVIDENCE"),
+            )
+        if evidence_time > current_time:
+            raise NCAAFEventFeatureHandoffUnavailable(
+                "NCAAF_EVENT_FEATURE_TEMPORAL_LEAKAGE",
+                f"{row.get('evidence_kind') or 'EVIDENCE'}:AFTER_SNAPSHOT_AS_OF",
             )
     game = {
         "official_event_id": event_id,
