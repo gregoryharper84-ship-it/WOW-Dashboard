@@ -141,6 +141,7 @@ def test_success_exact_merge_restores_five_check_policy(tmp_path,monkeypatch):
     api=FakeAPI()
     monkeypatch.setattr(recovery,"authenticate_admin",lambda x: None)
     monkeypatch.setattr(recovery,"_watchdog_process",lambda *a: Proc())
+    monkeypatch.setattr(recovery,"watchdog_ready_healthy",lambda *a, **kw: None)
     recovery.execute(api,intent(),tmp_path/"source",tmp_path/"journal")
     assert api.merged
     assert len(api.puts)==2
@@ -152,6 +153,7 @@ def test_merge_failure_restores_five_check_policy(tmp_path,monkeypatch):
     api=FakeAPI();api.merge_fail=True
     monkeypatch.setattr(recovery,"authenticate_admin",lambda x: None)
     monkeypatch.setattr(recovery,"_watchdog_process",lambda *a: Proc())
+    monkeypatch.setattr(recovery,"watchdog_ready_healthy",lambda *a, **kw: None)
     with pytest.raises(recovery.RecoveryHold,match="MERGE_FAILED"):
         recovery.execute(api,intent(),tmp_path/"source",tmp_path/"journal")
     assert api.rules==baseline() and len(api.puts)==2
@@ -168,6 +170,7 @@ def test_ruleset_put_uncertain_restoration(tmp_path,monkeypatch):
     api.put=ambiguous
     monkeypatch.setattr(recovery,"authenticate_admin",lambda x: None)
     monkeypatch.setattr(recovery,"_watchdog_process",lambda *a: Proc())
+    monkeypatch.setattr(recovery,"watchdog_ready_healthy",lambda *a, **kw: None)
     with pytest.raises(recovery.RecoveryHold,match="MERGE_FAILED"):
         recovery.execute(api,intent(),tmp_path/"source",tmp_path/"journal")
     assert api.rules==baseline()
@@ -224,3 +227,25 @@ def test_pinned_owner_signer_rejects_unregistered_namespace(tmp_path):
     p.write_text('wow-owner namespaces="wow-release" ssh-ed25519 AAAA owner\\n')
     with pytest.raises(recovery.RecoveryHold):
         recovery.owner_signer_file(p)
+
+def test_watchdog_deadline_must_be_live(tmp_path):
+    import json
+    class Active:
+        pid=123456
+        def poll(self):return None
+    path=tmp_path/"ready.json"
+    path.write_text(json.dumps({"pid":123456,"intent_digest":"d"*64,
+                                "expires_monotonic":0}))
+    with pytest.raises(recovery.RecoveryHold,match="WATCHDOG_ROLLBACK_DEADLINE_TOO_NEAR"):
+        recovery.watchdog_ready_healthy(path,Active(),"d"*64)
+
+def test_wrong_watchdog_pid_or_digest_rejected(tmp_path):
+    import json,time
+    class Active:
+        pid=123456
+        def poll(self):return None
+    path=tmp_path/"ready.json"
+    path.write_text(json.dumps({"pid":234567,"intent_digest":"d"*64,
+                                "expires_monotonic":time.monotonic()+100}))
+    with pytest.raises(recovery.RecoveryHold,match="WATCHDOG_READY_MISMATCH"):
+        recovery.watchdog_ready_healthy(path,Active(),"d"*64)
