@@ -1,5 +1,5 @@
 name: wow-v17-release-authority-check
-run-name: wow-v17-release-authority-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }}
+run-name: wow-v17-release-authority-check pr=${{ inputs.pr_number || 'AUTO' }} head=${{ inputs.head_sha || 'AUTO' }}
 
 # Phase C of #1550. Runs from protected main only and never checks out or executes
 # PR code. Evidence is read with the read-only GITHUB_TOKEN; the check is published

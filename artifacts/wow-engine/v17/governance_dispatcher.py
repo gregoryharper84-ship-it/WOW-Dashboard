@@ -107,6 +107,7 @@ def classify_target(
     available_roles: set[str],
     completed_role_runs: dict[str, str] | None = None,
     ancillary_ci_hold: str | None = None,
+    zero_credit_mode: bool = False,
 ) -> dict[str, Any]:
     """Return one next allowlisted role or a typed HOLD/DONE decision."""
     findings: list[str] = []
@@ -159,13 +160,15 @@ def classify_target(
         if not _owner_approved_at_head(reviews, owner_id, head):
             return {"action": "HOLD", "findings": ["TRUST_ROOT_OWNER_APPROVAL_MISSING"], "head_sha": head}
 
+    if not isinstance(zero_credit_mode, bool):
+        return {"action": "HOLD", "findings": ["ZERO_CREDIT_POLICY_INVALID"], "head_sha": head}
     runs = completed_role_runs or {}
     for role, finding in (
         ("source_review", "SOURCE_REVIEW_WORKFLOW_UNAVAILABLE"),
         ("qa", "QA_WORKFLOW_UNAVAILABLE"),
         ("release", "RELEASE_WORKFLOW_UNAVAILABLE"),
     ):
-        if role not in available_roles:
+        if role not in available_roles and not (zero_credit_mode and role == "source_review"):
             return {"action": "HOLD", "findings": [finding], "head_sha": head}
 
     checks = check_runs if isinstance(check_runs, list) else []
@@ -179,38 +182,39 @@ def classify_target(
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_PENDING:{name}"], "head_sha": head}
         if check.get("conclusion") != "success":
             return {"action": "HOLD", "findings": [f"REQUIRED_CHECK_FAILED:{name}"], "head_sha": head}
-    if source_review not in {
-        "PASS",
-        "MISSING",
-        "PENDING",
-        "STALE",
-        "REJECT",
-        "INVALID",
-        "ACTION_REQUIRED_ZERO_JOBS",
-    }:
-        return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STATUS_INVALID"], "head_sha": head}
-    if source_review in {"REJECT", "INVALID"}:
-        return {"action": "HOLD", "findings": [f"SOURCE_REVIEW_{source_review}"], "head_sha": head}
-    if source_review == "ACTION_REQUIRED_ZERO_JOBS":
-        if runs.get("source_review") != "action_required":
-            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_BLOCKED_RUN_UNPROVEN"], "head_sha": head}
-        return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
-    if source_review == "MISSING":
-        if runs.get("source_review") in {"queued", "in_progress", "waiting", "pending", "requested"}:
+    if not zero_credit_mode:
+        if source_review not in {
+            "PASS",
+            "MISSING",
+            "PENDING",
+            "STALE",
+            "REJECT",
+            "INVALID",
+            "ACTION_REQUIRED_ZERO_JOBS",
+        }:
+            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STATUS_INVALID"], "head_sha": head}
+        if source_review in {"REJECT", "INVALID"}:
+            return {"action": "HOLD", "findings": [f"SOURCE_REVIEW_{source_review}"], "head_sha": head}
+        if source_review == "ACTION_REQUIRED_ZERO_JOBS":
+            if runs.get("source_review") != "action_required":
+                return {"action": "HOLD", "findings": ["SOURCE_REVIEW_BLOCKED_RUN_UNPROVEN"], "head_sha": head}
+            return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
+        if source_review == "MISSING":
+            if runs.get("source_review") in {"queued", "in_progress", "waiting", "pending", "requested"}:
+                return {"action": "HOLD", "findings": ["SOURCE_REVIEW_PENDING"], "head_sha": head}
+            if runs.get("source_review") is not None:
+                return {"action": "HOLD", "findings": ["SOURCE_REVIEW_RUN_FAILED"], "head_sha": head}
+            return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
+        if source_review == "PENDING":
             return {"action": "HOLD", "findings": ["SOURCE_REVIEW_PENDING"], "head_sha": head}
-        if runs.get("source_review") is not None:
-            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_RUN_FAILED"], "head_sha": head}
-        return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
-    if source_review == "PENDING":
-        return {"action": "HOLD", "findings": ["SOURCE_REVIEW_PENDING"], "head_sha": head}
-    if source_review == "STALE":
-        if runs.get("source_review") != "success":
-            return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STALE_UNPROVEN"], "head_sha": head}
-        return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
+        if source_review == "STALE":
+            if runs.get("source_review") != "success":
+                return {"action": "HOLD", "findings": ["SOURCE_REVIEW_STALE_UNPROVEN"], "head_sha": head}
+            return {"action": "DISPATCH", "role": "source_review", "findings": [], "head_sha": head}
 
     if ancillary_ci_hold:
         return {"action": "HOLD", "findings": [ancillary_ci_hold], "head_sha": head}
-    if not protected:
+    if not protected and not zero_credit_mode:
         trusted = latest_check(checks, TRUSTED_GOVERNANCE_CHECK, head, GITHUB_ACTIONS_APP_ID)
         if trusted is None:
             return {

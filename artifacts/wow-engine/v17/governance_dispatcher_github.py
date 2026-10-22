@@ -724,6 +724,7 @@ def reconcile(
     controller_run_id: str,
     controller_run_attempt: int = 1,
     source_sha: str,
+    zero_credit_mode: bool = False,
 ) -> dict[str, Any]:
     if not SHA_RE.fullmatch(source_sha):
         raise DispatchError("CONTROLLER_SOURCE_SHA_INVALID")
@@ -739,6 +740,8 @@ def reconcile(
     ):
         raise DispatchError("CONTROLLER_RUN_ATTEMPT_INVALID")
     _journal_key()
+    if not isinstance(zero_credit_mode, bool):
+        raise DispatchError("ZERO_CREDIT_POLICY_INVALID")
     owner_id, owner_login = _owner(client)
     workflows = list_workflows(client)
     wip_by_role = count_wip(client, workflows) if workflows else {role: 0 for role in WORKFLOWS}
@@ -777,6 +780,7 @@ def reconcile(
                 "ancillary_ci_hold": None,
                 "available_roles": available_roles,
                 "completed_role_runs": statuses,
+                "zero_credit_mode": zero_credit_mode,
             }
             preflight = policy.classify_target(
                 **target_evidence,
