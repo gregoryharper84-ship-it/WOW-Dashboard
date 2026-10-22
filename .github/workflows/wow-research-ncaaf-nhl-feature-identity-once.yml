@@ -42,7 +42,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/wow-nhl-identity-evidence"
-          python scripts/nhl_forward_official_crosswalk.py \
+          PYTHONPATH=. python scripts/nhl_forward_official_crosswalk.py \
             --fixture data/research/frozen_20261022_ncaaf_nhl_identities.json \
             --out "$RUNNER_TEMP/wow-nhl-identity-evidence/canonical_nhl_crosswalk.json"
           {
