@@ -878,8 +878,9 @@ def verify_artifact(
             else None
         )
         _require(
-            run.get("name") == WORKFLOW_NAME
-            and run.get("path") == WORKFLOW_PATH
+            # REST run.name is a dynamic display title; authenticate the
+            # protected workflow path, producer receipt and source metadata.
+            run.get("path") == WORKFLOW_PATH
             and run.get("event") == source.get("event")
             and run.get("head_branch") == "main"
             and repository_name == expected_repository,
@@ -1102,7 +1103,7 @@ def verify_qa_review_policy(
     _require(
         source.get("run_id") == str(run_id)
         and attempt == expected_attempt == run.get("run_attempt")
-        and source.get("workflow_name") == run.get("name") == WORKFLOW_NAME
+        and source.get("workflow_name") == WORKFLOW_NAME
         and source.get("workflow_path") == run.get("path") == WORKFLOW_PATH
         and source.get("event") == run.get("event")
         and source.get("event") in {"workflow_dispatch", "workflow_run"}
