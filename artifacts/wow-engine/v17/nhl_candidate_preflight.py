@@ -399,6 +399,16 @@ def validate_nhl_goalie_status_handoff(
             raise NHLCandidatePreflightError(
                 "NHL_GOALIE_SOURCE_PIN_MISSING", "official source and payload hash required"
             )
+    # An updated timestamp alone does not establish a fresh immutable source
+    # receipt. Require at least one changed source identity/content commitment.
+    if (
+        frozen["source_snapshot_id"] == current["source_snapshot_id"]
+        and str(frozen["source_payload_sha256"]).lower()
+        == str(current["source_payload_sha256"]).lower()
+    ):
+        raise NHLCandidatePreflightError(
+            "NHL_GOALIE_SOURCE_NOT_REFRESHED", frozen_event
+        )
     for side in ("home", "away"):
         frozen_goalie = frozen.get(side)
         current_goalie = current.get(side)
