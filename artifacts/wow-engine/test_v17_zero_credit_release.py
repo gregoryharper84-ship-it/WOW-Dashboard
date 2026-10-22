@@ -122,3 +122,87 @@ def test_workflows_keep_paid_review_and_explicit_free_flag():
     assert "--zero-credit-policy-enabled" in qa_yaml
     assert "--zero-credit-policy-enabled" in release_yaml
     assert "uses: ./.github/actions/wow-chatgpt-agent" in qa_yaml
+
+
+def dispatcher_case(*, zero_credit=True, checks=None, author="copilot-swe-agent[bot]",
+                    source_review="PENDING", file="src/code.py"):
+    import governance_dispatcher as dispatch_policy
+    checked = checks if checks is not None else [
+        {"id": i, "name": name, "head_sha": SHA, "status": "completed",
+         "conclusion": "success", "app": {"id": 15368},
+         "started_at": f"2026-10-21T00:00:{i:02d}Z"}
+        for i, name in enumerate(dispatch_policy.QA_EVIDENCE_CHECKS, 1)
+    ]
+    pr = {"number": 41, "state": "open", "draft": False,
+          "merged_at": None, "changed_files": 1,
+          "user": {"id": 9001, "login": author},
+          "head": {"sha": SHA, "ref": "fix/nfl", "repo": {"full_name": REPO}},
+          "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    return dispatch_policy.classify_target(
+        repository=REPO, owner_id=285088163, owner_login="gregoryharper84-ship-it",
+        pull=pr, file_records=[{"filename": file, "status": "modified"}],
+        check_runs=checked, reviews=[], source_review=source_review,
+        available_roles={"qa", "release"}, zero_credit_mode=zero_credit,
+    )
+
+
+def test_dispatcher_zero_credit_needs_no_nonexistent_source_workflow():
+    decision = dispatcher_case()
+    assert decision["action"] == "DISPATCH" and decision["role"] == "qa"
+
+
+def test_dispatcher_legacy_still_requires_source_workflow():
+    decision = dispatcher_case(zero_credit=False)
+    assert decision["findings"] == ["SOURCE_REVIEW_WORKFLOW_UNAVAILABLE"]
+
+
+def test_dispatcher_zero_credit_still_requires_all_checks():
+    decision = dispatcher_case(checks=[])
+    assert decision["action"] == "HOLD"
+    assert decision["findings"][0].startswith("REQUIRED_CHECK_MISSING:")
+
+
+def test_dispatcher_zero_credit_rejects_wrong_app_on_regressions():
+    import governance_dispatcher as dp
+    checks = [
+        {"id": i, "name": name, "head_sha": SHA, "status": "completed",
+         "conclusion": "success", "app": {"id": 666},
+         "started_at": f"2026-10-21T00:00:{i:02d}Z"}
+        for i, name in enumerate(dp.QA_EVIDENCE_CHECKS, 1)
+    ]
+    assert dispatcher_case(checks=checks)["action"] == "HOLD"
+
+
+def test_dispatcher_zero_credit_routes_release_after_signed_qa_pass():
+    import governance_dispatcher as dp
+    checks = [
+        {"id": i, "name": name, "head_sha": SHA, "status": "completed",
+         "conclusion": "success", "app": {"id": 15368},
+         "started_at": f"2026-10-21T00:00:{i:02d}Z"}
+        for i, name in enumerate(dp.QA_EVIDENCE_CHECKS, 1)
+    ]
+    checks.append({"id": 30, "name": dp.QA_CHECK, "head_sha": SHA,
+                   "status": "completed", "conclusion": "success",
+                   "app": {"id": dp.QA_APP_ID},
+                   "started_at": "2026-10-21T01:00:00Z"})
+    decision = dispatcher_case(checks=checks)
+    assert decision["action"] == "DISPATCH" and decision["role"] == "release"
+
+
+def test_release_dispatch_requires_real_qa_run_identity():
+    import pytest
+    import governance_dispatcher_github as transport
+
+    class Client:
+        def __init__(self): self.body = None
+        def post(self, _url, body):
+            self.body = body
+
+    workflow = {"id": 999, "path": transport.WORKFLOWS["release"]["path"]}
+    client = Client()
+    with pytest.raises(transport.DispatchError, match="RELEASE_QA_RUN_IDENTITY_MISSING"):
+        transport.dispatch(client, "release", workflow, 41, SHA)
+    transport.dispatch(client, "release", workflow, 41, SHA,
+                       qa_run_id=120118553031, qa_run_attempt=2)
+    assert client.body["inputs"]["qa_run_id"] == "120118553031"
+    assert client.body["inputs"]["qa_run_attempt"] == "2"
