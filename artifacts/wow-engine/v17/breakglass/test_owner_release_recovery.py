@@ -195,3 +195,32 @@ def test_watchdog_does_not_arm_on_wrong_baseline(tmp_path):
     with pytest.raises(recovery.RecoveryHold):
         watchdog.watch(api,x,baseline(),tmp_path/"ready","f"*64)
     assert not (tmp_path/"ready").exists()
+
+
+def test_actual_owner_signature_and_tamper(tmp_path, monkeypatch):
+    """Exercise real OpenSSH signature verification with a disposable test key."""
+    import subprocess, shutil, base64, hashlib
+    if not shutil.which("ssh-keygen"):
+        pytest.skip("OpenSSH signing binary unavailable")
+    key=tmp_path/"owner-test"
+    subprocess.run(["ssh-keygen","-q","-t","ed25519","-N","","-f",str(key)],
+                   check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    pub=key.with_suffix(".pub").read_text().split()
+    digest="SHA256:"+base64.b64encode(hashlib.sha256(base64.b64decode(pub[1])).digest()).decode().rstrip("=")
+    monkeypatch.setattr(recovery,"PINNED_OWNER_KEY_FINGERPRINT",digest)
+    signers=tmp_path/"allowed_signers"
+    signers.write_text('wow-owner namespaces="wow-breakglass" '+pub[0]+' '+pub[1]+' owner-test\\n')
+    payload=tmp_path/"intent.json"
+    payload.write_bytes(recovery.canonical(intent()))
+    subprocess.run(["ssh-keygen","-Y","sign","-n","wow-breakglass","-f",str(key),str(payload)],
+                   check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    sig=tmp_path/"intent.json.sig"
+    recovery.verify_owner_signature(payload.read_bytes(),sig,signers)
+    with pytest.raises(recovery.RecoveryHold):
+        recovery.verify_owner_signature(payload.read_bytes()+b"wrong",sig,signers)
+
+def test_pinned_owner_signer_rejects_unregistered_namespace(tmp_path):
+    p=tmp_path/"allowed"
+    p.write_text('wow-owner namespaces="wow-release" ssh-ed25519 AAAA owner\\n')
+    with pytest.raises(recovery.RecoveryHold):
+        recovery.owner_signer_file(p)
