@@ -480,7 +480,8 @@ def automated_review_data(data=None, *, now=NOW):
 SOURCE_REVIEW_RUN = {
     "id": 54321,
     "run_attempt": 1,
-    "name": source_review.WORKFLOW_NAME,
+    "name": f"{source_review.WORKFLOW_NAME} event=workflow_dispatch pr=1822",
+    "workflow_id": source_review.WORKFLOW_ID,
     "path": source_review.WORKFLOW_PATH,
     "event": "workflow_dispatch",
     "head_branch": "main",
