@@ -32,6 +32,8 @@ The scheduled workflow retains a 30-day report artifact. Canonical postmortems a
 
 To make a recurring family actionable, engineering triage should record a stable `confirmed_root_cause_id` or `root_cause_code` and link corrective PRs, prevention regression tests, and production acceptance evidence through the existing lifecycle.
 
+**Closure learning handoff:** New P0/P1 incidents opened through the canonical incident manager use `learning_contract_version=1`. At Reporter verified closure (not merge/QA/Release), a structured learning receipt must identify why the prior tests missed the defect, a regression test and its authentic execution evidence, preventive control, reviewed adjacent paths, a stable confirmed root cause, recurrence links, and monitoring owner. The manager copies the confirmed cause into `confirmed_root_cause_id`, enabling the existing `failure_families` scheduled analysis. Repeated confirmed root causes produce `PREVENTIVE_ARCHITECTURE_REVIEW`; the report is advisory evidence and must not automatically close incidents or become a required check. Historical records are grandfathered. Capture baseline recurrence and verified repair data before claiming that reliability improved.
+
 ## Verification and release checklist
 1. `python -m pytest -q artifacts/wow-engine/test_v17_sirt_assurance.py`
 2. Verify the existing engineering code-health workflow passes on the exact PR head.
