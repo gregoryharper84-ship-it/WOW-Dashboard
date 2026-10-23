@@ -37,6 +37,7 @@ from team_event_request_runtime import install_team_event_request_routes
 from v17.core_intelligence_compounding_routes import install_compounding_intelligence_routes_read_only
 from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
 from v17.core_intelligence_runtime import install_core_intelligence_routes
+from v17 import memory_admission
 from v17.spread_forward_shadow import warm_ncaaf_forward_context
 from v17.scout_handoff_queue_installer import schedule_scout_handoff_queue
 from v17.core_intelligence_shadow_runtime import install_shadow_lab_routes
@@ -445,6 +446,28 @@ def get_ncaaf_spread_forward_warm_status():
     )
 
 
+def _warm_ncaaf_spread_under_heavy_slot() -> dict:
+    """Run research warm only while owning the single V17 heavyweight slot.
+
+    Admission and release occur in the *same* worker thread; cancelling an
+    asyncio.to_thread awaiter does not release the permit prematurely.
+    DB connection/corpus loading never begin when memory is pressured or when
+    Scout, Daily or an interactive user request has priority.
+    """
+    operation = "NCAAF_SPREAD_FORWARD_WARM"
+    permit = memory_admission.try_acquire_heavy_job(operation)
+    if permit is None:
+        raise memory_admission.HeavyJobDeferred(
+            code="HEAVY_JOB_BUSY",
+            operation=operation,
+            detail={"reason": "SERIALIZATION_BUSY", "retry_after_seconds": 15.0},
+        )
+    try:
+        return warm_ncaaf_forward_context(_db_client())
+    finally:
+        permit.release()
+
+
 async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
     """Warm immutable research context after the shared startup DB consumers settle."""
     try:
@@ -487,7 +510,32 @@ async def _warm_ncaaf_spread_forward_context_after_startup() -> None:
             max_attempts=max_attempts,
         )
         try:
-            receipt = await asyncio.to_thread(warm_ncaaf_forward_context, _db_client())
+            receipt = await asyncio.to_thread(_warm_ncaaf_spread_under_heavy_slot)
+        except memory_admission.HeavyJobDeferred as exc:
+            # A background research warm must never bypass a real cgroup hold
+            # or steal the heavyweight slot from fitted user-facing scoring.
+            # A bounded retry is nonterminal; the warm status remains DEFERRED
+            # if all attempts encounter the same safety condition.
+            has_retry = attempt < max_attempts
+            _set_spread_forward_warm_state(
+                "DEFERRED",
+                "SPREAD_FORWARD_CONTEXT_WARM_DEFERRED",
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error_type=type(exc).__name__,
+                error_code=exc.code,
+                transient=True,
+                retry_required=has_retry,
+                retry_trigger="NEXT_STARTUP_OR_AUTHENTICATED_RETRY",
+            )
+            _spread_forward_logger.warning(
+                "WOW_NCAAF_SPREAD_FORWARD_WARM status=DEFERRED "
+                "attempt=%s max_attempts=%s error_code=%s can_execute=false",
+                attempt, max_attempts, exc.code,
+            )
+            if has_retry:
+                continue
+            return
         except Exception as exc:  # noqa: BLE001
             error_code = _spread_forward_warm_error_code(exc)
             transient = _spread_forward_warm_failure_is_transient(exc)
