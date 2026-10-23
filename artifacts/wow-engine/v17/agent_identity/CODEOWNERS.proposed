@@ -14,6 +14,7 @@
 /artifacts/wow-engine/v17/engineering_incident_identity.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_effectiveness.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_provider_failover.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_remote_fallback.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/governance_dispatcher.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/governance_dispatcher_github.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/independent_release_checks.py @gregoryharper84-ship-it
