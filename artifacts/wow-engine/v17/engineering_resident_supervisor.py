@@ -24,11 +24,14 @@ from v17.amrt_operational_lanes import dispatch_preflight
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
-ACTIVE_WORKFLOWS = frozenset({
-    "wow-v17-chatgpt-engineering-worker",
-    "wow-v17-claude-engineering-worker",
-    "wow-v17-engineering-provider-dispatcher",
-})
+# Inspect the exact three existing engineering workflow files. Repository-wide
+# Actions counts include unrelated CI jobs and can change between pagination
+# calls. They cannot establish whether an engineering writer already owns work.
+ACTIVE_WORKFLOW_FILES = (
+    "wow-v17-chatgpt-engineering-worker.yml",
+    "wow-v17-claude-engineering-worker.yml",
+    "wow-v17-engineering-provider-dispatcher.yml",
+)
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
@@ -110,14 +113,31 @@ class GitHubTransport:
 
 
 def active_engineering_workflow(client: GitHubTransport) -> bool:
-    """Fail closed when GitHub could not enumerate the complete active run set."""
-    for state in ("queued", "in_progress", "waiting", "requested"):
-        result = client.get(f"actions/runs?status={state}&per_page=100")
-        runs = result.get("workflow_runs")
-        if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
-            raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(run.get("name") in ACTIVE_WORKFLOWS for run in runs):
-            return True
+    """Check only protected engineering workers, never repository-wide CI.
+
+    A positive GitHub server count for any selected workflow/state is itself
+    sufficient to HOLD dispatch, even if GitHub returned a short first page.
+    Malformed contradictory inventory fails closed, never grants a write lease.
+    """
+    for workflow in ACTIVE_WORKFLOW_FILES:
+        for state in ("queued", "in_progress", "waiting", "requested"):
+            result = client.get(
+                f"actions/workflows/{workflow}/runs?status={state}&per_page=100"
+            )
+            if not isinstance(result, dict):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            runs = result.get("workflow_runs")
+            total = result.get("total_count")
+            if (
+                not isinstance(runs, list)
+                or type(total) is not int
+                or total < 0
+                or any(not isinstance(run, dict) for run in runs)
+                or (total == 0 and runs)
+            ):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            if total > 0 or runs:
+                return True
     return False
 
 
@@ -408,6 +428,7 @@ def persist_resident_heartbeat(
 # GitHub/Redis/Supabase transports: those could contain credentials or URLs.
 _SAFE_RESIDENT_CYCLE_REASONS = frozenset({
     "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE",
+    "ACTIVE_WORKFLOW_INVENTORY_INVALID",
     "OPEN_PR_INVENTORY_INVALID",
     "OPEN_PR_INVENTORY_INCOMPLETE",
     "OPEN_PR_INVENTORY_NOT_EXHAUSTIVE",
