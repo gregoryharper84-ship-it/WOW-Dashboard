@@ -343,6 +343,7 @@ These local research-only typed errors belong to `artifacts/wow-engine/scripts/n
 | `SOURCE_EVENTS_MALFORMED` | NBA ESPN raw source capture / evidence validation | Expected ESPN scoreboard event array is absent or malformed. | No |
 | `SOURCE_EVENT_IDENTITY_MALFORMED` | NBA ESPN raw source capture / evidence validation | An event has no valid source event identity. | No |
 | `SOURCE_EVENT_IDENTITY_DUPLICATE` | NBA ESPN raw source capture / evidence validation | Raw response repeats the same event identity. | No |
+| `SOURCE_TEAM_IDENTITY_MALFORMED` | NBA ESPN raw source capture / home-away identity | Missing, duplicate or contradictory ESPN home/away team IDs, side roles or names; no canonical team identity may be inferred. | No |
 | `SOURCE_EVENT_TIME_MALFORMED` | NBA ESPN raw source capture / evidence validation | An event has invalid/missing timezone-qualified start. | No |
 | `SOURCE_EVENT_STATUS_MALFORMED` | NBA ESPN raw source capture / evidence validation | An event is missing a declared ESPN state. | No |
 | `CAPTURE_OUTPUT_ALREADY_EXISTS` | NBA ESPN raw source capture / evidence validation | One-shot output path already contains an immutable capture or receipt. | No |
