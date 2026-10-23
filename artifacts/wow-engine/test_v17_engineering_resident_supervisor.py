@@ -15,6 +15,7 @@ from v17.engineering_resident_supervisor import (
     pending_pr_for_issue,
     persist_resident_heartbeat,
     supervisor_runtime_status,
+    resident_activation_blockers,
 )
 
 ISSUE = {
@@ -605,3 +606,53 @@ def test_amrt_1841_wrong_change_class_blocks_new_source_dispatch():
     client = AMRTClient(open_pr=False)
     assert dispatch_once(client, FakeRedis(), manifest) == "NO_APPROVED_OPEN_ENGINEERING_TASK"
     assert not client.sent
+
+
+@pytest.mark.parametrize("field,reason", [
+    ("enabled", "RESIDENT_FLAG_DISABLED"),
+    ("token_configured", "GITHUB_DISPATCH_TOKEN_MISSING"),
+    ("redis_configured", "REDIS_LEASE_CONFIG_MISSING"),
+    ("durable_heartbeat_configured", "DURABLE_HEARTBEAT_CONFIG_MISSING"),
+    ("governance_pass", "DRY_RUN_GOVERNANCE_HOLD"),
+])
+def test_activation_diagnostic_is_exact_but_never_contains_secret_values(field, reason):
+    status = {
+        "enabled": True,
+        "token_configured": True,
+        "redis_configured": True,
+        "durable_heartbeat_configured": True,
+        "governance_pass": True,
+        "can_execute": False,
+    }
+    assert resident_activation_blockers(status) == ()
+    status[field] = False
+    result = resident_activation_blockers(status)
+    assert result == (reason,)
+    assert "SECRET" not in str(result)
+
+
+def test_activation_diagnostics_include_all_missing_categories_without_credentials():
+    status = {"enabled": True, "token_configured": False,
+              "redis_configured": False, "durable_heartbeat_configured": True,
+              "governance_pass": False}
+    assert resident_activation_blockers(status) == (
+        "GITHUB_DISPATCH_TOKEN_MISSING",
+        "REDIS_LEASE_CONFIG_MISSING",
+        "DRY_RUN_GOVERNANCE_HOLD",
+    )
+
+
+def test_actual_env_values_do_not_appear_in_safe_diagnostics(monkeypatch):
+    monkeypatch.setenv("WOW_ENGINEERING_RESIDENT_DISPATCH_ENABLED", "1")
+    monkeypatch.delenv("WOW_ENGINEERING_GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("REDIS_URL", "redis://token-must-not-appear@host:6379/0")
+    monkeypatch.setenv("SUPABASE_URL", "https://private-supabase-url.example")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "super-secret-must-not-appear")
+    monkeypatch.setenv("WOW_CAN_EXECUTE", "false")
+    monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
+    decision = supervisor_runtime_status()
+    blockers = resident_activation_blockers(decision)
+    assert blockers == ("GITHUB_DISPATCH_TOKEN_MISSING",)
+    assert "secret-must-not-appear" not in str(decision)
+    assert "token-must-not-appear" not in str(decision)
+    assert "private-supabase-url" not in str(decision)
