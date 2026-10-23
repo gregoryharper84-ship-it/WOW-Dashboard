@@ -770,3 +770,51 @@ def test_specific_workflow_inventory_invalid_fails_closed(bad):
             return super().get(suffix)
     with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INVALID"):
         dispatch_once(Invalid(), FakeRedis(), MANIFEST)
+
+
+def test_github_numeric_repository_link_alias_is_same_exact_repo(monkeypatch):
+    client = GitHubTransport("synthetic-test-token")
+    link = (
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=2>; rel="next", '
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=3>; rel="last"'
+    )
+    monkeypatch.setattr(
+        client, "call_with_headers",
+        lambda _: ([open_pr_record(9100 + i) for i in range(100)], {"Link": link}),
+    )
+    rows, has_next, link_present = client.get_open_pull_request_page(1)
+    assert len(rows) == 100 and has_next and link_present
+
+
+@pytest.mark.parametrize("alteration", [
+    "https://api.github.com/repositories/1240256888/pulls?state=open&per_page=100&page=2",
+    "https://not-github.example/repositories/1240256887/pulls?state=open&per_page=100&page=2",
+    "http://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2",
+    "https://api.github.com/repositories/1240256887/pulls?state=closed&per_page=100&page=2",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=3",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2&other=1",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2#fragment",
+    "https://api.github.com/repositories/1240256887/issues?state=open&per_page=100&page=2",
+])
+def test_numeric_alias_must_not_relax_exact_pagination_identity(alteration, monkeypatch):
+    client = GitHubTransport("synthetic-test-token")
+    link = f'<{alteration}>; rel="next"'
+    monkeypatch.setattr(
+        client, "call_with_headers",
+        lambda _: ([open_pr_record(9300 + i) for i in range(100)], {"link": link}),
+    )
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
+        client.get_open_pull_request_page(1)
+
+
+def test_numeric_repository_link_alias_only_for_configured_repository(monkeypatch):
+    client = GitHubTransport("synthetic-test-token", repo="different-owner/different-repo")
+    link = (
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=2>; rel="next"'
+    )
+    monkeypatch.setattr(client, "call_with_headers", lambda _: ([], {"Link": link}))
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
+        client.get_open_pull_request_page(1)
