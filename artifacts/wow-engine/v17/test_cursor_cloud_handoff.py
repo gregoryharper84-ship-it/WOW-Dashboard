@@ -100,6 +100,24 @@ class HandoffTests(unittest.TestCase):
         self.assertFalse(result["production_verified"])
         self.assertEqual(len(calls), 4)
 
+    def test_automatic_label_bridge_is_guarded(self):
+        bridge = (HERE.parent.parent.parent / ".github" / "workflows" /
+                  "wow-v17-cursor-pr-handoff-bridge.yml").read_text()
+        self.assertIn("pull_request_target:", bridge)
+        self.assertIn("types: [labeled]", bridge)
+        self.assertIn("github.event.label.name == 'wow-cursor-ready'", bridge)
+        self.assertIn("github.event.sender.login == 'wow-engineering[bot]'", bridge)
+        self.assertIn("CURSOR_AUTOMATIC_INCIDENT_NOT_OPEN", bridge)
+        self.assertIn('gh workflow run wow-v17-engineering-provider-dispatcher.yml', bridge)
+
+    def test_spending_gate_default_disabled_and_global_cursor_serialization(self):
+        workflow = (HERE.parent.parent.parent / ".github" / "workflows" /
+                    "wow-v17-engineering-provider-dispatcher.yml").read_text()
+        self.assertIn("CURSOR_SINGLE_AGENT", workflow)
+        self.assertIn("CURSOR_SPEND_CAP_CONFIRMED", workflow)
+        self.assertIn("CURSOR_SPEND_CAP_UNCONFIRMED", workflow)
+        self.assertIn('CURSOR_HANDOFF_ENABLED:-false', workflow)
+
     def test_invalid_agent_receipt_fails_closed(self):
         def api(url, **kwargs):
             if "/pulls/" in url:

@@ -57,7 +57,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: wow-v17-engineering-provider-dispatcher-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-provider-dispatcher-${{ inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' || inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
@@ -307,6 +307,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           CURSOR_HANDOFF_ENABLED: ${{ vars.CURSOR_HANDOFF_ENABLED }}
+          CURSOR_SPEND_CAP_CONFIRMED: ${{ vars.CURSOR_SPEND_CAP_CONFIRMED }}
           CURSOR_PR_NUMBER: ${{ inputs.cursor_pr_number }}
           CURSOR_EXPECTED_HEAD: ${{ inputs.cursor_expected_head }}
           CURSOR_TASK: ${{ inputs.cursor_task }}
@@ -316,6 +317,13 @@ jobs:
           if [ "${CURSOR_HANDOFF_ENABLED:-false}" != "true" ]; then
             printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_HANDOFF_DISABLED","can_execute":false,"production_verified":false}\n' > "$receipt"
             echo "::error::CURSOR_HANDOFF_DISABLED"
+            exit 1
+          fi
+          # This opt-in is an owner's attestation, NOT a provider-enforced price cap.
+          # Never launch while additional spending controls have not been confirmed.
+          if [ "${CURSOR_SPEND_CAP_CONFIRMED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_SPEND_CAP_UNCONFIRMED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_SPEND_CAP_UNCONFIRMED"
             exit 1
           fi
           if [ -z "${CURSOR_PR_NUMBER:-}" ] || [ -z "${CURSOR_EXPECTED_HEAD:-}" ] || [ -z "${CURSOR_TASK:-}" ]; then
