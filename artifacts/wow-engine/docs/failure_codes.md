@@ -302,3 +302,20 @@ Regression: `artifacts/wow-engine/tests/test_v17_nba_points_snapshot_bridge.py`,
 | `NBA_HISTORY_BOX_GAME_ID_MISMATCH`, `NBA_HISTORY_GAME_NOT_FINAL`, `NBA_HISTORY_BOX_TIME_CONTRADICTION`, `NBA_HISTORY_BOX_SCORE_SCHEMA_INVALID`, `NBA_HISTORY_BOX_PLAYER_ID_MISSING_OR_DUPLICATE`, `NBA_HISTORY_POINTS_DISAGREE_WITH_BOX` | NBA CDN settled-game reconciliation | Missing exact official game/player, non-final game, impossible kickoff/date, invalid boxscore or disagreed points | No |
 
 Regression: `artifacts/wow-engine/tests/test_v17_nba_points_official_history.py`. MAX 10 CDN game calls plus 1-2 supplied NBA playergamelog seasons; no guessed timestamps, role status, board line, probabilities or wager functions. A successful history retrieval is **not** a complete pregame evidence snapshot.
+
+### NBA POINTS exact quote/roster event binding (#1990)
+
+A numerically matching prop quote is **not** authority for a different event, player, period, stat or direction. The bridge now requires a source-supplied, canonical event-ID-bound current roster and exact board quote; unknown or missing identifiers hold at evidence stage. This does not certify the board source's authenticity or produce a model probability.
+
+| Code | Owning stage | Fail-closed condition |
+|---|---|---|
+| `NBA_POINTS_BOARD_EVENT_MISMATCH` | Exact quote identity | Board quote canonical event ID differs from target |
+| `NBA_POINTS_BOARD_PLAYER_MISMATCH` | Exact quote identity | Quote canonical player ID differs from target |
+| `NBA_POINTS_BOARD_STAT_MISMATCH` | Exact quote identity | Quote stat is not NBA POINTS |
+| `NBA_POINTS_BOARD_DIRECTION_MISMATCH` | Exact quote identity | Quote MORE/LESS side differs from target |
+| `NBA_POINTS_BOARD_PERIOD_MISMATCH` | Exact quote identity | Quote period is not FULL_GAME |
+| `NBA_POINTS_BOARD_START_MISMATCH` | Exact quote identity | Quote event kickoff timestamp differs from target |
+| `NBA_POINTS_ROSTER_EVENT_MISMATCH` | Current roster identity | Source roster event ID differs from the exact canonical target |
+| `NBA_POINTS_*_MISSING` | Source structure | Missing quote/roster identity is held rather than inferred |
+
+Both directions require their own correctly typed exact quote and preserve the already-observed market line. These checks are additional to event cutoff, official history, calibration and terminal governance; `can_execute=false`.
