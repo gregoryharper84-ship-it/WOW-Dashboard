@@ -190,6 +190,16 @@ def classify_provider_failure(provider: str, log_text: str) -> ProviderFailure:
     )
 
 
+# Billing and credential failures cannot heal merely because 120 minutes elapsed.
+# The last completed successful primary run clears this state; explicit force_provider
+# remains the operator-controlled recovery probe, not an automatic retry loop.
+OPENAI_PERSISTENT_BREAKER_CODES = frozenset({
+    "OPENAI_API_QUOTA_EXCEEDED",
+    "OPENAI_API_KEY_MISSING",
+    "OPENAI_API_AUTH_FAILED",
+})
+
+
 def circuit_breaker_active(
     failure_code: str,
     *,
@@ -199,7 +209,10 @@ def circuit_breaker_active(
     return (
         failure_code in OPENAI_FAILOVER_ELIGIBLE
         and age_minutes >= 0
-        and age_minutes < cooldown_minutes
+        and (
+            failure_code in OPENAI_PERSISTENT_BREAKER_CODES
+            or age_minutes < cooldown_minutes
+        )
     )
 
 

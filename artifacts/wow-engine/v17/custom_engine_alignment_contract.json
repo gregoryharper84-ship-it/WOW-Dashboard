@@ -21,7 +21,7 @@
       "environment": "wow-v17-render-production-attestation",
       "task": "wow-v17-render-receipt-pointer",
       "advancing_receipt_statuses": ["EXACT_SHA_RENDER_DEPLOY_LIVE", "EXACT_SHA_ALREADY_LIVE"],
-      "non_advancing_receipt_statuses": ["NON_MAIN_NO_DEPLOY", "STALE_SHA_NO_DEPLOY", "UPSTREAM_NOT_SUCCESS_NO_DEPLOY", "DEPLOY_SUPERSEDED_BY_NEW_MAIN"],
+      "non_advancing_receipt_statuses": ["NON_MAIN_NO_DEPLOY", "STALE_SHA_NO_DEPLOY", "UPSTREAM_NOT_SUCCESS_NO_DEPLOY", "DEPLOY_SUPERSEDED_BY_NEW_MAIN", "PRODUCTION_RELEASE_HOLD"],
       "green_workflow_alone_advances_pointer": false,
       "direct_protected_main_mutation": false,
       "can_execute": false,

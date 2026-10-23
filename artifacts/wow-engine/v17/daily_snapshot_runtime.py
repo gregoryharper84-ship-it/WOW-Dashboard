@@ -327,6 +327,19 @@ def _settlement_basis(sport: str) -> str:
     }.get(sport, "FULL_GAME_OUTRIGHT")
 
 
+def _cross_sport_stage_status(row: dict[str, Any]) -> str:
+    """Native Daily stage terminal for one discovered cross-sport row.
+
+    ``bucket`` records the model outcome and is set before the full-board
+    overlay runs. The overlay may later withdraw ``rank_eligible`` when the
+    publication-chain audit proves a mandatory stage unproven; a row without
+    rank eligibility is not an approved stage. Pre-overlay, MODEL_COMPLETED
+    already implies rank_eligible, so this only ever lowers a row to HELD.
+    """
+    completed = row.get("bucket") == discovery.MODEL_COMPLETED
+    return "COMPLETED" if completed and row.get("rank_eligible") is True else "HELD"
+
+
 def _cross_sport_moneyline_rows(
     req: DailySnapshotRequest,
     *,
@@ -431,9 +444,7 @@ def _cross_sport_moneyline_rows(
             },
             row,
             assert_no_terminal_upgrade(
-                reduce_row_terminal(
-                    ["COMPLETED" if row.get("bucket") == discovery.MODEL_COMPLETED else "HELD"]
-                )
+                reduce_row_terminal([_cross_sport_stage_status(row)])
             ),
         )
         for row in scan["rows"]

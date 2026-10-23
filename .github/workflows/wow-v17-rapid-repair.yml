@@ -3,12 +3,6 @@ name: wow-v17-rapid-repair
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'artifacts/wow-engine/**'
-      - '.github/workflows/wow-v17-rapid-repair.yml'
-      - '.github/workflows/wow-engine-verify.yml'
-      - '.github/workflows/wow-v17-change-impact-gate.yml'
-      - 'codecov.yml'
   workflow_dispatch:
 
 permissions:

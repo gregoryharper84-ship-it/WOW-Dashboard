@@ -2,12 +2,9 @@ name: wow-v17-chatgpt-engineering-worker
 run-name: >-
   wow-v17-chatgpt-engineering-worker lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }}
 
+# Only the provider-aware dispatcher may automatically admit the primary
+# worker. Manual workflow_dispatch remains available for explicit recovery.
 on:
-  schedule:
-    - cron: "17 * * * *"
-  workflow_run:
-    workflows: ["wow-v17-nightly-engineering-scan"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       target_incident:
@@ -35,17 +32,13 @@ permissions:
   issues: read
 
 concurrency:
-  group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-implementation-single-writer
   cancel-in-progress: false
 
 jobs:
   multi-agent-engineering:
     name: WOW V17 ChatGPT engineering team
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'schedule' ||
-      (github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion != 'cancelled') ||
-      (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.conclusion != 'cancelled')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     environment: wow-engineering
@@ -153,6 +146,13 @@ jobs:
               target_reason="Domain-scoped exact P0 target."
               target_hold="DOMAIN_SCOPED_P0_LEASE"
             elif [ "$severity" = "P1" ] && [ "$lane" = "STANDARD" ]; then
+              python artifacts/wow-engine/v17/engineering_dispatch_queue.py check-standard \
+                --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+                --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+                --incident "$TARGET_INCIDENT" > /dev/null || {
+                echo "::error::STANDARD_TARGET_CONFLICTS_WITH_OPEN_RAPID_P0:$TARGET_INCIDENT"
+                exit 1
+              }
               [ -z "$lease_group" ] || [ "$lease_group" = "GLOBAL" ] || {
                 echo "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE:$TARGET_INCIDENT" >&2; exit 1;
               }
@@ -175,8 +175,10 @@ jobs:
               terminal_authority:"V17_TERMINAL_REDUCER"
             }')
           else
-            jq '.records |= map(select(.severity != "P0" or .execution_lane != "RAPID"))' \
-              "$RUNNER_TEMP/wow-dispatch-queue.json" > "$RUNNER_TEMP/wow-standard-dispatch-queue.json"
+            python artifacts/wow-engine/v17/engineering_dispatch_queue.py standard \
+              --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+              --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+              --output "$RUNNER_TEMP/wow-standard-dispatch-queue.json" > /dev/null
             decision=$(python artifacts/wow-engine/v17/engineering_agent_team.py dual-priority \
               --ledger "$RUNNER_TEMP/wow-standard-dispatch-queue.json")
           fi

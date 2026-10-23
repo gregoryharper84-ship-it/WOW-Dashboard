@@ -104,6 +104,26 @@ LIVE_ACCEPTANCE_PROBES: dict[str, str] = {
 
 ALLOWED_DISPOSITIONS = frozenset({"BLOCKED_WITH_EXACT_REASON"})
 TRUST_ROOT_SOURCE = ".github/workflows/wow-v17-existing-pr-governance-review.yml"
+# Governance-workflow seed previously embedded in the existing-PR shell deny list.
+# The receipt classifier treats every .github/ and .agents/ path as a trust root.
+# This seed is what governance_trust_roots() scans for files those workflows execute.
+DECLARED_TRUST_ROOT_PATHS = (
+    ".github/workflows/wow-verify.yml",
+    ".github/workflows/wow-engine-verify.yml",
+    ".github/workflows/wow-v17-rapid-repair.yml",
+    ".github/workflows/wow-v17-change-impact-gate.yml",
+    ".github/workflows/wow-v17-trusted-governance-gate.yml",
+    ".github/workflows/wow-v17-existing-pr-governance-review.yml",
+    ".github/workflows/wow-v17-morning-green-continuation.yml",
+    ".github/workflows/wow-v17-release-production-verification-agent.yml",
+    ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+    ".github/workflows/wow-v17-claude-engineering-worker.yml",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+    ".github/scripts/verify_engineering_governance_receipt.py",
+    ".github/scripts/verify_existing_pr_governance_receipt.py",
+    ".github/actions/wow-chatgpt-agent/*",
+    ".github/actions/wow-claude-agent/*",
+)
 CODEOWNERS_LOCATIONS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")  # GitHub search order
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # Autonomy model: ordinary PRs need no human review; they merge only when the
@@ -115,18 +135,23 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # ----------------------------------------------------------------------------- utils
 
 def trust_root_paths(repo_root: Path) -> list[str]:
-    """Trust-root paths exactly as the protected existing-PR review enforces them."""
-    text = (repo_root / TRUST_ROOT_SOURCE).read_text()
-    match = re.search(r'case "\$changed_path" in\s*\n\s*([^\n]+)\)\n', text)
-    if not match:
-        raise ValueError("TRUST_ROOT_LIST_UNPARSEABLE")
-    return [p.strip() for p in match.group(1).split("|") if p.strip()]
+    """Governance-workflow seed paths. Prefix rules cover the rest of .github and .agents."""
+    source = repo_root / TRUST_ROOT_SOURCE
+    if not source.is_file():
+        raise ValueError("TRUST_ROOT_SOURCE_MISSING")
+    text = source.read_text()
+    if 'case "$changed_path" in' in text:
+        raise ValueError("TRUST_ROOT_SHELL_DENY_LIST_MUST_NOT_RETURN")
+    if "--bootstrap" not in text or "TRUST_ROOT_BOOTSTRAP" not in text:
+        raise ValueError("TRUST_ROOT_BOOTSTRAP_PATH_MISSING")
+    return list(DECLARED_TRUST_ROOT_PATHS)
 
 
 # Workflows that make governance decisions or hold control-plane credentials.
 GOVERNANCE_WORKFLOWS_EXTRA = (
     ".github/workflows/wow-v17-independent-qa-check.yml",
     ".github/workflows/wow-v17-release-authority-check.yml",
+    ".github/workflows/wow-v17-governance-dispatcher.yml",
 )
 TRUST_ROOT_PREFIXES = (".github/", ".agents/")
 _REF_RE = re.compile(r"((?:artifacts|scripts|\.agents|\.github/scripts)/[A-Za-z0-9_./-]+\.(?:py|json|md|sh|ya?ml|txt))")

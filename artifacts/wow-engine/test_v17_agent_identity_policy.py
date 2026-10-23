@@ -539,6 +539,23 @@ def test_proposed_codeowners_covers_computed_governance_files_without_drift():
     assert listed == expected, (listed - expected, expected - listed)
 
 
+def test_dispatcher_and_computed_governance_roots_require_active_owner_coverage():
+    gov = set(m.governance_trust_roots(ROOT))
+    dispatcher_roots = {
+        "artifacts/wow-engine/v17/governance_dispatcher.py",
+        "artifacts/wow-engine/v17/governance_dispatcher_github.py",
+    }
+    assert dispatcher_roots <= gov
+
+    for codeowners_path in (ROOT / ".github/CODEOWNERS", PROPOSED / "CODEOWNERS.proposed"):
+        text = codeowners_path.read_text()
+        lines = set(text.splitlines())
+        for path in dispatcher_roots:
+            assert f"/{path} @{OWNER}" in lines
+        for path in gov:
+            assert f"@{OWNER}" in m._codeowners_owners(text, path), path
+
+
 def test_governance_trust_roots_include_self_and_inline_imports():
     gov = set(m.governance_trust_roots(ROOT))
     for path in ("artifacts/wow-engine/v17/agent_identity_policy.py",
