@@ -24,8 +24,13 @@ price, a public projection or generic reasoning for an absent fitted model, and
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date as _date
+from datetime import datetime
+from datetime import time as _time
+from datetime import timedelta, timezone
 from time import monotonic
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -639,6 +644,60 @@ def _slate_date_matches(commence_time: Any, slate_date: str, tz_name: str) -> bo
     return local.date().isoformat() == str(slate_date)
 
 
+# The requested slate (local date, timezone) for the discovery pass in flight.
+# Feed adapters compute their provider query window when they are called, and
+# consult ``slate_bounded_window`` so they ask the provider for the requested
+# local day instead of an unbounded rolling horizon from "now".
+_SLATE_FETCH_WINDOW: ContextVar[tuple[str, str] | None] = ContextVar(
+    "wow_slate_fetch_window", default=None
+)
+_MAX_SLATE_WINDOW_HOURS = 168
+
+
+def slate_bounded_window(
+    started: datetime, default_end: datetime
+) -> tuple[datetime, datetime]:
+    """Return the provider query window for the discovery pass in flight.
+
+    Discovery only: this narrows which events a provider is asked for and never
+    touches classification, routing, or probabilities. ``_purge_bucket`` still
+    labels any event outside the requested local slate ``EVENT_WRONG_DATE``.
+
+    Outside a discovery pass, or whenever the slate cannot be resolved into a
+    usable window, the caller's original ``(started, default_end)`` window is
+    returned unchanged, so this can only ever fall back to prior behaviour.
+
+    The window is ``[max(now, slate_start), slate_end)`` in the requested
+    timezone, capped at ``_MAX_SLATE_WINDOW_HOURS`` from ``started``. It is keyed
+    off the requested slate, not "now", so a request for a later slate is not
+    truncated at the rolling horizon.
+    """
+    context = _SLATE_FETCH_WINDOW.get()
+    if not context:
+        return started, default_end
+    slate_date, tz_name = context
+    try:
+        day = _date.fromisoformat(str(slate_date))
+    except (TypeError, ValueError):
+        return started, default_end
+    try:
+        tz = ZoneInfo(str(tz_name))
+    except Exception:  # noqa: BLE001 - mirror _slate_date_matches: unusable zone -> UTC
+        tz = timezone.utc
+    slate_start = datetime.combine(day, _time.min, tzinfo=tz).astimezone(timezone.utc)
+    slate_end = datetime.combine(day + timedelta(days=1), _time.min, tzinfo=tz).astimezone(
+        timezone.utc
+    )
+    # Exclusive upper bound: an event at local midnight belongs to the next day.
+    end = min(slate_end - timedelta(seconds=1), started + timedelta(hours=_MAX_SLATE_WINDOW_HOURS))
+    start = max(started, slate_start)
+    if end <= start:
+        # Slate already over or beyond the cap: keep prior behaviour rather than
+        # issue an empty or inverted provider query.
+        return started, default_end
+    return start, end
+
+
 def normalize_discovered_event(
     raw: Mapping[str, Any],
     *,
@@ -740,7 +799,50 @@ def discovery_budget_seconds() -> float:
     return max(0.5, min(configured, 120.0))
 
 
+@contextmanager
+def slate_window_context(requested_slate_date: Any, requested_timezone: Any):
+    """Publish the requested slate for one discovery pass (reset on exit).
+
+    Every production discovery entry point (this module's wrapper and the
+    acquisition-fairness owner installed by ``v17_observability``) must run its
+    pass inside this context so feed adapters bound their query window.
+    """
+    token = _SLATE_FETCH_WINDOW.set((str(requested_slate_date), str(requested_timezone)))
+    try:
+        yield
+    finally:
+        _SLATE_FETCH_WINDOW.reset(token)
+
+
 def discover_winner_slate(
+    *,
+    requested_slate_date: str,
+    requested_timezone: str,
+    fetch_sport_events: Callable[..., Iterable[Mapping[str, Any]]],
+    supported_sports: Iterable[str] = SUPPORTED_DISCOVERY_SPORTS,
+    discovery_targets: Mapping[str, tuple[DiscoveryTarget, ...]] | None = None,
+    include_regime_variants: bool = False,
+    now: datetime | None = None,
+    budget_seconds: float | None = None,
+) -> DiscoveryInventory:
+    """Discover the slate with feed query windows bound to the requested local day.
+
+    Thin wrapper over ``_discover_winner_slate``; classification is unchanged.
+    """
+    with slate_window_context(requested_slate_date, requested_timezone):
+        return _discover_winner_slate(
+            requested_slate_date=requested_slate_date,
+            requested_timezone=requested_timezone,
+            fetch_sport_events=fetch_sport_events,
+            supported_sports=supported_sports,
+            discovery_targets=discovery_targets,
+            include_regime_variants=include_regime_variants,
+            now=now,
+            budget_seconds=budget_seconds,
+        )
+
+
+def _discover_winner_slate(
     *,
     requested_slate_date: str,
     requested_timezone: str,
