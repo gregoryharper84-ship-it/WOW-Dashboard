@@ -177,6 +177,7 @@ def create_postmortem(
         "engineering_fix_ids": [],
         "created_utc": created,
         "updated_utc": created,
+        "learning_contract_version": "1",
         **team,
     }
     ledger["records"].append(row)
@@ -444,7 +445,8 @@ def mark_release(
     _save_ledger(ledger)
 
 
-def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str | None = None) -> None:
+def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str | None = None,
+                   learning_receipt: dict[str, Any] | None = None) -> None:
     ledger = _load_ledger()
     row = _find_record(ledger, postmortem_id)
     if row.get("workflow_stage") != "REPORTER_CLOSURE":
@@ -454,8 +456,16 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
         "evidence": evidence,
         "closed_utc": _utc_now(),
     }
+    if learning_receipt is not None:
+        if not isinstance(learning_receipt, dict):
+            raise ValueError("learning receipt must be a JSON object")
+        row.setdefault("learning", {}).update(learning_receipt)
     if preventive_control:
         row.setdefault("learning", {})["preventive_control"] = preventive_control
+    if row.get("root_cause_status") == "CONFIRMED":
+        code = (row.get("learning") or {}).get("root_cause_code")
+        if isinstance(code, str) and code:
+            row["confirmed_root_cause_id"] = code
     row["state"] = "VERIFIED_CLOSED"
     latest_fix = _latest_fix_id(row)
     if latest_fix:
@@ -568,6 +578,7 @@ def main() -> None:
     close.add_argument("--postmortem-id", required=True)
     close.add_argument("--evidence", required=True)
     close.add_argument("--preventive-control")
+    close.add_argument("--learning-json-file", help="P0/P1 closure learning receipt JSON file")
 
     args = parser.parse_args()
     if args.command == "validate":
@@ -634,6 +645,8 @@ def main() -> None:
             postmortem_id=args.postmortem_id,
             evidence=args.evidence,
             preventive_control=args.preventive_control,
+            learning_receipt=(json.loads(Path(args.learning_json_file).read_text(encoding="utf-8"))
+                              if args.learning_json_file else None),
         )
         print(args.postmortem_id)
 
