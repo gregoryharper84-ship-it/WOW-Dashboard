@@ -118,6 +118,25 @@ def build_nba_points_snapshot(
     if {team_id, opponent_id} != expected:
         raise NBAPointsSourceError("NBA_POINTS_CANONICAL_TEAM_MISMATCH")
 
+    # A line for another event/player/side is not exact evidence merely because
+    # its numeric value happens to match the requested board line.
+    if _text(line_observation, "event_id") != event_id:
+        raise NBAPointsSourceError("NBA_POINTS_BOARD_EVENT_MISMATCH")
+    if _text(line_observation, "player_id") != player_id:
+        raise NBAPointsSourceError("NBA_POINTS_BOARD_PLAYER_MISMATCH")
+    if _text(line_observation, "stat_type").upper() != STAT_TYPE:
+        raise NBAPointsSourceError("NBA_POINTS_BOARD_STAT_MISMATCH")
+    if _text(line_observation, "direction").upper() != direction:
+        raise NBAPointsSourceError("NBA_POINTS_BOARD_DIRECTION_MISMATCH")
+    if _text(line_observation, "period").upper() != "FULL_GAME":
+        raise NBAPointsSourceError("NBA_POINTS_BOARD_PERIOD_MISMATCH")
+    if _time(line_observation.get("event_start_time"), "board_event_start_time") != event_start:
+        raise NBAPointsSourceError("NBA_POINTS_BOARD_START_MISMATCH")
+    # A season-roster match does not prove this player's actual current
+    # game-specific availability; bind the roster observation to this event.
+    if _text(roster, "event_id") != event_id:
+        raise NBAPointsSourceError("NBA_POINTS_ROSTER_EVENT_MISMATCH")
+
     roster_id, roster_team, roster_name = (_text(roster, key) for key in ("player_id", "team_id", "player"))
     if (roster_id != player_id or roster_team != team_id
             or " ".join(roster_name.split()).casefold() != " ".join(player.split()).casefold()):
