@@ -24,9 +24,8 @@ from v17.amrt_operational_lanes import dispatch_preflight
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
-# Inspect the exact three existing engineering workflow files. Repository-wide
-# Actions counts include unrelated CI jobs and can change between pagination
-# calls. They cannot establish whether an engineering writer already owns work.
+# Only the three registered engineering workflows can own the implementation
+# writer. Unrelated CI run churn must never corrupt this busy check.
 ACTIVE_WORKFLOW_FILES = (
     "wow-v17-chatgpt-engineering-worker.yml",
     "wow-v17-claude-engineering-worker.yml",
@@ -113,29 +112,29 @@ class GitHubTransport:
 
 
 def active_engineering_workflow(client: GitHubTransport) -> bool:
-    """Check only protected engineering workers, never repository-wide CI.
+    """Fail closed on each exact GitHub engineering-workflow active inventory.
 
-    A positive GitHub server count for any selected workflow/state is itself
-    sufficient to HOLD dispatch, even if GitHub returned a short first page.
-    Malformed contradictory inventory fails closed, never grants a write lease.
+    Repository-wide counts can race unrelated CI execution; query only the
+    three already-registered writers. Positive evidence is always BUSY,
+    including transient total_count/row skew. Malformed or overfull inventory
+    still blocks instead of granting another source writer.
     """
-    for workflow in ACTIVE_WORKFLOW_FILES:
+    for filename in ACTIVE_WORKFLOW_FILES:
         for state in ("queued", "in_progress", "waiting", "requested"):
             result = client.get(
-                f"actions/workflows/{workflow}/runs?status={state}&per_page=100"
+                f"actions/workflows/{filename}/runs?status={state}&per_page=100"
             )
             if not isinstance(result, dict):
                 raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
-            runs = result.get("workflow_runs")
-            total = result.get("total_count")
+            total, runs = result.get("total_count"), result.get("workflow_runs")
             if (
-                not isinstance(runs, list)
-                or type(total) is not int
-                or total < 0
-                or any(not isinstance(run, dict) for run in runs)
-                or (total == 0 and runs)
+                isinstance(total, bool) or not isinstance(total, int)
+                or total < 0 or not isinstance(runs, list)
+                or len(runs) > 100 or any(not isinstance(run, dict) for run in runs)
             ):
                 raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            if total > 100:
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
             if total > 0 or runs:
                 return True
     return False
@@ -409,11 +408,9 @@ def persist_resident_heartbeat(
         "updated_at": now,
     }
     if status == "STOPPED":
-        # Render replaces a Celery worker before the retiring process has
-        # necessarily emitted its final heartbeat. A plain upsert here lets the
-        # *old* instance overwrite the new RUNNING row with STOPPED. Fence the
-        # shutdown write atomically to the exact instance that is stopping.
-        # A zero-row update means another instance owns the heartbeat now.
+        # Render may start a replacement before the retiring Celery instance
+        # has emitted its last heartbeat. Fence shutdown to that exact instance;
+        # an old STOPPED cannot clobber a newer RUNNING supervisor heartbeat.
         db_client.table("wow_engineering_auditor_runtime").update(payload).eq(
             "auditor_id", DISPATCHER_HEARTBEAT_ID
         ).eq("instance_id", instance_id).execute()
@@ -428,7 +425,6 @@ def persist_resident_heartbeat(
 # GitHub/Redis/Supabase transports: those could contain credentials or URLs.
 _SAFE_RESIDENT_CYCLE_REASONS = frozenset({
     "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE",
-    "ACTIVE_WORKFLOW_INVENTORY_INVALID",
     "OPEN_PR_INVENTORY_INVALID",
     "OPEN_PR_INVENTORY_INCOMPLETE",
     "OPEN_PR_INVENTORY_NOT_EXHAUSTIVE",
