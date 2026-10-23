@@ -70,8 +70,11 @@ class FakeClient:
         )
 
     def get(self, suffix):
-        if suffix.startswith("actions/runs?"):
-            if self.active and "status=in_progress" in suffix:
+        if suffix.startswith("actions/workflows/"):
+            assert "/runs?status=" in suffix
+            assert suffix.endswith("&per_page=100")
+            if (self.active and "status=in_progress" in suffix
+                    and "wow-v17-chatgpt-engineering-worker.yml" in suffix):
                 return {"total_count": 1, "workflow_runs": [
                     {"name": "wow-v17-chatgpt-engineering-worker"}
                 ]}
@@ -181,10 +184,10 @@ def test_no_duplicate_dispatch_when_busy(locked, cooling, active, open_pr, expec
 def test_concurrently_active_engineering_workflows_block_dispatch():
     class Concurrent(FakeClient):
         def get(self, suffix):
-            if suffix == "actions/runs?status=in_progress&per_page=100":
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=in_progress&per_page=100":
                 return {"total_count": 2, "workflow_runs": [
                     {"name": "wow-v17-chatgpt-engineering-worker"},
-                    {"name": "wow-v17-engineering-provider-dispatcher"},
+                    {"name": "wow-v17-chatgpt-engineering-worker"},
                 ]}
             return super().get(suffix)
 
@@ -202,7 +205,7 @@ def test_empty_queue_never_dispatches():
 def test_github_inventory_incomplete_fails_closed():
     class Incomplete(FakeClient):
         def get(self, suffix):
-            if suffix.startswith("actions/runs?"):
+            if suffix.startswith("actions/workflows/"):
                 return {"total_count": 101, "workflow_runs": []}
             return super().get(suffix)
     with pytest.raises(RuntimeError, match="INCOMPLETE"):
@@ -682,3 +685,44 @@ def test_resident_cycle_redacts_untrusted_error_messages(error):
     assert result == "CYCLE_" + type(error).__name__.upper()
     assert "sensitive" not in result and "secret" not in result
     assert result.isupper() and result.replace("_", "").isalnum()
+
+
+def test_unrelated_repository_wide_runs_cannot_block_specific_idle_workflows():
+    class Narrow(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                raise AssertionError("Unrelated repository-wide CI is not consulted")
+            return super().get(suffix)
+    client = Narrow()
+    assert not active_engineering_workflow(client)
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
+@pytest.mark.parametrize("count,rows,expected", [
+    (15, [], True), (0, [{"id": 1}], True),
+    (1, [], True), (0, [], False),
+])
+def test_live_github_count_skew_is_busy_never_a_dispatch_permission(count, rows, expected):
+    class Skewed(FakeClient):
+        def get(self, suffix):
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=queued&per_page=100":
+                return {"total_count": count, "workflow_runs": rows}
+            return super().get(suffix)
+    assert active_engineering_workflow(Skewed()) is expected
+
+
+@pytest.mark.parametrize("bad", [
+    None, [], {"total_count": None, "workflow_runs": []},
+    {"total_count": True, "workflow_runs": []},
+    {"total_count": -1, "workflow_runs": []},
+    {"total_count": 0, "workflow_runs": None},
+    {"total_count": 0, "workflow_runs": ["invalid-row"]},
+])
+def test_specific_workflow_inventory_invalid_fails_closed(bad):
+    class Invalid(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/workflows/"):
+                return bad
+            return super().get(suffix)
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INVALID"):
+        dispatch_once(Invalid(), FakeRedis(), MANIFEST)
