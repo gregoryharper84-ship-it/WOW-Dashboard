@@ -92,3 +92,40 @@ def test_no_rows_does_not_invent_evidence_or_call_database():
     assert result["status"] == "NO_ROWS"
     assert result["detail_available"] is False
     assert db.payload is None
+
+
+def test_same_events_different_slate_requests_have_distinct_immutable_run_contexts():
+    """Two Daily calls can see the same event while requesting different local days.
+
+    The ledger must retain requested intent per run rather than attributing a
+    wrong-date HOLD to an event or to caller intent without provenance.
+    """
+    shared = [{"lane": "MONEYLINE", "row_status": "HELD",
+               "identity": {"official_event_id": "nba-unique-1",
+                            "commence_time_utc": "2026-10-24T01:30:00Z"},
+               "result": {"bucket": "EVENT_WRONG_DATE"}, "can_execute": False}]
+    original = deepcopy(shared)
+    receipts = []
+    for run_id, slate_date, caller_class in (
+        ("v17-daily-a", "2026-10-22", "INTERNAL_AUTOMATION"),
+        ("v17-daily-b", "2026-10-23", "V17_DAILY_ACTION"),
+    ):
+        db = _CaptureDB()
+        context = {"request_trace_id": f"trace-{run_id}",
+                   "requested_slate_date": slate_date,
+                   "requested_timezone": "America/Chicago",
+                   "caller_class": caller_class,
+                   "accepted_at_utc": "2026-10-23T20:12:55+00:00",
+                   "can_execute": False}
+        result = persist_row_detail(db, run_id=run_id, rows=shared,
+                                    request_context=context)
+        assert result["status"] == "PERSISTED"
+        assert result["rows_persisted"] == 1
+        receipts.append(db.payload[0])
+    assert shared == original
+    assert receipts[0]["identity"] == receipts[1]["identity"]
+    assert receipts[0]["detail"]["result"] == receipts[1]["detail"]["result"]
+    assert receipts[0]["detail"]["daily_request_context"]["requested_slate_date"] == "2026-10-22"
+    assert receipts[1]["detail"]["daily_request_context"]["requested_slate_date"] == "2026-10-23"
+    assert receipts[0]["detail"]["daily_request_context"]["request_trace_id"] != receipts[1]["detail"]["daily_request_context"]["request_trace_id"]
+    assert all(row["can_execute"] is False for row in receipts)
