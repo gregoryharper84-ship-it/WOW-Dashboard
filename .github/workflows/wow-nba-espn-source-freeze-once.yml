@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/wow-nba-espn-source-freeze-once.yml
+      - artifacts/wow-engine/scripts/nba_one_shot_espn_capture.py
+      - artifacts/wow-engine/tests/test_nba_one_shot_espn_capture.py
 
 permissions:
   contents: read
