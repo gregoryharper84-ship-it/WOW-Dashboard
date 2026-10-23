@@ -63,10 +63,31 @@ def test_circuit_breaker_only_applies_to_known_openai_provider_failures() -> Non
         age_minutes=30,
         cooldown_minutes=120,
     )
-    assert not module.circuit_breaker_active(
+    # Exhausted account/quota and invalid credentials cannot heal on a timer.
+    assert module.circuit_breaker_active(
         "OPENAI_API_QUOTA_EXCEEDED",
         age_minutes=121,
         cooldown_minutes=120,
+    )
+    assert module.circuit_breaker_active(
+        "OPENAI_API_QUOTA_EXCEEDED",
+        age_minutes=60 * 24 * 30,
+        cooldown_minutes=120,
+    )
+    assert module.circuit_breaker_active(
+        "OPENAI_API_AUTH_FAILED", age_minutes=10000,
+    )
+    assert module.circuit_breaker_active(
+        "OPENAI_API_KEY_MISSING", age_minutes=10000,
+    )
+    assert not module.circuit_breaker_active(
+        "OPENAI_API_RATE_LIMITED", age_minutes=121,
+    )
+    assert module.circuit_breaker_active(
+        "OPENAI_API_RATE_LIMITED", age_minutes=30,
+    )
+    assert not module.circuit_breaker_active(
+        "OPENAI_API_QUOTA_EXCEEDED", age_minutes=-1,
     )
     assert not module.circuit_breaker_active(
         "NON_PROVIDER_FAILURE",

@@ -87,6 +87,25 @@
       "lease_group": "P0_LLP_RESTORE"
     },
     {
+      "issue_number": 1841,
+      "severity": "P0",
+      "priority_rank": 7,
+      "execution_lane": "RAPID",
+      "conflict_keys": [
+        "NFL_PUBLICATION",
+        "STAGE_PROOF",
+        "FULL_SLATE_ACCEPTANCE",
+        "OFFICIAL_PUBLICATION",
+        "ALL_SPORTS_MONEYLINE",
+        "LLP_USER_PATH"
+      ],
+      "rapid_stream": "LLP_RESTORE",
+      "lease_group": "P0_LLP_RESTORE",
+      "amrt_owned": true,
+      "change_class": "B",
+      "can_execute": false
+    },
+    {
       "issue_number": 1309,
       "severity": "P1",
       "priority_rank": 7,

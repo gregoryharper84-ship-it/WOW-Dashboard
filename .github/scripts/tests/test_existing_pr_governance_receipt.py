@@ -10,14 +10,25 @@ import textwrap
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_existing_pr_governance_receipt.py"
+SOURCE_REVIEW_SCRIPT = Path(__file__).resolve().parents[1] / "independent_source_review_receipt.py"
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "wow-v17-existing-pr-governance-review.yml"
 REPO_ROOT = Path(__file__).resolve().parents[3]
+TRUSTED_GATE = REPO_ROOT / ".github/workflows/wow-v17-trusted-governance-gate.yml"
+RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
+MORNING_GREEN_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-morning-green-continuation.yml"
 RELEASE_CHECKS_SCRIPT = REPO_ROOT / "artifacts/wow-engine/v17/independent_release_checks.py"
 spec = importlib.util.spec_from_file_location("verify_existing_pr_governance_receipt", SCRIPT)
 verifier = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 sys.modules[spec.name] = verifier
 spec.loader.exec_module(verifier)
+source_review_spec = importlib.util.spec_from_file_location(
+    "independent_source_review_receipt_for_governance", SOURCE_REVIEW_SCRIPT
+)
+source_review = importlib.util.module_from_spec(source_review_spec)
+assert source_review_spec and source_review_spec.loader
+sys.modules[source_review_spec.name] = source_review
+source_review_spec.loader.exec_module(source_review)
 release_spec = importlib.util.spec_from_file_location("independent_release_checks_for_existing_pr", RELEASE_CHECKS_SCRIPT)
 release_checks = importlib.util.module_from_spec(release_spec)
 assert release_spec and release_spec.loader
@@ -31,17 +42,96 @@ REVIEWER = {"id": 9001, "login": "independent-reviewer"}
 ALLOWLIST = [REVIEWER]
 
 
-def test_certifier_workflow_uses_no_claude_or_write_permissions():
+def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permissions():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "uses: ./.github/actions/wow-claude-agent" not in workflow
     assert "ANTHROPIC_API_KEY" not in workflow
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in workflow
     assert "TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}" in workflow
+    assert "workflows: [wow-v17-independent-qa-check]" in workflow
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
+    assert "wow-v17-independent-source-review" in workflow
+    assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in workflow
+    assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow
+    assert "--source-review-json" in workflow
+    assert "TRUST_ROOT_BOOTSTRAP" in workflow
     assert "checks: read" in workflow
     assert "actions: write" not in workflow
     assert "contents: write" not in workflow
     assert "pull-requests: write" not in workflow
+
+
+def test_certifier_consumes_only_authenticated_qa_review_run_artifacts():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "workflow_run:" in workflow
+    assert "workflows: [wow-v17-independent-qa-check]" in workflow
+    assert "SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" in workflow
+    assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow
+    assert "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" in workflow
+    assert "refs?|related to" in workflow
+    assert "--source-review-artifact-id" in workflow
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
+    assert ".event == \"workflow_dispatch\" or .event == \"workflow_run\"" in workflow
+    assert "ref: main" in workflow
+
+
+def test_source_review_artifact_name_regex_captures_pr_and_head_under_bash_nounset():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    regex_line = next(
+        line.strip()
+        for line in workflow.splitlines()
+        if line.strip().startswith("[[ \"$artifact_name\" =~ ")
+    ).removesuffix(" || {")
+    regex_line += " || exit 1"
+    valid_name = f"wow-v17-independent-source-review-1822-{'a' * 40}-54321-1"
+    accepted = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            "\n".join(
+                (
+                    f'artifact_name="{valid_name}"',
+                    'SOURCE_RUN_ID=54321',
+                    'SOURCE_ATTEMPT=1',
+                    regex_line,
+                    'source_pr="${BASH_REMATCH[1]}"',
+                    'source_sha="${BASH_REMATCH[2]}"',
+                    'printf "%s %s\\n" "$source_pr" "$source_sha"',
+                )
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    assert accepted.stdout.strip() == f"1822 {'a' * 40}"
+
+    rejected = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            "\n".join(
+                (
+                    'artifact_name="wow-v17-independent-source-review-1822-not-a-sha-54321-1"',
+                    'SOURCE_RUN_ID=54321',
+                    'SOURCE_ATTEMPT=1',
+                    regex_line,
+                    'source_pr="${BASH_REMATCH[1]}"',
+                )
+            ),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
 
 
 @pytest.fixture
@@ -323,6 +413,86 @@ def verify(receipt, *, head=HEAD, now=NOW, live_reviews=None):
     )
 
 
+def automated_review_data(data=None, *, now=NOW):
+    source = data or evidence()
+    author = source["pr"]["user"]
+    files = [{
+        "filename": "src/fix.py",
+        "previous_filename": None,
+        "status": "modified",
+        "patch": "@@ -1 +1 @@\n-old\n+new",
+        "additions": 1,
+        "deletions": 1,
+    }]
+    _, digest = source_review.canonical_diff(files, expected_count=1)
+    artifact = source_review.build_artifact(
+        repository=REPOSITORY,
+        pr={
+            "number": 1822,
+            "state": "open",
+            "draft": False,
+            "merged_at": None,
+            "changed_files": 1,
+            "user": {"id": author["id"], "login": author["login"]},
+            "head": {
+                "sha": HEAD,
+                "ref": "fix/issue-1806",
+                "repo": {"full_name": REPOSITORY},
+            },
+            "base": {"ref": "main", "repo": {"full_name": REPOSITORY}},
+        },
+        files=files,
+        commit={
+            "sha": HEAD,
+            "commit": {"tree": {"sha": "d" * 40}, "message": "Fix the source issue"},
+            "parents": [{"sha": "e" * 40}],
+            "author": {"login": "copilot-swe-agent"},
+            "committer": {"login": "copilot-swe-agent"},
+        },
+        review_result={
+            "decision": "PASS",
+            "summary": "Reviewed all changed source files.",
+            "reviewed_head_sha": HEAD,
+            "reviewed_diff_sha256": digest,
+            "reviewed_files": ["src/fix.py"],
+            "assessment": {
+                "source_review": "PASS",
+                "security_review": "PASS",
+                "probability_integrity_review": "PASS",
+            },
+            "findings": [],
+        },
+        run={
+            "id": 54321,
+            "run_attempt": 1,
+            "name": source_review.WORKFLOW_NAME,
+            "path": source_review.WORKFLOW_PATH,
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "repository": REPOSITORY,
+            "head_sha": "b" * 40,
+        },
+        now=now,
+    )
+    return artifact
+
+
+SOURCE_REVIEW_RUN = {
+    "id": 54321,
+    "run_attempt": 1,
+    "name": f"{source_review.WORKFLOW_NAME} event=workflow_dispatch pr=1822",
+    "workflow_id": source_review.WORKFLOW_ID,
+    "path": source_review.WORKFLOW_PATH,
+    "event": "workflow_dispatch",
+    "head_branch": "main",
+    "head_sha": "b" * 40,
+    "repository": {"full_name": REPOSITORY},
+    "head_repository": {"full_name": REPOSITORY},
+    "status": "completed",
+    "conclusion": "success",
+}
+
+
 def test_builds_versioned_exact_head_review_evidence_without_legacy_pass_fields():
     receipt = build()
 
@@ -332,6 +502,126 @@ def test_builds_versioned_exact_head_review_evidence_without_legacy_pass_fields(
     assert "governance_complete" not in receipt
     assert receipt["can_execute"] is False
     verify(receipt)
+
+
+def test_standalone_automated_review_is_a_separate_versioned_exact_head_receipt():
+    receipt = verifier.build_receipt(
+        evidence(),
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        automated_review=automated_review_data(),
+        source_review_run=SOURCE_REVIEW_RUN,
+        source_review_artifact_id=555,
+        now=NOW,
+    )
+
+    verifier.verify_receipt(
+        receipt,
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_name=verifier.WORKFLOW_NAME,
+        expected_pr_number=1822,
+        live_reviews=[],
+        source_review_run=SOURCE_REVIEW_RUN,
+        now=NOW,
+    )
+
+    assert receipt["receipt_schema_version"] == 3
+    assert receipt["trusted_reviewers"] == []
+    assert receipt["independent_review"]["type"] == "AUTOMATED_SOURCE_REVIEW"
+    assert receipt["independent_review"]["artifact_id"] == 555
+    assert receipt["independent_review"]["artifact"]["source"]["run_id"] == "54321"
+    assert receipt["evidence_state"] == "REVIEW_EVIDENCE_VERIFIED"
+    assert receipt["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    ("source_run", "reason"),
+    [
+        ({**SOURCE_REVIEW_RUN, "event": "pull_request_target"}, "WORKFLOW_RUN_UNTRUSTED"),
+        ({**SOURCE_REVIEW_RUN, "path": ".github/workflows/fork.yml"}, "WORKFLOW_RUN_UNTRUSTED"),
+        ({**SOURCE_REVIEW_RUN, "head_branch": "attacker"}, "WORKFLOW_RUN_UNTRUSTED"),
+        ({**SOURCE_REVIEW_RUN, "conclusion": "failure"}, "WORKFLOW_RUN_UNTRUSTED"),
+        ({**SOURCE_REVIEW_RUN, "run_attempt": 2}, "RUN_ATTEMPT_MISMATCH"),
+    ],
+)
+def test_automated_review_requires_current_authenticated_source_run(source_run, reason):
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match=reason):
+        verifier.build_receipt(
+            evidence(),
+            expected_repository=REPOSITORY,
+            expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806",
+            expected_pr_number=1822,
+            expected_incident_id="1806",
+            expected_workflow_run_id="12345",
+            expected_workflow_run_attempt=1,
+            automated_review=automated_review_data(),
+            source_review_run=source_run,
+            source_review_artifact_id=555,
+            now=NOW,
+        )
+
+
+def test_automated_review_requires_bound_sha_diff_author_and_artifact_identity():
+    stale = automated_review_data()
+    stale["target"]["head_sha"] = "b" * 40
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="HEAD_MISMATCH"):
+        verifier.build_receipt(
+            evidence(),
+            expected_repository=REPOSITORY,
+            expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806",
+            expected_pr_number=1822,
+            expected_incident_id="1806",
+            expected_workflow_run_id="12345",
+            expected_workflow_run_attempt=1,
+            automated_review=stale,
+            source_review_run=SOURCE_REVIEW_RUN,
+            source_review_artifact_id=555,
+            now=NOW,
+        )
+
+    wrong_diff = automated_review_data()
+    wrong_diff["diff"]["file_paths"] = ["src/other.py"]
+    wrong_diff["review"]["reviewed_files"] = ["src/other.py"]
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="DIFF_INVENTORY_MISMATCH"):
+        verifier.build_receipt(
+            evidence(),
+            expected_repository=REPOSITORY,
+            expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806",
+            expected_pr_number=1822,
+            expected_incident_id="1806",
+            expected_workflow_run_id="12345",
+            expected_workflow_run_attempt=1,
+            automated_review=wrong_diff,
+            source_review_run=SOURCE_REVIEW_RUN,
+            source_review_artifact_id=555,
+            now=NOW,
+        )
+
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="ARTIFACT_ID_MISSING"):
+        verifier.build_receipt(
+            evidence(),
+            expected_repository=REPOSITORY,
+            expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806",
+            expected_pr_number=1822,
+            expected_incident_id="1806",
+            expected_workflow_run_id="12345",
+            expected_workflow_run_attempt=1,
+            automated_review=automated_review_data(),
+            source_review_run=SOURCE_REVIEW_RUN,
+            now=NOW,
+        )
 
 
 def test_bot_author_is_not_a_required_identity_for_ordinary_fixes():
@@ -548,8 +838,14 @@ def release_evidence():
             (*release_checks.QA_EVIDENCE_CHECKS, release_checks.TRUSTED_GOVERNANCE_CHECK)
         )
     ]
+    source_pr_evidence = evidence(author={"id": 77, "login": "wow-engineering[bot]", "type": "Bot"})
+    source_review_artifact = automated_review_data(
+        source_pr_evidence,
+        now=datetime.now(timezone.utc),
+    )
     return {
         "repository": verifier.CANONICAL_REPOSITORY,
+        "pr_number": 1822,
         "expected_head_sha": HEAD,
         "owner_login": verifier.OWNER_LOGIN,
         "evidence_errors": [],
@@ -558,12 +854,28 @@ def release_evidence():
             "draft": False,
             "merged": False,
             "head_sha": HEAD,
+            "head_ref": "fix/issue-1806",
             "head_repo": verifier.CANONICAL_REPOSITORY,
             "base_ref": "main",
             "author": "wow-engineering[bot]",
+            "author_id": 77,
             "changed_files": 1,
         },
         "files": ["src/fix.py"],
+        "source_review_paths": ["src/fix.py"],
+        "source_review": {
+            "artifact_id": 555,
+            "artifact": source_review_artifact,
+            "run": SOURCE_REVIEW_RUN,
+        },
+        "qa_review_policy": {
+            "mode": "independent",
+            "target": {"pr_number": 1822, "head_sha": HEAD, "head_ref": "fix/issue-1806"},
+            "canary_scope": None,
+            "source": {"run_id": "12345", "run_attempt": 1},
+        },
+        "independent_review_active": True,
+        "current_review_active": False,
         "check_runs": checks,
         "reviews": [],
     }
@@ -706,6 +1018,50 @@ def test_temporary_provider_sunset_blocks_new_receipts_and_replay():
         build(now=datetime(2026, 11, 2, 0, 0, tzinfo=timezone.utc))
 
 
+def test_authenticated_automated_review_receipts_remain_usable_after_legacy_sunset():
+    after_sunset = datetime(2026, 11, 1, 0, 1, tzinfo=timezone.utc)
+    receipt = verifier.build_receipt(
+        evidence(),
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        automated_review=automated_review_data(now=after_sunset),
+        source_review_run=SOURCE_REVIEW_RUN,
+        source_review_artifact_id=555,
+        now=after_sunset,
+    )
+    verifier.verify_receipt(
+        receipt,
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_name=verifier.WORKFLOW_NAME,
+        expected_pr_number=1822,
+        live_reviews=[],
+        source_review_run=SOURCE_REVIEW_RUN,
+        now=after_sunset + timedelta(minutes=29),
+    )
+    assert receipt["receipt_schema_version"] == 3
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="EXPIRED_OR_FUTURE_RECEIPT"):
+        verifier.verify_receipt(
+            receipt,
+            expected_repository=REPOSITORY,
+            expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806",
+            expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME,
+            expected_pr_number=1822,
+            live_reviews=[],
+            source_review_run=SOURCE_REVIEW_RUN,
+            now=after_sunset + timedelta(minutes=30),
+        )
+
+
 def test_receipt_expiry_cannot_be_extended_or_backdated():
     receipt = build()
     receipt["fallback_expires_utc"] = "2036-11-02T00:00:00Z"
@@ -799,18 +1155,26 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     end = workflow.index(end_marker, start) + len(end_marker)
     invocation = workflow[start:end]
 
-    def run(workflow_name, receipt, live_reviews=None, live_checks=None):
+    def run(workflow_name, receipt, live_reviews=None, live_checks=None, source_run=None):
         receipt_path = tmp_path / "receipt.json"
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
         reviews_path = tmp_path / "reviews.json"
         reviews_path.write_text(json.dumps(live_reviews or []), encoding="utf-8")
         checks_path = tmp_path / "checks.json"
         checks_path.write_text(json.dumps(live_checks or []), encoding="utf-8")
+        source_run_path = tmp_path / "source-review-run.json"
+        if source_run is not None:
+            source_run_path.write_text(json.dumps(source_run), encoding="utf-8")
+        elif source_run_path.exists():
+            source_run_path.unlink()
         script = (
             'set -euo pipefail\n'
             'receipt="$RECEIPT_PATH"\n'
             'live_reviews="$LIVE_REVIEWS_PATH"\n'
             'live_checks="$LIVE_CHECKS_PATH"\n'
+            'cert_mode=$(python -c \'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")\' "$receipt")\n'
+            'receipt_schema=$(python -c \'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("receipt_schema_version") or "")\' "$receipt")\n'
+            'source_review_run="$SOURCE_REVIEW_RUN_PATH"\n'
             f"{invocation}\n"
         )
         env = os.environ | {
@@ -818,6 +1182,7 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "RECEIPT_PATH": str(receipt_path),
             "LIVE_REVIEWS_PATH": str(reviews_path),
             "LIVE_CHECKS_PATH": str(checks_path),
+            "SOURCE_REVIEW_RUN_PATH": str(tmp_path / "source-review-run.json"),
             "PR_NUMBER": "1822",
             "PR_HEAD_SHA": HEAD,
             "PR_HEAD_REF": "fix/issue-1806",
@@ -907,6 +1272,49 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     assert boot_withdrawn.returncode == 1
     assert "TRUST_ROOT_OWNER_APPROVAL_MISSING" in boot_withdrawn.stdout
 
+    automated = verifier.build_receipt(
+        evidence(),
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        automated_review=automated_review_data(now=datetime.now(timezone.utc)),
+        source_review_run=SOURCE_REVIEW_RUN,
+        source_review_artifact_id=555,
+        now=datetime.now(timezone.utc),
+    )
+    automated_valid = run(
+        verifier.WORKFLOW_NAME, automated, live_reviews=[], source_run=SOURCE_REVIEW_RUN
+    )
+    assert automated_valid.returncode == 0, automated_valid.stdout + automated_valid.stderr
+    automated_missing_source = run(verifier.WORKFLOW_NAME, automated, live_reviews=[])
+    assert automated_missing_source.returncode == 1
+    assert "SOURCE_REVIEW_RUN_METADATA_MISSING" in automated_missing_source.stdout
+
+
+def test_trusted_gate_revalidates_authenticated_automated_review_source():
+    workflow = TRUSTED_GATE.read_text(encoding="utf-8")
+
+    assert "workflows: [wow-v17-existing-pr-governance-review]" in workflow
+    assert "GOVERNANCE_SOURCE_REVIEW_RUN_UNTRUSTED" in workflow
+    assert "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_UNTRUSTED" in workflow
+    assert "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_CONTENT_MISMATCH" in workflow
+    assert "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_CHECKSUM_MISMATCH" in workflow
+    assert "verify_unique_artifact_inventory" in workflow
+    assert "--source-review-run-json" in workflow
+    assert ".workflow_run.id == $run_id" in workflow
+
+
+def test_release_and_continuation_consumers_resolve_authenticated_source_review_metadata():
+    for path in (RELEASE_WORKFLOW, MORNING_GREEN_WORKFLOW):
+        workflow = path.read_text(encoding="utf-8")
+        assert "GH_TOKEN: ${{ github.token }}" in workflow
+        assert "verify_existing_pr_governance_receipt.py" in workflow
+        assert "--receipt" in workflow
+
 
 def test_trust_root_bootstrap_receipt_uses_owner_approval_not_an_allowlist():
     receipt = build_bootstrap()
@@ -960,7 +1368,7 @@ def test_bootstrap_requires_green_qa_release_and_exact_check_provenance():
         build_bootstrap(bootstrap_evidence(check_sha="b" * 40))
 
 
-def test_bootstrap_receipt_expires_in_30_minutes_and_at_the_provider_sunset():
+def test_bootstrap_receipt_expires_in_30_minutes_without_a_provider_sunset():
     current = datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
     receipt = build_bootstrap(now=current)
     assert receipt["fallback_expires_utc"] == "2026-10-18T00:30:00Z"
@@ -968,12 +1376,10 @@ def test_bootstrap_receipt_expires_in_30_minutes_and_at_the_provider_sunset():
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT"):
         verify_bootstrap(receipt, now=current + timedelta(minutes=30))
     at_sunset = datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc)
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
-        build_bootstrap(now=at_sunset)
-    before_sunset = datetime(2026, 10, 31, 23, 40, tzinfo=timezone.utc)
-    sunset_receipt = build_bootstrap(now=before_sunset)
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
-        verify_bootstrap(sunset_receipt, now=at_sunset)
+    post_sunset_receipt = build_bootstrap(now=at_sunset)
+    verify_bootstrap(post_sunset_receipt, now=at_sunset + timedelta(minutes=29))
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TEMPORARY_FALLBACK_EXPIRED_OR_FUTURE_RECEIPT"):
+        verify_bootstrap(post_sunset_receipt, now=at_sunset + timedelta(minutes=30))
 
 
 def test_live_recheck_rejects_replaced_owner_review_and_superseded_checks():

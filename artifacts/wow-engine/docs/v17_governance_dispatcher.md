@@ -122,3 +122,19 @@ reconcile any pre-POST reservations manually. Code on this branch is not proof
 of activation or production verification.
 
 `can_execute=false` · `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`
+
+## Opt-in zero-credit routing
+
+The protected-main controller can route directly to deterministic QA when
+`WOW_QA_ZERO_CREDIT_MODE=true` and
+`WOW_QA_INDEPENDENT_REVIEW_ACTIVE=false`. It skips the absent source-review
+workflow and the non-required legacy certifier, but never claims semantic
+source review. It still verifies exact-head regression checks and trust-root
+owner approval, then uses separate QA and Release App checks. Release
+workflow dispatch requires the authenticated successful QA run ID and attempt.
+The dispatcher does not approve any pull request or make deployments.
+
+Do not activate this controller unless the `wow-dispatch` environment is
+configured for protected `main` with `WOW_DISPATCH_JOURNAL_HMAC_KEY` (a
+random 64-character hex HMAC key). In free mode, no OpenAI, Claude, or
+provider-model API key is needed.

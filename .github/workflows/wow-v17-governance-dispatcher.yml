@@ -58,6 +58,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INPUT_PR_NUMBER: ${{ inputs.pr_number }}
           WOW_DISPATCH_JOURNAL_HMAC_KEY: ${{ secrets.WOW_DISPATCH_JOURNAL_HMAC_KEY }}
+          WOW_QA_ZERO_CREDIT_MODE: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
+          WOW_QA_INDEPENDENT_REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
         run: |
           set -euo pipefail
           python artifacts/wow-engine/v17/governance_dispatcher_github.py \

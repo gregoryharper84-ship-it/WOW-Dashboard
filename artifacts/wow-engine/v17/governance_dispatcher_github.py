@@ -657,12 +657,22 @@ def reserve_dispatch(
     client.post(f"/repos/{REPOSITORY}/issues/{pr_number}/comments", {"body": body})
 
 
-def dispatch(client: GitHub, role: str, workflow: dict, pr_number: int, head_sha: str) -> None:
+def dispatch(client: GitHub, role: str, workflow: dict, pr_number: int, head_sha: str, *,
+             qa_run_id: int | None = None, qa_run_attempt: int | None = None) -> None:
     if role not in WORKFLOWS or workflow.get("path") != WORKFLOWS[role]["path"]:
         raise DispatchError("DISPATCH_TARGET_NOT_ALLOWLISTED")
+    inputs = {"pr_number": str(pr_number), "head_sha": head_sha}
+    if role == "release":
+        if (
+            not isinstance(qa_run_id, int) or isinstance(qa_run_id, bool) or qa_run_id <= 0
+            or not isinstance(qa_run_attempt, int) or isinstance(qa_run_attempt, bool)
+            or qa_run_attempt <= 0
+        ):
+            raise DispatchError("RELEASE_QA_RUN_IDENTITY_MISSING")
+        inputs.update({"qa_run_id": str(qa_run_id), "qa_run_attempt": str(qa_run_attempt)})
     client.post(
         f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/dispatches",
-        {"ref": "main", "inputs": {"pr_number": str(pr_number), "head_sha": head_sha}},
+        {"ref": "main", "inputs": inputs},
     )
 
 
@@ -724,6 +734,7 @@ def reconcile(
     controller_run_id: str,
     controller_run_attempt: int = 1,
     source_sha: str,
+    zero_credit_mode: bool = False,
 ) -> dict[str, Any]:
     if not SHA_RE.fullmatch(source_sha):
         raise DispatchError("CONTROLLER_SOURCE_SHA_INVALID")
@@ -739,6 +750,8 @@ def reconcile(
     ):
         raise DispatchError("CONTROLLER_RUN_ATTEMPT_INVALID")
     _journal_key()
+    if not isinstance(zero_credit_mode, bool):
+        raise DispatchError("ZERO_CREDIT_POLICY_INVALID")
     owner_id, owner_login = _owner(client)
     workflows = list_workflows(client)
     wip_by_role = count_wip(client, workflows) if workflows else {role: 0 for role in WORKFLOWS}
@@ -777,6 +790,7 @@ def reconcile(
                 "ancillary_ci_hold": None,
                 "available_roles": available_roles,
                 "completed_role_runs": statuses,
+                "zero_credit_mode": zero_credit_mode,
             }
             preflight = policy.classify_target(
                 **target_evidence,
@@ -809,6 +823,21 @@ def reconcile(
                 decisions.append(decision)
                 continue
             role = decision["role"]
+            qa_source = (role_runs.get("qa") or {}) if role == "release" else {}
+            if role == "release" and (
+                not isinstance(qa_source, dict)
+                or qa_source.get("status") != "completed"
+                or qa_source.get("conclusion") != "success"
+                or not isinstance(qa_source.get("id"), int)
+                or not isinstance(qa_source.get("run_attempt"), int)
+            ):
+                decisions.append({
+                    "pr_number": number,
+                    "action": "HOLD",
+                    "head_sha": head_sha,
+                    "findings": ["RELEASE_QA_RUN_PROVENANCE_MISSING"],
+                })
+                continue
             reservations = list_reservations(client, number)
             prior_attempts = reservation_attempts(reservations, role, number, head_sha)
             try:
@@ -862,7 +891,10 @@ def reconcile(
                 controller_run_id=controller_run_id,
                 attempt=controller_run_attempt,
             )
-            dispatch(client, role, workflows[role], number, head_sha)
+            dispatch(
+                client, role, workflows[role], number, head_sha,
+                qa_run_id=qa_source.get("id"), qa_run_attempt=qa_source.get("run_attempt"),
+            )
             dispatches += 1
             wip_count += 1
             wip_by_role[role] = wip_by_role.get(role, 0) + 1
@@ -922,6 +954,14 @@ def main() -> int:
     run_attempt = os.getenv("GITHUB_RUN_ATTEMPT", "")
     source_sha = os.getenv("GITHUB_SHA", "")
     input_pr = os.getenv("INPUT_PR_NUMBER", "").strip() or None
+    zero_credit_setting = os.getenv("WOW_QA_ZERO_CREDIT_MODE", "")
+    paid_review_setting = os.getenv("WOW_QA_INDEPENDENT_REVIEW_ACTIVE", "")
+    if zero_credit_setting not in {"", "false", "true"} or paid_review_setting not in {"", "false", "true"}:
+        print(json.dumps({"action": "HOLD", "finding": "REVIEW_POLICY_SETTING_INVALID", "can_execute": False}))
+        return 2
+    if zero_credit_setting == "true" and paid_review_setting == "true":
+        print(json.dumps({"action": "HOLD", "finding": "REVIEW_POLICY_MODES_CONFLICT", "can_execute": False}))
+        return 2
     if not run_number.isdigit() or not run_id.isdigit() or not run_attempt.isdigit():
         print(json.dumps({"action": "HOLD", "finding": "CONTROLLER_RUN_IDENTITY_INVALID"}))
         return 2
@@ -933,6 +973,7 @@ def main() -> int:
             controller_run_id=run_id,
             controller_run_attempt=int(run_attempt),
             source_sha=source_sha,
+            zero_credit_mode=(zero_credit_setting == "true"),
         )
     except DispatchError as exc:
         print(json.dumps({"action": "HOLD", "finding": str(exc), "can_execute": False}))
