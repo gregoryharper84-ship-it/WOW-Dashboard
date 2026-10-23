@@ -16,6 +16,7 @@ from v17.engineering_resident_supervisor import (
     persist_resident_heartbeat,
     supervisor_runtime_status,
     resident_activation_blockers,
+    resident_cycle_failure_code,
 )
 
 ISSUE = {
@@ -656,3 +657,28 @@ def test_actual_env_values_do_not_appear_in_safe_diagnostics(monkeypatch):
     assert "secret-must-not-appear" not in str(decision)
     assert "token-must-not-appear" not in str(decision)
     assert "private-supabase-url" not in str(decision)
+
+
+@pytest.mark.parametrize("code", [
+    "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE",
+    "OPEN_PR_INVENTORY_INVALID",
+    "OPEN_PR_INVENTORY_INCOMPLETE",
+    "OPEN_PR_INVENTORY_NOT_EXHAUSTIVE",
+    "OPEN_PR_PAGE_INVALID",
+])
+def test_resident_cycle_reports_known_fail_closed_reason_without_disabling_hold(code):
+    assert resident_cycle_failure_code(RuntimeError(code)) == code
+    assert resident_cycle_failure_code(ValueError(code)) == code
+
+
+@pytest.mark.parametrize("error", [
+    RuntimeError("Authorization: Bearer sensitive-credential"),
+    RuntimeError("https://api.github.com/private?token=sensitive"),
+    ValueError("OPEN_PR_INVENTORY_INVALID plus untrusted text"),
+    ConnectionError("secret-network-response"),
+])
+def test_resident_cycle_redacts_untrusted_error_messages(error):
+    result = resident_cycle_failure_code(error)
+    assert result == "CYCLE_" + type(error).__name__.upper()
+    assert "sensitive" not in result and "secret" not in result
+    assert result.isupper() and result.replace("_", "").isalnum()
