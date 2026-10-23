@@ -1,4 +1,4 @@
-# NBA one-shot ESPN capture — 2026-10-22
+# NBA one-shot ESPN capture — 2026-10-23
 
 **Status: EXPERIMENT_CREATED / source-only.** This change adds a safe, non-scoring research probe; it does **not** integrate or supersede the reviewed source adapter, V5.1 model, or existing V17 runtime. No deployment, cron, database write or probability publication is authorized.
 
@@ -8,9 +8,9 @@ On an authorized Render shell with the source branch checked out (or the exact s
 
 ```bash
 python3 artifacts/wow-engine/scripts/nba_one_shot_espn_capture.py capture \
-  --date 2026-10-22 --outdir /tmp/wow-nba-one-shot-20261022
+  --date 2026-10-23 --outdir /tmp/wow-nba-one-shot-20261023
 python3 artifacts/wow-engine/scripts/nba_one_shot_espn_capture.py verify \
-  --date 2026-10-22 --outdir /tmp/wow-nba-one-shot-20261022
+  --date 2026-10-23 --outdir /tmp/wow-nba-one-shot-20261023
 ```
 
 The output includes original raw JSON bytes and their SHA-256, source HTTP `Date`, local UTC clock, eligible pregame ESPN event IDs, start/status, and skipped-event reasons. A missing `Date`, stale clock comparison, redirect, malformed body or duplicate ID fails closed. Re-captures to an existing path fail. **Do not classify any event as a governed probability.**
@@ -18,6 +18,23 @@ The output includes original raw JSON bytes and their SHA-256, source HTTP `Date
 Use `pytest -q artifacts/wow-engine/tests/test_nba_one_shot_espn_capture.py` for mocked no-network regression.
 
 **Evidence limitation:** ESPN's HTTP `Date` header and the Render host clock are not independent cryptographic capture-time attestation. Archive raw bytes, capture receipt and Render job identity/timestamp outside the ephemeral shell, then verify hashes against the separately stored bytes. Source bytes, adapter signatures, external clock proof and feature equivalence remain distinct contracts.
+
+## Read-only one-shot GitHub runner (current slate)
+
+A dedicated same-repository, branch-restricted GitHub Actions workflow now performs
+the same one-shot capture for NBA date `2026-10-23` during this PR's workflow
+addition, preserving a raw JSON archive, SHA-256 receipt, HTTP Date observation
+and exact-head GitHub workflow identity. It uses only `contents: read`, fixed
+ESPN HTTPS destination, no secrets, no cron, no database, no writable tokens
+and no trained-model publication. See
+`.github/workflows/wow-nba-espn-source-freeze-once.yml`.
+
+The provider scoreboard's `dates` query is not proof of a complete local-day
+slate: pregame eligibility is evaluated against the runner's actual UTC clock,
+and the stored receipt explicitly disclaims independent time attestation,
+source completeness and V5.1 fitted-feature compatibility. A 0-event success
+is still only a source receipt. GitHub archives expire under repository
+retention; independently preserve/hash the original records before use.
 
 ## V5 / V5.1 compatibility gap
 
@@ -42,7 +59,8 @@ Before adapter integration: compare exact season/history scope, game counts, poi
 | Gate | State |
 | --- | --- |
 | Local source probe mocked tests | 13 / 13 PASS |
-| Real Render ESPN execution | NOT RUN through connected toolset (no one-shot shell/run-job action) |
+| Real Render ESPN execution | NOT RUN (GitHub runner is a separate isolated source capture path) |
+| GitHub current-slate source capture | PENDING exact-head runner result; no certification or publication |
 | V5.1 source-level feature equivalence | UNVERIFIED |
 | Independent capture clock / adapter signature | NOT ESTABLISHED |
 | Scorer/calibration/production activation | NOT ATTEMPTED |
