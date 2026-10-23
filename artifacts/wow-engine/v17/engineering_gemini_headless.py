@@ -127,6 +127,10 @@ def inspect_changed_paths(paths: list[str]) -> dict[str, Any]:
                         and Path(name).name.startswith("test_") and name.endswith(".py"))):
             return {"status": "HELD", "code": "GEMINI_PATCH_PROTECTED_OR_INVALID_PATH",
                     "rejected_path": name[:200], "can_execute": False}
+    if not any(p.startswith("artifacts/wow-engine/v17/") and p.endswith(".py")
+               for p in paths):
+        return {"status": "HELD", "code": "GEMINI_PATCH_SOURCE_CHANGE_REQUIRED",
+                "can_execute": False}
     return {"status": "CANDIDATE_ONLY", "code": "GEMINI_ISOLATED_PATCH_UNREVIEWED",
             "files": len(paths), "can_execute": False}
 
