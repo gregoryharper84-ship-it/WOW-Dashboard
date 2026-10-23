@@ -24,11 +24,13 @@ from v17.amrt_operational_lanes import dispatch_preflight
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
-ACTIVE_WORKFLOWS = frozenset({
-    "wow-v17-chatgpt-engineering-worker",
-    "wow-v17-claude-engineering-worker",
-    "wow-v17-engineering-provider-dispatcher",
-})
+# Only the three registered engineering workflows can own the implementation
+# writer. Unrelated CI run churn must never corrupt this busy check.
+ACTIVE_WORKFLOW_FILES = (
+    "wow-v17-chatgpt-engineering-worker.yml",
+    "wow-v17-claude-engineering-worker.yml",
+    "wow-v17-engineering-provider-dispatcher.yml",
+)
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
@@ -110,14 +112,31 @@ class GitHubTransport:
 
 
 def active_engineering_workflow(client: GitHubTransport) -> bool:
-    """Fail closed when GitHub could not enumerate the complete active run set."""
-    for state in ("queued", "in_progress", "waiting", "requested"):
-        result = client.get(f"actions/runs?status={state}&per_page=100")
-        runs = result.get("workflow_runs")
-        if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
-            raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(run.get("name") in ACTIVE_WORKFLOWS for run in runs):
-            return True
+    """Fail closed on each exact GitHub engineering-workflow active inventory.
+
+    Repository-wide counts can race unrelated CI execution; query only the
+    three already-registered writers. Positive evidence is always BUSY,
+    including transient total_count/row skew. Malformed or overfull inventory
+    still blocks instead of granting another source writer.
+    """
+    for filename in ACTIVE_WORKFLOW_FILES:
+        for state in ("queued", "in_progress", "waiting", "requested"):
+            result = client.get(
+                f"actions/workflows/{filename}/runs?status={state}&per_page=100"
+            )
+            if not isinstance(result, dict):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            total, runs = result.get("total_count"), result.get("workflow_runs")
+            if (
+                isinstance(total, bool) or not isinstance(total, int)
+                or total < 0 or not isinstance(runs, list)
+                or len(runs) > 100 or any(not isinstance(run, dict) for run in runs)
+            ):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            if total > 100:
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
+            if total > 0 or runs:
+                return True
     return False
 
 
