@@ -22,6 +22,10 @@ Antigravity officially discovers repository-root GEMINI.md and workspace agents 
 
 Record per task: issue number, input SHA, agent identity, source/branch, time and usage shown in Antigravity, root-cause accuracy, actionable patch, local tests, CI results, independent QA/Release results, production closure (if any) and failures. Compare the cost/quality to the existing OpenAI/Claude/Cursor provider path. If Gemini causes duplicate work or creates extra gates, roll back the workspace integration.
 
+## Local autonomous Sidecar option — opt-in only
+
+For the tested native Sidecar installer, bounded daily AMRT schedule, genuine project-ID requirements, runtime verification and `/goal` task, see `docs/wow/engineering/WOW_GEMINI_AUTONOMY_SETUP.md`. This configuration is not enabled until installed on the owner's Mac. It is not an unattended cloud provider.
+
 ## Future unattended option — explicitly NOT enabled
 
 The current .github/workflows/wow-v17-engineering-provider-dispatcher.yml exposes auto/openai/anthropic and has no Gemini choice. Any future Gemini API provider must be separately authorized, use the documented server-side Google API credential path (not the user's consumer Antigravity session), place secrets only in approved environment storage, protect untrusted PR contexts, enforce credit/quota ceilings and bounded retries, and return typed quota/auth failures. Reuse the existing provider selector, worker leases and receipts. Require exact-SHA CI, independent verification, and no degradation of protected checks. No automatic invocation or billing is requested or enabled by this pilot.
