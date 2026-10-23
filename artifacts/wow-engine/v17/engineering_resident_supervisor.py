@@ -346,6 +346,21 @@ def supervisor_runtime_status() -> dict[str, Any]:
 
 
 
+def resident_activation_blockers(status: dict[str, Any]) -> tuple[str, ...]:
+    """Expose missing *categories* only, never env values or token lengths.
+
+    Startup diagnostics are source-truth, not an authorization override.
+    """
+    checks = (
+        ("enabled", "RESIDENT_FLAG_DISABLED"),
+        ("token_configured", "GITHUB_DISPATCH_TOKEN_MISSING"),
+        ("redis_configured", "REDIS_LEASE_CONFIG_MISSING"),
+        ("durable_heartbeat_configured", "DURABLE_HEARTBEAT_CONFIG_MISSING"),
+        ("governance_pass", "DRY_RUN_GOVERNANCE_HOLD"),
+    )
+    return tuple(code for field, code in checks if status.get(field) is not True)
+
+
 def persist_resident_heartbeat(
     db_client: Any, *, status: str, outcome: str, instance_id: str,
 ) -> None:
@@ -378,7 +393,11 @@ def persist_resident_heartbeat(
 def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
     status = supervisor_runtime_status()
     if status["status"] != "CONFIGURED_UNVERIFIED":
-        LOG.warning("WOW_RESIDENT_SUPERVISOR status=%s can_execute=false", status["status"])
+        LOG.warning(
+            "WOW_RESIDENT_SUPERVISOR status=%s missing_categories=%s can_execute=false",
+            status["status"],
+            ",".join(resident_activation_blockers(status)) or "NONE",
+        )
         return
     from redis import Redis
     from v17.engineering_auditor_worker import _db_client
