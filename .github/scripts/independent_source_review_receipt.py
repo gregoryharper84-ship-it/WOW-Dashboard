@@ -21,6 +21,7 @@ from zipfile import BadZipFile, ZipFile
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 WORKFLOW_NAME = "wow-v17-independent-qa-check"
 WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
+WORKFLOW_ID = 380562324
 PROVIDER_IDENTITY = "openai-codex-action"
 CREDENTIAL_SCOPE = "WOW_QA_REVIEW_OPENAI_API_KEY"
 MAX_REVIEW_AGE = timedelta(minutes=30)
@@ -84,6 +85,16 @@ def _exact_keys(value: object, keys: set[str], name: str) -> Mapping[str, Any]:
 def _positive_int(value: object, name: str) -> int:
     _require(isinstance(value, int) and not isinstance(value, bool) and value > 0, f"{name}_INVALID")
     return value
+
+
+def _is_qa_workflow_run(run: Mapping[str, Any]) -> bool:
+    workflow_id = run.get("workflow_id")
+    return (
+        isinstance(workflow_id, int)
+        and not isinstance(workflow_id, bool)
+        and workflow_id == WORKFLOW_ID
+        and run.get("path") == WORKFLOW_PATH
+    )
 
 
 def _timestamp(value: object, name: str) -> datetime:
@@ -189,9 +200,19 @@ def resolve_current_source_review(
     )
 
     prefix = f"wow-v17-independent-source-review-{pr_number}-{head_sha}-"
+    # GitHub artifact ?name= is an exact-name query, not a prefix filter.
+    # When the policy has authenticated the producer run/attempt, this exact
+    # repository-wide query preserves duplicate detection and avoids the
+    # unbounded unrelated repo inventory that previously failed >2000 rows.
+    listing = "/actions/artifacts?"
+    if expected_workflow_run_id is not None:
+        exact_run_id = _positive_int(expected_workflow_run_id, "SOURCE_REVIEW_RUN_ID")
+        exact_attempt = _positive_int(expected_workflow_run_attempt, "SOURCE_REVIEW_RUN_ATTEMPT")
+        exact_name = f"{prefix}{exact_run_id}-{exact_attempt}"
+        listing = f"/actions/artifacts?name={exact_name}&"
     records: list[dict[str, Any]] = []
     for page in range(1, 21):
-        response = json_fetch(f"/actions/artifacts?per_page=100&page={page}")
+        response = json_fetch(f"{listing}per_page=100&page={page}")
         _require(isinstance(response, Mapping) and isinstance(response.get("artifacts"), list),
                  "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID")
         page_records = response["artifacts"]
@@ -889,8 +910,7 @@ def verify_artifact(
         repository = run.get("repository")
         head_repository = run.get("head_repository")
         _require(
-            run.get("name") == WORKFLOW_NAME
-            and run.get("path") == WORKFLOW_PATH
+            _is_qa_workflow_run(run)
             and run.get("event") == source.get("event")
             and run.get("head_branch") == "main"
             and isinstance(head_repository, Mapping)
@@ -1011,7 +1031,7 @@ def build_qa_review_policy(
     _positive_int(pr_number, "QA_POLICY_PR_NUMBER")
     _require(bool(SHA.fullmatch(head_sha)), "QA_POLICY_HEAD_INVALID")
     _require(isinstance(head_ref, str) and bool(head_ref), "QA_POLICY_HEAD_REF_INVALID")
-    _require(mode in {"legacy", "independent", "canary"}, "QA_POLICY_MODE_INVALID")
+    _require(mode in {"legacy", "independent", "canary", "zero_credit"}, "QA_POLICY_MODE_INVALID")
     _require(isinstance(run, Mapping), "QA_POLICY_RUN_INVALID")
     _positive_int(run.get("id"), "QA_POLICY_RUN_ID")
     attempt = _positive_int(run.get("run_attempt"), "QA_POLICY_RUN_ATTEMPT")
@@ -1081,7 +1101,7 @@ def verify_qa_review_policy(
     _require(isinstance(target.get("head_ref"), str) and bool(target["head_ref"]),
              "QA_POLICY_HEAD_REF_INVALID")
     policy_mode = artifact.get("mode")
-    _require(policy_mode in {"legacy", "independent", "canary"}, "QA_POLICY_MODE_INVALID")
+    _require(policy_mode in {"legacy", "independent", "canary", "zero_credit"}, "QA_POLICY_MODE_INVALID")
     scope = artifact.get("canary_scope")
     if policy_mode == "canary":
         _require(
@@ -1102,8 +1122,9 @@ def verify_qa_review_policy(
     _require(
         source.get("run_id") == str(run_id)
         and attempt == expected_attempt == run.get("run_attempt")
-        and source.get("workflow_name") == run.get("name") == WORKFLOW_NAME
-        and source.get("workflow_path") == run.get("path") == WORKFLOW_PATH
+        and source.get("workflow_name") == WORKFLOW_NAME
+        and source.get("workflow_path") == WORKFLOW_PATH
+        and _is_qa_workflow_run(run)
         and source.get("event") == run.get("event")
         and source.get("event") in {"workflow_dispatch", "workflow_run"}
         and source.get("head_branch") == run.get("head_branch") == "main"
@@ -1252,7 +1273,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--head-ref")
     parser.add_argument("--attempt", type=int)
-    parser.add_argument("--policy-mode", choices=("legacy", "independent", "canary"))
+    parser.add_argument("--policy-mode", choices=("legacy", "independent", "canary", "zero_credit"))
     args = parser.parse_args(argv)
     try:
         if args.capture:
