@@ -213,7 +213,6 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
     body_pattern = re.compile(
         r"(?im)^Incident:\s*(?:\x60)?#?" + issue_ref + r"(?:\x60)?\s*$",
     )
-    title_pattern = re.compile(r"\(#" + issue_ref + r"\)\s*$")
     seen_numbers: set[int] = set()
     matches_issue = False
 
@@ -235,7 +234,8 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
                 raise RuntimeError("OPEN_PR_INVENTORY_INCOMPLETE")
             seen_numbers.add(pr_number)
 
-            if title_pattern.search(pr["title"]) or body_pattern.search(pr.get("body") or ""):
+            # PR titles are untrusted descriptions, never incident-ownership proof.
+            if body_pattern.search(pr.get("body") or ""):
                 matches_issue = True
 
         if len(result) < OPEN_PR_PAGE_SIZE:
