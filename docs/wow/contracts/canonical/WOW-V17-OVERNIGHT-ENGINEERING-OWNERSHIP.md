@@ -120,6 +120,39 @@ The existing Render resident dispatcher heartbeat is a separate liveness signal,
 not repair acceptance, a provider entitlement, or authorization to spend. Its
 dispatches still pass through the same quota breaker and opt-in admission gates.
 
+### Resident pre-dispatch admission (#2001 follow-through)
+
+The resident reads the existing protected-main provider-route artifact and
+protected worker completion evidence through GitHub only; it never probes a
+paid provider or assumes that configured budget flags prove provider health.
+Known persistent quota/auth blockage with no admitted fallback returns
+`PROVIDER_QUOTA_BLOCKED` before GitHub dispatch and before attempt accounting.
+Malformed, missing, expired-artifact or unreadable evidence fails closed.
+Transient throttles remain distinct: expiry of their cooldown is not proof of
+recovery. Positive admission must be fresh (15 minutes) on current main; a fresh
+successful protected worker, including its exact parent-linked `NO_ACTION`
+acknowledgment, can supersede an older blocker.
+
+Remote reservations and existing heartbeat leases are checked before dispatch.
+The existing Redis resident lease reserves a persistent pending handoff before
+the GitHub POST. Only an accepted POST, or the exact correlated workflow run
+found after an ambiguous response, increments the existing bounded attempt
+counter. Lua compare-and-set makes accounting exactly once. The pending handoff
+does not expire automatically; unknown, absent or duplicate run evidence holds
+for reconciliation, never a resend. A completed correlated run clears only the
+handoff, not the counter. Provider holds are persisted as `DEGRADED` outcomes by
+the existing resident heartbeat path.
+
+The three-attempt ceiling and its existing retention remain unchanged. Previously
+exhausted counters are not reset, increased or automatically forgiven by this
+repair. After genuinely admitted provider recovery, those incidents still require
+their existing accountable owner to triage the exhausted attempt history.
+If only opt-in Copilot is configured but no affirmative admission is proven, keep
+the resident held: the existing protected dispatcher/independent-provider owner
+must supply capability and delivery evidence through its existing lane. Do not
+create a parallel resolver, infer readiness from flags, or launch a paid recovery
+probe to clear the hold.
+
 Admission requires an exact open issue already in the dispatch manifest, its
 matching domain lease, protected `main`, a concrete current main SHA, no existing
 assignment/linked repair PR, and a successful user-context repository capability

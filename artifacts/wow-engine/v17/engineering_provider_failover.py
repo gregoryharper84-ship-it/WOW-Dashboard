@@ -216,6 +216,33 @@ def circuit_breaker_active(
     )
 
 
+def resident_provider_admission(route: dict[str, Any], *, updated_at: str, now: datetime) -> str:
+    """Consume protected dispatcher's receipt; elapsed time never proves recovery."""
+    if (route.get("can_execute") is not False
+            or route.get("terminal_authority") != "V17_TERMINAL_REDUCER"
+            or route.get("action") not in {"DISPATCH", "SURVIVAL", "NO_ACTION"}
+            or not isinstance(route.get("reason"), str)):
+        return "PROVIDER_STATUS_UNVERIFIED"
+    try:
+        stamp = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+        age = (now - stamp).total_seconds() / 60
+    except (ValueError, TypeError, AttributeError):
+        return "PROVIDER_STATUS_UNVERIFIED"
+    if age < 0:
+        return "PROVIDER_STATUS_UNVERIFIED"
+    reason = route["reason"]
+    if route["action"] == "SURVIVAL" and route.get("provider") == "deterministic":
+        if any(code in reason.split(":") for code in OPENAI_PERSISTENT_BREAKER_CODES):
+            return "PROVIDER_QUOTA_BLOCKED"
+        if any(code in reason.split(":") for code in OPENAI_FAILOVER_ELIGIBLE):
+            return "PROVIDER_THROTTLED" if age < 120 else "PROVIDER_RECOVERY_UNVERIFIED"
+        return "PROVIDER_STATUS_UNVERIFIED"
+    if (route["action"] == "DISPATCH" and route.get("provider") in {"openai", "anthropic"}
+            and age <= 15):
+        return "PROVIDER_ADMITTED"
+    return "PROVIDER_RECOVERY_UNVERIFIED"
+
+
 def survival_receipt(
     *,
     reason: str,

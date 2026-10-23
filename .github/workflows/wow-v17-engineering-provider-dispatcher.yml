@@ -1,6 +1,6 @@
 name: wow-v17-engineering-provider-dispatcher
 run-name: >-
-  WOW V17 provider source=${{ github.event.workflow_run.display_title || 'manual' }} lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }}
+  WOW V17 provider source=${{ github.event.workflow_run.display_title || 'manual' }} lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }} resident=${{ inputs.resident_dispatch_id || 'NONE' }}
 
 on:
   # Provider-aware admission is the only automatic engineering entrypoint.
@@ -14,6 +14,10 @@ on:
     types: [completed]
   workflow_dispatch:
     inputs:
+      resident_dispatch_id:
+        description: Optional resident reservation correlation ID; never provider or spend authorization.
+        required: false
+        default: ""
       force_provider:
         description: Optional provider override for diagnostics.
         required: false
