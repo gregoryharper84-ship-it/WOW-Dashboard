@@ -1125,6 +1125,7 @@ def verify_qa_review_policy(
         and source.get("workflow_name") == WORKFLOW_NAME
         and source.get("workflow_path") == WORKFLOW_PATH
         and _is_qa_workflow_run(run)
+        and run.get("name") == WORKFLOW_NAME
         and source.get("event") == run.get("event")
         and source.get("event") in {"workflow_dispatch", "workflow_run"}
         and source.get("head_branch") == run.get("head_branch") == "main"
