@@ -23,12 +23,17 @@ from v17.amrt_operational_lanes import dispatch_preflight
 
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
+# The numeric canonical GitHub API alias for this exact repository, verified
+# against GET /repos/{owner}/{repo}. Never accept a different numeric ID.
+REPO_ID = 1240256887
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
-ACTIVE_WORKFLOWS = frozenset({
-    "wow-v17-chatgpt-engineering-worker",
-    "wow-v17-claude-engineering-worker",
-    "wow-v17-engineering-provider-dispatcher",
-})
+# Only the three registered engineering workflows can own the implementation
+# writer. Unrelated CI run churn must never corrupt this busy check.
+ACTIVE_WORKFLOW_FILES = (
+    "wow-v17-chatgpt-engineering-worker.yml",
+    "wow-v17-claude-engineering-worker.yml",
+    "wow-v17-engineering-provider-dispatcher.yml",
+)
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
@@ -110,14 +115,31 @@ class GitHubTransport:
 
 
 def active_engineering_workflow(client: GitHubTransport) -> bool:
-    """Fail closed when GitHub could not enumerate the complete active run set."""
-    for state in ("queued", "in_progress", "waiting", "requested"):
-        result = client.get(f"actions/runs?status={state}&per_page=100")
-        runs = result.get("workflow_runs")
-        if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
-            raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(run.get("name") in ACTIVE_WORKFLOWS for run in runs):
-            return True
+    """Fail closed on each exact GitHub engineering-workflow active inventory.
+
+    Repository-wide counts can race unrelated CI execution; query only the
+    three already-registered writers. Positive evidence is always BUSY,
+    including transient total_count/row skew. Malformed or overfull inventory
+    still blocks instead of granting another source writer.
+    """
+    for filename in ACTIVE_WORKFLOW_FILES:
+        for state in ("queued", "in_progress", "waiting", "requested"):
+            result = client.get(
+                f"actions/workflows/{filename}/runs?status={state}&per_page=100"
+            )
+            if not isinstance(result, dict):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            total, runs = result.get("total_count"), result.get("workflow_runs")
+            if (
+                isinstance(total, bool) or not isinstance(total, int)
+                or total < 0 or not isinstance(runs, list)
+                or len(runs) > 100 or any(not isinstance(run, dict) for run in runs)
+            ):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            if total > 100:
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
+            if total > 0 or runs:
+                return True
     return False
 
 
@@ -173,10 +195,15 @@ def _open_pr_page_pagination(
 
     next_url = urlparse(next_links[0])
     query = parse_qs(next_url.query, keep_blank_values=True)
+    permitted_paths = {f"/repos/{repo}/pulls"}
+    if repo == REPO:
+        # GitHub's own Link header may prefer its canonical /repositories/id
+        # form. This is the SAME pre-verified repository, not a wildcard.
+        permitted_paths.add(f"/repositories/{REPO_ID}/pulls")
     if (
         next_url.scheme != "https"
         or next_url.netloc != "api.github.com"
-        or next_url.path != f"/repos/{repo}/pulls"
+        or next_url.path not in permitted_paths
         or next_url.fragment
         or set(query) != {"state", "per_page", "page"}
         or query.get("state") != ["open"]
@@ -378,7 +405,7 @@ def persist_resident_heartbeat(
         ch.isalnum() or ch == "_" for ch in safe_outcome
     ):
         raise ValueError("RESIDENT_HEARTBEAT_OUTCOME_INVALID")
-    db_client.table("wow_engineering_auditor_runtime").upsert({
+    payload = {
         "auditor_id": DISPATCHER_HEARTBEAT_ID,
         "instance_id": instance_id,
         "status": status,
@@ -387,7 +414,18 @@ def persist_resident_heartbeat(
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "updated_at": now,
-    }, on_conflict="auditor_id").execute()
+    }
+    if status == "STOPPED":
+        # Render may start a replacement before the retiring Celery instance
+        # has emitted its last heartbeat. Fence shutdown to that exact instance;
+        # an old STOPPED cannot clobber a newer RUNNING supervisor heartbeat.
+        db_client.table("wow_engineering_auditor_runtime").update(payload).eq(
+            "auditor_id", DISPATCHER_HEARTBEAT_ID
+        ).eq("instance_id", instance_id).execute()
+    else:
+        db_client.table("wow_engineering_auditor_runtime").upsert(
+            payload, on_conflict="auditor_id"
+        ).execute()
 
 
 # Only fixed, locally-authored failure literals can reach operational logs or

@@ -70,8 +70,11 @@ class FakeClient:
         )
 
     def get(self, suffix):
-        if suffix.startswith("actions/runs?"):
-            if self.active and "status=in_progress" in suffix:
+        if suffix.startswith("actions/workflows/"):
+            assert "/runs?status=" in suffix
+            assert suffix.endswith("&per_page=100")
+            if (self.active and "status=in_progress" in suffix
+                    and "wow-v17-chatgpt-engineering-worker.yml" in suffix):
                 return {"total_count": 1, "workflow_runs": [
                     {"name": "wow-v17-chatgpt-engineering-worker"}
                 ]}
@@ -181,10 +184,10 @@ def test_no_duplicate_dispatch_when_busy(locked, cooling, active, open_pr, expec
 def test_concurrently_active_engineering_workflows_block_dispatch():
     class Concurrent(FakeClient):
         def get(self, suffix):
-            if suffix == "actions/runs?status=in_progress&per_page=100":
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=in_progress&per_page=100":
                 return {"total_count": 2, "workflow_runs": [
                     {"name": "wow-v17-chatgpt-engineering-worker"},
-                    {"name": "wow-v17-engineering-provider-dispatcher"},
+                    {"name": "wow-v17-chatgpt-engineering-worker"},
                 ]}
             return super().get(suffix)
 
@@ -202,7 +205,7 @@ def test_empty_queue_never_dispatches():
 def test_github_inventory_incomplete_fails_closed():
     class Incomplete(FakeClient):
         def get(self, suffix):
-            if suffix.startswith("actions/runs?"):
+            if suffix.startswith("actions/workflows/"):
                 return {"total_count": 101, "workflow_runs": []}
             return super().get(suffix)
     with pytest.raises(RuntimeError, match="INCOMPLETE"):
@@ -538,6 +541,50 @@ def test_distinct_resident_heartbeat_is_durable_and_not_self_approval():
     assert "token" not in repr(row).lower()
 
 
+def test_retiring_resident_cannot_overwrite_new_worker_heartbeat():
+    # The Render replacement starts before the old worker has shut down.
+    # STOPPED from the retiring instance must be an atomic compare-and-update,
+    # never a new upsert of the shared auditor_id.
+    class SharedStore:
+        def __init__(self):
+            self.row = None
+            self.pending = None
+            self.filters = []
+        def table(self, name):
+            assert name == "wow_engineering_auditor_runtime"
+            return self
+        def upsert(self, payload, *, on_conflict):
+            assert on_conflict == "auditor_id"
+            self.pending = ("upsert", dict(payload))
+            self.filters = []
+            return self
+        def update(self, payload):
+            self.pending = ("update", dict(payload))
+            self.filters = []
+            return self
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+        def execute(self):
+            kind, payload = self.pending
+            if kind == "upsert" or all(self.row and self.row.get(k) == v for k, v in self.filters):
+                self.row = payload
+            return {"data": [self.row] if self.row else []}
+
+    db = SharedStore()
+    persist_resident_heartbeat(db, status="RUNNING", outcome="CYCLE_STARTED", instance_id="worker-old:7")
+    persist_resident_heartbeat(db, status="RUNNING", outcome="CYCLE_STARTED", instance_id="worker-new:8")
+    persist_resident_heartbeat(db, status="STOPPED", outcome="WORKER_SHUTDOWN", instance_id="worker-old:7")
+    assert db.filters == [
+        ("auditor_id", "WOW_ENGINEERING_RESIDENT_DISPATCHER"),
+        ("instance_id", "worker-old:7"),
+    ]
+    assert db.row["status"] == "RUNNING" and db.row["instance_id"] == "worker-new:8"
+    persist_resident_heartbeat(db, status="STOPPED", outcome="WORKER_SHUTDOWN", instance_id="worker-new:8")
+    assert db.row["status"] == "STOPPED" and db.row["instance_id"] == "worker-new:8"
+    assert db.row["can_execute"] is False
+
+
 @pytest.mark.parametrize("status,outcome", [
     ("PASSED", "CYCLE_STARTED"),
     ("RUNNING", "BAD:UNTRUSTED"),
@@ -682,3 +729,92 @@ def test_resident_cycle_redacts_untrusted_error_messages(error):
     assert result == "CYCLE_" + type(error).__name__.upper()
     assert "sensitive" not in result and "secret" not in result
     assert result.isupper() and result.replace("_", "").isalnum()
+
+
+def test_unrelated_repository_wide_runs_cannot_block_specific_idle_workflows():
+    class Narrow(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                raise AssertionError("Unrelated repository-wide CI is not consulted")
+            return super().get(suffix)
+    client = Narrow()
+    assert not active_engineering_workflow(client)
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
+@pytest.mark.parametrize("count,rows,expected", [
+    (15, [], True), (0, [{"id": 1}], True),
+    (1, [], True), (0, [], False),
+])
+def test_live_github_count_skew_is_busy_never_a_dispatch_permission(count, rows, expected):
+    class Skewed(FakeClient):
+        def get(self, suffix):
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=queued&per_page=100":
+                return {"total_count": count, "workflow_runs": rows}
+            return super().get(suffix)
+    assert active_engineering_workflow(Skewed()) is expected
+
+
+@pytest.mark.parametrize("bad", [
+    None, [], {"total_count": None, "workflow_runs": []},
+    {"total_count": True, "workflow_runs": []},
+    {"total_count": -1, "workflow_runs": []},
+    {"total_count": 0, "workflow_runs": None},
+    {"total_count": 0, "workflow_runs": ["invalid-row"]},
+])
+def test_specific_workflow_inventory_invalid_fails_closed(bad):
+    class Invalid(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/workflows/"):
+                return bad
+            return super().get(suffix)
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INVALID"):
+        dispatch_once(Invalid(), FakeRedis(), MANIFEST)
+
+
+def test_github_numeric_repository_link_alias_is_same_exact_repo(monkeypatch):
+    client = GitHubTransport("synthetic-test-token")
+    link = (
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=2>; rel="next", '
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=3>; rel="last"'
+    )
+    monkeypatch.setattr(
+        client, "call_with_headers",
+        lambda _: ([open_pr_record(9100 + i) for i in range(100)], {"Link": link}),
+    )
+    rows, has_next, link_present = client.get_open_pull_request_page(1)
+    assert len(rows) == 100 and has_next and link_present
+
+
+@pytest.mark.parametrize("alteration", [
+    "https://api.github.com/repositories/1240256888/pulls?state=open&per_page=100&page=2",
+    "https://not-github.example/repositories/1240256887/pulls?state=open&per_page=100&page=2",
+    "http://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2",
+    "https://api.github.com/repositories/1240256887/pulls?state=closed&per_page=100&page=2",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=3",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2&other=1",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2#fragment",
+    "https://api.github.com/repositories/1240256887/issues?state=open&per_page=100&page=2",
+])
+def test_numeric_alias_must_not_relax_exact_pagination_identity(alteration, monkeypatch):
+    client = GitHubTransport("synthetic-test-token")
+    link = f'<{alteration}>; rel="next"'
+    monkeypatch.setattr(
+        client, "call_with_headers",
+        lambda _: ([open_pr_record(9300 + i) for i in range(100)], {"link": link}),
+    )
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
+        client.get_open_pull_request_page(1)
+
+
+def test_numeric_repository_link_alias_only_for_configured_repository(monkeypatch):
+    client = GitHubTransport("synthetic-test-token", repo="different-owner/different-repo")
+    link = (
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=2>; rel="next"'
+    )
+    monkeypatch.setattr(client, "call_with_headers", lambda _: ([], {"Link": link}))
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
+        client.get_open_pull_request_page(1)
