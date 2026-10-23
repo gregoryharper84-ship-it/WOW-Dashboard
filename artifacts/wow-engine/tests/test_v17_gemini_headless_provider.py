@@ -87,7 +87,11 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
                          "CANDIDATE_ONLY")
         for path in (".github/workflows/wow-verify.yml", ".agents/agents/new/agent.md",
                      ".gemini/settings.json", "GEMINI.md", "scripts/other.py",
-                     "../outside.py", "/tmp/token"):
+                     "../outside.py", "/tmp/token",
+                     "artifacts/wow-engine/requirements.txt",
+                     "artifacts/wow-engine/v17/new_config.yaml",
+                     "artifacts/wow-engine/docs/notes.md",
+                     "artifacts/wow-engine/tests/helper.py"):
             self.assertEqual(gemini.inspect_changed_paths([path])["status"], "HELD", path)
         self.assertEqual(gemini.inspect_changed_paths([])["status"], "HELD")
 
