@@ -86,6 +86,17 @@ def _has_workflow_cycle(graph):
     return any(visit(workflow) for workflow in graph)
 
 
+def test_protected_receipt_test_step_installs_its_yaml_parser_dependency():
+    _, _, workflow = _workflow_run_sources(WORKFLOW)
+    steps = workflow["jobs"]["certify-existing-pr"]["steps"]
+    test_step = next(step for step in steps if step.get("name") == "Test protected receipt verifier")
+
+    assert (
+        "python -m pip install --disable-pip-version-check pytest==9.1.1 PyYAML==6.0.3"
+        in test_step["run"]
+    )
+
+
 def test_protected_governance_workflow_run_graph_is_acyclic_and_detects_the_old_cycle():
     sources_by_name, graph, definitions = _workflow_run_graph()
     qa_name = "wow-v17-independent-qa-check"
