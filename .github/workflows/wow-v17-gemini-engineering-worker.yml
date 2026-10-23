@@ -209,7 +209,7 @@ jobs:
           untracked = subprocess.run(["git","-C",str(root),"ls-files","--others","--exclude-standard","-z"],
                                      check=True, capture_output=True).stdout
           paths = sorted({part.decode("utf-8") for part in
-                          (tracked + untracked).split(b"\\0") if part})
+                          (tracked + untracked).split(b"\0") if part})
           target.write_text(json.dumps(paths), encoding="utf-8")
           PY
           python "$GITHUB_WORKSPACE/artifacts/wow-engine/v17/engineering_gemini_headless.py" \
