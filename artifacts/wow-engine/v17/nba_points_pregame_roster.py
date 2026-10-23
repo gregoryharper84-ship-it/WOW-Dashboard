@@ -171,4 +171,73 @@ def verify_nba_points_current_roster(
     }
 
 
-__all__ = ["CAN_EXECUTE", "NBAPregameRosterError", "verify_nba_points_current_roster"]
+def acquire_nba_points_current_roster(
+    *, espn_event_id: str, nba_game_id: str, player_name: str,
+    http_get: Any,
+    clock: Any = lambda: datetime.now(timezone.utc),
+) -> dict[str, Any]:
+    """At most two read-only requests to fixed official-source URL patterns.
+
+    Both payloads are captured independently at fetch completion; their
+    authenticated transport/provider access is an upstream deployment concern.
+    No current availability is inferred when either source omits a status.
+    """
+    if not re.fullmatch(r"(?:espn-)?[0-9]{6,12}", espn_event_id):
+        raise NBAPregameRosterError("NBA_ROSTER_ESPN_EVENT_ID_INVALID")
+    if not re.fullmatch(r"[0-9]{10}", nba_game_id):
+        raise NBAPregameRosterError("NBA_ROSTER_NBA_GAME_ID_INVALID")
+    event = espn_event_id.removeprefix("espn-")
+    urls = (
+        (
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary",
+            {"event": event},
+        ),
+        (
+            f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{nba_game_id}.json",
+            None,
+        ),
+    )
+    payloads: list[Mapping[str, Any]] = []
+    captures: list[str] = []
+    for url, params in urls:
+        try:
+            response = http_get(
+                url, params=params, timeout=12.0,
+                headers={"Accept": "application/json"},
+            )
+            if int(response.status_code) != 200:
+                raise NBAPregameRosterError("NBA_ROSTER_PROVIDER_HTTP_FAILURE")
+            body = response.json()
+        except NBAPregameRosterError:
+            raise
+        except Exception as exc:
+            raise NBAPregameRosterError("NBA_ROSTER_PROVIDER_UNAVAILABLE") from exc
+        if not isinstance(body, Mapping):
+            raise NBAPregameRosterError("NBA_ROSTER_PROVIDER_SCHEMA_INVALID")
+        timestamp = clock()
+        if not isinstance(timestamp, datetime) or timestamp.utcoffset() is None:
+            raise NBAPregameRosterError("NBA_ROSTER_CLOCK_INVALID")
+        payloads.append(body)
+        captures.append(timestamp.astimezone(timezone.utc).isoformat())
+    now = clock()
+    if not isinstance(now, datetime) or now.utcoffset() is None:
+        raise NBAPregameRosterError("NBA_ROSTER_CLOCK_INVALID")
+    result = verify_nba_points_current_roster(
+        espn_event_id=espn_event_id, nba_game_id=nba_game_id,
+        player_name=player_name,
+        espn_summary=payloads[0], nba_boxscore=payloads[1],
+        espn_captured_at=captures[0], nba_captured_at=captures[1],
+        now=now,
+    )
+    result["source_acquisition"] = {
+        "provider_calls": 2,
+        "transport": "READ_ONLY_FIXED_ORIGINS",
+        "source_names": ["ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"],
+    }
+    return result
+
+
+__all__ = [
+    "CAN_EXECUTE", "NBAPregameRosterError",
+    "verify_nba_points_current_roster", "acquire_nba_points_current_roster",
+]
