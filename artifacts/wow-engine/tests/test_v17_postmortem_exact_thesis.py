@@ -127,3 +127,34 @@ def test_readonly_diagnostic_never_claims_terminal_authority():
     outcome = match_exact_pregame_thesis(prediction, settled).as_dict()
     assert outcome["can_execute"] is False
     assert "terminal_label" not in outcome
+
+
+def test_settlement_cannot_take_credit_for_different_prediction_id():
+    prediction, settled = records()
+    settled["prediction_id"] = "pred-OTHER"
+    outcome = match_exact_pregame_thesis(prediction, settled)
+    assert outcome.reason == "PREDICTION_ID_MISMATCH"
+    assert outcome.eligible_for_model_grading is False
+    assert outcome.prediction_id is None
+
+
+def test_matched_explicit_prediction_id_remains_eligible():
+    prediction, settled = records()
+    settled["prediction_id"] = "pred-123"
+    assert match_exact_pregame_thesis(prediction, settled).eligible_for_model_grading
+
+
+def test_prediction_persistence_cannot_predate_its_model_computation():
+    prediction, settled = records()
+    prediction["model_timestamp"] = "2026-08-22T19:05:00Z"
+    prediction["created_at"] = "2026-08-22T19:01:00Z"
+    outcome = match_exact_pregame_thesis(prediction, settled)
+    assert outcome.status == "PREGAME_TIME_PROOF_INVALID"
+    assert outcome.reason == "PREDICTION_WRITE_PRECEDES_MODEL"
+    assert outcome.eligible_for_model_grading is False
+
+
+def test_same_model_and_write_timestamp_is_allowed():
+    prediction, settled = records()
+    prediction["created_at"] = prediction["model_timestamp"]
+    assert match_exact_pregame_thesis(prediction, settled).eligible_for_model_grading
