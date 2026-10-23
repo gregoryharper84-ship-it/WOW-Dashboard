@@ -23,6 +23,9 @@ from v17.amrt_operational_lanes import dispatch_preflight
 
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
+# The numeric canonical GitHub API alias for this exact repository, verified
+# against GET /repos/{owner}/{repo}. Never accept a different numeric ID.
+REPO_ID = 1240256887
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
 # Only the three registered engineering workflows can own the implementation
 # writer. Unrelated CI run churn must never corrupt this busy check.
@@ -192,10 +195,15 @@ def _open_pr_page_pagination(
 
     next_url = urlparse(next_links[0])
     query = parse_qs(next_url.query, keep_blank_values=True)
+    permitted_paths = {f"/repos/{repo}/pulls"}
+    if repo == REPO:
+        # GitHub's own Link header may prefer its canonical /repositories/id
+        # form. This is the SAME pre-verified repository, not a wildcard.
+        permitted_paths.add(f"/repositories/{REPO_ID}/pulls")
     if (
         next_url.scheme != "https"
         or next_url.netloc != "api.github.com"
-        or next_url.path != f"/repos/{repo}/pulls"
+        or next_url.path not in permitted_paths
         or next_url.fragment
         or set(query) != {"state", "per_page", "page"}
         or query.get("state") != ["open"]
