@@ -18,7 +18,9 @@ _JOB_URL = re.compile(
     r"https://github\.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/([1-9][0-9]*)/job/([1-9][0-9]*)\Z"
 )
 _TEST_ID = re.compile(
-    r"artifacts/wow-engine/(?:[a-zA-Z0-9_-]+/)*test_[a-zA-Z0-9_-]+\.py::test_[a-zA-Z0-9_]+(?:\[[a-zA-Z0-9_, -]+\])?\Z"
+    r"(?:[a-zA-Z0-9_-]+/)*test_[a-zA-Z0-9_-]+\.py"
+    r"(?:::[a-zA-Z0-9_]+)*::test_[a-zA-Z0-9_]+"
+    r"(?:\[[a-zA-Z0-9_, .-]+\])?\Z"
 )
 _SHA = re.compile(r"[a-f0-9]{40}\Z")
 _TRUSTED_WORKFLOWS = frozenset({"wow-verify", "wow-engine-verify", "wow-v17-rapid-repair"})
@@ -127,11 +129,15 @@ def verify_authenticated_regression(receipt: dict, *, expected_sha: str) -> dict
     except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         raise ValueError("regression evidence GitHub verification unavailable") from exc
     test_id = receipt["regression_test_added"]
-    if not re.search(
-        r"(?m)^(?:\d{4}-\d{2}-\d{2}T[^\s]+Z\s+)?"
-        + re.escape(test_id) + r"\s+PASSED(?:\s|\[|$)",
-        log,
-    ):
+    # Quiet pytest jobs emit this exact proof marker via conftest.py. The
+    # root-relative and artifacts/wow-engine-relative forms identify one test.
+    candidates = [test_id]
+    engine_prefix = "artifacts/wow-engine/"
+    if test_id.startswith(engine_prefix):
+        candidates.append(test_id[len(engine_prefix):])
+    prefix = r"(?m)^(?:\d{4}-\d{2}-\d{2}T[^\s]+Z\s+)?WOW_INCIDENT_REGRESSION_PASSED\s+"
+    if not any(re.search(prefix + re.escape(nodeid) + r"\s+PASSED(?:\s|$)", log)
+               for nodeid in candidates):
         raise ValueError("regression evidence named test has no authenticated PASS log")
     return {
         "source": "GITHUB_ACTIONS_AUTHENTICATED_JOB_LOG",
