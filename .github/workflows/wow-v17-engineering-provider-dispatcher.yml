@@ -3,8 +3,12 @@ run-name: >-
   WOW V17 provider source=${{ github.event.workflow_run.display_title || 'manual' }} lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }}
 
 on:
+  # Provider-aware admission is the only automatic engineering entrypoint.
+  schedule:
+    - cron: "17 * * * *"
   workflow_run:
     workflows:
+      - wow-v17-nightly-engineering-scan
       - wow-v17-chatgpt-engineering-worker
       - wow-v17-claude-engineering-worker
     types: [completed]
@@ -110,7 +114,24 @@ jobs:
               --log-file "$log_file"
           }
 
-          if [ "$EVENT_NAME" = "workflow_run" ]; then
+          # Nightly scan completions are new engineering intake, not worker
+          # failures. They follow the same credit-aware admission as cron.
+          secondary_usable() {
+            { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; } || return 1
+            local recent conclusion
+            if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow wow-v17-claude-engineering-worker.yml \
+                --status completed --limit 1 \
+                --json databaseId,conclusion 2>/dev/null); then
+              return 1
+            fi
+            conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
+            # Account/structured-output failures require an explicit recovery
+            # probe, never hourly repetition. No prior run permits one probe.
+            [ "$conclusion" != "failure" ] && [ "$conclusion" != "cancelled" ]
+          }
+
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$source_workflow_id" != "wow-v17-nightly-engineering-scan" ]; then
             if [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
             elif [ "$source_workflow_id" = "wow-v17-chatgpt-engineering-worker" ]; then
@@ -177,23 +198,30 @@ jobs:
                   --cooldown-minutes 120 | jq -r '.active')
               fi
 
-              if [ "$breaker" = "true" ] &&
-                 { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; }; then
-                action=DISPATCH
-                provider=anthropic
-                reason="CIRCUIT_BREAKER:${breaker_code}"
+              if [ "$breaker" = "true" ]; then
+                # A configured key is not evidence of restored quota. Never
+                # dispatch OpenAI while its verified breaker remains active.
+                if secondary_usable; then
+                  action=DISPATCH
+                  provider=anthropic
+                  reason="CIRCUIT_BREAKER:${breaker_code}"
+                else
+                  action=SURVIVAL
+                  provider=deterministic
+                  reason="CIRCUIT_BREAKER:${breaker_code}:SECONDARY_UNAVAILABLE_OR_FAILED"
+                fi
               elif [ -n "${OPENAI_API_KEY:-}" ]; then
                 action=DISPATCH
                 provider=openai
                 reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
-              elif [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+              elif secondary_usable; then
                 action=DISPATCH
                 provider=anthropic
                 reason=OPENAI_API_KEY_MISSING
               else
                 action=SURVIVAL
                 provider=deterministic
-                reason=NO_ENGINEERING_PROVIDER_AUTH_AVAILABLE
+                reason=NO_HEALTHY_ENGINEERING_PROVIDER_AVAILABLE
               fi
             fi
           fi
