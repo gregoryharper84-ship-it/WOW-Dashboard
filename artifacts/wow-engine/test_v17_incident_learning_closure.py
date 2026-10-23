@@ -123,3 +123,34 @@ def test_sirt_clusters_confirmed_root_causes_from_learning_receipts(monkeypatch)
     assert families[0]["recurring"] is True
     assert families[0]["occurrences"] == 2
     assert families[0]["opportunity"] == "PREVENTIVE_ARCHITECTURE_REVIEW"
+
+
+def test_new_incident_severity_must_be_canonical(tmp_path, monkeypatch):
+    ledger = {"records": [], "schema_version": "2.0"}
+    monkeypatch.setattr(records, "_load_ledger", lambda: ledger)
+    monkeypatch.setattr(records, "_save_ledger", lambda data: None)
+    monkeypatch.setattr(records, "POSTMORTEMS", tmp_path)
+    monkeypatch.setattr(records, "_relative", lambda path: str(path))
+    created = records.create_postmortem(
+        title="Learning severity canonicalization",
+        severity=" p1 ", domain="deployment runtime", evidence="reproduced",
+    )
+    assert created.postmortem.exists()
+    assert ledger["records"][0]["severity"] == "P1"
+    assert ledger["records"][0]["learning_contract_version"] == "1"
+
+
+@pytest.mark.parametrize("severity", ["", "P9", "HIGH", "P1_INVALID"])
+def test_new_incident_rejects_unrecognized_severity_before_ledger_write(severity):
+    with pytest.raises(ValueError, match="invalid incident severity"):
+        records.create_postmortem(
+            title="Invalid severity", severity=severity,
+            domain="deployment runtime", evidence="reproduced",
+        )
+
+
+@pytest.mark.parametrize("severity", ["P1 ", "p0", "P9", None])
+def test_mutated_severity_cannot_escape_learning_contract(severity):
+    row = _ready_for_reporter()
+    row["severity"] = severity
+    assert "invalid new-incident severity for learning contract" in validate_team_record(row)
