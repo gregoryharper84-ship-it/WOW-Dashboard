@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 from fastapi import HTTPException
 
 from v17.full_board_stabilization import capability_matrix, publication_chain_audit, reconcile_full_board
+from v17.stage_proof_contract import apply_scan_row_stage_proof_ceiling
 
 CAN_EXECUTE = False
 FULL_BOARD_STAGES = (
@@ -287,7 +288,11 @@ def _safe_score_wrapper(score_row: Callable[..., Any]) -> Callable[..., Mapping[
 def enrich_full_board_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Attach the mandatory cross-sport completeness/reporting contract."""
     out = dict(payload)
-    base_rows = [dict(row) for row in (payload.get("rows") or []) if isinstance(row, Mapping)]
+    base_rows = [
+        apply_scan_row_stage_proof_ceiling(dict(row), _publication_audit_for_row)
+        for row in (payload.get("rows") or [])
+        if isinstance(row, Mapping)
+    ]
     discovery = payload.get("discovery") if isinstance(payload.get("discovery"), Mapping) else {}
     inventoried_sports = list(discovery.get("sports_queried") or [])
 

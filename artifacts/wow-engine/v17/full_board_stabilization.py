@@ -77,6 +77,7 @@ class PublicationChainAudit:
     first_blocker: str | None
     stages: dict[str, bool]
     can_execute: bool = False
+    stage_evidence: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +85,7 @@ class PublicationChainAudit:
             "rank_eligible": self.rank_eligible,
             "first_blocker": self.first_blocker,
             "stages": dict(self.stages),
+            "stage_evidence": dict(self.stage_evidence),
             "global_terminal_authority": GLOBAL_TERMINAL_AUTHORITY,
             "can_execute": False,
         }
@@ -239,137 +241,37 @@ def lineup_pending_status(
     }
 
 
-def _legacy_final_refresh(row: Mapping[str, Any]) -> tuple[bool | None, str | None]:
-    """Read only explicit legacy refresh proof; event state is never proof."""
-    values: list[bool] = []
-    if "final_refresh_passed" in row:
-        values.append(row.get("final_refresh_passed") is True)
-    if "final_refresh_status" in row:
-        values.append(_upper(row.get("final_refresh_status")) in {"PASS", "COMPLETE"})
-    if not values:
-        return None, None
-    if len(set(values)) > 1:
-        return False, "FINAL_REFRESH_EVIDENCE_CONFLICT"
-    return values[0], None if values[0] else "FINAL_REFRESH_NOT_COMPLETE"
-
-
-def _final_refresh_state(row: Mapping[str, Any]) -> tuple[bool, str | None]:
-    """Resolve canonical nested refresh proof, failing closed on ambiguity.
-
-    ``llp_governance.final_refresh`` is authoritative when present. Top-level
-    legacy proof is consulted only when that nested key is absent, and a
-    PREGAME/SCHEDULED event state never substitutes for an actual refresh.
-    """
-    governance_present = "llp_governance" in row
-    governance = row.get("llp_governance")
-    if governance_present and not isinstance(governance, Mapping):
-        return False, "LLP_GOVERNANCE_MALFORMED"
-
-    if isinstance(governance, Mapping) and "final_refresh" in governance:
-        refresh = governance.get("final_refresh")
-        if not isinstance(refresh, Mapping):
-            return False, "FINAL_REFRESH_EVIDENCE_MALFORMED"
-        status = _upper(refresh.get("final_refresh_status") or refresh.get("status"))
-        blockers = refresh.get("reasons") or refresh.get("blockers") or []
-        if (
-            not status
-            or "can_execute" not in refresh
-            or not isinstance(blockers, (list, tuple))
-            or (
-                "probability_invalidated" in refresh
-                and not isinstance(refresh.get("probability_invalidated"), bool)
-            )
-            or (
-                "rerun_required" in refresh
-                and not isinstance(refresh.get("rerun_required"), bool)
-            )
-        ):
-            return False, "FINAL_REFRESH_EVIDENCE_MALFORMED"
-        nested_ok = bool(
-            status in {"PASS", "COMPLETE"}
-            and not blockers
-            and refresh.get("probability_invalidated") is not True
-            and refresh.get("rerun_required") is not True
-            and refresh.get("can_execute") is False
-        )
-        legacy, legacy_blocker = _legacy_final_refresh(row)
-        if legacy_blocker == "FINAL_REFRESH_EVIDENCE_CONFLICT":
-            return False, legacy_blocker
-        if legacy is not None and legacy != nested_ok:
-            return False, "FINAL_REFRESH_EVIDENCE_CONFLICT"
-        return nested_ok, None if nested_ok else "FINAL_REFRESH_NOT_COMPLETE"
-
-    legacy, blocker = _legacy_final_refresh(row)
-    if legacy is None:
-        return False, "FINAL_REFRESH_NOT_COMPLETE"
-    return legacy, blocker
-
-
 def publication_chain_audit(row: Mapping[str, Any]) -> PublicationChainAudit:
-    """Explain the first failed sporting-publication stage without guessing.
+    """Explain the first unproven sporting-publication stage without guessing.
 
     The audit is diagnostic only. It never upgrades a row to rank eligible unless
-    every required boolean/status already proves completion in the supplied row.
+    every required receipt already proves completion. A missing receipt is
+    ``EVIDENCE_NOT_EMITTED`` and stays distinct from an explicit failure.
+    Calibration health, an official-publication guard PASS, and a scheduled
+    event state are not substitutes for those receipts.
     """
-    calibration_ok = bool(
-        row.get("dynamic_calibration_complete") is True
-        or _upper(row.get("calibration_status")) in {"PASS", "COMPLETE"}
-    )
-    package_ok = bool(
-        row.get("probability_package_valid") is True
-        or _upper(row.get("probability_validity_status")) in {"PASS", "COMPLETE"}
-    )
-    probability_audit_ok = bool(
-        row.get("probability_audit_passed") is True
-        or _upper(row.get("llp_probability_audit_result")) in {
-            "PASS", "PASS_PROBABILITY_AUDIT"
-        }
-    )
-    event_governor_ok = bool(
-        row.get("event_governor_complete") is True
-        or _upper(row.get("event_mutex_status")) == "PASS"
-    )
-    final_refresh_ok, final_refresh_blocker = _final_refresh_state(row)
-    terminal_ok = bool(
-        _upper(row.get("global_terminal_authority") or row.get("terminal_authority"))
-        in {GLOBAL_TERMINAL_AUTHORITY, ""}
-        and row.get("can_execute") is False
-    )
-    numeric_ok = all(
-        row.get(field) is not None
-        for field in ("calibrated_probability", "calibrated_lower_bound")
-    ) or all(
-        row.get(field) is not None
-        for field in ("calibrated_home_probability", "calibrated_home_lower_bound")
-    )
+    from v17.stage_proof_contract import EVIDENCE_CONFLICT, EVIDENCE_NOT_EMITTED, classify_publication_evidence
 
-    stages = {
-        "probability_package_valid": package_ok,
-        "dynamic_calibration_complete": calibration_ok,
-        "probability_audit_passed": probability_audit_ok,
-        "event_governor_complete": event_governor_ok,
-        "numerical_bounds_present": numeric_ok,
-        "final_refresh_passed": final_refresh_ok,
-        "terminal_authority_preserved": terminal_ok,
-    }
-    blocker_by_stage = {
-        "probability_package_valid": "PROBABILITY_PACKAGE_NOT_VALID",
-        "dynamic_calibration_complete": "DYNAMIC_CALIBRATION_NOT_COMPLETE",
-        "probability_audit_passed": "PROBABILITY_AUDIT_NOT_COMPLETE",
-        "event_governor_complete": "EVENT_GOVERNOR_NOT_COMPLETE",
-        "numerical_bounds_present": "CALIBRATED_PROBABILITY_OR_LOWER_BOUND_MISSING",
-        "final_refresh_passed": final_refresh_blocker or "FINAL_REFRESH_NOT_COMPLETE",
-        "terminal_authority_preserved": "TERMINAL_AUTHORITY_OR_EXECUTION_INVARIANT_NOT_PROVEN",
-    }
-    first = next((blocker_by_stage[name] for name, ok in stages.items() if not ok), None)
+    classified = classify_publication_evidence(row)
+    stages = dict(classified["stages"])
+    stage_evidence = dict(classified["stage_evidence"])
+    first = classified["first_blocker"]
+    first_evidence = classified["first_evidence"]
     already_ranked = row.get("rank_eligible") is True
     publishable = row.get("probability_publishable") is True
     complete = first is None and already_ranked and publishable
     if complete:
-        return PublicationChainAudit("PASS", True, None, stages)
+        return PublicationChainAudit("PASS", True, None, stages, False, stage_evidence)
     if first is None:
         first = "RANK_ELIGIBLE_OR_PROBABILITY_PUBLISHABLE_NOT_PROVEN"
-    return PublicationChainAudit("BLOCKED", False, first, stages)
+        status = "BLOCKED"
+    elif first_evidence == EVIDENCE_NOT_EMITTED:
+        status = "UNPROVEN"
+    elif first_evidence == EVIDENCE_CONFLICT:
+        status = "CONFLICT"
+    else:
+        status = "BLOCKED"
+    return PublicationChainAudit(status, False, first, stages, False, stage_evidence)
 
 
 def classify_terminal_disposition(row: Mapping[str, Any]) -> str:

@@ -416,10 +416,22 @@ def compact_direction(outcome: dict[str, Any]) -> dict[str, Any]:
     return compact
 
 
+def _compact_moneyline_source(result: dict[str, Any]) -> dict[str, Any]:
+    """Read specialist proof nested under a full-board scan row."""
+    source = dict(result)
+    detail = result.get("detail")
+    if isinstance(detail, dict):
+        for key, value in detail.items():
+            if key not in source or source.get(key) is None:
+                source[key] = value
+    return source
+
+
 def compact_moneyline_result(result: dict[str, Any]) -> dict[str, Any]:
     """Project a team/event result without hiding valid held probabilities."""
-    compact = _pick(result, _COMPACT_MONEYLINE_FIELDS)
-    guard = result.get("official_publication_guard")
+    source = _compact_moneyline_source(result)
+    compact = _pick(source, _COMPACT_MONEYLINE_FIELDS)
+    guard = source.get("official_publication_guard")
     if isinstance(guard, dict):
         kept, truncated = _compact_blockers(guard.get("blockers"))
         compact["official_publication_guard"] = {
@@ -432,9 +444,27 @@ def compact_moneyline_result(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(prepublication, dict):
         compact["prepublication_claim"] = prepublication
 
-    publishable = result.get("probability_publishable") is True
-    rank_eligible = result.get("rank_eligible") is True
-    model_available = _moneyline_model_probability_available(result)
+    publishable = source.get("probability_publishable") is True
+    rank_eligible = source.get("rank_eligible") is True
+    model_available = _moneyline_model_probability_available(source)
+    audit = result.get("publication_chain_audit")
+    if isinstance(audit, dict):
+        compact["publication_chain_audit"] = {
+            "status": audit.get("status"),
+            "first_blocker": audit.get("first_blocker"),
+            "rank_eligible": audit.get("rank_eligible") is True,
+            "can_execute": False,
+        }
+    agreement = result.get("publication_agreement")
+    if isinstance(agreement, dict):
+        compact["publication_agreement"] = {
+            "status": agreement.get("status"),
+            "reason": agreement.get("reason"),
+            "upstream_official_publication_guard_status": agreement.get(
+                "upstream_official_publication_guard_status"
+            ),
+            "can_execute": False,
+        }
     official = bool(publishable and rank_eligible)
 
     compact["probability_publishable"] = publishable
