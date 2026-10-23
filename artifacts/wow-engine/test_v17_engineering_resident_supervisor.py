@@ -70,8 +70,9 @@ class FakeClient:
         )
 
     def get(self, suffix):
-        if suffix.startswith("actions/runs?"):
-            if self.active and "status=in_progress" in suffix:
+        if suffix.startswith("actions/workflows/") and "/runs?status=" in suffix:
+            if (self.active and "wow-v17-chatgpt-engineering-worker.yml" in suffix
+                    and "status=in_progress" in suffix):
                 return {"total_count": 1, "workflow_runs": [
                     {"name": "wow-v17-chatgpt-engineering-worker"}
                 ]}
@@ -181,10 +182,10 @@ def test_no_duplicate_dispatch_when_busy(locked, cooling, active, open_pr, expec
 def test_concurrently_active_engineering_workflows_block_dispatch():
     class Concurrent(FakeClient):
         def get(self, suffix):
-            if suffix == "actions/runs?status=in_progress&per_page=100":
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=in_progress&per_page=100":
                 return {"total_count": 2, "workflow_runs": [
                     {"name": "wow-v17-chatgpt-engineering-worker"},
-                    {"name": "wow-v17-engineering-provider-dispatcher"},
+                    {"name": "wow-v17-chatgpt-engineering-worker"},
                 ]}
             return super().get(suffix)
 
@@ -199,14 +200,46 @@ def test_empty_queue_never_dispatches():
     assert not client.sent
 
 
-def test_github_inventory_incomplete_fails_closed():
-    class Incomplete(FakeClient):
+def test_positive_scoped_count_holds_even_if_first_page_is_short():
+    class ShortPage(FakeClient):
         def get(self, suffix):
-            if suffix.startswith("actions/runs?"):
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=queued&per_page=100":
                 return {"total_count": 101, "workflow_runs": []}
             return super().get(suffix)
-    with pytest.raises(RuntimeError, match="INCOMPLETE"):
-        active_engineering_workflow(Incomplete())
+    client = ShortPage()
+    assert active_engineering_workflow(client) is True
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+    assert client.sent == []
+
+
+def test_unrelated_repository_workflows_are_never_counted_as_engineering_writers():
+    class NoGlobalInventory(FakeClient):
+        def get(self, suffix):
+            assert not suffix.startswith("actions/runs?"), "repository-wide CI is not engineering owner state"
+            return super().get(suffix)
+    client = NoGlobalInventory()
+    assert active_engineering_workflow(client) is False
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+    assert client.sent == [ISSUE]
+
+
+@pytest.mark.parametrize("payload", [
+    {"total_count": -1, "workflow_runs": []},
+    {"total_count": 0, "workflow_runs": [{"name": "unexpected"}]},
+    {"total_count": "1", "workflow_runs": []},
+    {"total_count": 0, "workflow_runs": None},
+    {"total_count": 1, "workflow_runs": ["unsafe"]},
+])
+def test_malformed_scoped_inventory_fails_closed(payload):
+    class Malformed(FakeClient):
+        def get(self, suffix):
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=queued&per_page=100":
+                return payload
+            return super().get(suffix)
+    client = Malformed()
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INVALID"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert client.sent == []
 
 
 def test_open_pr_identity_is_not_silent_and_blocks_duplicate():
