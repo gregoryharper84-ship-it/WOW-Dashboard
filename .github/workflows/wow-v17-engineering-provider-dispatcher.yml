@@ -144,11 +144,26 @@ jobs:
             local recent conclusion
             if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
                  --workflow wow-v17-gemini-engineering-worker.yml \
-                 --status completed --limit 1 --json databaseId,conclusion 2>/dev/null); then
+                 --status completed --limit 1 --json databaseId,conclusion,updatedAt 2>/dev/null); then
               return 1
             fi
             conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
-            [ "$conclusion" = "success" ]
+            [ "$conclusion" = "success" ] || return 1
+            # Cost circuit: no repeated automatic paid work more than once/day.
+            # Manual explicit canaries remain available for recovery and diagnostics.
+            local age_minutes
+            age_minutes=$(python - "$recent" <<'PY'
+          import datetime as dt, json, sys
+          try:
+              runs = json.loads(sys.argv[1])
+              when = dt.datetime.fromisoformat(runs[0]["updatedAt"].replace("Z", "+00:00"))
+              minutes = (dt.datetime.now(dt.timezone.utc) - when).total_seconds() / 60
+              print(int(minutes) if minutes >= 0 else -1)
+          except (ValueError, KeyError, IndexError, TypeError):
+              print(-1)
+          PY
+            ) || return 1
+            [[ "$age_minutes" =~ ^[0-9]+$ ]] && [ "$age_minutes" -ge 1440 ]
           }
 
           if [ "$EVENT_NAME" = "workflow_run" ] && [ "$source_workflow_id" != "wow-v17-nightly-engineering-scan" ]; then
