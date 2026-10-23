@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import importlib.util
 from pathlib import Path
 import subprocess
 import sys
@@ -9,12 +11,15 @@ import sys
 import pytest
 import yaml
 
-from v17.claude_execution_outcome_diagnostic import inspect_execution_file
-
 ENGINE = Path(__file__).resolve().parent
 REPO = ENGINE.parents[1]
 ACTION = REPO / ".github/actions/wow-claude-agent/action.yml"
-SCRIPT = ENGINE / "v17/claude_execution_outcome_diagnostic.py"
+SCRIPT = REPO / ".github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py"
+SPEC = importlib.util.spec_from_file_location("_protected_claude_diagnostic_test", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+inspect_execution_file = MODULE.inspect_execution_file
 SENTINEL = "sk-ant-unprintable-sentinel-only-for-testing"
 
 
@@ -141,9 +146,89 @@ def test_composite_diagnostic_runs_before_existing_result_gate_for_both_provider
         "${{ steps.claude_oauth.outputs.execution_file }}"
     )
     assert by_name[api]["run"] == by_name[oauth]["run"] == (
-        "python3 artifacts/wow-engine/v17/claude_execution_outcome_diagnostic.py"
+        "python3 .github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py"
     )
     assert "CLAUDE_STRUCTURED_OUTPUT_MISSING" in by_name[gate]["run"]
     assert "CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON" in by_name[gate]["run"]
     assert by_name[gate]["if"] == "always()"
     assert ACTION.read_text().count('show_full_output: "false"') == 2
+
+def test_diagnostic_helper_is_a_protected_governance_action():
+    assert SCRIPT.is_file()
+    assert not (ENGINE / "v17/claude_execution_outcome_diagnostic.py").exists()
+    from v17.agent_identity_policy import is_trust_root, _codeowners_owners
+    assert is_trust_root(".github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py", frozenset())
+    for owners in (REPO / ".github/CODEOWNERS",
+                   ENGINE / "v17/agent_identity/CODEOWNERS.proposed"):
+        assert "@gregoryharper84-ship-it" in _codeowners_owners(
+            owners.read_text(), ".github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py"
+        )
+
+
+def test_helper_only_change_requires_trust_root_review():
+    spec = importlib.util.spec_from_file_location(
+        "_claude_protected_diff_verifier",
+        REPO / ".github/scripts/verify_existing_pr_governance_receipt.py",
+    )
+    assert spec is not None and spec.loader is not None
+    verifier = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = verifier
+    spec.loader.exec_module(verifier)
+    for paths in (
+        [{"filename": ".github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py",
+          "previous_filename": None}],
+        [{"filename": "docs/moved-helper.py",
+          "previous_filename": ".github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py"}],
+    ):
+        with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                           match="TRUST_ROOT_CHANGE_NOT_CERTIFIABLE"):
+            verifier._validate_protected_diff(paths, repo_root=REPO)
+
+
+@pytest.mark.parametrize("provider,clearing_step,attempt_step", [
+    ("api", "Clear API-key execution transcript before invocation",
+     "Run governed Claude agent with API key"),
+    ("oauth", "Clear OAuth execution transcript before invocation",
+     "Run governed Claude agent with OAuth"),
+])
+def test_each_attempt_clears_stale_shared_execution_evidence(
+    tmp_path, provider, clearing_step, attempt_step
+):
+    steps = yaml.safe_load(ACTION.read_text())["runs"]["steps"]
+    by_name = {step["name"]: step for step in steps}
+    clear = by_name[clearing_step]
+    attempt = by_name[attempt_step]
+    assert steps.index(clear) + 1 == steps.index(attempt)
+    assert clear["if"] == attempt["if"]
+    shared = tmp_path / "claude-execution-output.json"
+    shared.write_text(json.dumps({
+        "type": "result", "is_error": True, "api_error_status": 429,
+        "result": SENTINEL,
+    }))
+    assert inspect_execution_file(str(shared), runner_temp=str(tmp_path)).startswith(
+        "PROVIDER_HTTP_429"
+    )
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", clear["run"]],
+        env={**os.environ, "RUNNER_TEMP": str(tmp_path)},
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    # Simulated provider setup error occurs before the pinned action writes.
+    assert not shared.exists()
+    assert not inspect_execution_file(str(shared), runner_temp=str(tmp_path)).startswith(
+        "PROVIDER_HTTP_429"
+    )
+
+
+def test_missing_runner_temp_fails_closed_before_provider_attempt(tmp_path):
+    steps = yaml.safe_load(ACTION.read_text())["runs"]["steps"]
+    clear = next(s for s in steps
+                 if s["name"] == "Clear OAuth execution transcript before invocation")
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", clear["run"]],
+        env={**os.environ, "RUNNER_TEMP": ""},
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode != 0
+    assert "CLAUDE_RUNNER_TEMP_MISSING" in result.stdout
