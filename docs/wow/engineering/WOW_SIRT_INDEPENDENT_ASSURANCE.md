@@ -1,5 +1,8 @@
 # WOW SIRT — Independent Assurance Implementation
 
+
+**Operating mission:** [DEBUG. DISSOLVE. DEPLOY.](WOW_ENGINEERING_MISSION_DOCTRINE.md) SIRT independently verifies reality, not appearances: exact-SHA evidence, actual product capability, typed PASS/FAIL/UNVERIFIED, and accountable re-entry. SIRT is not an Engineering repair owner, release writer, or substitute for independent QA/Release.
+
 ## Ownership
 The Conductor coordinates ecosystem handoffs; Engineering implements fixes; Independent Verification accepts closures; SIRT diagnoses, prevents, and audits. No alternate terminal publication authority is created.
 
