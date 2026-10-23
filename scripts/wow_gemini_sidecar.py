@@ -39,7 +39,7 @@ AGENT_PROMPT = (
 def _project_id(value: str) -> str:
     value = str(value or "").strip()
     if not PROJECT_ID_RE.fullmatch(value) or value.lower() in {
-        "projectid", "your-project-id", "example", "placeholder"
+        "projectid", "your-project-id", "example", "placeholder", "actual_project_id", "replace_with_real_project_id"
     }:
         raise ValueError("Provide the REAL Antigravity project ID, not a placeholder, URL, or path")
     return value
