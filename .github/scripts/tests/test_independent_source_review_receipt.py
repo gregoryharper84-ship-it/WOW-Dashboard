@@ -56,6 +56,8 @@ PRODUCER_RUN = {
 }
 CONSUMER_RUN = {
     **PRODUCER_RUN,
+    "name": f"{review.WORKFLOW_NAME} event=workflow_dispatch pr=1822",
+    "workflow_id": review.WORKFLOW_ID,
     "repository": {"full_name": review.CANONICAL_REPOSITORY},
     "head_repository": {"full_name": review.CANONICAL_REPOSITORY},
     "status": "completed",
@@ -268,7 +270,11 @@ def test_workflow_run_triggered_review_keeps_protected_main_provenance():
         now=NOW,
     )
 
-    verify(receipt, run={**CONSUMER_RUN, "event": "workflow_run"})
+    verify(receipt, run={
+        **CONSUMER_RUN,
+        "name": f"{review.WORKFLOW_NAME} event=workflow_run pr=AUTO",
+        "event": "workflow_run",
+    })
 
     with pytest.raises(review.SourceReviewError, match="PROVENANCE_MISMATCH|WORKFLOW_RUN_UNTRUSTED"):
         verify(receipt, run={**CONSUMER_RUN, "event": "pull_request"})
@@ -318,6 +324,9 @@ def test_foreign_or_failed_workflow_run_holds():
         ("event", "pull_request_target"),
         ("head_branch", "attacker"),
         ("path", ".github/workflows/untrusted.yml"),
+        ("workflow_id", review.WORKFLOW_ID + 1),
+        ("workflow_id", None),
+        ("workflow_id", True),
         ("status", "in_progress"),
         ("conclusion", "failure"),
     ]:
@@ -577,14 +586,15 @@ def test_artifact_checksum_is_verified_by_cli(tmp_path):
     assert result == 1
 
 
-def qa_policy(mode="independent", *, now=NOW):
+def qa_policy(mode="independent", *, now=NOW, event=None):
+    run = PRODUCER_RUN if event is None else {**PRODUCER_RUN, "event": event}
     return review.build_qa_review_policy(
         repository=review.CANONICAL_REPOSITORY,
         pr_number=1822,
         head_sha=HEAD,
         head_ref="copilot/fix",
         mode=mode,
-        run=PRODUCER_RUN,
+        run=run,
         now=now,
     )
 
@@ -665,8 +675,14 @@ def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path
 
 
 @pytest.mark.parametrize(("field", "value", "reason"), [
-    ("name", "foreign-workflow", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("workflow_id", 1, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("workflow_id", None, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("workflow_id", True, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("path", ".github/workflows/other.yml", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("event", "pull_request_target", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("head_sha", "c" * 40, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("repository", {"full_name": "fork/WOW-Dashboard"}, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("head_repository", {"full_name": "fork/WOW-Dashboard"}, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("head_branch", "feature", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("conclusion", "cancelled", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("run_attempt", 2, "QA_POLICY_RUN_ATTEMPT_MISMATCH"),
@@ -675,6 +691,58 @@ def test_qa_policy_rejects_foreign_failed_or_replayed_producer_run(field, value,
     routes, archive = qa_policy_routes()
     routes[f"/actions/runs/{PRODUCER_RUN['id']}"][field] = value
     with pytest.raises(review.SourceReviewError, match=reason):
+        review.resolve_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY,
+            run_id=PRODUCER_RUN["id"],
+            run_attempt=1,
+            token="read-only",
+            now=datetime.now(timezone.utc),
+            get_json=routes.__getitem__,
+            download_artifact=lambda artifact_id: archive,
+        )
+
+
+@pytest.mark.parametrize(
+    ("event", "display_name"),
+    [
+        ("workflow_dispatch", f"{review.WORKFLOW_NAME} event=workflow_dispatch pr=1963"),
+        ("workflow_run", f"{review.WORKFLOW_NAME} event=workflow_run pr=AUTO"),
+    ],
+)
+def test_qa_policy_accepts_dynamic_run_name_for_trusted_workflow(event, display_name):
+    routes, archive = qa_policy_routes(
+        qa_policy(now=datetime.now(timezone.utc) - timedelta(minutes=1), event=event)
+    )
+    run = routes[f"/actions/runs/{PRODUCER_RUN['id']}"]
+    run["name"] = display_name
+    run["event"] = event
+    resolved = review.resolve_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY,
+        run_id=PRODUCER_RUN["id"],
+        run_attempt=1,
+        token="read-only",
+        expected_pr_number=1822,
+        now=datetime.now(timezone.utc),
+        get_json=routes.__getitem__,
+        download_artifact=lambda artifact_id: archive,
+    )
+    assert resolved["run"]["name"] == display_name
+    assert resolved["policy"]["source"]["head_sha"] == MAIN
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("workflow_name", "foreign-workflow"),
+    ("workflow_path", ".github/workflows/other.yml"),
+    ("event", "pull_request_target"),
+    ("head_sha", "c" * 40),
+    ("repository", "fork/WOW-Dashboard"),
+    ("run_id", "99999"),
+])
+def test_qa_policy_rejects_fabricated_source_provenance(field, value):
+    policy = qa_policy(now=datetime.now(timezone.utc) - timedelta(minutes=1))
+    policy["source"][field] = value
+    routes, archive = qa_policy_routes(policy)
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_RUN_PROVENANCE_MISMATCH"):
         review.resolve_qa_review_policy(
             repository=review.CANONICAL_REPOSITORY,
             run_id=PRODUCER_RUN["id"],
