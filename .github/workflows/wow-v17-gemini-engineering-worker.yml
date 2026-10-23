@@ -92,8 +92,10 @@ jobs:
             > "$RUNNER_TEMP/wow-gemini/selection.json"
           status=$(jq -r '.status' "$RUNNER_TEMP/wow-gemini/selection.json")
           if [ "$status" = "NO_ACTION" ]; then
-            echo "selected=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            # An empty queue is not an authenticated model canary. Keep auto
+            # routing disabled until a real candidate/receipt has succeeded.
+            echo "::error::GEMINI_NO_ELIGIBLE_CANARY_INCIDENT"
+            exit 1
           fi
           [ "$status" = "SELECTED" ] || { echo "::error::GEMINI_INCIDENT_ADMISSION_HELD"; exit 1; }
           echo "selected=true" >> "$GITHUB_OUTPUT"
