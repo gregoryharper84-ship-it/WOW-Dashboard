@@ -305,7 +305,7 @@ def test_canonical_body_marker_blocks_duplicate_even_with_unrelated_title():
     client = FakeClient(open_pr_pages=[[
         open_pr_record(
             1842, title="new NFL publication repair",
-            body="AMRT_CANONICAL_INCIDENT_OWNERSHIP\\nIncident: #1841",
+            body="AMRT_CANONICAL_INCIDENT_OWNERSHIP\nIncident: #1841",
             draft=True,
         ),
     ]])
