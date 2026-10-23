@@ -139,3 +139,52 @@ def test_postseason_espn_fallback_requires_matching_postseason_model_regime():
         event, SimpleNamespace(supported_regimes=(registry.PLAYOFFS,))
     )
     # This checks only route eligibility, NEVER fitted or certified capability.
+
+
+def test_2026_world_series_game1_and_game2_are_not_regular_season():
+    """Reproduce Oct 23 2026 MLB Daily aliases without granting official identity."""
+    from datetime import datetime, timezone
+
+    from v17 import quota_aware_degraded_discovery as quota
+
+    def candidate(utc_start):
+        raw_event = _espn_event({"type": 3, "slug": "postseason"})
+        raw_event["date"] = utc_start
+        raw_event["competitions"][0]["competitors"][0]["team"]["displayName"] = "Milwaukee Brewers"
+        raw_event["competitions"][0]["competitors"][1]["team"]["displayName"] = "Tampa Bay Rays"
+        public_row = secondary.espn_event_to_primary_shape(raw_event, "baseball_mlb")
+        assert public_row["season_phase"] == "POSTSEASON"
+        event = discovery.normalize_discovered_event(
+            public_row,
+            sport="MLB",
+            sport_key="3",
+            source="DISCOVERY_FEED",
+            target=discovery.DiscoveryTarget(
+                family="MLB", provider=registry.PROVIDER,
+                league="MLB", regime=registry.REGULAR_SEASON, sport_id=3,
+            ),
+            now=datetime(2026, 10, 23, 12, tzinfo=timezone.utc),
+        )
+        return quota._normalize_public_alias(
+            {"id": public_row["id"], "discovery_provider": "ESPN_SCOREBOARD"},
+            event,
+        )
+
+    game1 = candidate("2026-10-24T00:00:00Z")  # Oct 23 at 7 p.m. Central
+    game2 = candidate("2026-10-25T00:00:00Z")  # Oct 24 at 7 p.m. Central
+
+    assert game1.regime == game2.regime == registry.PLAYOFFS
+    assert game1.home_team == "Milwaukee Brewers"
+    assert game1.away_team == "Tampa Bay Rays"
+    assert game1.official_event_id is None  # ESPN alias is never official MLB identity
+    assert not discovery.model_supports_regime(
+        game1, SimpleNamespace(supported_regimes=(registry.REGULAR_SEASON,))
+    )
+    assert discovery._purge_bucket(
+        game1, slate_date="2026-10-23", tz_name="America/Chicago"
+    ) == discovery.IDENTITY_UNRESOLVED
+    assert discovery._purge_bucket(
+        game2, slate_date="2026-10-23", tz_name="America/Chicago"
+    ) == discovery.WRONG_DATE
+    assert not game1.raw.get("prediction_authority", False)
+    assert discovery.CAN_EXECUTE is False
