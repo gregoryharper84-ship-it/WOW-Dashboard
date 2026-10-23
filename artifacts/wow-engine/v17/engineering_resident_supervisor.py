@@ -378,7 +378,7 @@ def persist_resident_heartbeat(
         ch.isalnum() or ch == "_" for ch in safe_outcome
     ):
         raise ValueError("RESIDENT_HEARTBEAT_OUTCOME_INVALID")
-    db_client.table("wow_engineering_auditor_runtime").upsert({
+    payload = {
         "auditor_id": DISPATCHER_HEARTBEAT_ID,
         "instance_id": instance_id,
         "status": status,
@@ -387,7 +387,20 @@ def persist_resident_heartbeat(
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "updated_at": now,
-    }, on_conflict="auditor_id").execute()
+    }
+    if status == "STOPPED":
+        # Render replaces a Celery worker before the retiring process has
+        # necessarily emitted its final heartbeat. A plain upsert here lets the
+        # *old* instance overwrite the new RUNNING row with STOPPED. Fence the
+        # shutdown write atomically to the exact instance that is stopping.
+        # A zero-row update means another instance owns the heartbeat now.
+        db_client.table("wow_engineering_auditor_runtime").update(payload).eq(
+            "auditor_id", DISPATCHER_HEARTBEAT_ID
+        ).eq("instance_id", instance_id).execute()
+    else:
+        db_client.table("wow_engineering_auditor_runtime").upsert(
+            payload, on_conflict="auditor_id"
+        ).execute()
 
 
 # Only fixed, locally-authored failure literals can reach operational logs or
