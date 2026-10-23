@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .incident_regression_evidence import verify_authenticated_regression
     from .nightly_engineering_team_contract import (
         CLOSURE_RELEASE_STATUSES,
         REPRODUCTION_STATUSES,
@@ -27,6 +28,7 @@ try:
         validate_team_record,
     )
 except ImportError:  # direct-script/spec loader compatibility
+    from incident_regression_evidence import verify_authenticated_regression
     from nightly_engineering_team_contract import (
         CLOSURE_RELEASE_STATUSES,
         REPRODUCTION_STATUSES,
@@ -479,6 +481,12 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
     errors = validate_team_record(row, enforce_closure=True)
     if errors:
         raise ValueError("closure blocked: " + "; ".join(errors))
+    if row.get("learning_contract_version") == "1" and row.get("severity") in {"P0", "P1"}:
+        release = row.get("release") or {}
+        release_sha = release.get("deployed_commit") or release.get("merge_commit")
+        row["learning"]["regression_evidence_verified"] = verify_authenticated_regression(
+            row["learning"], expected_sha=release_sha
+        )
     row["updated_utc"] = _utc_now()
     _save_ledger(ledger)
 
