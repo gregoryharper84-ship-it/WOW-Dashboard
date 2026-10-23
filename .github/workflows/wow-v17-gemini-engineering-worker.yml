@@ -167,7 +167,7 @@ jobs:
           if [ "$rc" -eq 124 ]; then flag+=(--timed-out); fi
           python "$GITHUB_WORKSPACE/artifacts/wow-engine/v17/engineering_gemini_headless.py" classify \
             --exit-code "$rc" --stderr-file "$RUNNER_TEMP/wow-gemini/cli-stderr.txt" \
-            "${flag[@]}" > "$RUNNER_TEMP/wow-gemini/model-receipt.json" || {
+            --response-file "$RUNNER_TEMP/wow-gemini/cli-output.json" "${flag[@]}" > "$RUNNER_TEMP/wow-gemini/model-receipt.json" || {
             echo "::error::GEMINI_MODEL_TYPED_FAILURE"
             exit 1
           }
