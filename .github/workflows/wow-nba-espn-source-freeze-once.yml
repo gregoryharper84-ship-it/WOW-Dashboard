@@ -12,6 +12,11 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded PR-head research captures without any write capability.
+concurrency:
+  group: wow-nba-one-shot-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   source-capture:
     name: Research raw source freeze / ${{ matrix.sport }}
