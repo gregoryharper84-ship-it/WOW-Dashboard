@@ -71,6 +71,8 @@ class GeminiSidecarInstallerContract(unittest.TestCase):
             with self.assertRaises(ValueError):
                 worker.install(cfg, "your-project-id")
             with self.assertRaises(ValueError):
+                worker.install(cfg, "ACTUAL_PROJECT_ID")
+            with self.assertRaises(ValueError):
                 worker.install(cfg, "project_abc", "no")
             self.assertFalse(cfg.exists())
 
