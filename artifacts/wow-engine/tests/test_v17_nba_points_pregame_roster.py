@@ -8,6 +8,7 @@ import pytest
 
 from v17.nba_points_pregame_roster import (
     NBAPregameRosterError, verify_nba_points_current_roster,
+    acquire_nba_points_current_roster,
 )
 
 
@@ -137,3 +138,57 @@ def test_cannot_promote_unchanged_roster_evidence_to_role_or_model_readiness():
     assert result["role_ledger_ready"] is False
     assert result["probability_publishable"] is False
     assert not result["can_execute"]
+
+
+def test_bounded_live_source_adapter_uses_only_two_fixed_origin_gets():
+    data = fixtures()
+    seen = []
+    def fake_get(url, params, timeout, headers):
+        seen.append((url, params, timeout, headers))
+        if "espn.com" in url:
+            content = data["espn_summary"]
+        else:
+            content = data["nba_boxscore"]
+        from types import SimpleNamespace
+        return SimpleNamespace(status_code=200, json=lambda: content)
+    result = acquire_nba_points_current_roster(
+        espn_event_id=data["espn_event_id"], nba_game_id=data["nba_game_id"],
+        player_name=data["player_name"], http_get=fake_get,
+        clock=lambda: data["now"],
+    )
+    assert len(seen) == 2
+    assert seen[0][0] == "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary"
+    assert seen[0][1] == {"event": "401000123"}
+    assert seen[1][0] == "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_0022600123.json"
+    assert seen[1][1] is None
+    assert all(request[2] == 12 for request in seen)
+    assert result["source_acquisition"]["provider_calls"] == 2
+    assert result["roster"]["player_id"] == "1629001"
+    assert result["role_ledger_ready"] is False
+    assert result["probability_publishable"] is False
+
+
+def test_nba_live_source_http_failure_stops_before_any_model_path():
+    from types import SimpleNamespace
+    def broken(url, params, timeout, headers):
+        return SimpleNamespace(status_code=503, json=lambda: {})
+    with pytest.raises(NBAPregameRosterError) as error:
+        acquire_nba_points_current_roster(
+            espn_event_id="401000123", nba_game_id="0022600123",
+            player_name="Sample Player", http_get=broken,
+        )
+    assert error.value.code == "NBA_ROSTER_PROVIDER_HTTP_FAILURE"
+
+
+def test_unsafe_requested_source_ids_cannot_change_fixed_provider_urls():
+    calls = []
+    def should_not_fetch(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("no untrusted URL may be fetched")
+    with pytest.raises(NBAPregameRosterError) as error:
+        acquire_nba_points_current_roster(
+            espn_event_id="401000123?host=other", nba_game_id="0022600123",
+            player_name="Sample Player", http_get=should_not_fetch,
+        )
+    assert error.value.code == "NBA_ROSTER_ESPN_EVENT_ID_INVALID"
+    assert calls == []
