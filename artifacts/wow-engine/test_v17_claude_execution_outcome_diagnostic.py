@@ -124,8 +124,16 @@ def test_composite_diagnostic_runs_before_existing_result_gate_for_both_provider
     oauth = "Classify OAuth provider failure without provider text"
     assert steps.index(by_name[api]) < steps.index(by_name["Run governed Claude agent with OAuth"])
     assert steps.index(by_name[oauth]) < steps.index(by_name[gate])
-    assert by_name[api]["if"] == "always() && steps.claude_api.outcome == 'failure'"
-    assert by_name[oauth]["if"] == "always() && steps.claude_oauth.outcome == 'failure'"
+    api_condition = by_name[api]["if"]
+    oauth_condition = by_name[oauth]["if"]
+    for condition, key in ((api_condition, "claude_api"), (oauth_condition, "claude_oauth")):
+        assert "always()" in condition
+        assert f"steps.{key}.outcome == 'failure'" in condition
+        # The observed SDK error returns action outcome=success with empty
+        # structured_output; it must still run the sanitized diagnostic.
+        assert f"steps.{key}.outcome == 'success'" in condition
+        assert f"steps.{key}.outputs.structured_output == ''" in condition
+        assert "outcome == 'skipped'" not in condition
     assert by_name[api]["env"]["CLAUDE_EXECUTION_FILE"] == (
         "${{ steps.claude_api.outputs.execution_file }}"
     )
