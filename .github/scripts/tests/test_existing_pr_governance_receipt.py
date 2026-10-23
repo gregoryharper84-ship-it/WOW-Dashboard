@@ -10,6 +10,7 @@ import sys
 import textwrap
 
 import pytest
+import yaml
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_existing_pr_governance_receipt.py"
 SOURCE_REVIEW_SCRIPT = Path(__file__).resolve().parents[1] / "independent_source_review_receipt.py"
@@ -46,33 +47,24 @@ ALLOWLIST = [REVIEWER]
 
 
 def _workflow_run_sources(path):
-    content = path.read_text(encoding="utf-8")
-    name_match = re.search(r"(?m)^name:\s*(.+?)\s*$", content)
-    assert name_match, f"Missing workflow name in {path}"
-    trigger_match = re.search(
-        r"(?ms)^  workflow_run:\s*\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
-        content,
-    )
-    if not trigger_match:
-        return name_match.group(1), set()
-    workflows_match = re.search(
-        r"(?m)^    workflows:\s*\[([^\]]*)\]\s*$",
-        trigger_match.group(1),
-    )
-    assert workflows_match, f"Missing workflow_run producer list in {path}"
-    sources = {name.strip() for name in workflows_match.group(1).split(",") if name.strip()}
-    return name_match.group(1), sources
+    workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert isinstance(workflow, dict) and workflow.get("name"), f"Invalid workflow YAML: {path}"
+    triggers = workflow.get("on", {})
+    run_trigger = triggers.get("workflow_run", {})
+    return workflow["name"], set(run_trigger.get("workflows", [])), workflow
 
 
 def _workflow_run_graph():
     workflows = (QA_WORKFLOW, WORKFLOW, TRUSTED_GATE)
-    sources_by_name = dict(_workflow_run_sources(path) for path in workflows)
+    parsed = [_workflow_run_sources(path) for path in workflows]
+    sources_by_name = {name: sources for name, sources, _ in parsed}
+    definitions = {name: workflow for name, _, workflow in parsed}
     known_workflows = set(sources_by_name)
     graph = {name: set() for name in known_workflows}
     for consumer, sources in sources_by_name.items():
         for producer in sources & known_workflows:
             graph[producer].add(consumer)
-    return sources_by_name, graph
+    return sources_by_name, graph, definitions
 
 
 def _has_workflow_cycle(graph):
@@ -95,7 +87,7 @@ def _has_workflow_cycle(graph):
 
 
 def test_protected_governance_workflow_run_graph_is_acyclic_and_detects_the_old_cycle():
-    sources_by_name, graph = _workflow_run_graph()
+    sources_by_name, graph, definitions = _workflow_run_graph()
     qa_name = "wow-v17-independent-qa-check"
     certifier_name = "wow-v17-existing-pr-governance-review"
     trusted_gate_name = "wow-v17-trusted-governance-gate"
@@ -105,32 +97,67 @@ def test_protected_governance_workflow_run_graph_is_acyclic_and_detects_the_old_
     assert sources_by_name[trusted_gate_name] == {certifier_name}
     assert not _has_workflow_cycle(graph)
 
+    qa_workflow = definitions[qa_name]
+    dispatch = qa_workflow["on"]["workflow_dispatch"]["inputs"]
+    assert dispatch["pr_number"]["required"] == "true"
+    assert dispatch["head_sha"]["required"] == "false"
+    assert "github.ref == 'refs/heads/main'" in qa_workflow["jobs"]["qa"]["if"]
+    assert qa_workflow["on"]["workflow_run"]["types"] == ["completed"]
+
     old_cycle = {workflow: set(downstream) for workflow, downstream in graph.items()}
     old_cycle[trusted_gate_name].add(qa_name)
     assert _has_workflow_cycle(old_cycle)
 
 
-def test_workflow_run_burst_canary_is_finite_and_preserves_role_order():
-    sources_by_name, graph = _workflow_run_graph()
+def test_workflow_run_events_include_skipped_job_completion_without_reentering_qa():
+    sources_by_name, graph, _ = _workflow_run_graph()
     qa_name = "wow-v17-independent-qa-check"
     certifier_name = "wow-v17-existing-pr-governance-review"
     trusted_gate_name = "wow-v17-trusted-governance-gate"
-    burst_size = 31
-    pending = [qa_name] * burst_size
-    generated = []
 
-    while pending:
-        producer = pending.pop()
-        for consumer in graph[producer]:
-            if producer in sources_by_name[consumer]:
-                generated.append(consumer)
-                pending.append(consumer)
+    regular_suite_consumers = {
+        consumer for consumer, sources in sources_by_name.items()
+        if "wow-verify" in sources
+    }
+    assert regular_suite_consumers == {qa_name}
 
-    assert Counter(generated) == Counter({
-        certifier_name: burst_size,
-        trusted_gate_name: burst_size,
+    def completed_workflow_consumers(producer, *, job_conclusion="success"):
+        assert job_conclusion in {"success", "skipped"}
+        return {
+            consumer for consumer, sources in sources_by_name.items()
+            if producer in sources
+        }
+
+    assert completed_workflow_consumers("wow-verify") == {qa_name}
+    assert completed_workflow_consumers(qa_name, job_conclusion="skipped") == {certifier_name}
+    assert completed_workflow_consumers(certifier_name) == {trusted_gate_name}
+    assert completed_workflow_consumers(trusted_gate_name) == set()
+
+    event_queue = [("wow-verify", "success")] * 31
+    dispatched = Counter()
+    while event_queue:
+        completed, job_conclusion = event_queue.pop()
+        for consumer in completed_workflow_consumers(
+            completed,
+            job_conclusion="skipped" if completed == qa_name else job_conclusion,
+        ):
+            dispatched[consumer] += 1
+            event_queue.append((consumer, "skipped" if consumer == qa_name else "success"))
+
+    assert dispatched == Counter({
+        qa_name: 31,
+        certifier_name: 31,
+        trusted_gate_name: 31,
     })
     assert not _has_workflow_cycle(graph)
+
+
+def test_malformed_qa_workflow_run_event_identity_holds(qa_policy_identity_step):
+    result, _, outputs = qa_policy_identity_step(source_prs="{")
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_QA_POLICY_IDENTITY_HOLD:" in result.stderr
+    assert outputs == ""
 
 
 def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permissions():
