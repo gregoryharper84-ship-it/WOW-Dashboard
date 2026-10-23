@@ -9,12 +9,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import threading
 from datetime import datetime, timezone
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from v17.engineering_dispatch_queue import _validate_manifest
 from v17.amrt_operational_lanes import dispatch_preflight
@@ -32,6 +34,8 @@ LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
 ATTEMPT_KEY_PREFIX = "wow:v17:engineering:resident-dispatch-attempts:v1:"
 DISPATCHER_HEARTBEAT_ID = "WOW_ENGINEERING_RESIDENT_DISPATCHER"
+OPEN_PR_PAGE_SIZE = 100
+MAX_OPEN_PR_PAGES = 10
 _STOP = threading.Event()
 _THREAD: threading.Thread | None = None
 
@@ -44,7 +48,9 @@ class GitHubTransport:
             raise ValueError("GITHUB_DISPATCH_TOKEN_MISSING")
         self.token, self.repo = token, repo
 
-    def call(self, path: str, payload: dict[str, Any] | None = None) -> Any:
+    def call_with_headers(
+        self, path: str, payload: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, str]]:
         if not path.startswith("/") or "//" in path or not path.startswith(f"/repos/{self.repo}/"):
             raise ValueError("UNAPPROVED_GITHUB_API_PATH")
         data = json.dumps(payload).encode() if payload is not None else None
@@ -63,10 +69,25 @@ class GitHubTransport:
         # Do not log URLs with query strings or secret-bearing transport errors.
         with urllib.request.urlopen(request, timeout=8) as response:
             raw = response.read()
-        return json.loads(raw) if raw else {}
+            response_headers = dict(response.headers.items())
+        return (json.loads(raw) if raw else {}), response_headers
+
+    def call(self, path: str, payload: dict[str, Any] | None = None) -> Any:
+        return self.call_with_headers(path, payload)[0]
 
     def get(self, suffix: str) -> Any:
         return self.call(f"/repos/{self.repo}/{suffix}")
+
+    def get_open_pull_request_page(self, page: int) -> tuple[Any, bool, bool]:
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise ValueError("OPEN_PR_PAGE_INVALID")
+        result, headers = self.call_with_headers(
+            f"/repos/{self.repo}/pulls?state=open&per_page={OPEN_PR_PAGE_SIZE}&page={page}",
+        )
+        has_next, has_pagination_link = _open_pr_page_pagination(
+            headers, page=page, repo=self.repo,
+        )
+        return result, has_next, has_pagination_link
 
     def dispatch(self, issue: dict[str, Any]) -> None:
         group = str(issue.get("lease_group") or "GLOBAL")
@@ -124,16 +145,107 @@ def next_approved_issue(
     return None
 
 
-def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
-    result = client.get("pulls?state=open&per_page=100")
-    # GitHub returns a list for this endpoint; our transport also supports lists.
-    if not isinstance(result, list):
+def _open_pr_page_pagination(
+    headers: dict[str, str], *, page: int, repo: str,
+) -> tuple[bool, bool]:
+    link_header = next(
+        (value for key, value in headers.items() if key.lower() == "link"),
+        None,
+    )
+    if link_header is None:
+        return False, False
+    if not isinstance(link_header, str):
         raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
-    if len(result) == 100:
-        raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
-    import re
-    pattern = re.compile(r"(?im)^Incident:\s*(?:\x60)?#?" + re.escape(str(issue_number)) + r"(?:\x60)?\s*$")
-    return any(pattern.search(str(pr.get("body") or "")) for pr in result)
+
+    next_links = []
+    for link in link_header.split(","):
+        match = re.fullmatch(
+            r'\s*<([^<>]+)>\s*;\s*rel\s*=\s*"?([a-z]+)"?\s*', link,
+        )
+        if match is None:
+            raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+        if match.group(2) == "next":
+            next_links.append(match.group(1))
+    if len(next_links) > 1:
+        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+    if not next_links:
+        return False, True
+
+    next_url = urlparse(next_links[0])
+    query = parse_qs(next_url.query, keep_blank_values=True)
+    if (
+        next_url.scheme != "https"
+        or next_url.netloc != "api.github.com"
+        or next_url.path != f"/repos/{repo}/pulls"
+        or next_url.fragment
+        or set(query) != {"state", "per_page", "page"}
+        or query.get("state") != ["open"]
+        or query.get("per_page") != [str(OPEN_PR_PAGE_SIZE)]
+        or query.get("page") != [str(page + 1)]
+    ):
+        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+    return True, True
+
+
+def _validate_open_pr(pr: Any, *, repo: str) -> dict[str, Any]:
+    if not isinstance(pr, dict):
+        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+    number = pr.get("number")
+    issue_url = pr.get("issue_url")
+    if (
+        isinstance(number, bool)
+        or not isinstance(number, int)
+        or number < 1
+        or pr.get("state") != "open"
+        or pr.get("html_url") != f"https://github.com/{repo}/pull/{number}"
+        or not isinstance(pr.get("title"), str)
+        or (pr.get("body") is not None and not isinstance(pr.get("body"), str))
+        or issue_url != f"https://api.github.com/repos/{repo}/issues/{number}"
+        or not isinstance(pr.get("draft"), bool)
+    ):
+        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+    return pr
+
+
+def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
+    repo = getattr(client, "repo", REPO)
+    issue_ref = re.escape(str(issue_number))
+    body_pattern = re.compile(
+        r"(?im)^Incident:\s*(?:\x60)?#?" + issue_ref + r"(?:\x60)?\s*$",
+    )
+    seen_numbers: set[int] = set()
+    matches_issue = False
+
+    for page in range(1, MAX_OPEN_PR_PAGES + 1):
+        result, has_next, has_pagination_link = client.get_open_pull_request_page(page)
+        if not isinstance(result, list) or len(result) > OPEN_PR_PAGE_SIZE:
+            raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+        if (
+            not isinstance(has_next, bool)
+            or not isinstance(has_pagination_link, bool)
+            or (has_next and len(result) != OPEN_PR_PAGE_SIZE)
+        ):
+            raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+
+        for raw_pr in result:
+            pr = _validate_open_pr(raw_pr, repo=repo)
+            pr_number = pr["number"]
+            if pr_number in seen_numbers:
+                raise RuntimeError("OPEN_PR_INVENTORY_INCOMPLETE")
+            seen_numbers.add(pr_number)
+
+            # PR titles are untrusted descriptions, never incident-ownership proof.
+            if body_pattern.search(pr.get("body") or ""):
+                matches_issue = True
+
+        if len(result) < OPEN_PR_PAGE_SIZE:
+            return matches_issue
+        if has_pagination_link and not has_next:
+            return matches_issue
+        if page == MAX_OPEN_PR_PAGES:
+            raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
+
+    raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
 
 
 def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str, Any]) -> str:
