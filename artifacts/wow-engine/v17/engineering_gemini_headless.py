@@ -121,9 +121,10 @@ def inspect_changed_paths(paths: list[str]) -> dict[str, Any]:
         name = path.strip().replace("\\", "/")
         if (name != path or not name or name.startswith("/") or ".." in name.split("/")
                 or any(name.startswith(prefix) for prefix in _BLOCKED_PATHS)
-                or not name.startswith("artifacts/wow-engine/")
-                or (name.endswith(".py") and "/tests/" in name
-                    and not Path(name).name.startswith("test_"))):
+                or not (name.startswith("artifacts/wow-engine/v17/") and name.endswith(".py")
+                        and name != "artifacts/wow-engine/v17/engineering_gemini_headless.py"
+                        or name.startswith("artifacts/wow-engine/tests/")
+                        and Path(name).name.startswith("test_") and name.endswith(".py"))):
             return {"status": "HELD", "code": "GEMINI_PATCH_PROTECTED_OR_INVALID_PATH",
                     "rejected_path": name[:200], "can_execute": False}
     return {"status": "CANDIDATE_ONLY", "code": "GEMINI_ISOLATED_PATCH_UNREVIEWED",
