@@ -360,8 +360,15 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     reconciliation = audit["reconciliation"]
     assert reconciliation["row_reconciliation"] == "PASS"
     assert reconciliation["events_accounted"] == reconciliation["events_discovered"]
-    assert reconciliation["retained_unsupported_rows"] >= 3, (
-        "Missing-model candidates were silently altered: "
+    # An alias-only NHL row must be HELD at identity rather than mislabeled
+    # MODEL_UNAVAILABLE. Both typed hold classes still count as retained rows;
+    # neither may be dropped, scored, or published.
+    assert (
+        reconciliation["retained_unsupported_rows"]
+        + reconciliation["buckets"][discovery.IDENTITY_UNRESOLVED]
+        >= 3
+    ), (
+        "Unsupported or unresolved candidates were lost: "
         + repr([(r["identity"].get("sport"), r["result"].get("bucket"), r["result"].get("model_status")) for r in moneyline_rows])
     )
     # Every supported sport was *queried*, not just the ones with a model.
@@ -370,7 +377,14 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
 
     for row in moneyline_rows:
         if row["identity"].get("sport") in {"NFL", "NHL", "SOCCER"}:
-            assert row["result"]["model_status"] == "MODEL_UNAVAILABLE"
+            bucket = row["result"].get("bucket")
+            assert bucket in {"MODEL_UNAVAILABLE", discovery.IDENTITY_UNRESOLVED}
+            if bucket == discovery.IDENTITY_UNRESOLVED:
+                # Identity failure occurs before model selection; never
+                # invent MODEL_UNAVAILABLE to explain a non-invoked scorer.
+                assert row["result"].get("model_status") is None
+            else:
+                assert row["result"]["model_status"] == "MODEL_UNAVAILABLE"
             assert row["result"]["rank_eligible"] is False
             assert row["result"]["market_probability_substitution_allowed"] is False
             assert row["probability_publishable"] is False
