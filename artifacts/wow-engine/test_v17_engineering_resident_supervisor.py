@@ -15,6 +15,8 @@ from v17.engineering_resident_supervisor import (
     pending_pr_for_issue,
     persist_resident_heartbeat,
     supervisor_runtime_status,
+    resident_activation_blockers,
+    resident_cycle_failure_code,
 )
 
 ISSUE = {
@@ -35,25 +37,58 @@ MANIFEST = {
 }
 
 
+def open_pr_record(
+    number, *, issue_number=None, title=None, body=None, draft=False,
+):
+    if body is None and issue_number is not None:
+        body = f"Incident: #{issue_number}"
+    return {
+        "number": number,
+        "state": "open",
+        "html_url": f"https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/{number}",
+        "issue_url": f"https://api.github.com/repos/gregoryharper84-ship-it/WOW-Dashboard/issues/{number}",
+        "title": title or f"Change {number}",
+        "body": body,
+        "draft": draft,
+    }
+
+
 class FakeClient:
-    def __init__(self, *, active=False, issue_open=True, open_pr=False):
+    def __init__(
+        self, *, active=False, issue_open=True, open_pr=False,
+        open_pr_pages=None,
+    ):
         self.active = active
         self.issue_open = issue_open
         self.open_pr = open_pr
         self.sent = []
+        self.open_pr_calls = []
+        self.fail_open_pr_page = None
+        self.open_pr_pages = open_pr_pages if open_pr_pages is not None else (
+            [[open_pr_record(9001, issue_number=1388, body="Incident: #1388")]]
+            if open_pr else [[]]
+        )
 
     def get(self, suffix):
-        if suffix.startswith("actions/runs?"):
-            if self.active and "status=in_progress" in suffix:
+        if suffix.startswith("actions/workflows/"):
+            assert "/runs?status=" in suffix
+            assert suffix.endswith("&per_page=100")
+            if (self.active and "status=in_progress" in suffix
+                    and "wow-v17-chatgpt-engineering-worker.yml" in suffix):
                 return {"total_count": 1, "workflow_runs": [
                     {"name": "wow-v17-chatgpt-engineering-worker"}
                 ]}
             return {"total_count": 0, "workflow_runs": []}
-        if suffix in ("issues/1388", "issues/823"):
+        if suffix.startswith("issues/"):
             return {"state": "open" if self.issue_open else "closed"}
-        if suffix.startswith("pulls?"):
-            return [{"body": "Incident: 1388"}] if self.open_pr else []
         raise AssertionError(suffix)
+
+    def get_open_pull_request_page(self, page):
+        self.open_pr_calls.append(page)
+        if self.fail_open_pr_page == page:
+            raise RuntimeError("SIMULATED_GITHUB_PAGINATION_FAILURE")
+        rows = self.open_pr_pages[page - 1] if page <= len(self.open_pr_pages) else []
+        return rows, page < len(self.open_pr_pages), len(self.open_pr_pages) > 1
 
     def dispatch(self, issue):
         self.sent.append(issue)
@@ -146,6 +181,21 @@ def test_no_duplicate_dispatch_when_busy(locked, cooling, active, open_pr, expec
     assert client.sent == []
 
 
+def test_concurrently_active_engineering_workflows_block_dispatch():
+    class Concurrent(FakeClient):
+        def get(self, suffix):
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=in_progress&per_page=100":
+                return {"total_count": 2, "workflow_runs": [
+                    {"name": "wow-v17-chatgpt-engineering-worker"},
+                    {"name": "wow-v17-chatgpt-engineering-worker"},
+                ]}
+            return super().get(suffix)
+
+    client = Concurrent()
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+    assert client.sent == []
+
+
 def test_empty_queue_never_dispatches():
     client = FakeClient(issue_open=False)
     assert dispatch_once(client, FakeRedis(), MANIFEST) == "NO_APPROVED_OPEN_ENGINEERING_TASK"
@@ -155,7 +205,7 @@ def test_empty_queue_never_dispatches():
 def test_github_inventory_incomplete_fails_closed():
     class Incomplete(FakeClient):
         def get(self, suffix):
-            if suffix.startswith("actions/runs?"):
+            if suffix.startswith("actions/workflows/"):
                 return {"total_count": 101, "workflow_runs": []}
             return super().get(suffix)
     with pytest.raises(RuntimeError, match="INCOMPLETE"):
@@ -165,6 +215,183 @@ def test_github_inventory_incomplete_fails_closed():
 def test_open_pr_identity_is_not_silent_and_blocks_duplicate():
     assert pending_pr_for_issue(FakeClient(open_pr=True), 1388)
     assert not pending_pr_for_issue(FakeClient(open_pr=False), 1388)
+
+
+def _pr_pages(rows):
+    pages = [rows[index:index + 100] for index in range(0, len(rows), 100)]
+    if not pages:
+        return [[]]
+    if len(rows) % 100 == 0:
+        pages.append([])
+    return pages
+
+
+@pytest.mark.parametrize(
+    "count,expected_match,expected_pages",
+    [(0, False, 1), (1, False, 1), (100, True, 2), (101, True, 2), (233, True, 3)],
+)
+def test_open_pr_inventory_is_exhaustive_across_bounded_pages(
+    count, expected_match, expected_pages,
+):
+    rows = [
+        open_pr_record(
+            2000 + index,
+            issue_number=1841 if index == count - 1 and expected_match else None,
+        )
+        for index in range(count)
+    ]
+    client = FakeClient(open_pr_pages=_pr_pages(rows))
+    assert pending_pr_for_issue(client, 1841) is expected_match
+    assert client.open_pr_calls == list(range(1, expected_pages + 1))
+
+
+@pytest.mark.parametrize("duplicate_page", [2, 3])
+def test_duplicate_on_later_page_is_found(duplicate_page):
+    rows = [open_pr_record(3000 + index) for index in range(233)]
+    rows[(duplicate_page - 1) * 100] = open_pr_record(
+        3000 + (duplicate_page - 1) * 100,
+        issue_number=1841,
+        body="Incident: #1841",
+        title="fix(P0): existing repair (#1841)",
+        draft=True,
+    )
+    client = FakeClient(open_pr_pages=_pr_pages(rows))
+    assert pending_pr_for_issue(client, 1841)
+    assert client.open_pr_calls == [1, 2, 3]
+
+
+def test_real_draft_pr_1842_is_detected_on_page_three_of_233():
+    rows = [open_pr_record(9000 + index) for index in range(233)]
+    rows[-1] = open_pr_record(
+        1842,
+        title="fix(P0): NFL stage-proof contract holds publication when receipts are absent (#1841)",
+        body="Incident: #1841",
+        draft=True,
+    )
+    client = FakeClient(open_pr_pages=_pr_pages(rows))
+    assert pending_pr_for_issue(client, 1841)
+    assert client.open_pr_calls == [1, 2, 3]
+
+
+def test_open_pr_pagination_failure_replays_from_page_one_and_never_dispatches():
+    rows = [open_pr_record(4000 + index) for index in range(101)]
+    rows[0] = open_pr_record(4000, issue_number=1388)
+    client = FakeClient(open_pr_pages=_pr_pages(rows))
+    client.fail_open_pr_page = 2
+
+    with pytest.raises(RuntimeError, match="PAGINATION_FAILURE"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert client.sent == []
+
+    client.fail_open_pr_page = None
+    assert pending_pr_for_issue(client, 1388)
+    assert client.open_pr_calls == [1, 2, 1, 2]
+
+
+@pytest.mark.parametrize("body,title", [
+    ("Related context mentions #1841 only in prose.", "Change to unrelated issue"),
+    ("Incident: #11841", "fix(#11841)"),
+])
+def test_unanchored_or_numeric_prefix_references_do_not_match(body, title):
+    client = FakeClient(open_pr_pages=[[
+        open_pr_record(5000, issue_number=11841, title=title, body=body),
+    ]])
+    assert not pending_pr_for_issue(client, 1841)
+
+
+def test_title_alone_cannot_claim_incident_ownership():
+    client = FakeClient(open_pr_pages=[[
+        open_pr_record(5001, title="fix(P0): existing repair (#1841)"),
+    ]])
+    assert not pending_pr_for_issue(client, 1841)
+
+
+def test_canonical_body_marker_blocks_duplicate_even_with_unrelated_title():
+    client = FakeClient(open_pr_pages=[[
+        open_pr_record(
+            1842, title="new NFL publication repair",
+            body="AMRT_CANONICAL_INCIDENT_OWNERSHIP\nIncident: #1841",
+            draft=True,
+        ),
+    ]])
+    assert pending_pr_for_issue(client, 1841)
+
+
+def test_prs_own_issue_url_does_not_alias_incident_number():
+    client = FakeClient(open_pr_pages=[[
+        open_pr_record(1842, title="Unrelated wording"),
+    ]])
+    assert not pending_pr_for_issue(client, 1841)
+
+
+def test_full_page_requires_empty_sentinel_page():
+    rows = [open_pr_record(6000 + index) for index in range(100)]
+    class NoLink(FakeClient):
+        def get_open_pull_request_page(self, page):
+            self.open_pr_calls.append(page)
+            if page == 1:
+                return rows, False, False
+            return [], False, False
+
+    client = NoLink(open_pr_pages=[rows, []])
+    assert not pending_pr_for_issue(client, 1841)
+    assert client.open_pr_calls == [1, 2]
+
+
+def test_open_pr_inventory_page_limit_is_fail_closed():
+    pages = [
+        [open_pr_record(8000 + page * 100 + index) for index in range(100)]
+        for page in range(11)
+    ]
+    client = FakeClient(open_pr_pages=pages)
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_NOT_EXHAUSTIVE"):
+        pending_pr_for_issue(client, 1841)
+    assert client.open_pr_calls == list(range(1, 11))
+
+
+def test_exact_page_limit_with_explicit_end_is_complete():
+    pages = [
+        [open_pr_record(10000 + page * 100 + index) for index in range(100)]
+        for page in range(10)
+    ]
+    client = FakeClient(open_pr_pages=pages)
+    assert not pending_pr_for_issue(client, 1841)
+    assert client.open_pr_calls == list(range(1, 11))
+
+
+def test_transport_validates_open_pr_next_link(monkeypatch):
+    client = GitHubTransport("placeholder")
+    calls = []
+    rows = [open_pr_record(7000 + index) for index in range(100)]
+    next_link = (
+        '<https://api.github.com/repos/gregoryharper84-ship-it/WOW-Dashboard/'
+        'pulls?state=open&per_page=100&page=2>; rel="next"'
+    )
+    monkeypatch.setattr(
+        client, "call_with_headers",
+        lambda path: (calls.append(path) or rows, {"Link": next_link}),
+    )
+    result, has_next, has_pagination_link = client.get_open_pull_request_page(1)
+    assert len(result) == 100
+    assert has_next is True
+    assert has_pagination_link is True
+    assert calls == [
+        "/repos/gregoryharper84-ship-it/WOW-Dashboard/pulls?state=open&per_page=100&page=1",
+    ]
+
+    monkeypatch.setattr(
+        client, "call_with_headers",
+        lambda *_: (rows, {"Link": next_link.replace("page=2", "page=3")}),
+    )
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
+        client.get_open_pull_request_page(1)
+
+
+def test_malformed_open_pr_page_fails_closed_without_dispatch():
+    client = FakeClient(open_pr_pages=[[{}]])
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
+        dispatch_once(client, FakeRedis(), MANIFEST)
+    assert client.sent == []
 
 
 def test_issue_selection_requires_valid_manifest():
@@ -211,6 +438,20 @@ def test_existing_pr_cannot_starve_next_approved_p0_incident(monkeypatch):
     assert dispatch_once(client, store, manifest) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
     assert client.sent == [SECOND_ISSUE]
     assert store.attempts == 1
+
+
+def test_existing_pr_does_not_starve_disjoint_p0_incident():
+    disjoint_p0 = {
+        **ISSUE,
+        "issue_number": 1688,
+        "priority_rank": 2,
+        "lease_group": "P0_AUTONOMY_RESTORE",
+        "conflict_keys": ["ENGINEERING_AUTONOMY"],
+    }
+    manifest = {**MANIFEST, "restoration": [ISSUE, disjoint_p0]}
+    client, store = FakeClient(open_pr=True), FakeRedis()
+    assert dispatch_once(client, store, manifest) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+    assert client.sent == [disjoint_p0]
 
 
 def test_retry_cap_cannot_starve_next_approved_p0_incident(monkeypatch):
@@ -300,6 +541,50 @@ def test_distinct_resident_heartbeat_is_durable_and_not_self_approval():
     assert "token" not in repr(row).lower()
 
 
+def test_retiring_resident_cannot_overwrite_new_worker_heartbeat():
+    # The Render replacement starts before the old worker has shut down.
+    # STOPPED from the retiring instance must be an atomic compare-and-update,
+    # never a new upsert of the shared auditor_id.
+    class SharedStore:
+        def __init__(self):
+            self.row = None
+            self.pending = None
+            self.filters = []
+        def table(self, name):
+            assert name == "wow_engineering_auditor_runtime"
+            return self
+        def upsert(self, payload, *, on_conflict):
+            assert on_conflict == "auditor_id"
+            self.pending = ("upsert", dict(payload))
+            self.filters = []
+            return self
+        def update(self, payload):
+            self.pending = ("update", dict(payload))
+            self.filters = []
+            return self
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+        def execute(self):
+            kind, payload = self.pending
+            if kind == "upsert" or all(self.row and self.row.get(k) == v for k, v in self.filters):
+                self.row = payload
+            return {"data": [self.row] if self.row else []}
+
+    db = SharedStore()
+    persist_resident_heartbeat(db, status="RUNNING", outcome="CYCLE_STARTED", instance_id="worker-old:7")
+    persist_resident_heartbeat(db, status="RUNNING", outcome="CYCLE_STARTED", instance_id="worker-new:8")
+    persist_resident_heartbeat(db, status="STOPPED", outcome="WORKER_SHUTDOWN", instance_id="worker-old:7")
+    assert db.filters == [
+        ("auditor_id", "WOW_ENGINEERING_RESIDENT_DISPATCHER"),
+        ("instance_id", "worker-old:7"),
+    ]
+    assert db.row["status"] == "RUNNING" and db.row["instance_id"] == "worker-new:8"
+    persist_resident_heartbeat(db, status="STOPPED", outcome="WORKER_SHUTDOWN", instance_id="worker-new:8")
+    assert db.row["status"] == "STOPPED" and db.row["instance_id"] == "worker-new:8"
+    assert db.row["can_execute"] is False
+
+
 @pytest.mark.parametrize("status,outcome", [
     ("PASSED", "CYCLE_STARTED"),
     ("RUNNING", "BAD:UNTRUSTED"),
@@ -333,11 +618,18 @@ AMRT_1841 = {
 
 
 class AMRTClient(FakeClient):
+    def __init__(self, *, open_pr=False):
+        pages = [[open_pr_record(
+            1842,
+            title="fix(P0): NFL stage-proof contract holds publication when receipts are absent (#1841)",
+            body="Incident: #1841",
+            draft=True,
+        )]] if open_pr else [[]]
+        super().__init__(open_pr=open_pr, open_pr_pages=pages)
+
     def get(self, suffix):
         if suffix == "issues/1841":
             return {"state": "open"}
-        if suffix.startswith("pulls?"):
-            return [{"body": "Incident: #1841"}] if self.open_pr else []
         return super().get(suffix)
 
 
@@ -362,3 +654,167 @@ def test_amrt_1841_wrong_change_class_blocks_new_source_dispatch():
     client = AMRTClient(open_pr=False)
     assert dispatch_once(client, FakeRedis(), manifest) == "NO_APPROVED_OPEN_ENGINEERING_TASK"
     assert not client.sent
+
+
+@pytest.mark.parametrize("field,reason", [
+    ("enabled", "RESIDENT_FLAG_DISABLED"),
+    ("token_configured", "GITHUB_DISPATCH_TOKEN_MISSING"),
+    ("redis_configured", "REDIS_LEASE_CONFIG_MISSING"),
+    ("durable_heartbeat_configured", "DURABLE_HEARTBEAT_CONFIG_MISSING"),
+    ("governance_pass", "DRY_RUN_GOVERNANCE_HOLD"),
+])
+def test_activation_diagnostic_is_exact_but_never_contains_secret_values(field, reason):
+    status = {
+        "enabled": True,
+        "token_configured": True,
+        "redis_configured": True,
+        "durable_heartbeat_configured": True,
+        "governance_pass": True,
+        "can_execute": False,
+    }
+    assert resident_activation_blockers(status) == ()
+    status[field] = False
+    result = resident_activation_blockers(status)
+    assert result == (reason,)
+    assert "SECRET" not in str(result)
+
+
+def test_activation_diagnostics_include_all_missing_categories_without_credentials():
+    status = {"enabled": True, "token_configured": False,
+              "redis_configured": False, "durable_heartbeat_configured": True,
+              "governance_pass": False}
+    assert resident_activation_blockers(status) == (
+        "GITHUB_DISPATCH_TOKEN_MISSING",
+        "REDIS_LEASE_CONFIG_MISSING",
+        "DRY_RUN_GOVERNANCE_HOLD",
+    )
+
+
+def test_actual_env_values_do_not_appear_in_safe_diagnostics(monkeypatch):
+    monkeypatch.setenv("WOW_ENGINEERING_RESIDENT_DISPATCH_ENABLED", "1")
+    monkeypatch.delenv("WOW_ENGINEERING_GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("REDIS_URL", "redis://token-must-not-appear@host:6379/0")
+    monkeypatch.setenv("SUPABASE_URL", "https://private-supabase-url.example")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "super-secret-must-not-appear")
+    monkeypatch.setenv("WOW_CAN_EXECUTE", "false")
+    monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
+    decision = supervisor_runtime_status()
+    blockers = resident_activation_blockers(decision)
+    assert blockers == ("GITHUB_DISPATCH_TOKEN_MISSING",)
+    assert "secret-must-not-appear" not in str(decision)
+    assert "token-must-not-appear" not in str(decision)
+    assert "private-supabase-url" not in str(decision)
+
+
+@pytest.mark.parametrize("code", [
+    "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE",
+    "OPEN_PR_INVENTORY_INVALID",
+    "OPEN_PR_INVENTORY_INCOMPLETE",
+    "OPEN_PR_INVENTORY_NOT_EXHAUSTIVE",
+    "OPEN_PR_PAGE_INVALID",
+])
+def test_resident_cycle_reports_known_fail_closed_reason_without_disabling_hold(code):
+    assert resident_cycle_failure_code(RuntimeError(code)) == code
+    assert resident_cycle_failure_code(ValueError(code)) == code
+
+
+@pytest.mark.parametrize("error", [
+    RuntimeError("Authorization: Bearer sensitive-credential"),
+    RuntimeError("https://api.github.com/private?token=sensitive"),
+    ValueError("OPEN_PR_INVENTORY_INVALID plus untrusted text"),
+    ConnectionError("secret-network-response"),
+])
+def test_resident_cycle_redacts_untrusted_error_messages(error):
+    result = resident_cycle_failure_code(error)
+    assert result == "CYCLE_" + type(error).__name__.upper()
+    assert "sensitive" not in result and "secret" not in result
+    assert result.isupper() and result.replace("_", "").isalnum()
+
+
+def test_unrelated_repository_wide_runs_cannot_block_specific_idle_workflows():
+    class Narrow(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/runs?"):
+                raise AssertionError("Unrelated repository-wide CI is not consulted")
+            return super().get(suffix)
+    client = Narrow()
+    assert not active_engineering_workflow(client)
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
+@pytest.mark.parametrize("count,rows,expected", [
+    (15, [], True), (0, [{"id": 1}], True),
+    (1, [], True), (0, [], False),
+])
+def test_live_github_count_skew_is_busy_never_a_dispatch_permission(count, rows, expected):
+    class Skewed(FakeClient):
+        def get(self, suffix):
+            if suffix == "actions/workflows/wow-v17-chatgpt-engineering-worker.yml/runs?status=queued&per_page=100":
+                return {"total_count": count, "workflow_runs": rows}
+            return super().get(suffix)
+    assert active_engineering_workflow(Skewed()) is expected
+
+
+@pytest.mark.parametrize("bad", [
+    None, [], {"total_count": None, "workflow_runs": []},
+    {"total_count": True, "workflow_runs": []},
+    {"total_count": -1, "workflow_runs": []},
+    {"total_count": 0, "workflow_runs": None},
+    {"total_count": 0, "workflow_runs": ["invalid-row"]},
+])
+def test_specific_workflow_inventory_invalid_fails_closed(bad):
+    class Invalid(FakeClient):
+        def get(self, suffix):
+            if suffix.startswith("actions/workflows/"):
+                return bad
+            return super().get(suffix)
+    with pytest.raises(RuntimeError, match="ACTIVE_WORKFLOW_INVENTORY_INVALID"):
+        dispatch_once(Invalid(), FakeRedis(), MANIFEST)
+
+
+def test_github_numeric_repository_link_alias_is_same_exact_repo(monkeypatch):
+    client = GitHubTransport("synthetic-test-token")
+    link = (
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=2>; rel="next", '
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=3>; rel="last"'
+    )
+    monkeypatch.setattr(
+        client, "call_with_headers",
+        lambda _: ([open_pr_record(9100 + i) for i in range(100)], {"Link": link}),
+    )
+    rows, has_next, link_present = client.get_open_pull_request_page(1)
+    assert len(rows) == 100 and has_next and link_present
+
+
+@pytest.mark.parametrize("alteration", [
+    "https://api.github.com/repositories/1240256888/pulls?state=open&per_page=100&page=2",
+    "https://not-github.example/repositories/1240256887/pulls?state=open&per_page=100&page=2",
+    "http://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2",
+    "https://api.github.com/repositories/1240256887/pulls?state=closed&per_page=100&page=2",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=3",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2&other=1",
+    "https://api.github.com/repositories/1240256887/pulls?state=open&per_page=100&page=2#fragment",
+    "https://api.github.com/repositories/1240256887/issues?state=open&per_page=100&page=2",
+])
+def test_numeric_alias_must_not_relax_exact_pagination_identity(alteration, monkeypatch):
+    client = GitHubTransport("synthetic-test-token")
+    link = f'<{alteration}>; rel="next"'
+    monkeypatch.setattr(
+        client, "call_with_headers",
+        lambda _: ([open_pr_record(9300 + i) for i in range(100)], {"link": link}),
+    )
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
+        client.get_open_pull_request_page(1)
+
+
+def test_numeric_repository_link_alias_only_for_configured_repository(monkeypatch):
+    client = GitHubTransport("synthetic-test-token", repo="different-owner/different-repo")
+    link = (
+        '<https://api.github.com/repositories/1240256887/'
+        'pulls?state=open&per_page=100&page=2>; rel="next"'
+    )
+    monkeypatch.setattr(client, "call_with_headers", lambda _: ([], {"Link": link}))
+    with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
+        client.get_open_pull_request_page(1)
