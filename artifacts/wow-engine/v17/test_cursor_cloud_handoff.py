@@ -59,15 +59,19 @@ class HandoffTests(unittest.TestCase):
             calls.append((url, kwargs))
             if "/pulls/" in url:
                 return pr()
-            return {"items": [{"id": "bc-prior", "status": "ACTIVE"}]}
+            if "prUrl=" in url:
+                return {"items": [{"id": "bc-prior", "status": "ACTIVE"}]}
+            return {"items": []}
         with self.assertRaises(mod.HandoffBlocked) as cm:
             mod.dispatch(REPO, 1948, SHA, "Fix it", "gh", "cursor", api)
         self.assertEqual(cm.exception.code, "CURSOR_ACTIVE_PR_AGENT_EXISTS")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
 
     def test_incomplete_inventory_fails_closed(self):
         def api(url, **kwargs):
-            return pr() if "/pulls/" in url else {"items": [], "nextCursor": "next"}
+            if "/pulls/" in url:
+                return pr()
+            return {"items": [], "nextCursor": "next"} if "prUrl=" in url else {"items": []}
         with self.assertRaises(mod.HandoffBlocked) as cm:
             mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
         self.assertEqual(cm.exception.code, "CURSOR_AGENT_INVENTORY_UNVERIFIED")
