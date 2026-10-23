@@ -33,3 +33,93 @@ def test_p0_parallel_rapid_dispatch_yaml_parses() -> None:
     assert data["permissions"]["actions"] == "write"
     assert data["permissions"]["contents"] == "read"
     assert data["permissions"]["issues"] == "read"
+
+
+def test_p0_rapid_provider_preflight_is_wired_before_dispatch() -> None:
+    text = WORKFLOW.read_text()
+    assert text.index("Preflight P0 engineering provider availability") < text.index(
+        "Dispatch idle domain-scoped writers"
+    )
+    assert "if: steps.provider_state.outputs.admit == 'true'" in text
+    assert "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED" in text
+    assert "PRIMARY_WORKER_INVENTORY_UNVERIFIED" in text
+    assert "provider_admission:" in text
+
+
+import os
+import subprocess
+import tempfile
+import textwrap
+
+import pytest
+
+
+@pytest.mark.parametrize(
+    "primary,secondary,code,fail_inventory,expected_admit,expected_reason",
+    [
+        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "false", "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED"),
+        ("failure", "cancelled", "OPENAI_API_AUTH_FAILED", False, "false", "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED"),
+        ("failure", "success", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PROVIDER_ADMISSION_CLEAR"),
+        ("failure", "failure", "OPENAI_API_RATE_LIMITED", False, "true", "PROVIDER_ADMISSION_CLEAR"),
+        ("success", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PROVIDER_ADMISSION_CLEAR"),
+        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", True, "false", "PRIMARY_WORKER_INVENTORY_UNVERIFIED"),
+    ],
+)
+def test_real_p0_provider_preflight_with_bounded_cli_fixtures(
+    primary, secondary, code, fail_inventory, expected_admit, expected_reason,
+) -> None:
+    text = WORKFLOW.read_text()
+    part = text.split("      - name: Preflight P0 engineering provider availability", 1)[1]
+    script = textwrap.dedent(part.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    with tempfile.TemporaryDirectory() as tmpdir:
+        from pathlib import Path as _Path
+        root = _Path(tmpdir)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/bin/bash\n"
+            "if [ \"$1\" = run ] && [ \"$2\" = list ]; then\n"
+            "  if [[ \"$*\" == *wow-v17-chatgpt-engineering-worker.yml* ]]; then\n"
+            "    if [ \"$FAKE_INVENTORY_FAILURE\" = true ]; then exit 1; fi\n"
+            "    printf '[{\"databaseId\":101,\"conclusion\":\"%s\"}]\\n' \"$FAKE_PRIMARY\"\n"
+            "  else\n"
+            "    printf '[{\"databaseId\":102,\"conclusion\":\"%s\"}]\\n' \"$FAKE_SECONDARY\"\n"
+            "  fi\n"
+            "elif [ \"$1\" = run ] && [ \"$2\" = view ]; then\n"
+            "  echo 'ERROR: Quota exceeded. Check your plan and billing details.'\n"
+            "else exit 70; fi\n"
+        )
+        gh.chmod(0o755)
+        python = bin_dir / "python"
+        python.write_text(
+            "#!/bin/bash\n"
+            "printf '{\"code\":\"%s\"}\\n' \"$FAKE_CODE\"\n"
+        )
+        python.chmod(0o755)
+        output = root / "github-output"
+        summary = root / "summary"
+        output.touch()
+        summary.touch()
+        env = dict(
+            os.environ,
+            PATH=str(bin_dir) + ":" + os.environ["PATH"],
+            GITHUB_OUTPUT=str(output),
+            GITHUB_STEP_SUMMARY=str(summary),
+            GITHUB_REPOSITORY="fixture/repo",
+            RUNNER_TEMP=str(root),
+            FAKE_PRIMARY=primary,
+            FAKE_SECONDARY=secondary,
+            FAKE_CODE=code,
+            FAKE_INVENTORY_FAILURE="true" if fail_inventory else "false",
+        )
+        result = subprocess.run(
+            ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=10
+        )
+        assert result.returncode == 0, result.stderr
+        values = dict(
+            line.split("=", 1) for line in output.read_text().splitlines()
+        )
+        assert values["admit"] == expected_admit
+        assert values["reason"] == expected_reason
+        assert expected_reason in summary.read_text()
