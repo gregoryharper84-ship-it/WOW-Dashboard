@@ -15,9 +15,18 @@ spec.loader.exec_module(capture)
 NOW = datetime(2026, 10, 22, 18, 0, tzinfo=timezone.utc)
 TARGET = "2026-10-22"
 
+def _event(state="pre", dt="2026-10-23T00:00:00Z"):
+    return {
+        "id": "401001", "date": dt, "status": {"type": {"state": state}},
+        "competitions": [{"competitors": [
+            {"homeAway": "home", "team": {"id": "4", "displayName": "Chicago Bulls"}},
+            {"homeAway": "away", "team": {"id": "15", "displayName": "Milwaukee Bucks"}},
+        ]}],
+    }
+
+
 def payload(state="pre", dt="2026-10-23T00:00:00Z"):
-    return json.dumps({"events": [{"id": "401001", "date": dt,
-                       "status": {"type": {"state": state}}}]}).encode()
+    return json.dumps({"events": [_event(state, dt)]}).encode()
 
 class Response:
     def __init__(self, raw=None, date=None, url=None, headers=None, status=200):
@@ -41,6 +50,8 @@ def test_capture_and_verified_hash_and_event_replay(tmp_path):
     got = capture.capture(TARGET, tmp_path, now=NOW, opener=Opener(Response()))
     assert got["raw_sha256"] == hashlib.sha256(payload()).hexdigest()
     assert len(got["events_pregame_eligible"]) == 1
+    assert got["events_pregame_eligible"][0]["home"] == {"team_id": "4", "name": "Chicago Bulls"}
+    assert got["events_pregame_eligible"][0]["away"] == {"team_id": "15", "name": "Milwaukee Bucks"}
     assert got["can_execute"] is False and got["probability_publishable"] is False
     assert capture.verify(tmp_path, TARGET)["status"] == "RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS"
 
@@ -94,11 +105,49 @@ def test_malformed_source_shape_fails_not_a_pick():
         capture.classify_events(b"{}", now=NOW)
 
 def test_duplicate_event_id_fails():
-    event = {"id": "1", "date": "2026-10-23T00:00:00Z",
-             "status": {"type": {"state": "pre"}}}
+    event = _event()
+    event["id"] = "1"
     with pytest.raises(capture.CaptureFailure, match="SOURCE_EVENT_IDENTITY_DUPLICATE"):
         capture.classify_events(json.dumps({"events": [event, event]}).encode(), now=NOW)
 
 def test_invalid_target_date():
     with pytest.raises(capture.CaptureFailure, match="BAD_TARGET_DATE"):
         capture.source_url("../../today")
+
+
+@pytest.mark.parametrize("fault", [
+    "no_competitions", "empty_competitors", "one_competitor", "duplicate_home",
+    "duplicate_team_id", "missing_team_id", "missing_display_name", "unknown_side",
+])
+def test_malformed_espn_home_away_identity_fails_closed(fault):
+    event = _event()
+    c = event["competitions"][0]["competitors"]
+    if fault == "no_competitions":
+        del event["competitions"]
+    elif fault == "empty_competitors":
+        event["competitions"][0]["competitors"] = []
+    elif fault == "one_competitor":
+        event["competitions"][0]["competitors"] = c[:1]
+    elif fault == "duplicate_home":
+        c[1]["homeAway"] = "home"
+    elif fault == "duplicate_team_id":
+        c[1]["team"]["id"] = c[0]["team"]["id"]
+    elif fault == "missing_team_id":
+        del c[1]["team"]["id"]
+    elif fault == "missing_display_name":
+        c[1]["team"]["displayName"] = ""
+    elif fault == "unknown_side":
+        c[1]["homeAway"] = "neutral"
+    with pytest.raises(capture.CaptureFailure, match="SOURCE_TEAM_IDENTITY_MALFORMED"):
+        capture.classify_events(json.dumps({"events": [event]}).encode(), now=NOW)
+
+
+def test_receipt_team_identity_tampering_rejected_even_if_raw_hash_unchanged(tmp_path):
+    got = capture.capture(TARGET, tmp_path, now=NOW, opener=Opener(Response()))
+    path = tmp_path / f"nba_{TARGET}_capture_receipt.json"
+    receipt = json.loads(path.read_text())
+    receipt["events_pregame_eligible"][0]["home"]["team_id"] = "999"
+    path.write_text(json.dumps(receipt))
+    assert got["events_pregame_eligible"][0]["home"]["team_id"] == "4"
+    with pytest.raises(capture.CaptureFailure, match="CAPTURE_RECEIPT_EVENT_MISMATCH"):
+        capture.verify(tmp_path, TARGET)
