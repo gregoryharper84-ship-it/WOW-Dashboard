@@ -28,7 +28,14 @@ try:
         validate_team_record,
     )
 except ImportError:  # direct-script/spec loader compatibility
-    from incident_regression_evidence import verify_authenticated_regression
+    import importlib.util as _importlib_util
+    _evidence_path = Path(__file__).with_name("incident_regression_evidence.py")
+    _evidence_spec = _importlib_util.spec_from_file_location("incident_regression_evidence", _evidence_path)
+    if _evidence_spec is None or _evidence_spec.loader is None:
+        raise ImportError("incident_regression_evidence module specification unavailable")
+    _evidence_module = _importlib_util.module_from_spec(_evidence_spec)
+    _evidence_spec.loader.exec_module(_evidence_module)
+    verify_authenticated_regression = _evidence_module.verify_authenticated_regression
     from nightly_engineering_team_contract import (
         CLOSURE_RELEASE_STATUSES,
         REPRODUCTION_STATUSES,
