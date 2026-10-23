@@ -147,16 +147,23 @@ jobs:
             echo "::error::GEMINI_API_KEY_MISSING"
             exit 1
           fi
-          # Pin a CLI version and deny shell, MCP, web, and extension tools.
+          # Pin a released stable CLI and fail before API use if flags drift.
           npm install --global @google/gemini-cli@0.64.0 --no-audit --no-fund
+          [ "$(gemini --version)" = "0.64.0" ] || { echo "::error::GEMINI_PINNED_CLI_VERSION_MISMATCH"; exit 1; }
+          help_text=$(gemini --help)
+          for flag in --output-format --approval-mode --model --prompt --extensions; do
+            grep -Fq -- "$flag" <<<"$help_text" || { echo "::error::GEMINI_CLI_FLAG_MISSING"; exit 1; }
+          done
           export HOME="$RUNNER_TEMP/wow-gemini/session-home"
           mkdir -p "$HOME/.gemini"
           cat > "$HOME/.gemini/settings.json" <<'JSON'
           {
+            "general": {"maxAttempts": 1, "defaultApprovalMode": "auto_edit"},
+            "billing": {"overageStrategy": "never"},
+            "model": {"maxSessionTurns": 12},
             "tools": {
               "core": ["read_file", "read_many_files", "glob", "grep_search", "list_directory", "write_file", "replace"],
-              "exclude": ["run_shell_command", "web_fetch", "google_web_search", "save_memory"],
-              "confirmationRequired": ["run_shell_command"]
+              "exclude": ["run_shell_command", "web_fetch", "google_web_search", "save_memory"]
             },
             "security": {"disableYoloMode": true},
             "telemetry": {"enabled": false}
@@ -201,18 +208,34 @@ jobs:
                                    check=True, capture_output=True).stdout
           untracked = subprocess.run(["git","-C",str(root),"ls-files","--others","--exclude-standard","-z"],
                                      check=True, capture_output=True).stdout
-          paths = sorted(set((tracked + untracked).decode().split("\\0")) - {""})
+          paths = sorted({part.decode("utf-8") for part in
+                          (tracked + untracked).split(b"\\0") if part})
           target.write_text(json.dumps(paths), encoding="utf-8")
           PY
           python "$GITHUB_WORKSPACE/artifacts/wow-engine/v17/engineering_gemini_headless.py" \
             inspect-patch --files-json "$RUNNER_TEMP/wow-gemini/files.json" \
             > "$RUNNER_TEMP/wow-gemini/patch-inspection.json"
           cd "$RUNNER_TEMP/wow-gemini/candidate"
-          git add -N . 
+          # Stage intent-to-add only after checking every candidate path.
+          git add -N -- artifacts/wow-engine
           git diff --check
           git diff --binary --no-ext-diff > "$RUNNER_TEMP/wow-gemini/candidate.patch"
+          [ "$(wc -c < "$RUNNER_TEMP/wow-gemini/candidate.patch")" -le 524288 ] || {
+            echo "::error::GEMINI_PATCH_EXCEEDS_LIMIT"
+            exit 1
+          }
           python -m compileall -q artifacts/wow-engine/v17
-          echo "CANDIDATE_ONLY: patch not committed or published" >> "$GITHUB_STEP_SUMMARY"
+          # Execute actual candidate changes under a fresh step with NO
+          # GEMINI_API_KEY, no GH_TOKEN and no checkout write credentials.
+          python -m pip install -r artifacts/wow-engine/requirements.txt
+          python "$GITHUB_WORKSPACE/artifacts/wow-engine/v17/engineering_gemini_headless.py" \
+            verify-candidate --files-json "$RUNNER_TEMP/wow-gemini/files.json" \
+            --worktree "$RUNNER_TEMP/wow-gemini/candidate" \
+            > "$RUNNER_TEMP/wow-gemini/regression-receipt.json" || {
+              echo "::error::GEMINI_CANDIDATE_REGRESSION_UNPROVEN"
+              exit 1
+            }
+          echo "TESTED_CANDIDATE_ONLY: patch not committed, pushed, or published" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload typed read-only candidate evidence
         if: always()
@@ -226,5 +249,6 @@ jobs:
             ${{ runner.temp }}/wow-gemini/selection.json
             ${{ runner.temp }}/wow-gemini/model-receipt.json
             ${{ runner.temp }}/wow-gemini/patch-inspection.json
+            ${{ runner.temp }}/wow-gemini/regression-receipt.json
             ${{ runner.temp }}/wow-gemini/files.json
             ${{ runner.temp }}/wow-gemini/candidate.patch
