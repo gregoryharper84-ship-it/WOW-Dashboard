@@ -1,0 +1,88 @@
+name: WOW Research NBA One-Shot Source Freeze
+
+on:
+  pull_request:
+    types: [synchronize]
+    branches: [main]
+    paths:
+      - .github/workflows/wow-nba-espn-source-freeze-once.yml
+
+permissions:
+  contents: read
+
+jobs:
+  source-capture:
+    name: Research raw source freeze / ${{ matrix.sport }}
+    if: ${{ github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' && github.event.pull_request.head.ref == 'research/nba-one-shot-espn-capture-20261022' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sport: NBA
+            target_date: '2026-10-23'
+
+    steps:
+      - name: Checkout exact PR source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify capture source compiles
+        run: python3 -m py_compile artifacts/wow-engine/scripts/nba_one_shot_espn_capture.py
+
+      - name: One-shot independent runner capture and replay
+        id: capture
+        env:
+          SPORT: ${{ matrix.sport }}
+          TARGET_DATE: ${{ matrix.target_date }}
+        shell: bash
+        run: |
+          set -u
+          export BASE="$RUNNER_TEMP/wow-source-evidence/$SPORT"
+          export OUTDIR="$BASE/original"
+          mkdir -p "$BASE"
+          {
+            echo "sport=$SPORT"
+            echo "target_date=$TARGET_DATE"
+            echo "github_run_id=$GITHUB_RUN_ID"
+            echo "github_run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "github_sha=$GITHUB_SHA"
+            echo "source_head_sha=${{ github.event.pull_request.head.sha }}"
+            echo "runner_started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "note=Runner clock and HTTP Date are not independent timestamp attestation"
+          } > "$BASE/runner_context.txt"
+          python3 artifacts/wow-engine/scripts/nba_one_shot_espn_capture.py capture \
+            --date "$TARGET_DATE" --outdir "$OUTDIR" \
+            > "$BASE/capture_output.json"
+          CAPTURE_RC=$?
+          echo "capture_exit_code=$CAPTURE_RC" >> "$BASE/runner_context.txt"
+          if [ "$CAPTURE_RC" -eq 0 ]; then
+            python3 artifacts/wow-engine/scripts/nba_one_shot_espn_capture.py verify \
+              --date "$TARGET_DATE" --outdir "$OUTDIR" \
+              > "$BASE/verify_output.json"
+            VERIFY_RC=$?
+          else
+            VERIFY_RC=99
+            echo '{"status":"NOT_RUN_CAPTURE_FAILED","can_execute":false}' > "$BASE/verify_output.json"
+          fi
+          echo "verify_exit_code=$VERIFY_RC" >> "$BASE/runner_context.txt"
+          echo "runner_completed_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$BASE/runner_context.txt"
+          find "$BASE" -type f -print0 | sort -z | xargs -0 -r sha256sum > "$BASE/runner_file_hashes.txt"
+          cat "$BASE/capture_output.json"
+          cat "$BASE/verify_output.json"
+          if [ "$CAPTURE_RC" -ne 0 ] || [ "$VERIFY_RC" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Preserve source bytes and receipt in GitHub artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-nba-espn-raw-${{ matrix.sport }}-${{ matrix.target_date }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/wow-source-evidence/${{ matrix.sport }}/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
