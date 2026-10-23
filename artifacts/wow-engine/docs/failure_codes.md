@@ -288,3 +288,17 @@ The optional `v17/nba_points_snapshot_bridge.py` is a **read-only, source-suppli
 | `NBA_POINTS_CANONICAL_EVIDENCE_REJECTED`, `NBA_POINTS_SNAPSHOT_IDENTITY_MISMATCH`, `NBA_POINTS_SNAPSHOT_LINE_MISMATCH` | NBA POINTS canonical V17 validator/snapshot handoff | Existing V17 scorer evidence normalizer fails or the immutable snapshot changed event/player/stat/exact line | No |
 
 Regression: `artifacts/wow-engine/tests/test_v17_nba_points_snapshot_bridge.py`, including exact source-line and historical-identity counterexamples. Once a real provider path is integrated, its own source-authenticity/identity checks remain required. `can_execute=false`, `probability_publishable=false` throughout.
+
+### NBA official history cross-source diagnostics (#1988)
+
+`v17/nba_points_official_history.py` is read-only research acquisition. The NBA Stats gamelog and NBA CDN settled boxscore must agree on game ID, player ID, final status, game start and points. It does not claim active-role/roster verification, exact market line, calibrated probability, publication or certification.
+
+| Code or family | Owning stage | Exact condition | Sporting probability/rank changed? |
+|---|---|---|---|
+| `NBA_HISTORY_PLAYER_ID_INVALID`, `NBA_HISTORY_SEASON_SCOPE_INVALID` | NBA POINTS source request | Player identifier is non-numeric/unsafe or season fanout exceeds two explicit seasons | No |
+| `NBA_HISTORY_TIME_INVALID`, `NBA_HISTORY_TIME_NAIVE`, `NBA_HISTORY_EVENT_NOT_PREGAME`, `NBA_HISTORY_GAME_DATE_INVALID` | NBA POINTS temporal source check | Missing/invalid/naive timestamp or target has started | No |
+| `NBA_HISTORY_SOURCE_HTTP_FAILURE`, `NBA_HISTORY_SOURCE_UNAVAILABLE`, `NBA_HISTORY_SOURCE_INVALID`, `NBA_HISTORY_GAMELOG_SCHEMA_INVALID` | NBA Stats/CDN HTTP+schema | Provider HTTP failure, invalid response or missing unique required result set/columns | No |
+| `NBA_HISTORY_PLAYER_ID_MISMATCH`, `NBA_HISTORY_GAME_ID_INVALID`, `NBA_HISTORY_POINTS_INVALID`, `NBA_HISTORY_DUPLICATE_GAME_CONTRADICTION`, `NBA_HISTORY_L10_INSUFFICIENT` | NBA playergamelog history preparation | Historical row player/game/stat invalid, duplicated contradictorily, or fewer than ten eligible prior rows | No |
+| `NBA_HISTORY_BOX_GAME_ID_MISMATCH`, `NBA_HISTORY_GAME_NOT_FINAL`, `NBA_HISTORY_BOX_TIME_CONTRADICTION`, `NBA_HISTORY_BOX_SCORE_SCHEMA_INVALID`, `NBA_HISTORY_BOX_PLAYER_ID_MISSING_OR_DUPLICATE`, `NBA_HISTORY_POINTS_DISAGREE_WITH_BOX` | NBA CDN settled-game reconciliation | Missing exact official game/player, non-final game, impossible kickoff/date, invalid boxscore or disagreed points | No |
+
+Regression: `artifacts/wow-engine/tests/test_v17_nba_points_official_history.py`. MAX 10 CDN game calls plus 1-2 supplied NBA playergamelog seasons; no guessed timestamps, role status, board line, probabilities or wager functions. A successful history retrieval is **not** a complete pregame evidence snapshot.
