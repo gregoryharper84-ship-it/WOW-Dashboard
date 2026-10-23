@@ -105,6 +105,11 @@ jobs:
           set -euo pipefail
           target="$RUNNER_TEMP/wow-gemini/candidate"
           git worktree add --detach "$target" HEAD
+          # Never inherit repository-provided Gemini CLI tool settings or MCPs.
+          [ ! -e "$target/.gemini/settings.json" ] || {
+            echo "::error::GEMINI_REPOSITORY_SETTINGS_NOT_TRUSTED"
+            exit 1
+          }
           [ "$(git -C "$target" rev-parse HEAD)" = "$(git rev-parse HEAD)" ] || exit 1
           python - "$RUNNER_TEMP/wow-gemini/selection.json" "$RUNNER_TEMP/wow-gemini/prompt.txt" <<'PY'
           import json, pathlib, sys
