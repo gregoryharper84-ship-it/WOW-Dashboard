@@ -267,7 +267,7 @@ def test_timestamped_github_job_log_pass_is_accepted(monkeypatch):
     })
     monkeypatch.setattr(regression, "_job_log", lambda job_id, token: (
         "2026-10-23T20:01:02.123Z "
-        "WOW_INCIDENT_REGRESSION_PASSED test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED [100%]\n"
+        ".WOW_INCIDENT_REGRESSION_PASSED test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED [100%]\n"
     ))
     assert regression.verify_authenticated_regression(
         _learning(), expected_sha="a" * 40
