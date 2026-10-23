@@ -74,9 +74,16 @@ def _first_numeric(detail: Mapping[str, Any], *names: str) -> Any:
     return None
 
 
+def _chain_blocked(audit: Mapping[str, Any] | None) -> bool:
+    """True only when an audit ran and proved at least one mandatory stage unproven."""
+    return isinstance(audit, Mapping) and _upper(audit.get("status")) == "BLOCKED"
+
+
 def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
     detail = dict(row.get("detail") or {}) if isinstance(row.get("detail"), Mapping) else {}
     candidate_id = _candidate_id(row)
+    audit = _publication_audit_for_row(row)
+    ceiling_applies = _chain_blocked(audit) and row.get("rank_eligible") is True
     result = {
         "candidate_id": candidate_id,
         "sport": row.get("sport"),
@@ -88,7 +95,11 @@ def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "model_status": row.get("model_status") or detail.get("model_status") or detail.get("code"),
         "market_acquisition_status": _market_status(detail),
         "governance_status": _governance_status(detail),
-        "rank_eligible": row.get("rank_eligible") is True,
+        # Strict ceiling: a BLOCKED publication-chain audit can only lower rank
+        # eligibility. The numerical probability fields below are never touched.
+        "rank_eligible": row.get("rank_eligible") is True and not ceiling_applies,
+        "publication_chain_status": audit.get("status") if isinstance(audit, Mapping) else None,
+        **({"rank_eligible_pre_audit": True} if ceiling_applies else {}),
         "probability_publishable": row.get("probability_publishable") is True,
         "calibrated_probability": _first_numeric(
             detail,
@@ -102,7 +113,12 @@ def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
             "calibrated_home_lower_bound",
             "governed_lower_bound",
         ),
-        "blocker": detail.get("blocker") or detail.get("blocker_code") or detail.get("reason"),
+        "blocker": (
+            detail.get("blocker")
+            or detail.get("blocker_code")
+            or detail.get("reason")
+            or (audit.get("first_blocker") if ceiling_applies else None)
+        ),
         "can_execute": False,
     }
     return result
@@ -292,7 +308,15 @@ def enrich_full_board_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         detail = dict(item.get("detail") or {}) if isinstance(item.get("detail"), Mapping) else {}
         item["market_acquisition_status"] = _market_status(detail)
         item["governance_status"] = _governance_status(detail)
-        item["publication_chain_audit"] = _publication_audit_for_row(item)
+        audit = _publication_audit_for_row(item)
+        item["publication_chain_audit"] = audit
+        if _chain_blocked(audit) and item.get("rank_eligible") is True:
+            # Preserve the model result and its provenance; withdraw only ranking.
+            item["rank_eligible_pre_audit"] = True
+            item["rank_eligible"] = False
+            item["rank_ceiling_reason"] = (
+                f"PUBLICATION_CHAIN_AUDIT_BLOCKED:{audit.get('first_blocker')}"
+            )
         item["can_execute"] = False
         enriched_rows.append(item)
 

@@ -383,6 +383,17 @@ def classify_terminal_disposition(row: Mapping[str, Any]) -> str:
     model_status = _upper(row.get("model_status") or row.get("code") or row.get("terminal_status"))
     if model_status in {MODEL_INPUTS_INSUFFICIENT, MODEL_UNAVAILABLE, MODEL_SCORER_FAILED, MODEL_OUTPUT_INVALID}:
         return model_status
+    # Strict ceiling: a BLOCKED publication-chain audit means a mandatory stage
+    # is unproven, so no upstream label may lift the row to RANK_ELIGIBLE. It is
+    # keyed to rows that were rank eligible upstream (still True, or recorded in
+    # ``rank_eligible_pre_audit`` once the flat row was lowered), so it only ever
+    # lowers a row; rows that were never eligible keep their existing buckets.
+    if (
+        _upper(row.get("publication_chain_status")) == "BLOCKED"
+        and (row.get("rank_eligible") is True or row.get("rank_eligible_pre_audit") is True)
+        and row.get("probability_publishable") is True
+    ):
+        return HELD
     if row.get("rank_eligible") is True and row.get("probability_publishable") is True:
         return RANK_ELIGIBLE
     if _upper(row.get("status")) in {"HOLD", "HELD", "WATCH", "MODEL_QUALIFIED_HOLD"}:
