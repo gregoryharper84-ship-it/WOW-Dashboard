@@ -128,7 +128,8 @@ def verify_authenticated_regression(receipt: dict, *, expected_sha: str) -> dict
         raise ValueError("regression evidence GitHub verification unavailable") from exc
     test_id = receipt["regression_test_added"]
     if not re.search(
-        r"(?m)^" + re.escape(test_id) + r"\s+PASSED(?:\s|\[|$)",
+        r"(?m)^(?:\d{4}-\d{2}-\d{2}T[^\s]+Z\s+)?"
+        + re.escape(test_id) + r"\s+PASSED(?:\s|\[|$)",
         log,
     ):
         raise ValueError("regression evidence named test has no authenticated PASS log")
