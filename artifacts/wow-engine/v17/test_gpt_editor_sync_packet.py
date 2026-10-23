@@ -66,13 +66,15 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
 
     # Keep this dedicated sync workflow dependency-free. Full YAML/OpenAPI
     # validation runs in the protected backend regression suite.
-    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 26
-    assert manifest["action_operation_count"] == 26
+    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 27
+    assert manifest["action_operation_count"] == 27
     assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
     assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
     assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
-    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_26_OPERATIONS" in manifest["acceptance_required"]
+    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_27_OPERATIONS" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_DAILY_SNAPSHOT" in manifest["acceptance_required"]
+    assert "scoreWowTeamEventRequest" in manifest["required_operations"]
+    assert "FRESH_CHAT_SCORE_WOW_TEAM_EVENT_BATCH" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SCORE_WOW_V17_SPREAD_FORWARD_SHADOW" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_NFL_PICKEM_BOARD" in manifest["acceptance_required"]
 

@@ -15,6 +15,10 @@ inputs:
     description: OpenAI Codex permission profile
     required: false
     default: ":read-only"
+  working_directory:
+    description: Explicit Codex working directory; trusted workflow must validate this path.
+    required: false
+    default: ""
   codex_args:
     description: Additional safe Codex CLI arguments
     required: false
@@ -40,8 +44,30 @@ runs:
         fi
         runner_group="$(id -gn)"
         sudo usermod -a -G "$runner_group" wow-codex
-        chmod -R g+rwX "$GITHUB_WORKSPACE"
+        # Normalize to a real path beneath the protected main workspace.
+        # A targeted repair must not grant the untrusted agent write access to main.
+        requested="${{ inputs.working_directory }}"
+        requested="${requested:-$GITHUB_WORKSPACE}"
+        target=$(python - "$requested" "$GITHUB_WORKSPACE" <<'PY'
+        import pathlib, sys
+        root = pathlib.Path(sys.argv[2]).resolve(strict=True)
+        candidate = pathlib.Path(sys.argv[1])
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve(strict=True)
+        if candidate != root and root not in candidate.parents:
+            raise SystemExit("CODEX_WORKSPACE_OUTSIDE_TRUSTED_REPOSITORY")
+        print(candidate)
+        PY
+        )
+        # Read-only reviewers never need blanket write access to source checkout.
+        if [ "${{ inputs.permission_profile }}" = ":workspace" ]; then
+          chmod -R g+rwX "$target"
+        fi
         sudo -u wow-codex git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        if [ "$target" != "$GITHUB_WORKSPACE" ]; then
+          sudo -u wow-codex git config --global --add safe.directory "$target"
+        fi
 
     - name: Materialize structured output schema
       id: schema
@@ -58,12 +84,13 @@ runs:
 
     - name: Run governed OpenAI agent
       id: codex
-      uses: openai/codex-action@v1
+      uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13
       with:
         openai-api-key: ${{ inputs.openai_api_key }}
         prompt: ${{ inputs.prompt }}
         output-schema-file: ${{ steps.schema.outputs.schema_file }}
         permission-profile: ${{ inputs.permission_profile }}
+        working-directory: ${{ inputs.working_directory }}
         codex-args: ${{ inputs.codex_args }}
         safety-strategy: unprivileged-user
         codex-user: wow-codex

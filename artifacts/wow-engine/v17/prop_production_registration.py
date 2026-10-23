@@ -31,6 +31,10 @@ CANARY_TABLE = "wow_prop_action_canary_receipts"
 CANARY_OPERATION_IDS = frozenset({"scoreWowPickRequest", "scoreWowV17PickRequest"})
 
 
+class CanaryReceiptStoreUnavailable(RuntimeError):
+    """Typed fail-closed canary receipt read failure; never means zero receipts."""
+
+
 class PropProductionRegistrationAuditRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     routes: list[str] = Field(default_factory=list)
@@ -166,8 +170,8 @@ def _canary_receipts(db: Any, artifact: Mapping[str, Any], release: ReviewedCert
             .limit(20).execute()
         )
         return _rows(result)
-    except Exception:
-        return []
+    except Exception as exc:
+        raise CanaryReceiptStoreUnavailable("CANARY_RECEIPT_STORE_UNAVAILABLE") from exc
 
 
 def _artifact_rows(db: Any) -> list[dict[str, Any]]:
@@ -322,10 +326,29 @@ def run_prop_production_registration_audit(req: PropProductionRegistrationAuditR
             continue
         identity = _release_key(key[0], key[1], str(artifact.get("model_artifact_version")), str(artifact.get("artifact_checksum")))
         release = REVIEWED_CERTIFICATION_RELEASES.get(identity)
-        receipts = _canary_receipts(db, artifact, release)
-        output.append(audit_registration_for_artifact(
+        receipt_store_unavailable = False
+        try:
+            receipts = _canary_receipts(db, artifact, release)
+        except CanaryReceiptStoreUnavailable:
+            receipts = []
+            receipt_store_unavailable = True
+        assessment = audit_registration_for_artifact(
             artifact, cert_by_identity.get(identity), release=release, canary_receipts=receipts
-        ))
+        )
+        if receipt_store_unavailable:
+            assessment["blockers"] = list(dict.fromkeys([
+                *assessment["blockers"], "CANARY_RECEIPT_STORE_UNAVAILABLE"
+            ]))
+            assessment["action_canary_blockers"] = list(dict.fromkeys([
+                *assessment["action_canary_blockers"], "CANARY_RECEIPT_STORE_UNAVAILABLE"
+            ]))
+            assessment["action_canary_verified"] = False
+            assessment["production_numerical_authority"] = False
+            # Never erase stricter upstream calibration, review or promotion
+            # blockers with a downstream receipt-store availability failure.
+            if assessment["status"] == "PRODUCTION_REGISTERED":
+                assessment["status"] = "HYDRATION_OR_RUNTIME_ADAPTER_REQUIRED"
+        output.append(assessment)
     output.sort(key=lambda row: (row["sport"], row["stat_type"]))
     return {
         "status": "PROP_PRODUCTION_REGISTRATION_AUDIT_COMPLETE",

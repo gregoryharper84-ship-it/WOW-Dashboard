@@ -1,0 +1,86 @@
+name: wow-sirt-independent-reliability-sentinel
+
+# Independent watchdog of the existing resident auditor. This is NOT a
+# replacement Engineering auditor or an alternate production control plane.
+on:
+  # Keep the independent quarter-hour schedule. Add redundant read-only
+  # triggers for default-branch registration and hourly engineering completion.
+  # These DO NOT provide an outside-GitHub failure-domain observer.
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-sirt-independent-reliability-sentinel.yml"
+  workflow_run:
+    workflows:
+      - wow-v17-24h-engineering-closure-loop
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: wow-sirt-independent-reliability-sentinel
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    name: Independently verify auditor heartbeat
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Evaluate independent heartbeat and governance
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT: ${{ vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT }}
+        run: |
+          set -uo pipefail
+          python artifacts/wow-engine/v17/sirt_assurance.py sentinel > "$RUNNER_TEMP/sirt-heartbeat.json"
+          result=$?
+          cat "$RUNNER_TEMP/sirt-heartbeat.json"
+          if [ "$result" -ne 0 ]; then
+            echo "SIRT watchdog blocked: auditor/worker activity stale, unhealthy, or authoritative evidence unavailable." >> "$GITHUB_STEP_SUMMARY"
+            echo "This is not a betting-model verdict." >> "$GITHUB_STEP_SUMMARY"
+            exit "$result"
+          fi
+          if [ "${WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT:-}" = "1" ]; then
+            echo "Resident engineering dispatcher heartbeat and authority were independently checked." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Resident engineering dispatcher enforcement is OFF; no dispatcher production-readiness claim." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Product readiness remains separately governed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Analyze canonical incident history
+        if: always()
+        shell: bash
+        # This mode needs the same read-only Supabase source as the heartbeat
+        # step; otherwise it silently emits UNVERIFIED symptom cohorts.
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python artifacts/wow-engine/v17/sirt_assurance.py failures > "$RUNNER_TEMP/sirt-failure-families.json"
+
+      - name: Retain independent evidence receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sirt-assurance-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/sirt-heartbeat.json
+            ${{ runner.temp }}/sirt-failure-families.json
+          if-no-files-found: error
+          retention-days: 30

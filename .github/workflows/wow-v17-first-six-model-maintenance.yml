@@ -33,8 +33,11 @@ on:
       - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
       - "artifacts/wow-engine/test_v17_team_event_certification_replay.py"
       - "artifacts/wow-engine/test_v17_first_six_workflow_retry_contract.py"
+      - "artifacts/wow-engine/test_v17_first_six_ncaaf_hydrate_order.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
+      - "artifacts/wow-engine/test_v17_immutable_ledger_upserts.py"
+      - "artifacts/wow-engine/test_v17_soccer_openfootball_row_order.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
@@ -59,19 +62,24 @@ on:
       - "artifacts/wow-engine/test_v17_model_source_entitlements.py"
       - "artifacts/wow-engine/test_v17_team_event_certification_replay.py"
       - "artifacts/wow-engine/test_v17_first_six_workflow_retry_contract.py"
+      - "artifacts/wow-engine/test_v17_first_six_ncaaf_hydrate_order.py"
       - "artifacts/wow-engine/test_v17_team_state_intelligence.py"
       - "artifacts/wow-engine/test_v17_team_state_challenger_training.py"
       - "artifacts/wow-engine/test_v17_team_state_scoped_maintenance.py"
       - "artifacts/wow-engine/test_v17_nfl_event_context_challenger.py"
       - "artifacts/wow-engine/test_v17_first_six_certification.py"
       - "artifacts/wow-engine/test_v17_first_six_source_contracts.py"
+      - "artifacts/wow-engine/test_v17_immutable_ledger_upserts.py"
+      - "artifacts/wow-engine/test_v17_soccer_openfootball_row_order.py"
       - "artifacts/wow-engine/test_v17_maintenance_terminal_truth.py"
 
 permissions:
   contents: read
 
 concurrency:
-  group: wow-v17-first-six-model-maintenance
+  # PR verification runs never reach the live maintain job, so they must not
+  # share (and cancel) the live schedule/dispatch/push maintenance group.
+  group: wow-v17-first-six-model-maintenance-${{ github.event_name == 'pull_request' && github.ref || 'live' }}
   cancel-in-progress: true
 
 jobs:
@@ -96,8 +104,11 @@ jobs:
           test_v17_model_source_entitlements.py
           test_v17_team_event_certification_replay.py
           test_v17_first_six_workflow_retry_contract.py
+          test_v17_first_six_ncaaf_hydrate_order.py
           test_v17_first_six_certification.py
           test_v17_first_six_source_contracts.py
+          test_v17_immutable_ledger_upserts.py
+          test_v17_soccer_openfootball_row_order.py
           test_v17_team_event_specialist_ownership.py
           test_v17_ncaaf_model_maintenance.py
           test_v17_basketball_model_maintenance.py
@@ -217,6 +228,27 @@ jobs:
                       time.sleep(10 * (attempt + 1))
               return transport_block(name, last_code, last_detail)
 
+          ancillary_results = {}
+
+          def run_ancillary(name, path):
+              payload = post_bounded(name, path, attempts=3, timeout=180)
+              assert payload.get("can_execute") is False, (name, payload)
+              assert payload.get("probability_publishable") is False, (name, payload)
+              if "automatic_certification" in payload:
+                  assert payload.get("automatic_certification") is False, (name, payload)
+              if "automatic_promotion" in payload:
+                  assert payload.get("automatic_promotion") is False, (name, payload)
+              ancillary_results[name] = payload
+
+          # The NCAAF lane hydrates settled games into wow_ncaaf_training_games.
+          # The NCAAF team-state scope derives the immutable dynamic feature rows
+          # from that ledger, so hydrate first; otherwise the feature ledger is
+          # always one hydrate behind and the spread forward warm fails closed
+          # with SPREAD_REPLAY_PERSISTED_NCAAF_FEATURES_STALE (#987).
+          for name, path in ancillary_endpoints:
+              if name == "NCAAF":
+                  run_ancillary(name, path)
+
           team_state_results = {}
           if not push_fast_lane:
               nfl_event_v2 = post_bounded(
@@ -262,16 +294,9 @@ jobs:
               assert all(row.get("can_execute") is False for row in payload["rows"]), payload
               assert all(row.get("probability_publishable") is False for row in payload["rows"]), payload
 
-          ancillary_results = {}
           for name, path in ancillary_endpoints:
-              payload = post_bounded(name, path, attempts=3, timeout=180)
-              assert payload.get("can_execute") is False, (name, payload)
-              assert payload.get("probability_publishable") is False, (name, payload)
-              if "automatic_certification" in payload:
-                  assert payload.get("automatic_certification") is False, (name, payload)
-              if "automatic_promotion" in payload:
-                  assert payload.get("automatic_promotion") is False, (name, payload)
-              ancillary_results[name] = payload
+              if name not in ancillary_results:
+                  run_ancillary(name, path)
 
           scope_updated = sum(int(payload.get("candidate_rows_updated") or 0) for payload in governed_team_state_payloads)
           scope_blocked = sum(int(payload.get("candidate_rows_blocked") or 0) for payload in governed_team_state_payloads)
@@ -304,5 +329,8 @@ jobs:
               "ancillary": ancillary_results,
           }, sort_keys=True))
           if blocked_ancillary:
+              # Surface the typed blocker as a check-run annotation so it is
+              # readable through the Checks API without downloading job logs.
+              print("::error title=FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED::" + json.dumps(blocked_ancillary, sort_keys=True)[:3500])
               raise RuntimeError("FIRST_SIX_ANCILLARY_MAINTENANCE_BLOCKED:" + json.dumps(blocked_ancillary, sort_keys=True))
           PY

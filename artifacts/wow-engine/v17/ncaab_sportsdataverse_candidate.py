@@ -216,6 +216,7 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         client.table("wow_d1_training_rows").upsert(
             payloads[offset:offset + 250],
             on_conflict="sport,official_event_id,feature_schema_version,source_manifest_sha256",
+            ignore_duplicates=True,
         ).execute()
     artifact = dict(candidate.artifact_payload)
     version = f"NCAAB_RESULT_FORM_LOGIT_V1_{candidate.dataset_hash[:16]}_{code_sha[:12]}"
@@ -235,7 +236,7 @@ def train_and_persist(client: Any, *, training_code_sha: str) -> dict[str, Any]:
         "source_review_status": "CC_BY_4_0_PROVENANCE_READY", "lifecycle_state": "CANDIDATE",
         "promoted": False, "active": False, "automatic_certification": False,
         "automatic_promotion": False, "probability_publishable": False, "can_execute": False,
-    }, on_conflict="model_artifact_version").execute()
+    }, on_conflict="model_artifact_version", ignore_duplicates=True).execute()
     return {
         "ok": True, "code": "NCAAB_CANDIDATE_PERSISTED", "model_artifact_version": version,
         "eligible_rows": len(rows), "source_assets": sources, "metrics": metrics,

@@ -152,6 +152,32 @@ def _safe_odds_diagnostics(payload: Any) -> dict[str, Any]:
     }
 
 
+# The odds router replaces a non-JSON upstream body with this bare code and
+# mirrors the upstream HTTP status (wow-odds-router `_passthrough`).
+ROUTER_PASSTHROUGH_NON_JSON = "ODDS_PROVIDER_NON_JSON"
+PROXY_UPSTREAM_NON_JSON = "ODDS_API_UPSTREAM_NON_JSON"
+ODDS_PROVIDER_RATE_LIMITED_CODE = "ODDS_PROVIDER_HTTP_429"
+
+
+def _typed_non_json_code(code: Any, http_status: Any, diagnostics: dict[str, Any]) -> Any:
+    """Keep a provider 429 typed as rate limiting instead of "non-JSON".
+
+    Incident #823 (Oct 14): every non-ESPN family failed as
+    ODDS_PROVIDER_NON_JSON with no status, while the router logged HTTP 429 for
+    each sport-inventory call. A non-JSON body describes the payload, not the
+    cause; the status is the explicit provider evidence. Only a proven 429 is
+    re-typed. Other statuses keep their original code; their status is recorded.
+    """
+    if code not in (ROUTER_PASSTHROUGH_NON_JSON, PROXY_UPSTREAM_NON_JSON):
+        return code
+    status = http_status if isinstance(http_status, int) and 100 <= http_status <= 599 else None
+    if code == ROUTER_PASSTHROUGH_NON_JSON and diagnostics.get("upstream_status") is None:
+        diagnostics["upstream_status"] = status
+    if diagnostics.get("upstream_status") == 429:
+        return ODDS_PROVIDER_RATE_LIMITED_CODE
+    return code
+
+
 def proxy_get(path: str, params: dict[str, Any] | None = None) -> FetchResult:
     token = os.environ.get("WOW_ODDS_PROXY_ACTION_KEY") or os.environ.get("WOW_GITHUB_OIDC_TOKEN")
     if not token:
@@ -174,6 +200,7 @@ def proxy_get(path: str, params: dict[str, Any] | None = None) -> FetchResult:
             code = None
         diagnostics_source = detail if isinstance(detail, dict) and detail else payload
         diagnostics = _safe_odds_diagnostics(diagnostics_source)
+        code = _typed_non_json_code(code, exc.code, diagnostics)
         return FetchResult(
             False,
             status=exc.code,
