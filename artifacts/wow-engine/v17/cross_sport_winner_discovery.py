@@ -650,9 +650,10 @@ def normalize_discovered_event(
 ) -> DiscoveredEvent:
     """Translate one provider event row into a canonical discovery candidate.
 
-    The target's league and regime win over anything the row says about itself:
-    the provider sport id is what was actually queried, so it is the authority on
-    which competition and which season regime this row belongs to.
+    The verified provider sport id owns the primary feed's regime. An ESPN
+    scoreboard fallback spans multiple season phases regardless of that target,
+    so only its explicitly sourced phase is used; unknown phases fail closed
+    rather than silently inheriting regular-season fitted model eligibility.
     """
     league = _text(raw.get("league") or raw.get("league_name") or raw.get("sport_title")) or sport
     if target is not None and target.league:
@@ -665,6 +666,27 @@ def normalize_discovered_event(
         or raw.get("event_start_time_utc")
     )
     event_id = raw.get("id") or raw.get("event_id") or raw.get("official_event_id") or raw.get("event_uuid")
+    regime = target.regime if target is not None else registry.REGULAR_SEASON
+
+    # A verified Rundown sport id owns the regime on primary acquisition.  The
+    # secondary ESPN scoreboard, however, returns ALL season phases even when
+    # queried as a fallback to a regular-season target.  Preserve ESPN's own
+    # normalized season phase for that specific fallback, or fail closed if
+    # unavailable; otherwise playoff rows can reach regular-season-only models.
+    if raw.get("_wow_secondary_source") == "ESPN_SCOREBOARD_RESEARCH_FALLBACK":
+        # The fallback spans season regimes regardless of its primary target.
+        # Missing ESPN phase provenance must also fail closed, not inherit the
+        # primary REGULAR_SEASON target and score an uncertified postseason row.
+        season_phase = (
+            _text(raw.get("season_phase")).upper()
+            if raw.get("season_phase_source") == "ESPN_SCOREBOARD"
+            else ""
+        )
+        regime = {
+            "REGULAR_SEASON": registry.REGULAR_SEASON,
+            "POSTSEASON": registry.PLAYOFFS,
+            "PRESEASON": registry.PRESEASON,
+        }.get(season_phase, "UNKNOWN")
     return DiscoveredEvent(
         sport=normalize_team_event_identity(sport, league),
         league=league.upper(),
@@ -679,7 +701,7 @@ def normalize_discovered_event(
             now=now,
         ),
         source=source,
-        regime=target.regime if target is not None else registry.REGULAR_SEASON,
+        regime=regime,
         provider=target.provider if target is not None else None,
         provider_sport_id=target.sport_id if target is not None else None,
         raw=dict(raw),
