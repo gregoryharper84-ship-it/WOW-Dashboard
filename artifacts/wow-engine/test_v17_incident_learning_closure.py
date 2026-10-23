@@ -258,6 +258,21 @@ def test_authenticated_regression_proof_binds_job_test_and_exact_release_sha(mon
     assert proof["job_id"] == 456
 
 
+def test_timestamped_github_job_log_pass_is_accepted(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "dummy-test-token")
+    monkeypatch.setattr(regression, "_job_json", lambda job_id, token: {
+        "id": 456, "run_id": 123, "head_sha": "a" * 40,
+        "status": "completed", "conclusion": "success", "workflow_name": "wow-verify",
+    })
+    monkeypatch.setattr(regression, "_job_log", lambda job_id, token: (
+        "2026-10-23T20:01:02.123Z "
+        "artifacts/wow-engine/test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED [100%]\n"
+    ))
+    assert regression.verify_authenticated_regression(
+        _learning(), expected_sha="a" * 40
+    )["result"] == "PASS"
+
+
 def test_closure_rejects_missing_authenticated_job_proof_and_does_not_save(monkeypatch):
     row = _ready_for_reporter()
     monkeypatch.setattr(records, "_load_ledger", lambda: {"records": [row]})
