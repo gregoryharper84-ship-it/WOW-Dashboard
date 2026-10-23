@@ -139,15 +139,14 @@ jobs:
               code=$(jq -r '.code' <<<"$classification")
               eligible=$(jq -r '.failover_eligible' <<<"$classification")
               reason="$code"
-              if [ "$eligible" = "true" ] &&
-                 { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; }; then
+              if [ "$eligible" = "true" ] && secondary_usable; then
                 action=DISPATCH
                 provider=anthropic
               else
                 action=SURVIVAL
                 provider=deterministic
                 if [ "$eligible" = "true" ]; then
-                  reason="${code}:ANTHROPIC_AUTH_MISSING"
+                  reason="${code}:ANTHROPIC_UNAVAILABLE_OR_FAILED"
                 fi
               fi
             elif [ "$source_workflow_id" = "wow-v17-claude-engineering-worker" ]; then
