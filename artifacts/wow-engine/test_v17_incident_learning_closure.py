@@ -77,6 +77,7 @@ def test_p0_missing_learning_does_not_persist_false_closed(monkeypatch):
     assert saved == []
 
 
+@pytest.mark.wow_incident_regression
 def test_learning_is_recorded(monkeypatch):
     row = _ready_for_reporter(severity="P1")
     saved = _close(monkeypatch, row, _learning())
@@ -224,7 +225,7 @@ def test_authenticated_job_rejects_failure_sha_run_or_untrusted_producer(monkeyp
     job.update(mutate)
     monkeypatch.setattr(regression, "_job_json", lambda job_id, token: job)
     monkeypatch.setattr(regression, "_job_log", lambda job_id, token: (
-        "artifacts/wow-engine/test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED\n"
+        "WOW_INCIDENT_REGRESSION_PASSED artifacts/wow-engine/test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED\n"
     ))
     with pytest.raises(ValueError, match=expected):
         regression.verify_authenticated_regression(_learning(), expected_sha="a" * 40)
@@ -237,7 +238,7 @@ def test_authenticated_job_requires_exact_named_test_pass_in_log(monkeypatch):
         "status": "completed", "conclusion": "success", "workflow_name": "wow-engine-verify",
     })
     monkeypatch.setattr(regression, "_job_log", lambda job_id, token: (
-        "artifacts/wow-engine/test_v17_incident_learning_closure.py::test_learning_is_recorded FAILED\n"
+        "WOW_INCIDENT_REGRESSION_PASSED artifacts/wow-engine/test_v17_incident_learning_closure.py::test_learning_is_recorded FAILED\n"
     ))
     with pytest.raises(ValueError, match="no authenticated PASS log"):
         regression.verify_authenticated_regression(_learning(), expected_sha="a" * 40)
@@ -250,7 +251,7 @@ def test_authenticated_regression_proof_binds_job_test_and_exact_release_sha(mon
         "status": "completed", "conclusion": "success", "workflow_name": "wow-engine-verify",
     })
     monkeypatch.setattr(regression, "_job_log", lambda job_id, token: (
-        "artifacts/wow-engine/test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED [100%]\n"
+        "WOW_INCIDENT_REGRESSION_PASSED artifacts/wow-engine/test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED [100%]\n"
     ))
     proof = regression.verify_authenticated_regression(_learning(), expected_sha="a" * 40)
     assert proof["result"] == "PASS"
@@ -266,7 +267,7 @@ def test_timestamped_github_job_log_pass_is_accepted(monkeypatch):
     })
     monkeypatch.setattr(regression, "_job_log", lambda job_id, token: (
         "2026-10-23T20:01:02.123Z "
-        "artifacts/wow-engine/test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED [100%]\n"
+        "WOW_INCIDENT_REGRESSION_PASSED test_v17_incident_learning_closure.py::test_learning_is_recorded PASSED [100%]\n"
     ))
     assert regression.verify_authenticated_regression(
         _learning(), expected_sha="a" * 40
@@ -298,3 +299,26 @@ def test_missing_github_credential_fails_closed(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     with pytest.raises(ValueError, match="credential unavailable"):
         regression.verify_authenticated_regression(_learning(), expected_sha="a" * 40)
+
+
+
+def test_class_based_pytest_regression_locator_supported(monkeypatch):
+    receipt = _learning()
+    receipt["regression_test_added"] = (
+        "artifacts/wow-engine/v17/test_llp_v17_1_calibration_monotonicity.py"
+        "::TestLLPV171CalibrationMonotonicity::test_governance_invariants"
+    )
+    assert regression.validate_regression_fields(receipt) == []
+    monkeypatch.setenv("GH_TOKEN", "dummy-test-token")
+    monkeypatch.setattr(regression, "_job_json", lambda job_id, token: {
+        "id": 456, "run_id": 123, "head_sha": "a" * 40,
+        "status": "completed", "conclusion": "success", "workflow_name": "wow-engine-verify",
+    })
+    monkeypatch.setattr(regression, "_job_log", lambda job_id, token: (
+        "2026-10-23T20:01:02.123Z WOW_INCIDENT_REGRESSION_PASSED "
+        "v17/test_llp_v17_1_calibration_monotonicity.py"
+        "::TestLLPV171CalibrationMonotonicity::test_governance_invariants PASSED\n"
+    ))
+    assert regression.verify_authenticated_regression(
+        receipt, expected_sha="a" * 40,
+    )["result"] == "PASS"
