@@ -70,3 +70,22 @@ def test_existing_referenced_skill_contracts_exist():
         '.agents/skills/wow-engineering-qa-verification-agent/SKILL.md',
     ):
         assert (ROOT / relative_path).is_file()
+
+
+def test_native_claude_paths_have_the_same_enforced_trust_root_coverage():
+    import importlib.util
+    import sys
+    policy_path = ROOT / 'artifacts/wow-engine/v17/agent_identity_policy.py'
+    spec = importlib.util.spec_from_file_location('_native_claude_policy_test', policy_path)
+    assert spec is not None and spec.loader is not None
+    policy = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = policy
+    spec.loader.exec_module(policy)
+    assert '.claude/' in policy.TRUST_ROOT_PREFIXES
+    for path in ('.claude/README.md', '.claude/skills/new/SKILL.md',
+                 '.claude/agents/new.md', '.claude/settings.json'):
+        assert policy.is_trust_root(path, frozenset())
+        for codeowners in (ROOT / '.github/CODEOWNERS',
+                           ROOT / 'artifacts/wow-engine/v17/agent_identity/CODEOWNERS.proposed'):
+            assert f'@gregoryharper84-ship-it' in policy._codeowners_owners(
+                codeowners.read_text(), path)

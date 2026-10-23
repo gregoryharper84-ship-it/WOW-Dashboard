@@ -1,9 +1,10 @@
 # PROPOSED — owner installs at .github/CODEOWNERS (#1550 phase D). Not active until merged by the owner.
 # Generated from agent_identity_policy.trust_root_paths() + governance_trust_roots(); a test fails on drift.
 # The sole human owner must approve any change to these paths, including this file.
-# /.github/ and /.agents/ cover NEW workflows, actions, scripts and agent skills.
+# /.github/, /.agents/ and /.claude/ cover NEW workflows, actions, scripts and native Claude instructions.
 /.github/ @gregoryharper84-ship-it
 /.agents/ @gregoryharper84-ship-it
+/.claude/ @gregoryharper84-ship-it
 # Files executed or read by governance workflows (changing them changes how the gates decide):
 /artifacts/flask-scoring-api/requirements.txt @gregoryharper84-ship-it
 /artifacts/wow-engine/requirements.txt @gregoryharper84-ship-it
