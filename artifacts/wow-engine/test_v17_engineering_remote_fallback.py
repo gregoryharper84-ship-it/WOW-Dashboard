@@ -116,6 +116,20 @@ class RemoteFallbackTests(unittest.TestCase):
                          "COPILOT_ADMISSION_NOT_AUTHORIZED")
         self.assertEqual(self.api.launches, [])
 
+    def test_default_zero_additional_api_spend_preserves_native_detection(self):
+        result = self.run_fallback({})
+        self.assertEqual(result["action"], "SURVIVAL")
+        self.assertEqual(result["status"], "CURSOR_NOT_CONFIGURED")
+        self.assertEqual(self.api.calls, [])
+        root = Path(__file__).resolve().parents[2]
+        dispatcher = (root / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
+        rapid = (root / ".github/workflows/wow-v17-p0-rapid-dispatch.yml").read_text()
+        self.assertIn('cron: "17 * * * *"', dispatcher)
+        self.assertIn('cron: "*/15 * * * *"', rapid)
+        self.assertIn("name: Deterministic survival checks", dispatcher)
+        self.assertIn("engineering_provider_failover.py survival-receipt", dispatcher)
+        self.assertIn("vars.WOW_COPILOT_FALLBACK_ENABLED == 'true'", dispatcher)
+
     def test_wrong_branch_repo_sha_and_domain(self):
         for key, value in (("GITHUB_REF", "refs/heads/feature"),
                            ("GITHUB_REPOSITORY", "attacker/repo"),

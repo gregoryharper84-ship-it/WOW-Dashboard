@@ -112,6 +112,14 @@ budget with usage stopped at its limit. Only then set repository variables:
 These flags attest owner setup; they do not create or verify a billing cap.
 This patch does not configure secrets, budgets, permissions, or launch agents.
 
+The default budget is **zero additional API spend**. GitHub-native scheduled
+detection and deterministic SURVIVAL checks continue while OpenAI/Claude are at
+quota limits; they do not require enabling Copilot or configuring Cursor. There
+is no automatic recharge or paid remote invocation in this default path.
+The existing Render resident dispatcher heartbeat is a separate liveness signal,
+not repair acceptance, a provider entitlement, or authorization to spend. Its
+dispatches still pass through the same quota breaker and opt-in admission gates.
+
 Admission requires an exact open issue already in the dispatch manifest, its
 matching domain lease, protected `main`, a concrete current main SHA, no existing
 assignment/linked repair PR, and a successful user-context repository capability
