@@ -19,7 +19,7 @@ class GeminiAntigravityContractTests(unittest.TestCase):
             "LLP_TEAM_BETTING_ENGINE",
             "No consumer-subscription credential reuse",
             "never place, route, modify, approve, or cancel a wager",
-            "single",
+            "Work on one assigned issue and one existing authorized branch at a time.",
         ):
             self.assertIn(invariant.lower(), contents.lower(), invariant)
 
