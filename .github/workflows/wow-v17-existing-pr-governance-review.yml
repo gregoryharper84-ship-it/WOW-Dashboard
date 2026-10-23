@@ -10,6 +10,10 @@ on:
         description: Existing engineering PR to certify
         required: true
         type: string
+      head_sha:
+        description: Optional exact PR head expected by this certification request
+        required: false
+        type: string
       incident_id:
         description: Optional canonical incident override
         required: false
@@ -48,6 +52,72 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check pytest==9.1.1
           python -m pytest -q .github/scripts/tests/test_existing_pr_governance_receipt.py
+
+      - name: Resolve exact QA policy identity
+        id: qa_policy
+        if: github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          import sys
+
+          sys.path.insert(0, ".github/scripts")
+          from independent_source_review_receipt import (
+              SourceReviewError,
+              resolve_qa_review_policy,
+          )
+
+          try:
+              source_prs = json.loads(os.environ.get("SOURCE_PRS", "[]"))
+              if source_prs is None:
+                  source_prs = []
+              if not isinstance(source_prs, list):
+                  raise SourceReviewError("QA_POLICY_EVENT_PR_IDENTITY_INVALID")
+              expected_pr = None
+              if source_prs:
+                  if len(source_prs) != 1 or not isinstance(source_prs[0], dict):
+                      raise SourceReviewError("QA_POLICY_EVENT_PR_IDENTITY_AMBIGUOUS")
+                  event_pr = source_prs[0]
+                  event_head = event_pr.get("head") or {}
+                  event_base = event_pr.get("base") or {}
+                  if (
+                      not isinstance(event_pr.get("number"), int)
+                      or isinstance(event_pr.get("number"), bool)
+                      or not isinstance(event_head.get("sha"), str)
+                      or event_base.get("ref") != "main"
+                  ):
+                      raise SourceReviewError("QA_POLICY_EVENT_PR_IDENTITY_INVALID")
+                  expected_pr = event_pr["number"]
+
+              result = resolve_qa_review_policy(
+                  repository=os.environ["GITHUB_REPOSITORY"],
+                  run_id=int(os.environ["SOURCE_RUN_ID"]),
+                  run_attempt=int(os.environ["SOURCE_ATTEMPT"]),
+                  token=os.environ["GH_TOKEN"],
+                  expected_pr_number=expected_pr,
+              )
+              target = result["policy"]["target"]
+              if source_prs and (
+                  target["pr_number"] != event_pr["number"]
+                  or target["head_sha"] != event_head["sha"]
+              ):
+                  raise SourceReviewError("QA_POLICY_EVENT_PR_IDENTITY_MISMATCH")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write(f"pr_number={target['pr_number']}\n")
+                  output.write(f"head_sha={target['head_sha']}\n")
+                  output.write(f"head_ref={target['head_ref']}\n")
+          except (KeyError, TypeError, ValueError, SourceReviewError) as exc:
+              print(f"EXISTING_PR_QA_POLICY_IDENTITY_HOLD:{exc}", file=sys.stderr)
+              raise SystemExit(1)
+          PY
 
       - name: Resolve exact standalone source-review artifact
         id: source_review
@@ -160,13 +230,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT_PR: ${{ github.event.pull_request.number || '' }}
           INPUT_PR: ${{ inputs.pr_number || '' }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha || '' }}
           INPUT_INCIDENT: ${{ inputs.incident_id || '' }}
           SOURCE_PR: ${{ steps.source_review.outputs.pr_number || '' }}
           SOURCE_HEAD_SHA: ${{ steps.source_review.outputs.head_sha || '' }}
           SOURCE_HEAD_REF: ${{ steps.source_review.outputs.head_ref || '' }}
+          POLICY_PR: ${{ steps.qa_policy.outputs.pr_number || '' }}
+          POLICY_HEAD_SHA: ${{ steps.qa_policy.outputs.head_sha || '' }}
+          POLICY_HEAD_REF: ${{ steps.qa_policy.outputs.head_ref || '' }}
         run: |
           set -euo pipefail
-          pr_number="${EVENT_PR:-${INPUT_PR:-${SOURCE_PR:-}}}"
+          pr_number="${EVENT_PR:-${INPUT_PR:-${SOURCE_PR:-${POLICY_PR:-}}}}"
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || { echo "EXISTING_PR_NUMBER_INVALID" >&2; exit 1; }
 
           mkdir -p .governance-review-evidence
@@ -191,6 +265,21 @@ jobs:
           [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] && [ -n "$head_ref" ] || {
             echo "EXISTING_PR_IDENTITY_INCOMPLETE" >&2; exit 1;
           }
+          if [ -n "${INPUT_HEAD_SHA:-}" ]; then
+            [[ "$INPUT_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "EXISTING_PR_INPUT_HEAD_SHA_INVALID" >&2; exit 1;
+            }
+            [ "$head_sha" = "$INPUT_HEAD_SHA" ] || {
+              echo "EXISTING_PR_INPUT_HEAD_SHA_STALE" >&2; exit 1;
+            }
+          fi
+          if [ -n "${POLICY_PR:-}" ]; then
+            [ "$pr_number" = "$POLICY_PR" ] &&
+              [ "$head_sha" = "$POLICY_HEAD_SHA" ] &&
+              [ "$head_ref" = "$POLICY_HEAD_REF" ] || {
+              echo "EXISTING_PR_QA_POLICY_TARGET_MISMATCH" >&2; exit 1;
+            }
+          fi
           if [ -n "${SOURCE_HEAD_SHA:-}" ]; then
             [ "$head_sha" = "$SOURCE_HEAD_SHA" ] && [ "$head_ref" = "$SOURCE_HEAD_REF" ] || {
               echo "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" >&2; exit 1;
