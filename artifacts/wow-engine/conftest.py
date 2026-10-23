@@ -61,3 +61,27 @@ def _discovery_source_env_isolation():
             os.environ.pop(name, None)
         else:
             os.environ[name] = value
+
+
+
+def pytest_configure(config):
+    """Register a narrowly scoped marker for incident-learning proof."""
+    config.addinivalue_line(
+        "markers",
+        "wow_incident_regression: Emit one authenticated named PASS line for incident closure.",
+    )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Quiet-mode CI prints a named result only for marked passing tests.
+
+    This is evidence output, not a CI decision or additional approval gate.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if (report.when == "call" and report.passed
+            and item.get_closest_marker("wow_incident_regression") is not None):
+        terminal = item.config.pluginmanager.get_plugin("terminalreporter")
+        if terminal is not None:
+            terminal.write_line(f"WOW_INCIDENT_REGRESSION_PASSED {report.nodeid} PASSED")
