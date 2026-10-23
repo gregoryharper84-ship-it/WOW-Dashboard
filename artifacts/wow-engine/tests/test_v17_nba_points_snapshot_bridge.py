@@ -21,9 +21,13 @@ def fixture():
         "period": "FULL_GAME", "line": 21.5, "direction": "MORE",
     }
     roster = {"player_id": "nba-678", "team_id": "espn-17",
+              "event_id": "espn-123456",
               "player": "Player Example", "availability": "ACTIVE",
               "captured_at": "2026-10-22T18:20:00Z"}
     line = {"provider": "EXACT_CAPTURED_BOARD", "line_type": "EXACT_BOARD_LINE",
+            "event_id": "espn-123456", "player_id": "nba-678",
+            "stat_type": "POINTS", "direction": "MORE", "period": "FULL_GAME",
+            "event_start_time": "2026-10-23T02:00:00Z",
             "line": "21.50", "captured_at": "2026-10-22T18:25:00Z"}
     logs = [
         {"event_id": f"prior-{i}", "event_start_time": "2026-10-14T02:00:00Z",
@@ -117,7 +121,8 @@ def test_full_source_is_validated_but_never_scored_or_persisted():
 def test_less_preserves_exact_captured_line():
     a, b, c, d = fixture()
     a["direction"] = "LESS"
-    assert run(target=a)["snapshot"]["line"] == 21.5
+    c["direction"] = "LESS"
+    assert run(target=a, line=c)["snapshot"]["line"] == 21.5
 
 
 @pytest.mark.parametrize("side,code", [
@@ -233,3 +238,29 @@ def test_canonical_factory_must_preserve_event_identity():
             "player": "Player Example", "line": 21.5,
         }
     fails("NBA_POINTS_SNAPSHOT_IDENTITY_MISMATCH", snapshot_factory=incorrect)
+
+
+@pytest.mark.parametrize("field,wrong,reason", [
+    ("event_id", "espn-999999", "NBA_POINTS_BOARD_EVENT_MISMATCH"),
+    ("player_id", "nba-999", "NBA_POINTS_BOARD_PLAYER_MISMATCH"),
+    ("stat_type", "ASSISTS", "NBA_POINTS_BOARD_STAT_MISMATCH"),
+    ("direction", "LESS", "NBA_POINTS_BOARD_DIRECTION_MISMATCH"),
+    ("period", "FIRST_HALF", "NBA_POINTS_BOARD_PERIOD_MISMATCH"),
+    ("event_start_time", "2026-10-24T02:00:00Z", "NBA_POINTS_BOARD_START_MISMATCH"),
+])
+def test_identical_numeric_board_line_must_match_exact_thesis(field, wrong, reason):
+    _, _, line, _ = fixture()
+    line[field] = wrong
+    fails(reason, line=line)
+
+
+def test_season_roster_cannot_claim_unrelated_game_availability():
+    _, roster, _, _ = fixture()
+    roster["event_id"] = "espn-999999"
+    fails("NBA_POINTS_ROSTER_EVENT_MISMATCH", roster=roster)
+
+
+def test_missing_quote_identity_does_not_infer_from_numeric_line():
+    _, _, line, _ = fixture()
+    line.pop("player_id")
+    fails("NBA_POINTS_PLAYER_ID_MISSING", line=line)
