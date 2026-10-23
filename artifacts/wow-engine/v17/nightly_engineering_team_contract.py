@@ -14,8 +14,17 @@ from typing import Any
 
 try:
     from .incident_regression_evidence import validate_regression_fields
-except ImportError:  # direct script compatibility
-    from incident_regression_evidence import validate_regression_fields
+except ImportError:  # direct script/spec loader compatibility
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+    _evidence_spec = _importlib_util.spec_from_file_location(
+        "incident_regression_evidence", _Path(__file__).with_name("incident_regression_evidence.py")
+    )
+    if _evidence_spec is None or _evidence_spec.loader is None:
+        raise ImportError("incident_regression_evidence module specification unavailable")
+    _evidence_module = _importlib_util.module_from_spec(_evidence_spec)
+    _evidence_spec.loader.exec_module(_evidence_module)
+    validate_regression_fields = _evidence_module.validate_regression_fields
 
 TEAM_CONTRACT_VERSION = "1.0"
 
