@@ -1,0 +1,62 @@
+name: wow-v17-cursor-pr-handoff-bridge
+# Event intake only. Existing provider dispatcher remains the sole routing control plane.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-cursor-pr-handoff-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  route-to-existing-dispatcher:
+    if: >-
+      github.event.issue.pull_request != null &&
+      github.event.sender.login == github.repository_owner &&
+      startsWith(github.event.comment.body, '/wow-cursor')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate existing same-repository PR and submit scoped Cursor handoff
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.comment.body }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          info="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")"
+          head="$(jq -r '.head.sha' <<<"$info")"
+          head_repo="$(jq -r '.head.repo.full_name // empty' <<<"$info")"
+          head_branch="$(jq -r '.head.ref // empty' <<<"$info")"
+          base="$(jq -r '.base.ref' <<<"$info")"
+          state="$(jq -r '.state' <<<"$info")"
+          if [[ ! "$head" =~ ^[0-9a-f]{40}$ ]] || [ "$head_repo" != "$GITHUB_REPOSITORY" ] || [ "$base" != main ] || [ "$state" != open ] || [ "$head_branch" = main ]; then
+            echo "::error::CURSOR_PR_IDENTITY_NOT_ELIGIBLE"
+            exit 1
+          fi
+          # Require the whole first line to be the command, not just a prefix.
+          first_line="${BODY%%$'\n'*}"
+          if [ "$first_line" != "/wow-cursor" ]; then
+            echo "::error::CURSOR_HANDOFF_COMMAND_INVALID"
+            exit 1
+          fi
+          task="${BODY#*$'\n'}"
+          if [ "$task" = "$BODY" ] || [ -z "$task" ] || [ "${#task}" -gt 4000 ]; then
+            echo "::error::CURSOR_HANDOFF_TASK_INVALID"
+            exit 1
+          fi
+          gh workflow run wow-v17-engineering-provider-dispatcher.yml \
+            --repo "$GITHUB_REPOSITORY" --ref main \
+            -f force_provider=cursor \
+            -f reason=OWNER_CURSOR_PR_HANDOFF \
+            -f lease_group="PR_$PR_NUMBER" \
+            -f cursor_pr_number="$PR_NUMBER" \
+            -f cursor_expected_head="$head" \
+            -f cursor_task="$task"
+          echo "Submitted scoped Cursor dispatch for PR #$PR_NUMBER at $head" >> "$GITHUB_STEP_SUMMARY"

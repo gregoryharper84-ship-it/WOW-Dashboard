@@ -23,6 +23,19 @@ on:
           - auto
           - openai
           - anthropic
+          - cursor
+      cursor_pr_number:
+        description: Existing PR number for an opt-in Cursor handoff.
+        required: false
+        default: ""
+      cursor_expected_head:
+        description: Exact expected PR head SHA for Cursor handoff.
+        required: false
+        default: ""
+      cursor_task:
+        description: Scoped engineering assignment (max 4000 characters).
+        required: false
+        default: ""
       reason:
         description: Optional dispatch reason.
         required: false
@@ -166,6 +179,10 @@ jobs:
               action=DISPATCH
               provider=openai
               reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+            elif [ "$force" = "cursor" ]; then
+              action=DISPATCH
+              provider=cursor
+              reason="${MANUAL_REASON:-OWNER_CURSOR_PR_HANDOFF}"
             elif [ "$force" = "anthropic" ]; then
               if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
                 action=DISPATCH
@@ -283,6 +300,36 @@ jobs:
             -f target_incident="$TARGET_INCIDENT" \
             -f lease_group="$LEASE_GROUP"
 
+      - name: Dispatch scoped Cursor Cloud Agent
+        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'cursor'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CURSOR_HANDOFF_ENABLED: ${{ vars.CURSOR_HANDOFF_ENABLED }}
+          CURSOR_PR_NUMBER: ${{ inputs.cursor_pr_number }}
+          CURSOR_EXPECTED_HEAD: ${{ inputs.cursor_expected_head }}
+          CURSOR_TASK: ${{ inputs.cursor_task }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/cursor-handoff.json"
+          if [ "${CURSOR_HANDOFF_ENABLED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_HANDOFF_DISABLED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_HANDOFF_DISABLED"
+            exit 1
+          fi
+          if [ -z "${CURSOR_PR_NUMBER:-}" ] || [ -z "${CURSOR_EXPECTED_HEAD:-}" ] || [ -z "${CURSOR_TASK:-}" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_DISPATCH_INPUTS_MISSING","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_DISPATCH_INPUTS_MISSING"
+            exit 1
+          fi
+          python artifacts/wow-engine/v17/cursor_cloud_handoff.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number "$CURSOR_PR_NUMBER" \
+            --expected-head "$CURSOR_EXPECTED_HEAD" \
+            --task "$CURSOR_TASK" \
+            --receipt "$receipt"
+
       - name: Deterministic survival checks
         id: survival
         if: steps.route.outputs.action == 'SURVIVAL'
@@ -323,6 +370,7 @@ jobs:
           path: |
             ${{ steps.route.outputs.receipt }}
             ${{ runner.temp }}/wow-survival/*.json
+            ${{ runner.temp }}/cursor-handoff.json
           retention-days: 14
 
       - name: Record provider-control summary
@@ -338,6 +386,7 @@ jobs:
             echo "- lease_group: ${{ steps.route.outputs.lease_group || 'GLOBAL' }}"
             echo "- OpenAI primary: wow-v17-chatgpt-engineering-worker"
             echo "- Anthropic fallback: wow-v17-claude-engineering-worker"
+            echo "- Cursor: opt-in existing-PR Cloud Agent only, not automatic fallback"
             echo "- deterministic survival: ${{ steps.route.outputs.action == 'SURVIVAL' }}"
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
