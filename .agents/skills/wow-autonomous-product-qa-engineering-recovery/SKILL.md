@@ -534,6 +534,10 @@ recurrence_of:
 
 Research/Triage searches this history before debugging a new recurrence.
 
+**P0/P1 closure learning contract (new incidents only).** After independent QA and production verification, the Reporter must attach a structured learning receipt before setting `VERIFIED_CLOSED`. Required fields are `root_cause_code` (stable uppercase identifier), `failure_category`, `why_existing_tests_missed_it`, `regression_test_added`, `regression_test_evidence_ref`, `architecture_lesson`, `preventive_control`, `similar_code_paths_reviewed` (nonempty list), `recurrence_of` (explicit list, empty when new), and `recurrence_monitor_owner`. Evidence references must be authentic, independently checkable, and bound to the tested revision. The canonical incident manager writes `confirmed_root_cause_id` for SIRT recurrence analysis only when root cause is confirmed. A missing or malformed receipt prevents **Reporter verified closure**, not PR checks, QA, Release or product recovery. Older incidents are grandfathered; P2/P3 can still record learning without the mandatory P0/P1 requirement. Never fabricate test evidence to satisfy the receipt.
+
+For CLI closure, pass a JSON object through `close-verified --learning-json-file <path>` in addition to the existing verified acceptance evidence. SIRT's read-only recurrence report uses the existing canonical incident ledger; no competing queue, writer, release gate, or probability authority is created.
+
 ## Nightly relationship
 
 `.agents/skills/wow-nightly-engineering-autopilot/SKILL.md` is the **scheduled detector/completion wrapper**. It must delegate every defect that proceeds beyond observation to this recovery team rather than acting as one engineer through the whole chain.
