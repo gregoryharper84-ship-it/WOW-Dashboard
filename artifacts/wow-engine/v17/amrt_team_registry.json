@@ -1,0 +1,138 @@
+{
+  "schema_version": "1.0",
+  "team_id": "WOW_AUTONOMOUS_MODEL_RECOVERY_TEAM",
+  "name": "WOW Autonomous Model Recovery Team (AMRT)",
+  "status": "SOURCE_CANDIDATE_NOT_DEPLOYED",
+  "runtime_generation": "V17_ACTIVE",
+  "custom_gpt_identity": "WOW_BETTING_ENGINE",
+  "parent_control_plane": "WOW_ECOSYSTEM_CONDUCTOR",
+  "engineering_domain": "ENGINEERING_CLOSURE",
+  "terminal_authority": "V17_TERMINAL_REDUCER",
+  "can_execute": false,
+  "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": true,
+  "source_branch": "amrt/recovery-closure-gate-20261018",
+  "source_pr": 1843,
+  "active_worker": "EXISTING_AUTHENTICATED_ENGINEERING_WORKER_ONLY",
+  "source_module": "v17.amrt_operational_lanes",
+  "shared_lease_authority": "EXISTING_CONDUCTOR_ATOMIC_INCIDENT_LEASE",
+  "receipts_table": "wow_engineering_attempt_receipts",
+  "max_provider_attempts": 3,
+  "max_parallel_workers": 2,
+  "priority_policy": {
+    "P0": "Model correctness, publication safety, availability",
+    "P1": "Restoration and autonomy failures",
+    "P2": "Recurring defects and data reconciliation",
+    "P3": "Optimization and technical debt"
+  },
+  "ownership": "ONE_ACCOUNTABLE_INCIDENT_OWNER_UNTIL_INDEPENDENT_PRODUCTION_CLOSURE",
+  "change_classes": [
+    "A",
+    "B",
+    "C"
+  ],
+  "class_c_policy": "CERTIFICATION_REQUIRED_NO_AMRT_SELF_APPROVAL",
+  "activation_requirements": [
+    "AUTHORIZED_ENGINEERING_APP_ADOPTION",
+    "EXACT_HEAD_CI_AND_REGRESSION",
+    "SEPARATE_INDEPENDENT_QA_AND_PROTECTED_RELEASE",
+    "APPROVED_MERGE_AND_DEPLOY",
+    "LIVE_WORKER_HEARTBEAT_AND_PERSISTED_HANDOFF"
+  ],
+  "production_closure_requirements": [
+    "ROOT_CAUSE_EVIDENCE",
+    "FOCUSED_AND_REGRESSION_TESTS",
+    "INDEPENDENT_REVIEW",
+    "REQUIRED_APPROVALS",
+    "AUTHORIZED_MERGE_SHA",
+    "MATCHING_RENDER_LIVE_SHA",
+    "SAME_RUN_ACTION_ACCEPTANCE",
+    "SUPABASE_PERSISTENCE_AND_RECONCILIATION",
+    "INDEPENDENT_QA_CLOSURE"
+  ],
+  "specialists": [
+    {
+      "role_id": "BLOCKER_SENTINEL",
+      "title": "Blocker Sentinel",
+      "order": 1,
+      "skill_path": ".agents/skills/wow-amrt-blocker-sentinel/SKILL.md",
+      "module": "v17.amrt_operational_lanes",
+      "handler": "detect_blockers",
+      "next_owner": "ROOT_CAUSE_INVESTIGATOR",
+      "probability_authority": false,
+      "approval_authority": false,
+      "source_status": "DEFINITION_ONLY_UNTIL_EXISTING_WORKER_ADOPTS"
+    },
+    {
+      "role_id": "ROOT_CAUSE_INVESTIGATOR",
+      "title": "Root Cause Investigator",
+      "order": 2,
+      "skill_path": ".agents/skills/wow-amrt-root-cause-investigator/SKILL.md",
+      "module": "v17.amrt_operational_lanes",
+      "handler": "investigate_root_cause",
+      "next_owner": "MODEL_RECOVERY_ENGINEER | DATA_INTEGRATION_ENGINEER | CODE_CI_ENGINEER | RELEASE_VERIFICATION",
+      "probability_authority": false,
+      "approval_authority": false,
+      "source_status": "DEFINITION_ONLY_UNTIL_EXISTING_WORKER_ADOPTS"
+    },
+    {
+      "role_id": "MODEL_RECOVERY_ENGINEER",
+      "title": "Model Recovery Engineer",
+      "order": 3,
+      "skill_path": ".agents/skills/wow-amrt-model-recovery-engineer/SKILL.md",
+      "module": "v17.amrt_operational_lanes",
+      "handler": "model_recovery",
+      "next_owner": "CODE_CI_ENGINEER",
+      "probability_authority": false,
+      "approval_authority": false,
+      "source_status": "DEFINITION_ONLY_UNTIL_EXISTING_WORKER_ADOPTS"
+    },
+    {
+      "role_id": "DATA_INTEGRATION_ENGINEER",
+      "title": "Data & Integration Engineer",
+      "order": 4,
+      "skill_path": ".agents/skills/wow-amrt-data-integration-engineer/SKILL.md",
+      "module": "v17.amrt_operational_lanes",
+      "handler": "data_integration_recovery",
+      "next_owner": "CODE_CI_ENGINEER",
+      "probability_authority": false,
+      "approval_authority": false,
+      "source_status": "DEFINITION_ONLY_UNTIL_EXISTING_WORKER_ADOPTS"
+    },
+    {
+      "role_id": "CODE_CI_ENGINEER",
+      "title": "Code & CI Engineer",
+      "order": 5,
+      "skill_path": ".agents/skills/wow-amrt-code-ci-engineer/SKILL.md",
+      "module": "v17.amrt_operational_lanes",
+      "handler": "code_ci_recovery",
+      "next_owner": "INDEPENDENT_QA",
+      "probability_authority": false,
+      "approval_authority": false,
+      "source_status": "DEFINITION_ONLY_UNTIL_EXISTING_WORKER_ADOPTS"
+    },
+    {
+      "role_id": "INDEPENDENT_QA",
+      "title": "Independent QA",
+      "order": 6,
+      "skill_path": ".agents/skills/wow-amrt-independent-qa/SKILL.md",
+      "module": "v17.amrt_operational_lanes",
+      "handler": "independent_qa",
+      "next_owner": "RELEASE_VERIFICATION",
+      "probability_authority": false,
+      "approval_authority": false,
+      "source_status": "DEFINITION_ONLY_UNTIL_EXISTING_WORKER_ADOPTS"
+    },
+    {
+      "role_id": "RELEASE_VERIFICATION",
+      "title": "Release & Verification",
+      "order": 7,
+      "skill_path": ".agents/skills/wow-amrt-release-verification/SKILL.md",
+      "module": "v17.amrt_operational_lanes",
+      "handler": "release_verification",
+      "next_owner": "INDEPENDENT_VERIFICATION",
+      "probability_authority": false,
+      "approval_authority": false,
+      "source_status": "DEFINITION_ONLY_UNTIL_EXISTING_WORKER_ADOPTS"
+    }
+  ]
+}

@@ -9,28 +9,38 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import threading
 from datetime import datetime, timezone
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from v17.engineering_dispatch_queue import _validate_manifest
+from v17.amrt_operational_lanes import dispatch_preflight
 
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
+# The numeric canonical GitHub API alias for this exact repository, verified
+# against GET /repos/{owner}/{repo}. Never accept a different numeric ID.
+REPO_ID = 1240256887
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
-ACTIVE_WORKFLOWS = frozenset({
-    "wow-v17-chatgpt-engineering-worker",
-    "wow-v17-claude-engineering-worker",
-    "wow-v17-engineering-provider-dispatcher",
-})
+# Only the three registered engineering workflows can own the implementation
+# writer. Unrelated CI run churn must never corrupt this busy check.
+ACTIVE_WORKFLOW_FILES = (
+    "wow-v17-chatgpt-engineering-worker.yml",
+    "wow-v17-claude-engineering-worker.yml",
+    "wow-v17-engineering-provider-dispatcher.yml",
+)
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
 ATTEMPT_KEY_PREFIX = "wow:v17:engineering:resident-dispatch-attempts:v1:"
 DISPATCHER_HEARTBEAT_ID = "WOW_ENGINEERING_RESIDENT_DISPATCHER"
+OPEN_PR_PAGE_SIZE = 100
+MAX_OPEN_PR_PAGES = 10
 _STOP = threading.Event()
 _THREAD: threading.Thread | None = None
 
@@ -43,7 +53,9 @@ class GitHubTransport:
             raise ValueError("GITHUB_DISPATCH_TOKEN_MISSING")
         self.token, self.repo = token, repo
 
-    def call(self, path: str, payload: dict[str, Any] | None = None) -> Any:
+    def call_with_headers(
+        self, path: str, payload: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, str]]:
         if not path.startswith("/") or "//" in path or not path.startswith(f"/repos/{self.repo}/"):
             raise ValueError("UNAPPROVED_GITHUB_API_PATH")
         data = json.dumps(payload).encode() if payload is not None else None
@@ -62,10 +74,25 @@ class GitHubTransport:
         # Do not log URLs with query strings or secret-bearing transport errors.
         with urllib.request.urlopen(request, timeout=8) as response:
             raw = response.read()
-        return json.loads(raw) if raw else {}
+            response_headers = dict(response.headers.items())
+        return (json.loads(raw) if raw else {}), response_headers
+
+    def call(self, path: str, payload: dict[str, Any] | None = None) -> Any:
+        return self.call_with_headers(path, payload)[0]
 
     def get(self, suffix: str) -> Any:
         return self.call(f"/repos/{self.repo}/{suffix}")
+
+    def get_open_pull_request_page(self, page: int) -> tuple[Any, bool, bool]:
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise ValueError("OPEN_PR_PAGE_INVALID")
+        result, headers = self.call_with_headers(
+            f"/repos/{self.repo}/pulls?state=open&per_page={OPEN_PR_PAGE_SIZE}&page={page}",
+        )
+        has_next, has_pagination_link = _open_pr_page_pagination(
+            headers, page=page, repo=self.repo,
+        )
+        return result, has_next, has_pagination_link
 
     def dispatch(self, issue: dict[str, Any]) -> None:
         group = str(issue.get("lease_group") or "GLOBAL")
@@ -88,14 +115,31 @@ class GitHubTransport:
 
 
 def active_engineering_workflow(client: GitHubTransport) -> bool:
-    """Fail closed when GitHub could not enumerate the complete active run set."""
-    for state in ("queued", "in_progress", "waiting", "requested"):
-        result = client.get(f"actions/runs?status={state}&per_page=100")
-        runs = result.get("workflow_runs")
-        if not isinstance(runs, list) or int(result.get("total_count", -1)) > len(runs):
-            raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
-        if any(run.get("name") in ACTIVE_WORKFLOWS for run in runs):
-            return True
+    """Fail closed on each exact GitHub engineering-workflow active inventory.
+
+    Repository-wide counts can race unrelated CI execution; query only the
+    three already-registered writers. Positive evidence is always BUSY,
+    including transient total_count/row skew. Malformed or overfull inventory
+    still blocks instead of granting another source writer.
+    """
+    for filename in ACTIVE_WORKFLOW_FILES:
+        for state in ("queued", "in_progress", "waiting", "requested"):
+            result = client.get(
+                f"actions/workflows/{filename}/runs?status={state}&per_page=100"
+            )
+            if not isinstance(result, dict):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            total, runs = result.get("total_count"), result.get("workflow_runs")
+            if (
+                isinstance(total, bool) or not isinstance(total, int)
+                or total < 0 or not isinstance(runs, list)
+                or len(runs) > 100 or any(not isinstance(run, dict) for run in runs)
+            ):
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INVALID")
+            if total > 100:
+                raise RuntimeError("ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE")
+            if total > 0 or runs:
+                return True
     return False
 
 
@@ -123,16 +167,112 @@ def next_approved_issue(
     return None
 
 
-def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
-    result = client.get("pulls?state=open&per_page=100")
-    # GitHub returns a list for this endpoint; our transport also supports lists.
-    if not isinstance(result, list):
+def _open_pr_page_pagination(
+    headers: dict[str, str], *, page: int, repo: str,
+) -> tuple[bool, bool]:
+    link_header = next(
+        (value for key, value in headers.items() if key.lower() == "link"),
+        None,
+    )
+    if link_header is None:
+        return False, False
+    if not isinstance(link_header, str):
         raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
-    if len(result) == 100:
-        raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
-    import re
-    pattern = re.compile(r"(?im)^Incident:\s*(?:\x60)?#?" + re.escape(str(issue_number)) + r"(?:\x60)?\s*$")
-    return any(pattern.search(str(pr.get("body") or "")) for pr in result)
+
+    next_links = []
+    for link in link_header.split(","):
+        match = re.fullmatch(
+            r'\s*<([^<>]+)>\s*;\s*rel\s*=\s*"?([a-z]+)"?\s*', link,
+        )
+        if match is None:
+            raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+        if match.group(2) == "next":
+            next_links.append(match.group(1))
+    if len(next_links) > 1:
+        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+    if not next_links:
+        return False, True
+
+    next_url = urlparse(next_links[0])
+    query = parse_qs(next_url.query, keep_blank_values=True)
+    permitted_paths = {f"/repos/{repo}/pulls"}
+    if repo == REPO:
+        # GitHub's own Link header may prefer its canonical /repositories/id
+        # form. This is the SAME pre-verified repository, not a wildcard.
+        permitted_paths.add(f"/repositories/{REPO_ID}/pulls")
+    if (
+        next_url.scheme != "https"
+        or next_url.netloc != "api.github.com"
+        or next_url.path not in permitted_paths
+        or next_url.fragment
+        or set(query) != {"state", "per_page", "page"}
+        or query.get("state") != ["open"]
+        or query.get("per_page") != [str(OPEN_PR_PAGE_SIZE)]
+        or query.get("page") != [str(page + 1)]
+    ):
+        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+    return True, True
+
+
+def _validate_open_pr(pr: Any, *, repo: str) -> dict[str, Any]:
+    if not isinstance(pr, dict):
+        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+    number = pr.get("number")
+    issue_url = pr.get("issue_url")
+    if (
+        isinstance(number, bool)
+        or not isinstance(number, int)
+        or number < 1
+        or pr.get("state") != "open"
+        or pr.get("html_url") != f"https://github.com/{repo}/pull/{number}"
+        or not isinstance(pr.get("title"), str)
+        or (pr.get("body") is not None and not isinstance(pr.get("body"), str))
+        or issue_url != f"https://api.github.com/repos/{repo}/issues/{number}"
+        or not isinstance(pr.get("draft"), bool)
+    ):
+        raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+    return pr
+
+
+def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
+    repo = getattr(client, "repo", REPO)
+    issue_ref = re.escape(str(issue_number))
+    body_pattern = re.compile(
+        r"(?im)^Incident:\s*(?:\x60)?#?" + issue_ref + r"(?:\x60)?\s*$",
+    )
+    seen_numbers: set[int] = set()
+    matches_issue = False
+
+    for page in range(1, MAX_OPEN_PR_PAGES + 1):
+        result, has_next, has_pagination_link = client.get_open_pull_request_page(page)
+        if not isinstance(result, list) or len(result) > OPEN_PR_PAGE_SIZE:
+            raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+        if (
+            not isinstance(has_next, bool)
+            or not isinstance(has_pagination_link, bool)
+            or (has_next and len(result) != OPEN_PR_PAGE_SIZE)
+        ):
+            raise RuntimeError("OPEN_PR_INVENTORY_INVALID")
+
+        for raw_pr in result:
+            pr = _validate_open_pr(raw_pr, repo=repo)
+            pr_number = pr["number"]
+            if pr_number in seen_numbers:
+                raise RuntimeError("OPEN_PR_INVENTORY_INCOMPLETE")
+            seen_numbers.add(pr_number)
+
+            # PR titles are untrusted descriptions, never incident-ownership proof.
+            if body_pattern.search(pr.get("body") or ""):
+                matches_issue = True
+
+        if len(result) < OPEN_PR_PAGE_SIZE:
+            return matches_issue
+        if has_pagination_link and not has_next:
+            return matches_issue
+        if page == MAX_OPEN_PR_PAGES:
+            raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
+
+    raise RuntimeError("OPEN_PR_INVENTORY_NOT_EXHAUSTIVE")
 
 
 def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str, Any]) -> str:
@@ -171,6 +311,15 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
             needs_p1_bootstrap = True
             skipped.add(issue_number)
             continue
+        # AMRT incidents share the same worker and lease; no alternative
+        # dispatcher, background provider, or synthetic approval authority.
+        if issue.get("amrt_owned") is True:
+            admission = dispatch_preflight(issue)
+            if admission.state != "READY":
+                LOG.warning("AMRT admission held for issue %d reason=%s",
+                            issue_number, ",".join(admission.reasons))
+                skipped.add(issue_number)
+                continue
         if pending_pr_for_issue(client, issue_number):
             has_pending_pr = True
             skipped.add(issue_number)
@@ -224,6 +373,21 @@ def supervisor_runtime_status() -> dict[str, Any]:
 
 
 
+def resident_activation_blockers(status: dict[str, Any]) -> tuple[str, ...]:
+    """Expose missing *categories* only, never env values or token lengths.
+
+    Startup diagnostics are source-truth, not an authorization override.
+    """
+    checks = (
+        ("enabled", "RESIDENT_FLAG_DISABLED"),
+        ("token_configured", "GITHUB_DISPATCH_TOKEN_MISSING"),
+        ("redis_configured", "REDIS_LEASE_CONFIG_MISSING"),
+        ("durable_heartbeat_configured", "DURABLE_HEARTBEAT_CONFIG_MISSING"),
+        ("governance_pass", "DRY_RUN_GOVERNANCE_HOLD"),
+    )
+    return tuple(code for field, code in checks if status.get(field) is not True)
+
+
 def persist_resident_heartbeat(
     db_client: Any, *, status: str, outcome: str, instance_id: str,
 ) -> None:
@@ -241,7 +405,7 @@ def persist_resident_heartbeat(
         ch.isalnum() or ch == "_" for ch in safe_outcome
     ):
         raise ValueError("RESIDENT_HEARTBEAT_OUTCOME_INVALID")
-    db_client.table("wow_engineering_auditor_runtime").upsert({
+    payload = {
         "auditor_id": DISPATCHER_HEARTBEAT_ID,
         "instance_id": instance_id,
         "status": status,
@@ -250,13 +414,51 @@ def persist_resident_heartbeat(
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "updated_at": now,
-    }, on_conflict="auditor_id").execute()
+    }
+    if status == "STOPPED":
+        # Render may start a replacement before the retiring Celery instance
+        # has emitted its last heartbeat. Fence shutdown to that exact instance;
+        # an old STOPPED cannot clobber a newer RUNNING supervisor heartbeat.
+        db_client.table("wow_engineering_auditor_runtime").update(payload).eq(
+            "auditor_id", DISPATCHER_HEARTBEAT_ID
+        ).eq("instance_id", instance_id).execute()
+    else:
+        db_client.table("wow_engineering_auditor_runtime").upsert(
+            payload, on_conflict="auditor_id"
+        ).execute()
+
+
+# Only fixed, locally-authored failure literals can reach operational logs or
+# durable heartbeat receipts. Never print raw exception messages returned from
+# GitHub/Redis/Supabase transports: those could contain credentials or URLs.
+_SAFE_RESIDENT_CYCLE_REASONS = frozenset({
+    "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE",
+    "OPEN_PR_INVENTORY_INVALID",
+    "OPEN_PR_INVENTORY_INCOMPLETE",
+    "OPEN_PR_INVENTORY_NOT_EXHAUSTIVE",
+    "OPEN_PR_PAGE_INVALID",
+    "P0_DOMAIN_LEASE_MISSING",
+    "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE",
+    "UNAPPROVED_GITHUB_API_PATH",
+})
+
+
+def resident_cycle_failure_code(exc: Exception) -> str:
+    """Return an allowlisted diagnosis; redact arbitrary upstream error text."""
+    reason = str(exc)
+    if isinstance(exc, (RuntimeError, ValueError)) and reason in _SAFE_RESIDENT_CYCLE_REASONS:
+        return reason
+    return "CYCLE_" + type(exc).__name__.upper()
 
 
 def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
     status = supervisor_runtime_status()
     if status["status"] != "CONFIGURED_UNVERIFIED":
-        LOG.warning("WOW_RESIDENT_SUPERVISOR status=%s can_execute=false", status["status"])
+        LOG.warning(
+            "WOW_RESIDENT_SUPERVISOR status=%s missing_categories=%s can_execute=false",
+            status["status"],
+            ",".join(resident_activation_blockers(status)) or "NONE",
+        )
         return
     from redis import Redis
     from v17.engineering_auditor_worker import _db_client
@@ -297,14 +499,15 @@ def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
             )
             LOG.warning("WOW_RESIDENT_SUPERVISOR outcome=%s can_execute=false", outcome)
         except Exception as exc:
+            failure_code = resident_cycle_failure_code(exc)
             LOG.warning(
-                "WOW_RESIDENT_SUPERVISOR outcome=BLOCKED error_type=%s can_execute=false",
-                type(exc).__name__,
+                "WOW_RESIDENT_SUPERVISOR outcome=BLOCKED reason=%s error_type=%s can_execute=false",
+                failure_code, type(exc).__name__,
             )
             try:
                 persist_resident_heartbeat(
                     db_client, status="DEGRADED",
-                    outcome="CYCLE_" + type(exc).__name__.upper(),
+                    outcome=failure_code,
                     instance_id=instance_id,
                 )
             except Exception:
