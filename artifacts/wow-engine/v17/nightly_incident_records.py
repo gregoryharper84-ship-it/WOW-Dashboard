@@ -157,6 +157,9 @@ def create_postmortem(
     reported_by: str = "operator",
     subsystem: str | None = None,
 ) -> RecordPaths:
+    severity = severity.strip().upper()
+    if severity not in {"P0", "P1", "P2", "P3"}:
+        raise ValueError(f"invalid incident severity: {severity!r}")
     ledger = _load_ledger()
     if state not in ALLOWED_STATES:
         raise ValueError(f"invalid state: {state}")
