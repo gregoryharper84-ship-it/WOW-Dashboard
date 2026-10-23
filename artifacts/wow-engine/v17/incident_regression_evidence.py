@@ -5,6 +5,7 @@ Fail closed on incomplete SHA, CI outcome, test-case or source provenance.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -17,13 +18,21 @@ _REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 _JOB_URL = re.compile(
     r"https://github\.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/([1-9][0-9]*)/job/([1-9][0-9]*)\Z"
 )
-_TEST_ID = re.compile(
+_PYTEST_ID = re.compile(
     r"(?:[a-zA-Z0-9_-]+/)*test_[a-zA-Z0-9_-]+\.py"
     r"(?:::[a-zA-Z0-9_]+)*::test_[a-zA-Z0-9_]+"
-    r"(?:\[[a-zA-Z0-9_, .-]+\])?\Z"
+    r"(?:\[[^\r\n]{0,256}\])?\Z"
+)
+_JS_ID = re.compile(
+    r"(artifacts/mcp-server/test/v17_[a-zA-Z0-9_-]+\.test\.js)"
+    r"::([^\x00-\x1f\x7f]{1,300})\Z"
 )
 _SHA = re.compile(r"[a-f0-9]{40}\Z")
-_TRUSTED_WORKFLOWS = frozenset({"wow-verify", "wow-engine-verify", "wow-v17-rapid-repair"})
+_TRUSTED_WORKFLOWS = {
+    "pytest": frozenset({"wow-verify", "wow-engine-verify", "wow-v17-rapid-repair"}),
+    "node": frozenset({"v17-mcp-plugin-migration"}),
+}
+_NODE_JOB_NAME = "V17 MCP contract and transport"
 _MAX_LOG_BYTES = 12 * 1024 * 1024
 
 
@@ -41,8 +50,11 @@ def validate_regression_fields(receipt: dict) -> list[str]:
         _trusted_job_url(receipt.get("regression_test_evidence_ref"))
     except ValueError as exc:
         errors.append(str(exc))
-    if not _TEST_ID.fullmatch(str(receipt.get("regression_test_added") or "")):
-        errors.append("learning receipt regression_test_added must identify a pytest test case")
+    test_id = receipt.get("regression_test_added")
+    if not isinstance(test_id, str) or len(test_id) > 512 or not (
+        _PYTEST_ID.fullmatch(test_id) or _JS_ID.fullmatch(test_id)
+    ):
+        errors.append("learning receipt regression_test_added must identify a supported pytest or native JavaScript test case")
     if not _SHA.fullmatch(str(receipt.get("regression_test_sha") or "")):
         errors.append("learning receipt regression_test_sha invalid")
     return errors
@@ -101,8 +113,49 @@ def _job_log(job_id: int, token: str) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _native_test_exists_at_sha(path: str, test_name: str, sha: str, token: str) -> bool:
+    """Bind native TAP test name to a real source file at the exact tested SHA."""
+    from urllib.parse import quote
+    request = Request(
+        f"https://api.github.com/repos/{_REPO}/contents/{quote(path, safe='/')}?ref={sha}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "wow-incident-regression-verifier",
+        },
+    )
+    with urlopen(request, timeout=20) as response:
+        payload = json.load(response)
+    if (not isinstance(payload, dict) or payload.get("type") != "file"
+            or payload.get("encoding") != "base64"):
+        raise ValueError("regression evidence native source not a GitHub file")
+    source = base64.b64decode(payload.get("content", ""), validate=False).decode("utf-8")
+    # This source-backed lane intentionally accepts literal node:test() names
+    # only. Computed/dynamic names are not attested as an exact test identity.
+    return bool(re.search(
+        r"\btest\(\s*(['\"])" + re.escape(test_name) + r"\1\s*,",
+        source,
+    ))
+
+
+def _native_tap_pass(log: str, name: str) -> bool:
+    """Check native node --test TAP subtest and its adjacent successful result."""
+    lines = []
+    for line in log.splitlines():
+        line = re.sub(r"^\d{4}-\d{2}-\d{2}T[^\s]+Z\s+", "", line).strip()
+        lines.append(line)
+    for i, line in enumerate(lines):
+        if line != f"# Subtest: {name}":
+            continue
+        if i + 1 >= len(lines):
+            continue
+        if re.fullmatch(r"ok [1-9][0-9]* - " + re.escape(name), lines[i + 1]):
+            return True
+    return False
+
+
 def verify_authenticated_regression(receipt: dict, *, expected_sha: str) -> dict:
-    """Require one named pytest case PASSED in a real successful exact-SHA CI job.
+    """Require one named native JS or pytest PASS in a successful exact-SHA CI job.
 
     The job and log are fetched from GitHub using read-only authentication.
     String assertions or job URLs supplied by the incident author alone never pass.
@@ -116,6 +169,9 @@ def verify_authenticated_regression(receipt: dict, *, expected_sha: str) -> dict
     if not token:
         raise ValueError("regression evidence GitHub read credential unavailable")
     run_id, job_id = _trusted_job_url(receipt["regression_test_evidence_ref"])
+    test_id = receipt["regression_test_added"]
+    node_match = _JS_ID.fullmatch(test_id)
+    kind = "node" if node_match else "pytest"
     try:
         job = _job_json(job_id, token)
         if not isinstance(job, dict):
@@ -123,22 +179,27 @@ def verify_authenticated_regression(receipt: dict, *, expected_sha: str) -> dict
         if (job.get("id") != job_id or job.get("run_id") != run_id or
                 job.get("head_sha") != expected_sha or
                 job.get("status") != "completed" or job.get("conclusion") != "success" or
-                job.get("workflow_name") not in _TRUSTED_WORKFLOWS):
+                job.get("workflow_name") not in _TRUSTED_WORKFLOWS[kind] or
+                (kind == "node" and job.get("name") != _NODE_JOB_NAME)):
             raise ValueError("regression evidence job failed, mismatched or untrusted")
         log = _job_log(job_id, token)
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        if node_match:
+            native_path, native_name = node_match.groups()
+            if not _native_test_exists_at_sha(native_path, native_name, expected_sha, token):
+                raise ValueError("regression evidence native test absent from exact-SHA source")
+            if not _native_tap_pass(log, native_name):
+                raise ValueError("regression evidence native named test has no authenticated TAP PASS")
+        else:
+            candidates = [test_id]
+            engine_prefix = "artifacts/wow-engine/"
+            if test_id.startswith(engine_prefix):
+                candidates.append(test_id[len(engine_prefix):])
+            prefix = r"(?m)^(?:\d{4}-\d{2}-\d{2}T[^\s]+Z\s+)?[.sxX]{0,120}WOW_INCIDENT_REGRESSION_PASSED\s+"
+            if not any(re.search(prefix + re.escape(nodeid) + r"\s+PASSED(?:\s|$)", log)
+                       for nodeid in candidates):
+                raise ValueError("regression evidence named test has no authenticated PASS log")
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError, UnicodeError) as exc:
         raise ValueError("regression evidence GitHub verification unavailable") from exc
-    test_id = receipt["regression_test_added"]
-    # Quiet pytest jobs emit this exact proof marker via conftest.py. The
-    # root-relative and artifacts/wow-engine-relative forms identify one test.
-    candidates = [test_id]
-    engine_prefix = "artifacts/wow-engine/"
-    if test_id.startswith(engine_prefix):
-        candidates.append(test_id[len(engine_prefix):])
-    prefix = r"(?m)^(?:\d{4}-\d{2}-\d{2}T[^\s]+Z\s+)?[.sxX]{0,120}WOW_INCIDENT_REGRESSION_PASSED\s+"
-    if not any(re.search(prefix + re.escape(nodeid) + r"\s+PASSED(?:\s|$)", log)
-               for nodeid in candidates):
-        raise ValueError("regression evidence named test has no authenticated PASS log")
     return {
         "source": "GITHUB_ACTIONS_AUTHENTICATED_JOB_LOG",
         "job_id": job_id,
@@ -147,4 +208,5 @@ def verify_authenticated_regression(receipt: dict, *, expected_sha: str) -> dict
         "test": test_id,
         "workflow": job["workflow_name"],
         "result": "PASS",
+        "test_kind": kind,
     }
