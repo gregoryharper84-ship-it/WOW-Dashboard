@@ -133,10 +133,11 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
             target = "artifacts/wow-engine/tests/test_changed_candidate.py"
             (worktree / target).parent.mkdir(parents=True)
             (worktree / target).write_text("def test_ok(): assert True\n")
+            source = "artifacts/wow-engine/v17/model_change.py"
             with mock.patch.object(gemini.subprocess, "run", return_value=subprocess.CompletedProcess(
                 ["python", "-m", "pytest"], 0, "1 passed", ""
             )) as runner:
-                result = gemini.verify_candidate(worktree, [target])
+                result = gemini.verify_candidate(worktree, [source, target])
             self.assertEqual(result["status"], "TESTED_CANDIDATE")
             self.assertEqual(result["test_files"], [target])
             self.assertEqual(runner.call_args.kwargs["cwd"], worktree)
@@ -149,15 +150,21 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
             target = "artifacts/wow-engine/tests/test_patch_failure.py"
             (worktree / target).parent.mkdir(parents=True)
             (worktree / target).write_text("def test_fail(): assert False\n")
+            source = "artifacts/wow-engine/v17/model_change.py"
             with mock.patch.object(gemini.subprocess, "run", return_value=subprocess.CompletedProcess(
                 ["pytest"], 1, "FAILED", "error"
             )):
-                result = gemini.verify_candidate(worktree, [target])
+                result = gemini.verify_candidate(worktree, [source, target])
             self.assertEqual(result["code"], "GEMINI_REGRESSION_FAILED")
             self.assertEqual(result["status"], "HELD")
             with mock.patch.object(gemini.subprocess, "run", side_effect=subprocess.TimeoutExpired(["pytest"], 300)):
-                result = gemini.verify_candidate(worktree, [target])
+                result = gemini.verify_candidate(worktree, [source, target])
             self.assertEqual(result["code"], "GEMINI_REGRESSION_TIMEOUT")
+
+    def test_test_only_patch_never_qualifies_as_source_repair(self):
+        patch = gemini.inspect_changed_paths(["artifacts/wow-engine/tests/test_only.py"])
+        self.assertEqual(patch["status"], "HELD")
+        self.assertEqual(patch["code"], "GEMINI_PATCH_SOURCE_CHANGE_REQUIRED")
 
     def test_worker_parses_nul_delimited_git_and_requires_test_receipt(self):
         worker = (ROOT / ".github/workflows/wow-v17-gemini-engineering-worker.yml").read_text()
