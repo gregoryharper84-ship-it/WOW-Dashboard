@@ -918,19 +918,43 @@ def test_qa_workflow_resolves_minimal_workflow_run_repositories_against_live_pr(
     ],
 )
 def test_manual_dispatch_refuses_invalid_or_stale_exact_head(fake_gh, wf, input_sha, invalid_code):
-    proc, runner, _ = _run_decide(
-        fake_gh,
-        wf,
-        _routes_for_pr(_evidence_runs()),
-        {
-            "EVENT": "workflow_dispatch",
-            "INPUT_PR": "7",
-            "INPUT_HEAD_SHA": input_sha,
-            "WR_PRS": "null",
-            "QA_APP_ID": QA_APP,
-            "RELEASE_APP_ID": REL_APP,
-        },
-    )
+    if wf == QA_WF:
+        # The QA SHA guard is in the Resolve target step, BEFORE Decide.
+        # A failed target resolution must never proceed to any decision or publish.
+        (fake_gh / "routes.json").write_text(json.dumps(_routes_for_pr(_evidence_runs())))
+        runner = fake_gh / "runner"
+        runner.mkdir(exist_ok=True)
+        env = dict(
+            os.environ,
+            PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+            FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+            FAKE_GH_LOG=str(fake_gh / "gh.log"),
+            GITHUB_REPOSITORY=REPO,
+            GITHUB_OUTPUT=str(fake_gh / "qa-target.txt"),
+            GH_TOKEN="read-only",
+            EVENT="workflow_dispatch",
+            INPUT_PR="7",
+            INPUT_HEAD_SHA=input_sha,
+            WR_PRS="null",
+        )
+        proc = subprocess.run(
+            ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+            cwd=ROOT, env=env, capture_output=True, text=True,
+        )
+    else:
+        proc, runner, _ = _run_decide(
+            fake_gh,
+            wf,
+            _routes_for_pr(_evidence_runs()),
+            {
+                "EVENT": "workflow_dispatch",
+                "INPUT_PR": "7",
+                "INPUT_HEAD_SHA": input_sha,
+                "WR_PRS": "null",
+                "QA_APP_ID": QA_APP,
+                "RELEASE_APP_ID": REL_APP,
+            },
+        )
 
     assert proc.returncode != 0
     assert f"::error::{invalid_code}" in proc.stdout
