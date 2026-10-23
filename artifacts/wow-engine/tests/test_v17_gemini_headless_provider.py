@@ -4,6 +4,9 @@ from __future__ import annotations
 import importlib.util
 import sys
 import unittest
+import tempfile
+import subprocess
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -108,6 +111,60 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         self.assertIn("run_shell_command", worker)
         self.assertNotIn("schedule:", worker)
         self.assertIn("can_execute=false", worker)
+
+
+    def test_candidate_requires_changed_real_regression_test(self):
+        with tempfile.TemporaryDirectory() as root:
+            worktree = Path(root)
+            source = "artifacts/wow-engine/v17/other_module.py"
+            (worktree / source).parent.mkdir(parents=True)
+            (worktree / source).write_text("x=1\n")
+            result = gemini.verify_candidate(worktree, [source])
+            self.assertEqual(result["status"], "HELD")
+            self.assertEqual(result["code"], "GEMINI_CHANGED_REGRESSION_TEST_REQUIRED")
+
+    def test_candidate_tests_execute_in_isolated_checkout(self):
+        with tempfile.TemporaryDirectory() as root:
+            worktree = Path(root)
+            target = "artifacts/wow-engine/tests/test_changed_candidate.py"
+            (worktree / target).parent.mkdir(parents=True)
+            (worktree / target).write_text("def test_ok(): assert True\n")
+            with mock.patch.object(gemini.subprocess, "run", return_value=subprocess.CompletedProcess(
+                ["python", "-m", "pytest"], 0, "1 passed", ""
+            )) as runner:
+                result = gemini.verify_candidate(worktree, [target])
+            self.assertEqual(result["status"], "TESTED_CANDIDATE")
+            self.assertEqual(result["test_files"], [target])
+            self.assertEqual(runner.call_args.kwargs["cwd"], worktree)
+            self.assertEqual(runner.call_args.kwargs["timeout"], 300)
+            self.assertIn(target, runner.call_args.args[0])
+
+    def test_failed_and_timeout_regressions_cannot_pass(self):
+        with tempfile.TemporaryDirectory() as root:
+            worktree = Path(root)
+            target = "artifacts/wow-engine/tests/test_patch_failure.py"
+            (worktree / target).parent.mkdir(parents=True)
+            (worktree / target).write_text("def test_fail(): assert False\n")
+            with mock.patch.object(gemini.subprocess, "run", return_value=subprocess.CompletedProcess(
+                ["pytest"], 1, "FAILED", "error"
+            )):
+                result = gemini.verify_candidate(worktree, [target])
+            self.assertEqual(result["code"], "GEMINI_REGRESSION_FAILED")
+            self.assertEqual(result["status"], "HELD")
+            with mock.patch.object(gemini.subprocess, "run", side_effect=subprocess.TimeoutExpired(["pytest"], 300)):
+                result = gemini.verify_candidate(worktree, [target])
+            self.assertEqual(result["code"], "GEMINI_REGRESSION_TIMEOUT")
+
+    def test_worker_parses_nul_delimited_git_and_requires_test_receipt(self):
+        worker = (ROOT / ".github/workflows/wow-v17-gemini-engineering-worker.yml").read_text()
+        self.assertIn('split(b"\\0")', worker)
+        self.assertNotIn('split(b"\\\\0")', worker)
+        self.assertIn("verify-candidate --files-json", worker)
+        self.assertIn("regression-receipt.json", worker)
+        self.assertIn("@google/gemini-cli@0.64.0", worker)
+        self.assertIn("gemini --help", worker)
+        self.assertIn('"maxSessionTurns": 12', worker)
+        self.assertIn('"overageStrategy": "never"', worker)
 
 
 if __name__ == "__main__":
