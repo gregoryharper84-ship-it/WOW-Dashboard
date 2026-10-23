@@ -538,6 +538,50 @@ def test_distinct_resident_heartbeat_is_durable_and_not_self_approval():
     assert "token" not in repr(row).lower()
 
 
+def test_retiring_resident_cannot_overwrite_new_worker_heartbeat():
+    # The Render replacement starts before the old worker has shut down.
+    # STOPPED from the retiring instance must be an atomic compare-and-update,
+    # never a new upsert of the shared auditor_id.
+    class SharedStore:
+        def __init__(self):
+            self.row = None
+            self.pending = None
+            self.filters = []
+        def table(self, name):
+            assert name == "wow_engineering_auditor_runtime"
+            return self
+        def upsert(self, payload, *, on_conflict):
+            assert on_conflict == "auditor_id"
+            self.pending = ("upsert", dict(payload))
+            self.filters = []
+            return self
+        def update(self, payload):
+            self.pending = ("update", dict(payload))
+            self.filters = []
+            return self
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+        def execute(self):
+            kind, payload = self.pending
+            if kind == "upsert" or all(self.row and self.row.get(k) == v for k, v in self.filters):
+                self.row = payload
+            return {"data": [self.row] if self.row else []}
+
+    db = SharedStore()
+    persist_resident_heartbeat(db, status="RUNNING", outcome="CYCLE_STARTED", instance_id="worker-old:7")
+    persist_resident_heartbeat(db, status="RUNNING", outcome="CYCLE_STARTED", instance_id="worker-new:8")
+    persist_resident_heartbeat(db, status="STOPPED", outcome="WORKER_SHUTDOWN", instance_id="worker-old:7")
+    assert db.filters == [
+        ("auditor_id", "WOW_ENGINEERING_RESIDENT_DISPATCHER"),
+        ("instance_id", "worker-old:7"),
+    ]
+    assert db.row["status"] == "RUNNING" and db.row["instance_id"] == "worker-new:8"
+    persist_resident_heartbeat(db, status="STOPPED", outcome="WORKER_SHUTDOWN", instance_id="worker-new:8")
+    assert db.row["status"] == "STOPPED" and db.row["instance_id"] == "worker-new:8"
+    assert db.row["can_execute"] is False
+
+
 @pytest.mark.parametrize("status,outcome", [
     ("PASSED", "CYCLE_STARTED"),
     ("RUNNING", "BAD:UNTRUSTED"),
