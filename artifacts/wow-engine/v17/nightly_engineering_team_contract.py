@@ -318,6 +318,8 @@ def validate_team_record(record: dict[str, Any], *, enforce_closure: bool = True
         errors.append(f"invalid reproduction_status: {record.get('reproduction_status')!r}")
     if not isinstance(record.get("acceptance_criteria"), list):
         errors.append("acceptance_criteria must be a list")
+    if record.get("learning_contract_version") == "1" and record.get("severity") not in {"P0", "P1", "P2", "P3"}:
+        errors.append("invalid new-incident severity for learning contract")
 
     errors.extend(validate_handoff_history(record))
 
