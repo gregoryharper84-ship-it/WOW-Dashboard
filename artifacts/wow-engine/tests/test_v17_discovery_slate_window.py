@@ -328,3 +328,32 @@ def test_wrong_date_classification_is_unchanged():
     assert discovery._slate_date_matches("2026-10-24T01:00Z", "2026-10-22", CHICAGO) is False
     assert discovery._slate_date_matches("2026-10-23T00:15Z", "2026-10-22", CHICAGO) is True
     assert discovery.WRONG_DATE == "EVENT_WRONG_DATE"
+
+
+def test_oct23_actual_run_preserves_local_evening_games_but_excludes_tomorrow():
+    """Reproduce Oct 23 20:12Z validation run's next-day NCAAF/NHL overflow.
+
+    Query scope excludes next-local-day starts but preserves UTC Oct 24
+    starts occurring on the requested Oct 23 evening in Chicago.
+    This does not change downstream model status or turn holds into picks.
+    """
+    now = datetime(2026, 10, 23, 20, 12, 55, tzinfo=timezone.utc)
+    token = _in_slate("2026-10-23")
+    try:
+        start, end = discovery.slate_bounded_window(
+            now, now + timedelta(hours=36)
+        )
+    finally:
+        discovery._SLATE_FETCH_WINDOW.reset(token)
+    assert start == now
+    assert end == datetime(2026, 10, 24, 4, 59, 59, tzinfo=timezone.utc)
+    # NBA and NHL late-night UTC starts remain in the correct local slate.
+    for eligible in ("2026-10-23T23:00:00Z", "2026-10-24T01:30:00Z",
+                     "2026-10-24T04:59:59Z"):
+        assert start <= datetime.fromisoformat(eligible.replace("Z", "+00:00")) <= end
+        assert discovery._slate_date_matches(eligible, "2026-10-23", CHICAGO)
+    # Observed next-day NCAAF/NHL rows must not be fetched for Oct 23.
+    for tomorrow in ("2026-10-24T16:00:00Z", "2026-10-24T19:30:00Z",
+                     "2026-10-24T23:00:00Z", "2026-10-25T02:00:00Z"):
+        assert datetime.fromisoformat(tomorrow.replace("Z", "+00:00")) > end
+        assert not discovery._slate_date_matches(tomorrow, "2026-10-23", CHICAGO)
