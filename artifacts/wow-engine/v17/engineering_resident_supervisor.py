@@ -390,6 +390,29 @@ def persist_resident_heartbeat(
     }, on_conflict="auditor_id").execute()
 
 
+# Only fixed, locally-authored failure literals can reach operational logs or
+# durable heartbeat receipts. Never print raw exception messages returned from
+# GitHub/Redis/Supabase transports: those could contain credentials or URLs.
+_SAFE_RESIDENT_CYCLE_REASONS = frozenset({
+    "ACTIVE_WORKFLOW_INVENTORY_INCOMPLETE",
+    "OPEN_PR_INVENTORY_INVALID",
+    "OPEN_PR_INVENTORY_INCOMPLETE",
+    "OPEN_PR_INVENTORY_NOT_EXHAUSTIVE",
+    "OPEN_PR_PAGE_INVALID",
+    "P0_DOMAIN_LEASE_MISSING",
+    "STANDARD_TARGET_MUST_USE_GLOBAL_LEASE",
+    "UNAPPROVED_GITHUB_API_PATH",
+})
+
+
+def resident_cycle_failure_code(exc: Exception) -> str:
+    """Return an allowlisted diagnosis; redact arbitrary upstream error text."""
+    reason = str(exc)
+    if isinstance(exc, (RuntimeError, ValueError)) and reason in _SAFE_RESIDENT_CYCLE_REASONS:
+        return reason
+    return "CYCLE_" + type(exc).__name__.upper()
+
+
 def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
     status = supervisor_runtime_status()
     if status["status"] != "CONFIGURED_UNVERIFIED":
@@ -438,14 +461,15 @@ def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
             )
             LOG.warning("WOW_RESIDENT_SUPERVISOR outcome=%s can_execute=false", outcome)
         except Exception as exc:
+            failure_code = resident_cycle_failure_code(exc)
             LOG.warning(
-                "WOW_RESIDENT_SUPERVISOR outcome=BLOCKED error_type=%s can_execute=false",
-                type(exc).__name__,
+                "WOW_RESIDENT_SUPERVISOR outcome=BLOCKED reason=%s error_type=%s can_execute=false",
+                failure_code, type(exc).__name__,
             )
             try:
                 persist_resident_heartbeat(
                     db_client, status="DEGRADED",
-                    outcome="CYCLE_" + type(exc).__name__.upper(),
+                    outcome=failure_code,
                     instance_id=instance_id,
                 )
             except Exception:

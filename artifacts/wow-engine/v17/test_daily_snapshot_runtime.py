@@ -77,6 +77,9 @@ def governed_team_result():
 
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
+    # The fixture is a canonical two-row test: an independently scheduled
+    # cross-sport provider scan is not a third synthetic candidate.
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
     # Keep this row/terminal contract test independent of the process-global
     # production installer that can force a fresh provider acquisition when the
@@ -166,7 +169,10 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     assert result["rows"][0]["row_status"]=="COMPLETED"
 
 
-def test_zero_row_query_failures_are_typed_as_data_unobtainable():
+def test_zero_row_query_failures_are_typed_as_data_unobtainable(monkeypatch):
+    # A broken canonical database must be tested without separately acquired
+    # cross-sport rows masking the MONEYLINE zero-row classification.
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
     class BrokenQuery(Query):
         def execute(self): raise ConnectionError("boom")
     class BrokenDB:
@@ -325,6 +331,9 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     )
     monkeypatch.setattr(feed, "odds_proxy_feed", lambda **kwargs: slate)
     monkeypatch.setattr(feed, "rundown_board_feed", lambda **kwargs: slate)
+    # The full-suite runner can otherwise inherit a short provider time budget;
+    # this deterministic in-memory feed must walk every configured target.
+    monkeypatch.setattr(discovery, "discovery_budget_seconds", lambda: 600.0)
 
     # No non-MLB bridge is registered, so every discovered non-MLB row must be
     # retained as MODEL_UNAVAILABLE rather than disappear from the board.
@@ -351,7 +360,10 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     reconciliation = audit["reconciliation"]
     assert reconciliation["row_reconciliation"] == "PASS"
     assert reconciliation["events_accounted"] == reconciliation["events_discovered"]
-    assert reconciliation["retained_unsupported_rows"] >= 3
+    assert reconciliation["retained_unsupported_rows"] >= 3, (
+        "Missing-model candidates were silently altered: "
+        + repr([(r["identity"].get("sport"), r["result"].get("bucket"), r["result"].get("model_status")) for r in moneyline_rows])
+    )
     # Every supported sport was *queried*, not just the ones with a model.
     assert audit["discovery"]["sports_queried"] == list(discovery.SUPPORTED_DISCOVERY_SPORTS)
     assert audit["discovery"]["discovery_independent_of_model_registry"] is True
