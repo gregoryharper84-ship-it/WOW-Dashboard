@@ -59,7 +59,64 @@ jobs:
           selected_count=$(jq -r '.selected_count' "$RUNNER_TEMP/wow-p0-parallel.json")
           echo "selected_count=$selected_count" >> "$GITHUB_OUTPUT"
 
+      - name: Preflight P0 engineering provider availability
+        id: provider_state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # This controls *engineering invocation*, not sporting-probability
+          # authority. No provider keys enter the rapid dispatcher.
+          admit=true
+          reason=PROVIDER_ADMISSION_CLEAR
+          if ! primary=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow wow-v17-chatgpt-engineering-worker.yml \
+              --status completed --limit 1 \
+              --json databaseId,conclusion 2>/dev/null); then
+            admit=false
+            reason=PRIMARY_WORKER_INVENTORY_UNVERIFIED
+          else
+            primary_id=$(jq -r '.[0].databaseId // empty' <<<"$primary")
+            primary_status=$(jq -r '.[0].conclusion // empty' <<<"$primary")
+            if [ -n "$primary_id" ] && [ "$primary_status" = failure ]; then
+              logfile="$RUNNER_TEMP/p0-primary-failed.log"
+              if ! gh run view "$primary_id" --repo "$GITHUB_REPOSITORY" \
+                  --log-failed > "$logfile" 2>/dev/null; then
+                admit=false
+                reason=PRIMARY_FAILURE_EVIDENCE_UNAVAILABLE
+              else
+                classification=$(python artifacts/wow-engine/v17/engineering_provider_failover.py classify \
+                  --provider openai --log-file "$logfile")
+                code=$(jq -r '.code // empty' <<<"$classification")
+                case "$code" in
+                  OPENAI_API_QUOTA_EXCEEDED|OPENAI_API_KEY_MISSING|OPENAI_API_AUTH_FAILED)
+                    if ! secondary=$(gh run list \
+                        --repo "$GITHUB_REPOSITORY" \
+                        --workflow wow-v17-claude-engineering-worker.yml \
+                        --status completed --limit 1 \
+                        --json databaseId,conclusion 2>/dev/null); then
+                      admit=false
+                      reason=SECONDARY_WORKER_INVENTORY_UNVERIFIED
+                    else
+                      secondary_status=$(jq -r '.[0].conclusion // empty' <<<"$secondary")
+                      if [ "$secondary_status" = failure ] || [ "$secondary_status" = cancelled ]; then
+                        admit=false
+                        reason=PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED
+                      fi
+                    fi
+                    ;;
+                esac
+              fi
+            fi
+          fi
+          echo "admit=$admit" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "P0_PROVIDER_ADMISSION: $reason; dispatch_allowed=$admit" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Dispatch idle domain-scoped writers
+        if: steps.provider_state.outputs.admit == 'true'
         id: dispatch_streams
         shell: bash
         env:
@@ -116,6 +173,8 @@ jobs:
             echo "- busy_streams: ${{ steps.dispatch_streams.outputs.busy_count || '0' }}"
             echo "- max_parallel_writers: 3"
             echo "- implementation_lease_scope: domain-scoped"
+            echo "- provider_admission: ${{ steps.provider_state.outputs.reason || 'NOT_CHECKED' }}"
+            echo "- provider_dispatch_allowed: ${{ steps.provider_state.outputs.admit || 'false' }}"
             echo "- stream_A: Scout/Data Plane (#1237 -> #1250)"
             echo "- stream_B: State/Scoring (#1189 -> #960)"
             echo "- stream_C: Runtime/Ingest (#502 -> #1127)"
