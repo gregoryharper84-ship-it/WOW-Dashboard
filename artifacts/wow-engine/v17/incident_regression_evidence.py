@@ -28,7 +28,7 @@ _MAX_LOG_BYTES = 12 * 1024 * 1024
 def _trusted_job_url(value: object) -> tuple[int, int]:
     match = _JOB_URL.fullmatch(value) if isinstance(value, str) else None
     if not match:
-        raise ValueError("learning receipt requires authentic GitHub Actions job evidence URL")
+        raise ValueError("learning receipt requires authentic regression GitHub Actions job evidence URL")
     return int(match.group(1)), int(match.group(2))
 
 
