@@ -66,7 +66,10 @@ runs:
 
     - name: Classify API-key provider failure without provider text
       # Observation only. Never manufacture structured_output or approval.
-      if: always() && steps.claude_api.outcome == 'failure'
+      if: >-
+        always() &&
+        (steps.claude_api.outcome == 'failure' ||
+         (steps.claude_api.outcome == 'success' && steps.claude_api.outputs.structured_output == ''))
       shell: bash
       env:
         CLAUDE_EXECUTION_FILE: ${{ steps.claude_api.outputs.execution_file }}
@@ -90,7 +93,10 @@ runs:
         show_full_output: "false"
 
     - name: Classify OAuth provider failure without provider text
-      if: always() && steps.claude_oauth.outcome == 'failure'
+      if: >-
+        always() &&
+        (steps.claude_oauth.outcome == 'failure' ||
+         (steps.claude_oauth.outcome == 'success' && steps.claude_oauth.outputs.structured_output == ''))
       shell: bash
       env:
         CLAUDE_EXECUTION_FILE: ${{ steps.claude_oauth.outputs.execution_file }}
