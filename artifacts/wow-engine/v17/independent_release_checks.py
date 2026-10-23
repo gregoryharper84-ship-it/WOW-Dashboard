@@ -76,6 +76,7 @@ def gather(
     qa_review_policy: dict[str, Any] | None = None,
     current_review_active: bool = False,
     independent_review_active: bool = True,
+    zero_credit_enabled: bool = False,
     source_review_producer_context: bool = False,
     source_review_run_id: int | None = None,
     source_review_run_attempt: int | None = None,
@@ -134,12 +135,13 @@ def gather(
                       "commit_id": r.get("commit_id"), "submitted_at": r.get("submitted_at")} for r in reviews]
     ev["qa_review_policy"] = qa_review_policy
     ev["current_review_active"] = current_review_active
+    ev["zero_credit_enabled"] = zero_credit_enabled
     if qa_review_policy is not None:
         mode = qa_review_policy.get("mode") if isinstance(qa_review_policy, dict) else None
-        if mode not in {"legacy", "independent", "canary"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
             errors.append("QA_REVIEW_POLICY_MODE_INVALID")
         else:
-            independent_review_active = mode != "legacy"
+            independent_review_active = mode in {"independent", "canary"}
             source = qa_review_policy.get("source") or {}
             try:
                 source_review_run_id = int(source.get("run_id"))
@@ -327,8 +329,20 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         mode = policy.get("mode") if isinstance(policy, dict) else None
         target = policy.get("target") if isinstance(policy, dict) else None
         scope = policy.get("canary_scope") if isinstance(policy, dict) else None
-        if mode not in {"legacy", "independent", "canary"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
+        elif mode == "zero_credit":
+            # Reduced-assurance evidence checks only: not adversarial source review.
+            if ev.get("zero_credit_enabled") is not True:
+                findings.append("QA_ZERO_CREDIT_POLICY_NOT_ENABLED")
+            if ev.get("current_review_active") is True or ev.get("independent_review_active") is not False:
+                findings.append("QA_ZERO_CREDIT_POLICY_CONFLICT")
+            if ev.get("source_review") is not None:
+                findings.append("QA_ZERO_CREDIT_SOURCE_REVIEW_UNEXPECTED")
+            if not isinstance(target, dict) or (target.get("pr_number") != ev.get("pr_number")
+                    or target.get("head_sha") != head
+                    or target.get("head_ref") != (pr.get("head_ref") or "")):
+                findings.append("QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH")
         elif mode == "legacy":
             if ev.get("independent_review_active") is not False:
                 findings.append("QA_REVIEW_POLICY_MODE_CONFLICT")
@@ -353,7 +367,7 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     runs = ev.get("check_runs") or []
     expected_checks = QA_EVIDENCE_CHECKS
     trust_root_change = any(is_trust_root(str(f), governance_files) for f in files)
-    if review_active is False and not trust_root_change:
+    if review_active is False and not trust_root_change and (policy or {}).get("mode") != "zero_credit":
         expected_checks = (*expected_checks, TRUSTED_GOVERNANCE_CHECK)
     for name in expected_checks:
         run = _latest(runs, name, head, GITHUB_ACTIONS_APP_ID)
@@ -386,7 +400,7 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
     policy = ev.get("qa_review_policy")
     if not isinstance(policy, dict):
         findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
-    elif policy.get("mode") not in {"legacy", "independent", "canary"}:
+    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit"}:
         findings.append("RELEASE_QA_REVIEW_POLICY_INVALID")
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
@@ -405,14 +419,16 @@ def decision(kind: str, findings: list[str], ev: dict) -> dict[str, Any]:
     # only the superseded commit and can never overwrite the current head's check.
     head = ev.get("expected_head_sha")
     passed = not findings
+    no_api = (ev.get("qa_review_policy") or {}).get("mode") == "zero_credit"
     return {
         "check_name": QA_CHECK if kind == "qa" else RELEASE_CHECK,
         "head_sha": head,
         "conclusion": "success" if passed else "failure",
         "findings": findings,
         "title": ("PASS" if passed else f"HOLD: {len(findings)} finding(s)") + f" at {str(head)[:12]}",
-        "summary": ("All exact-head conditions satisfied. Evidence only: not merge, deployment or "
-                    "probability authority. can_execute=false." if passed else
+        "summary": (("ZERO-CREDIT DETERMINISTIC QA ONLY; no semantic/adversarial source review performed. Exact-head evidence satisfied. No merge/deploy authority. can_execute=false." if no_api else
+                     "All exact-head conditions satisfied. Evidence only: not merge, deployment or "
+                     "probability authority. can_execute=false.") if passed else
                     "Typed findings:\n" + "\n".join(f"- `{f}`" for f in findings) +
                     "\n\nFail-closed. can_execute=false."),
         "merge_or_release_authorized": False,
@@ -432,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--pr", required=True, type=int)
     g.add_argument("--expected-head", required=True)
     g.add_argument("--legacy-review-policy", action="store_true")
+    g.add_argument("--zero-credit-policy-enabled", action="store_true")
     g.add_argument("--source-review-json", type=Path)
     g.add_argument("--source-review-run-json", type=Path)
     g.add_argument("--source-review-artifact-id", type=int)
@@ -495,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
             qa_review_policy=qa_review_policy,
             current_review_active=args.current_review_active,
             independent_review_active=not args.legacy_review_policy,
+            zero_credit_enabled=args.zero_credit_policy_enabled,
             source_review_producer_context=args.source_review_producer_context,
             source_review_run_id=args.source_review_run_id,
             source_review_run_attempt=args.source_review_run_attempt,

@@ -110,6 +110,7 @@ def source_review_evidence(
     )
     source_run = run if producer_context else {
         **run,
+        "workflow_id": source_review.WORKFLOW_ID,
         "repository": {"full_name": REPO},
         "head_repository": {"full_name": REPO},
         "status": "completed",
