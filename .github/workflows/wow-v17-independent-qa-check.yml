@@ -34,10 +34,13 @@ permissions:
   actions: read
 
 concurrency:
-  # One serialized queue per role: later runs see later evidence, so the newest
-  # published check always reflects the most complete evidence for that head.
-  group: wow-v17-independent-qa-check
+  # Isolate PRs: other PR events cannot cancel a queued exact-head decision.
+  # Repeat events for one PR remain serialized; unknown-target runs remain
+  # isolated and fail closed by the target resolver below. Queue bounded by
+  # GitHub Actions maximum of 100 pending runs per group.
+  group: wow-v17-independent-qa-check-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   qa:
