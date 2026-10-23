@@ -56,7 +56,7 @@ def _utc(raw: Any) -> datetime:
 
 
 def _git_blob(data: bytes) -> str:
-    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\\0" + data).hexdigest()
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + bytes([0]) + data).hexdigest()
 
 
 def _sha(data: bytes) -> str:
