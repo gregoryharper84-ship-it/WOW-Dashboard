@@ -117,6 +117,17 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         self.assertIn("can_execute=false", worker)
 
 
+    def test_auto_routing_has_daily_cost_cooldown_and_manual_canary(self):
+        dispatcher = (ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
+        start = dispatcher.index("gemini_canary_healthy()")
+        end = dispatcher.index("if [ \"$EVENT_NAME\" =", start)
+        healthy = dispatcher[start:end]
+        self.assertIn("updatedAt", healthy)
+        self.assertIn('conclusion" = "success"', healthy)
+        self.assertIn('"$age_minutes" -ge 1440', healthy)
+        self.assertIn('minutes >= 0 else -1', healthy)
+        self.assertIn('elif [ "$force" = "gemini" ]', dispatcher)
+
     def test_candidate_requires_changed_real_regression_test(self):
         with tempfile.TemporaryDirectory() as root:
             worktree = Path(root)
