@@ -93,7 +93,7 @@ class NCAAFProspectiveFreezeTests(unittest.TestCase):
     def test_forged_source_hash_rejected(self):
         data = json.loads(self.feature_data)
         data["source_snapshot"]["payload_sha256"] = "not-a-sha"
-        self.blocked("NCAAF_FREEZE_ORIGINAL_SOURCE_HASH_INVALID",
+        self.blocked("NCAAF_FORWARD_CFBD_SOURCE_INVALID",
                      feature_bytes=self.data(data))
 
     def test_forged_probability_rejected(self):
