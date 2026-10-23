@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -118,11 +120,59 @@ def inspect_changed_paths(paths: list[str]) -> dict[str, Any]:
     for path in paths:
         name = path.strip().replace("\\", "/")
         if (name != path or not name or name.startswith("/") or ".." in name.split("/")
-                or any(name.startswith(prefix) for prefix in _BLOCKED_PATHS)):
+                or any(name.startswith(prefix) for prefix in _BLOCKED_PATHS)
+                or not name.startswith("artifacts/wow-engine/")
+                or (name.endswith(".py") and "/tests/" in name
+                    and not Path(name).name.startswith("test_"))):
             return {"status": "HELD", "code": "GEMINI_PATCH_PROTECTED_OR_INVALID_PATH",
                     "rejected_path": name[:200], "can_execute": False}
     return {"status": "CANDIDATE_ONLY", "code": "GEMINI_ISOLATED_PATCH_UNREVIEWED",
             "files": len(paths), "can_execute": False}
+
+
+def candidate_test_paths(paths: list[str]) -> list[str]:
+    """Require real regression tests changed alongside the code candidate."""
+    allowed = sorted(
+        p for p in paths
+        if p.startswith("artifacts/wow-engine/tests/")
+        and p.endswith(".py") and Path(p).name.startswith("test_")
+    )
+    if not allowed or len(allowed) > 10:
+        raise ValueError("GEMINI_CHANGED_REGRESSION_TEST_REQUIRED")
+    return allowed
+
+
+def verify_candidate(worktree: Path, paths: list[str]) -> dict[str, Any]:
+    """Execute edited tests in isolated worktree; fail closed on any failure.
+
+    No Gemini API key or GitHub write token is present at this step. Do not
+    turn test stdout/stderr into a pass receipt; return process evidence only.
+    """
+    inspected = inspect_changed_paths(paths)
+    if inspected["status"] != "CANDIDATE_ONLY":
+        return {"status": "HELD", "code": inspected["code"], "can_execute": False}
+    try:
+        tests = candidate_test_paths(paths)
+    except ValueError:
+        return {"status": "HELD", "code": "GEMINI_CHANGED_REGRESSION_TEST_REQUIRED",
+                "can_execute": False}
+    if not worktree.is_dir() or not all((worktree / p).is_file() for p in tests):
+        return {"status": "HELD", "code": "GEMINI_CHANGED_TEST_PATH_MISSING", "can_execute": False}
+    try:
+        run = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "--disable-warnings", "--maxfail=1", *tests],
+            cwd=worktree, timeout=300, capture_output=True, text=True, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "HELD", "code": "GEMINI_REGRESSION_TIMEOUT", "can_execute": False}
+    except OSError:
+        return {"status": "HELD", "code": "GEMINI_REGRESSION_RUNNER_UNAVAILABLE", "can_execute": False}
+    return {
+        "status": "TESTED_CANDIDATE" if run.returncode == 0 else "HELD",
+        "code": "GEMINI_REGRESSION_PASS" if run.returncode == 0 else "GEMINI_REGRESSION_FAILED",
+        "test_files": tests, "exit_code": run.returncode,
+        "can_execute": False, "terminal_authority": MODEL_AUTHORITY,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -145,6 +195,9 @@ def main(argv: list[str] | None = None) -> int:
     classify.add_argument("--timed-out", action="store_true")
     changed = sub.add_parser("inspect-patch")
     changed.add_argument("--files-json", required=True)
+    verify = sub.add_parser("verify-candidate")
+    verify.add_argument("--files-json", required=True)
+    verify.add_argument("--worktree", required=True)
     args = parser.parse_args(argv)
     try:
         if args.action == "admit":
@@ -162,15 +215,18 @@ def main(argv: list[str] | None = None) -> int:
                 response = None
             result = classify_cli(args.exit_code, Path(args.stderr_file).read_text(encoding="utf-8"),
                                   timed_out=args.timed_out, response=response)
-        else:
+        elif args.action == "inspect-patch":
             result = inspect_changed_paths(json.loads(Path(args.files_json).read_text(encoding="utf-8")))
+        else:
+            result = verify_candidate(Path(args.worktree),
+                json.loads(Path(args.files_json).read_text(encoding="utf-8")))
     except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         # Deliberately exclude exception text; upstream API inputs may contain secrets.
         result = {"status": "HELD", "code": "GEMINI_ADMISSION_OR_EVIDENCE_INVALID",
                   "error_type": type(exc).__name__, "can_execute": False,
                   "terminal_authority": MODEL_AUTHORITY}
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["status"] in {"SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED"} else 2
+    return 0 if result["status"] in {"SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TESTED_CANDIDATE"} else 2
 
 
 if __name__ == "__main__":
