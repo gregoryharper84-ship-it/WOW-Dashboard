@@ -1574,4 +1574,10 @@ def test_existing_manual_qa_release_accept_exact_optional_head_sha(workflow_name
     assert "INPUT_HEAD_SHA: ${{ inputs.head_sha }}" in workflow
     assert "INPUT_HEAD_SHA_INVALID" in workflow
     assert "INPUT_HEAD_SHA_STALE" in workflow
-    assert "head=${{ inputs.head_sha || 'AUTO' }}" in workflow
+    if workflow_name == "wow-v17-independent-qa-check.yml":
+        # QA uses a stable authenticated run-name for exact policy provenance.
+        # Its optional head guard remains in the Resolve target step, not the display name.
+        assert "run-name: wow-v17-independent-qa-check\n" in workflow
+        assert "head=${{ inputs.head_sha || 'AUTO' }}" not in workflow
+    else:
+        assert "head=${{ inputs.head_sha || 'AUTO' }}" in workflow
