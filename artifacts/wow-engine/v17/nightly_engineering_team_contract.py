@@ -12,6 +12,11 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+try:
+    from .incident_regression_evidence import validate_regression_fields
+except ImportError:  # direct script compatibility
+    from incident_regression_evidence import validate_regression_fields
+
 TEAM_CONTRACT_VERSION = "1.0"
 
 ROLES = {
@@ -286,6 +291,7 @@ def validate_learning_receipt(record: dict[str, Any]) -> list[str]:
     if (not isinstance(paths, list) or not paths
             or any(not isinstance(p, str) or not p.strip() or len(p) > 512 for p in paths)):
         errors.append("learning receipt requires reviewed adjacent code paths")
+    errors.extend(validate_regression_fields(receipt))
     recurrence = receipt.get("recurrence_of")
     if (not isinstance(recurrence, list)
             or any(not isinstance(p, str) or not p.strip() or len(p) > 128 for p in recurrence)):
