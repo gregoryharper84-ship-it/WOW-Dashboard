@@ -272,3 +272,18 @@ These are **research feature preparation** failures, not certified model inferen
 | `NCAAF_FORWARD_PRIOR_FORM_INSUFFICIENT` | NCAAF research forward feature builder | One or both teams lack the model's minimum three source-eligible settled prior games; no baseline imputation. | No |
 | `NCAAF_FORWARD_FEATURE_SCHEMA_INVALID` | NCAAF research forward feature builder | Computed numeric features do not exactly match the candidate model schema or finite-number contract. | No |
 | `NCAAF_FORWARD_FEATURE_NOT_PREGAME` | NCAAF research forward feature builder | Latest evidence acquisition timestamp is not strictly before the target event start. | No |
+
+
+## Immutable exact-thesis postmortem attribution diagnostics (P1, 2026-10-22)
+
+These codes are **read-only diagnostic matching statuses**, not global V17 terminal reducer decisions, certification, model availability, or eligibility to place wagers. `v17/postmortem_exact_thesis.py` emits them without changing the pregame prediction or settlement. An official model grade requires a matching immutable pregame prediction, complete structured exact identity (including direction, period, line where applicable, and settlement basis), and UTC-aware pre-event model/write times. A missing or contradictory field prevents model attribution but never changes the actual settled result.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `MATCHED_IMMUTABLE_PREGAME_PREDICTION` | Postmortem / exact attribution | All structured thesis dimensions agree and immutable pregame model/write times predate event start. Eligible for *model grading* only, not newly ranked. | No new rank |
+| `MODEL_ATTRIBUTION_UNAVAILABLE` | Postmortem / exact attribution | No explicitly immutable pregame prediction or durable prediction ID exists. Outcome-only analysis remains possible. | No |
+| `EXACT_THESIS_EVIDENCE_INSUFFICIENT` | Postmortem / exact attribution | A required structured sport, event, player, stat, period, side, settlement or exact scalar line is missing/invalid. Do not parse free-text selection into model proof. | No |
+| `EXACT_THESIS_IDENTITY_MISMATCH` | Postmortem / exact attribution | A required identity differs, including different line, direction, event kickoff, or unexpected line on a winner market. | No |
+| `PREGAME_TIME_PROOF_INVALID` | Postmortem / exact attribution | Model creation, persistence or kickoff timestamps are missing/naive/invalid, or model/write occurred at/after the event start. | No |
+
+Regression: `tests/test_v17_postmortem_exact_thesis.py`. Reasons include field-specific `*_MISSING` / `*_MISMATCH`, `EXACT_LINE_MISMATCH`, `EVENT_START_IDENTITY_MISMATCH`, and `PREDICTION_NOT_BEFORE_EVENT_START`, always under the owning diagnostic code. Duplicate slip instances share a canonical thesis identity and do not become multiple independent model observations. `can_execute=false` throughout.
