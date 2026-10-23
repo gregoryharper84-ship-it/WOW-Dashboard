@@ -82,7 +82,7 @@ class HandoffTests(unittest.TestCase):
         with self.assertRaises(mod.HandoffBlocked) as cm:
             mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
         self.assertEqual(cm.exception.code, "CURSOR_STALE_PR_HEAD")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
 
     def test_success_returns_queued_not_production_verified(self):
         calls = []
@@ -98,7 +98,28 @@ class HandoffTests(unittest.TestCase):
         result = mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
         self.assertEqual(result["status"], "CURSOR_AGENT_ENQUEUED")
         self.assertFalse(result["production_verified"])
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 5)
+
+    def test_global_active_agent_prevents_new_charge(self):
+        calls = []
+        def api(url, **kwargs):
+            calls.append((url, kwargs))
+            if "/pulls/" in url:
+                return pr()
+            if "prUrl=" in url:
+                raise AssertionError("must stop before PR-scope inventory")
+            return {"items": [{"status": "ACTIVE", "id": "bc-other"}]}
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS")
+        self.assertEqual(len(calls), 2)
+
+    def test_global_paginated_agent_inventory_fails_closed(self):
+        def api(url, **kwargs):
+            return pr() if "/pulls/" in url else {"items": [], "nextCursor": "page2"}
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED")
 
     def test_automatic_label_bridge_is_guarded(self):
         bridge = (HERE.parent.parent.parent / ".github" / "workflows" /

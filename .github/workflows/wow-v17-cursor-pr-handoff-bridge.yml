@@ -1,5 +1,7 @@
 name: wow-v17-cursor-pr-handoff-bridge
 # Event intake only. Existing provider dispatcher remains the sole routing control plane.
+# Trusted owner or Engineering App may add wow-cursor-ready to an existing PR.
+# No untrusted PR code is checked out on the pull_request_target path.
 on:
   issue_comment:
     types: [created]
@@ -10,9 +12,10 @@ permissions:
   actions: write
   contents: read
   pull-requests: read
+  issues: read
 
 concurrency:
-  group: wow-v17-cursor-pr-handoff-${{ github.event.issue.number }}
+  group: wow-v17-cursor-pr-handoff-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:

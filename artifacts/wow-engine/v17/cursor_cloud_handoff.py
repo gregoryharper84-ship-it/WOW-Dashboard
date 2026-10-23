@@ -125,6 +125,17 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
     gh_url = f"{GITHUB_API}/repos/{repo}/pulls/{pr_number}"
     validate_pr(api(gh_url, token=github_token), repo=repo, number=pr_number, sha=expected_head)
 
+    # Budget guard: only one active Cloud Agent for this account at a time.
+    # An opaque/paginated inventory is not proof that no competing agent exists.
+    active = api(CURSOR_API + "/v1/agents?" + parse.urlencode({"limit": 100}),
+                 token=cursor_token, basic=True)
+    if not isinstance(active.get("items"), list) or active.get("nextCursor"):
+        raise HandoffBlocked("CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED")
+    if any(not isinstance(item, dict) for item in active["items"]):
+        raise HandoffBlocked("CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED")
+    if any(item.get("status") == "ACTIVE" for item in active["items"]):
+        raise HandoffBlocked("CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS")
+
     # No second Cloud Agent while a PR already has an active run.
     inventory = api(CURSOR_API + "/v1/agents?" + parse.urlencode({"prUrl": pr_url, "limit": 100}),
                     token=cursor_token, basic=True)
