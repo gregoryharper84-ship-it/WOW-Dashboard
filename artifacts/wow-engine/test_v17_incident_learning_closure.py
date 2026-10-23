@@ -322,3 +322,119 @@ def test_class_based_pytest_regression_locator_supported(monkeypatch):
     assert regression.verify_authenticated_regression(
         receipt, expected_sha="a" * 40,
     )["result"] == "PASS"
+
+
+
+@pytest.mark.parametrize("suffix", ["[]", "[/]", "[alpha:beta]", "[x/y with spaces]"])
+def test_parameterized_pytest_ids_with_special_characters_are_valid(suffix):
+    receipt = _learning()
+    receipt["regression_test_added"] += suffix
+    assert regression.validate_regression_fields(receipt) == []
+
+
+def _native_learning():
+    receipt = _learning()
+    receipt["regression_test_added"] = (
+        "artifacts/mcp-server/test/v17_oauth.test.js::"
+        "OAuth JWT validation verifies signature, issuer, protected-resource audience, expiry, and client allowlist"
+    )
+    return receipt
+
+
+def test_native_javascript_exact_sha_tap_pass(monkeypatch):
+    receipt = _native_learning()
+    monkeypatch.setenv("GH_TOKEN", "test-read-token")
+    monkeypatch.setattr(regression, "_job_json", lambda job_id, token: {
+        "id": 456, "run_id": 123, "head_sha": "a" * 40,
+        "status": "completed", "conclusion": "success",
+        "workflow_name": "v17-mcp-plugin-migration",
+        "name": "V17 MCP contract and transport",
+    })
+    monkeypatch.setattr(regression, "_native_test_exists_at_sha",
+                        lambda path, name, sha, token: True)
+    monkeypatch.setattr(regression, "_job_log", lambda job_id, token: (
+        "2026-10-23T20:44:00.000Z # Subtest: " +
+        receipt["regression_test_added"].split("::", 1)[1] + "\n" +
+        "2026-10-23T20:44:00.001Z ok 7 - " +
+        receipt["regression_test_added"].split("::", 1)[1] + "\n"
+    ))
+    proof = regression.verify_authenticated_regression(receipt, expected_sha="a" * 40)
+    assert proof["result"] == "PASS" and proof["test_kind"] == "node"
+
+
+@pytest.mark.parametrize("change", [
+    {"workflow_name": "wow-engine-verify"},
+    {"name": "Unrelated native job"},
+    {"head_sha": "b" * 40},
+    {"conclusion": "failure"},
+])
+def test_native_javascript_rejects_untrusted_workflow_job_sha_or_failure(monkeypatch, change):
+    receipt = _native_learning()
+    monkeypatch.setenv("GH_TOKEN", "test-read-token")
+    job = {
+        "id": 456, "run_id": 123, "head_sha": "a" * 40,
+        "status": "completed", "conclusion": "success",
+        "workflow_name": "v17-mcp-plugin-migration",
+        "name": "V17 MCP contract and transport",
+    }
+    job.update(change)
+    monkeypatch.setattr(regression, "_job_json", lambda job_id, token: job)
+    with pytest.raises(ValueError, match="failed, mismatched or untrusted"):
+        regression.verify_authenticated_regression(receipt, expected_sha="a" * 40)
+
+
+@pytest.mark.parametrize("log", [
+    "# Subtest: OAuth JWT validation verifies signature, issuer, protected-resource audience, expiry, and client allowlist\n"
+    "not ok 7 - OAuth JWT validation verifies signature, issuer, protected-resource audience, expiry, and client allowlist\n",
+    "ok 7 - OAuth JWT validation verifies signature, issuer, protected-resource audience, expiry, and client allowlist\n",
+    "# Subtest: unrelated\nok 7 - unrelated\n",
+])
+def test_native_javascript_rejects_missing_or_failed_named_tap(monkeypatch, log):
+    receipt = _native_learning()
+    monkeypatch.setenv("GH_TOKEN", "test-read-token")
+    monkeypatch.setattr(regression, "_job_json", lambda job_id, token: {
+        "id": 456, "run_id": 123, "head_sha": "a" * 40,
+        "status": "completed", "conclusion": "success",
+        "workflow_name": "v17-mcp-plugin-migration", "name": "V17 MCP contract and transport",
+    })
+    monkeypatch.setattr(regression, "_native_test_exists_at_sha",
+                        lambda path, name, sha, token: True)
+    monkeypatch.setattr(regression, "_job_log", lambda job_id, token: log)
+    with pytest.raises(ValueError, match="no authenticated TAP PASS"):
+        regression.verify_authenticated_regression(receipt, expected_sha="a" * 40)
+
+
+def test_native_javascript_rejects_wrong_file_source_at_sha(monkeypatch):
+    receipt = _native_learning()
+    monkeypatch.setenv("GH_TOKEN", "test-read-token")
+    monkeypatch.setattr(regression, "_job_json", lambda job_id, token: {
+        "id": 456, "run_id": 123, "head_sha": "a" * 40,
+        "status": "completed", "conclusion": "success",
+        "workflow_name": "v17-mcp-plugin-migration", "name": "V17 MCP contract and transport",
+    })
+    monkeypatch.setattr(regression, "_native_test_exists_at_sha",
+                        lambda path, name, sha, token: False)
+    monkeypatch.setattr(regression, "_job_log", lambda job_id, token: "fake-ok")
+    with pytest.raises(ValueError, match="absent from exact-SHA source"):
+        regression.verify_authenticated_regression(receipt, expected_sha="a" * 40)
+
+
+def test_native_javascript_source_literal_name_binding(monkeypatch):
+    import base64
+    import json
+    from io import BytesIO
+
+    source = 'test("OAuth JWT validation verifies signature, issuer, protected-resource audience, expiry, and client allowlist", async () => {});'
+    payload = {"type": "file", "encoding": "base64",
+               "content": base64.b64encode(source.encode()).decode()}
+    monkeypatch.setattr(regression, "urlopen", lambda request, timeout: BytesIO(json.dumps(payload).encode()))
+    assert regression._native_test_exists_at_sha(
+        "artifacts/mcp-server/test/v17_oauth.test.js",
+        "OAuth JWT validation verifies signature, issuer, protected-resource audience, expiry, and client allowlist",
+        "a" * 40, "read-only",
+    )
+    assert not regression._native_test_exists_at_sha(
+        "artifacts/mcp-server/test/v17_oauth.test.js",
+        "Another nonexisting JS test",
+        "a" * 40, "read-only",
+    )
