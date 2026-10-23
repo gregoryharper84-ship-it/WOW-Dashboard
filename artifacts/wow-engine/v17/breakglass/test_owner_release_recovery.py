@@ -192,6 +192,39 @@ def test_witness_restores_if_operator_dies(tmp_path):
     assert (tmp_path/"ready").exists()
     assert api.rules==baseline()
 
+def test_watchdog_keeps_retrying_after_restore_api_outage(tmp_path, monkeypatch):
+    """A brief GitHub outage at the deadline must not kill the watchdog."""
+    api = FakeAPI()
+    original_get = api.get
+    reads = {"n": 0}
+
+    def enter_temporary_window(suffix):
+        if suffix == f"rulesets/{recovery.RULESET_ID}":
+            reads["n"] += 1
+            if reads["n"] == 2:
+                api.rules = recovery.temporary_ruleset(baseline())
+        return original_get(suffix)
+
+    api.get = enter_temporary_window
+    original_restore = watchdog.restore
+    attempts = {"n": 0}
+
+    def unavailable_then_restore(a, b):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise recovery.RecoveryHold("SIMULATED_GITHUB_OUTAGE")
+        return original_restore(a, b)
+
+    monkeypatch.setattr(watchdog, "restore", unavailable_then_restore)
+    ticks = iter([0, 100])
+    delays = []
+    watchdog.watch(api, intent(), baseline(), tmp_path / "ready", "f" * 64,
+                   period=0, clock=lambda: next(ticks), sleep=delays.append)
+    assert attempts["n"] == 3
+    assert delays == [1, 1]
+    assert api.rules == baseline()
+
+
 def test_watchdog_does_not_arm_on_wrong_baseline(tmp_path):
     api=FakeAPI()
     x=intent();x["baseline_ruleset_sha256"]="f"*64
