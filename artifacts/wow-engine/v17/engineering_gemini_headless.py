@@ -13,7 +13,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _INCIDENT = re.compile(r"^[1-9][0-9]*$")
 _LEASE = re.compile(r"^[A-Z][A-Z0-9_]{2,80}$")
 _BLOCKED_PATHS = (
-    ".github/", ".agents/", ".codex/", ".git/", "scripts/",
+    ".github/", ".agents/", ".codex/", ".git/", ".gemini/", "GEMINI.md", "scripts/",
     "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt",
     "artifacts/wow-engine/v17/engineering_gemini_headless.py",
 )
@@ -50,7 +50,10 @@ def select_incident(
     This selects *research/isolated patch work only*. It never acquires a writer
     lease or grants shared-branch write/merge authority.
     """
-    from v17.engineering_dispatch_queue import build_queue, standard_conflicts_with_rapid
+    try:
+        from v17.engineering_dispatch_queue import build_queue, standard_conflicts_with_rapid
+    except ImportError:  # direct script execution from GitHub Actions
+        from engineering_dispatch_queue import build_queue, standard_conflicts_with_rapid
 
     if not _LEASE.fullmatch(requested_lease):
         raise ValueError("GEMINI_LEASE_GROUP_INVALID")
@@ -85,13 +88,17 @@ def select_incident(
     }
 
 
-def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False) -> dict[str, Any]:
+def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
+                 response: Any = None) -> dict[str, Any]:
     """Classify one bounded attempt without persisting log contents or secrets."""
     value = (stderr or "").lower()
     if timed_out:
         code = "GEMINI_CLI_TIMEOUT"
     elif exit_code == 0:
-        code = "GEMINI_CLI_COMPLETE"
+        code = ("GEMINI_CLI_COMPLETE" if isinstance(response, dict)
+                and isinstance(response.get("response"), str)
+                and bool(response["response"].strip()) and not response.get("error")
+                else "GEMINI_CLI_RESPONSE_MALFORMED")
     elif exit_code == 53:
         code = "GEMINI_CLI_TURN_LIMIT"
     elif exit_code == 42:
@@ -134,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     classify = sub.add_parser("classify")
     classify.add_argument("--exit-code", type=int, required=True)
     classify.add_argument("--stderr-file", required=True)
+    classify.add_argument("--response-file", required=True)
     classify.add_argument("--timed-out", action="store_true")
     changed = sub.add_parser("inspect-patch")
     changed.add_argument("--files-json", required=True)
@@ -148,8 +156,12 @@ def main(argv: list[str] | None = None) -> int:
                 target_incident=args.target, requested_lease=args.lease_group,
             )
         elif args.action == "classify":
+            try:
+                response = json.loads(Path(args.response_file).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                response = None
             result = classify_cli(args.exit_code, Path(args.stderr_file).read_text(encoding="utf-8"),
-                                  timed_out=args.timed_out)
+                                  timed_out=args.timed_out, response=response)
         else:
             result = inspect_changed_paths(json.loads(Path(args.files_json).read_text(encoding="utf-8")))
     except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
