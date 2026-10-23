@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded PR checks without canceling any protected-main capture.
+concurrency:
+  group: wow-ncaaf-44-forward-freeze-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify-frozen-forward-contract:
     name: Verify 44 research-only forward inputs
