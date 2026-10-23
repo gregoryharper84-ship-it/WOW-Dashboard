@@ -81,6 +81,12 @@ def match_exact_pregame_thesis(
     prediction_id = prediction_id_raw.strip() if isinstance(prediction_id_raw, str) else ""
     if not prediction_id:
         return ExactThesisMatch(_UNATTRIBUTED, "PREDICTION_ID_MISSING", None, None, False)
+    # A settled record that explicitly identifies a pregame prediction may not
+    # be attributed to a different forecast from the same game/stat/line.
+    if settled.get("prediction_id") is not None:
+        recorded_id = settled.get("prediction_id")
+        if not isinstance(recorded_id, str) or recorded_id.strip() != prediction_id:
+            return ExactThesisMatch(_MISMATCH, "PREDICTION_ID_MISMATCH", None, None, False)
 
     values: dict[str, str] = {}
     for field in _FIELDS:
@@ -116,6 +122,8 @@ def match_exact_pregame_thesis(
         return ExactThesisMatch(_MISMATCH, "EVENT_START_IDENTITY_MISMATCH", None, None, False)
     if model_time >= kickoff or written_at >= kickoff:
         return ExactThesisMatch(_INVALID_TIME, "PREDICTION_NOT_BEFORE_EVENT_START", None, None, False)
+    if written_at < model_time:
+        return ExactThesisMatch(_INVALID_TIME, "PREDICTION_WRITE_PRECEDES_MODEL", None, None, False)
 
     key = tuple(values[field] for field in _FIELDS) + (line_part,)
     return ExactThesisMatch(_SUCCESS, None, prediction_id, key, True)
