@@ -1,8 +1,10 @@
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import textwrap
@@ -13,6 +15,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "verify_existing_pr_governance_re
 SOURCE_REVIEW_SCRIPT = Path(__file__).resolve().parents[1] / "independent_source_review_receipt.py"
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "wow-v17-existing-pr-governance-review.yml"
 REPO_ROOT = Path(__file__).resolve().parents[3]
+QA_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-independent-qa-check.yml"
 TRUSTED_GATE = REPO_ROOT / ".github/workflows/wow-v17-trusted-governance-gate.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
 MORNING_GREEN_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-morning-green-continuation.yml"
@@ -40,6 +43,94 @@ HEAD = "a" * 40
 REPOSITORY = verifier.CANONICAL_REPOSITORY
 REVIEWER = {"id": 9001, "login": "independent-reviewer"}
 ALLOWLIST = [REVIEWER]
+
+
+def _workflow_run_sources(path):
+    content = path.read_text(encoding="utf-8")
+    name_match = re.search(r"(?m)^name:\s*(.+?)\s*$", content)
+    assert name_match, f"Missing workflow name in {path}"
+    trigger_match = re.search(
+        r"(?ms)^  workflow_run:\s*\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+        content,
+    )
+    if not trigger_match:
+        return name_match.group(1), set()
+    workflows_match = re.search(
+        r"(?m)^    workflows:\s*\[([^\]]*)\]\s*$",
+        trigger_match.group(1),
+    )
+    assert workflows_match, f"Missing workflow_run producer list in {path}"
+    sources = {name.strip() for name in workflows_match.group(1).split(",") if name.strip()}
+    return name_match.group(1), sources
+
+
+def _workflow_run_graph():
+    workflows = (QA_WORKFLOW, WORKFLOW, TRUSTED_GATE)
+    sources_by_name = dict(_workflow_run_sources(path) for path in workflows)
+    known_workflows = set(sources_by_name)
+    graph = {name: set() for name in known_workflows}
+    for consumer, sources in sources_by_name.items():
+        for producer in sources & known_workflows:
+            graph[producer].add(consumer)
+    return sources_by_name, graph
+
+
+def _has_workflow_cycle(graph):
+    visiting = set()
+    visited = set()
+
+    def visit(workflow):
+        if workflow in visiting:
+            return True
+        if workflow in visited:
+            return False
+        visiting.add(workflow)
+        if any(visit(downstream) for downstream in graph[workflow]):
+            return True
+        visiting.remove(workflow)
+        visited.add(workflow)
+        return False
+
+    return any(visit(workflow) for workflow in graph)
+
+
+def test_protected_governance_workflow_run_graph_is_acyclic_and_detects_the_old_cycle():
+    sources_by_name, graph = _workflow_run_graph()
+    qa_name = "wow-v17-independent-qa-check"
+    certifier_name = "wow-v17-existing-pr-governance-review"
+    trusted_gate_name = "wow-v17-trusted-governance-gate"
+
+    assert trusted_gate_name not in sources_by_name[qa_name]
+    assert sources_by_name[certifier_name] == {qa_name}
+    assert sources_by_name[trusted_gate_name] == {certifier_name}
+    assert not _has_workflow_cycle(graph)
+
+    old_cycle = {workflow: set(downstream) for workflow, downstream in graph.items()}
+    old_cycle[trusted_gate_name].add(qa_name)
+    assert _has_workflow_cycle(old_cycle)
+
+
+def test_workflow_run_burst_canary_is_finite_and_preserves_role_order():
+    sources_by_name, graph = _workflow_run_graph()
+    qa_name = "wow-v17-independent-qa-check"
+    certifier_name = "wow-v17-existing-pr-governance-review"
+    trusted_gate_name = "wow-v17-trusted-governance-gate"
+    burst_size = 31
+    pending = [qa_name] * burst_size
+    generated = []
+
+    while pending:
+        producer = pending.pop()
+        for consumer in graph[producer]:
+            if producer in sources_by_name[consumer]:
+                generated.append(consumer)
+                pending.append(consumer)
+
+    assert Counter(generated) == Counter({
+        certifier_name: burst_size,
+        trusted_gate_name: burst_size,
+    })
+    assert not _has_workflow_cycle(graph)
 
 
 def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permissions():

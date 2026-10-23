@@ -843,7 +843,6 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "github.ref == 'refs/heads/main'" in workflow
     assert parsed["on"]["workflow_run"]["workflows"] == [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
-        "wow-v17-trusted-governance-gate",
     ]
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow

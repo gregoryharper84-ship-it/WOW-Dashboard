@@ -613,7 +613,7 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
 @pytest.mark.parametrize("wf, upstream", [
     (QA_WF, [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
-        "wow-v17-change-impact-gate", "wow-v17-trusted-governance-gate",
+        "wow-v17-change-impact-gate",
     ]),
     (REL_WF, ["wow-v17-independent-qa-check"]),
 ])
@@ -626,7 +626,9 @@ def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
     assert triggers["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "true"
     if wf == QA_WF:
         workflow = yaml.load(wf.read_text(), Loader=yaml.BaseLoader)
-        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in workflow["jobs"]["qa"]["if"]
+        assert "github.ref == 'refs/heads/main'" in workflow["jobs"]["qa"]["if"]
+        assert "vars.WOW_QA_APP_ID != ''" in workflow["jobs"]["qa"]["if"]
+        assert "workflow_run.name" not in workflow["jobs"]["qa"]["if"]
     if wf == REL_WF:
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_id"]["required"] == "true"
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_attempt"]["required"] == "true"
