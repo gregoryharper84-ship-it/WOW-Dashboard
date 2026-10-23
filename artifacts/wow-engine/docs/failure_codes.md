@@ -272,3 +272,19 @@ These are **research feature preparation** failures, not certified model inferen
 | `NCAAF_FORWARD_PRIOR_FORM_INSUFFICIENT` | NCAAF research forward feature builder | One or both teams lack the model's minimum three source-eligible settled prior games; no baseline imputation. | No |
 | `NCAAF_FORWARD_FEATURE_SCHEMA_INVALID` | NCAAF research forward feature builder | Computed numeric features do not exactly match the candidate model schema or finite-number contract. | No |
 | `NCAAF_FORWARD_FEATURE_NOT_PREGAME` | NCAAF research forward feature builder | Latest evidence acquisition timestamp is not strictly before the target event start. | No |
+
+## NBA POINTS source-snapshot bridge diagnostics (P0 #1988)
+
+The optional `v17/nba_points_snapshot_bridge.py` is a **read-only, source-supplied input validator**. It does not authenticate an upstream NBA feed, write a DB row, activate a route, score/calibrate/certify a model, rank or execute. It must be invoked only after source acquisition; `SOURCE_VALIDATED_SNAPSHOT_NOT_PERSISTED` is not a certified hydrated model prediction. Every failure below is a bridge-stage `NBAPointsSourceError`, never `MODEL_UNAVAILABLE`, scorer completion failure, or global terminal label.
+
+| Code or family | Owning lane/stage | Exact condition | Affects sporting probability/rank? |
+|---|---|---|---|
+| `NBA_POINTS_*_MISSING`, `NBA_POINTS_*_INVALID`, `NBA_POINTS_*_NAIVE` | NBA POINTS pregame evidence bridge | A required explicit identifier/time/number is blank, malformed, nonfinite, or timezone-naive | No; no prediction made |
+| `NBA_POINTS_EVENT_NOT_PREGAME`, `NBA_POINTS_CAPTURE_NOT_PREGAME`, `NBA_POINTS_ROSTER_TIMESTAMP_INVALID`, `NBA_POINTS_ROLE_TIMESTAMP_INVALID`, `NBA_POINTS_SOURCE_TIMESTAMP_INVALID`, `NBA_POINTS_LINE_TIMESTAMP_INVALID` | NBA POINTS point-in-time source gating | Event already started or capture/roster/role/game/source/line evidence occurs after allowed pregame cutoff | No; evidence rejected |
+| `NBA_POINTS_TEAM_IDENTITY_CONFLICT`, `NBA_POINTS_CANONICAL_EVENT_UNRESOLVED`, `NBA_POINTS_CANONICAL_EVENT_UNVERIFIED`, `NBA_POINTS_CANONICAL_TEAM_MISMATCH`, `NBA_POINTS_ROSTER_PLAYER_MISMATCH` | NBA POINTS canonical event/player/roster identity | Schedule identity is absent, alias-only or contradicts exactly roster team/player or target event | No |
+| `NBA_POINTS_ADJACENT_LINE_NOT_EXACT`, `NBA_POINTS_EXACT_LINE_MISMATCH`, `NBA_POINTS_LINE_UNSUPPORTED`, `NBA_POINTS_DIRECTION_INVALID`, `NBA_POINTS_PERIOD_UNSUPPORTED` | NBA POINTS exact stat-line/side identity | Source line is adjacent/contradictory, invalid line, unsupported period or non-MORE/LESS side | No |
+| `NBA_POINTS_PLAYER_AVAILABILITY_HOLD`, `NBA_POINTS_ROLE_EVIDENCE_MISSING` | NBA POINTS source role check | Player not affirmatively listed available or missing role evidence | No |
+| `NBA_POINTS_L10_EVIDENCE_INCOMPLETE`, `NBA_POINTS_PRIOR_GAME_INVALID`, `NBA_POINTS_PRIOR_GAME_DUPLICATE_OR_TARGET`, `NBA_POINTS_PRIOR_GAME_PLAYER_MISMATCH`, `NBA_POINTS_PRIOR_GAME_FUTURE_LEAKAGE`, `NBA_POINTS_GAME_BOX_SCORE_MISMATCH`, `NBA_POINTS_SOURCE_TIMESTAMPS_MISSING`, `NBA_POINTS_SOURCE_IDENTITY_INVALID` | NBA POINTS historical-game evidence | Fewer than 10 source stat rows; duplicate/wrong/future game or player; conflict between points and box-score observations; missing provenance | No |
+| `NBA_POINTS_CANONICAL_EVIDENCE_REJECTED`, `NBA_POINTS_SNAPSHOT_IDENTITY_MISMATCH`, `NBA_POINTS_SNAPSHOT_LINE_MISMATCH` | NBA POINTS canonical V17 validator/snapshot handoff | Existing V17 scorer evidence normalizer fails or the immutable snapshot changed event/player/stat/exact line | No |
+
+Regression: `artifacts/wow-engine/tests/test_v17_nba_points_snapshot_bridge.py`, including exact source-line and historical-identity counterexamples. Once a real provider path is integrated, its own source-authenticity/identity checks remain required. `can_execute=false`, `probability_publishable=false` throughout.
