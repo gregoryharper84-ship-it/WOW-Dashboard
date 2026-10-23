@@ -153,6 +153,11 @@ def verify_candidate_certification_evidence(db: Any, candidate_id: str) -> dict[
     if len(candidates) != 1:
         return {"status": "CERTIFICATION_EVIDENCE_BLOCKED", "code": "CANDIDATE_ARTIFACT_NOT_FOUND", "candidate_id": candidate_id, "probability_publishable": False, "can_execute": False}
     c = candidates[0]
+    # Share the existing authenticated evidence endpoint with the 1X2 verifier.
+    # This is a research-only candidate replay, never model activation.
+    if str(c.get("sport") or "").upper() == "SOCCER" and str(c.get("model_family") or "").startswith("SOCCER_1X2_MULTINOMIAL_LOGIT_V1_"):
+        from v17.soccer_multiclass_certification_evidence import verify_soccer_candidate_certification_evidence
+        return verify_soccer_candidate_certification_evidence(db, candidate_id)
     blockers: list[str] = []
     for flag in ("promoted", "active", "automatic_certification", "automatic_promotion", "probability_publishable"):
         if bool(c.get(flag)):
