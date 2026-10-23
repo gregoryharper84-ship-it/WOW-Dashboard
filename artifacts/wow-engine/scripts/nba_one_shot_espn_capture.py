@@ -97,6 +97,37 @@ def fetch_source(target_date: str, *, now: datetime | None = None, opener=None) 
     except (OSError, error.URLError) as exc:
         raise CaptureFailure("SOURCE_FETCH_FAILED") from exc
 
+def _competitor_identity(event: dict) -> dict:
+    """Extract provider home/away IDs, never infer participants from matchup names.
+
+    Research receipts must preserve exact team identity for a later independent
+    canonical resolver. Missing, duplicated or mismatched IDs fail closed.
+    """
+    try:
+        competitions = event["competitions"]
+        competitors = competitions[0]["competitors"]
+        if not isinstance(competitors, list) or len(competitors) != 2:
+            raise ValueError("exactly two competitors required")
+        resolved = {}
+        for competitor in competitors:
+            side = competitor["homeAway"]
+            team = competitor["team"]
+            if not isinstance(team, dict):
+                raise ValueError("team metadata invalid")
+            team_id = str(team.get("id") or "").strip()
+            name = str(team.get("displayName") or "").strip()
+            if side not in {"home", "away"} or side in resolved:
+                raise ValueError("duplicate/unknown side")
+            if not team_id.isdecimal() or not name:
+                raise ValueError("missing/untrusted team identity")
+            resolved[side] = {"team_id": team_id, "name": name}
+        if set(resolved) != {"home", "away"} or resolved["home"]["team_id"] == resolved["away"]["team_id"]:
+            raise ValueError("missing sides or same team")
+        return {"home": resolved["home"], "away": resolved["away"]}
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
+        raise CaptureFailure("SOURCE_TEAM_IDENTITY_MALFORMED") from exc
+
+
 def classify_events(raw: bytes, *, now: datetime, min_lead_seconds: int = MIN_LEAD_SECONDS) -> dict:
     if min_lead_seconds < MIN_LEAD_SECONDS:
         raise CaptureFailure("BAD_MIN_LEAD")
@@ -120,8 +151,9 @@ def classify_events(raw: bytes, *, now: datetime, min_lead_seconds: int = MIN_LE
         if not isinstance(state, str):
             raise CaptureFailure("SOURCE_EVENT_STATUS_MALFORMED")
         lead_seconds = (event_start - now).total_seconds()
+        identity = _competitor_identity(event)
         summary = {"event_id": event_id, "event_start_utc": event_start.isoformat(),
-                   "state": state, "lead_seconds": int(lead_seconds)}
+                   "state": state, "lead_seconds": int(lead_seconds), **identity}
         if state.lower() == "pre" and lead_seconds >= min_lead_seconds:
             eligible.append(summary)
         else:
