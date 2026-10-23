@@ -27,6 +27,23 @@ def write_ready(ready: Path, pid: int, digest: str, expires_monotonic: float):
         f.write(canonical(obj));f.flush();os.fsync(f.fileno())
     os.replace(tmp,ready)
 
+def restore_until_verified(api, baseline: dict, *, sleep=time.sleep, period: float = 5) -> None:
+    """Keep retrying across transient GitHub outages until five-check restoration is verified.
+
+    restore() already retries and reads back the exact original ruleset.
+    Exhausting its short retry budget must not terminate the only surviving
+    same-host restoration process.
+    """
+    while True:
+        try:
+            restore(api, baseline)
+            return
+        except (RecoveryHold, OSError, ValueError, KeyError, TypeError) as exc:
+            print("P0_WATCHDOG_RESTORE_PENDING_RETRY:" + str(exc),
+                  file=sys.stderr, flush=True)
+            sleep(period)
+
+
 def watch(api, intent: dict, baseline: dict, ready: Path, intent_digest: str, *,
           period: float = 1, clock=time.monotonic, sleep=time.sleep):
     require(checks_from_ruleset(baseline) == expected_check_set(), "WATCHDOG_BASELINE_NOT_FIVE_CHECKS")
@@ -52,12 +69,12 @@ def watch(api, intent: dict, baseline: dict, ready: Path, intent_digest: str, *,
             return
         if actual not in (orig, temporary, None):
             # Unexpected policy drift while the maintenance window is active.
-            restore(api,baseline)
+            restore_until_verified(api,baseline,sleep=sleep,period=max(period,1))
             raise RecoveryHold("WATCHDOG_UNEXPECTED_POLICY_DRIFT_RESTORED")
         if clock() >= deadline:
             # After an API outage, always attempt restoration, never infer green.
             if actual != orig:
-                restore(api,baseline)
+                restore_until_verified(api,baseline,sleep=sleep,period=max(period,1))
                 print("WATCHDOG_DEADLINE_RESTORED_FIVE_CHECKS",flush=True)
             else:
                 print("WATCHDOG_DEADLINE_BASELINE_INTACT",flush=True)
