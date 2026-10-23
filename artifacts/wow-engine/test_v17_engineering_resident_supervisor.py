@@ -294,9 +294,20 @@ def test_unanchored_or_numeric_prefix_references_do_not_match(body, title):
     assert not pending_pr_for_issue(client, 1841)
 
 
-def test_anchored_title_reference_is_authoritative():
+def test_title_alone_cannot_claim_incident_ownership():
     client = FakeClient(open_pr_pages=[[
         open_pr_record(5001, title="fix(P0): existing repair (#1841)"),
+    ]])
+    assert not pending_pr_for_issue(client, 1841)
+
+
+def test_canonical_body_marker_blocks_duplicate_even_with_unrelated_title():
+    client = FakeClient(open_pr_pages=[[
+        open_pr_record(
+            1842, title="new NFL publication repair",
+            body="AMRT_CANONICAL_INCIDENT_OWNERSHIP\\nIncident: #1841",
+            draft=True,
+        ),
     ]])
     assert pending_pr_for_issue(client, 1841)
 
