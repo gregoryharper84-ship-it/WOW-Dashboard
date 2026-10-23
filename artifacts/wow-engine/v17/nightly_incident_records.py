@@ -163,6 +163,8 @@ def create_postmortem(
     ledger = _load_ledger()
     if state not in ALLOWED_STATES:
         raise ValueError(f"invalid state: {state}")
+    if state == "VERIFIED_CLOSED" and severity in {"P0", "P1"}:
+        raise ValueError("new P0/P1 cannot be created VERIFIED_CLOSED; use Reporter closure")
     date = _today()
     pm_id = _next_id("PM", date, ledger["records"])
     path = POSTMORTEMS / f"{pm_id}__{_slug(title)}.md"
