@@ -17,7 +17,9 @@ TARGET = "2026-10-22"
 
 def _event(state="pre", dt="2026-10-23T00:00:00Z"):
     return {
-        "id": "401001", "date": dt, "status": {"type": {"state": state}},
+        "id": "401001", "date": dt,
+        "status": {"type": {"state": state, "completed": False}},
+        "season": {"year": 2027, "type": 2, "slug": "regular-season"},
         "competitions": [{"competitors": [
             {"homeAway": "home", "team": {"id": "4", "displayName": "Chicago Bulls"}},
             {"homeAway": "away", "team": {"id": "15", "displayName": "Milwaukee Bucks"}},
@@ -149,5 +151,59 @@ def test_receipt_team_identity_tampering_rejected_even_if_raw_hash_unchanged(tmp
     receipt["events_pregame_eligible"][0]["home"]["team_id"] = "999"
     path.write_text(json.dumps(receipt))
     assert got["events_pregame_eligible"][0]["home"]["team_id"] == "4"
+    with pytest.raises(capture.CaptureFailure, match="CAPTURE_RECEIPT_EVENT_MISMATCH"):
+        capture.verify(tmp_path, TARGET)
+
+
+@pytest.mark.parametrize(("change", "expected"), [
+    ("completed_contradiction", "EVENT_NOT_FUTURE_PREGAME"),
+    ("wrong_date", "EVENT_WRONG_NBA_LOCAL_DATE"),
+    ("preseason", "EVENT_REGIME_NOT_REGULAR_SEASON"),
+    ("postseason", "EVENT_REGIME_NOT_REGULAR_SEASON"),
+    ("short_lead", "MIN_LEAD_NOT_MET"),
+])
+def test_source_research_classification_rejects_off_slate_nonpregame_regimes(change, expected):
+    event = _event()
+    if change == "completed_contradiction":
+        event["status"]["type"]["completed"] = True
+    elif change == "wrong_date":
+        # 04:30 UTC is after midnight on Oct23 in NBA's Eastern date.
+        event["date"] = "2026-10-23T04:30:00Z"
+    elif change == "preseason":
+        event["season"] = {"year": 2027, "type": 1, "slug": "preseason"}
+    elif change == "postseason":
+        event["season"] = {"year": 2027, "type": 3, "slug": "post-season"}
+    elif change == "short_lead":
+        event["date"] = "2026-10-22T18:05:00Z"
+    info = capture.classify_events(
+        json.dumps({"events": [event]}).encode(), now=NOW, target_date=TARGET,
+    )
+    assert info["events_pregame_eligible"] == []
+    assert info["events_skipped"][0]["reason"] == expected
+
+
+@pytest.mark.parametrize(("field", "value", "code"), [
+    ("status", {"type": {"state": "pre"}}, "SOURCE_EVENT_STATUS_MALFORMED"),
+    ("status", {"type": {"completed": False}}, "SOURCE_EVENT_STATUS_MALFORMED"),
+    ("season", None, "SOURCE_SEASON_IDENTITY_MALFORMED"),
+    ("season", [], "SOURCE_SEASON_IDENTITY_MALFORMED"),
+])
+def test_missing_source_status_or_season_never_passes_to_identity_receipt(field, value, code):
+    event = _event()
+    event[field] = value
+    with pytest.raises(capture.CaptureFailure, match=code):
+        capture.classify_events(
+            json.dumps({"events": [event]}).encode(), now=NOW, target_date=TARGET,
+        )
+
+
+def test_local_calendar_day_is_bound_in_original_and_replayed_receipt(tmp_path):
+    manifest = capture.capture(TARGET, tmp_path, now=NOW, opener=Opener(Response()))
+    assert len(manifest["events_pregame_eligible"]) == 1
+    assert capture.verify(tmp_path, TARGET)["status"] == "RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS"
+    manifest_path = tmp_path / f"nba_{TARGET}_capture_receipt.json"
+    stored = json.loads(manifest_path.read_text())
+    stored["events_pregame_eligible"] = []
+    manifest_path.write_text(json.dumps(stored))
     with pytest.raises(capture.CaptureFailure, match="CAPTURE_RECEIPT_EVENT_MISMATCH"):
         capture.verify(tmp_path, TARGET)
