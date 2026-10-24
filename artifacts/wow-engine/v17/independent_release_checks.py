@@ -45,6 +45,13 @@ PER_PAGE = 100
 Fetch = Callable[[str], tuple[int, Any]]
 QA_WORKFLOW_NAME = "wow-v17-independent-qa-check"
 QA_WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
+# Stable id of that workflow in this repository. GitHub's run `name` is the
+# dynamic run-name, not this workflow name.
+QA_WORKFLOW_ID = 380562324
+QA_RUN_NAME_RE = re.compile(
+    r"^wow-v17-independent-qa-check event=(workflow_run|workflow_dispatch) "
+    r"pr=(?:[1-9][0-9]*|AUTO) head=(?:[0-9a-f]{40}|AUTO)$"
+)
 
 
 class UpstreamQaError(Exception):
@@ -270,13 +277,26 @@ def classify_upstream_qa(
         raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNREADABLE")
     repository = run.get("repository") if isinstance(run.get("repository"), dict) else {}
     head_repository = run.get("head_repository") if isinstance(run.get("head_repository"), dict) else {}
+    event = run.get("event")
+    name = run.get("name")
+    # Trust the workflow id and path. `name` is GitHub's run-name
+    # ("wow-v17-independent-qa-check event=... pr=... head=..."), so equality
+    # with the static workflow name rejects every real run.
+    name_matches = (
+        isinstance(name, str)
+        and QA_RUN_NAME_RE.fullmatch(name) is not None
+        and isinstance(event, str)
+        and name.startswith(f"{QA_WORKFLOW_NAME} event={event} ")
+    )
     trusted = (
         run.get("id") == run_id
         and run.get("run_attempt") == run_attempt
-        and run.get("name") == QA_WORKFLOW_NAME
+        and run.get("workflow_id") == QA_WORKFLOW_ID
         and run.get("path") == QA_WORKFLOW_PATH
+        and name_matches
         and run.get("head_branch") == "main"
-        and run.get("event") in {"workflow_run", "workflow_dispatch"}
+        and SHA_RE.fullmatch(str(run.get("head_sha") or "")) is not None
+        and event in {"workflow_run", "workflow_dispatch"}
         and repository.get("full_name") == repo
         and head_repository.get("full_name") == repo
         and run.get("status") == "completed"

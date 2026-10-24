@@ -683,19 +683,42 @@ def test_source_qa_release_certifier_dag_has_no_cycle():
     assert "github.event.workflow_run.pull_requests[0]" in qa_if
 
 
+# Copied from GET /repos/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/40107281706.
+# `name` is the workflow run-name, not the workflow's static name.
+REAL_QA_RUN_40107281706 = {
+    "id": 40107281706,
+    "name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO",
+    "workflow_id": 380562324,
+    "path": ".github/workflows/wow-v17-independent-qa-check.yml",
+    "head_branch": "main",
+    "head_sha": "00f3bc37aeed8007e062b993112221623b19acd3",
+    "event": "workflow_run",
+    "run_attempt": 1,
+    "status": "completed",
+    "conclusion": "failure",
+    "repository": {"full_name": REPO},
+    "head_repository": {"full_name": REPO},
+}
+# Copied from run 40104744926, the successful QA execution for PR 1977, attempt 2.
+REAL_QA_RUN_40104744926 = {
+    "id": 40104744926,
+    "name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO",
+    "workflow_id": 380562324,
+    "path": ".github/workflows/wow-v17-independent-qa-check.yml",
+    "head_branch": "main",
+    "head_sha": "1c4ef99ab3ea8cbd8c9a07cdd3e500257f055acc",
+    "event": "workflow_run",
+    "run_attempt": 2,
+    "status": "completed",
+    "conclusion": "success",
+    "repository": {"full_name": REPO},
+    "head_repository": {"full_name": REPO},
+}
+
+
 def _qa_run(**overrides):
-    body = {
-        "id": 40107281706,
-        "run_attempt": 1,
-        "name": "wow-v17-independent-qa-check",
-        "path": ".github/workflows/wow-v17-independent-qa-check.yml",
-        "head_branch": "main",
-        "event": "workflow_run",
-        "status": "completed",
-        "conclusion": "success",
-        "repository": {"full_name": REPO},
-        "head_repository": {"full_name": REPO},
-    }
+    body = dict(REAL_QA_RUN_40107281706)
+    body["conclusion"] = "success"
     body.update(overrides)
     return body
 
@@ -741,6 +764,13 @@ def test_prless_or_skipped_upstream_qa_is_neutral(run_over, jobs, reason):
     ({"head_repository": {"full_name": "other/WOW-Dashboard"}}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"repository": {"full_name": "other/WOW-Dashboard"}}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"path": ".github/workflows/other.yml"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"workflow_id": 380562325}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"workflow_id": "380562324"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO",
+      "workflow_id": 1}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"head_sha": "not-a-sha"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"head_sha": "A" * 40}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"head_branch": "feature"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"run_attempt": 2}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"event": "schedule"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
@@ -774,6 +804,49 @@ def test_unreadable_upstream_qa_run_fails_closed():
 def test_non_integer_upstream_identity_fails_closed():
     with pytest.raises(m.UpstreamQaError, match="^RELEASE_UPSTREAM_QA_UNTRUSTED$"):
         m.classify_upstream_qa(REPO, run_id=True, run_attempt=1, fetch=_classify_fetch(_qa_run(), _qa_jobs()))
+
+
+def test_real_successful_qa_run_with_dynamic_name_is_applicable():
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40104744926, run_attempt=2,
+        fetch=_classify_fetch(dict(REAL_QA_RUN_40104744926), _qa_jobs("success")),
+    )
+    assert classified == {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
+    assert "can_execute" not in classified
+
+
+def test_real_failed_qa_run_is_not_rejected_for_its_dynamic_name():
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(dict(REAL_QA_RUN_40107281706), _qa_jobs("failure")),
+    )
+    assert classified == {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
+
+
+def test_real_qa_run_with_skipped_job_stays_neutral():
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(dict(REAL_QA_RUN_40107281706, conclusion="success"), _qa_jobs("skipped")),
+    )
+    assert classified == {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
+
+
+def test_dispatch_run_name_shape_is_trusted_only_with_the_workflow_id():
+    dispatched = _qa_run(
+        event="workflow_dispatch",
+        name="wow-v17-independent-qa-check event=workflow_dispatch pr=1977 head=" + ("a" * 40),
+    )
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(dispatched, _qa_jobs("success")),
+    )
+    assert classified["disposition"] == "applicable"
+    spoofed = dict(dispatched, workflow_id=1)
+    with pytest.raises(m.UpstreamQaError, match="^RELEASE_UPSTREAM_QA_UNTRUSTED$"):
+        m.classify_upstream_qa(
+            REPO, run_id=40107281706, run_attempt=1,
+            fetch=_classify_fetch(spoofed, _qa_jobs("success")),
+        )
 
 
 # --- workflows: execute the real Bash against a fake gh ------------------------------
