@@ -7,6 +7,8 @@ on:
       - '.github/workflows/wow-v17-propsmadness-nba-offline.yml'
       - 'artifacts/wow-engine/v17/propsmadness_nba_offline_adapter.py'
       - 'artifacts/wow-engine/tests/test_propsmadness_nba_offline_adapter.py'
+      - 'artifacts/wow-engine/v17/propsmadness_nba_historical_gap_audit.py'
+      - 'artifacts/wow-engine/tests/test_propsmadness_nba_historical_gap_audit.py'
       - 'artifacts/wow-engine/PROPSMADNESS_NBA_FEASIBILITY_AND_IMPLEMENTATION_2018.md'
 
 permissions:
@@ -35,7 +37,7 @@ jobs:
         shell: bash
         run: |
           python -m pip install --disable-pip-version-check pytest
-          python -m pytest --confcutdir=tests -q tests/test_propsmadness_nba_offline_adapter.py
+          python -m pytest --confcutdir=tests -q tests/test_propsmadness_nba_offline_adapter.py tests/test_propsmadness_nba_historical_gap_audit.py
       - name: Assert source authorization remains disabled
         working-directory: artifacts/wow-engine
         shell: bash
