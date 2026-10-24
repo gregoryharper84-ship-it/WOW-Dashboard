@@ -62,7 +62,12 @@ def validate_pr(data: dict, *, repo: str, number: int, sha: str,
         raise HandoffBlocked("CURSOR_UNSAFE_TARGET_BRANCH")
     if base.get("ref") != "main":
         raise HandoffBlocked("CURSOR_UNEXPECTED_BASE_BRANCH")
-    incidents = INCIDENT_RE.findall(data.get("body") or "")
+    pr_body = data.get("body")
+    if pr_body is None:
+        pr_body = ""
+    if not isinstance(pr_body, str):
+        raise HandoffBlocked("CURSOR_GITHUB_PR_RESPONSE_INVALID")
+    incidents = INCIDENT_RE.findall(pr_body)
     if incidents != [str(incident_number)]:
         raise HandoffBlocked("CURSOR_PR_INCIDENT_MISMATCH")
 
@@ -226,7 +231,10 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
         raise HandoffBlocked("CURSOR_ACTIVE_PR_AGENT_EXISTS")
 
     # Recheck before the irreversible dispatch; Cursor also gets SHA-lock instructions.
-    validate_pr(api(gh_url, token=github_token), repo=repo, number=pr_number,
+    current_pr = api(gh_url, token=github_token)
+    if not isinstance(current_pr, dict):
+        raise HandoffBlocked("CURSOR_GITHUB_PR_RESPONSE_INVALID")
+    validate_pr(current_pr, repo=repo, number=pr_number,
                 sha=expected_head, incident_number=incident_number)
     lease_api = _LeaseGitHub(api, github_token)
     comments = _github_pages(

@@ -47,7 +47,8 @@ def dispatch(*args, **kwargs):
 
 class FakeApi:
     def __init__(self, *, global_agents=None, pr_agents=None, global_next=None,
-                 pr_next=None, issue_data=None, stale_pr_read=None, post_result=None):
+                 pr_next=None, issue_data=None, stale_pr_read=None,
+                 malformed_pr_read=None, post_result=None):
         self.calls = []
         self.comments = []
         self.cursor_posts = []
@@ -57,6 +58,7 @@ class FakeApi:
         self.pr_next = pr_next
         self.issue_data = issue_data or issue()
         self.stale_pr_read = stale_pr_read
+        self.malformed_pr_read = malformed_pr_read
         self.pr_reads = 0
         self.post_result = post_result
 
@@ -64,6 +66,8 @@ class FakeApi:
         self.calls.append((url, kwargs))
         if "/pulls/" in url:
             self.pr_reads += 1
+            if self.pr_reads == self.malformed_pr_read:
+                return []
             return pr(sha="b" * 40) if self.pr_reads == self.stale_pr_read else pr()
         if "/issues/comments/" in url and kwargs.get("method") == "PATCH":
             self.comments[0]["body"] = kwargs["body"]["body"]
@@ -137,12 +141,15 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, "CURSOR_PR_INCIDENT_MISMATCH")
 
     def test_malformed_pr_shape_fails_with_typed_error(self):
-        with self.assertRaises(mod.HandoffBlocked) as cm:
-            mod.validate_pr(
-                {"number": 1948, "state": "open", "head": [], "base": {}},
-                repo=REPO, number=1948, sha=SHA, incident_number=INCIDENT,
-            )
-        self.assertEqual(cm.exception.code, "CURSOR_GITHUB_PR_RESPONSE_INVALID")
+        malformed = (
+            {"number": 1948, "state": "open", "head": [], "base": {}},
+            pr(body=[]),
+        )
+        for data in malformed:
+            with self.subTest(data=data), self.assertRaises(mod.HandoffBlocked) as cm:
+                mod.validate_pr(data, repo=REPO, number=1948, sha=SHA,
+                                incident_number=INCIDENT)
+            self.assertEqual(cm.exception.code, "CURSOR_GITHUB_PR_RESPONSE_INVALID")
 
     def test_missing_key_fails_before_network(self):
         with self.assertRaises(mod.HandoffBlocked) as cm:
@@ -214,6 +221,14 @@ class HandoffTests(unittest.TestCase):
             dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
         self.assertEqual(cm.exception.code, "CURSOR_STALE_PR_HEAD")
         self.assertEqual(api.cursor_posts, [])
+
+    def test_malformed_pr_recheck_fails_typed_before_lease_or_create(self):
+        api = FakeApi(malformed_pr_read=2)
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_GITHUB_PR_RESPONSE_INVALID")
+        self.assertEqual(api.cursor_posts, [])
+        self.assertEqual(api.comments, [])
 
     def test_shared_remote_or_local_writer_lease_blocks_billable_dispatch(self):
         remote_hold = remote.receipt(
