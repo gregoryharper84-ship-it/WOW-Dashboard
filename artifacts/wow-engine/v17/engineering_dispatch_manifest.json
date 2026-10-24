@@ -181,6 +181,17 @@
         "AGENT_INSTRUCTION_TRUST_ROOT",
         "RELEASE_SECURITY"
       ]
+    },
+    {
+      "issue_number": 1952,
+      "severity": "P1",
+      "priority_rank": 14,
+      "execution_lane": "STANDARD",
+      "conflict_keys": [
+        "NHL_CANDIDATE",
+        "ALL_SPORTS_MONEYLINE",
+        "PROP_LIFECYCLE"
+      ]
     }
   ],
   "acceleration": []
