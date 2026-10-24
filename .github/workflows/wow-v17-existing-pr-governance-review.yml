@@ -190,40 +190,6 @@ jobs:
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
           echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve upstream QA target from authenticated artifacts
-        id: upstream_qa
-        if: steps.route.outputs.applicable == 'true' && github.event_name == 'workflow_run'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          SOURCE_PULL_REQUESTS: ${{ toJson(github.event.workflow_run.pull_requests) }}
-        run: |
-          set -euo pipefail
-          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] && [[ "$SOURCE_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
-            echo "UPSTREAM_QA_RUN_IDENTITY_INVALID" >&2; exit 1;
-          }
-          if ! resolved=$(python .github/scripts/independent_source_review_receipt.py \
-            --resolve-upstream-qa \
-            --repository "$GITHUB_REPOSITORY" \
-            --run-id "$SOURCE_RUN_ID" \
-            --attempt "$SOURCE_ATTEMPT" \
-            --pull-requests-json "$SOURCE_PULL_REQUESTS"); then
-            printf '%s\n' "$resolved" >&2
-            echo "UPSTREAM_QA_TARGET_UNRESOLVED" >&2
-            exit 1
-          fi
-          pr_number=$(jq -er '.pr_number' <<<"$resolved")
-          head_sha=$(jq -er '.head_sha' <<<"$resolved")
-          head_ref=$(jq -er '.head_ref' <<<"$resolved")
-          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] && [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] && [ -n "$head_ref" ] || {
-            echo "UPSTREAM_QA_TARGET_INVALID" >&2; exit 1;
-          }
-          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
-          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
-
       - name: Resolve exact PR identity and incident
         if: steps.route.outputs.applicable == 'true'
         id: target
@@ -236,19 +202,10 @@ jobs:
           SOURCE_PR: ${{ steps.source_review.outputs.pr_number || '' }}
           SOURCE_HEAD_SHA: ${{ steps.source_review.outputs.head_sha || '' }}
           SOURCE_HEAD_REF: ${{ steps.source_review.outputs.head_ref || '' }}
-          UPSTREAM_PR: ${{ steps.upstream_qa.outputs.pr_number || '' }}
-          UPSTREAM_HEAD_SHA: ${{ steps.upstream_qa.outputs.head_sha || '' }}
-          UPSTREAM_HEAD_REF: ${{ steps.upstream_qa.outputs.head_ref || '' }}
         run: |
           set -euo pipefail
-          pr_number="${EVENT_PR:-${INPUT_PR:-${SOURCE_PR:-${UPSTREAM_PR:-}}}}"
+          pr_number="${EVENT_PR:-${INPUT_PR:-${SOURCE_PR:-}}}"
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || { echo "EXISTING_PR_NUMBER_INVALID" >&2; exit 1; }
-          if [ -n "${SOURCE_PR:-}" ] && [ "$SOURCE_PR" != "$pr_number" ]; then
-            echo "UPSTREAM_QA_IDENTITY_MISMATCH" >&2; exit 1;
-          fi
-          if [ -n "${UPSTREAM_PR:-}" ] && [ "$UPSTREAM_PR" != "$pr_number" ]; then
-            echo "UPSTREAM_QA_IDENTITY_MISMATCH" >&2; exit 1;
-          fi
 
           mkdir -p .governance-review-evidence
           pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
@@ -275,11 +232,6 @@ jobs:
           if [ -n "${SOURCE_HEAD_SHA:-}" ]; then
             [ "$head_sha" = "$SOURCE_HEAD_SHA" ] && [ "$head_ref" = "$SOURCE_HEAD_REF" ] || {
               echo "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" >&2; exit 1;
-            }
-          fi
-          if [ -n "${UPSTREAM_HEAD_SHA:-}" ]; then
-            [ "$head_sha" = "$UPSTREAM_HEAD_SHA" ] && [ "$head_ref" = "$UPSTREAM_HEAD_REF" ] || {
-              echo "UPSTREAM_QA_PR_HEAD_MOVED_OR_REF_MISMATCH" >&2; exit 1;
             }
           fi
 

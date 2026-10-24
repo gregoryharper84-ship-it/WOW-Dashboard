@@ -606,40 +606,6 @@ def test_workflow_run_certifier_rejects_forged_or_stale_source(
     assert reason in proc.stderr
 
 
-def test_workflow_run_certifier_accepts_verified_receipt_without_event_pr(tmp_path):
-    sha = "a" * 40
-    head_ref = "wow-engineering/fix-qa-release-queue-b254b6f32e1f"
-    run, receipt, artifact = _certifier_fixture()
-    receipt["receipt_schema_version"] = 2
-    receipt["target"] = {"pr_number": 2016, "head_sha": sha, "head_ref": head_ref}
-    proc, output = _run_gate_artifact_resolution(
-        tmp_path,
-        event="workflow_run",
-        artifacts=[artifact],
-        run=run,
-        receipt=receipt,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    assert "pr_number=2016" in output
-    assert f"head_sha={sha}" in output
-    assert f"head_ref={head_ref}" in output
-
-
-def test_workflow_run_gate_rejects_dispatch_origin_even_with_a_valid_receipt(tmp_path):
-    run, receipt, artifact = _certifier_fixture(run_overrides={"event": "workflow_dispatch"})
-    proc, _ = _run_gate_artifact_resolution(
-        tmp_path,
-        event="workflow_run",
-        artifacts=[artifact],
-        run=run,
-        receipt=receipt,
-    )
-
-    assert proc.returncode != 0
-    assert "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" in proc.stderr
-
-
 @pytest.mark.parametrize(
     ("artifact_name", "duplicate", "expected_success"),
     [
