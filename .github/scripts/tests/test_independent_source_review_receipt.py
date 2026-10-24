@@ -958,6 +958,19 @@ def test_upstream_qa_does_not_guess_when_artifacts_and_pull_requests_disagree():
             conflict, conflict_policy, conflict_outcome,
             pull_requests=[{"number": 2012, "head": {"sha": "c" * 40, "ref": "other"}}],
         )
+    ref_conflict, ref_policy, ref_outcome = _upstream_bundle()
+    with pytest.raises(review.SourceReviewError, match="QA_UPSTREAM_PULL_REQUEST_MISMATCH"):
+        _resolve_upstream(
+            ref_conflict, ref_policy, ref_outcome,
+            pull_requests=[{"number": 1822, "head": {"sha": HEAD, "ref": "other"}}],
+        )
+    agreed, agreed_policy, agreed_outcome = _upstream_bundle()
+    agreed_target = _resolve_upstream(
+        agreed, agreed_policy, agreed_outcome,
+        pull_requests=[{"number": 1822, "head": {"sha": HEAD, "ref": "copilot/fix"}}],
+    )
+    assert agreed_target["pr_number"] == 1822
+    assert agreed_target["head_ref"] == "copilot/fix"
 
     mismatched, mismatched_policy, mismatched_outcome = _upstream_bundle(
         decision=_qa_outcome(head="c" * 40)

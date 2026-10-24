@@ -1284,14 +1284,19 @@ def _coerce_pull_requests(value: object) -> list[Any]:
     return value
 
 
-def _assert_pull_requests_match(pull_requests: list[Any], *, pr_number: int, head_sha: str) -> None:
+def _assert_pull_requests_match(
+    pull_requests: list[Any], *, pr_number: int, head_sha: str, head_ref: str,
+) -> None:
     for item in pull_requests:
         _require(isinstance(item, Mapping), "QA_UPSTREAM_PULL_REQUESTS_INVALID")
         head = item.get("head") if isinstance(item.get("head"), Mapping) else {}
         observed_sha = head.get("sha")
+        observed_ref = head.get("ref")
         _require(item.get("number") == pr_number, "QA_UPSTREAM_PULL_REQUEST_MISMATCH")
         if observed_sha is not None:
             _require(observed_sha == head_sha, "QA_UPSTREAM_PULL_REQUEST_MISMATCH")
+        if observed_ref is not None:
+            _require(observed_ref == head_ref, "QA_UPSTREAM_PULL_REQUEST_MISMATCH")
 
 
 def resolve_upstream_qa_target(
@@ -1406,7 +1411,10 @@ def resolve_upstream_qa_target(
     _require(isinstance(decision.get("title"), str) and isinstance(decision.get("summary"), str),
              "QA_OUTCOME_TEXT_INVALID")
     _assert_pull_requests_match(
-        _coerce_pull_requests(pull_requests), pr_number=pr_number, head_sha=head_sha,
+        _coerce_pull_requests(pull_requests),
+        pr_number=pr_number,
+        head_sha=head_sha,
+        head_ref=head_ref,
     )
     return {
         "pr_number": pr_number,
