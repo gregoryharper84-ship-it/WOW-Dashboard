@@ -143,6 +143,13 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("CURSOR_SPEND_CAP_UNCONFIRMED", workflow)
         self.assertIn('CURSOR_HANDOFF_ENABLED:-false', workflow)
 
+    def test_cursor_dispatch_requires_remote_writer_fence(self):
+        workflow = (HERE.parent.parent.parent / ".github" / "workflows" /
+                    "wow-v17-engineering-provider-dispatcher.yml").read_text()
+        step = workflow.split("      - name: Dispatch scoped Cursor Cloud Agent", 1)[1]
+        step = step.split("      - name: Deterministic survival checks", 1)[0]
+        self.assertIn("steps.remote_fence.outcome == 'success'", step)
+
     def test_invalid_agent_receipt_fails_closed(self):
         def api(url, **kwargs):
             if "/pulls/" in url:

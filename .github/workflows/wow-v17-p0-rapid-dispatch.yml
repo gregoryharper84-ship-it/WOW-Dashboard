@@ -64,6 +64,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          INDEPENDENT_ENABLED: ${{ vars.WOW_COPILOT_FALLBACK_ENABLED }}
+          INDEPENDENT_BUDGET_APPROVED: ${{ vars.WOW_COPILOT_FALLBACK_BUDGET_APPROVED }}
+          INDEPENDENT_REPOSITORY: ${{ vars.WOW_COPILOT_FALLBACK_REPOSITORY }}
+          INDEPENDENT_MAX_ASSIGNMENTS: ${{ vars.WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS }}
         run: |
           set -euo pipefail
           # This controls *engineering invocation*, not sporting-probability
@@ -104,6 +108,15 @@ jobs:
                       if [ "$secondary_status" = failure ] || [ "$secondary_status" = cancelled ]; then
                         admit=false
                         reason=PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED
+                        # Preserve exact manifest intake for independent admission,
+                        # never re-enable exhausted OpenAI/Claude invocations here.
+                        if [ "${INDEPENDENT_ENABLED:-}" = true ] && \
+                           [ "${INDEPENDENT_BUDGET_APPROVED:-}" = true ] && \
+                           [ "${INDEPENDENT_REPOSITORY:-}" = "$GITHUB_REPOSITORY" ] && \
+                           [ "${INDEPENDENT_MAX_ASSIGNMENTS:-}" = 1 ]; then
+                          admit=true
+                          reason=PRIMARY_ACCOUNT_BLOCKED_INDEPENDENT_ADMISSION_ONLY
+                        fi
                       fi
                     fi
                     ;;

@@ -1,6 +1,6 @@
 name: wow-v17-engineering-provider-dispatcher
 run-name: >-
-  WOW V17 provider source=${{ github.event.workflow_run.display_title || 'manual' }} lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }}
+  WOW V17 provider source=${{ github.event.workflow_run.display_title || 'manual' }} lease=${{ inputs.lease_group || 'GLOBAL' }} incident=${{ inputs.target_incident || 'AUTO' }} resident=${{ inputs.resident_dispatch_id || 'NONE' }}
 
 on:
   # Provider-aware admission is the only automatic engineering entrypoint.
@@ -14,6 +14,10 @@ on:
     types: [completed]
   workflow_dispatch:
     inputs:
+      resident_dispatch_id:
+        description: Optional resident reservation correlation ID; never provider or spend authorization.
+        required: false
+        default: ""
       force_provider:
         description: Optional provider override for diagnostics.
         required: false
@@ -65,6 +69,11 @@ jobs:
     name: WOW V17 engineering provider control plane
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      fallback_required: ${{ (steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' && vars.WOW_COPILOT_FALLBACK_ENABLED == 'true') || steps.remote_fence.outcome == 'failure' }}
+      target_incident: ${{ steps.route.outputs.target_incident }}
+      lease_group: ${{ steps.route.outputs.lease_group }}
+      allow_new_assignment: ${{ steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' }}
 
     steps:
       - name: Checkout protected main
@@ -95,6 +104,7 @@ jobs:
           action=NO_ACTION
           provider=none
           reason=NO_ACTION
+          independent_fallback_allowed=false
           parent_run="${SOURCE_RUN_ID:-$GITHUB_RUN_ID}"
           target_incident="${MANUAL_TARGET_INCIDENT:-}"
           lease_group="${MANUAL_LEASE_GROUP:-GLOBAL}"
@@ -160,6 +170,7 @@ jobs:
                 provider=deterministic
                 if [ "$eligible" = "true" ]; then
                   reason="${code}:ANTHROPIC_UNAVAILABLE_OR_FAILED"
+                  independent_fallback_allowed=true
                 fi
               fi
             elif [ "$source_workflow_id" = "wow-v17-claude-engineering-worker" ]; then
@@ -168,6 +179,9 @@ jobs:
               reason="$code"
               action=SURVIVAL
               provider=deterministic
+              if [[ "$code" == ANTHROPIC_API_* ]]; then
+                independent_fallback_allowed=true
+              fi
             else
               action=SURVIVAL
               provider=deterministic
@@ -225,6 +239,7 @@ jobs:
                   action=SURVIVAL
                   provider=deterministic
                   reason="CIRCUIT_BREAKER:${breaker_code}:SECONDARY_UNAVAILABLE_OR_FAILED"
+                  independent_fallback_allowed=true
                 fi
               elif [ -n "${OPENAI_API_KEY:-}" ]; then
                 action=DISPATCH
@@ -238,6 +253,7 @@ jobs:
                 action=SURVIVAL
                 provider=deterministic
                 reason=NO_HEALTHY_ENGINEERING_PROVIDER_AVAILABLE
+                independent_fallback_allowed=true
               fi
             fi
           fi
@@ -249,6 +265,7 @@ jobs:
             --arg parent_run_id "$parent_run" \
             --arg target_incident "$target_incident" \
             --arg lease_group "$lease_group" \
+            --argjson independent_fallback_allowed "$independent_fallback_allowed" \
             '{
               action: $action,
               provider: $provider,
@@ -256,6 +273,8 @@ jobs:
               parent_run_id: $parent_run_id,
               target_incident: $target_incident,
               lease_group: $lease_group,
+              cursor_status: (if $provider == "cursor" then null else "CURSOR_NOT_CONFIGURED" end),
+              independent_fallback_allowed: $independent_fallback_allowed,
               can_execute: false,
               terminal_authority: "V17_TERMINAL_REDUCER"
             }' > "$receipt"
@@ -267,9 +286,18 @@ jobs:
           echo "target_incident=$target_incident" >> "$GITHUB_OUTPUT"
           echo "lease_group=$lease_group" >> "$GITHUB_OUTPUT"
           echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
+          echo "independent_fallback_allowed=$independent_fallback_allowed" >> "$GITHUB_OUTPUT"
+
+      - name: Fence unresolved remote writers
+        id: remote_fence
+        if: steps.route.outputs.action != 'NO_ACTION'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
 
       - name: Dispatch OpenAI primary worker
-        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'openai'
+        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'openai' && steps.remote_fence.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
@@ -283,7 +311,7 @@ jobs:
             -f lease_group="$LEASE_GROUP"
 
       - name: Dispatch Anthropic fallback worker
-        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'anthropic'
+        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'anthropic' && steps.remote_fence.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           FALLBACK_REASON: ${{ steps.route.outputs.reason }}
@@ -301,7 +329,7 @@ jobs:
             -f lease_group="$LEASE_GROUP"
 
       - name: Dispatch scoped Cursor Cloud Agent
-        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'cursor'
+        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'cursor' && steps.remote_fence.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -340,14 +368,18 @@ jobs:
 
       - name: Deterministic survival checks
         id: survival
-        if: steps.route.outputs.action == 'SURVIVAL'
+        if: steps.route.outputs.action == 'SURVIVAL' || steps.remote_fence.outcome == 'failure'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REASON: ${{ steps.route.outputs.reason }}
+          REMOTE_FENCE: ${{ steps.remote_fence.outcome }}
           PARENT_RUN_ID: ${{ steps.route.outputs.parent_run_id }}
         run: |
           set -euo pipefail
+          if [ "$REMOTE_FENCE" = "failure" ]; then
+            REASON=REMOTE_WRITER_RECONCILIATION_REQUIRED
+          fi
           mkdir -p "$RUNNER_TEMP/wow-survival"
           python artifacts/wow-engine/v17/engineering_agent_team.py self-check \
             > "$RUNNER_TEMP/wow-survival/team-self-check.json"
@@ -401,7 +433,52 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Surface degraded provider state
-        if: steps.route.outputs.action == 'SURVIVAL'
+        if: steps.route.outputs.action == 'SURVIVAL' || steps.remote_fence.outcome == 'failure'
         run: |
           echo "::error::Both generative engineering paths are unavailable or unsafe to fail over; deterministic survival checks completed."
           exit 1
+
+  independent-provider:
+    needs: provider-control
+    if: always() && needs.provider-control.outputs.fallback_required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    # Only actual remote admission competes for the writer lock. The routing
+    # job must never hold it while queueing an OpenAI/Claude worker.
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Reconcile or admit separately authorized Copilot fallback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.WOW_COPILOT_ASSIGNMENT_TOKEN }}
+          WOW_COPILOT_FALLBACK_ENABLED: ${{ vars.WOW_COPILOT_FALLBACK_ENABLED }}
+          WOW_COPILOT_FALLBACK_REPOSITORY: ${{ vars.WOW_COPILOT_FALLBACK_REPOSITORY }}
+          WOW_COPILOT_FALLBACK_BUDGET_APPROVED: ${{ vars.WOW_COPILOT_FALLBACK_BUDGET_APPROVED }}
+          WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS: ${{ vars.WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS }}
+          TARGET_INCIDENT: ${{ needs.provider-control.outputs.target_incident }}
+          LEASE_GROUP: ${{ needs.provider-control.outputs.lease_group }}
+          ALLOW_NEW_ASSIGNMENT: ${{ needs.provider-control.outputs.allow_new_assignment }}
+        run: |
+          python artifacts/wow-engine/v17/engineering_remote_fallback.py fallback \
+            --output "$RUNNER_TEMP/independent-provider-receipt.json"
+
+      - name: Upload independent-provider receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-independent-provider-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/independent-provider-receipt.json
+          if-no-files-found: error
+          retention-days: 14

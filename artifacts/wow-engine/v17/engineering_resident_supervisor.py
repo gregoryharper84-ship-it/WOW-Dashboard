@@ -7,19 +7,25 @@ The supervisor never merges, deploys, scores sport, or grants verification.
 from __future__ import annotations
 
 import json
+import io
 import logging
 import os
 import re
 import socket
 import threading
+import uuid
+import zipfile
 from datetime import datetime, timezone
 import urllib.request
+from urllib.error import HTTPError
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from v17.engineering_dispatch_queue import _validate_manifest
 from v17.amrt_operational_lanes import dispatch_preflight
+from v17.engineering_provider_failover import resident_provider_admission
+from v17.engineering_remote_fallback import assert_no_remote_writer
 
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
@@ -38,6 +44,7 @@ MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
 LOCK_KEY = "wow:v17:engineering:resident-dispatch-lock:v1"
 COOLDOWN_KEY = "wow:v17:engineering:resident-dispatch-cooldown:v1"
 ATTEMPT_KEY_PREFIX = "wow:v17:engineering:resident-dispatch-attempts:v1:"
+PENDING_DISPATCH_KEY = LOCK_KEY + ":pending"
 DISPATCHER_HEARTBEAT_ID = "WOW_ENGINEERING_RESIDENT_DISPATCHER"
 OPEN_PR_PAGE_SIZE = 100
 MAX_OPEN_PR_PAGES = 10
@@ -83,6 +90,156 @@ class GitHubTransport:
     def get(self, suffix: str) -> Any:
         return self.call(f"/repos/{self.repo}/{suffix}")
 
+    def remote_writer_clear(self) -> bool:
+        comments = []
+        for page in range(1, 101):
+            rows = self.get(f"issues/1138/comments?per_page=100&page={page}")
+            if not isinstance(rows, list):
+                raise ValueError("REMOTE_RESERVATION_INVALID")
+            comments.extend(rows)
+            if len(rows) < 100:
+                break
+        else:
+            raise ValueError("REMOTE_RESERVATION_INVALID")
+        assert_no_remote_writer(comments)
+        now = datetime.now(timezone.utc)
+        for comment in comments:
+            body = comment.get("body") or ""
+            if "<!-- WOW_DUAL_STREAM_HEARTBEAT:" in body and "- worker_mode: RUNNING" in body:
+                expiry = re.search(r"^- lease_expires_at: (.+)$", body, re.M)
+                if not expiry:
+                    return False
+                stamp = datetime.fromisoformat(expiry[1].replace("Z", "+00:00"))
+                if stamp > now:
+                    return False
+        return True
+
+    def provider_admission(self) -> str:
+        """Read existing GitHub receipts only. Never probe a paid provider."""
+        result = self.get(
+            f"actions/workflows/{PROVIDER_WORKFLOW}/runs?branch=main&status=completed&per_page=1"
+        )
+        runs = result.get("workflow_runs")
+        if not isinstance(runs, list) or not runs:
+            return "PROVIDER_STATUS_UNVERIFIED"
+        run = runs[0]
+        if (run.get("head_branch") != "main" or run.get("status") != "completed"
+                or run.get("path") != f".github/workflows/{PROVIDER_WORKFLOW}"
+                or type(run.get("id")) is not int or run["id"] <= 0
+                or not re.fullmatch(r"[0-9a-f]{40}", str(run.get("head_sha", "")))):
+            return "PROVIDER_STATUS_UNVERIFIED"
+        artifacts = self.get(f"actions/runs/{run['id']}/artifacts?per_page=100")
+        rows = artifacts.get("artifacts")
+        if (not isinstance(rows, list) or type(artifacts.get("total_count")) is not int
+                or artifacts["total_count"] != len(rows)):
+            return "PROVIDER_STATUS_UNVERIFIED"
+        name = f"wow-v17-engineering-provider-receipt-{run['id']}-{run.get('run_attempt')}"
+        selected = [row for row in rows if row.get("name") == name and row.get("expired") is False]
+        if len(selected) != 1 or type(selected[0].get("id")) is not int:
+            return "PROVIDER_STATUS_UNVERIFIED"
+        route = self.provider_receipt(selected[0]["id"])
+        now = datetime.now(timezone.utc)
+        decision = resident_provider_admission(route, updated_at=run.get("updated_at"), now=now)
+        if decision == "PROVIDER_STATUS_UNVERIFIED":
+            return decision
+        # A later successful protected worker proves recovery; a later failed
+        # or unclassified worker invalidates an older positive route receipt.
+        latest_success = False
+        for workflow in ("wow-v17-chatgpt-engineering-worker.yml", "wow-v17-claude-engineering-worker.yml"):
+            workers = self.get(f"actions/workflows/{workflow}/runs?branch=main&status=completed&per_page=1")
+            items = workers.get("workflow_runs")
+            if not isinstance(items, list):
+                return "PROVIDER_STATUS_UNVERIFIED"
+            if not items:
+                continue
+            worker = items[0]
+            if (worker.get("path") != f".github/workflows/{workflow}"
+                    or worker.get("head_branch") != "main" or worker.get("status") != "completed"
+                    or type(worker.get("id")) is not int or worker["id"] <= 0
+                    or not re.fullmatch(r"[0-9a-f]{40}", str(worker.get("head_sha", "")))
+                    or worker.get("conclusion") not in {"success", "failure", "cancelled", "timed_out"}):
+                return "PROVIDER_STATUS_UNVERIFIED"
+            updated = datetime.fromisoformat(worker["updated_at"].replace("Z", "+00:00"))
+            route_time = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
+            age = (now - updated).total_seconds()
+            if age < 0:
+                return "PROVIDER_STATUS_UNVERIFIED"
+            acknowledged = (
+                route.get("action") == "NO_ACTION"
+                and str(route.get("parent_run_id")) == str(worker["id"])
+                and route.get("reason") == workflow.removesuffix(".yml") + "_SUCCESS"
+                and worker["conclusion"] == "success"
+            )
+            if updated >= route_time or acknowledged:
+                if worker["conclusion"] == "success" and age <= 900:
+                    latest_success |= worker["head_sha"] == self.get("commits/main").get("sha")
+                elif (decision == "PROVIDER_ADMITTED"
+                      and route.get("provider") == ("openai" if "chatgpt" in workflow else "anthropic")):
+                    decision = "PROVIDER_RECOVERY_UNVERIFIED"
+        if latest_success:
+            return "PROVIDER_ADMITTED"
+        if decision == "PROVIDER_ADMITTED" and self.get("commits/main").get("sha") != run["head_sha"]:
+            return "PROVIDER_RECOVERY_UNVERIFIED"
+        return decision
+
+    def provider_receipt(self, artifact_id: int) -> dict[str, Any]:
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
+
+        opener = urllib.request.build_opener(NoRedirect)
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{self.repo}/actions/artifacts/{artifact_id}/zip",
+            headers={"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json"},
+        )
+        try:
+            opener.open(request, timeout=8)
+        except HTTPError as exc:
+            if exc.code != 302:
+                raise ValueError("PROVIDER_STATUS_UNVERIFIED") from None
+            location = exc.headers.get("Location", "")
+        else:
+            raise ValueError("PROVIDER_STATUS_UNVERIFIED")
+        target = urlparse(location)
+        if (target.scheme != "https" or target.username or target.password or target.port
+                or not (target.netloc.endswith(".blob.core.windows.net")
+                        or target.netloc.endswith(".githubusercontent.com"))):
+            raise ValueError("PROVIDER_STATUS_UNVERIFIED")
+        # Signed artifact URLs get NO repository credential and no redirects.
+        with opener.open(urllib.request.Request(location), timeout=8) as response:
+            raw = response.read(2_000_001)
+        if len(raw) > 2_000_000:
+            raise ValueError("PROVIDER_STATUS_UNVERIFIED")
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            matches = [info for info in archive.infolist() if info.filename == "provider-route.json"]
+            if len(matches) != 1 or matches[0].file_size > 32_768:
+                raise ValueError("PROVIDER_STATUS_UNVERIFIED")
+            return json.loads(archive.read(matches[0]))
+
+    def dispatched_runs(self, claim: dict[str, Any]) -> list[dict[str, Any]]:
+        result = self.get(
+            f"actions/workflows/{PROVIDER_WORKFLOW}/runs?branch=main&event=workflow_dispatch&per_page=100"
+        )
+        if not isinstance(result, dict):
+            raise ValueError("DISPATCH_RECONCILIATION_REQUIRED")
+        runs = result.get("workflow_runs")
+        total = result.get("total_count")
+        if (type(total) is not int or total < 0 or not isinstance(runs, list)
+                or len(runs) > 100 or any(not isinstance(run, dict) for run in runs)):
+            raise ValueError("DISPATCH_RECONCILIATION_REQUIRED")
+        if total > len(runs):
+            # A full page is sufficient only if it crosses the reservation boundary.
+            if not runs or runs[-1].get("created_at", "") >= claim["created_at"]:
+                raise ValueError("DISPATCH_RECONCILIATION_REQUIRED")
+        return [run for run in runs
+                if run.get("head_branch") == "main" and run.get("event") == "workflow_dispatch"
+                and run.get("path") == f".github/workflows/{PROVIDER_WORKFLOW}"
+                and run.get("created_at", "") >= claim["created_at"]
+                and re.search(rf"\blease={re.escape(claim['lease_group'])} incident={claim['issue_number']}\b",
+                              run.get("display_title", ""))
+                and re.search(rf"\bresident={claim['dispatch_id']}(?:\s|$)",
+                              run.get("display_title", ""))]
+
     def get_open_pull_request_page(self, page: int) -> tuple[Any, bool, bool]:
         if isinstance(page, bool) or not isinstance(page, int) or page < 1:
             raise ValueError("OPEN_PR_PAGE_INVALID")
@@ -94,7 +251,7 @@ class GitHubTransport:
         )
         return result, has_next, has_pagination_link
 
-    def dispatch(self, issue: dict[str, Any]) -> None:
+    def dispatch(self, issue: dict[str, Any], *, dispatch_id: str = "") -> None:
         group = str(issue.get("lease_group") or "GLOBAL")
         incident = str(issue["issue_number"])
         if issue.get("severity") == "P0":
@@ -102,6 +259,8 @@ class GitHubTransport:
                 raise ValueError("P0_DOMAIN_LEASE_MISSING")
         elif group != "GLOBAL":
             raise ValueError("STANDARD_TARGET_MUST_USE_GLOBAL_LEASE")
+        if dispatch_id and not re.fullmatch(r"[0-9a-f]{32}", dispatch_id):
+            raise ValueError("DISPATCH_RECONCILIATION_REQUIRED")
         # An exact P1 target must not silently degrade to generic queue selection.
         self.call(
             f"/repos/{self.repo}/actions/workflows/{PROVIDER_WORKFLOW}/dispatches",
@@ -110,6 +269,7 @@ class GitHubTransport:
                 "reason": "RESIDENT_SUPERVISOR_NEXT_TASK",
                 "target_incident": incident,
                 "lease_group": group,
+                **({"resident_dispatch_id": dispatch_id} if dispatch_id else {}),
             }},
         )
 
@@ -277,12 +437,32 @@ def pending_pr_for_issue(client: GitHubTransport, issue_number: int) -> bool:
 
 def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str, Any]) -> str:
     """Atomic admission across resident replicas; GitHub worker remains the writer."""
-    if not redis_client.set(LOCK_KEY, socket.gethostname(), nx=True, ex=180):
+    owner = uuid.uuid4().hex
+    if not redis_client.set(LOCK_KEY, owner, nx=True, ex=180):
         return "ANOTHER_RESIDENT_SUPERVISOR_OWNS_LEASE"
+    try:
+        if not client.remote_writer_clear():
+            return "REMOTE_WRITER_RECONCILIATION_REQUIRED"
+    except Exception:
+        return "REMOTE_WRITER_RECONCILIATION_REQUIRED"
+    pending = redis_client.get(PENDING_DISPATCH_KEY)
+    if pending:
+        return reconcile_resident_dispatch(client, redis_client, pending)
     if redis_client.exists(COOLDOWN_KEY):
         return "RECENT_DISPATCH_COOLDOWN"
     if active_engineering_workflow(client):
         return "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+    try:
+        provider_state = client.provider_admission()
+    except Exception:
+        return "PROVIDER_STATUS_UNVERIFIED"
+    if not isinstance(provider_state, str) or provider_state not in {
+        "PROVIDER_ADMITTED", "PROVIDER_QUOTA_BLOCKED", "PROVIDER_THROTTLED",
+        "PROVIDER_RECOVERY_UNVERIFIED",
+    }:
+        return "PROVIDER_STATUS_UNVERIFIED"
+    if provider_state != "PROVIDER_ADMITTED":
+        return provider_state
     # An incident already at PR/review or retry cap must not starve every
     # other approved incident. Keep one shared writer and do not duplicate PRs.
     skipped: set[int] = set()
@@ -327,15 +507,91 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
         # Prevent repeated failed agent invocations from burning quota all day.
         # The existing worker owns bounded repair attempts inside each run.
         attempts_key = ATTEMPT_KEY_PREFIX + str(issue_number)
-        if int(redis_client.get(attempts_key) or 0) >= 3:
+        attempts = int(redis_client.get(attempts_key) or 0)
+        if attempts >= 3:
             has_attempt_cap = True
             skipped.add(issue_number)
             continue
-        client.dispatch(issue)
-        redis_client.incr(attempts_key)
-        redis_client.expire(attempts_key, 86400)
+        claim = {
+            "issue_number": issue_number,
+            "lease_group": str(issue.get("lease_group") or "GLOBAL"),
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "attempts_before": attempts, "counted": False,
+            "dispatch_id": owner,
+            "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+        }
+        encoded = json.dumps(claim, sort_keys=True)
+        # This persistent handoff extends the existing resident lease across
+        # ambiguous POST/accounting responses; it has no automatic expiry/reset.
+        reserved = redis_client.eval(
+            """-- reserve_resident_dispatch
+            if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+            return redis.call('SET', KEYS[2], ARGV[2], 'NX') and 1 or 0
+            """, 2, LOCK_KEY, PENDING_DISPATCH_KEY, owner, encoded,
+        )
+        if not reserved:
+            return "DISPATCH_RECONCILIATION_REQUIRED"
+        try:
+            client.dispatch(issue, dispatch_id=owner)
+        except Exception:
+            return "DISPATCH_RECONCILIATION_REQUIRED"
+        if not count_accepted_dispatch(redis_client, encoded, claim):
+            return "DISPATCH_RECONCILIATION_REQUIRED"
         redis_client.set(COOLDOWN_KEY, str(issue_number), ex=900)
         return "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+
+
+def count_accepted_dispatch(redis_client: Any, encoded: str | bytes, claim: dict[str, Any]) -> bool:
+    counted = json.dumps({**claim, "counted": True}, sort_keys=True)
+    return bool(redis_client.eval(
+        """-- count_accepted_resident_dispatch
+        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+        local before = tonumber(redis.call('GET', KEYS[2]) or '0')
+        if before ~= tonumber(ARGV[2]) or before >= 3 then return 0 end
+        redis.call('INCR', KEYS[2])
+        redis.call('EXPIRE', KEYS[2], 86400)
+        redis.call('SET', KEYS[1], ARGV[3])
+        return 1
+        """, 2, PENDING_DISPATCH_KEY,
+        ATTEMPT_KEY_PREFIX + str(claim["issue_number"]),
+        encoded, claim["attempts_before"], counted,
+    ))
+
+
+def reconcile_resident_dispatch(client: GitHubTransport, redis_client: Any, encoded: str | bytes) -> str:
+    try:
+        claim = json.loads(encoded)
+        if (claim.get("can_execute") is not False
+                or claim.get("terminal_authority") != "V17_TERMINAL_REDUCER"
+                or type(claim.get("issue_number")) is not int or claim["issue_number"] < 1
+                or type(claim.get("counted")) is not bool
+                or type(claim.get("attempts_before")) is not int
+                or not 0 <= claim["attempts_before"] < 3
+                or not re.fullmatch(r"[0-9a-f]{32}", claim.get("dispatch_id", ""))
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", claim.get("lease_group", ""))
+                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", claim.get("created_at", ""))):
+            return "DISPATCH_RECONCILIATION_REQUIRED"
+        runs = client.dispatched_runs(claim)
+        if len(runs) != 1 or runs[0].get("status") not in {
+            "queued", "in_progress", "waiting", "requested", "completed", "pending",
+        }:
+            return "DISPATCH_RECONCILIATION_REQUIRED"
+        if not claim["counted"]:
+            if not count_accepted_dispatch(redis_client, encoded, claim):
+                return "DISPATCH_RECONCILIATION_REQUIRED"
+            encoded = json.dumps({**claim, "counted": True}, sort_keys=True)
+        if runs[0]["status"] != "completed":
+            return "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+        # Preserve the existing bounded counter; only the pending handoff clears.
+        cleared = redis_client.eval(
+            """-- clear_reconciled_resident_dispatch
+            if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+            return redis.call('DEL', KEYS[1])
+            """, 1, PENDING_DISPATCH_KEY, encoded,
+        )
+        return "DISPATCH_RECONCILED" if cleared else "DISPATCH_RECONCILIATION_REQUIRED"
+    except Exception:
+        return "DISPATCH_RECONCILIATION_REQUIRED"
 
 
 def _enabled() -> bool:
@@ -492,7 +748,9 @@ def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
                 "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE",
                 "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR",
                 "P1_EXACT_WORKER_BOOTSTRAP_REQUIRED",
-            }
+                "REMOTE_WRITER_RECONCILIATION_REQUIRED",
+                "DISPATCH_RECONCILIATION_REQUIRED",
+            } or outcome.startswith("PROVIDER_")
             persist_resident_heartbeat(
                 db_client, status="DEGRADED" if is_hold else "RUNNING",
                 outcome=outcome, instance_id=instance_id,
