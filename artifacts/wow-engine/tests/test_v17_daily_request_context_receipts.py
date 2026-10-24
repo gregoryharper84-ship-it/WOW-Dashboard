@@ -11,19 +11,62 @@ from v17.cross_sport_winner_discovery import _slate_date_matches
 
 
 class _CaptureDB:
+    """Faithful fake for both write and exact-run readback contracts.
+
+    The persistence repair must actually verify the stored row set. Do not
+    weaken the implementation to accommodate the old write-only fixture.
+    """
+
     def __init__(self):
         self.payload = None
         self.table_name = None
+        self.stored = {}
+        self._select = False
+        self._run_id = None
+        self._start = 0
+        self._end = 9999
 
     def table(self, name):
+        assert name == DAILY_ROW_DETAIL_TABLE
         self.table_name = name
+        self._select = False
+        self._run_id = None
+        self._start = 0
+        self._end = 9999
         return self
 
-    def upsert(self, payload):
+    def upsert(self, payload, **_kwargs):
         self.payload = payload
+        for row in payload:
+            self.stored[(row["run_id"], row["row_index"])] = deepcopy(row)
+        return self
+
+    def select(self, *_fields):
+        self._select = True
+        return self
+
+    def eq(self, field, value):
+        assert field == "run_id"
+        self._run_id = value
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def range(self, start, end):
+        self._start, self._end = start, end
         return self
 
     def execute(self):
+        if self._select:
+            indices = sorted(
+                row_index for run_id, row_index in self.stored
+                if run_id == self._run_id
+            )
+            return SimpleNamespace(data=[
+                {"row_index": index}
+                for index in indices[self._start:self._end + 1]
+            ])
         return SimpleNamespace(data=[])
 
 
