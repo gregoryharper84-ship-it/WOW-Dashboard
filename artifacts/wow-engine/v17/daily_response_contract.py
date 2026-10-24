@@ -30,12 +30,15 @@ from __future__ import annotations
 import json
 from math import isfinite
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 CAN_EXECUTE = False
 
 DAILY_ROW_DETAIL_TABLE = "wow_v17_daily_run_row_detail"
 DAILY_ACQUISITION_DETAIL_TABLE = "wow_v17_daily_run_acquisition_detail"
+# Only a configured query that the provider answered counts toward a complete board.
+ACQUISITION_COMPLETE_FINAL_STATES = frozenset({"EVENTS_RETURNED", "NO_EVENTS_RETURNED"})
+MAX_ACQUISITION_FAMILY_SUMMARY = 32
 
 DETAIL_PERSISTENCE_UNAVAILABLE = "DAILY_ROW_DETAIL_PERSISTENCE_UNAVAILABLE"
 DETAIL_RETRIEVAL_UNAVAILABLE = "DAILY_ROW_DETAIL_RETRIEVAL_UNAVAILABLE"
@@ -362,6 +365,11 @@ def compact_cross_sport_discovery_audit(audit: dict[str, Any]) -> dict[str, Any]
     reference = audit.get("acquisition_detail_ref")
     if isinstance(reference, dict):
         compact["acquisition_detail_ref"] = dict(reference)
+    family_summary = audit.get("acquisition_family_summary")
+    if isinstance(family_summary, list):
+        compact["acquisition_family_summary"] = [
+            dict(row) for row in family_summary[:MAX_ACQUISITION_FAMILY_SUMMARY] if isinstance(row, dict)
+        ]
     return compact
 
 
@@ -521,7 +529,10 @@ def compact_response(response: dict[str, Any], *, detail_available: bool) -> dic
     return compacted
 
 
-def persist_row_detail(db: Any, *, run_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def persist_row_detail(
+    db: Any, *, run_id: str, rows: list[dict[str, Any]],
+    request_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Persist full per-row evidence once so compact transport loses nothing.
 
     Fails closed and explicitly: a persistence failure is reported as a typed
@@ -538,7 +549,8 @@ def persist_row_detail(db: Any, *, run_id: str, rows: list[dict[str, Any]]) -> d
             "lane": row.get("lane"),
             "row_status": row.get("row_status"),
             "identity": row.get("identity") or {},
-            "detail": row,
+            "detail": ({**row, "daily_request_context": dict(request_context)}
+                       if request_context is not None else row),
             "captured_at": captured_at,
             "can_execute": False,
         }
@@ -623,6 +635,65 @@ def _bounded_code(value: Any) -> str | None:
     token = text.split(":", 1)[0].strip().upper()
     sanitized = "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in token)
     return sanitized[:96] or None
+
+
+def summarize_acquisition_by_family(details: Any) -> list[dict[str, Any]]:
+    """Bounded per-sport acquisition receipt for the normal Daily response.
+
+    Incident #823: per-target detail was persisted but the response only carried
+    a reference, so the Oct 14 user-path scan could not say which sport failed
+    or why. One small row per family: targets, events, final-state counts and
+    the first typed failure (code, path, upstream status). Codes are sanitized
+    with the same rules as persistence; no prices, probabilities or payloads.
+    """
+    if not isinstance(details, (list, tuple)):
+        return []
+    families: dict[str, dict[str, Any]] = {}
+    for detail in details:
+        if not isinstance(detail, Mapping):
+            continue
+        family = (_bounded_text(detail.get("family"), maximum=32) or "UNKNOWN").upper()
+        if family not in families and len(families) >= MAX_ACQUISITION_FAMILY_SUMMARY:
+            continue
+        summary = families.setdefault(family, {
+            "family": family,
+            "targets": 0,
+            "targets_complete": 0,
+            "targets_incomplete": 0,
+            "events_returned": 0,
+            "final_states": {},
+            "first_failure": None,
+            "can_execute": False,
+        })
+        state = _bounded_code(detail.get("final_state")) or "UNKNOWN"
+        summary["targets"] += 1
+        try:
+            summary["events_returned"] += max(0, int(detail.get("events_returned") or 0))
+        except (TypeError, ValueError):
+            pass
+        states = summary["final_states"]
+        if state in states or len(states) < 8:
+            states[state] = states.get(state, 0) + 1
+        if state in ACQUISITION_COMPLETE_FINAL_STATES:
+            summary["targets_complete"] += 1
+            continue
+        summary["targets_incomplete"] += 1
+        if summary["first_failure"] is None:
+            status, _ = _optional_upstream_status(detail.get("primary_upstream_status"))
+            summary["first_failure"] = {
+                "final_state": state,
+                "blocker_code": _bounded_code(detail.get("blocker_code")),
+                "primary_path_id": _bounded_code(detail.get("primary_path_id")),
+                "primary_upstream_status": status,
+                "fallback_path_id": _bounded_code(detail.get("fallback_path_id")),
+                "fallback_blocker_code": _bounded_code(detail.get("fallback_blocker_code")),
+            }
+    for summary in families.values():
+        summary["status"] = (
+            "COMPLETE" if summary["targets_incomplete"] == 0 else
+            "PARTIAL" if summary["targets_complete"] else "FAILED"
+        )
+    return [families[name] for name in sorted(families)]
 
 
 def _allowlisted_optional(value: Any, allowed: frozenset[str]) -> tuple[str | None, bool]:
@@ -1010,12 +1081,24 @@ def persist_acquisition_detail(
             "extra_target_count": len(stored_keys - expected_keys),
             "can_execute": False,
         }
+    # Incident #823: every target having a stored record proves the detail
+    # accounting, not the board. A target that failed, was rate limited, ran out
+    # of budget or has no configured feed leaves the board incomplete.
+    incomplete = [
+        row for row in payload
+        if str(row.get("final_state") or "") not in ACQUISITION_COMPLETE_FINAL_STATES
+    ]
     return {
         "status": "PERSISTED",
         "detail_available": True,
         "details_expected": len(payload),
         "details_persisted": len(payload),
-        "board_completeness": True,
+        "detail_reconciliation": True,
+        "board_completeness": not incomplete,
+        "incomplete_target_count": len(incomplete),
+        "incomplete_families": sorted({str(row.get("family") or "") for row in incomplete})[
+            :MAX_COMPACT_AUDIT_ITEMS
+        ],
         "blockers": [],
         "can_execute": False,
     }

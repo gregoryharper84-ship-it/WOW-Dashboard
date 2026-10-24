@@ -41,8 +41,12 @@ class PropTerminalDecision:
 MODEL_CAPABILITY_BLOCKERS = {
     "MODEL_UNAVAILABLE", "CONTROLLING_SPECIALIST_UNAVAILABLE", "EXACT_CERTIFIED_ROUTE_UNAVAILABLE",
     "MODEL_ARTIFACT_NOT_REGISTERED", "MODEL_ARTIFACT_NOT_PROMOTED", "UNSUPPORTED_COMPOSITE_MODEL",
-    "MODEL_CALIBRATION_UNAVAILABLE", "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND", "PROP_MODEL_REGISTRY_UNAVAILABLE",
+    "MODEL_CALIBRATION_UNAVAILABLE", "PROP_CERTIFIED_MODEL_ARTIFACT_NOT_FOUND",
     "PROP_MODEL_FAMILY_ADAPTER_UNAVAILABLE", "PROP_CALIBRATOR_ADAPTER_UNAVAILABLE",
+}
+
+REGISTRY_INFRA_BLOCKERS = {
+    "PROP_MODEL_REGISTRY_UNAVAILABLE", "PROP_MODEL_REGISTRY_INVALID_RESPONSE",
 }
 
 INPUT_BLOCKERS = {
@@ -78,6 +82,11 @@ def reduce_prop_terminal(*, proposed_label: str, blockers: Iterable[str] = (), m
 
     if bset & EVENT_BLOCKERS:
         return PropTerminalDecision("NO_PLAY", "EVENT_INVALIDATED", model_evaluated, False, False, bs, CAUSE_EVENT, concurrent_market)
+    # A failed registry lookup proves nothing about fitted-capability absence.
+    # Apply before the capability set; an outage must not be mislabeled as
+    # MODEL_UNAVAILABLE even when a stale capability blocker is also present.
+    if bset & REGISTRY_INFRA_BLOCKERS:
+        return PropTerminalDecision("REGISTRY_INFRASTRUCTURE_BLOCKED", "REGISTRY_INFRASTRUCTURE_BLOCKED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     if bset & MODEL_CAPABILITY_BLOCKERS:
         return PropTerminalDecision("MODEL_UNAVAILABLE", "CAPABILITY_BLOCKED", False, False, True, bs, CAUSE_INFRASTRUCTURE, concurrent_market)
     if (bset & SCORER_FAILURE_BLOCKERS) or label == "MODEL_SCORER_FAILED":

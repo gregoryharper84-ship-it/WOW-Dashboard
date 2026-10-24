@@ -195,7 +195,7 @@ def test_non_peer_primary_openai_agent_workflows_remain_openai_only() -> None:
     assert worker.count("uses: ./.github/actions/wow-claude-agent") == 3
 
     action = CHATGPT_ACTION.read_text()
-    assert "openai/codex-action@v1" in action
+    assert "openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675" in action
     assert "permission_profile" in action
     assert "safety-strategy: unprivileged-user" in action
     assert 'allow-bots: "true"' in action
@@ -239,7 +239,9 @@ def test_claude_runner_prefers_api_key_then_fails_over_to_oauth() -> None:
     assert "id: claude_api" in action
     assert "if: inputs.anthropic_api_key != ''" in action
     assert "id: claude_oauth" in action
-    assert "if: inputs.claude_code_oauth_token != '' && (inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure')" in action
+    assert "inputs.claude_code_oauth_token != ''" in action
+    assert "inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure' ||" in action
+    assert "steps.claude_api.outputs.structured_output == ''" in action
     assert action.count("continue-on-error: true") >= 2
     assert "steps.claude_api.outputs.structured_output || steps.claude_oauth.outputs.structured_output" in action
     assert "api_outcome=${API_OUTCOME:-not-run}, oauth_outcome=${OAUTH_OUTCOME:-not-run}" in action
@@ -263,15 +265,19 @@ def test_domain_scoped_p0_target_propagates_across_provider_and_workers() -> Non
     assert "incident=([0-9]+)" in dispatcher
     assert "lease=([A-Za-z0-9_-]+)" in dispatcher
 
-    shared_group = "group: wow-v17-engineering-domain-${{ inputs.lease_group || 'GLOBAL' }}"
+    shared_group = "group: wow-v17-engineering-implementation-single-writer"
     assert shared_group in openai
     assert shared_group in claude
     assert "TARGET_INCIDENT_NOT_ACTIONABLE" in openai
     assert "TARGET_INCIDENT_NOT_ACTIONABLE" in claude
     assert "TARGET_INCIDENT_LEASE_MISMATCH" in openai
     assert "TARGET_INCIDENT_LEASE_MISMATCH" in claude
-    assert 'select(.severity != "P0" or .execution_lane != "RAPID")' in openai
-    assert 'select(.severity != "P0" or .execution_lane != "RAPID")' in claude
+    assert "engineering_dispatch_queue.py standard" in openai
+    assert "engineering_dispatch_queue.py check-standard" in openai
+    assert "wow-v17-engineering-domain-" not in openai
+    assert "engineering_dispatch_queue.py standard" in claude
+    assert "engineering_dispatch_queue.py check-standard" in claude
+    assert "wow-v17-engineering-domain-" not in claude
     assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in openai
     assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in claude
     assert "marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'" not in openai

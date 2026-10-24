@@ -19,6 +19,12 @@ concurrency:
 env:
   DATABASE_URL: postgresql://wow_ci:wow_ci@localhost:5432/wow_test
   WOW_CI: "1"
+  # Importing the legacy Flask app starts production daemons unless their
+  # existing kill-switches are set. CI owns the Postgres lifecycle, so those
+  # daemon threads must never race pytest teardown or environment patching.
+  WNBA_DISABLE_CRON: "1"
+  LLP_DISABLE_SNAPSHOT_CRON: "1"
+  SETTLEMENT_WORKER_DISABLED: "1"
   PYTHONDONTWRITEBYTECODE: "1"
   ANTHROPIC_API_KEY: "wow-ci-placeholder-not-live"
   SESSION_SECRET: "wow-ci-attestation-secret-not-live"

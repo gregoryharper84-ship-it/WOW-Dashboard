@@ -1,0 +1,148 @@
+name: wow-v17-engineering-digest
+
+# Daily, read-only "WOW autonomy digest" pinned issue (#1550/#1663 item 4): PRs merged
+# in the last 24h, PRs on HOLD with reasons, PRs waiting on the owner (trust root),
+# stale/conflicted PRs, last main SHA, last Render deployed SHA.
+#
+# All reads use the ambient read-only GITHUB_TOKEN; only the issue write at the end
+# uses the wow-engineering App token. can_execute=false; never merges or deploys.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  deployments: read
+  issues: read
+
+concurrency:
+  group: wow-v17-engineering-digest
+  cancel-in-progress: true
+
+jobs:
+  digest:
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
+    environment: wow-engineering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Gather read-only evidence
+        id: evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          last_main_sha=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
+          last_render_deployed_sha=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/deployments?environment=wow-v17-render-production-attestation&per_page=100" \
+            --jq 'sort_by(.created_at) | last // {} | .sha // "UNKNOWN"')
+
+          cutoff=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-24H +%Y-%m-%dT%H:%M:%SZ)
+          merged=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=closed&base=main&per_page=100&sort=updated&direction=desc" \
+            --jq --arg bot "wow-engineering[bot]" --arg cutoff "$cutoff" \
+            '[.[] | select(.user.login == $bot) | select(.merged_at != null) | select(.merged_at >= $cutoff) | {number, title}]')
+
+          open_bot_prs=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq --arg bot "wow-engineering[bot]" '[.[] | select(.user.login == $bot) | {number, title, mergeable_state}]')
+
+          hold_prs='[]'
+          waiting_on_owner='[]'
+          stale_or_conflicted='[]'
+          for row in $(jq -c '.[]' <<<"$open_bot_prs"); do
+            number=$(jq -r '.number' <<<"$row")
+            title=$(jq -r '.title' <<<"$row")
+            mergeable_state=$(jq -r '.mergeable_state // "unknown"' <<<"$row")
+
+            checks=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${number}" --jq '.head.sha' | \
+              xargs -I{} gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/{}/check-runs?per_page=100" --jq '.check_runs')
+            summary=$(jq -r '
+              [.[] | select(.name == "WOW Independent QA exact-head" or .name == "WOW Release Authority exact-head")
+                   | select(.conclusion == "failure")]
+              | sort_by(.started_at // .created_at) | last // {} | .output.summary // ""
+            ' <<<"$checks")
+
+            if [ -n "$summary" ]; then
+              if grep -qE '_OWNER_APPROVAL_MISSING|QA_TRUST_ROOT_' <<<"$summary"; then
+                reason=$(grep -oE '[A-Z][A-Z0-9_]*' <<<"$summary" | grep -E '_OWNER_APPROVAL_MISSING|^QA_TRUST_ROOT_' | head -1)
+                waiting_on_owner=$(jq -c --arg n "$number" --arg t "$title" --arg r "$reason" \
+                  '. + [{number: ($n|tonumber), title: $t, reason: $r}]' <<<"$waiting_on_owner")
+              else
+                reason=$(grep -oE '[A-Z][A-Z0-9_]*' <<<"$summary" | head -1)
+                hold_prs=$(jq -c --arg n "$number" --arg t "$title" --arg r "$reason" \
+                  '. + [{number: ($n|tonumber), title: $t, reason: $r}]' <<<"$hold_prs")
+              fi
+            fi
+
+            if [ "$mergeable_state" = "dirty" ]; then
+              stale_or_conflicted=$(jq -c --arg n "$number" --arg t "$title" \
+                '. + [{number: ($n|tonumber), title: $t, reason: "PR_UPDATE_CONFLICT"}]' <<<"$stale_or_conflicted")
+            fi
+          done
+
+          jq -n \
+            --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson merged_last_24h "$merged" \
+            --argjson hold_prs "$hold_prs" \
+            --argjson waiting_on_owner "$waiting_on_owner" \
+            --argjson stale_or_conflicted "$stale_or_conflicted" \
+            --arg last_main_sha "$last_main_sha" \
+            --arg last_render_deployed_sha "$last_render_deployed_sha" \
+            '{generated_at:$generated_at,merged_last_24h:$merged_last_24h,hold_prs:$hold_prs,waiting_on_owner:$waiting_on_owner,stale_or_conflicted:$stale_or_conflicted,last_main_sha:$last_main_sha,last_render_deployed_sha:$last_render_deployed_sha}' \
+            > "$RUNNER_TEMP/digest-evidence.json"
+
+      - name: Render digest body
+        id: render
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_digest.py \
+            --evidence-json "$RUNNER_TEMP/digest-evidence.json" > "$RUNNER_TEMP/digest-body.md"
+
+      - name: Create or update the pinned digest issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          title="WOW autonomy digest"
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --search "in:title \"$title\"" \
+            --json number,title --jq --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/digest-body.md"
+            state=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${number}" --jq '.state')
+            [ "$state" = "closed" ] && gh issue reopen "$number" --repo "$GITHUB_REPOSITORY"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$RUNNER_TEMP/digest-body.md"
+          fi

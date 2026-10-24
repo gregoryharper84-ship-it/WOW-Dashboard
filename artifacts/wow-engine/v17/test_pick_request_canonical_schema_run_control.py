@@ -19,7 +19,8 @@ def test_live_host_uses_single_domain_canonical_action_with_run_control_merged()
         for operation in methods.values()
         if isinstance(operation, dict) and "operationId" in operation
     }
-    assert len(primary_ops) == 26
+    assert len(primary_ops) == 27
+    assert "scoreWowTeamEventRequest" in primary_ops
     assert "runWowV17NFLPickemBoard" not in primary_ops
     assert "submitWowV17NFLPickemBoard" in primary_ops
     assert "getWowV17NFLPickemRun" in primary_ops

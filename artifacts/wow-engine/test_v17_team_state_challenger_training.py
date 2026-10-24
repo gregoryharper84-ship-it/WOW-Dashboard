@@ -169,3 +169,123 @@ def test_team_state_screen_can_override_generic_candidate_screen_without_promoti
     assert payload["active"] is False
     assert payload["probability_publishable"] is False
     assert payload["can_execute"] is False
+
+
+def test_ncaaf_features_persist_even_when_candidate_fit_is_blocked(monkeypatch):
+    import pytest
+    from v17 import binary_candidate_lifecycle as lifecycle
+
+    def blocked_fit(*args, **kwargs):
+        raise lifecycle.BinaryCandidateError("BINARY_SAMPLE_INSUFFICIENT", "fixture")
+
+    monkeypatch.setattr(lifecycle, "train_binary_candidate", blocked_fit)
+    client = _Client()
+    with pytest.raises(training.TeamStateChallengerUnavailable) as exc:
+        training.train_binary_challenger(
+            client, sport="NCAAF", league="NCAAF", events=_events(),
+            expected_season_games=13, training_code_sha="a" * 40,
+        )
+
+    assert exc.value.code == "BINARY_SAMPLE_INSUFFICIENT"
+    assert client.calls
+    assert all(table == "wow_d1_training_rows" for table, _, _ in client.calls)
+    rows = [row for _, payload, _ in client.calls for row in payload]
+    assert rows
+    assert all(row["sport"] == "NCAAF" for row in rows)
+    assert all(row["model_family"] == "NCAAF_DYNAMIC_TEAM_STATE_LOGIT_V2" for row in rows)
+    assert all(row["market_features_used"] is False for row in rows)
+    assert all(row["can_execute"] is False for row in rows)
+    assert all(row["feature_as_of"] < row["event_start_time"] for row in rows)
+    assert all(row["historical_reconstruction"] is True for row in rows)
+    assert all(kwargs["ignore_duplicates"] is True for _, _, kwargs in client.calls)
+
+
+def test_non_ncaaf_does_not_change_candidate_fit_failure_persistence(monkeypatch):
+    import pytest
+    from v17 import binary_candidate_lifecycle as lifecycle
+
+    def blocked_fit(*args, **kwargs):
+        raise lifecycle.BinaryCandidateError("BINARY_SAMPLE_INSUFFICIENT", "fixture")
+
+    monkeypatch.setattr(lifecycle, "train_binary_candidate", blocked_fit)
+    client = _Client()
+    with pytest.raises(training.TeamStateChallengerUnavailable):
+        training.train_binary_challenger(
+            client, sport="NFL", league="NFL", events=_events(),
+            expected_season_games=17, training_code_sha="a" * 40,
+        )
+    assert client.calls == []
+
+
+def test_ncaaf_success_persists_feature_corpus_once_before_candidate_fit(monkeypatch):
+    """The normal fit path cannot double-write the ledger or auto-publish."""
+    from dataclasses import dataclass
+    from v17 import binary_candidate_lifecycle as lifecycle
+
+    @dataclass
+    class Metrics:
+        calibrated_brier: float = .20
+        baseline_brier: float = .25
+        calibrated_log_loss: float = .60
+        baseline_log_loss: float = .69
+        ece: float = .03
+        train_n: int = 40
+        calibration_n: int = 20
+        test_n: int = 20
+
+    client = _Client()
+    observed_at_fit = []
+
+    def fitted(rows, *, model_family, feature_names, min_rows):
+        observed_at_fit.append([call[0] for call in client.calls])
+        return SimpleNamespace(
+            artifact_payload={"candidate_only": True},
+            dataset_hash="1" * 64,
+            calibrator_payload={"method": "TEST"},
+            metrics=Metrics(),
+            research_screen_pass=True,
+        )
+
+    monkeypatch.setattr(lifecycle, "train_binary_candidate", fitted)
+    payload = training.train_binary_challenger(
+        client, sport="NCAAF", league="NCAAF", events=_events(),
+        expected_season_games=13, training_code_sha="a" * 40,
+    )
+    assert observed_at_fit == [["wow_d1_training_rows"]]
+    assert [table for table, _, _ in client.calls] == [
+        "wow_d1_training_rows", "wow_d1_candidate_artifacts",
+    ]
+    assert client.calls[0][2]["ignore_duplicates"] is True
+    assert client.calls[1][2]["ignore_duplicates"] is True
+    assert payload["probability_publishable"] is False
+    assert payload["automatic_promotion"] is False
+    assert payload["can_execute"] is False
+    assert client.calls[-1][1]["lifecycle_state"] == "CANDIDATE"
+    assert client.calls[-1][1]["active"] is False
+
+
+def test_ncaaf_failed_fit_feature_retries_preserve_immutable_identity(monkeypatch):
+    """Repeated failed candidate fitting writes the exact same idempotent rows."""
+    import pytest
+    from v17 import binary_candidate_lifecycle as lifecycle
+
+    def blocked_fit(*args, **kwargs):
+        raise lifecycle.BinaryCandidateError("BINARY_SAMPLE_INSUFFICIENT", "fixture")
+
+    monkeypatch.setattr(lifecycle, "train_binary_candidate", blocked_fit)
+    client = _Client()
+    for _ in range(2):
+        with pytest.raises(training.TeamStateChallengerUnavailable):
+            training.train_binary_challenger(
+                client, sport="NCAAF", league="NCAAF", events=_events(),
+                expected_season_games=13, training_code_sha="a" * 40,
+            )
+    assert len(client.calls) == 2
+    (table_a, payload_a, kwargs_a), (table_b, payload_b, kwargs_b) = client.calls
+    assert table_a == table_b == "wow_d1_training_rows"
+    assert payload_a == payload_b
+    assert kwargs_a == kwargs_b
+    assert kwargs_a["on_conflict"] == (
+        "sport,official_event_id,feature_schema_version,source_manifest_sha256"
+    )
+    assert kwargs_a["ignore_duplicates"] is True

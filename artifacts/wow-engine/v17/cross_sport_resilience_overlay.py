@@ -196,12 +196,13 @@ def _schedule_first_fetch(
         normalized = str(family or "").upper()
         sport_key = _ESPN_FAMILY_KEYS.get(normalized)
         if sport_key:
+            window_start, window_end = discovery.slate_bounded_window(started, end)
             result = secondary.secondary_for_request(
                 f"/odds-api/v4/sports/{sport_key}/events",
                 {
                     "dateFormat": "iso",
-                    "commenceTimeFrom": _iso(started),
-                    "commenceTimeTo": _iso(end),
+                    "commenceTimeFrom": _iso(window_start),
+                    "commenceTimeTo": _iso(window_end),
                 },
                 {},
                 primary_failure=None,
