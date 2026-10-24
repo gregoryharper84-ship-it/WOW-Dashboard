@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from email.utils import parsedate_to_datetime
 import hashlib
 import json
@@ -128,9 +129,12 @@ def _competitor_identity(event: dict) -> dict:
         raise CaptureFailure("SOURCE_TEAM_IDENTITY_MALFORMED") from exc
 
 
-def classify_events(raw: bytes, *, now: datetime, min_lead_seconds: int = MIN_LEAD_SECONDS) -> dict:
+def classify_events(raw: bytes, *, now: datetime, min_lead_seconds: int = MIN_LEAD_SECONDS, target_date: str | None = None) -> dict:
     if min_lead_seconds < MIN_LEAD_SECONDS:
         raise CaptureFailure("BAD_MIN_LEAD")
+    if not isinstance(now, datetime) or now.utcoffset() is None:
+        raise CaptureFailure("CAPTURE_CLOCK_NAIVE")
+    expected_day = date.fromisoformat(utc_date(target_date)) if target_date is not None else None
     try:
         payload = json.loads(raw)
     except (ValueError, UnicodeError) as exc:
@@ -147,17 +151,29 @@ def classify_events(raw: bytes, *, now: datetime, min_lead_seconds: int = MIN_LE
             raise CaptureFailure("SOURCE_EVENT_IDENTITY_DUPLICATE")
         seen.add(event_id)
         event_start = utc_datetime(event.get("date"))
-        state = ((event.get("status") or {}).get("type") or {}).get("state")
-        if not isinstance(state, str):
+        status = event.get("status")
+        status_type = status.get("type") if isinstance(status, dict) else None
+        state = status_type.get("state") if isinstance(status_type, dict) else None
+        completed = status_type.get("completed") if isinstance(status_type, dict) else None
+        if not isinstance(state, str) or type(completed) is not bool:
             raise CaptureFailure("SOURCE_EVENT_STATUS_MALFORMED")
+        season = event.get("season")
+        if not isinstance(season, dict):
+            raise CaptureFailure("SOURCE_SEASON_IDENTITY_MALFORMED")
         lead_seconds = (event_start - now).total_seconds()
         identity = _competitor_identity(event)
         summary = {"event_id": event_id, "event_start_utc": event_start.isoformat(),
                    "state": state, "lead_seconds": int(lead_seconds), **identity}
-        if state.lower() == "pre" and lead_seconds >= min_lead_seconds:
-            eligible.append(summary)
+        if season.get("type") != 2 or season.get("slug") != "regular-season":
+            skipped.append({**summary, "reason": "EVENT_REGIME_NOT_REGULAR_SEASON"})
+        elif expected_day is not None and event_start.astimezone(ZoneInfo("America/New_York")).date() != expected_day:
+            skipped.append({**summary, "reason": "EVENT_WRONG_NBA_LOCAL_DATE"})
+        elif state.lower() != "pre" or completed is not False:
+            skipped.append({**summary, "reason": "EVENT_NOT_FUTURE_PREGAME"})
+        elif lead_seconds < min_lead_seconds:
+            skipped.append({**summary, "reason": "MIN_LEAD_NOT_MET"})
         else:
-            skipped.append({**summary, "reason": "EVENT_NOT_FUTURE_PREGAME" if state.lower() != "pre" else "MIN_LEAD_NOT_MET"})
+            eligible.append(summary)
     return {"events_total": len(seen), "events_pregame_eligible": eligible, "events_skipped": skipped}
 
 def _atomic_bytes(destination: Path, data: bytes) -> None:
@@ -179,7 +195,7 @@ def capture(target_date: str, outdir: Path, *, now: datetime | None = None, open
         raise CaptureFailure("CAPTURE_CLOCK_NAIVE")
     now = now.astimezone(timezone.utc)
     raw, meta = fetch_source(target_date, now=now, opener=opener)
-    count = classify_events(raw, now=now)
+    count = classify_events(raw, now=now, target_date=target_date)
     manifest = {
         "schema_version": MANIFEST_SCHEMA, "sport": "NBA", "target_date": utc_date(target_date),
         **meta, **count, "data_provenance": "ESPN_PUBLIC_SCOREBOARD_HTTP",
@@ -213,7 +229,7 @@ def verify(outdir: Path, target_date: str) -> dict:
     if hashlib.sha256(raw).hexdigest() != manifest.get("raw_sha256") or len(raw) != manifest.get("raw_bytes"):
         raise CaptureFailure("CAPTURE_RAW_HASH_MISMATCH")
     now = utc_datetime(manifest.get("capture_host_clock_utc"))
-    events = classify_events(raw, now=now)
+    events = classify_events(raw, now=now, target_date=target_date)
     for k, value in events.items():
         if value != manifest.get(k):
             raise CaptureFailure("CAPTURE_RECEIPT_EVENT_MISMATCH")
