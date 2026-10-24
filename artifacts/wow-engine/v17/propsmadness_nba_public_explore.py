@@ -235,6 +235,8 @@ def fetch_public_explore_once(
     text = robots_text
     if text is None:
         text = read(ROOT + "/robots.txt", 50000).decode("utf-8", errors="strict")
+    if not text.strip() or not re.search(r"(?im)^\s*User-agent\s*:", text):
+        raise PublicPageHold("PM_PUBLIC_ROBOTS_UNVERIFIED")
     robots = RobotFileParser()
     robots.parse(text.splitlines())
     url = ROOT + "/nba/props/" + market
