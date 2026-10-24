@@ -19,6 +19,9 @@ DEFAULT_TIMEOUT_SECONDS = 10
 SIRT_WATCHDOG_WORKFLOW = "wow-sirt-independent-reliability-sentinel.yml"
 SIRT_WATCHDOG_COMPONENT = f"{REPOSITORY}:{SIRT_WATCHDOG_WORKFLOW}"
 SIRT_WATCHDOG_MAX_AGE = timedelta(minutes=90)
+# Off-GitHub Render cron sentinel (15-minute cadence): two missed cycles plus slack.
+EXTERNAL_SENTINEL_ID = "WOW_SIRT_EXTERNAL_SENTINEL"
+EXTERNAL_SENTINEL_MAX_AGE = timedelta(minutes=35)
 CODE_HEALTH_WORKFLOW_NAMES = frozenset({
     "wow-v17-engineering-auditor-code-health",
     "wow-engine-verify",
@@ -159,6 +162,32 @@ def reconcile_github_updates(
     return {"github_work_events": work_n, "code_health_events": code_health_n}
 
 
+def _external_sentinel_fresh(store: Any, observed: datetime) -> bool:
+    """True only for a fresh, well-formed, non-executing heartbeat from the off-GitHub sentinel.
+
+    Fail closed: any missing reader, read error, wrong identity, non-RUNNING
+    status, authority mismatch, unparseable/future/stale timestamp is NOT fresh,
+    so the original GitHub-based HEARTBEAT_MISSING verdict stands.
+    """
+    reader = getattr(store, "read_runtime_row", None)
+    if reader is None:
+        return False
+    try:
+        row = reader(EXTERNAL_SENTINEL_ID)
+        if not isinstance(row, dict):
+            return False
+        if row.get("auditor_id") != EXTERNAL_SENTINEL_ID or row.get("status") != "RUNNING":
+            return False
+        if row.get("can_execute") is not False or row.get("terminal_authority") != "V17_TERMINAL_REDUCER":
+            return False
+        beat = parse_timestamp(str(row.get("last_heartbeat_at")))
+    except Exception:
+        return False
+    if beat > observed + timedelta(minutes=2):
+        return False
+    return observed - beat <= EXTERNAL_SENTINEL_MAX_AGE
+
+
 def reconcile_sirt_watchdog(
     store: EngineeringAuditStore,
     *,
@@ -204,6 +233,14 @@ def reconcile_sirt_watchdog(
     newest = max(eligible, key=lambda item: item[0]) if eligible else None
     age = observed - newest[0] if newest else None
     if age is None or age > SIRT_WATCHDOG_MAX_AGE:
+        if _external_sentinel_fresh(store, observed):
+            store.resolve_finding(
+                "AUDITOR_HEALTH",
+                SIRT_WATCHDOG_COMPONENT,
+                resolution="FRESH_EXTERNAL_SENTINEL_HEARTBEAT_OBSERVED",
+                now=observed,
+            )
+            return "WATCHDOG_EXTERNAL_OBSERVED"
         store.open_finding(
             "AUDITOR_HEALTH",
             component=SIRT_WATCHDOG_COMPONENT,
