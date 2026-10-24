@@ -201,12 +201,37 @@ def check_runs(client: GitHub, head_sha: str) -> list[dict]:
 
 
 def list_role_runs(client: GitHub, workflow_id: int, role: str, pr_number: int, head_sha: str) -> list[dict]:
-    rows = _paged(
-        client,
-        f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs?branch=main",
-        "workflow_runs",
-        MAX_RUN_PAGES,
-    )
+    # Search the PR's lifetime, splitting overflowing history windows rather
+    # than treating old unrelated runs as a permanent governance deadlock.
+    pull = client.get(f"/repos/{REPOSITORY}/pulls/{pr_number}")
+    if not isinstance(pull, dict) or pull.get("number") != pr_number:
+        raise DispatchError("ROLE_HISTORY_PR_INVALID")
+    try:
+        opened = datetime.fromisoformat(pull["created_at"].replace("Z", "+00:00")).date()
+    except (KeyError, AttributeError, ValueError) as exc:
+        raise DispatchError("ROLE_HISTORY_PR_DATE_INVALID") from exc
+    today = datetime.now(timezone.utc).date()
+    if opened > today:
+        raise DispatchError("ROLE_HISTORY_PR_DATE_INVALID")
+
+    def fetch_window(start, end, depth=0):
+        if depth > 24:
+            raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
+        path = (
+            f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs"
+            f"?branch=main&created={start.isoformat()}..{end.isoformat()}"
+        )
+        try:
+            return _paged(client, path, "workflow_runs", MAX_RUN_PAGES)
+        except DispatchError as exc:
+            if str(exc) != "GITHUB_INVENTORY_TRUNCATED" or start >= end:
+                raise
+            mid = start + timedelta(days=(end - start).days // 2)
+            return fetch_window(start, mid, depth + 1) + fetch_window(
+                mid + timedelta(days=1), end, depth + 1
+            )
+
+    rows = fetch_window(opened, today)
     expected_name = policy.run_name(role, pr_number, head_sha)
     found = []
     for run in rows:
@@ -259,17 +284,26 @@ def role_run_statuses(runs: dict[str, dict]) -> dict[str, str]:
 
 def count_wip(client: GitHub, workflows: dict[str, dict]) -> dict[str, int]:
     active = {role: 0 for role in WORKFLOWS}
+    # Only active statuses contribute to concurrency. Historical completed runs
+    # must not consume the bounded page inventory.
+    statuses = ("queued", "in_progress", "waiting", "pending", "requested")
     for role, workflow in workflows.items():
-        rows = _paged(
-            client,
-            f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?branch=main",
-            "workflow_runs",
-            MAX_RUN_PAGES,
-        )
-        active[role] += sum(
-            1 for run in rows
-            if isinstance(run, dict) and run.get("status") in {"queued", "in_progress", "waiting", "pending", "requested"}
-        )
+        seen = set()
+        for status in statuses:
+            rows = _paged(
+                client,
+                f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?branch=main&status={status}",
+                "workflow_runs",
+                MAX_RUN_PAGES,
+            )
+            for run in rows:
+                if not isinstance(run, dict) or run.get("status") != status:
+                    raise DispatchError("GITHUB_ACTIVE_RUN_INVENTORY_INVALID")
+                run_id = run.get("id")
+                if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
+                    raise DispatchError("GITHUB_ACTIVE_RUN_INVENTORY_INVALID")
+                seen.add(run_id)
+        active[role] = len(seen)
     return active
 
 
