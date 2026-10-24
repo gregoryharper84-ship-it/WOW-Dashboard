@@ -287,6 +287,11 @@ jobs:
           print("Exact-head repair context bound to PR", packet["pr_number"], "SHA", sha)
           PY
 
+      - name: Fence unresolved remote writers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
+
       - name: Initialize persistent-worker safety state
         id: safety
         shell: bash
@@ -1304,6 +1309,8 @@ jobs:
           # A run that did not succeed must not leave a RUNNING heartbeat or hold
           # its lease until expiry (#1021). Report SAFE_HOLD and release the lease
           # at the moment the run ended; the original claim stays in the receipt.
+          # A denied remote fence never owned a lease and cannot release one.
+          [ -n "${WORKER_ID:-}" ] || exit 0
           JOB_STATUS="${JOB_STATUS:-unknown}"
           LEASE_CLAIMED_EXPIRES_AT="${LEASE_EXPIRES_AT:-UNKNOWN}"
           LEASE_STATE=HELD

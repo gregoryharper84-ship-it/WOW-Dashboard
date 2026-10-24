@@ -21,7 +21,7 @@ concurrency:
 jobs:
   trusted-governance:
     name: Trusted exact-head engineering governance
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'workflow_run')
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'workflow_run' && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -61,6 +61,13 @@ jobs:
             artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")
             matches=$(jq -c '[.artifacts[] | select(.expired == false and
               (.name | test("^wow-v17-engineering-governance-[a-f0-9]{40}$")))]' <<<"$artifacts")
+            # A successful certifier run with no receipt routed its own event as
+            # not applicable; there is nothing to certify, so exit neutrally.
+            if [ "$(jq 'length' <<<"$matches")" -eq 0 ] && [ "$(jq '.artifacts | length' <<<"$artifacts")" -eq 0 ]; then
+              echo "applicable=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::GOVERNANCE_EVENT_NOT_APPLICABLE:CERTIFIER_PRODUCED_NO_RECEIPT (nothing certified)"
+              exit 0
+            fi
             [ "$(jq 'length' <<<"$matches")" -eq 1 ] || {
               echo "GOVERNANCE_CERTIFIER_RECEIPT_MISSING_OR_DUPLICATE" >&2; exit 1;
             }
@@ -128,6 +135,7 @@ jobs:
             exit 1
           fi
 
+          echo "applicable=true" >> "$GITHUB_OUTPUT"
           echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
@@ -135,6 +143,7 @@ jobs:
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
 
       - name: Verify trusted workflow identity and completion
+        if: steps.artifact.outputs.applicable == 'true'
         id: workflow
         shell: bash
         env:
@@ -226,6 +235,7 @@ jobs:
           exit 1
 
       - name: Download and verify exact-head receipt
+        if: steps.artifact.outputs.applicable == 'true'
         shell: bash
         env:
           ARTIFACT_ID: ${{ steps.artifact.outputs.artifact_id }}

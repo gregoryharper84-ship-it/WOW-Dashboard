@@ -528,6 +528,55 @@ def test_trusted_gate_consumes_authenticated_automatic_qa_review_run(tmp_path):
         assert "GOVERNANCE_SOURCE_REVIEW_RUN_UNTRUSTED" in rejected.stderr
 
 
+def test_successful_certifier_without_receipt_exits_neutrally(tmp_path):
+    run, receipt, _ = _certifier_fixture()
+    proc, output = _run_gate_artifact_resolution(
+        tmp_path, event="workflow_run", artifacts=[], run=run, receipt=receipt
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert output.splitlines() == ["applicable=false"]
+    assert "GOVERNANCE_EVENT_NOT_APPLICABLE:CERTIFIER_PRODUCED_NO_RECEIPT" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "artifacts",
+    [
+        [{"id": 56, "name": "unrelated-artifact", "expired": False}],
+        [{"id": 55, "name": "wow-v17-engineering-governance-" + "a" * 40, "expired": True}],
+    ],
+)
+def test_certifier_with_unusable_artifacts_still_fails_closed(tmp_path, artifacts):
+    run, receipt, _ = _certifier_fixture()
+    proc, output = _run_gate_artifact_resolution(
+        tmp_path, event="workflow_run", artifacts=artifacts, run=run, receipt=receipt
+    )
+
+    assert proc.returncode != 0
+    assert "GOVERNANCE_CERTIFIER_RECEIPT_MISSING_OR_DUPLICATE" in proc.stderr
+    assert "applicable" not in output
+
+
+def test_untrusted_certifier_without_receipt_is_not_neutral(tmp_path):
+    run, receipt, _ = _certifier_fixture(run_overrides={"conclusion": "failure"})
+    proc, output = _run_gate_artifact_resolution(
+        tmp_path, event="workflow_run", artifacts=[], run=run, receipt=receipt
+    )
+
+    assert proc.returncode != 0
+    assert "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" in proc.stderr
+    assert "applicable" not in output
+
+
+def test_trusted_gate_skips_failed_certifier_runs_and_gates_downstream_steps():
+    workflow = yaml.load(GATE.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["trusted-governance"]
+
+    assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
+    for step in job["steps"][2:]:
+        assert step["if"].startswith("steps.artifact.outputs.applicable == 'true'"), step["name"]
+
+
 @pytest.mark.parametrize(
     ("run_overrides", "artifact_sha", "receipt_sha", "reason"),
     [
