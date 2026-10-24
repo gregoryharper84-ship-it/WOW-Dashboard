@@ -23,6 +23,11 @@ on:
         type: boolean
         required: true
         default: false
+      render_public_dom:
+        description: 'Render the public page JavaScript in a clean browser (no login)'
+        type: boolean
+        required: true
+        default: true
 
 permissions:
   contents: read
@@ -35,7 +40,7 @@ jobs:
   public-readonly-probe:
     if: inputs.confirm_personal_noncommercial_use == true
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,12 +48,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install public browser renderer only when explicitly selected
+        if: inputs.render_public_dom == true
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check playwright
+          python -m playwright install --with-deps chromium
       - name: Run single explicit public-page research probe
         working-directory: artifacts/wow-engine
         shell: bash
         env:
           PM_SPORT: ${{ inputs.sport }}
           PM_MARKET: ${{ inputs.market }}
+          PM_BROWSER: ${{ inputs.render_public_dom }}
         run: |
           python - <<'PY'
           import json
@@ -56,8 +68,12 @@ jobs:
           from v17.propsmadness_multisport_public_explore import (
               PublicPageHold, fetch_public_one_shot
           )
+          from v17.propsmadness_public_browser_probe import probe_public_rendered_once
           try:
-              receipt = fetch_public_one_shot(
+              collector = (probe_public_rendered_once
+                           if os.environ.get('PM_BROWSER') == 'true'
+                           else fetch_public_one_shot)
+              receipt = collector(
                   os.environ['PM_SPORT'], os.environ['PM_MARKET'],
                   personal_noncommercial_use_confirmed=True
               )
