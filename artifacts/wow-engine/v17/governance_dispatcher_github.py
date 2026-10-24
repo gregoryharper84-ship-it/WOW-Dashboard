@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
@@ -54,6 +54,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 JOURNAL_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_COMMENT_PAGES = 5
 MAX_RUN_PAGES = 5
+MAX_RUN_RESULTS = MAX_RUN_PAGES * 100
 MAX_ARTIFACT_PAGES = 20
 MAX_PULL_PAGES = 10
 MAX_RETRIES = 3
@@ -148,24 +149,47 @@ def _paged(client: GitHub, path: str, key: str | None = None, max_pages: int = p
     raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
 
 
-def _paged_workflow_runs(client: GitHub, path: str, max_pages: int = MAX_RUN_PAGES) -> list[dict]:
+def _workflow_run_page(body: object) -> tuple[list[dict], int]:
+    if not isinstance(body, dict):
+        raise DispatchError("GITHUB_INVENTORY_INVALID")
+    rows = body.get("workflow_runs")
+    total = body.get("total_count")
+    if (
+        not isinstance(rows, list)
+        or not isinstance(total, int)
+        or isinstance(total, bool)
+        or total < 0
+    ):
+        raise DispatchError("GITHUB_INVENTORY_INVALID")
+    ids = set()
+    for run in rows:
+        if (
+            not isinstance(run, dict)
+            or not isinstance(run.get("id"), int)
+            or isinstance(run.get("id"), bool)
+            or run["id"] < 1
+            or run["id"] in ids
+        ):
+            raise DispatchError("GITHUB_INVENTORY_INVALID")
+        ids.add(run["id"])
+    return rows, total
+
+
+def _paged_workflow_runs(
+    client: GitHub,
+    path: str,
+    max_pages: int = MAX_RUN_PAGES,
+    first_page: dict | None = None,
+) -> list[dict]:
     runs = []
     expected_total = None
     seen_ids = set()
     separator = "&" if "?" in path else "?"
     for page in range(1, max_pages + 1):
-        body = client.get(f"{path}{separator}per_page=100&page={page}")
-        if not isinstance(body, dict):
-            raise DispatchError("GITHUB_INVENTORY_INVALID")
-        rows = body.get("workflow_runs")
-        total = body.get("total_count")
-        if (
-            not isinstance(rows, list)
-            or not isinstance(total, int)
-            or isinstance(total, bool)
-            or total < 0
-        ):
-            raise DispatchError("GITHUB_INVENTORY_INVALID")
+        body = first_page if page == 1 and first_page is not None else client.get(
+            f"{path}{separator}per_page=100&page={page}"
+        )
+        rows, total = _workflow_run_page(body)
         if expected_total is None:
             expected_total = total
             if total > max_pages * 100:
@@ -176,19 +200,43 @@ def _paged_workflow_runs(client: GitHub, path: str, max_pages: int = MAX_RUN_PAG
         if len(rows) != expected_rows:
             raise DispatchError("GITHUB_INVENTORY_INCOMPLETE")
         for run in rows:
-            if (
-                not isinstance(run, dict)
-                or not isinstance(run.get("id"), int)
-                or isinstance(run.get("id"), bool)
-                or run["id"] < 1
-                or run["id"] in seen_ids
-            ):
+            if run["id"] in seen_ids:
                 raise DispatchError("GITHUB_INVENTORY_INVALID")
             seen_ids.add(run["id"])
         runs.extend(rows)
         if len(runs) == expected_total:
             return runs
     raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
+
+
+def _workflow_runs_for_date_window(
+    client: GitHub,
+    path: str,
+    start_date: date,
+    end_date: date,
+) -> list[dict]:
+    query = urlencode([("created", f"{start_date.isoformat()}..{end_date.isoformat()}")])
+    window_path = f"{path}&{query}" if "?" in path else f"{path}?{query}"
+    body = client.get(f"{window_path}&per_page=100&page=1")
+    rows, total = _workflow_run_page(body)
+    if len(rows) != min(100, total):
+        raise DispatchError("GITHUB_INVENTORY_INCOMPLETE")
+    if total > MAX_RUN_RESULTS:
+        if start_date == end_date:
+            raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
+        midpoint = start_date + timedelta(days=(end_date - start_date).days // 2)
+        left = _workflow_runs_for_date_window(client, path, start_date, midpoint)
+        right = _workflow_runs_for_date_window(client, path, midpoint + timedelta(days=1), end_date)
+        seen_ids = {run["id"] for run in left}
+        if any(run["id"] in seen_ids for run in right):
+            raise DispatchError("GITHUB_INVENTORY_DUPLICATE")
+        return left + right
+    runs = _paged_workflow_runs(client, window_path, first_page=body)
+    for run in runs:
+        run_date = _timestamp(run.get("created_at"), "ROLE_RUN_CREATED_AT_INVALID").date()
+        if not start_date <= run_date <= end_date:
+            raise DispatchError("ROLE_RUN_DATE_WINDOW_MISMATCH")
+    return runs
 
 
 def list_workflows(client: GitHub) -> dict[str, dict]:
@@ -262,11 +310,11 @@ def _timestamp(value: object, finding: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _pr_created_date(value: object) -> tuple[datetime, str]:
+def _pr_created_date(value: object) -> tuple[datetime, date]:
     created = _timestamp(value, "PR_CREATED_AT_INVALID")
     if created > datetime.now(timezone.utc):
         raise DispatchError("PR_CREATED_AT_INVALID")
-    return created, created.date().isoformat()
+    return created, created.date()
 
 
 def _qa_policy_run_matches_target(
@@ -321,18 +369,17 @@ def list_role_runs(
 ) -> list[dict]:
     if role not in WORKFLOWS or role not in ROLE_RUN_EVENTS:
         raise DispatchError("ROLE_RUN_NOT_ALLOWLISTED")
-    created_at, created_date = _pr_created_date(pr_created_at)
+    created_at, first_date = _pr_created_date(pr_created_at)
+    last_date = datetime.now(timezone.utc).date()
+    if first_date > last_date:
+        raise DispatchError("PR_CREATED_AT_INVALID")
     expected_name = policy.run_name(role, pr_number, head_sha)
     found = []
     seen_ids = set()
     for event in ROLE_RUN_EVENTS[role]:
-        query = urlencode([
-            ("branch", "main"),
-            ("created", f">={created_date}"),
-            ("event", event),
-        ])
+        query = urlencode([("branch", "main"), ("event", event)])
         path = f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs?{query}"
-        for run in _paged_workflow_runs(client, path):
+        for run in _workflow_runs_for_date_window(client, path, first_date, last_date):
             if (
                 run.get("workflow_id") != workflow_id
                 or run.get("path") != WORKFLOWS[role]["path"]

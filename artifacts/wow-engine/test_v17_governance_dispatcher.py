@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 from datetime import datetime, timedelta, timezone
 from urllib.error import URLError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -616,28 +617,48 @@ def test_active_work_in_progress_is_counted_per_role():
     }
 
     class FakeClient:
+        def __init__(self):
+            self.completed_history = [
+                wip_run(workflows["qa"], 50_000 + index, "completed")
+                for index in range(501)
+            ]
+            self.paths = []
+
         def get(self, path):
+            self.paths.append(path)
             assert "branch=main" in path
-            assert "status=" in path
-            if "/workflows/2/runs?" in path and "status=queued" in path:
-                return {
-                    "total_count": 1,
-                    "workflow_runs": [
-                        wip_run(workflows["qa"], 987, "queued"),
-                    ]
-                }
-            if "/workflows/2/runs?" in path and "status=in_progress" in path:
-                return {
-                    "total_count": 1,
-                    "workflow_runs": [wip_run(workflows["qa"], 987, "in_progress")],
-                }
+            status_values = parse_qs(urlsplit(path).query).get("status", [])
+            if not status_values:
+                page = int(parse_qs(urlsplit(path).query).get("page", ["1"])[0])
+                offset = (page - 1) * 100
+                return {"workflow_runs": self.completed_history[offset:offset + 100]}
+            assert status_values[0] in transport.ACTIVE_RUN_STATUSES
+            if "/workflows/2/runs?" in path:
+                status = status_values[0]
+                if status in {"queued", "in_progress"}:
+                    return {
+                        "total_count": 1,
+                        "workflow_runs": [wip_run(workflows["qa"], 987, status)],
+                    }
+                if status == "waiting":
+                    return {"total_count": 1, "workflow_runs": [wip_run(workflows["qa"], 988, status)]}
+                if status == "pending":
+                    return {"total_count": 1, "workflow_runs": [wip_run(workflows["qa"], 989, status)]}
+                if status == "requested":
+                    return {"total_count": 1, "workflow_runs": [wip_run(workflows["qa"], 990, status)]}
             return {"total_count": 0, "workflow_runs": []}
 
-    assert transport.count_wip(FakeClient(), workflows) == {
+    client = FakeClient()
+    assert transport.count_wip(client, workflows) == {
         "source_review": 0,
-        "qa": 1,
+        "qa": 4,
         "release": 0,
     }
+    assert len(client.completed_history) == 501
+    assert {
+        parse_qs(urlsplit(path).query)["status"][0]
+        for path in client.paths
+    } == set(transport.ACTIVE_RUN_STATUSES)
 
 
 def wip_run(workflow, run_id, status):
@@ -665,6 +686,30 @@ def test_wip_inventory_holds_when_a_filtered_page_is_incomplete():
             return {"total_count": 0, "workflow_runs": []}
 
     with pytest.raises(transport.DispatchError, match="GITHUB_INVENTORY_INCOMPLETE"):
+        transport.count_wip(FakeClient(), workflows)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"total_count": 1, "workflow_runs": [{}]},
+        {"total_count": True, "workflow_runs": []},
+        {"total_count": 0, "workflow_runs": None},
+    ],
+)
+def test_malformed_wip_inventory_holds(response):
+    workflows = {
+        role: {"id": index + 1, **details}
+        for index, (role, details) in enumerate(transport.WORKFLOWS.items())
+    }
+
+    class FakeClient:
+        def get(self, path):
+            if "/workflows/1/runs?" in path and "status=queued" in path:
+                return response
+            return {"total_count": 0, "workflow_runs": []}
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_INVENTORY_INVALID"):
         transport.count_wip(FakeClient(), workflows)
 
 
@@ -913,6 +958,24 @@ def test_signed_journal_rejects_invalid_dispatcher_provenance_fields(monkeypatch
         transport.list_reservations(FakeClient(), 41)
 
 
+def workflow_runs_response(path, all_runs):
+    params = parse_qs(urlsplit(path).query)
+    event = params["event"][0]
+    start_date, end_date = params["created"][0].split("..")
+    start_date = datetime.fromisoformat(start_date).date()
+    end_date = datetime.fromisoformat(end_date).date()
+    rows = [
+        run
+        for run in all_runs
+        if run["event"] == event
+        and start_date <= datetime.fromisoformat(run["created_at"].replace("Z", "+00:00")).date() <= end_date
+    ]
+    page = int(params.get("page", ["1"])[0])
+    per_page = int(params.get("per_page", ["100"])[0])
+    offset = (page - 1) * per_page
+    return {"total_count": len(rows), "workflow_runs": rows[offset:offset + per_page]}
+
+
 def test_role_run_matching_accepts_api_workflow_name_with_display_title():
     expected = policy.run_name("source_review", 41, HEAD)
     run = {
@@ -937,9 +1000,7 @@ def test_role_run_matching_accepts_api_workflow_name_with_display_title():
 
         def get(self, path):
             self.paths.append(path)
-            if "event=workflow_dispatch" in path:
-                return {"total_count": 1, "workflow_runs": [run]}
-            return {"total_count": 0, "workflow_runs": []}
+            return workflow_runs_response(path, [run])
 
     client = FakeClient()
     matches = transport.list_role_runs(
@@ -947,25 +1008,123 @@ def test_role_run_matching_accepts_api_workflow_name_with_display_title():
     )
 
     assert matches == [run]
-    assert len(client.paths) == 2
-    assert all("branch=main" in path and "created=%3E%3D2026-10-01" in path for path in client.paths)
-    assert {path.split("event=")[-1].split("&")[0] for path in client.paths} == {
+    assert all("branch=main" in path for path in client.paths)
+    assert {parse_qs(urlsplit(path).query)["event"][0] for path in client.paths} == {
         "workflow_dispatch",
         "workflow_run",
     }
+    assert all("created" in parse_qs(urlsplit(path).query) for path in client.paths)
 
 
-def test_role_run_history_holds_instead_of_scanning_past_the_page_cap():
+def test_role_run_history_partitions_multi_day_windows_over_500(monkeypatch):
+    created = (datetime.now(timezone.utc) - timedelta(days=20)).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+    first_day = created.date() + timedelta(days=1)
+    second_day = first_day + timedelta(days=1)
+    expected = policy.run_name("source_review", 41, HEAD)
+    other = policy.run_name("source_review", 42, OTHER_HEAD)
+    runs = []
+    for index in range(501):
+        run_day = first_day if index < 251 else second_day
+        runs.append({
+            "id": 10_000 + index,
+            "workflow_id": 12,
+            "name": transport.WORKFLOWS["source_review"]["name"],
+            "display_title": expected if index == 0 else other,
+            "path": transport.WORKFLOWS["source_review"]["path"],
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "repository": {"full_name": REPOSITORY},
+            "head_repository": {"full_name": REPOSITORY},
+            "head_sha": HEAD if index == 0 else OTHER_HEAD,
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": f"{run_day.isoformat()}T12:00:00Z",
+        })
+    client_paths = []
+
     class FakeClient:
         def get(self, path):
-            assert "branch=main" in path
-            assert "created=%3E%3D2026-10-01" in path
-            assert "event=workflow_dispatch" in path
-            return {"total_count": transport.MAX_RUN_PAGES * 100 + 1, "workflow_runs": []}
+            client_paths.append(path)
+            return workflow_runs_response(path, runs)
+
+    matches = transport.list_role_runs(
+        FakeClient(), 12, "source_review", 41, HEAD, created.isoformat()
+    )
+
+    assert len(runs) == 501
+    assert len(matches) == 1
+    assert matches[0]["id"] == runs[0]["id"]
+    assert any(
+        int(params["created"][0].split("..")[0][:4]) == created.year
+        for params in (parse_qs(urlsplit(path).query) for path in client_paths)
+    )
+
+
+def test_role_run_history_holds_for_more_than_500_runs_in_one_day():
+    created = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    runs = [
+        {
+            "id": 20_000 + index,
+            "workflow_id": 12,
+            "name": transport.WORKFLOWS["source_review"]["name"],
+            "display_title": "unrelated run",
+            "path": transport.WORKFLOWS["source_review"]["path"],
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "repository": {"full_name": REPOSITORY},
+            "head_repository": {"full_name": REPOSITORY},
+            "head_sha": OTHER_HEAD,
+            "status": "completed",
+            "created_at": f"{created.date().isoformat()}T12:00:00Z",
+        }
+        for index in range(501)
+    ]
+
+    class FakeClient:
+        def get(self, path):
+            return workflow_runs_response(path, runs)
 
     with pytest.raises(transport.DispatchError, match="GITHUB_INVENTORY_TRUNCATED"):
         transport.list_role_runs(
-            FakeClient(), 12, "source_review", 41, HEAD, "2026-10-01T12:00:00Z"
+            FakeClient(), 12, "source_review", 41, HEAD, created.isoformat()
+        )
+
+
+def test_duplicate_active_source_review_runs_hold():
+    expected = policy.run_name("source_review", 41, HEAD)
+    runs = [
+        {
+            "id": run_id,
+            "workflow_id": 12,
+            "name": transport.WORKFLOWS["source_review"]["name"],
+            "display_title": expected,
+            "path": transport.WORKFLOWS["source_review"]["path"],
+            "event": "workflow_dispatch",
+            "head_branch": "main",
+            "repository": {"full_name": REPOSITORY},
+            "head_repository": {"full_name": REPOSITORY},
+            "head_sha": OTHER_HEAD,
+            "status": "in_progress",
+            "created_at": "2026-10-02T12:00:00Z",
+        }
+        for run_id in (30001, 30002)
+    ]
+
+    class FakeClient:
+        def get(self, path):
+            return workflow_runs_response(path, runs)
+
+    with pytest.raises(transport.DispatchError, match="DUPLICATE_ACTIVE_ROLE_RUNS:source_review"):
+        transport.matching_role_runs(
+            FakeClient(),
+            {"source_review": {"id": 12, **transport.WORKFLOWS["source_review"]}},
+            41,
+            HEAD,
+            "2026-10-01T12:00:00Z",
         )
 
 
