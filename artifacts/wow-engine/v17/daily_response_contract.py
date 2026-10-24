@@ -529,7 +529,10 @@ def compact_response(response: dict[str, Any], *, detail_available: bool) -> dic
     return compacted
 
 
-def persist_row_detail(db: Any, *, run_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def persist_row_detail(
+    db: Any, *, run_id: str, rows: list[dict[str, Any]],
+    request_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Persist full per-row evidence once so compact transport loses nothing.
 
     Fails closed and explicitly: a persistence failure is reported as a typed
@@ -546,7 +549,8 @@ def persist_row_detail(db: Any, *, run_id: str, rows: list[dict[str, Any]]) -> d
             "lane": row.get("lane"),
             "row_status": row.get("row_status"),
             "identity": row.get("identity") or {},
-            "detail": row,
+            "detail": ({**row, "daily_request_context": dict(request_context)}
+                       if request_context is not None else row),
             "captured_at": captured_at,
             "can_execute": False,
         }
