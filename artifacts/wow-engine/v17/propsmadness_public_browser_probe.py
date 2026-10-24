@@ -7,6 +7,7 @@ JavaScript, but unknown/disallowed robots and 403/429 always stop the probe.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from urllib.request import Request, build_opener
 from urllib.error import HTTPError, URLError
 from urllib.robotparser import RobotFileParser
@@ -61,6 +62,19 @@ def _check_robots_live(url: str) -> None:
     _robots_permits(raw, url)
 
 
+def _public_browser_asset_allowed(url: str, resource_type: str) -> bool:
+    """Public page/assets only; never follow undocumented data API traffic."""
+    p = urlparse(url)
+    if p.scheme != "https" or p.hostname != "propsmadness.com":
+        return False
+    if resource_type not in ("document", "script", "stylesheet", "font", "image"):
+        return False
+    if any(part in ("api", "graphql", "rpc", "admin", "private")
+           for part in p.path.lower().split("/") if part):
+        return False
+    return True
+
+
 def _render_public_page(url: str) -> bytes:
     """One headless browser navigation to a public allowlisted Explore page."""
     try:
@@ -78,6 +92,15 @@ def _render_public_page(url: str) -> bytes:
                     service_workers="block",
                 )
                 page = context.new_page()
+                # JS can otherwise trigger undocumented private XHR/fetch APIs
+                # implicitly. Deny those requests: if data relies on them,
+                # report no verified public rows rather than work around them.
+                def restrict(route: Any) -> None:
+                    if _public_browser_asset_allowed(route.request.url, route.request.resource_type):
+                        route.continue_()
+                    else:
+                        route.abort()
+                page.route("**/*", restrict)
                 response = page.goto(url, wait_until="domcontentloaded", timeout=15000)
                 if page.url != url:
                     raise PublicPageHold("PM_PUBLIC_REDIRECT_NOT_ALLOWED")
