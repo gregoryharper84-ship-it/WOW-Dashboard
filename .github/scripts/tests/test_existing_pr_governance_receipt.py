@@ -597,6 +597,132 @@ def test_manual_dispatch_exact_head_is_optional_but_must_match_when_supplied(
         assert expected_error in result.stderr
 
 
+def test_applicable_workflow_run_without_source_identity_still_fails_closed(run_identity_step):
+    result = run_identity_step(evidence()["pr"], EVENT_PR="", SOURCE_PR="")
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_NUMBER_INVALID" in result.stderr
+
+
+def test_source_review_stale_head_sha_fails_closed(run_identity_step):
+    pr = evidence()["pr"]
+    pr["body"] = "Closes #1806"
+    result = run_identity_step(
+        pr, EVENT_PR="", SOURCE_PR="1822", SOURCE_HEAD_SHA="b" * 40, SOURCE_HEAD_REF="fix/issue-1806"
+    )
+
+    assert result.returncode == 1
+    assert "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" in result.stderr
+
+
+@pytest.fixture
+def run_route_step(tmp_path):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    step = workflow.split("      - name: Route event applicability\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    stub = """
+gh() {
+  if [ "$*" = "api /repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" ]; then
+    printf '%s\\n' "$TEST_ARTIFACTS_JSON"
+  else
+    echo "UNEXPECTED_GH_INVOCATION:$*" >&2
+    return 1
+  fi
+}
+"""
+
+    def run(**overrides):
+        outputs = tmp_path / "outputs"
+        outputs.write_text("", encoding="utf-8")
+        env = os.environ | {
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_OUTPUT": str(outputs),
+            "EVENT_NAME": "workflow_run",
+            "REVIEW_ACTIVE": "true",
+            "SOURCE_RUN_ID": "40062800000",
+            "SOURCE_CONCLUSION": "success",
+            "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": []}),
+        } | overrides
+        result = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", stub + script],
+            cwd=tmp_path, env=env, capture_output=True, text=True, check=False,
+        )
+        parsed = dict(
+            line.split("=", 1) for line in outputs.read_text(encoding="utf-8").splitlines() if "=" in line
+        )
+        return result, parsed
+
+    return run
+
+
+POLICY_ARTIFACT = {"artifacts": [{"name": "wow-v17-qa-policy-40062800000-1"}]}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        # Observed in run 40062825503: QA completion while source review is inactive.
+        ({"REVIEW_ACTIVE": ""}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE"),
+        ({"REVIEW_ACTIVE": "false"}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE"),
+        ({"SOURCE_CONCLUSION": "failure"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:failure"),
+        ({"SOURCE_CONCLUSION": "skipped"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:skipped"),
+        ({"SOURCE_CONCLUSION": ""}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:none"),
+        ({}, "SOURCE_QA_RUN_HAD_NO_EXACT_HEAD_TARGET"),
+    ],
+)
+def test_inapplicable_workflow_run_exits_neutrally_without_receipt(overrides, reason, run_route_step):
+    result, outputs = run_route_step(**overrides)
+
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"applicable": "false", "reason": reason}
+    assert "EXISTING_PR_NUMBER_INVALID" not in result.stderr
+
+
+@pytest.mark.parametrize("event", ["pull_request_target", "workflow_dispatch"])
+def test_direct_pr_events_are_always_applicable(event, run_route_step):
+    result, outputs = run_route_step(EVENT_NAME=event, REVIEW_ACTIVE="", SOURCE_RUN_ID="", SOURCE_CONCLUSION="")
+
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"applicable": "true"}
+    assert "UNEXPECTED_GH_INVOCATION" not in result.stderr
+
+
+def test_targeted_successful_qa_run_is_applicable(run_route_step):
+    result, outputs = run_route_step(TEST_ARTIFACTS_JSON=json.dumps(POLICY_ARTIFACT))
+
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"applicable": "true"}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"SOURCE_RUN_ID": ""}, "SOURCE_REVIEW_RUN_ID_OR_ATTEMPT_INVALID"),
+        ({"SOURCE_RUN_ID": "0"}, "SOURCE_REVIEW_RUN_ID_OR_ATTEMPT_INVALID"),
+        ({"TEST_ARTIFACTS_JSON": "{}"}, "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID"),
+        ({"TEST_ARTIFACTS_JSON": "not-json"}, "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID"),
+    ],
+)
+def test_route_fails_closed_on_untrusted_source_identity(overrides, reason, run_route_step):
+    result, outputs = run_route_step(**overrides)
+
+    assert result.returncode == 1
+    assert reason in result.stderr
+    assert "applicable" not in outputs
+
+
+def test_every_certification_step_is_gated_on_the_route():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    steps = workflow.split("      - name: ")[2:]
+
+    assert workflow.split("      - name: ")[1].startswith("Route event applicability\n")
+    assert steps
+    for step in steps:
+        assert "        if: steps.route.outputs.applicable == 'true'" in step, step.splitlines()[0]
+    # Duplicate deliveries of one QA run share a concurrency group and cancel each other.
+    assert "group: wow-v17-existing-pr-governance-${{ github.event.workflow_run.id" in workflow
+
+
 def evidence(*, author=None, review_state="APPROVED", review_sha=HEAD):
     author = author or {"id": verifier.OWNER_ID, "login": verifier.OWNER_LOGIN, "type": "User"}
     return {

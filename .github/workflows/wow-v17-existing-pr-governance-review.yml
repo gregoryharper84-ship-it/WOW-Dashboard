@@ -41,7 +41,43 @@ jobs:
     timeout-minutes: 35
 
     steps:
+      - name: Route event applicability
+        id: route
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE || '' }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+        run: |
+          set -euo pipefail
+          # A workflow_run event carries no PR identity of its own. Only a successful
+          # QA run that resolved an exact-head target can supply one; every other
+          # completion is inapplicable and exits neutrally instead of manufacturing
+          # EXISTING_PR_NUMBER_INVALID. Applicable events keep every fail-closed gate.
+          neutral() {
+            echo "applicable=false" >> "$GITHUB_OUTPUT"
+            echo "reason=$1" >> "$GITHUB_OUTPUT"
+            echo "::notice::GOVERNANCE_EVENT_NOT_APPLICABLE:$1 (no receipt produced)"
+            exit 0
+          }
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            [ "$REVIEW_ACTIVE" = "true" ] || neutral "INDEPENDENT_SOURCE_REVIEW_INACTIVE"
+            [ "$SOURCE_CONCLUSION" = "success" ] || neutral "SOURCE_QA_RUN_NOT_SUCCESSFUL:${SOURCE_CONCLUSION:-none}"
+            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+              echo "SOURCE_REVIEW_RUN_ID_OR_ATTEMPT_INVALID" >&2; exit 1;
+            }
+            artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")
+            targeted=$(jq -e '[.artifacts[] | select(.name | startswith("wow-v17-qa-policy-"))] | length' <<<"$artifacts") || {
+              echo "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
+            }
+            [ "$targeted" -gt 0 ] || neutral "SOURCE_QA_RUN_HAD_NO_EXACT_HEAD_TARGET"
+          fi
+          echo "applicable=true" >> "$GITHUB_OUTPUT"
+
       - name: Checkout protected main
+        if: steps.route.outputs.applicable == 'true'
         uses: actions/checkout@v6
         with:
           ref: main
@@ -49,13 +85,14 @@ jobs:
           persist-credentials: false
 
       - name: Test protected receipt verifier
+        if: steps.route.outputs.applicable == 'true'
         run: |
           python -m pip install --disable-pip-version-check pytest==9.1.1 PyYAML==6.0.3
           python -m pytest -q .github/scripts/tests/test_existing_pr_governance_receipt.py
 
       - name: Resolve exact QA policy identity
         id: qa_policy
-        if: github.event_name == 'workflow_run'
+        if: steps.route.outputs.applicable == 'true' && github.event_name == 'workflow_run'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -121,7 +158,7 @@ jobs:
 
       - name: Resolve exact standalone source-review artifact
         id: source_review
-        if: github.event_name == 'workflow_run' && vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true'
+        if: steps.route.outputs.applicable == 'true' && (github.event_name == 'workflow_run' && vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -224,6 +261,7 @@ jobs:
           echo "artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
 
       - name: Resolve exact PR identity and incident
+        if: steps.route.outputs.applicable == 'true'
         id: target
         shell: bash
         env:
@@ -316,6 +354,7 @@ jobs:
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
 
       - name: Verify exact-head deterministic CI
+        if: steps.route.outputs.applicable == 'true'
         id: regression
         shell: bash
         env:
@@ -380,6 +419,7 @@ jobs:
           echo "status=0" >> "$GITHUB_OUTPUT"
 
       - name: Collect complete exact-head GitHub evidence
+        if: steps.route.outputs.applicable == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -438,6 +478,7 @@ jobs:
             > ".governance-review-evidence/evidence.json"
 
       - name: Build and verify review-evidence receipt
+        if: steps.route.outputs.applicable == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -577,7 +618,7 @@ jobs:
           sha256sum "$receipt" | awk '{print $1}' > "$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
 
       - name: Upload exact-head review-evidence receipt
-        if: success()
+        if: steps.route.outputs.applicable == 'true' && (success())
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-engineering-governance-${{ steps.target.outputs.head_sha }}
