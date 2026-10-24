@@ -73,33 +73,12 @@ jobs:
             task="WOW autonomous restoration of existing PR #$PR_NUMBER for Incident #$incident. Investigate the reproduced failure and root cause, implement the smallest admissible change on the existing PR, add positive and negative regression tests, and return exact-head CI and typed blocker evidence. Preserve single-writer lease, independent review, and can_execute=false; do not merge, deploy, alter probabilities or place wagers."
           else
             # Require the whole first line to be the owner's command.
-            first_line="${BODY%%
-          # Existing single-dispatcher entrypoint; no direct Agent API secrets here.
-          gh workflow run wow-v17-engineering-provider-dispatcher.yml \
-            --repo "$GITHUB_REPOSITORY" --ref main \
-            -f force_provider=cursor \
-            -f reason=OWNER_CURSOR_PR_HANDOFF \
-            -f lease_group="PR_$PR_NUMBER" \
-            -f cursor_pr_number="$PR_NUMBER" \
-            -f cursor_expected_head="$head" \
-            -f cursor_task="$task"
-          echo "Submitted scoped Cursor dispatch for PR #$PR_NUMBER at $head" >> "$GITHUB_STEP_SUMMARY"
-\n'*}"
+            first_line="${BODY%%$'\n'*}"
             if [ "$first_line" != "/wow-cursor" ]; then
               echo "::error::CURSOR_HANDOFF_COMMAND_INVALID"
               exit 1
             fi
-            task="${BODY#*
-          gh workflow run wow-v17-engineering-provider-dispatcher.yml \
-            --repo "$GITHUB_REPOSITORY" --ref main \
-            -f force_provider=cursor \
-            -f reason=OWNER_CURSOR_PR_HANDOFF \
-            -f lease_group="PR_$PR_NUMBER" \
-            -f cursor_pr_number="$PR_NUMBER" \
-            -f cursor_expected_head="$head" \
-            -f cursor_task="$task"
-          echo "Submitted scoped Cursor dispatch for PR #$PR_NUMBER at $head" >> "$GITHUB_STEP_SUMMARY"
-\n'}"
+            task="${BODY#*$'\n'}"
             if [ "$task" = "$BODY" ] || [ -z "$task" ] || [ "${#task}" -gt 4000 ]; then
               echo "::error::CURSOR_HANDOFF_TASK_INVALID"
               exit 1
