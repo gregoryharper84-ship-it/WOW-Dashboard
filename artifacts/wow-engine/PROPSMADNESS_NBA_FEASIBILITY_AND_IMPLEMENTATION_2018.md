@@ -49,6 +49,20 @@ Read-only, three completed historical NBA dates and two upcoming slates, >=100 p
 
 Never invent historical pregame snapshots from retrospective filters. Missing observations stay missing; scoreboard outcomes are not pregame model features.
 
+## Owner's updated approach: no vendor email; controlled public-page research
+
+The owner prefers public-page extraction to vendor outreach. The prior email draft was not sent. The code includes **no** vendor API authentication, undocumented endpoint access or privileged browser automation.
+
+- Public free NBA Explore example: https://propsmadness.com/nba/props/points. A visible page can show player labels, lines, display odds and recent averages. It does **not** verify book-specific odds, original historical timestamps, official player/game identities or a historical archive.
+- A **one-shot** public HTML extractor now exists in `v17/propsmadness_nba_public_explore.py`. It supports only four NBA public Explore URLs; first checks live `robots.txt`, rejects unknown/disallowed rules, 403/429, changed response origin, payload over 2 MB and unrecognized HTML. No proxies, login, CAPTCHA, private API, retries, scheduled collection, cookies, database writes or source-entitlement edits.
+- CLI, only where personal noncommercial research use is consistent with the site's current conditions: `python -m v17.propsmadness_nba_public_explore --market points --confirm-personal-noncommercial-use`. This acknowledgement is not a license for WOW commercial analytics, republishing, automated bulk collection, retention or model training. Do not misrepresent the intended use to activate it.
+- Parser outputs discovery-only, null canonical identities, null sportsbook and null official kickoff, as well as `historical_line_evidence=false`, `pregame_verified=false`, `historical_training_authorized=false`, `probability_publishable=false`, `can_execute=false`. It never invents missing history or promotes displayed odds to governed probability.
+- CI uses **synthetic** sample HTML only; actual live robots permission, schema suitability and successful website fetch are not yet verified. Unknown robots policy means do not fetch the target page.
+
+**Historical limitation:** An observation collected now is not a historical pregame observation for a prior game. Retrospective grades, hit rates and displayed closing lines do not prove an original timestamp or the exact sportsbook quote. Genuine model training needs documented pregame snapshots and license-compatible reuse. Existing NBA Stats/CDN game-log and reviewed SportsDataverse sources are better candidates for historical label backfill while PropsMadness usage remains restricted.
+
+---
+
 ## WOW interface
 
 Scout discovery would receive research candidates with exact player-event/stat/period/line identity and separate market/sporting sources, never a ranked model probability. Private historical staging needs separate security and source-rights approval. The NBA POINTS model work remains owned by issue #1988; usage/on-off/DvP challenger #1863 remains post-restoration. Any calibrated probabilities require the certified controlling specialist and V17 terminal reducer.
