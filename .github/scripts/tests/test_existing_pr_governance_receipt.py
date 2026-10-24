@@ -75,6 +75,17 @@ def test_certifier_consumes_only_authenticated_qa_review_run_artifacts():
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
     assert ".event == \"workflow_dispatch\" or .event == \"workflow_run\"" in workflow
     assert "ref: main" in workflow
+    assert "--resolve-upstream-qa" in workflow
+    assert "--pull-requests-json" in workflow
+    assert "UPSTREAM_QA_IDENTITY_MISMATCH" in workflow
+    assert "UPSTREAM_QA_PR_HEAD_MOVED_OR_REF_MISMATCH" in workflow
+    assert "github.event.workflow_run.pull_requests[0]" not in workflow
+
+
+def test_trusted_gate_still_rejects_workflow_dispatch_certifier_origin():
+    gate = TRUSTED_GATE.read_text(encoding="utf-8")
+    assert "github.event.workflow_run.event == 'workflow_run'" in gate
+    assert '.event == "workflow_run" and .head_branch == "main"' in gate
 
 
 def test_source_review_artifact_name_regex_captures_pr_and_head_under_bash_nounset():
@@ -242,6 +253,65 @@ def test_workflow_rejects_invalid_pr_number(run_identity_step):
 
     assert result.returncode == 1
     assert "EXISTING_PR_NUMBER_INVALID" in result.stderr
+
+
+def test_empty_event_context_accepts_only_matching_upstream_qa_identity(run_identity_step):
+    pr = evidence()["pr"]
+    pr["body"] = "Closes #1806"
+    result = run_identity_step(
+        pr,
+        EVENT_PR="",
+        INPUT_PR="",
+        SOURCE_PR="",
+        SOURCE_HEAD_SHA="",
+        SOURCE_HEAD_REF="",
+        UPSTREAM_PR="1822",
+        UPSTREAM_HEAD_SHA=HEAD,
+        UPSTREAM_HEAD_REF="fix/issue-1806",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_empty_context_without_upstream_artifact_identity_stays_closed(run_identity_step):
+    result = run_identity_step(
+        evidence()["pr"],
+        EVENT_PR="",
+        INPUT_PR="",
+        SOURCE_PR="",
+        SOURCE_HEAD_SHA="",
+        SOURCE_HEAD_REF="",
+        UPSTREAM_PR="",
+        UPSTREAM_HEAD_SHA="",
+        UPSTREAM_HEAD_REF="",
+    )
+    assert result.returncode == 1
+    assert "EXISTING_PR_NUMBER_INVALID" in result.stderr
+
+
+def test_upstream_qa_head_mismatch_and_conflicting_pr_are_rejected(run_identity_step):
+    pr = evidence()["pr"]
+    pr["body"] = "Closes #1806"
+    moved = run_identity_step(
+        pr,
+        EVENT_PR="",
+        INPUT_PR="",
+        SOURCE_PR="",
+        UPSTREAM_PR="1822",
+        UPSTREAM_HEAD_SHA="b" * 40,
+        UPSTREAM_HEAD_REF="fix/issue-1806",
+    )
+    assert moved.returncode == 1
+    assert "UPSTREAM_QA_PR_HEAD_MOVED_OR_REF_MISMATCH" in moved.stderr
+
+    conflict = run_identity_step(
+        pr,
+        EVENT_PR="1822",
+        UPSTREAM_PR="2016",
+        UPSTREAM_HEAD_SHA=HEAD,
+        UPSTREAM_HEAD_REF="fix/issue-1806",
+    )
+    assert conflict.returncode == 1
+    assert "UPSTREAM_QA_IDENTITY_MISMATCH" in conflict.stderr
 
 
 def evidence(*, author=None, review_state="APPROVED", review_sha=HEAD):

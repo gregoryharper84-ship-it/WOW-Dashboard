@@ -605,7 +605,14 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
             assert "${{" not in step.split("run: |", 1)[1], "no expression interpolation inside run scripts"
         if "steps.app_token.outputs.token" in step:
             assert step.startswith("Publish exact-head check"), "App token only reaches the publish step"
-    assert re.search(r"group: wow-v17-[a-z-]+-check\n  cancel-in-progress: false", text)
+    # Protect the *new* exact-PR queue rather than require the obsolete global queue.
+    concurrency = yaml.load(text, Loader=yaml.BaseLoader)["concurrency"]
+    assert concurrency["group"] == (
+        wf.stem + "-${{ inputs.pr_number || "
+        "github.event.workflow_run.pull_requests[0].number || github.run_id }}"
+    )
+    assert concurrency["cancel-in-progress"] == "false"
+    assert concurrency["queue"] == "max"
 
 
 @pytest.mark.parametrize("wf, upstream", [
