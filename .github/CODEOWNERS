@@ -1,8 +1,9 @@
 # Generated from agent_identity_policy.trust_root_paths() + governance_trust_roots(); a test fails on drift.
 # ACTIVE (#1663/#1550 phase D). The sole human owner must approve any change to these paths, including this file.
-# /.github/ and /.agents/ cover NEW workflows, actions, scripts and agent skills.
+# /.github/, /.agents/ and /.claude/ cover NEW workflows, actions, scripts and native Claude instructions.
 /.github/ @gregoryharper84-ship-it
 /.agents/ @gregoryharper84-ship-it
+/.claude/ @gregoryharper84-ship-it
 # Files executed or read by governance workflows (changing them changes how the gates decide):
 /artifacts/flask-scoring-api/requirements.txt @gregoryharper84-ship-it
 /artifacts/wow-engine/requirements.txt @gregoryharper84-ship-it
@@ -13,6 +14,7 @@
 /artifacts/wow-engine/v17/engineering_incident_identity.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_effectiveness.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_provider_failover.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_remote_fallback.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/governance_dispatcher.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/governance_dispatcher_github.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/independent_release_checks.py @gregoryharper84-ship-it

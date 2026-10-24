@@ -56,7 +56,7 @@ BOOTSTRAP_CHECKS = {
     "WOW Independent QA exact-head": 5245832,
     "WOW Release Authority exact-head": 5245853,
 }
-TRUST_ROOT_PREFIXES = (".github/", ".agents/")
+TRUST_ROOT_PREFIXES = (".github/", ".agents/", ".claude/")
 PROTECTED_PATHS = frozenset(
     {
         "artifacts/wow-engine/v17/agent_identity_policy.py",

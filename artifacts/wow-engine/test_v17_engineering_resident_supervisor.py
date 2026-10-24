@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+from datetime import datetime, timedelta, timezone
+import io
+import zipfile
+from urllib.error import HTTPError
 
 import pytest
 import yaml
 
 from v17.engineering_resident_supervisor import (
     ATTEMPT_KEY_PREFIX,
+    LOCK_KEY,
+    PENDING_DISPATCH_KEY,
     GitHubTransport,
     active_engineering_workflow,
     dispatch_once,
@@ -62,6 +69,9 @@ class FakeClient:
         self.issue_open = issue_open
         self.open_pr = open_pr
         self.sent = []
+        self.provider_state = "PROVIDER_ADMITTED"
+        self.remote_clear = True
+        self.reconciled_runs = []
         self.open_pr_calls = []
         self.fail_open_pr_page = None
         self.open_pr_pages = open_pr_pages if open_pr_pages is not None else (
@@ -90,8 +100,17 @@ class FakeClient:
         rows = self.open_pr_pages[page - 1] if page <= len(self.open_pr_pages) else []
         return rows, page < len(self.open_pr_pages), len(self.open_pr_pages) > 1
 
-    def dispatch(self, issue):
+    def dispatch(self, issue, *, dispatch_id=""):
         self.sent.append(issue)
+
+    def provider_admission(self):
+        return self.provider_state
+
+    def remote_writer_clear(self):
+        return self.remote_clear
+
+    def dispatched_runs(self, claim):
+        return self.reconciled_runs
 
 
 class FakeRedis:
@@ -100,18 +119,46 @@ class FakeRedis:
         self.attempts = attempts
         self.attempts_by_key = {}
         self.values = []
+        self.stored = {}
 
     def set(self, key, value, *, nx=False, ex=0):
         self.values.append((key, value, nx, ex))
         if nx and self.locked:
             return False
+        if nx and key in self.stored:
+            return False
+        self.stored[key] = value
         return True
 
     def exists(self, key):
         return self.cooling
 
     def get(self, key):
-        return str(self.attempts_by_key.get(key, self.attempts))
+        if key.startswith(ATTEMPT_KEY_PREFIX):
+            return str(self.attempts_by_key.get(key, self.attempts))
+        return self.stored.get(key)
+
+    def eval(self, script, key_count, *args):
+        keys, argv = args[:key_count], args[key_count:]
+        if "reserve_resident_dispatch" in script:
+            if self.get(keys[0]) != argv[0] or self.get(keys[1]):
+                return 0
+            self.stored[keys[1]] = argv[1]
+            return 1
+        if "count_accepted_resident_dispatch" in script:
+            if (self.get(keys[0]) != argv[0] or int(self.get(keys[1])) != int(argv[1])
+                    or int(self.get(keys[1])) >= 3):
+                return 0
+            self.incr(keys[1])
+            self.expire(keys[1], 86400)
+            self.stored[keys[0]] = argv[2]
+            return 1
+        if "clear_reconciled_resident_dispatch" in script:
+            if self.get(keys[0]) != argv[0]:
+                return 0
+            del self.stored[keys[0]]
+            return 1
+        raise AssertionError(script)
 
     def incr(self, key):
         value = int(self.get(key)) + 1
@@ -166,6 +213,263 @@ def test_atomic_single_supervisor_dispatch_once():
     assert client.sent == [ISSUE]
     assert store.attempts == 1
     assert any(value == "1388" and ex == 900 for _, value, _, ex in store.values)
+
+
+@pytest.mark.parametrize("state", [
+    "PROVIDER_QUOTA_BLOCKED", "PROVIDER_THROTTLED", "PROVIDER_RECOVERY_UNVERIFIED",
+    "PROVIDER_STATUS_UNVERIFIED", None, {}, "unexpected",
+])
+@pytest.mark.parametrize("attempts", [0, 3])
+def test_provider_hold_precedes_dispatch_and_never_consumes_or_resets_cap(state, attempts):
+    client, store = FakeClient(), FakeRedis(attempts=attempts)
+    client.provider_state = state
+    result = dispatch_once(client, store, MANIFEST)
+    assert result == (state if state in (
+        "PROVIDER_QUOTA_BLOCKED", "PROVIDER_THROTTLED", "PROVIDER_RECOVERY_UNVERIFIED",
+    ) else "PROVIDER_STATUS_UNVERIFIED")
+    assert not client.sent
+    assert store.attempts == attempts
+    assert store.attempts_by_key == {}
+    assert store.get(PENDING_DISPATCH_KEY) is None
+
+
+def test_unreadable_provider_status_fails_closed():
+    client, store = FakeClient(), FakeRedis()
+    def unavailable():
+        raise TimeoutError("private upstream response")
+    client.provider_admission = unavailable
+    assert dispatch_once(client, store, MANIFEST) == "PROVIDER_STATUS_UNVERIFIED"
+    assert not client.sent and store.attempts == 0
+
+
+def test_provider_recovery_dispatches_once_and_preserves_existing_cap():
+    client, store = FakeClient(), FakeRedis()
+    client.provider_state = "PROVIDER_QUOTA_BLOCKED"
+    assert dispatch_once(client, store, MANIFEST) == "PROVIDER_QUOTA_BLOCKED"
+    store.stored.pop(LOCK_KEY)
+    client.provider_state = "PROVIDER_ADMITTED"
+    assert dispatch_once(client, store, MANIFEST) == "DISPATCHED_TO_PROTECTED_ENGINEERING_WORKFLOW"
+    assert len(client.sent) == 1 and store.attempts == 1
+    assert json.loads(store.get(PENDING_DISPATCH_KEY))["counted"] is True
+    store.stored.pop(LOCK_KEY)
+    assert dispatch_once(client, store, MANIFEST) == "DISPATCH_RECONCILIATION_REQUIRED"
+    assert len(client.sent) == 1 and store.attempts == 1
+    exhausted = FakeRedis(attempts=3)
+    client.sent.clear()
+    assert dispatch_once(client, exhausted, MANIFEST) == "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"
+    assert not client.sent and exhausted.attempts == 3
+
+
+def test_remote_reservation_blocks_before_dispatch_and_count():
+    client, store = FakeClient(), FakeRedis()
+    client.remote_clear = False
+    assert dispatch_once(client, store, MANIFEST) == "REMOTE_WRITER_RECONCILIATION_REQUIRED"
+    assert not client.sent and store.attempts == 0
+
+
+def test_ambiguous_dispatch_is_reconciled_and_counted_once_without_retry():
+    client, store = FakeClient(), FakeRedis()
+    def timeout(issue, **kwargs):
+        client.sent.append(issue)
+        raise TimeoutError("private response")
+    client.dispatch = timeout
+    assert dispatch_once(client, store, MANIFEST) == "DISPATCH_RECONCILIATION_REQUIRED"
+    assert store.attempts == 0
+    assert json.loads(store.get(PENDING_DISPATCH_KEY))["counted"] is False
+    for runs, expected in (
+        ([], "DISPATCH_RECONCILIATION_REQUIRED"),
+        ([{"status": "in_progress"}], "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"),
+        ([{"status": "completed"}], "DISPATCH_RECONCILED"),
+    ):
+        store.stored.pop(LOCK_KEY)
+        client.reconciled_runs = runs
+        assert dispatch_once(client, store, MANIFEST) == expected
+    assert len(client.sent) == 1 and store.attempts == 1
+    assert store.get(PENDING_DISPATCH_KEY) is None
+
+
+def test_expired_resident_lease_cannot_send_workflow():
+    client, store = FakeClient(), FakeRedis()
+    def moved_lease():
+        store.stored[LOCK_KEY] = "another-owner"
+        return "PROVIDER_ADMITTED"
+    client.provider_admission = moved_lease
+    assert dispatch_once(client, store, MANIFEST) == "DISPATCH_RECONCILIATION_REQUIRED"
+    assert not client.sent and store.attempts == 0
+
+
+def test_unreadable_remote_reservation_never_dispatches():
+    client, store = FakeClient(), FakeRedis()
+    def unavailable():
+        raise ValueError("private response")
+    client.remote_writer_clear = unavailable
+    assert dispatch_once(client, store, MANIFEST) == "REMOTE_WRITER_RECONCILIATION_REQUIRED"
+    assert not client.sent and store.attempts == 0
+
+
+def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
+                       secondary="failure", recovery=False):
+    client = GitHubTransport("fixture-token")
+    now = datetime.now(timezone.utc)
+    stamp = (now - timedelta(minutes=5)).isoformat()
+    sha = "a" * 40
+    run = {
+        "id": 900, "run_attempt": 1, "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+        "head_branch": "main", "head_sha": sha, "status": "completed",
+        "updated_at": stamp,
+    }
+    route = {
+        "action": action, "provider": "deterministic" if action == "SURVIVAL" else "openai",
+        "reason": "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED:SECONDARY_UNAVAILABLE_OR_FAILED",
+        "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    calls = []
+    def get(suffix):
+        calls.append(suffix)
+        if "engineering-provider-dispatcher.yml/runs?" in suffix:
+            return {"workflow_runs": [run]}
+        if suffix == "actions/runs/900/artifacts?per_page=100":
+            return {"total_count": 1, "artifacts": [{
+                "id": 77, "name": "wow-v17-engineering-provider-receipt-900-1", "expired": False,
+            }]}
+        if suffix == "commits/main":
+            return {"sha": sha}
+        for workflow, state in (("chatgpt", primary), ("claude", secondary)):
+            if f"wow-v17-{workflow}-engineering-worker.yml/runs?" in suffix:
+                return {"workflow_runs": [{
+                    "id": 901 if workflow == "chatgpt" else 902,
+                    "path": f".github/workflows/wow-v17-{workflow}-engineering-worker.yml",
+                    "head_sha": sha,
+                    "head_branch": "main", "status": "completed", "conclusion": state,
+                    "updated_at": (now if recovery and state == "success"
+                                   else now - timedelta(minutes=10)).isoformat(),
+                }]}
+        raise AssertionError(suffix)
+    monkeypatch.setattr(client, "get", get)
+    monkeypatch.setattr(client, "provider_receipt", lambda artifact_id: route)
+    return client, run, route, calls
+
+
+def test_real_transport_persistent_quota_zero_dispatch_and_counter_even_after_old_cap(monkeypatch):
+    client, run, route, calls = _provider_evidence(monkeypatch)
+    run["updated_at"] = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+    monkeypatch.setattr(client, "remote_writer_clear", lambda: True)
+    monkeypatch.setattr("v17.engineering_resident_supervisor.active_engineering_workflow", lambda client: False)
+    for attempts in (0, 3):
+        store = FakeRedis(attempts=attempts)
+        assert dispatch_once(client, store, MANIFEST) == "PROVIDER_QUOTA_BLOCKED"
+        assert store.attempts == attempts and store.attempts_by_key == {}
+    assert not any("dispatches" in path for path in calls)
+
+
+def test_recent_protected_worker_success_proves_recovery(monkeypatch):
+    client, run, route, calls = _provider_evidence(monkeypatch, primary="success", recovery=True)
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
+    client, run, route, calls = _provider_evidence(monkeypatch, action="DISPATCH")
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
+    run["head_sha"] = "b" * 40
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+    route["can_execute"] = True
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+
+
+def test_success_acknowledgment_receipt_matches_exact_parent_worker(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, primary="success")
+    route.update(action="NO_ACTION", provider="none", parent_run_id="901",
+                 reason="wow-v17-chatgpt-engineering-worker_SUCCESS")
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
+    route["parent_run_id"] = "999"
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+@pytest.mark.parametrize("bad_run", [
+    {"head_branch": "feature"}, {"path": "untrusted.yml"}, {"id": True},
+    {"head_sha": "malformed"}, {"status": "queued"},
+])
+def test_provider_receipt_identity_is_fail_closed(monkeypatch, bad_run):
+    client, run, _, _ = _provider_evidence(monkeypatch)
+    run.update(bad_run)
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+
+
+def test_artifact_redirect_does_not_forward_credentials(monkeypatch):
+    client = GitHubTransport("fixture-token")
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, "w") as archive:
+        archive.writestr("provider-route.json", '{"can_execute":false}')
+    requests = []
+    class Response(io.BytesIO):
+        pass
+    class Opener:
+        def open(self, req, timeout):
+            requests.append(req)
+            if len(requests) == 1:
+                raise HTTPError(req.full_url, 302, "", {
+                    "Location": "https://fixture.blob.core.windows.net/artifact?signed=fixture",
+                }, None)
+            return Response(raw.getvalue())
+    monkeypatch.setattr("urllib.request.build_opener", lambda handler: Opener())
+    assert client.provider_receipt(77) == {"can_execute": False}
+    assert requests[0].get_header("Authorization") == "Bearer " + "fixture-token"
+    assert requests[1].get_header("Authorization") is None
+
+
+def test_untrusted_artifact_redirect_is_rejected(monkeypatch):
+    client = GitHubTransport("fixture-token")
+    class Opener:
+        def open(self, req, timeout):
+            raise HTTPError(req.full_url, 302, "", {"Location": "https://attacker.invalid/secret"}, None)
+    monkeypatch.setattr("urllib.request.build_opener", lambda handler: Opener())
+    with pytest.raises(ValueError, match="PROVIDER_STATUS_UNVERIFIED"):
+        client.provider_receipt(77)
+
+
+def test_ambiguous_reconciliation_requires_exact_resident_nonce(monkeypatch):
+    client = GitHubTransport("fixture-token")
+    claim = {
+        "issue_number": 1388, "lease_group": "P0_LLP_RESTORE",
+        "dispatch_id": "a" * 32, "created_at": "2026-10-23T16:00:00Z",
+    }
+    run = {
+        "head_branch": "main", "event": "workflow_dispatch",
+        "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+        "created_at": claim["created_at"], "status": "completed",
+        "display_title": "WOW V17 provider source=manual lease=P0_LLP_RESTORE incident=1388 resident=" + "b" * 32,
+    }
+    response = {"total_count": 1, "workflow_runs": [run]}
+    monkeypatch.setattr(client, "get", lambda suffix: response)
+    assert client.dispatched_runs(claim) == []
+    run["display_title"] = run["display_title"].replace("b" * 32, "a" * 32)
+    assert client.dispatched_runs(claim) == [run]
+    response["total_count"] = True
+    with pytest.raises(ValueError, match="DISPATCH_RECONCILIATION_REQUIRED"):
+        client.dispatched_runs(claim)
+
+
+def test_counter_accounting_failure_keeps_pending_hold_without_resend():
+    client, store = FakeClient(), FakeRedis()
+    original = store.eval
+    def lost_reply(script, *args):
+        result = original(script, *args)
+        if "count_accepted_resident_dispatch" in script:
+            raise TimeoutError("reply lost after successful accounting")
+        return result
+    store.eval = lost_reply
+    with pytest.raises(TimeoutError):
+        dispatch_once(client, store, MANIFEST)
+    assert store.attempts == 1
+    store.eval = original
+    store.stored.pop(LOCK_KEY)
+    client.reconciled_runs = [{"status": "completed"}]
+    assert dispatch_once(client, store, MANIFEST) == "DISPATCH_RECONCILED"
+    assert store.attempts == 1 and len(client.sent) == 1
+
+
+def test_malformed_pending_reservation_never_resets_counter():
+    client, store = FakeClient(), FakeRedis(attempts=3)
+    store.stored[PENDING_DISPATCH_KEY] = '{"can_execute":true}'
+    assert dispatch_once(client, store, MANIFEST) == "DISPATCH_RECONCILIATION_REQUIRED"
+    assert store.attempts == 3 and not client.sent
 
 
 @pytest.mark.parametrize("locked,cooling,active,open_pr,expected", [

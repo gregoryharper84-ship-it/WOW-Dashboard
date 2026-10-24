@@ -42,6 +42,8 @@ from v17.llp_governed_package_scoring import (
     MODEL_OUTPUT_INVALID,
     MODEL_SCORER_FAILED,
     MODEL_UNAVAILABLE,
+    PASS as MODEL_PACKAGE_PASS,
+    validate_governed_scoring_package,
 )
 from v17.team_event_capability_manifest import (
     EXPECTED_TEAM_EVENT_SPORTS,
@@ -1286,12 +1288,16 @@ def route_discovered_slate(
             rows.append(
                 RoutedRow(
                     identity=event.identity(),
-                    bucket=MODEL_UNAVAILABLE,
-                    model_status=MODEL_UNAVAILABLE,
+                    bucket=OTHER_GOVERNED_HOLD,
+                    model_status="MODEL_RESOLUTION_FAILED",
                     detail={
+                        "code": "MODEL_RESOLUTION_FAILED",
                         "reason": "MODEL_RESOLUTION_FAILED",
                         "error_type": type(exc).__name__,
                         "model_invoked": False,
+                        "probability_publishable": False,
+                        "rank_eligible": False,
+                        "can_execute": False,
                     },
                 )
             )
@@ -1336,12 +1342,86 @@ def route_discovered_slate(
             )
             continue
 
-        result = score_row(event, model)
-        payload = dict(result or {})
+        # A single faulty scorer must not abort the frozen full-slate inventory.
+        # Classify invocation failures separately from a genuinely absent model.
+        try:
+            result = score_row(event, model)
+        except Exception as exc:  # noqa: BLE001 - per-row fail-closed boundary
+            # A specialist may raise a typed HTTPException with a native
+            # model/input/identity code. Preserve it instead of inventing an
+            # invocation failure; only untyped exceptions become scorer failures.
+            native_detail = getattr(exc, "detail", None)
+            if isinstance(native_detail, Mapping) and native_detail.get("code"):
+                payload = {
+                    **dict(native_detail),
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+            else:
+                payload = {
+                    "code": MODEL_SCORER_FAILED,
+                    "reason": "DISCOVERED_ROW_SCORER_EXCEPTION",
+                    "error_type": type(exc).__name__,
+                    "scoring_attempted": True,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+        else:
+            if result is None or (isinstance(result, Mapping) and not result):
+                payload = {
+                    "code": MODEL_SCORER_FAILED,
+                    "reason": "DISCOVERED_ROW_SCORER_NO_COMPLETION",
+                    "scoring_attempted": True,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+            elif not isinstance(result, Mapping):
+                payload = {
+                    "code": MODEL_OUTPUT_INVALID,
+                    "reason": "DISCOVERED_ROW_SCORER_RESPONSE_NOT_MAPPING",
+                    "scoring_attempted": True,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+            else:
+                payload = dict(result)
         code = payload.get("code") or payload.get("model_status") or payload.get("terminal_status")
         completed = (
             payload.get("probability_publishable") is True and payload.get("rank_eligible") is True
         )
+        # Contradictory success booleans never override a typed hard failure.
+        if completed and _text(code).upper() in {
+            MODEL_UNAVAILABLE,
+            MODEL_INPUTS_INSUFFICIENT,
+            MODEL_SCORER_FAILED,
+            MODEL_OUTPUT_INVALID,
+            "STALE_MODEL_OUTPUT",
+            "MODEL_ROUTE_UNSUPPORTED",
+        }:
+            completed = False
+            payload = {
+                **payload,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+        if completed:
+            package_audit = validate_governed_scoring_package(payload)
+            if package_audit.status != MODEL_PACKAGE_PASS:
+                payload = {
+                    **payload,
+                    "code": package_audit.status,
+                    "model_package_validation": package_audit.as_dict(),
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+                code = package_audit.status
+                completed = False
         if completed:
             rows.append(
                 RoutedRow(

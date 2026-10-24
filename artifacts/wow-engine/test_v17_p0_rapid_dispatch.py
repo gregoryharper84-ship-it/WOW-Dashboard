@@ -55,18 +55,20 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "primary,secondary,code,fail_inventory,expected_admit,expected_reason",
+    "primary,secondary,code,fail_inventory,expected_admit,expected_reason,independent",
     [
-        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "false", "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED"),
-        ("failure", "cancelled", "OPENAI_API_AUTH_FAILED", False, "false", "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED"),
-        ("failure", "success", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PROVIDER_ADMISSION_CLEAR"),
-        ("failure", "failure", "OPENAI_API_RATE_LIMITED", False, "true", "PROVIDER_ADMISSION_CLEAR"),
-        ("success", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PROVIDER_ADMISSION_CLEAR"),
-        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", True, "false", "PRIMARY_WORKER_INVENTORY_UNVERIFIED"),
+        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "false", "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED", False),
+        ("failure", "cancelled", "OPENAI_API_AUTH_FAILED", False, "false", "PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED", False),
+        ("failure", "success", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PROVIDER_ADMISSION_CLEAR", False),
+        ("failure", "failure", "OPENAI_API_RATE_LIMITED", False, "true", "PROVIDER_ADMISSION_CLEAR", False),
+        ("success", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PROVIDER_ADMISSION_CLEAR", False),
+        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", True, "false", "PRIMARY_WORKER_INVENTORY_UNVERIFIED", False),
+        ("failure", "failure", "OPENAI_API_QUOTA_EXCEEDED", False, "true", "PRIMARY_ACCOUNT_BLOCKED_INDEPENDENT_ADMISSION_ONLY", True),
+        ("failure", "failure", "OPENAI_API_AUTH_FAILED", False, "true", "PRIMARY_ACCOUNT_BLOCKED_INDEPENDENT_ADMISSION_ONLY", True),
     ],
 )
 def test_real_p0_provider_preflight_with_bounded_cli_fixtures(
-    primary, secondary, code, fail_inventory, expected_admit, expected_reason,
+    primary, secondary, code, fail_inventory, expected_admit, expected_reason, independent,
 ) -> None:
     text = WORKFLOW.read_text()
     part = text.split("      - name: Preflight P0 engineering provider availability", 1)[1]
@@ -112,6 +114,10 @@ def test_real_p0_provider_preflight_with_bounded_cli_fixtures(
             FAKE_SECONDARY=secondary,
             FAKE_CODE=code,
             FAKE_INVENTORY_FAILURE="true" if fail_inventory else "false",
+            INDEPENDENT_ENABLED="true" if independent else "",
+            INDEPENDENT_BUDGET_APPROVED="true" if independent else "",
+            INDEPENDENT_REPOSITORY="fixture/repo",
+            INDEPENDENT_MAX_ASSIGNMENTS="1",
         )
         result = subprocess.run(
             ["bash", "-c", script], env=env, capture_output=True, text=True, timeout=10

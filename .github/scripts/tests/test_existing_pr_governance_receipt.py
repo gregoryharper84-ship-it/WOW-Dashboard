@@ -1826,3 +1826,17 @@ def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch):
 
     monkeypatch.setattr(verifier, "build_receipt", build_now)
     assert verifier.main() == 0
+
+
+@pytest.mark.parametrize('filename,previous_filename', (
+    ('.claude/skills/__new_skill__/SKILL.md', None),
+    ('.claude/agents/__new_agent__.md', None),
+    ('.claude/settings.json', None),
+    ('docs/renamed-skill.md', '.claude/skills/__old_skill__/SKILL.md'),
+    ('.claude/agents/renamed.md', 'docs/previous.md'),
+))
+def test_claude_instructions_cannot_use_ordinary_source_receipt(filename, previous_filename):
+    files = [{'filename': filename, 'previous_filename': previous_filename}]
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                       match='TRUST_ROOT_CHANGE_NOT_CERTIFIABLE'):
+        verifier._validate_protected_diff(files, repo_root=REPO_ROOT)
