@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -54,6 +55,41 @@ def build_shadow_binary_calibration_artifact(
     if fit.result is None or fit.result.calibration_status != CalibrationStatus.PLATT_TIME_SPLIT_V1:
         raise BasketballCalibrationArtifactError("BASKETBALL_PLATT_CALIBRATION_NOT_PROMOTABLE")
 
+    # A correctly fitted calibration status does not validate source row shapes:
+    # these fields enter durable review receipts and must be independently
+    # reproducible, chronological, binary-labelled and finite.
+    if any(
+        isinstance(p, bool) or not isinstance(p, (int, float, np.number))
+        or not math.isfinite(float(p)) or not 0.0 < float(p) < 1.0
+        for p in raw_probabilities
+    ):
+        raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_RAW_PROBABILITY_INVALID")
+    if any(
+        type(y) not in (int, np.int64, np.int32) or int(y) not in (0, 1)
+        for y in outcomes
+    ):
+        raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_OUTCOME_NOT_BINARY")
+    if any(
+        type(fold) not in (int, np.int64, np.int32) or int(fold) < 0
+        for fold in fold_assignments
+    ):
+        raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_FOLD_INVALID")
+    seen_folds = list(dict.fromkeys(int(fold) for fold in fold_assignments))
+    if len(seen_folds) < 2 or seen_folds != list(range(len(seen_folds))):
+        raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_FOLD_NOT_CHRONOLOGICAL")
+    metrics = fit.metrics
+    checks = (
+        ("brier", 0.0, 1.0), ("log_loss", 0.0, None),
+        ("ece", 0.0, 1.0), ("calibration_bias", -1.0, 1.0),
+    )
+    for key, minimum, maximum in checks:
+        try:
+            value = float(getattr(metrics, key))
+        except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+            raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_METRIC_INVALID") from exc
+        if not math.isfinite(value) or value < minimum or (maximum is not None and value > maximum):
+            raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_METRIC_INVALID")
+
     normalized_timestamps: list[str] = []
     parsed_timestamps: list[datetime] = []
     for raw_ts in timestamps:
@@ -67,10 +103,22 @@ def build_shadow_binary_calibration_artifact(
         parsed_timestamps.append(parsed)
         normalized_timestamps.append(parsed.isoformat())
 
+    if any(left > right for left, right in zip(parsed_timestamps, parsed_timestamps[1:])):
+        raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_TIMESTAMP_NOT_CHRONOLOGICAL")
+    # Exact UTC timestamp/date groups must never straddle model training and
+    # validation folds. Multiple sporting results on the same date are a
+    # chronological batch, not independent knowledge for each other.
+    fold_by_day: dict[str, int] = {}
+    for ts, fold in zip(parsed_timestamps, fold_assignments):
+        day = ts.date().isoformat()
+        if day in fold_by_day and fold_by_day[day] != int(fold):
+            raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_DATE_SPLIT_ACROSS_FOLDS")
+        fold_by_day[day] = int(fold)
+
     raw = np.asarray(raw_probabilities, dtype=float)
     y = np.asarray(outcomes, dtype=float)
     calibrated = np.asarray([fit.coefficients.apply(float(p)) for p in raw], dtype=float)
-    if not np.all(np.isfinite(calibrated)):
+    if not np.all(np.isfinite(calibrated)) or not np.all((calibrated > 0.0) & (calibrated < 1.0)):
         raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATED_HISTORY_NONFINITE")
 
     residual_q90 = float(np.quantile(np.abs(calibrated - y), 0.90))
