@@ -271,16 +271,36 @@ jobs:
                   if not isinstance(events, list):
                       continue
                   scheduled = []
+                  seen_event_ids = set()
+                  ambiguous_identity = False
                   for event in events:
                       if not isinstance(event, dict):
                           continue
+                      event_id = str(event.get("id") or "").strip()
+                      if not event_id or event_id in seen_event_ids:
+                          ambiguous_identity = True
+                          break
+                      seen_event_ids.add(event_id)
                       status = event.get("status") if isinstance(event.get("status"), dict) else {}
                       status_type = (
                           status.get("type") if isinstance(status.get("type"), dict) else {}
                       )
-                      if status_type.get("completed") is True:
+                      # "not completed" is NOT proof of pregame; reject in-progress
+                      # games and impossible kickoff/date crossovers.
+                      if status_type.get("completed") is not False or str(status_type.get("state") or "").lower() != "pre":
                           continue
-                      scheduled.append(event)
+                      try:
+                          kick = datetime.fromisoformat(str(event["date"]).replace("Z", "+00:00"))
+                          if kick.utcoffset() is None:
+                              raise ValueError("naive kickoff")
+                      except (KeyError, TypeError, ValueError):
+                          ambiguous_identity = True
+                          break
+                      if kick.astimezone(zone).date() != candidate or kick <= datetime.now(kick.tzinfo):
+                          continue
+                      scheduled.append(event_id)
+                  if ambiguous_identity:
+                      continue
                   if len(scheduled) > 12:
                       return candidate.isoformat(), len(scheduled)
               return None, 0
