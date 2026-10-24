@@ -1,4 +1,9 @@
 name: wow-v17-independent-qa-check
+# Dynamic run-name stays until a later merge sets this one line to exactly
+# `run-name: wow-v17-independent-qa-check`. Release accepts that static name
+# only with workflow id 380562324 and this file's path. That merge must keep
+# the job `if` below (skip when pull_requests[0] is absent, and keep the
+# trusted-governance-gate exclusion) and the AUTO concurrency group.
 run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }} head=${{ inputs.head_sha || 'AUTO' }}
 
 # Phase C of #1550. Runs from protected main only and never checks out or executes

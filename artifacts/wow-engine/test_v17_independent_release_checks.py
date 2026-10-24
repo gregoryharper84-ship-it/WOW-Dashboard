@@ -766,7 +766,29 @@ def test_prless_or_skipped_upstream_qa_is_neutral(run_over, jobs, reason):
     ({"path": ".github/workflows/other.yml"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"workflow_id": 380562325}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"workflow_id": "380562324"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
-    ({"name": "wow-v17-independent-qa-check"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check", "workflow_id": 1}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check", "path": ".github/workflows/other.yml"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check", "head_sha": "not-a-sha"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check", "run_attempt": 2}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check",
+      "repository": {"full_name": "other/WOW-Dashboard"}}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check",
+      "head_repository": {"full_name": "other/WOW-Dashboard"}}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check "}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check extra"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check event=push pr=AUTO head=AUTO"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "other-workflow"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO extra"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check event=workflow_dispatch pr=AUTO head=AUTO"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO",
       "workflow_id": 1}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"head_sha": "not-a-sha"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
@@ -804,6 +826,26 @@ def test_unreadable_upstream_qa_run_fails_closed():
 def test_non_integer_upstream_identity_fails_closed():
     with pytest.raises(m.UpstreamQaError, match="^RELEASE_UPSTREAM_QA_UNTRUSTED$"):
         m.classify_upstream_qa(REPO, run_id=True, run_attempt=1, fetch=_classify_fetch(_qa_run(), _qa_jobs()))
+
+
+def test_static_qa_run_name_is_applicable_with_pinned_workflow_identity():
+    assert m.QA_WORKFLOW_ID == 380562324
+    assert m.QA_WORKFLOW_PATH == ".github/workflows/wow-v17-independent-qa-check.yml"
+    for conclusion in ("success", "failure"):
+        run = _qa_run(
+            name=m.QA_WORKFLOW_NAME,
+            workflow_id=m.QA_WORKFLOW_ID,
+            path=m.QA_WORKFLOW_PATH,
+            conclusion=conclusion,
+        )
+        classified = m.classify_upstream_qa(
+            REPO, run_id=40107281706, run_attempt=1,
+            fetch=_classify_fetch(run, _qa_jobs(conclusion)),
+        )
+        assert classified == {
+            "disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE",
+        }
+        assert "can_execute" not in classified
 
 
 def test_real_successful_qa_run_with_dynamic_name_is_applicable():

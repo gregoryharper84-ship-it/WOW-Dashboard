@@ -46,7 +46,8 @@ Fetch = Callable[[str], tuple[int, Any]]
 QA_WORKFLOW_NAME = "wow-v17-independent-qa-check"
 QA_WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
 # Stable id of that workflow in this repository. GitHub's run `name` is the
-# dynamic run-name, not this workflow name.
+# workflow run-name. Today that is the dynamic shape below. A later change
+# may set it to exactly QA_WORKFLOW_NAME. Neither string is principal evidence.
 QA_WORKFLOW_ID = 380562324
 QA_RUN_NAME_RE = re.compile(
     r"^wow-v17-independent-qa-check event=(workflow_run|workflow_dispatch) "
@@ -260,6 +261,23 @@ def _positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _qa_run_name_matches(name: Any, event: Any) -> bool:
+    """True for the current dynamic run-name or the exact static workflow name.
+
+    A matching name does not authenticate the run. Callers still require
+    workflow id 380562324, the workflow path, repository, head, attempt, and
+    the single completed ``qa`` job. Any other name is rejected.
+    """
+    if not isinstance(name, str) or not isinstance(event, str):
+        return False
+    if name == QA_WORKFLOW_NAME:
+        return True
+    return (
+        QA_RUN_NAME_RE.fullmatch(name) is not None
+        and name.startswith(f"{QA_WORKFLOW_NAME} event={event} ")
+    )
+
+
 def classify_upstream_qa(
     repo: str, *, run_id: int, run_attempt: int, fetch: Fetch = gh_fetch,
 ) -> dict[str, str]:
@@ -279,15 +297,9 @@ def classify_upstream_qa(
     head_repository = run.get("head_repository") if isinstance(run.get("head_repository"), dict) else {}
     event = run.get("event")
     name = run.get("name")
-    # Trust the workflow id and path. `name` is GitHub's run-name
-    # ("wow-v17-independent-qa-check event=... pr=... head=..."), so equality
-    # with the static workflow name rejects every real run.
-    name_matches = (
-        isinstance(name, str)
-        and QA_RUN_NAME_RE.fullmatch(name) is not None
-        and isinstance(event, str)
-        and name.startswith(f"{QA_WORKFLOW_NAME} event={event} ")
-    )
+    # Workflow id and path authenticate the workflow. `name` may be the
+    # current dynamic run-name or exactly "wow-v17-independent-qa-check".
+    name_matches = _qa_run_name_matches(name, event)
     trusted = (
         run.get("id") == run_id
         and run.get("run_attempt") == run_attempt
