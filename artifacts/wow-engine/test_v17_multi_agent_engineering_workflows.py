@@ -1,6 +1,9 @@
+import json
 from pathlib import Path
 
 import yaml
+
+from v17.engineering_dispatch_queue import build_queue
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -282,6 +285,22 @@ def test_domain_scoped_p0_target_propagates_across_provider_and_workers() -> Non
     assert "WOW_DUAL_STREAM_HEARTBEAT:${LEASE_GROUP:-GLOBAL}" in claude
     assert "marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'" not in openai
     assert "marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'" not in claude
+
+
+def test_nhl_incident_1952_resolves_as_standard_p1_in_dispatch_queue() -> None:
+    manifest = json.loads((ROOT / "artifacts/wow-engine/v17/engineering_dispatch_manifest.json").read_text())
+    queue = build_queue(manifest, [{"number": 1952, "title": "NHL", "state": "OPEN"}])
+    records = [r for r in queue["records"] if r["incident_id"] == "1952"]
+
+    assert len(records) == 1
+    record = records[0]
+    assert record["severity"] == "P1"
+    assert record["priority_rank"] == 14
+    assert record["execution_lane"] == "STANDARD"
+    assert record["lease_group"] == ""
+    assert record["work_stream"] == "RESTORATION"
+    assert record["conflict_keys"] == ["NHL_CANDIDATE", "ALL_SPORTS_MONEYLINE", "PROP_LIFECYCLE"]
+    assert record["can_execute"] is False
 
 
 def test_provider_dispatcher_has_typed_failover_and_survival() -> None:
