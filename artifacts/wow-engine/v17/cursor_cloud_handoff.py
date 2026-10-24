@@ -16,6 +16,7 @@ from urllib import error, parse, request
 
 GITHUB_API = "https://api.github.com"
 CURSOR_API = "https://api.cursor.com"
+LEDGER_ISSUE = 1138
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -72,7 +73,7 @@ def payload(repo: str, number: int, sha: str, task: str) -> dict:
 
 
 def api_json(url: str, *, token: str, basic: bool = False, method: str = "GET",
-             body: dict | None = None) -> dict:
+             body: dict | None = None) -> dict | list:
     auth = ("Basic " + base64.b64encode((token + ":").encode()).decode()
             if basic else "Bearer " + token)
     data = json.dumps(body).encode() if body is not None else None
@@ -88,7 +89,7 @@ def api_json(url: str, *, token: str, basic: bool = False, method: str = "GET",
     try:
         with request.urlopen(req, timeout=15) as response:
             out = json.load(response)
-            if not isinstance(out, dict):
+            if not isinstance(out, dict) and not (not basic and isinstance(out, list)):
                 raise HandoffBlocked("CURSOR_API_RESPONSE_INVALID")
             return out
     except error.HTTPError as exc:
@@ -108,6 +109,65 @@ def api_json(url: str, *, token: str, basic: bool = False, method: str = "GET",
         raise HandoffBlocked(f"CURSOR_GITHUB_PR_HTTP_{exc.code}") from exc
     except (error.URLError, TimeoutError, ValueError) as exc:
         raise HandoffBlocked("CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED") from exc
+
+
+
+def read_remote_ledger(repo: str, github_token: str, api=api_json) -> list[dict]:
+    """Exhaustively read #1138 before admission; partial inventory blocks."""
+    comments = []
+    for page in range(1, 101):
+        url = f"{GITHUB_API}/repos/{repo}/issues/{LEDGER_ISSUE}/comments?per_page=100&page={page}"
+        rows = api(url, token=github_token)
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise HandoffBlocked("CURSOR_REMOTE_LEDGER_UNVERIFIED")
+        comments.extend(rows)
+        if len(rows) < 100:
+            return comments
+    raise HandoffBlocked("CURSOR_REMOTE_LEDGER_TRUNCATED")
+
+
+def reserve_remote_writer(repo: str, number: int, sha: str, agent: str,
+                          github_token: str, api=api_json) -> int:
+    """Reserve before Cloud Agent POST under the *shared* Actions writer lock.
+
+    A reservation is never automatically expired or retried after ambiguity.
+    Release requires separately verified remote termination and review.
+    """
+    try:
+        from .engineering_remote_fallback import (
+            ProviderUnavailable, assert_no_remote_writer, cursor_reservations,
+        )
+    except ImportError:
+        from engineering_remote_fallback import (
+            ProviderUnavailable, assert_no_remote_writer, cursor_reservations,
+        )
+    comments = read_remote_ledger(repo, github_token, api)
+    try:
+        # Even released reservations cannot authorize replay of the same head.
+        if any(row["pr_number"] == number and row["expected_head"] == sha
+               for _, row in cursor_reservations(comments)):
+            raise HandoffBlocked("CURSOR_RESERVATION_REPLAY_REJECTED")
+        assert_no_remote_writer(comments)
+    except ProviderUnavailable as exc:
+        raise HandoffBlocked(str(exc)) from exc
+
+    run_id = os.environ.get("GITHUB_RUN_ID", "0")
+    if not re.fullmatch(r"[0-9]+", run_id):
+        raise HandoffBlocked("CURSOR_ACTION_RUN_ID_INVALID")
+    claim = {
+        "provider": "cursor", "repo": repo, "pr_number": number,
+        "expected_head": sha, "agent_id": agent, "github_run_id": run_id,
+        "hold": True, "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "status": "REMOTE_LAUNCH_RESERVED",
+    }
+    body = (f"<!-- WOW_CURSOR_REMOTE_REPAIR_ATTEMPT:{number} -->\n"
+            + json.dumps(claim, sort_keys=True))
+    url = f"{GITHUB_API}/repos/{repo}/issues/{LEDGER_ISSUE}/comments"
+    saved = api(url, token=github_token, method="POST", body={"body": body})
+    if not isinstance(saved, dict) or type(saved.get("id")) is not int:
+        raise HandoffBlocked("CURSOR_RESERVATION_WRITE_UNVERIFIED")
+    return saved["id"]
 
 
 def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
@@ -148,6 +208,9 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
 
     # Recheck before the irreversible dispatch; Cursor also gets SHA-lock instructions.
     validate_pr(api(gh_url, token=github_token), repo=repo, number=pr_number, sha=expected_head)
+    reservation_id = reserve_remote_writer(
+        repo, pr_number, expected_head, body["agentId"], github_token, api,
+    )
     result = api(CURSOR_API + "/v1/agents", token=cursor_token, basic=True,
                  method="POST", body=body)
     agent = result.get("agent") or {}
@@ -157,6 +220,7 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
     return {
         "status": "CURSOR_AGENT_ENQUEUED",
         "agent_id": agent["id"],
+        "reservation_id": reservation_id,
         "run_id": run["id"],
         "run_status": run.get("status"),
         "pr_number": pr_number,

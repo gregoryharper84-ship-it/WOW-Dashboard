@@ -24,6 +24,7 @@ except ImportError:
 REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 LEDGER = f"/repos/{REPOSITORY}/issues/1138/comments"
 MARKER = "<!-- WOW_REMOTE_REPAIR_ATTEMPT:"
+CURSOR_MARKER = "<!-- WOW_CURSOR_REMOTE_REPAIR_ATTEMPT:"
 COPILOT_ID = 198982749  # github.com/apps/copilot-swe-agent, not the requesting user
 SHA = re.compile(r"[0-9a-f]{40}")
 
@@ -90,8 +91,39 @@ def reservations(comments):
     return result
 
 
+
+def cursor_reservations(comments):
+    """Parse the same #1138 ledger. Malformed evidence is never a clear lease."""
+    found = []
+    for comment in comments:
+        body = comment.get("body") or ""
+        if not body.startswith(CURSOR_MARKER):
+            continue
+        try:
+            header, payload = body.split("\n", 1)
+            row = json.loads(payload)
+            number = row["pr_number"]
+            if (type(number) is not int or number <= 0
+                    or header != f"{CURSOR_MARKER}{number} -->"
+                    or row.get("provider") != "cursor"
+                    or row.get("repo") != REPOSITORY
+                    or not SHA.fullmatch(str(row.get("expected_head", "")))
+                    or not re.fullmatch(r"bc-[0-9a-f-]{36}", str(row.get("agent_id", "")))
+                    or type(row.get("hold")) is not bool
+                    or row.get("can_execute") is not False
+                    or row.get("terminal_authority") != "V17_TERMINAL_REDUCER"
+                    or not re.fullmatch(r"[0-9]+", str(row.get("github_run_id", "")))
+                    or type(comment["id"]) is not int):
+                raise ValueError("invalid Cursor reservation")
+            found.append((comment["id"], row))
+        except (KeyError, ValueError, TypeError, IndexError):
+            raise ProviderUnavailable("CURSOR_REMOTE_RESERVATION_INVALID") from None
+    return found
+
+
 def assert_no_remote_writer(comments):
-    if any(receipt["hold"] for _, receipt in reservations(comments)):
+    if (any(receipt["hold"] for _, receipt in reservations(comments))
+            or any(receipt["hold"] for _, receipt in cursor_reservations(comments))):
         raise ProviderUnavailable("REMOTE_WRITER_RECONCILIATION_REQUIRED")
 
 

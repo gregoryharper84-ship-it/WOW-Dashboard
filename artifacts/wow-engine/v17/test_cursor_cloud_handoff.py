@@ -1,9 +1,11 @@
 """Deterministic no-network tests for the Cursor engineering handoff."""
 import importlib.util
 import pathlib
+import sys
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 spec = importlib.util.spec_from_file_location("cursor_cloud_handoff", HERE / "cursor_cloud_handoff.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
@@ -92,6 +94,8 @@ class HandoffTests(unittest.TestCase):
         calls = []
         def api(url, **kwargs):
             calls.append((url, kwargs))
+            if "/issues/1138/comments" in url:
+                return {"id": 123} if kwargs.get("method") == "POST" else []
             if "/pulls/" in url:
                 return pr()
             if kwargs.get("method") == "POST":
@@ -102,7 +106,9 @@ class HandoffTests(unittest.TestCase):
         result = mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
         self.assertEqual(result["status"], "CURSOR_AGENT_ENQUEUED")
         self.assertFalse(result["production_verified"])
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 7)
+        self.assertLess(next(i for i, (u, k) in enumerate(calls) if "/issues/1138/comments" in u and k.get("method") == "POST"),
+                        next(i for i, (u, k) in enumerate(calls) if u == mod.CURSOR_API + "/v1/agents" and k.get("method") == "POST"))
 
     def test_global_active_agent_prevents_new_charge(self):
         calls = []
@@ -146,18 +152,101 @@ class HandoffTests(unittest.TestCase):
     def test_cursor_dispatch_requires_remote_writer_fence(self):
         workflow = (HERE.parent.parent.parent / ".github" / "workflows" /
                     "wow-v17-engineering-provider-dispatcher.yml").read_text()
-        step = workflow.split("      - name: Dispatch scoped Cursor Cloud Agent", 1)[1]
-        step = step.split("      - name: Deterministic survival checks", 1)[0]
-        self.assertIn("steps.remote_fence.outcome == 'success'", step)
+        self.assertIn("steps.remote_fence.outcome == 'success'", workflow)
+        job = workflow.split("  cursor-dispatch:", 1)[1].split("  independent-provider:", 1)[0]
+        self.assertIn("wow-v17-engineering-implementation-single-writer", job)
+        self.assertIn("engineering_remote_fallback.py guard", job)
+        self.assertIn("issues: write", job)
+        self.assertIn("CURSOR_HANDOFF_ENABLED:-false", job)
 
     def test_invalid_agent_receipt_fails_closed(self):
         def api(url, **kwargs):
+            if "/issues/1138/comments" in url:
+                return {"id": 123} if kwargs.get("method") == "POST" else []
             if "/pulls/" in url:
                 return pr()
             return {"agent": {"id": "wrong"}, "run": {"id": "run"}} if kwargs.get("method") == "POST" else {"items": []}
         with self.assertRaises(mod.HandoffBlocked) as cm:
             mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
         self.assertEqual(cm.exception.code, "CURSOR_DISPATCH_RECEIPT_UNVERIFIED")
+
+    def test_cursor_ledger_hold_blocks_second_launch(self):
+        from engineering_remote_fallback import cursor_reservations
+        row = {
+            "provider": "cursor", "repo": REPO, "pr_number": 1948,
+            "expected_head": SHA, "agent_id": mod.agent_id(REPO, 1948, SHA),
+            "github_run_id": "42", "hold": True, "can_execute": False,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+        }
+        import json
+        comment = {"id": 12, "body": "<!-- WOW_CURSOR_REMOTE_REPAIR_ATTEMPT:1948 -->\n"
+                   + json.dumps(row, sort_keys=True)}
+        self.assertEqual(len(cursor_reservations([comment])), 1)
+        writes = []
+        def api(url, **kwargs):
+            if "/pulls/" in url:
+                return pr()
+            if "/issues/1138/comments" in url:
+                return [comment]
+            if kwargs.get("method") == "POST":
+                writes.append(url)
+            return {"items": []}
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_RESERVATION_REPLAY_REJECTED")
+        self.assertEqual(writes, [])
+
+    def test_cursor_reservation_denied_no_provider_post(self):
+        from engineering_remote_fallback import ProviderUnavailable, assert_no_remote_writer
+        import json
+        row = {
+            "provider": "cursor", "repo": REPO, "pr_number": 1949,
+            "expected_head": SHA, "agent_id": mod.agent_id(REPO, 1949, SHA),
+            "github_run_id": "42", "hold": True, "can_execute": False,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+        }
+        comment = {"id": 12, "body": "<!-- WOW_CURSOR_REMOTE_REPAIR_ATTEMPT:1949 -->\n"
+                   + json.dumps(row, sort_keys=True)}
+        with self.assertRaises(ProviderUnavailable):
+            assert_no_remote_writer([comment])
+        calls = []
+        def api(url, **kwargs):
+            calls.append((url, kwargs))
+            if "/pulls/" in url:
+                return pr()
+            if "/issues/1138/comments" in url:
+                return [comment]
+            return {"items": []}
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "REMOTE_WRITER_RECONCILIATION_REQUIRED")
+        self.assertFalse(any(k.get("method") == "POST" for _, k in calls))
+
+    def test_ambiguous_reservation_no_cursor_post(self):
+        calls = []
+        def api(url, **kwargs):
+            calls.append((url, kwargs))
+            if "/pulls/" in url:
+                return pr()
+            if "/issues/1138/comments" in url:
+                return {} if kwargs.get("method") == "POST" else []
+            return {"items": []}
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_RESERVATION_WRITE_UNVERIFIED")
+        self.assertFalse(any(u == mod.CURSOR_API + "/v1/agents" and
+                             k.get("method") == "POST" for u, k in calls))
+
+    def test_remote_ledger_truncation_fails_closed(self):
+        def api(url, **kwargs):
+            if "/pulls/" in url:
+                return pr()
+            if "/issues/1138/comments" in url:
+                return [{}] * 100
+            return {"items": []}
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            mod.dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_REMOTE_LEDGER_TRUNCATED")
 
 
 if __name__ == "__main__":

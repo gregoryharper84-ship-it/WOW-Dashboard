@@ -74,6 +74,7 @@ jobs:
       target_incident: ${{ steps.route.outputs.target_incident }}
       lease_group: ${{ steps.route.outputs.lease_group }}
       allow_new_assignment: ${{ steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' }}
+      cursor_dispatch_required: ${{ steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'cursor' && steps.remote_fence.outcome == 'success' }}
 
     steps:
       - name: Checkout protected main
@@ -328,44 +329,6 @@ jobs:
             -f target_incident="$TARGET_INCIDENT" \
             -f lease_group="$LEASE_GROUP"
 
-      - name: Dispatch scoped Cursor Cloud Agent
-        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'cursor' && steps.remote_fence.outcome == 'success'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          CURSOR_HANDOFF_ENABLED: ${{ vars.CURSOR_HANDOFF_ENABLED }}
-          CURSOR_SPEND_CAP_CONFIRMED: ${{ vars.CURSOR_SPEND_CAP_CONFIRMED }}
-          CURSOR_PR_NUMBER: ${{ inputs.cursor_pr_number }}
-          CURSOR_EXPECTED_HEAD: ${{ inputs.cursor_expected_head }}
-          CURSOR_TASK: ${{ inputs.cursor_task }}
-        run: |
-          set -euo pipefail
-          receipt="$RUNNER_TEMP/cursor-handoff.json"
-          if [ "${CURSOR_HANDOFF_ENABLED:-false}" != "true" ]; then
-            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_HANDOFF_DISABLED","can_execute":false,"production_verified":false}\n' > "$receipt"
-            echo "::error::CURSOR_HANDOFF_DISABLED"
-            exit 1
-          fi
-          # This opt-in is an owner's attestation, NOT a provider-enforced price cap.
-          # Never launch while additional spending controls have not been confirmed.
-          if [ "${CURSOR_SPEND_CAP_CONFIRMED:-false}" != "true" ]; then
-            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_SPEND_CAP_UNCONFIRMED","can_execute":false,"production_verified":false}\n' > "$receipt"
-            echo "::error::CURSOR_SPEND_CAP_UNCONFIRMED"
-            exit 1
-          fi
-          if [ -z "${CURSOR_PR_NUMBER:-}" ] || [ -z "${CURSOR_EXPECTED_HEAD:-}" ] || [ -z "${CURSOR_TASK:-}" ]; then
-            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_DISPATCH_INPUTS_MISSING","can_execute":false,"production_verified":false}\n' > "$receipt"
-            echo "::error::CURSOR_DISPATCH_INPUTS_MISSING"
-            exit 1
-          fi
-          python artifacts/wow-engine/v17/cursor_cloud_handoff.py \
-            --repo "$GITHUB_REPOSITORY" \
-            --pr-number "$CURSOR_PR_NUMBER" \
-            --expected-head "$CURSOR_EXPECTED_HEAD" \
-            --task "$CURSOR_TASK" \
-            --receipt "$receipt"
-
       - name: Deterministic survival checks
         id: survival
         if: steps.route.outputs.action == 'SURVIVAL' || steps.remote_fence.outcome == 'failure'
@@ -410,7 +373,6 @@ jobs:
           path: |
             ${{ steps.route.outputs.receipt }}
             ${{ runner.temp }}/wow-survival/*.json
-            ${{ runner.temp }}/cursor-handoff.json
           retention-days: 14
 
       - name: Record provider-control summary
@@ -438,6 +400,74 @@ jobs:
           echo "::error::Both generative engineering paths are unavailable or unsafe to fail over; deterministic survival checks completed."
           exit 1
 
+  cursor-dispatch:
+    needs: provider-control
+    if: needs.provider-control.outputs.cursor_dispatch_required == 'true'
+    name: Fenced existing-PR Cursor Cloud Agent launch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      issues: write
+    # Same cross-workflow lock as OpenAI, Claude, and Copilot admission.
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Dispatch scoped Cursor Cloud Agent under durable remote writer fence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CURSOR_HANDOFF_ENABLED: ${{ vars.CURSOR_HANDOFF_ENABLED }}
+          CURSOR_SPEND_CAP_CONFIRMED: ${{ vars.CURSOR_SPEND_CAP_CONFIRMED }}
+          CURSOR_PR_NUMBER: ${{ inputs.cursor_pr_number }}
+          CURSOR_EXPECTED_HEAD: ${{ inputs.cursor_expected_head }}
+          CURSOR_TASK: ${{ inputs.cursor_task }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/cursor-handoff.json"
+          if [ "${CURSOR_HANDOFF_ENABLED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_HANDOFF_DISABLED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_HANDOFF_DISABLED"
+            exit 1
+          fi
+          # This opt-in is an owner's attestation, NOT a provider-enforced price cap.
+          # Never launch while additional spending controls have not been confirmed.
+          if [ "${CURSOR_SPEND_CAP_CONFIRMED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_SPEND_CAP_UNCONFIRMED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_SPEND_CAP_UNCONFIRMED"
+            exit 1
+          fi
+          if [ -z "${CURSOR_PR_NUMBER:-}" ] || [ -z "${CURSOR_EXPECTED_HEAD:-}" ] || [ -z "${CURSOR_TASK:-}" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_DISPATCH_INPUTS_MISSING","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_DISPATCH_INPUTS_MISSING"
+            exit 1
+          fi
+          # No provider call before this guard; both guard and reservation run
+          # while the shared Actions implementation-single-writer lock is held.
+          python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
+          python artifacts/wow-engine/v17/cursor_cloud_handoff.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number "$CURSOR_PR_NUMBER" \
+            --expected-head "$CURSOR_EXPECTED_HEAD" \
+            --task "$CURSOR_TASK" \
+            --receipt "$receipt"
+      - name: Upload Cursor remote reservation receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-cursor-reservation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cursor-handoff.json
+          if-no-files-found: warn
+          retention-days: 14
   independent-provider:
     needs: provider-control
     if: always() && needs.provider-control.outputs.fallback_required == 'true'
