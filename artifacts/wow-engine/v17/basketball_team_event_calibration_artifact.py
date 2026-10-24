@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -75,9 +75,19 @@ def build_shadow_binary_calibration_artifact(
     ):
         raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_FOLD_INVALID")
     seen_folds = list(dict.fromkeys(int(fold) for fold in fold_assignments))
-    if (len(seen_folds) < 2 or seen_folds != list(range(len(seen_folds)))
+    if (len(seen_folds) < 6 or seen_folds != list(range(len(seen_folds)))
         or any(left > right for left, right in zip(fold_assignments, fold_assignments[1:]))):
         raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_FOLD_NOT_CHRONOLOGICAL")
+    audit = getattr(fit, "fold_train_audit", None)
+    if not isinstance(audit, Mapping) or set(audit) != set(seen_folds[1:]):
+        raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_FOLD_TRAIN_AUDIT_MISSING")
+    for fold in seen_folds[1:]:
+        # Expanding-window fits train on every earlier fold, never on their
+        # own or any future fold. This guards fake PASS status decorations.
+        trained_on = audit.get(fold)
+        if not isinstance(trained_on, (tuple, list)) or tuple(trained_on) != tuple(range(fold)):
+            raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_FOLD_TRAIN_AUDIT_INVALID")
+
     metrics = fit.metrics
     checks = (
         ("brier", 0.0, 1.0), ("log_loss", 0.0, None),
@@ -159,6 +169,9 @@ def build_shadow_binary_calibration_artifact(
         "calibration_bias": float(fit.metrics.calibration_bias),
         "source_data_hash": _sha(source_rows),
         "split_hash": _sha(split_rows),
+        "fold_train_audit_hash": _sha({str(k): list(audit[k]) for k in seen_folds[1:]}),
+        "residual_basis": "FULL_DATA_IN_SAMPLE_NOT_CERTIFIED_FOR_BOUNDS",
+        "bounds_preapproval_status": REVIEW_REQUIRED,
         "fit_end": fit_end,
         "health_status": "PASS",
         "certification_status": REVIEW_REQUIRED,
