@@ -53,6 +53,8 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 JOURNAL_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_COMMENT_PAGES = 5
 MAX_RUN_PAGES = 5
+MAX_ACTIVE_INVENTORY_PASSES = 3
+MAX_ROLE_HISTORY_WINDOWS_PER_RECONCILIATION = 64
 MAX_ARTIFACT_PAGES = 20
 MAX_PULL_PAGES = 10
 MAX_RETRIES = 3
@@ -67,6 +69,16 @@ class DispatchError(RuntimeError):
 
 class AmbiguousWrite(DispatchError):
     pass
+
+
+class _RoleHistoryBudget:
+    def __init__(self):
+        self.windows = 0
+
+    def consume_window(self) -> None:
+        if self.windows >= MAX_ROLE_HISTORY_WINDOWS_PER_RECONCILIATION:
+            raise DispatchError("GITHUB_ROLE_HISTORY_BUDGET_EXCEEDED")
+        self.windows += 1
 
 
 class GitHub:
@@ -141,6 +153,49 @@ def _paged(client: GitHub, path: str, key: str | None = None, max_pages: int = p
     raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
 
 
+def _workflow_runs(client: GitHub, path: str, max_pages: int = MAX_RUN_PAGES) -> list[dict]:
+    items: list[dict] = []
+    seen_ids: set[int] = set()
+    expected_count = None
+    separator = "&" if "?" in path else "?"
+    for page in range(1, max_pages + 1):
+        body = client.get(f"{path}{separator}per_page=100&page={page}")
+        if not isinstance(body, dict):
+            raise DispatchError("GITHUB_INVENTORY_INVALID")
+        rows = body.get("workflow_runs")
+        count = body.get("total_count")
+        if (
+            not isinstance(rows, list)
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 0
+            or len(rows) > 100
+        ):
+            raise DispatchError("GITHUB_INVENTORY_INVALID")
+        if expected_count is None:
+            expected_count = count
+        elif count != expected_count:
+            raise DispatchError("GITHUB_INVENTORY_INVALID")
+        for run in rows:
+            if (
+                not isinstance(run, dict)
+                or not isinstance(run.get("id"), int)
+                or isinstance(run.get("id"), bool)
+                or run["id"] < 1
+                or run["id"] in seen_ids
+            ):
+                raise DispatchError("GITHUB_INVENTORY_INVALID")
+            seen_ids.add(run["id"])
+            items.append(run)
+        if len(items) == expected_count:
+            return items
+        if len(items) > expected_count or len(rows) < 100:
+            raise DispatchError("GITHUB_INVENTORY_INVALID")
+        if page == max_pages:
+            raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
+    raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
+
+
 def list_workflows(client: GitHub) -> dict[str, dict]:
     result = {}
     for role, expected in WORKFLOWS.items():
@@ -200,13 +255,54 @@ def check_runs(client: GitHub, head_sha: str) -> list[dict]:
     )
 
 
-def list_role_runs(client: GitHub, workflow_id: int, role: str, pr_number: int, head_sha: str) -> list[dict]:
-    rows = _paged(
-        client,
-        f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs?branch=main",
-        "workflow_runs",
-        MAX_RUN_PAGES,
-    )
+def list_role_runs(
+    client: GitHub,
+    workflow_id: int,
+    role: str,
+    pr_number: int,
+    head_sha: str,
+    *,
+    history_budget: _RoleHistoryBudget | None = None,
+) -> list[dict]:
+    pull = client.get(f"/repos/{REPOSITORY}/pulls/{pr_number}")
+    if (
+        not isinstance(pull, dict)
+        or not isinstance(pull.get("number"), int)
+        or isinstance(pull.get("number"), bool)
+        or pull["number"] != pr_number
+    ):
+        raise DispatchError("ROLE_HISTORY_PR_INVALID")
+    created_at = pull.get("created_at")
+    try:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise DispatchError("ROLE_HISTORY_PR_DATE_INVALID") from exc
+    if created.tzinfo is None or created.utcoffset() is None:
+        raise DispatchError("ROLE_HISTORY_PR_DATE_INVALID")
+    opened = created.astimezone(timezone.utc).date()
+    today = datetime.now(timezone.utc).date()
+    if opened > today:
+        raise DispatchError("ROLE_HISTORY_PR_DATE_INVALID")
+
+    budget = history_budget or _RoleHistoryBudget()
+
+    def fetch_window(start, end):
+        budget.consume_window()
+        path = (
+            f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs"
+            f"?branch=main&created={start.isoformat()}..{end.isoformat()}"
+        )
+        try:
+            return _workflow_runs(client, path)
+        except DispatchError as exc:
+            if str(exc) != "GITHUB_INVENTORY_TRUNCATED" or start >= end:
+                raise
+            midpoint = start + timedelta(days=(end - start).days // 2)
+            return fetch_window(start, midpoint) + fetch_window(
+                midpoint + timedelta(days=1), end
+            )
+
+    rows = fetch_window(opened, today)
     expected_name = policy.run_name(role, pr_number, head_sha)
     found = []
     for run in rows:
@@ -229,10 +325,24 @@ def list_role_runs(client: GitHub, workflow_id: int, role: str, pr_number: int, 
     return found
 
 
-def matching_role_runs(client: GitHub, workflows: dict[str, dict], pr_number: int, head_sha: str) -> dict[str, dict]:
+def matching_role_runs(
+    client: GitHub,
+    workflows: dict[str, dict],
+    pr_number: int,
+    head_sha: str,
+    *,
+    history_budget: _RoleHistoryBudget | None = None,
+) -> dict[str, dict]:
     result = {}
     for role, workflow in workflows.items():
-        rows = list_role_runs(client, workflow["id"], role, pr_number, head_sha)
+        rows = list_role_runs(
+            client,
+            workflow["id"],
+            role,
+            pr_number,
+            head_sha,
+            history_budget=history_budget,
+        )
         if role == "source_review":
             active = [row for row in rows if row.get("status") != "completed"]
             if len(active) > 1:
@@ -259,18 +369,30 @@ def role_run_statuses(runs: dict[str, dict]) -> dict[str, str]:
 
 def count_wip(client: GitHub, workflows: dict[str, dict]) -> dict[str, int]:
     active = {role: 0 for role in WORKFLOWS}
-    for role, workflow in workflows.items():
-        rows = _paged(
-            client,
-            f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?branch=main",
-            "workflow_runs",
-            MAX_RUN_PAGES,
-        )
-        active[role] += sum(
-            1 for run in rows
-            if isinstance(run, dict) and run.get("status") in {"queued", "in_progress", "waiting", "pending", "requested"}
-        )
-    return active
+    statuses = ("queued", "in_progress", "waiting", "pending", "requested")
+    previous = None
+    for _ in range(MAX_ACTIVE_INVENTORY_PASSES):
+        inventory = {role: {} for role in WORKFLOWS}
+        status_changed = False
+        for role, workflow in workflows.items():
+            for status in statuses:
+                rows = _workflow_runs(
+                    client,
+                    f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs"
+                    f"?branch=main&status={status}",
+                )
+                for run in rows:
+                    if run.get("status") != status:
+                        raise DispatchError("GITHUB_ACTIVE_RUN_INVENTORY_INVALID")
+                    observed = inventory[role].get(run["id"])
+                    status_changed = status_changed or (
+                        observed is not None and observed != status
+                    )
+                    inventory[role][run["id"]] = status
+        if previous is not None and inventory == previous and not status_changed:
+            return {role: len(rows) for role, rows in inventory.items()}
+        previous = inventory
+    raise DispatchError("GITHUB_ACTIVE_RUN_INVENTORY_UNSTABLE")
 
 
 def legacy_certifier_ancillary_hold(client: GitHub, head_sha: str, pr_number: int) -> str | None:
@@ -760,6 +882,7 @@ def reconcile(
     targets = _target_list(client, input_pr, run_number)
     decisions = []
     dispatches = 0
+    history_budget = _RoleHistoryBudget()
 
     for listed in targets:
         number = listed.get("number")
@@ -775,7 +898,13 @@ def reconcile(
             files = pull_files(client, number, pr.get("changed_files"))
             checks = check_runs(client, head_sha)
             reviews = pull_reviews(client, number)
-            role_runs = matching_role_runs(client, workflows, number, head_sha)
+            role_runs = matching_role_runs(
+                client,
+                workflows,
+                number,
+                head_sha,
+                history_budget=history_budget,
+            )
             statuses = role_run_statuses(role_runs)
             available_roles = set(workflows)
 

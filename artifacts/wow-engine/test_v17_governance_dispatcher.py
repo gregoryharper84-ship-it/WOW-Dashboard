@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 from datetime import datetime, timedelta, timezone
 from urllib.error import URLError
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -609,28 +610,145 @@ def test_github_dispatch_rejects_workflow_path_alias():
 
 
 def test_active_work_in_progress_is_counted_per_role():
+    statuses = ("queued", "in_progress", "waiting", "pending", "requested")
+
     class FakeClient:
+        def __init__(self):
+            self.paths = []
+
         def get(self, path):
-            if "/workflows/2/runs?" in path:
-                return {
-                    "workflow_runs": [
-                        {"status": "in_progress"},
-                        {"status": "queued"},
-                        {"status": "completed"},
-                    ]
-                }
-            return {"workflow_runs": []}
+            self.paths.append(path)
+            status = parse_qs(urlsplit(path).query)["status"][0]
+            rows = []
+            if "/workflows/2/runs?" in path and status in {"queued", "in_progress"}:
+                rows = [{"id": len(rows) + (1 if status == "queued" else 2), "status": status}]
+            return {"total_count": len(rows), "workflow_runs": rows}
 
     workflows = {
         role: {"id": index + 1, **details}
         for index, (role, details) in enumerate(transport.WORKFLOWS.items())
     }
+    client = FakeClient()
 
-    assert transport.count_wip(FakeClient(), workflows) == {
+    assert transport.count_wip(client, workflows) == {
         "source_review": 0,
         "qa": 2,
         "release": 0,
     }
+    assert {
+        parse_qs(urlsplit(path).query)["status"][0]
+        for path in client.paths
+    } == set(statuses)
+
+
+def test_active_work_inventory_deduplicates_runs_that_change_status_during_scan():
+    class FakeClient:
+        def __init__(self):
+            self.passes = 0
+
+        def get(self, path):
+            status = parse_qs(urlsplit(path).query)["status"][0]
+            if status == "queued":
+                self.passes += 1
+            rows = []
+            if status == "in_progress" or (status == "queued" and self.passes == 1):
+                rows = [{"id": 22, "status": status}]
+            return {"total_count": len(rows), "workflow_runs": rows}
+
+    result = transport.count_wip(FakeClient(), {"qa": {"id": 123}})
+
+    assert result["qa"] == 1
+
+
+def test_active_work_inventory_accepts_complete_exact_full_page():
+    rows = [{"id": index + 1, "status": "queued"} for index in range(100)]
+
+    class FakeClient:
+        def __init__(self):
+            self.queued_pages = []
+
+        def get(self, path):
+            query = parse_qs(urlsplit(path).query)
+            status = query["status"][0]
+            page = int(query["page"][0])
+            if status == "queued":
+                self.queued_pages.append(page)
+            return {
+                "total_count": len(rows) if status == "queued" else 0,
+                "workflow_runs": rows if status == "queued" and page == 1 else [],
+            }
+
+    client = FakeClient()
+
+    assert transport.count_wip(client, {"qa": {"id": 123}})["qa"] == 100
+    assert client.queued_pages == [1, 1]
+
+
+def test_active_work_inventory_rejects_malformed_status_and_incomplete_pages():
+    class WrongStatusClient:
+        def get(self, _path):
+            return {"total_count": 1, "workflow_runs": [{"id": 1, "status": "completed"}]}
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_ACTIVE_RUN_INVENTORY_INVALID"):
+        transport.count_wip(WrongStatusClient(), {"qa": {"id": 123}})
+
+    class IncompleteClient:
+        def get(self, path):
+            query = parse_qs(urlsplit(path).query)
+            if query["status"][0] == "queued":
+                rows = [{"id": index + 1, "status": "queued"} for index in range(100)]
+                return {
+                    "total_count": 101,
+                    "workflow_runs": rows if query["page"][0] == "1" else [],
+                }
+            return {"total_count": 0, "workflow_runs": []}
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_INVENTORY_INVALID"):
+        transport.count_wip(IncompleteClient(), {"qa": {"id": 123}})
+
+
+def test_active_work_inventory_fails_closed_above_page_limit():
+    class FakeClient:
+        def get(self, path):
+            query = parse_qs(urlsplit(path).query)
+            if query["status"][0] != "queued":
+                return {"total_count": 0, "workflow_runs": []}
+            page = int(query["page"][0])
+            rows = [
+                {"id": (page - 1) * 100 + index + 1, "status": "queued"}
+                for index in range(100)
+            ]
+            return {"total_count": 501, "workflow_runs": rows}
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_INVENTORY_TRUNCATED"):
+        transport.count_wip(FakeClient(), {"qa": {"id": 123}})
+
+
+def test_active_work_inventory_preserves_rate_limit_failure():
+    class FakeClient:
+        def get(self, _path):
+            raise transport.DispatchError("GITHUB_READ_FAILED:403")
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_READ_FAILED:403"):
+        transport.count_wip(FakeClient(), {"qa": {"id": 123}})
+
+
+def test_active_work_inventory_fails_closed_when_snapshots_never_stabilize():
+    class FakeClient:
+        def __init__(self):
+            self.queued_requests = 0
+
+        def get(self, path):
+            query = parse_qs(urlsplit(path).query)
+            status = query["status"][0]
+            rows = []
+            if status == "queued":
+                self.queued_requests += 1
+                rows = [{"id": self.queued_requests, "status": status}]
+            return {"total_count": len(rows), "workflow_runs": rows}
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_ACTIVE_RUN_INVENTORY_UNSTABLE"):
+        transport.count_wip(FakeClient(), {"qa": {"id": 123}})
 
 
 def test_dispatch_reservation_is_signed_canonical_and_contains_no_token(monkeypatch):
@@ -894,12 +1012,176 @@ def test_role_run_matching_accepts_api_workflow_name_with_display_title():
     }
 
     class FakeClient:
-        def get(self, _):
-            return {"workflow_runs": [run]}
+        def get(self, path):
+            if path.endswith("/pulls/41"):
+                return {
+                    "number": 41,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            return {"total_count": 1, "workflow_runs": [run]}
 
     matches = transport.list_role_runs(FakeClient(), 12, "source_review", 41, HEAD)
 
     assert matches == [run]
+
+
+def test_role_run_history_partitions_5000_run_history_by_pr_lifetime():
+    today = datetime.now(timezone.utc).date()
+    opened = today - timedelta(days=9)
+    created_at = datetime.combine(opened, datetime.min.time(), timezone.utc).isoformat()
+    expected = policy.run_name("qa", 41, HEAD)
+    runs = []
+    for day_offset in range(10):
+        run_date = opened + timedelta(days=day_offset)
+        for index in range(500):
+            run_id = day_offset * 500 + index + 1
+            runs.append(
+                {
+                    "id": run_id,
+                    "name": expected if day_offset == 0 and index == 0 else "unrelated",
+                    "path": transport.WORKFLOWS["qa"]["path"],
+                    "event": "workflow_dispatch",
+                    "head_branch": "main",
+                    "head_repository": {"full_name": REPOSITORY},
+                    "head_sha": HEAD,
+                    "status": "completed",
+                    "created_at": f"{run_date.isoformat()}T12:00:00Z",
+                }
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.paths = []
+
+        def get(self, path):
+            self.paths.append(path)
+            if path.endswith("/pulls/41"):
+                return {"number": 41, "created_at": created_at}
+            query = parse_qs(urlsplit(path).query)
+            start, end = query["created"][0].split("..")
+            matching = [
+                run for run in runs
+                if start <= run["created_at"][:10] <= end
+            ]
+            page = int(query["page"][0])
+            return {
+                "total_count": len(matching),
+                "workflow_runs": matching[(page - 1) * 100:page * 100],
+            }
+
+    client = FakeClient()
+    matches = transport.list_role_runs(client, 12, "qa", 41, HEAD)
+    windows = [
+        parse_qs(urlsplit(path).query)["created"][0]
+        for path in client.paths
+        if "created" in parse_qs(urlsplit(path).query)
+    ]
+
+    assert [run["id"] for run in matches] == [1]
+    assert windows
+    assert all("created=" in path for path in client.paths if "/runs?" in path)
+    assert any(start == end for start, end in (window.split("..") for window in windows))
+
+
+def test_role_run_history_fails_closed_when_a_single_day_exceeds_page_limit():
+    today = datetime.now(timezone.utc).date()
+    created_at = datetime.combine(today, datetime.min.time(), timezone.utc).isoformat()
+    runs = [{"id": index + 1, "status": "completed"} for index in range(501)]
+
+    class FakeClient:
+        def get(self, path):
+            if path.endswith("/pulls/41"):
+                return {"number": 41, "created_at": created_at}
+            query = parse_qs(urlsplit(path).query)
+            page = int(query["page"][0])
+            return {
+                "total_count": len(runs),
+                "workflow_runs": runs[(page - 1) * 100:page * 100],
+            }
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_INVENTORY_TRUNCATED"):
+        transport.list_role_runs(FakeClient(), 12, "qa", 41, HEAD)
+
+
+def test_role_run_history_fails_closed_at_aggregate_window_budget():
+    today = datetime.now(timezone.utc).date()
+    opened = today - timedelta(days=99)
+    created_at = datetime.combine(opened, datetime.min.time(), timezone.utc).isoformat()
+
+    class FakeClient:
+        def __init__(self):
+            self.windows = 0
+
+        def get(self, path):
+            if path.endswith("/pulls/41"):
+                return {"number": 41, "created_at": created_at}
+            self.windows += 1
+            query = parse_qs(urlsplit(path).query)
+            start, end = query["created"][0].split("..")
+            day_count = (datetime.fromisoformat(end).date() - datetime.fromisoformat(start).date()).days + 1
+            page = int(query["page"][0])
+            rows = [
+                {"id": datetime.fromisoformat(start).date().toordinal() * 1_000_000 + page * 100 + index}
+                for index in range(100)
+            ]
+            return {"total_count": day_count * 500, "workflow_runs": rows}
+
+    client = FakeClient()
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_ROLE_HISTORY_BUDGET_EXCEEDED"):
+        transport.list_role_runs(client, 12, "qa", 41, HEAD)
+
+    assert client.windows <= (
+        transport.MAX_ROLE_HISTORY_WINDOWS_PER_RECONCILIATION * transport.MAX_RUN_PAGES
+    )
+
+
+def test_role_history_budget_is_shared_across_pr_scans():
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    class FakeClient:
+        def get(self, path):
+            if "/pulls/" in path:
+                return {
+                    "number": int(path.rsplit("/", 1)[1]),
+                    "created_at": created_at,
+                }
+            return {"total_count": 0, "workflow_runs": []}
+
+    budget = transport._RoleHistoryBudget()
+    budget.windows = transport.MAX_ROLE_HISTORY_WINDOWS_PER_RECONCILIATION - 1
+
+    assert transport.matching_role_runs(
+        FakeClient(),
+        {"qa": {"id": 123}},
+        41,
+        HEAD,
+        history_budget=budget,
+    ) == {}
+    with pytest.raises(transport.DispatchError, match="GITHUB_ROLE_HISTORY_BUDGET_EXCEEDED"):
+        transport.matching_role_runs(
+            FakeClient(),
+            {"qa": {"id": 123}},
+            42,
+            HEAD,
+            history_budget=budget,
+        )
+
+
+@pytest.mark.parametrize(
+    ("pull", "finding"),
+    [
+        ({"number": 42, "created_at": "2026-10-20T00:00:00Z"}, "ROLE_HISTORY_PR_INVALID"),
+        ({"number": 41, "created_at": "2026-10-20"}, "ROLE_HISTORY_PR_DATE_INVALID"),
+    ],
+)
+def test_role_run_history_requires_exact_pr_identity_and_trusted_time(pull, finding):
+    class FakeClient:
+        def get(self, _path):
+            return pull
+
+    with pytest.raises(transport.DispatchError, match=finding):
+        transport.list_role_runs(FakeClient(), 12, "qa", 41, HEAD)
 
 
 @pytest.mark.parametrize(
@@ -1187,7 +1469,7 @@ def test_reconcile_reserves_before_dispatch(monkeypatch):
     monkeypatch.setattr(transport, "check_runs", lambda *_: checks)
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
     monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
-    monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(transport, "matching_role_runs", lambda *_, **__: {})
     monkeypatch.setattr(transport, "source_review_status", lambda *_args, **_kwargs: "PASS")
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
     monkeypatch.setattr(transport, "reserve_dispatch", lambda *_args, **_kwargs: events.append("reserve"))
@@ -1227,7 +1509,7 @@ def test_reconcile_does_not_overfill_singleton_role_workflow_queue(monkeypatch):
     monkeypatch.setattr(transport, "check_runs", lambda *_: all_ci_checks())
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
     monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
-    monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(transport, "matching_role_runs", lambda *_, **__: {})
     monkeypatch.setattr(transport, "source_review_status", lambda *_args, **_kwargs: "PASS")
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
     monkeypatch.setattr(transport, "reserve_dispatch", lambda *_args, **_kwargs: events.append("reserve"))
@@ -1263,7 +1545,7 @@ def test_reconcile_does_not_fetch_reviewer_artifact_before_ci_is_ready(monkeypat
     monkeypatch.setattr(transport, "check_runs", lambda *_: [])
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
     monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
-    monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(transport, "matching_role_runs", lambda *_, **__: {})
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
     monkeypatch.setattr(
         transport,
@@ -1301,7 +1583,7 @@ def test_reconcile_does_not_dispatch_when_reservation_is_ambiguous(monkeypatch):
     monkeypatch.setattr(transport, "check_runs", lambda *_: all_ci_checks())
     monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
     monkeypatch.setattr(transport, "legacy_certifier_ancillary_hold", lambda *_: None)
-    monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(transport, "matching_role_runs", lambda *_, **__: {})
     monkeypatch.setattr(transport, "source_review_status", lambda *_args, **_kwargs: "PASS")
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
 
@@ -1505,7 +1787,7 @@ def test_ancillary_action_required_does_not_block_source_review_dispatch(monkeyp
         "legacy_certifier_ancillary_hold",
         lambda *_: pytest.fail("ancillary gate must not be queried before reviewer PASS"),
     )
-    monkeypatch.setattr(transport, "matching_role_runs", lambda *_: {})
+    monkeypatch.setattr(transport, "matching_role_runs", lambda *_, **__: {})
     monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
     monkeypatch.setattr(
         transport,
