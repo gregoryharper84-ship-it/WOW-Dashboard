@@ -400,6 +400,51 @@ jobs:
           echo "::error::Both generative engineering paths are unavailable or unsafe to fail over; deterministic survival checks completed."
           exit 1
 
+  independent-provider:
+    needs: provider-control
+    if: always() && needs.provider-control.outputs.fallback_required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    # Only actual remote admission competes for the writer lock. The routing
+    # job must never hold it while queueing an OpenAI/Claude worker.
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Reconcile or admit separately authorized Copilot fallback
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.WOW_COPILOT_ASSIGNMENT_TOKEN }}
+          WOW_COPILOT_FALLBACK_ENABLED: ${{ vars.WOW_COPILOT_FALLBACK_ENABLED }}
+          WOW_COPILOT_FALLBACK_REPOSITORY: ${{ vars.WOW_COPILOT_FALLBACK_REPOSITORY }}
+          WOW_COPILOT_FALLBACK_BUDGET_APPROVED: ${{ vars.WOW_COPILOT_FALLBACK_BUDGET_APPROVED }}
+          WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS: ${{ vars.WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS }}
+          TARGET_INCIDENT: ${{ needs.provider-control.outputs.target_incident }}
+          LEASE_GROUP: ${{ needs.provider-control.outputs.lease_group }}
+          ALLOW_NEW_ASSIGNMENT: ${{ needs.provider-control.outputs.allow_new_assignment }}
+        run: |
+          python artifacts/wow-engine/v17/engineering_remote_fallback.py fallback \
+            --output "$RUNNER_TEMP/independent-provider-receipt.json"
+
+      - name: Upload independent-provider receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-independent-provider-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/independent-provider-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
   cursor-dispatch:
     needs: provider-control
     if: needs.provider-control.outputs.cursor_dispatch_required == 'true'
@@ -467,48 +512,4 @@ jobs:
           name: wow-v17-cursor-reservation-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/cursor-handoff.json
           if-no-files-found: warn
-          retention-days: 14
-  independent-provider:
-    needs: provider-control
-    if: always() && needs.provider-control.outputs.fallback_required == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: read
-    # Only actual remote admission competes for the writer lock. The routing
-    # job must never hold it while queueing an OpenAI/Claude worker.
-    concurrency:
-      group: wow-v17-engineering-implementation-single-writer
-      cancel-in-progress: false
-    steps:
-      - name: Checkout protected main
-        uses: actions/checkout@v6
-        with:
-          ref: main
-          persist-credentials: false
-
-      - name: Reconcile or admit separately authorized Copilot fallback
-        env:
-          GH_TOKEN: ${{ github.token }}
-          COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.WOW_COPILOT_ASSIGNMENT_TOKEN }}
-          WOW_COPILOT_FALLBACK_ENABLED: ${{ vars.WOW_COPILOT_FALLBACK_ENABLED }}
-          WOW_COPILOT_FALLBACK_REPOSITORY: ${{ vars.WOW_COPILOT_FALLBACK_REPOSITORY }}
-          WOW_COPILOT_FALLBACK_BUDGET_APPROVED: ${{ vars.WOW_COPILOT_FALLBACK_BUDGET_APPROVED }}
-          WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS: ${{ vars.WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS }}
-          TARGET_INCIDENT: ${{ needs.provider-control.outputs.target_incident }}
-          LEASE_GROUP: ${{ needs.provider-control.outputs.lease_group }}
-          ALLOW_NEW_ASSIGNMENT: ${{ needs.provider-control.outputs.allow_new_assignment }}
-        run: |
-          python artifacts/wow-engine/v17/engineering_remote_fallback.py fallback \
-            --output "$RUNNER_TEMP/independent-provider-receipt.json"
-
-      - name: Upload independent-provider receipt
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: wow-v17-independent-provider-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/independent-provider-receipt.json
-          if-no-files-found: error
           retention-days: 14
