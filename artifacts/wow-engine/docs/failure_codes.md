@@ -325,3 +325,43 @@ A numerically matching prop quote is **not** authority for a different event, pl
 | `NBA_POINTS_*_MISSING` | Source structure | Missing quote/roster identity is held rather than inferred |
 
 Both directions require their own correctly typed exact quote and preserve the already-observed market line. These checks are additional to event cutoff, official history, calibration and terminal governance; `can_execute=false`.
+
+### Cursor Cloud Agent engineering handoff (#2008)
+
+Codes below belong solely to the engineering GitHub-to-Cursor control plane. None grants model qualification, wager execution, merge, or deployment authority. A queued Cloud Agent is not production acceptance.
+
+| Code | Owning stage | Trigger / fail-closed meaning |
+|---|---|---|
+| `CURSOR_HANDOFF_DISABLED` | provider-dispatcher feature gate | Owner opt-in variable is not true; no API call |
+| `CURSOR_DISPATCH_INPUTS_MISSING` | provider-dispatcher admission | Required PR number, expected SHA, or scoped task is empty |
+| `CURSOR_HANDOFF_COMMAND_INVALID` | PR-comment bridge | First line is not exactly `/wow-cursor` |
+| `CURSOR_HANDOFF_TASK_INVALID`, `CURSOR_TASK_INVALID` | PR-comment bridge / adapter input | Task missing, empty or longer than bounded input contract |
+| `CURSOR_PR_IDENTITY_NOT_ELIGIBLE` | PR-comment bridge | PR is not an open same-repository branch targeting main |
+| `CURSOR_IDENTITY_INPUT_INVALID`, `CURSOR_PR_NUMBER_INVALID` | adapter admission | Malformed repository, exact SHA, or PR number |
+| `CURSOR_PR_NOT_OPEN_OR_MISMATCH` | GitHub PR readback | Requested PR is not open or has changed identity |
+| `CURSOR_STALE_PR_HEAD` | GitHub PR head lock | PR head no longer matches caller's immutable expected SHA |
+| `CURSOR_FORK_HEAD_UNSUPPORTED` | GitHub PR head ownership | Head branch resides outside canonical repository |
+| `CURSOR_UNSAFE_TARGET_BRANCH`, `CURSOR_UNEXPECTED_BASE_BRANCH` | PR branch / base guard | Attempt would write main/master/empty head or operate against non-main base |
+| `CURSOR_GITHUB_AUTH_MISSING`, `CURSOR_GITHUB_PR_HTTP_<status>` | GitHub PR evidence | Missing GitHub credential or PR REST error; no authoritative head validation |
+| `CURSOR_API_KEY_MISSING`, `CURSOR_AUTH_OR_ACCESS_DENIED` | Cursor credential gate | No Cursor API key or failed provider authentication/permissions |
+| `CURSOR_BILLING_OR_RATE_LIMIT_BLOCKED` | Cursor spending/rate control | Cursor rejects with HTTP 402/429; no claim of started agent |
+| `CURSOR_AUTOMATIC_INCIDENT_ID_MISSING`, `CURSOR_AUTOMATIC_INCIDENT_NOT_OPEN` | trusted PR-label admission | No canonical linked incident or linked GitHub incident is not open |
+| `CURSOR_SPEND_CAP_UNCONFIRMED` | provider-dispatcher billing opt-in | Owner has not confirmed account spending cap; no Cursor API create |
+| `CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED`, `CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS` | account-wide cost/concurrency gate | Cursor account inventory is incomplete or another agent is active |
+| `CURSOR_AGENT_INVENTORY_UNVERIFIED` | Cursor active-agent inspection | Missing, invalid or truncated PR-scoped agent list |
+| `CURSOR_ACTIVE_PR_AGENT_EXISTS` | Cursor single-PR admission | An active Cloud Agent is already associated with that PR |
+| `CURSOR_DUPLICATE_DISPATCH_SUPPRESSED` | Cursor idempotent create | Server reports `agent_id_conflict` on deterministic agent ID |
+| `CURSOR_API_CONFLICT_UNRESOLVED`, `CURSOR_API_HTTP_<status>` | Cursor create / API | Unclassified 409 or other HTTP error; fail closed |
+| `CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS` | Cursor API preflight | Provider rejects request, target repository or configuration |
+| `CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED`, `CURSOR_API_RESPONSE_INVALID` | Remote evidence | Network, timeout, unparsable or non-object response |
+| `CURSOR_DISPATCH_RECEIPT_UNVERIFIED` | Cursor enqueue confirmation | Create did not return matching agent ID and run ID |
+| `CURSOR_REMOTE_LEDGER_UNVERIFIED`, `CURSOR_REMOTE_LEDGER_TRUNCATED` | Existing #1138 ledger inventory | Missing, malformed, or nonexhaustive remote writer history; never admit a new Cursor agent |
+| `CURSOR_REMOTE_RESERVATION_INVALID` | Shared Copilot/Cursor writer guard | Invalid immutable Cursor reservation marker, identity, or safety fields; deny all writer admissions |
+| `CURSOR_RESERVATION_REPLAY_REJECTED` | Cursor durable reservation admission | Exact PR/SHA has an existing Cursor reservation, even if previously released; never relaunch it |
+| `CURSOR_RESERVATION_WRITE_UNVERIFIED` | Cursor pre-launch ledger write | GitHub did not confirm a durable reservation ID; no Cursor API POST |
+| `CURSOR_ACTION_RUN_ID_INVALID` | GitHub Actions reservation attribution | Caller run ID cannot be recorded safely |
+| `REMOTE_WRITER_RECONCILIATION_REQUIRED` | Shared provider/worker fence | An unresolved Copilot or Cursor hold exists in #1138; deny concurrent admission |
+
+**Durable remote-writer reconciliation:** Cursor and Copilot now use the same existing #1138 heartbeat ledger and `wow-v17-engineering-implementation-single-writer` Actions admission lock. The Cursor hold is written **before** its irreversible provider POST; a network or provider error may leave a valid hold, never an automatic retry. The accountable owner may release `hold` only after authenticated remote termination, exact-PR/head reconciliation, and independent review evidence; retain the immutable reservation marker, incident/PR identity, and history rather than deleting comments or permitting same-head replay. Workers and the resident supervisor must treat active or unreadable Cursor holds as an admission stop. This is an admission fence, not a spending cap or independent release approval.
+
+Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.

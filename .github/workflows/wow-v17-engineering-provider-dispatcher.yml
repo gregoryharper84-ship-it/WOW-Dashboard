@@ -27,6 +27,19 @@ on:
           - auto
           - openai
           - anthropic
+          - cursor
+      cursor_pr_number:
+        description: Existing PR number for an opt-in Cursor handoff.
+        required: false
+        default: ""
+      cursor_expected_head:
+        description: Exact expected PR head SHA for Cursor handoff.
+        required: false
+        default: ""
+      cursor_task:
+        description: Scoped engineering assignment (max 4000 characters).
+        required: false
+        default: ""
       reason:
         description: Optional dispatch reason.
         required: false
@@ -48,7 +61,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: wow-v17-engineering-provider-dispatcher-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-provider-dispatcher-${{ inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' || inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
@@ -61,6 +74,7 @@ jobs:
       target_incident: ${{ steps.route.outputs.target_incident }}
       lease_group: ${{ steps.route.outputs.lease_group }}
       allow_new_assignment: ${{ steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' }}
+      cursor_dispatch_required: ${{ steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'cursor' && steps.remote_fence.outcome == 'success' }}
 
     steps:
       - name: Checkout protected main
@@ -180,6 +194,10 @@ jobs:
               action=DISPATCH
               provider=openai
               reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+            elif [ "$force" = "cursor" ]; then
+              action=DISPATCH
+              provider=cursor
+              reason="${MANUAL_REASON:-OWNER_CURSOR_PR_HANDOFF}"
             elif [ "$force" = "anthropic" ]; then
               if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
                 action=DISPATCH
@@ -256,7 +274,7 @@ jobs:
               parent_run_id: $parent_run_id,
               target_incident: $target_incident,
               lease_group: $lease_group,
-              cursor_status: "CURSOR_NOT_CONFIGURED",
+              cursor_status: (if $provider == "cursor" then null else "CURSOR_NOT_CONFIGURED" end),
               independent_fallback_allowed: $independent_fallback_allowed,
               can_execute: false,
               terminal_authority: "V17_TERMINAL_REDUCER"
@@ -370,6 +388,7 @@ jobs:
             echo "- lease_group: ${{ steps.route.outputs.lease_group || 'GLOBAL' }}"
             echo "- OpenAI primary: wow-v17-chatgpt-engineering-worker"
             echo "- Anthropic fallback: wow-v17-claude-engineering-worker"
+            echo "- Cursor: opt-in existing-PR Cloud Agent only, not automatic fallback"
             echo "- deterministic survival: ${{ steps.route.outputs.action == 'SURVIVAL' }}"
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
@@ -424,4 +443,73 @@ jobs:
           name: wow-v17-independent-provider-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/independent-provider-receipt.json
           if-no-files-found: error
+          retention-days: 14
+
+  cursor-dispatch:
+    needs: provider-control
+    if: needs.provider-control.outputs.cursor_dispatch_required == 'true'
+    name: Fenced existing-PR Cursor Cloud Agent launch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      issues: write
+    # Same cross-workflow lock as OpenAI, Claude, and Copilot admission.
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Dispatch scoped Cursor Cloud Agent under durable remote writer fence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CURSOR_HANDOFF_ENABLED: ${{ vars.CURSOR_HANDOFF_ENABLED }}
+          CURSOR_SPEND_CAP_CONFIRMED: ${{ vars.CURSOR_SPEND_CAP_CONFIRMED }}
+          CURSOR_PR_NUMBER: ${{ inputs.cursor_pr_number }}
+          CURSOR_EXPECTED_HEAD: ${{ inputs.cursor_expected_head }}
+          CURSOR_TASK: ${{ inputs.cursor_task }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/cursor-handoff.json"
+          if [ "${CURSOR_HANDOFF_ENABLED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_HANDOFF_DISABLED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_HANDOFF_DISABLED"
+            exit 1
+          fi
+          # This opt-in is an owner's attestation, NOT a provider-enforced price cap.
+          # Never launch while additional spending controls have not been confirmed.
+          if [ "${CURSOR_SPEND_CAP_CONFIRMED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_SPEND_CAP_UNCONFIRMED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_SPEND_CAP_UNCONFIRMED"
+            exit 1
+          fi
+          if [ -z "${CURSOR_PR_NUMBER:-}" ] || [ -z "${CURSOR_EXPECTED_HEAD:-}" ] || [ -z "${CURSOR_TASK:-}" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_DISPATCH_INPUTS_MISSING","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_DISPATCH_INPUTS_MISSING"
+            exit 1
+          fi
+          # No provider call before this guard; both guard and reservation run
+          # while the shared Actions implementation-single-writer lock is held.
+          python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
+          python artifacts/wow-engine/v17/cursor_cloud_handoff.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number "$CURSOR_PR_NUMBER" \
+            --expected-head "$CURSOR_EXPECTED_HEAD" \
+            --task "$CURSOR_TASK" \
+            --receipt "$receipt"
+      - name: Upload Cursor remote reservation receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-cursor-reservation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cursor-handoff.json
+          if-no-files-found: warn
           retention-days: 14
