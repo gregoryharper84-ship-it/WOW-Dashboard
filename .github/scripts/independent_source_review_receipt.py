@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import sys
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +32,18 @@ MAX_DIFF_LINES = 100_000
 MAX_REVIEW_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_ARTIFACT_INVENTORY = 2000
 QA_POLICY_ARTIFACT_NAME = "wow-v17-qa-review-policy.json"
+QA_OUTCOME_ARTIFACT_NAME = "wow-v17-qa-terminal-decision.json"
+QA_CHECK_NAME = "WOW Independent QA exact-head"
+QA_OUTCOME_KEYS = {
+    "check_name",
+    "head_sha",
+    "conclusion",
+    "findings",
+    "title",
+    "summary",
+    "merge_or_release_authorized",
+    "can_execute",
+}
 SHA = re.compile(r"^[a-f0-9]{40}$")
 DIGEST = re.compile(r"^[a-f0-9]{64}$")
 
@@ -1256,6 +1269,156 @@ def resolve_qa_review_policy(
     return {"artifact_id": artifact_id, "policy": policy, "run": run}
 
 
+def _coerce_pull_requests(value: object) -> list[Any]:
+    """Normalize workflow_run pull_requests. Empty is not an identity source."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise SourceReviewError("QA_UPSTREAM_PULL_REQUESTS_INVALID") from exc
+    if value is None:
+        return []
+    _require(isinstance(value, list), "QA_UPSTREAM_PULL_REQUESTS_INVALID")
+    return value
+
+
+def _assert_pull_requests_match(pull_requests: list[Any], *, pr_number: int, head_sha: str) -> None:
+    for item in pull_requests:
+        _require(isinstance(item, Mapping), "QA_UPSTREAM_PULL_REQUESTS_INVALID")
+        head = item.get("head") if isinstance(item.get("head"), Mapping) else {}
+        observed_sha = head.get("sha")
+        _require(item.get("number") == pr_number, "QA_UPSTREAM_PULL_REQUEST_MISMATCH")
+        if observed_sha is not None:
+            _require(observed_sha == head_sha, "QA_UPSTREAM_PULL_REQUEST_MISMATCH")
+
+
+def resolve_upstream_qa_target(
+    *,
+    repository: str,
+    run_id: int,
+    run_attempt: int,
+    token: str,
+    pull_requests: object = None,
+    now: datetime | None = None,
+    get_json: Any = None,
+    download_artifact: Any = None,
+) -> dict[str, Any]:
+    """Recover one PR identity from the QA run that triggered certification.
+
+    Protected-main QA runs leave workflow_run.pull_requests empty. That array is
+    never a fallback target. The policy artifact and the single terminal outcome
+    must agree, and both must belong to this run, attempt, and current PR head.
+    """
+    resolved = resolve_qa_review_policy(
+        repository=repository,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        token=token,
+        now=now,
+        get_json=get_json,
+        download_artifact=download_artifact,
+    )
+    run = resolved["run"]
+    _require(run.get("conclusion") == "success", "QA_UPSTREAM_RUN_NOT_SUCCESSFUL")
+    policy = resolved["policy"]
+    target = policy.get("target") if isinstance(policy, Mapping) else None
+    _require(isinstance(target, Mapping), "QA_UPSTREAM_POLICY_TARGET_MISSING")
+    pr_number = _positive_int(target.get("pr_number"), "QA_UPSTREAM_PR_NUMBER")
+    head_sha = target.get("head_sha")
+    head_ref = target.get("head_ref")
+    _require(isinstance(head_sha, str) and bool(SHA.fullmatch(head_sha)), "QA_UPSTREAM_HEAD_INVALID")
+    _require(isinstance(head_ref, str) and bool(head_ref), "QA_UPSTREAM_HEAD_REF_INVALID")
+
+    json_fetch = get_json or (lambda path: _github_get_json(repository=repository, path=path, token=token))
+    artifact_fetch = download_artifact or (
+        lambda artifact_id: _github_download_artifact(
+            repository=repository, artifact_id=artifact_id, token=token
+        )
+    )
+    inventory: list[Mapping[str, Any]] = []
+    for page in range(1, 21):
+        response = json_fetch(f"/actions/runs/{run_id}/artifacts?per_page=100&page={page}")
+        _require(isinstance(response, Mapping) and isinstance(response.get("artifacts"), list),
+                 "QA_OUTCOME_ARTIFACT_INVENTORY_INVALID")
+        rows = response["artifacts"]
+        _require(len(inventory) + len(rows) <= MAX_ARTIFACT_INVENTORY,
+                 "QA_OUTCOME_ARTIFACT_INVENTORY_LIMIT_EXCEEDED")
+        inventory.extend(row for row in rows if isinstance(row, Mapping))
+        if len(rows) < 100:
+            break
+    else:
+        raise SourceReviewError("QA_OUTCOME_ARTIFACT_INVENTORY_LIMIT_EXCEEDED")
+
+    outcome_rows = [
+        row for row in inventory
+        if isinstance(row.get("name"), str) and row["name"].startswith("wow-v17-qa-outcome-")
+    ]
+    _require(len(outcome_rows) == 1, "QA_OUTCOME_ARTIFACT_DUPLICATE_OR_MISSING")
+    expected_name = f"wow-v17-qa-outcome-{pr_number}-{head_sha}-{run_id}-{run_attempt}"
+    metadata = outcome_rows[0]
+    _require(metadata.get("name") == expected_name, "QA_OUTCOME_ARTIFACT_TARGET_MISMATCH")
+    _require(metadata.get("expired") is False, "QA_OUTCOME_ARTIFACT_EXPIRED")
+    created = _timestamp(metadata.get("created_at"), "QA_OUTCOME_ARTIFACT_CREATED_AT")
+    clock = now or datetime.now(timezone.utc)
+    _require(clock.tzinfo is not None and created <= clock.astimezone(timezone.utc) < created + MAX_REVIEW_AGE,
+             "QA_OUTCOME_ARTIFACT_STALE_OR_FUTURE")
+    outcome_artifact_id = _positive_int(metadata.get("id"), "QA_OUTCOME_ARTIFACT_ID")
+    actual_metadata = json_fetch(f"/actions/artifacts/{outcome_artifact_id}")
+    _require(
+        isinstance(actual_metadata, Mapping)
+        and actual_metadata.get("id") == outcome_artifact_id
+        and actual_metadata.get("name") == expected_name
+        and actual_metadata.get("expired") is False
+        and (actual_metadata.get("workflow_run") or {}).get("id") == run_id,
+        "QA_OUTCOME_ARTIFACT_PROVENANCE_MISMATCH",
+    )
+    archive = artifact_fetch(outcome_artifact_id)
+    _require(isinstance(archive, bytes) and len(archive) <= MAX_REVIEW_ARTIFACT_BYTES,
+             "QA_OUTCOME_ARTIFACT_LIMIT_EXCEEDED")
+    try:
+        with ZipFile(io.BytesIO(archive)) as archive_file:
+            names = archive_file.namelist()
+            _require(
+                sorted(names) == sorted([QA_OUTCOME_ARTIFACT_NAME, QA_OUTCOME_ARTIFACT_NAME + ".sha256"]),
+                "QA_OUTCOME_ARTIFACT_CONTENTS_INVALID",
+            )
+            payload = archive_file.read(QA_OUTCOME_ARTIFACT_NAME)
+            checksum = archive_file.read(QA_OUTCOME_ARTIFACT_NAME + ".sha256").decode("ascii").strip()
+        _require(
+            bool(DIGEST.fullmatch(checksum)) and hashlib.sha256(payload).hexdigest() == checksum,
+            "QA_OUTCOME_ARTIFACT_CHECKSUM_MISMATCH",
+        )
+        decision = json.loads(payload)
+    except (BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SourceReviewError("QA_OUTCOME_ARTIFACT_INVALID") from exc
+
+    decision = _exact_keys(decision, QA_OUTCOME_KEYS, "QA_OUTCOME")
+    _require(decision.get("check_name") == QA_CHECK_NAME, "QA_OUTCOME_CHECK_MISMATCH")
+    _require(decision.get("head_sha") == head_sha, "QA_OUTCOME_HEAD_MISMATCH")
+    _require(decision.get("conclusion") == "success" and decision.get("findings") == [],
+             "QA_OUTCOME_NOT_SUCCESSFUL")
+    _require(
+        decision.get("can_execute") is False and decision.get("merge_or_release_authorized") is False,
+        "QA_OUTCOME_EXECUTION_INVARIANT_VIOLATED",
+    )
+    _require(isinstance(decision.get("title"), str) and isinstance(decision.get("summary"), str),
+             "QA_OUTCOME_TEXT_INVALID")
+    _assert_pull_requests_match(
+        _coerce_pull_requests(pull_requests), pr_number=pr_number, head_sha=head_sha,
+    )
+    return {
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "head_ref": head_ref,
+        "run_id": run_id,
+        "run_attempt": run_attempt,
+        "policy_artifact_id": resolved["artifact_id"],
+        "outcome_artifact_id": outcome_artifact_id,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -1263,19 +1426,44 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--build", action="store_true")
     mode.add_argument("--verify", action="store_true")
     mode.add_argument("--write-policy", action="store_true")
+    mode.add_argument("--resolve-upstream-qa", action="store_true")
     parser.add_argument("--input", type=Path)
     parser.add_argument("--result", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--run", type=Path)
     parser.add_argument("--repository", required=True)
-    parser.add_argument("--pr-number", required=True, type=int)
-    parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--pr-number", type=int)
+    parser.add_argument("--head-sha")
     parser.add_argument("--head-ref")
     parser.add_argument("--attempt", type=int)
+    parser.add_argument("--run-id", type=int)
+    parser.add_argument("--pull-requests-json", default="[]")
     parser.add_argument("--policy-mode", choices=("legacy", "independent", "canary", "zero_credit"))
     args = parser.parse_args(argv)
     try:
+        if args.resolve_upstream_qa:
+            try:
+                _require(args.run_id is not None and args.attempt is not None,
+                         "QA_UPSTREAM_ARGUMENT_MISSING")
+                identity = resolve_upstream_qa_target(
+                    repository=args.repository,
+                    run_id=args.run_id,
+                    run_attempt=args.attempt,
+                    token=os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "",
+                    pull_requests=args.pull_requests_json,
+                )
+            except SourceReviewError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            print(json.dumps({
+                "pr_number": identity["pr_number"],
+                "head_sha": identity["head_sha"],
+                "head_ref": identity["head_ref"],
+            }, sort_keys=True))
+            return 0
+        _require(args.pr_number is not None, "SOURCE_REVIEW_PR_NUMBER_MISSING")
+        _require(isinstance(args.head_sha, str) and bool(args.head_sha), "SOURCE_REVIEW_HEAD_MISSING")
         if args.capture:
             _require(args.output is not None, "SOURCE_REVIEW_CAPTURE_ARGUMENT_MISSING")
             captured = capture_pr_evidence(
