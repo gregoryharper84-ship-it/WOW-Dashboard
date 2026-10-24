@@ -53,6 +53,15 @@ runs:
           echo 'EOF'
         } >> "$GITHUB_OUTPUT"
 
+    - name: Clear API-key execution transcript before invocation
+      # Pinned base action reuses RUNNER_TEMP/claude-execution-output.json.
+      # Remove prior evidence before this attempt; never infer provider status from a stale file.
+      if: inputs.anthropic_api_key != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ] || { echo "::error::CLAUDE_RUNNER_TEMP_MISSING"; exit 1; }
+        rm -f -- "$RUNNER_TEMP/claude-execution-output.json"
     - name: Run governed Claude agent with API key
       id: claude_api
       if: inputs.anthropic_api_key != ''
@@ -64,6 +73,29 @@ runs:
         claude_args: ${{ steps.config.outputs.claude_args }}
         show_full_output: "false"
 
+    - name: Classify API-key provider failure without provider text
+      # Observation only. Never manufacture structured_output or approval.
+      if: >-
+        always() &&
+        (steps.claude_api.outcome == 'failure' ||
+         (steps.claude_api.outcome == 'success' && steps.claude_api.outputs.structured_output == ''))
+      shell: bash
+      env:
+        CLAUDE_EXECUTION_FILE: ${{ steps.claude_api.outputs.execution_file }}
+        CLAUDE_ATTEMPT: API_KEY
+      run: python3 .github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py
+
+    - name: Clear OAuth execution transcript before invocation
+      # Provider setup can fail before overwriting the shared execution file.
+      if: >-
+        inputs.claude_code_oauth_token != '' &&
+        (inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure' ||
+         steps.claude_api.outputs.structured_output == '')
+      shell: bash
+      run: |
+        set -euo pipefail
+        [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ] || { echo "::error::CLAUDE_RUNNER_TEMP_MISSING"; exit 1; }
+        rm -f -- "$RUNNER_TEMP/claude-execution-output.json"
     - name: Run governed Claude agent with OAuth
       id: claude_oauth
       # A provider step may exit successfully without required structured_output.
@@ -79,6 +111,17 @@ runs:
         prompt: ${{ inputs.prompt }}
         claude_args: ${{ steps.config.outputs.claude_args }}
         show_full_output: "false"
+
+    - name: Classify OAuth provider failure without provider text
+      if: >-
+        always() &&
+        (steps.claude_oauth.outcome == 'failure' ||
+         (steps.claude_oauth.outcome == 'success' && steps.claude_oauth.outputs.structured_output == ''))
+      shell: bash
+      env:
+        CLAUDE_EXECUTION_FILE: ${{ steps.claude_oauth.outputs.execution_file }}
+        CLAUDE_ATTEMPT: OAUTH
+      run: python3 .github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py
 
     - name: Verify provider result exists
       if: always()
