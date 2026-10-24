@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import sys
 import unittest
 import tempfile
 import subprocess
+from contextlib import redirect_stdout
 from unittest import mock
 from pathlib import Path
 
@@ -44,6 +47,8 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
                          "GEMINI_AUTO_ROUTING_DISABLED")
         self.assertEqual(gemini.admit("true", "true", "", "manual")["status"], "ADMITTED")
         self.assertEqual(gemini.admit("true", "true", "true", "auto")["status"], "ADMITTED")
+        self.assertEqual(gemini.admit("true", "true", "true", "other")["code"],
+                         "GEMINI_ADMISSION_MODE_INVALID")
 
     def test_existing_priority_selected_for_research_not_writer_lease(self):
         manifest, issues = fixture()
@@ -53,6 +58,8 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         self.assertFalse(output["writer_lease_granted"])
         self.assertFalse(output["github_branch_write_allowed"])
         self.assertFalse(output["can_execute"])
+        filtered = gemini.select_incident(manifest, issues, requested_lease="P0_LLP_RESTORE")
+        self.assertEqual(filtered["incident_id"], "1841")
 
     def test_target_identity_and_lease_fails_closed(self):
         manifest, issues = fixture()
@@ -64,8 +71,28 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
                                    requested_lease="GLOBAL")
         with self.assertRaisesRegex(ValueError, "INCIDENT_ID_INVALID"):
             gemini.select_incident(manifest, issues, target_incident="foo")
+        with self.assertRaisesRegex(ValueError, "LEASE_GROUP_INVALID"):
+            gemini.select_incident(manifest, issues, requested_lease="bad")
         self.assertEqual(gemini.select_incident(manifest, [dict(issues[0], state="CLOSED")])["status"],
                          "NO_ACTION")
+        std_manifest = {
+            "can_execute": False,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+            "restoration": [
+                manifest["restoration"][0],
+                {
+                    "issue_number": 1999, "severity": "P1", "priority_rank": 2,
+                    "execution_lane": "STANDARD", "rapid_stream": "",
+                    "lease_group": "GLOBAL", "conflict_keys": ["NFL_PUBLICATION"],
+                },
+            ],
+            "acceleration": [],
+        }
+        std_issues = issues + [{"number": 1999, "title": "Standard conflict", "state": "OPEN"}]
+        conflict = gemini.select_incident(std_manifest, std_issues, target_incident="1999",
+                                          requested_lease="GLOBAL")
+        self.assertEqual(conflict["status"], "NO_ACTION")
+        self.assertEqual(conflict["code"], "GEMINI_STANDARD_CONFLICTS_WITH_P0")
 
     def test_provider_failures_are_typed_without_leaking_details(self):
         quota = gemini.classify_cli(1, "sensitive: RESOURCE_EXHAUSTED quota exceeded")
@@ -75,6 +102,14 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         self.assertEqual(gemini.classify_cli(124, "", timed_out=True)["code"],
                          "GEMINI_CLI_TIMEOUT")
         self.assertEqual(gemini.classify_cli(53, "limit")["code"], "GEMINI_CLI_TURN_LIMIT")
+        self.assertEqual(gemini.classify_cli(42, "bad input")["code"], "GEMINI_CLI_INPUT_INVALID")
+        self.assertEqual(gemini.classify_cli(1, "429 too many requests")["code"],
+                         "GEMINI_API_RATE_LIMITED")
+        self.assertEqual(gemini.classify_cli(1, "403 permission_denied")["code"],
+                         "GEMINI_API_AUTH_FAILED")
+        self.assertEqual(gemini.classify_cli(1, "503 unavailable")["code"],
+                         "GEMINI_API_UPSTREAM_UNAVAILABLE")
+        self.assertEqual(gemini.classify_cli(1, "other crash")["code"], "GEMINI_CLI_FAILED")
 
     def test_valid_result_requires_actual_response_and_no_error(self):
         ok = gemini.classify_cli(0, "", response={"response": "patch candidate", "stats": {}})
@@ -103,7 +138,12 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         self.assertIn("GEMINI_SPEND_CAP_CONFIRMED", dispatcher)
         self.assertIn("force_provider", dispatcher)
         self.assertIn("wow-v17-gemini-engineering-worker.yml", dispatcher)
+        self.assertIn(
+            "steps.route.outputs.provider == 'gemini' && steps.remote_fence.outcome == 'success'",
+            dispatcher,
+        )
         self.assertIn("wow-v17-engineering-implementation-single-writer", worker)
+        self.assertIn("engineering_remote_fallback.py guard", worker)
         self.assertIn("ref: main", worker)
         self.assertIn("persist-credentials: false", worker)
         self.assertIn("contents: read", worker)
@@ -137,6 +177,14 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
             result = gemini.verify_candidate(worktree, [source])
             self.assertEqual(result["status"], "HELD")
             self.assertEqual(result["code"], "GEMINI_CHANGED_REGRESSION_TEST_REQUIRED")
+            invalid = gemini.verify_candidate(worktree, [".github/workflows/wow-verify.yml"])
+            self.assertEqual(invalid["status"], "HELD")
+            self.assertEqual(invalid["code"], "GEMINI_PATCH_PROTECTED_OR_INVALID_PATH")
+            missing = gemini.verify_candidate(
+                worktree, [source, "artifacts/wow-engine/tests/test_missing.py"]
+            )
+            self.assertEqual(missing["status"], "HELD")
+            self.assertEqual(missing["code"], "GEMINI_CHANGED_TEST_PATH_MISSING")
 
     def test_candidate_tests_execute_in_isolated_checkout(self):
         with tempfile.TemporaryDirectory() as root:
@@ -171,11 +219,90 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
             with mock.patch.object(gemini.subprocess, "run", side_effect=subprocess.TimeoutExpired(["pytest"], 300)):
                 result = gemini.verify_candidate(worktree, [source, target])
             self.assertEqual(result["code"], "GEMINI_REGRESSION_TIMEOUT")
+            with mock.patch.object(gemini.subprocess, "run", side_effect=OSError("no pytest")):
+                result = gemini.verify_candidate(worktree, [source, target])
+            self.assertEqual(result["code"], "GEMINI_REGRESSION_RUNNER_UNAVAILABLE")
 
     def test_test_only_patch_never_qualifies_as_source_repair(self):
         patch = gemini.inspect_changed_paths(["artifacts/wow-engine/tests/test_only.py"])
         self.assertEqual(patch["status"], "HELD")
         self.assertEqual(patch["code"], "GEMINI_PATCH_SOURCE_CHANGE_REQUIRED")
+
+    def test_cli_entrypoints_and_fail_closed_error_handling(self):
+        manifest, issues = fixture()
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            manifest_file = base / "manifest.json"
+            issues_file = base / "issues.json"
+            stderr_file = base / "stderr.txt"
+            response_file = base / "response.json"
+            files_file = base / "files.json"
+            manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
+            issues_file.write_text(json.dumps(issues), encoding="utf-8")
+            stderr_file.write_text("", encoding="utf-8")
+            response_file.write_text(json.dumps({"response": "ok"}), encoding="utf-8")
+            src = "artifacts/wow-engine/v17/model_change.py"
+            tst = "artifacts/wow-engine/tests/test_candidate.py"
+            (base / src).parent.mkdir(parents=True)
+            (base / tst).parent.mkdir(parents=True)
+            (base / src).write_text("x = 1\n", encoding="utf-8")
+            (base / tst).write_text("def test_x(): assert True\n", encoding="utf-8")
+            files_file.write_text(json.dumps([src, tst]), encoding="utf-8")
+
+            def call_cli(*argv: str) -> tuple[int, dict]:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = gemini.main(list(argv))
+                return rc, json.loads(buf.getvalue())
+
+            rc, out = call_cli(
+                "admit", "--enabled", "true", "--spend-confirmed", "true",
+                "--auto-enabled", "false", "--mode", "manual",
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(out["status"], "ADMITTED")
+
+            rc, out = call_cli(
+                "select", "--manifest", str(manifest_file), "--issues", str(issues_file),
+                "--target", "1841", "--lease-group", "P0_LLP_RESTORE",
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(out["status"], "SELECTED")
+
+            rc, out = call_cli(
+                "classify", "--exit-code", "0", "--stderr-file", str(stderr_file),
+                "--response-file", str(response_file),
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(out["status"], "COMPLETED")
+
+            bad_resp = base / "bad.json"
+            bad_resp.write_text("{not-json", encoding="utf-8")
+            rc, out = call_cli(
+                "classify", "--exit-code", "0", "--stderr-file", str(stderr_file),
+                "--response-file", str(bad_resp),
+            )
+            self.assertEqual(rc, 2)
+            self.assertEqual(out["code"], "GEMINI_CLI_RESPONSE_MALFORMED")
+
+            rc, out = call_cli("inspect-patch", "--files-json", str(files_file))
+            self.assertEqual(rc, 0)
+            self.assertEqual(out["status"], "CANDIDATE_ONLY")
+
+            with mock.patch.object(
+                gemini.subprocess, "run",
+                return_value=subprocess.CompletedProcess(["pytest"], 0, "1 passed", ""),
+            ):
+                rc, out = call_cli(
+                    "verify-candidate", "--files-json", str(files_file),
+                    "--worktree", str(base),
+                )
+            self.assertEqual(rc, 0)
+            self.assertEqual(out["status"], "TESTED_CANDIDATE")
+
+            rc, out = call_cli("inspect-patch", "--files-json", str(base / "nonexistent.json"))
+            self.assertEqual(rc, 2)
+            self.assertEqual(out["code"], "GEMINI_ADMISSION_OR_EVIDENCE_INVALID")
 
     def test_worker_parses_nul_delimited_git_and_requires_test_receipt(self):
         worker = (ROOT / ".github/workflows/wow-v17-gemini-engineering-worker.yml").read_text()

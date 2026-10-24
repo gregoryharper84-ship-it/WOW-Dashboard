@@ -72,6 +72,12 @@ jobs:
             > "$RUNNER_TEMP/wow-gemini/admission.json"
           echo "admitted=true" >> "$GITHUB_OUTPUT"
 
+      - name: Fence unresolved remote writers
+        if: steps.admission.outputs.admitted == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
+
       - name: Select one canonical existing engineering issue
         id: selection
         if: steps.admission.outputs.admitted == 'true'
