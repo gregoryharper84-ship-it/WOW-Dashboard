@@ -147,7 +147,7 @@ def test_selector_accepts_only_real_unique_pregame_sunday_schedule(monkeypatch):
 def test_selector_rejects_in_progress_fixtures_not_misclassified_as_pregame(monkeypatch):
     cases = (
         {"status": {"type": {"completed": False, "state": "in"}}},
-        {"date": "2026-10-26T01:00:00Z"},  # Monday in Chicago
+        {"date": "2026-10-26T07:00:00Z"},  # Monday in Chicago
         {"date": "2026-10-20T18:00:00Z"},  # past
         {"date": "2026-10-25T18:00:00"},  # naive
     )
