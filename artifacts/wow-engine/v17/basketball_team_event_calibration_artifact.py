@@ -75,7 +75,8 @@ def build_shadow_binary_calibration_artifact(
     ):
         raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_FOLD_INVALID")
     seen_folds = list(dict.fromkeys(int(fold) for fold in fold_assignments))
-    if len(seen_folds) < 2 or seen_folds != list(range(len(seen_folds))):
+    if (len(seen_folds) < 2 or seen_folds != list(range(len(seen_folds)))
+        or any(left > right for left, right in zip(fold_assignments, fold_assignments[1:]))):
         raise BasketballCalibrationArtifactError("BASKETBALL_CALIBRATION_FOLD_NOT_CHRONOLOGICAL")
     metrics = fit.metrics
     checks = (
