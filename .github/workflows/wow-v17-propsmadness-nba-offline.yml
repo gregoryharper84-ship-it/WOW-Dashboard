@@ -1,0 +1,52 @@
+name: WOW PropsMadness NBA Offline Contract (No Vendor Access)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '.github/workflows/wow-v17-propsmadness-nba-offline.yml'
+      - 'artifacts/wow-engine/v17/propsmadness_nba_offline_adapter.py'
+      - 'artifacts/wow-engine/tests/test_propsmadness_nba_offline_adapter.py'
+      - 'artifacts/wow-engine/PROPSMADNESS_NBA_FEASIBILITY_AND_IMPLEMENTATION_2018.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-propsmadness-offline-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  synthetic-fixture-contract:
+    if: >-
+      github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.head_ref == 'backlog/2018-propsmadness-nba-fixture-adapter'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Exercise purely synthetic NBA source and leakage guards
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pytest --confcutdir=tests -q tests/test_propsmadness_nba_offline_adapter.py
+      - name: Assert source authorization remains disabled
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          python - <<'PY'
+          from v17.propsmadness_nba_offline_adapter import capability_receipt
+          c = capability_receipt()
+          assert c['live_fetch_supported'] is False
+          assert c['history_storage_authorized'] is False
+          assert c['training_authorized'] is False
+          assert c['prediction_authority'] is False
+          assert c['can_execute'] is False
+          print('PROPSMADNESS_NBA_OFFLINE_CONTRACT_VERIFIED_NO_VENDOR_ACCESS')
+          PY
