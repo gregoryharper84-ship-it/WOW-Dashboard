@@ -58,6 +58,8 @@ def _feature_package(event_id="espn-401999001"):
             "feature_as_of": "2026-10-22",
             "feature_timestamp": FEATURE_TIMESTAMP,
             "dataset_id": "nba-history-2026-10-22",
+            "source_replay_status": "RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS",
+            "timestamp_attestation": "VERIFIED",  # Synthetic test-only approval input
         },
     }
 
@@ -728,3 +730,37 @@ def _raise_certification_error(code):
 
 def _raise_calibration_error(error):
     raise error
+
+
+@pytest.mark.parametrize(("source_status", "timestamp_status", "expected"), [
+    ("MISSING", "VERIFIED", "NBA_SOURCE_EVENT_REPLAY_NOT_VERIFIED"),
+    ("RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS", "NOT_ESTABLISHED", "NBA_SOURCE_TIMESTAMP_ATTESTATION_NOT_VERIFIED"),
+    ("RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS", None, "NBA_SOURCE_TIMESTAMP_ATTESTATION_NOT_VERIFIED"),
+])
+def test_research_only_source_clock_cannot_reach_certified_model_even_when_manifest_enabled(
+    monkeypatch, source_status, timestamp_status, expected
+):
+    _enable_certified_nba_test_lane(monkeypatch)
+    feature = _feature_package()
+    feature["feature_audit"]["source_replay_status"] = source_status
+    feature["feature_audit"]["timestamp_attestation"] = timestamp_status
+    receipt = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=feature,
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: pytest.fail(
+            "unverified raw source cannot invoke even a test-certified model"
+        ),
+    )
+    assert receipt["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert receipt["blockers"] == [expected]
+    assert receipt["raw_probability"] is None
+    assert receipt["calibrated_probability"] is None
+    assert receipt["probability_publishable"] is False
+    assert receipt["rank_eligible"] is False
+    assert receipt["can_execute"] is False
