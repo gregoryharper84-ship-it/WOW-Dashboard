@@ -158,3 +158,17 @@ def test_no_user_consent_is_zero_request_and_http_429_stops_without_retry():
     with pytest.raises(PublicPageHold, match="PM_PUBLIC_SOURCE_ACCESS_DENIED"):
         fetch_public_one_shot("MLB", "strikeouts", personal_noncommercial_use_confirmed=True, urlopen=denied)
     assert urls == ["https://propsmadness.com/robots.txt"]
+
+def test_every_declared_market_has_a_non_authoritative_fixture_path():
+    # No declared NBA/NFL/MLB/WNBA stat may rely on an unexercised alias.
+    for sport, markets in MARKETS.items():
+        for market, (expected_stat, label) in markets.items():
+            blob = page(sport, 'player-' + market, label, '4.5', 'BOS', 'NYK')
+            result = parse_multisport_public_html(
+                blob, sport=sport, market=market, fetched_at='2026-10-23T19:00:00Z',
+            )
+            assert result['row_count'] == 1, (sport, market)
+            assert result['rows'][0]['stat_type'] == expected_stat
+            assert result['rows'][0]['historical_line_evidence'] is False
+            assert result['historical_training_authorized'] is False
+            assert result['probability_publishable'] is False
