@@ -135,6 +135,14 @@ def _feature_blocker(
     audit = feature_package.get("feature_audit")
     if not isinstance(audit, Mapping):
         return "NBA_FEATURE_LINEAGE_MISSING"
+    # A source captured with a runner clock and HTTP Date is useful research
+    # but is explicitly NOT independently attested. The current NBA scorer
+    # must refuse that input before any certified model inference, even if a
+    # future release enables the controlling specialist and bounds policy.
+    if audit.get("source_replay_status") != "RAW_CAPTURE_HASH_AND_EVENT_REPLAY_PASS":
+        return "NBA_SOURCE_EVENT_REPLAY_NOT_VERIFIED"
+    if audit.get("timestamp_attestation") != "VERIFIED":
+        return "NBA_SOURCE_TIMESTAMP_ATTESTATION_NOT_VERIFIED"
     if not source_snapshot_id or feature_package.get("source_snapshot_id") != source_snapshot_id:
         return "NBA_SOURCE_SNAPSHOT_ID_MISMATCH"
     source_at = _timestamp(feature_package.get("source_snapshot_timestamp"))
