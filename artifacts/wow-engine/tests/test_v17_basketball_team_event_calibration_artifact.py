@@ -27,6 +27,7 @@ def _fit():
         ),
         metrics=PlattFitMetrics(brier=0.22, log_loss=0.63, ece=0.04, calibration_bias=0.01),
         coefficients=PlattCoefficients(a=-0.1, b=0.9),
+        fold_train_audit={i: list(range(i)) for i in range(1, 6)},
     )
 
 
@@ -58,6 +59,9 @@ def test_shadow_artifact_is_hash_bound_and_not_self_certified():
     assert artifact["can_execute"] is False
     assert len(artifact["source_data_hash"]) == 64
     assert len(artifact["split_hash"]) == 64
+    assert len(artifact["fold_train_audit_hash"]) == 64
+    assert artifact["residual_basis"] == "FULL_DATA_IN_SAMPLE_NOT_CERTIFIED_FOR_BOUNDS"
+    assert artifact["bounds_preapproval_status"] == REVIEW_REQUIRED
     assert len(fingerprint) == 64
     assert artifact["platt_a"] == pytest.approx(0.9)
     assert artifact["platt_b"] == pytest.approx(-0.1)
@@ -126,6 +130,9 @@ def _calibration_case():
     ("same_date_split", "BASKETBALL_CALIBRATION_DATE_SPLIT_ACROSS_FOLDS"),
     ("nan_metric", "BASKETBALL_CALIBRATION_METRIC_INVALID"),
     ("invalid_ece", "BASKETBALL_CALIBRATION_METRIC_INVALID"),
+    ("missing_fold_audit", "BASKETBALL_CALIBRATION_FOLD_TRAIN_AUDIT_MISSING"),
+    ("future_training_fold", "BASKETBALL_CALIBRATION_FOLD_TRAIN_AUDIT_INVALID"),
+    ("insufficient_folds", "BASKETBALL_CALIBRATION_FOLD_NOT_CHRONOLOGICAL"),
 ])
 def test_shadow_calibration_rejects_adversarial_labels_folds_and_provenance(mutation, code):
     kwargs = _calibration_case()
@@ -147,17 +154,34 @@ def test_shadow_calibration_rejects_adversarial_labels_folds_and_provenance(muta
         kwargs["timestamps"][85] = kwargs["timestamps"][1]
     elif mutation == "same_date_split":
         kwargs["fold_assignments"][40] = 0
+    elif mutation == "missing_fold_audit":
+        fit = kwargs["fit"]
+        kwargs["fit"] = SimpleNamespace(
+            result=fit.result, coefficients=fit.coefficients, metrics=fit.metrics,
+        )
+    elif mutation == "future_training_fold":
+        fit = kwargs["fit"]
+        audit = dict(fit.fold_train_audit)
+        audit[1] = [0, 2]
+        kwargs["fit"] = SimpleNamespace(
+            result=fit.result, coefficients=fit.coefficients, metrics=fit.metrics,
+            fold_train_audit=audit,
+        )
+    elif mutation == "insufficient_folds":
+        kwargs["fold_assignments"] = [min(i // 50, 4) for i in range(240)]
     elif mutation == "nan_metric":
         fit = kwargs["fit"]
         kwargs["fit"] = SimpleNamespace(
             result=fit.result, coefficients=fit.coefficients,
             metrics=PlattFitMetrics(brier=float("nan"), log_loss=0.63, ece=0.04, calibration_bias=0.01),
+            fold_train_audit=fit.fold_train_audit,
         )
     elif mutation == "invalid_ece":
         fit = kwargs["fit"]
         kwargs["fit"] = SimpleNamespace(
             result=fit.result, coefficients=fit.coefficients,
             metrics=PlattFitMetrics(brier=0.22, log_loss=0.63, ece=1.4, calibration_bias=0.01),
+            fold_train_audit=fit.fold_train_audit,
         )
     with pytest.raises(BasketballCalibrationArtifactError, match=code):
         build_shadow_binary_calibration_artifact(**kwargs)
