@@ -63,6 +63,7 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
                 self.assertEqual(receipt["action"],"DISPATCH")
                 self.assertEqual(receipt["provider"],"anthropic")
                 self.assertEqual(receipt["reason"],"OPENAI_API_QUOTA_EXCEEDED")
+                self.assertTrue(receipt["provider_generation_allowed"])
 
     def test_missing_fallback_auth_is_fail_closed(self):
         receipt=self.route("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
@@ -175,7 +176,9 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
 
     def validate(self, directory, *, route=None, survival=None, **overrides):
         route_path = Path(directory) / "provider-route.json"
-        survival_path = Path(directory) / "provider-survival-receipt.json"
+        survival_dir = Path(directory) / "wow-survival"
+        survival_dir.mkdir()
+        survival_path = survival_dir / "provider-survival-receipt.json"
         route_path.write_text(json.dumps(self.route_receipt() if route is None else route))
         survival_path.write_text(json.dumps(survival or {
             "status": "DEGRADED_DETERMINISTIC_SURVIVAL",
@@ -189,6 +192,7 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
             "terminal_authority": "V17_TERMINAL_REDUCER",
         }))
         env = {
+            "RUNNER_TEMP": str(directory),
             "ROUTE_RECEIPT": str(route_path),
             "SURVIVAL_RECEIPT": str(survival_path),
             "ACTION": "SURVIVAL",
