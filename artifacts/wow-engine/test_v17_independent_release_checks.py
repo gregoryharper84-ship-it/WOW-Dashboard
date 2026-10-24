@@ -609,7 +609,7 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
     concurrency = yaml.load(text, Loader=yaml.BaseLoader)["concurrency"]
     assert concurrency["group"] == (
         wf.stem + "-${{ inputs.pr_number || "
-        "github.event.workflow_run.pull_requests[0].number || github.run_id }}"
+        "github.event.workflow_run.pull_requests[0].number || 'AUTO' }}"
     )
     assert concurrency["cancel-in-progress"] == "false"
     assert concurrency["queue"] == "max"
@@ -659,8 +659,8 @@ def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     assert steps["Decide at exact head (read-only)"]["if"] == (
         "success() && (github.event_name != 'workflow_run' || steps.upstream.outputs.applicable == 'true')"
     )
-    assert "steps.decide.outputs.count != '0'" in steps["Publish exact-head check"]["if"]
-    assert "steps.decide.outputs.count != '0'" in steps["Mint checks-only App token"]["if"]
+    assert steps["Publish exact-head check"]["if"] == "steps.decide.outputs.count == '1'"
+    assert steps["Mint checks-only App token"]["if"] == "steps.decide.outputs.count == '1'"
     script = _step_script(REL_WF, "Classify upstream QA applicability")
     assert "resolve-qa-policy" not in script
     assert "check-runs" not in script
@@ -1089,6 +1089,36 @@ def test_release_classify_step_treats_skipped_qa_job_as_neutral(fake_gh):
     assert not (fake_gh / "gh.log").exists()
 
 
+def _release_count_enables_token_and_publish(count):
+    """A skipped Decide step leaves count as GitHub's empty string.
+
+    Empty != '0' is true, which would mint the Release App token and run the
+    publisher with no decision file. Only count == '1' may continue.
+    """
+    workflow = yaml.load(REL_WF.read_text(), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["release"]["steps"]}
+    for name in ("Mint checks-only App token", "Publish exact-head check"):
+        assert steps[name]["if"] == "steps.decide.outputs.count == '1'"
+    return count == "1"
+
+
+def test_neutral_release_skips_token_and_publishes_nothing(fake_gh):
+    run_id = "40107281706"
+    routes = {
+        f"repos/{REPO}/actions/runs/{run_id}": [200, _qa_run(id=int(run_id))],
+        f"repos/{REPO}/actions/runs/{run_id}/attempts/1/jobs": [200, _qa_jobs("skipped")],
+    }
+    proc, outputs = _run_classify(fake_gh, routes, run_id)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "applicable=false" in outputs
+    # The old inequality treats this empty output as permission to publish.
+    assert ("" != "0") is True
+    assert _release_count_enables_token_and_publish("") is False
+    assert _release_count_enables_token_and_publish("0") is False
+    assert _release_count_enables_token_and_publish("1") is True
+    assert not (fake_gh / "gh.log").exists()
+
+
 def test_release_classify_step_rejects_a_foreign_upstream_run(fake_gh):
     run_id = "40107281706"
     foreign = _qa_run(id=int(run_id), head_repository={"full_name": "other/WOW-Dashboard"})
@@ -1213,7 +1243,7 @@ def test_automatic_release_uses_only_the_authenticated_qa_run_target(fake_gh):
         {"number": 8, "draft": False, "head": {"sha": OLD, "repo": {"full_name": REPO}}},
     ]]
 
-    proc, runner, _ = _run_decide(
+    proc, runner, env = _run_decide(
         fake_gh,
         REL_WF,
         routes,
@@ -1229,6 +1259,7 @@ def test_automatic_release_uses_only_the_authenticated_qa_run_target(fake_gh):
     )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in Path(env["GITHUB_OUTPUT"]).read_text()
     decisions = sorted(path.name for path in (runner / "decisions").glob("decision-*.json"))
     assert decisions == ["decision-7.json"]
     assert json.loads((runner / "decisions" / "decision-7.json").read_text())["head_sha"] == HEAD
