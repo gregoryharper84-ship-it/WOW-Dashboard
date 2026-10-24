@@ -1,0 +1,91 @@
+name: WOW PropsMadness One-Page Public Research Probe
+
+# Manually initiated only. No schedule, issue trigger, push trigger,
+# secret, external authenticated endpoint, DB write or automatic retry.
+on:
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: 'Single sport to inspect, only publicly available content'
+        required: true
+        type: choice
+        options:
+          - NBA
+          - NFL
+          - MLB
+          - WNBA
+      market:
+        description: 'One exact market slug from supported four-sport allowlist'
+        required: true
+        type: string
+      confirm_personal_noncommercial_use:
+        description: 'I have checked the provider terms and this specific use is personal and noncommercial'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: propsmadness-public-one-shot
+  cancel-in-progress: false
+
+jobs:
+  public-readonly-probe:
+    if: inputs.confirm_personal_noncommercial_use == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run single explicit public-page research probe
+        working-directory: artifacts/wow-engine
+        shell: bash
+        env:
+          PM_SPORT: ${{ inputs.sport }}
+          PM_MARKET: ${{ inputs.market }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from v17.propsmadness_multisport_public_explore import (
+              PublicPageHold, fetch_public_one_shot
+          )
+          try:
+              receipt = fetch_public_one_shot(
+                  os.environ['PM_SPORT'], os.environ['PM_MARKET'],
+                  personal_noncommercial_use_confirmed=True
+              )
+              # Never publish raw player/offer rows to public CI logs.
+              result = {
+                  'status': receipt['status'],
+                  'sport': receipt['sport'],
+                  'market': receipt['market'],
+                  'row_count': receipt['row_count'],
+                  'source_sha256': receipt['html_sha256'],
+                  'historical_training_authorized': False,
+                  'probability_publishable': False,
+                  'can_execute': False,
+              }
+              print(json.dumps(result, sort_keys=True))
+              if receipt['row_count'] <= 0:
+                  raise SystemExit(2)
+          except PublicPageHold as exc:
+              print(json.dumps({
+                  'status': 'PUBLIC_SCRAPE_HOLD', 'typed_blocker': exc.code,
+                  'historical_training_authorized': False,
+                  'can_execute': False,
+              }, sort_keys=True))
+              raise SystemExit(2)
+          PY
+      - name: Explain pilot scope
+        if: always()
+        shell: bash
+        run: |
+          echo '### Single-page research probe only' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No recurring scrape, raw provider-data artifact, authenticated access, live training, model publication, odds reuse, or wager execution.' >> "$GITHUB_STEP_SUMMARY"
