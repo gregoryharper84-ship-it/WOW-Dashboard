@@ -63,6 +63,33 @@ The owner prefers public-page extraction to vendor outreach. The prior email dra
 
 ---
 
+## Four-sport public Explore extension (build increment)
+
+The supported research discovery surface expands to all **four vendor-advertised leagues**: NBA, NFL, MLB, and WNBA. Official four-league coverage: https://propsmadness.com/help/en/articles/11104394-will-you-be-adding-other-sports ; public Explore description: https://propsmadness.com/help/en/articles/17694010-explore-every-player-at-once . Off-season leagues may show no rows.
+
+New sidecar: `v17/propsmadness_multisport_public_explore.py`, using the existing public HTML parser without modifying NBA fitted model lanes or the historical source rights manifest. Provider player and match IDs are **unverified aliases**.
+
+| Sport | Four initially allowlisted markets | Typed stat |
+| --- | --- | --- |
+| NBA | points, rebounds, assists, threes | POINTS, REBOUNDS, ASSISTS, THREE_POINTERS_MADE |
+| NFL | passing-yards, receiving-yards, rushing-yards, receptions | PASSING_YARDS, RECEIVING_YARDS, RUSHING_YARDS, RECEPTIONS |
+| MLB | strikeouts, pitcher-outs, hits, total-bases | PITCHER_STRIKEOUTS, PITCHING_OUTS, HITS, TOTAL_BASES |
+| WNBA | points, rebounds, assists, threes | POINTS, REBOUNDS, ASSISTS, THREE_POINTERS_MADE |
+
+The **16 definitions** are public-route/fixture support, not 16 verified active feeds or permitted recurring collectors. One invocation performs at most two requests: robots and one allowlisted public HTML page. Live access is off unless the operator truthfully confirms **personal noncommercial use** consistent with the provider's terms. Login, CAPTCHA circumvention, session harvesting, hidden API access, 403/429 retrying, crawl pagination and schedules are excluded. CI runs only synthetic fixtures.
+
+Manual example, only for actually permitted personal/noncommercial use:
+
+    python -m v17.propsmadness_multisport_public_explore --sport NFL --market passing-yards --confirm-personal-noncommercial-use
+
+Other sport examples: MLB strikeouts, WNBA points and NBA assists. Live robots policy and page/schema availability are unverified. Zero rows or locked/offseason rows must remain missing, never manufactured.
+
+All outputs are discovery-only with no verified sportsbook, official player/event identity, kickoff, exact-line authority, retrospective pretip snapshot, stored historical archive or model probability. MLB PITCHING_OUTS is distinct from innings-pitched/1IP; NFL stat families remain non-interchangeable. This PR does not confer market or sporting model authority.
+
+For historical model features, use independently verified, legally usable NBA/NFL/MLB/WNBA final outcomes and true licensed pregame snapshots. A present-day public page cannot retroactively establish last season's original lines or injury context. Future historical retention or training requires separate source rights and certified model acceptance.
+
+---
+
 ## WOW interface
 
 Scout discovery would receive research candidates with exact player-event/stat/period/line identity and separate market/sporting sources, never a ranked model probability. Private historical staging needs separate security and source-rights approval. The NBA POINTS model work remains owned by issue #1988; usage/on-off/DvP challenger #1863 remains post-restoration. Any calibrated probabilities require the certified controlling specialist and V17 terminal reducer.
