@@ -64,3 +64,29 @@ def test_role_history_over_500_is_partitioned_and_complete():
 def test_role_history_empty_across_recent_windows():
     client = FakeGitHub(history=0)
     assert transport.list_role_runs(client, 123, "qa", 41, "a" * 40) == []
+
+
+def test_role_history_over_500_spread_over_days_keeps_complete_window():
+    class SpreadClient(FakeGitHub):
+        def get(self, path):
+            if path.endswith("/pulls/41"):
+                return super().get(path)
+            self.paths.append(path)
+            q = parse_qs(urlsplit(path).query)
+            start, end = q["created"][0].split("..")
+            base = (datetime.now(timezone.utc) - timedelta(days=3)).date()
+            rows = []
+            for day, count in ((base, 320), (base + timedelta(days=1), 310)):
+                if start <= day.isoformat() <= end:
+                    rows.extend(
+                        {"id": int(day.strftime("%d")) * 10000 + i,
+                         "name": "unrelated", "status": "completed"}
+                        for i in range(count)
+                    )
+            page = int(q.get("page", ["1"])[0])
+            return {"workflow_runs": rows[(page-1)*100:page*100]}
+
+    client = SpreadClient()
+    assert transport.list_role_runs(client, 123, "qa", 41, "a" * 40) == []
+    assert any("created=" in path for path in client.paths)
+    assert len(client.paths) > 8
