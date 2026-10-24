@@ -48,7 +48,8 @@ def dispatch(*args, **kwargs):
 class FakeApi:
     def __init__(self, *, global_agents=None, pr_agents=None, global_next=None,
                  pr_next=None, issue_data=None, stale_pr_read=None,
-                 malformed_pr_read=None, post_result=None):
+                 malformed_pr_read=None, post_result=None, post_error=None,
+                 fail_ledger_write=False):
         self.calls = []
         self.comments = []
         self.cursor_posts = []
@@ -61,6 +62,8 @@ class FakeApi:
         self.malformed_pr_read = malformed_pr_read
         self.pr_reads = 0
         self.post_result = post_result
+        self.post_error = post_error
+        self.fail_ledger_write = fail_ledger_write
 
     def __call__(self, url, **kwargs):
         self.calls.append((url, kwargs))
@@ -74,6 +77,8 @@ class FakeApi:
             return self.comments[0]
         if "/issues/1138/comments" in url:
             if kwargs.get("body") is not None:
+                if self.fail_ledger_write:
+                    raise remote.ProviderUnavailable("HTTP_403")
                 saved = {"id": 55, "body": kwargs["body"]["body"]}
                 self.comments.append(saved)
                 return saved
@@ -85,6 +90,8 @@ class FakeApi:
         if "/v1/agents" in url:
             if kwargs.get("method") == "POST":
                 self.cursor_posts.append(kwargs)
+                if self.post_error is not None:
+                    raise self.post_error
                 if self.post_result is not None:
                     return self.post_result
                 return {"agent": {"id": kwargs["body"]["agentId"]},
@@ -292,6 +299,26 @@ class HandoffTests(unittest.TestCase):
     def test_duplicate_dispatch_is_stopped_by_persisted_shared_lease(self):
         api = FakeApi()
         dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_SHARED_WRITER_LEASE_ACTIVE")
+        self.assertEqual(len(api.cursor_posts), 1)
+
+    def test_failed_ledger_reservation_prevents_billable_cursor_post(self):
+        api = FakeApi(fail_ledger_write=True)
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_SHARED_WRITER_LEASE_UNAVAILABLE")
+        self.assertEqual(api.cursor_posts, [])
+        self.assertEqual(api.comments, [])
+
+    def test_ambiguous_cursor_post_ack_retains_hold_and_blocks_retry(self):
+        api = FakeApi(post_error=mod.HandoffBlocked("CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED"))
+        with self.assertRaises(mod.HandoffBlocked) as cm:
+            dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
+        self.assertEqual(cm.exception.code, "CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED")
+        self.assertEqual(len(api.cursor_posts), 1)
+        self.assertTrue(remote.reservations(api.comments)[0][1]["hold"])
         with self.assertRaises(mod.HandoffBlocked) as cm:
             dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
         self.assertEqual(cm.exception.code, "CURSOR_SHARED_WRITER_LEASE_ACTIVE")
