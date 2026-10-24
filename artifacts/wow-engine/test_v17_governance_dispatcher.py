@@ -41,6 +41,7 @@ def make_pull(*, author_id=9001, author="engineering-agent", sha=HEAD, changed_f
         "state": "open",
         "draft": False,
         "merged_at": None,
+        "created_at": "2026-10-01T12:00:00Z",
         "changed_files": changed_files,
         "user": {"id": author_id, "login": author},
         "head": {
@@ -609,28 +610,62 @@ def test_github_dispatch_rejects_workflow_path_alias():
 
 
 def test_active_work_in_progress_is_counted_per_role():
-    class FakeClient:
-        def get(self, path):
-            if "/workflows/2/runs?" in path:
-                return {
-                    "workflow_runs": [
-                        {"status": "in_progress"},
-                        {"status": "queued"},
-                        {"status": "completed"},
-                    ]
-                }
-            return {"workflow_runs": []}
-
     workflows = {
         role: {"id": index + 1, **details}
         for index, (role, details) in enumerate(transport.WORKFLOWS.items())
     }
 
+    class FakeClient:
+        def get(self, path):
+            assert "branch=main" in path
+            assert "status=" in path
+            if "/workflows/2/runs?" in path and "status=queued" in path:
+                return {
+                    "total_count": 1,
+                    "workflow_runs": [
+                        wip_run(workflows["qa"], 987, "queued"),
+                    ]
+                }
+            if "/workflows/2/runs?" in path and "status=in_progress" in path:
+                return {
+                    "total_count": 1,
+                    "workflow_runs": [wip_run(workflows["qa"], 987, "in_progress")],
+                }
+            return {"total_count": 0, "workflow_runs": []}
+
     assert transport.count_wip(FakeClient(), workflows) == {
         "source_review": 0,
-        "qa": 2,
+        "qa": 1,
         "release": 0,
     }
+
+
+def wip_run(workflow, run_id, status):
+    return {
+        "id": run_id,
+        "workflow_id": workflow["id"],
+        "path": workflow["path"],
+        "status": status,
+        "head_branch": "main",
+        "repository": {"full_name": REPOSITORY},
+        "head_repository": {"full_name": REPOSITORY},
+    }
+
+
+def test_wip_inventory_holds_when_a_filtered_page_is_incomplete():
+    workflows = {
+        role: {"id": index + 1, **details}
+        for index, (role, details) in enumerate(transport.WORKFLOWS.items())
+    }
+
+    class FakeClient:
+        def get(self, path):
+            if "/workflows/1/runs?" in path and "status=queued" in path:
+                return {"total_count": 2, "workflow_runs": [wip_run(workflows["source_review"], 81, "queued")]}
+            return {"total_count": 0, "workflow_runs": []}
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_INVENTORY_INCOMPLETE"):
+        transport.count_wip(FakeClient(), workflows)
 
 
 def test_dispatch_reservation_is_signed_canonical_and_contains_no_token(monkeypatch):
@@ -882,24 +917,159 @@ def test_role_run_matching_accepts_api_workflow_name_with_display_title():
     expected = policy.run_name("source_review", 41, HEAD)
     run = {
         "id": 987,
+        "workflow_id": 12,
         "name": transport.WORKFLOWS["source_review"]["name"],
         "display_title": expected,
         "path": transport.WORKFLOWS["source_review"]["path"],
         "event": "workflow_dispatch",
         "head_branch": "main",
+        "repository": {"full_name": REPOSITORY},
         "head_repository": {"full_name": REPOSITORY},
         "head_sha": OTHER_HEAD,
         "status": "completed",
         "conclusion": "success",
+        "created_at": "2026-10-02T12:00:00Z",
     }
 
     class FakeClient:
-        def get(self, _):
-            return {"workflow_runs": [run]}
+        def __init__(self):
+            self.paths = []
 
-    matches = transport.list_role_runs(FakeClient(), 12, "source_review", 41, HEAD)
+        def get(self, path):
+            self.paths.append(path)
+            if "event=workflow_dispatch" in path:
+                return {"total_count": 1, "workflow_runs": [run]}
+            return {"total_count": 0, "workflow_runs": []}
+
+    client = FakeClient()
+    matches = transport.list_role_runs(
+        client, 12, "source_review", 41, HEAD, "2026-10-01T12:00:00Z"
+    )
 
     assert matches == [run]
+    assert len(client.paths) == 2
+    assert all("branch=main" in path and "created=%3E%3D2026-10-01" in path for path in client.paths)
+    assert {path.split("event=")[-1].split("&")[0] for path in client.paths} == {
+        "workflow_dispatch",
+        "workflow_run",
+    }
+
+
+def test_role_run_history_holds_instead_of_scanning_past_the_page_cap():
+    class FakeClient:
+        def get(self, path):
+            assert "branch=main" in path
+            assert "created=%3E%3D2026-10-01" in path
+            assert "event=workflow_dispatch" in path
+            return {"total_count": transport.MAX_RUN_PAGES * 100 + 1, "workflow_runs": []}
+
+    with pytest.raises(transport.DispatchError, match="GITHUB_INVENTORY_TRUNCATED"):
+        transport.list_role_runs(
+            FakeClient(), 12, "source_review", 41, HEAD, "2026-10-01T12:00:00Z"
+        )
+
+
+def test_static_qa_run_requires_authenticated_exact_policy_target(monkeypatch):
+    workflow = {"id": 13, **transport.WORKFLOWS["qa"]}
+    run = {
+        "id": 987,
+        "run_attempt": 2,
+        "workflow_id": workflow["id"],
+        "name": workflow["name"],
+        "display_title": workflow["name"],
+        "path": workflow["path"],
+        "event": "workflow_dispatch",
+        "head_branch": "main",
+        "repository": {"full_name": REPOSITORY},
+        "head_repository": {"full_name": REPOSITORY},
+        "head_sha": OTHER_HEAD,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-10-02T12:00:00Z",
+    }
+    resolver_calls = []
+
+    class FakeSourceReviewError(Exception):
+        pass
+
+    class FakeSourceReview:
+        SourceReviewError = FakeSourceReviewError
+
+        @staticmethod
+        def resolve_qa_review_policy(**kwargs):
+            resolver_calls.append(kwargs)
+            return {
+                "policy": {
+                    "target": {"pr_number": 41, "head_sha": HEAD},
+                },
+                "run": run,
+            }
+
+    class FakeClient:
+        token = "test-token"
+
+        def get(self, path):
+            if "event=workflow_dispatch" in path:
+                return {"total_count": 1, "workflow_runs": [run]}
+            return {"total_count": 0, "workflow_runs": []}
+
+    monkeypatch.setattr(transport, "_source_review_module", lambda: FakeSourceReview)
+    matches = transport.list_role_runs(
+        FakeClient(), workflow["id"], "qa", 41, HEAD, "2026-10-01T12:00:00Z"
+    )
+
+    assert matches == [run]
+    assert resolver_calls[0]["run_id"] == run["id"]
+    assert resolver_calls[0]["run_attempt"] == run["run_attempt"]
+    assert resolver_calls[0]["expected_pr_number"] == 41
+
+
+def test_static_qa_run_with_authenticated_different_head_holds(monkeypatch):
+    workflow = {"id": 13, **transport.WORKFLOWS["qa"]}
+    run = {
+        "id": 987,
+        "run_attempt": 1,
+        "workflow_id": workflow["id"],
+        "name": workflow["name"],
+        "display_title": workflow["name"],
+        "path": workflow["path"],
+        "event": "workflow_dispatch",
+        "head_branch": "main",
+        "repository": {"full_name": REPOSITORY},
+        "head_repository": {"full_name": REPOSITORY},
+        "head_sha": OTHER_HEAD,
+        "status": "completed",
+        "created_at": "2026-10-02T12:00:00Z",
+    }
+
+    class FakeSourceReviewError(Exception):
+        pass
+
+    class FakeSourceReview:
+        SourceReviewError = FakeSourceReviewError
+
+        @staticmethod
+        def resolve_qa_review_policy(**_):
+            return {
+                "policy": {
+                    "target": {"pr_number": 41, "head_sha": OTHER_HEAD},
+                },
+                "run": run,
+            }
+
+    class FakeClient:
+        token = "test-token"
+
+        def get(self, path):
+            if "event=workflow_dispatch" in path:
+                return {"total_count": 1, "workflow_runs": [run]}
+            return {"total_count": 0, "workflow_runs": []}
+
+    monkeypatch.setattr(transport, "_source_review_module", lambda: FakeSourceReview)
+    with pytest.raises(transport.DispatchError, match="PR_HEAD_MOVED_DURING_RECONCILIATION"):
+        transport.list_role_runs(
+            FakeClient(), workflow["id"], "qa", 41, HEAD, "2026-10-01T12:00:00Z"
+        )
 
 
 @pytest.mark.parametrize(

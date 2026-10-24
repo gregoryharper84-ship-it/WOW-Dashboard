@@ -14,6 +14,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -59,6 +60,12 @@ MAX_RETRIES = 3
 TIMEOUT_SECONDS = 15
 RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 SOURCE_REVIEW_MAX_AGE = timedelta(minutes=30)
+ACTIVE_RUN_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
+ROLE_RUN_EVENTS = {
+    "source_review": ("workflow_dispatch", "workflow_run"),
+    "qa": ("workflow_dispatch", "workflow_run"),
+    "release": ("workflow_dispatch",),
+}
 
 
 class DispatchError(RuntimeError):
@@ -141,6 +148,49 @@ def _paged(client: GitHub, path: str, key: str | None = None, max_pages: int = p
     raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
 
 
+def _paged_workflow_runs(client: GitHub, path: str, max_pages: int = MAX_RUN_PAGES) -> list[dict]:
+    runs = []
+    expected_total = None
+    seen_ids = set()
+    separator = "&" if "?" in path else "?"
+    for page in range(1, max_pages + 1):
+        body = client.get(f"{path}{separator}per_page=100&page={page}")
+        if not isinstance(body, dict):
+            raise DispatchError("GITHUB_INVENTORY_INVALID")
+        rows = body.get("workflow_runs")
+        total = body.get("total_count")
+        if (
+            not isinstance(rows, list)
+            or not isinstance(total, int)
+            or isinstance(total, bool)
+            or total < 0
+        ):
+            raise DispatchError("GITHUB_INVENTORY_INVALID")
+        if expected_total is None:
+            expected_total = total
+            if total > max_pages * 100:
+                raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
+        elif total != expected_total:
+            raise DispatchError("GITHUB_INVENTORY_CHANGED")
+        expected_rows = min(100, expected_total - len(runs))
+        if len(rows) != expected_rows:
+            raise DispatchError("GITHUB_INVENTORY_INCOMPLETE")
+        for run in rows:
+            if (
+                not isinstance(run, dict)
+                or not isinstance(run.get("id"), int)
+                or isinstance(run.get("id"), bool)
+                or run["id"] < 1
+                or run["id"] in seen_ids
+            ):
+                raise DispatchError("GITHUB_INVENTORY_INVALID")
+            seen_ids.add(run["id"])
+        runs.extend(rows)
+        if len(runs) == expected_total:
+            return runs
+    raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
+
+
 def list_workflows(client: GitHub) -> dict[str, dict]:
     result = {}
     for role, expected in WORKFLOWS.items():
@@ -200,39 +250,139 @@ def check_runs(client: GitHub, head_sha: str) -> list[dict]:
     )
 
 
-def list_role_runs(client: GitHub, workflow_id: int, role: str, pr_number: int, head_sha: str) -> list[dict]:
-    rows = _paged(
-        client,
-        f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs?branch=main",
-        "workflow_runs",
-        MAX_RUN_PAGES,
-    )
+def _timestamp(value: object, finding: str) -> datetime:
+    if not isinstance(value, str):
+        raise DispatchError(finding)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise DispatchError(finding) from exc
+    if parsed.tzinfo is None:
+        raise DispatchError(finding)
+    return parsed.astimezone(timezone.utc)
+
+
+def _pr_created_date(value: object) -> tuple[datetime, str]:
+    created = _timestamp(value, "PR_CREATED_AT_INVALID")
+    if created > datetime.now(timezone.utc):
+        raise DispatchError("PR_CREATED_AT_INVALID")
+    return created, created.date().isoformat()
+
+
+def _qa_policy_run_matches_target(
+    client: GitHub,
+    run: dict,
+    pr_number: int,
+    head_sha: str,
+) -> bool:
+    module = _source_review_module()
+    if module is None or not getattr(client, "token", None):
+        raise DispatchError("QA_POLICY_VERIFIER_UNAVAILABLE")
+    try:
+        resolved = module.resolve_qa_review_policy(
+            repository=REPOSITORY,
+            run_id=run["id"],
+            run_attempt=run.get("run_attempt"),
+            token=client.token,
+            expected_pr_number=pr_number,
+        )
+    except module.SourceReviewError as exc:
+        finding = str(exc)
+        if finding in {
+            "QA_POLICY_PR_NUMBER_MISMATCH",
+            "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING",
+            "QA_POLICY_ARTIFACT_EXPIRED",
+            "QA_POLICY_ARTIFACT_STALE_OR_FUTURE",
+            "QA_POLICY_RUN_PROVENANCE_MISMATCH",
+            "QA_POLICY_RUN_ATTEMPT_MISMATCH",
+        }:
+            return False
+        if finding == "QA_POLICY_TARGET_NO_LONGER_CURRENT":
+            current = client.get(f"/repos/{REPOSITORY}/pulls/{pr_number}")
+            if ((current.get("head") or {}).get("sha")) != head_sha:
+                raise DispatchError("PR_HEAD_MOVED_DURING_RECONCILIATION") from exc
+            return False
+        raise DispatchError(f"QA_POLICY_RUN_IDENTITY_INVALID:{finding}") from exc
+    policy_target = (resolved.get("policy") or {}).get("target") or {}
+    if policy_target.get("pr_number") != pr_number:
+        return False
+    if policy_target.get("head_sha") != head_sha:
+        raise DispatchError("PR_HEAD_MOVED_DURING_RECONCILIATION")
+    return True
+
+
+def list_role_runs(
+    client: GitHub,
+    workflow_id: int,
+    role: str,
+    pr_number: int,
+    head_sha: str,
+    pr_created_at: str,
+) -> list[dict]:
+    if role not in WORKFLOWS or role not in ROLE_RUN_EVENTS:
+        raise DispatchError("ROLE_RUN_NOT_ALLOWLISTED")
+    created_at, created_date = _pr_created_date(pr_created_at)
     expected_name = policy.run_name(role, pr_number, head_sha)
     found = []
-    for run in rows:
-        if not isinstance(run, dict):
-            continue
-        run_names = {run.get("name"), run.get("display_title")}
-        if (
-            expected_name in run_names
-            and run.get("path") == WORKFLOWS[role]["path"]
-            and (
-                run.get("event") in {"workflow_dispatch", "workflow_run"}
-                if role == "source_review"
-                else run.get("event") == "workflow_dispatch"
-            )
-            and run.get("head_branch") == "main"
-            and (run.get("head_repository") or {}).get("full_name") == REPOSITORY
-            and SHA_RE.fullmatch(str(run.get("head_sha") or ""))
-        ):
+    seen_ids = set()
+    for event in ROLE_RUN_EVENTS[role]:
+        query = urlencode([
+            ("branch", "main"),
+            ("created", f">={created_date}"),
+            ("event", event),
+        ])
+        path = f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs?{query}"
+        for run in _paged_workflow_runs(client, path):
+            if (
+                run.get("workflow_id") != workflow_id
+                or run.get("path") != WORKFLOWS[role]["path"]
+                or run.get("event") != event
+                or run.get("head_branch") != "main"
+                or (run.get("repository") or {}).get("full_name") != REPOSITORY
+                or (run.get("head_repository") or {}).get("full_name") != REPOSITORY
+                or not SHA_RE.fullmatch(str(run.get("head_sha") or ""))
+            ):
+                raise DispatchError("ROLE_RUN_INVENTORY_INVALID")
+            run_created = _timestamp(run.get("created_at"), "ROLE_RUN_CREATED_AT_INVALID")
+            if run_created < created_at:
+                raise DispatchError("ROLE_RUN_PRECEDES_PULL_REQUEST")
+            raw_names = (run.get("name"), run.get("display_title"))
+            if any(name is not None and not isinstance(name, str) for name in raw_names):
+                raise DispatchError("ROLE_RUN_INVENTORY_INVALID")
+            run_names = set(raw_names)
+            if role == "qa":
+                if run.get("status") != "completed":
+                    continue
+                if not any(
+                    isinstance(name, str)
+                    and (
+                        name == WORKFLOWS["qa"]["name"]
+                        or name.startswith(WORKFLOWS["qa"]["name"] + " event=")
+                    )
+                    for name in run_names
+                ):
+                    continue
+                if not _qa_policy_run_matches_target(client, run, pr_number, head_sha):
+                    continue
+            elif expected_name not in run_names:
+                continue
+            if run["id"] in seen_ids:
+                raise DispatchError("ROLE_RUN_INVENTORY_DUPLICATE")
+            seen_ids.add(run["id"])
             found.append(run)
     return found
 
 
-def matching_role_runs(client: GitHub, workflows: dict[str, dict], pr_number: int, head_sha: str) -> dict[str, dict]:
+def matching_role_runs(
+    client: GitHub,
+    workflows: dict[str, dict],
+    pr_number: int,
+    head_sha: str,
+    pr_created_at: str,
+) -> dict[str, dict]:
     result = {}
     for role, workflow in workflows.items():
-        rows = list_role_runs(client, workflow["id"], role, pr_number, head_sha)
+        rows = list_role_runs(client, workflow["id"], role, pr_number, head_sha, pr_created_at)
         if role == "source_review":
             active = [row for row in rows if row.get("status") != "completed"]
             if len(active) > 1:
@@ -260,16 +410,28 @@ def role_run_statuses(runs: dict[str, dict]) -> dict[str, str]:
 def count_wip(client: GitHub, workflows: dict[str, dict]) -> dict[str, int]:
     active = {role: 0 for role in WORKFLOWS}
     for role, workflow in workflows.items():
-        rows = _paged(
-            client,
-            f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?branch=main",
-            "workflow_runs",
-            MAX_RUN_PAGES,
-        )
-        active[role] += sum(
-            1 for run in rows
-            if isinstance(run, dict) and run.get("status") in {"queued", "in_progress", "waiting", "pending", "requested"}
-        )
+        if (
+            not isinstance(workflow.get("id"), int)
+            or isinstance(workflow.get("id"), bool)
+            or workflow.get("path") != WORKFLOWS[role]["path"]
+        ):
+            raise DispatchError("WIP_WORKFLOW_IDENTITY_INVALID")
+        role_run_ids = set()
+        for status in ACTIVE_RUN_STATUSES:
+            query = urlencode([("branch", "main"), ("status", status)])
+            path = f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?{query}"
+            for run in _paged_workflow_runs(client, path):
+                if (
+                    run.get("workflow_id") != workflow["id"]
+                    or run.get("path") != workflow["path"]
+                    or run.get("status") != status
+                    or run.get("head_branch") != "main"
+                    or (run.get("repository") or {}).get("full_name") != REPOSITORY
+                    or (run.get("head_repository") or {}).get("full_name") != REPOSITORY
+                ):
+                    raise DispatchError("WIP_RUN_INVENTORY_INVALID")
+                role_run_ids.add(run["id"])
+        active[role] = len(role_run_ids)
     return active
 
 
@@ -775,7 +937,9 @@ def reconcile(
             files = pull_files(client, number, pr.get("changed_files"))
             checks = check_runs(client, head_sha)
             reviews = pull_reviews(client, number)
-            role_runs = matching_role_runs(client, workflows, number, head_sha)
+            role_runs = matching_role_runs(
+                client, workflows, number, head_sha, pr.get("created_at")
+            )
             statuses = role_run_statuses(role_runs)
             available_roles = set(workflows)
 
