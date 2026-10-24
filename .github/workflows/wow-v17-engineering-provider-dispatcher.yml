@@ -27,6 +27,7 @@ on:
           - auto
           - openai
           - anthropic
+          - gemini
       reason:
         description: Optional dispatch reason.
         required: false
@@ -85,6 +86,9 @@ jobs:
           MANUAL_REASON: ${{ inputs.reason }}
           MANUAL_TARGET_INCIDENT: ${{ inputs.target_incident }}
           MANUAL_LEASE_GROUP: ${{ inputs.lease_group }}
+          GEMINI_ENGINEERING_ENABLED: ${{ vars.GEMINI_ENGINEERING_ENABLED }}
+          GEMINI_AUTO_ROUTING_ENABLED: ${{ vars.GEMINI_AUTO_ROUTING_ENABLED }}
+          GEMINI_SPEND_CAP_CONFIRMED: ${{ vars.GEMINI_SPEND_CAP_CONFIRMED }}
           SOURCE_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |
           set -euo pipefail
@@ -141,6 +145,37 @@ jobs:
             [ "$conclusion" != "failure" ] && [ "$conclusion" != "cancelled" ]
           }
 
+          gemini_canary_healthy() {
+            [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
+            [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ] &&
+            [ "${GEMINI_AUTO_ROUTING_ENABLED:-}" = "true" ] || return 1
+            # Do not autonomously route Gemini until at least one real manual
+            # canary succeeded; a failed latest run opens a persistent breaker.
+            local recent conclusion
+            if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
+                 --workflow wow-v17-gemini-engineering-worker.yml \
+                 --status completed --limit 1 --json databaseId,conclusion,updatedAt 2>/dev/null); then
+              return 1
+            fi
+            conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
+            [ "$conclusion" = "success" ] || return 1
+            # Cost circuit: no repeated automatic paid work more than once/day.
+            # Manual explicit canaries remain available for recovery and diagnostics.
+            local age_minutes
+            age_minutes=$(python - "$recent" <<'PY'
+          import datetime as dt, json, sys
+          try:
+              runs = json.loads(sys.argv[1])
+              when = dt.datetime.fromisoformat(runs[0]["updatedAt"].replace("Z", "+00:00"))
+              minutes = (dt.datetime.now(dt.timezone.utc) - when).total_seconds() / 60
+              print(int(minutes) if minutes >= 0 else -1)
+          except (ValueError, KeyError, IndexError, TypeError):
+              print(-1)
+          PY
+            ) || return 1
+            [[ "$age_minutes" =~ ^[0-9]+$ ]] && [ "$age_minutes" -ge 1440 ]
+          }
+
           if [ "$EVENT_NAME" = "workflow_run" ] && [ "$source_workflow_id" != "wow-v17-nightly-engineering-scan" ]; then
             if [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
@@ -180,6 +215,17 @@ jobs:
               action=DISPATCH
               provider=openai
               reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+            elif [ "$force" = "gemini" ]; then
+              if [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
+                 [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ]; then
+                action=DISPATCH
+                provider=gemini
+                reason="${MANUAL_REASON:-GEMINI_OPERATOR_CANARY}"
+              else
+                action=SURVIVAL
+                provider=deterministic
+                reason=GEMINI_DISABLED_OR_SPEND_UNCONFIRMED
+              fi
             elif [ "$force" = "anthropic" ]; then
               if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
                 action=DISPATCH
@@ -190,6 +236,10 @@ jobs:
                 provider=deterministic
                 reason=ANTHROPIC_AUTH_MISSING
               fi
+            elif gemini_canary_healthy; then
+              action=DISPATCH
+              provider=gemini
+              reason=GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY
             else
               latest=$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
@@ -311,6 +361,22 @@ jobs:
             -f target_incident="$TARGET_INCIDENT" \
             -f lease_group="$LEASE_GROUP"
 
+      - name: Dispatch opt-in Gemini headless worker
+        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'gemini' && steps.remote_fence.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
+          LEASE_GROUP: ${{ steps.route.outputs.lease_group }}
+          INVOCATION_MODE: ${{ inputs.force_provider == 'gemini' && 'manual' || 'auto' }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-gemini-engineering-worker.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f target_incident="$TARGET_INCIDENT" \
+            -f lease_group="$LEASE_GROUP" \
+            -f invocation_mode="$INVOCATION_MODE"
+
       - name: Deterministic survival checks
         id: survival
         if: steps.route.outputs.action == 'SURVIVAL' || steps.remote_fence.outcome == 'failure'
@@ -370,6 +436,7 @@ jobs:
             echo "- lease_group: ${{ steps.route.outputs.lease_group || 'GLOBAL' }}"
             echo "- OpenAI primary: wow-v17-chatgpt-engineering-worker"
             echo "- Anthropic fallback: wow-v17-claude-engineering-worker"
+            echo "- Gemini opt-in: wow-v17-gemini-engineering-worker (canary+budget gated)"
             echo "- deterministic survival: ${{ steps.route.outputs.action == 'SURVIVAL' }}"
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
