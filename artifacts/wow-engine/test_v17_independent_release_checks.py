@@ -1077,6 +1077,128 @@ def test_invalid_dispatch_target_fails_without_publishing(fake_gh):
     assert "::error::QA_TARGETS_UNRESOLVED" in proc.stdout
 
 
+def _live_dispatch_pr(sha=HEAD, repo=REPO, number=7):
+    return {
+        "number": number,
+        "head": {"sha": sha, "ref": "fix/issue-1830", "repo": {"full_name": repo}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+
+
+def _qa_target_output_enables_publish(pr_number):
+    """Publish uses always(), so a failed resolver still reaches that if.
+
+    An empty pr_number leaves the condition false, so no App token is minted
+    and no check run is posted.
+    """
+    workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
+    assert steps["Mint checks-only App token"]["if"] == "steps.target.outputs.pr_number != ''"
+    assert steps["Publish exact-head check"]["if"] == "always() && steps.target.outputs.pr_number != ''"
+    return pr_number != ""
+
+
+def _run_qa_target(fake_gh, *, input_pr="7", input_head="", wr_prs="null", live=None):
+    pr = live if live is not None else _live_dispatch_pr()
+    routes = {f"repos/{REPO}/pulls/7": [200, pr]}
+    (fake_gh / "routes.json").write_text(json.dumps(routes))
+    out = fake_gh / "resolved.txt"
+    env = dict(
+        os.environ,
+        PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+        FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+        FAKE_GH_LOG=str(fake_gh / "gh.log"),
+        GITHUB_REPOSITORY=REPO,
+        GITHUB_OUTPUT=str(out),
+        GH_TOKEN="read-only",
+        EVENT="workflow_dispatch",
+        INPUT_PR=input_pr,
+        INPUT_HEAD_SHA=input_head,
+        WR_PRS=wr_prs,
+    )
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    return proc, out.read_text() if out.exists() else ""
+
+
+def test_dispatch_matching_head_resolves_that_pr_and_posts_no_check(fake_gh):
+    other_pr = json.dumps([{"number": 8, "head": {"sha": OLD}, "base": {"ref": "main"}}])
+    proc, outputs = _run_qa_target(fake_gh, input_head=HEAD, wr_prs=other_pr)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert outputs.splitlines() == [
+        "pr_number=7",
+        f"head_sha={HEAD}",
+        "head_ref=fix/issue-1830",
+    ]
+    assert _qa_target_output_enables_publish("7") is True
+    assert not (fake_gh / "gh.log").exists()
+
+
+@pytest.mark.parametrize("head, code", [
+    ("not-a-sha", "QA_INPUT_HEAD_SHA_INVALID"),
+    ("A" * 40, "QA_INPUT_HEAD_SHA_INVALID"),
+    (OLD, "QA_INPUT_HEAD_SHA_STALE"),
+    ("c" * 40, "QA_INPUT_HEAD_SHA_STALE"),
+])
+def test_dispatch_stale_or_malformed_head_publishes_no_qa_check(fake_gh, head, code):
+    proc, outputs = _run_qa_target(fake_gh, input_head=head)
+    assert proc.returncode != 0
+    assert f"::error::{code}" in proc.stdout
+    assert "pr_number=" not in outputs
+    assert _qa_target_output_enables_publish("") is False
+    assert not (fake_gh / "gh.log").exists()
+
+
+def test_dispatch_foreign_repository_head_publishes_no_qa_check(fake_gh):
+    proc, outputs = _run_qa_target(
+        fake_gh, input_head=HEAD, live=_live_dispatch_pr(repo="fork/WOW-Dashboard"),
+    )
+    assert proc.returncode != 0
+    assert "::error::QA_INPUT_HEAD_SHA_STALE" in proc.stdout
+    assert "pr_number=" not in outputs
+    assert not (fake_gh / "gh.log").exists()
+
+
+def test_release_dispatch_matching_head_writes_one_decision(fake_gh):
+    qa_run = {"id": 900, "name": m.QA_CHECK, "head_sha": HEAD, "status": "completed",
+              "conclusion": "success", "app": {"id": int(QA_APP)},
+              "completed_at": "2026-10-09T03:30:00Z"}
+    proc, runner, _ = _run_decide(
+        fake_gh, REL_WF, _routes_for_pr(_evidence_runs([qa_run])),
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "INPUT_HEAD_SHA": HEAD, "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in (fake_gh / "out.txt").read_text()
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "success", decision.get("findings")
+    assert decision["can_execute"] is False
+    assert _release_count_enables_token_and_publish("1") is True
+
+
+@pytest.mark.parametrize("head, code", [
+    ("not-a-sha", "RELEASE_INPUT_HEAD_SHA_INVALID"),
+    ("A" * 40, "RELEASE_INPUT_HEAD_SHA_INVALID"),
+    (OLD, "RELEASE_INPUT_HEAD_SHA_STALE"),
+    ("c" * 40, "RELEASE_INPUT_HEAD_SHA_STALE"),
+])
+def test_release_dispatch_stale_or_malformed_head_publishes_nothing(fake_gh, head, code):
+    proc, runner, _ = _run_decide(
+        fake_gh, REL_WF, _routes_for_pr(_evidence_runs()),
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "INPUT_HEAD_SHA": head, "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode != 0
+    assert f"::error::{code}" in proc.stdout
+    assert not (runner / "decisions" / "decision-7.json").exists()
+    written = (fake_gh / "out.txt").read_text() if (fake_gh / "out.txt").exists() else ""
+    assert "count=1" not in written
+    assert _release_count_enables_token_and_publish("") is False
+    assert not (fake_gh / "gh.log").exists()
+
+
 def test_empty_workflow_run_pr_array_still_fails_closed_inside_the_resolver(fake_gh):
     proc = subprocess.run(
         ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
