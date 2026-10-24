@@ -1,10 +1,33 @@
 import importlib.util
 import sys
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "artifacts/wow-engine/v17/engineering_provider_failover.py"
+
+
+def test_resident_admission_retains_persistent_breaker_but_does_not_infer_transient_recovery():
+    module = _load_module()
+    now = datetime.now(timezone.utc)
+    route = {
+        "action": "SURVIVAL", "provider": "deterministic",
+        "reason": "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED:SECONDARY_UNAVAILABLE_OR_FAILED",
+        "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    old = (now - timedelta(days=30)).isoformat()
+    assert module.resident_provider_admission(route, updated_at=old, now=now) == "PROVIDER_QUOTA_BLOCKED"
+    route["reason"] = "CIRCUIT_BREAKER:OPENAI_API_RATE_LIMITED:SECONDARY_UNAVAILABLE_OR_FAILED"
+    assert module.resident_provider_admission(route, updated_at=now.isoformat(), now=now) == "PROVIDER_THROTTLED"
+    assert module.resident_provider_admission(route, updated_at=old, now=now) == "PROVIDER_RECOVERY_UNVERIFIED"
+    route.update(action="DISPATCH", provider="openai")
+    assert module.resident_provider_admission(route, updated_at=old, now=now) == "PROVIDER_RECOVERY_UNVERIFIED"
+    assert module.resident_provider_admission(route, updated_at=now.isoformat(), now=now) == "PROVIDER_ADMITTED"
+    for changed in ({**route, "can_execute": True}, {**route, "action": "invalid"},
+                    {**route, "reason": None}, {**route, "terminal_authority": "OTHER"}):
+        assert module.resident_provider_admission(changed, updated_at=old, now=now) == "PROVIDER_STATUS_UNVERIFIED"
+    assert module.resident_provider_admission(route, updated_at="invalid", now=now) == "PROVIDER_STATUS_UNVERIFIED"
 
 
 def _load_module():
