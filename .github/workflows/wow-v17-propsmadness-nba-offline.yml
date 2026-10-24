@@ -8,11 +8,12 @@ on:
       - 'artifacts/wow-engine/v17/propsmadness_nba_offline_adapter.py'
       - 'artifacts/wow-engine/tests/test_propsmadness_nba_offline_adapter.py'
       - 'artifacts/wow-engine/v17/propsmadness_nba_historical_gap_audit.py'
-      - 'artifacts/wow-engine/tests/test_propsmadness_nba_historical_gap_audit.py tests/test_propsmadness_nba_public_explore.py tests/test_propsmadness_multisport_public_explore.py'
+      - 'artifacts/wow-engine/tests/test_propsmadness_nba_historical_gap_audit.py tests/test_propsmadness_nba_public_explore.py tests/test_propsmadness_multisport_public_explore.py tests/test_propsmadness_manual_workflow_contract.py'
       - 'artifacts/wow-engine/v17/propsmadness_nba_public_explore.py'
       - 'artifacts/wow-engine/tests/test_propsmadness_nba_public_explore.py'
       - 'artifacts/wow-engine/v17/propsmadness_multisport_public_explore.py'
       - 'artifacts/wow-engine/tests/test_propsmadness_multisport_public_explore.py'
+      - 'artifacts/wow-engine/tests/test_propsmadness_manual_workflow_contract.py'
       - '.github/workflows/wow-propsmadness-public-research-once.yml'
       - 'artifacts/wow-engine/PROPSMADNESS_NBA_FEASIBILITY_AND_IMPLEMENTATION_2018.md'
 
