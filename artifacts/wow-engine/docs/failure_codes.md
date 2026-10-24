@@ -355,5 +355,13 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 | `CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS` | Cursor API preflight | Provider rejects request, target repository or configuration |
 | `CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED`, `CURSOR_API_RESPONSE_INVALID` | Remote evidence | Network, timeout, unparsable or non-object response |
 | `CURSOR_DISPATCH_RECEIPT_UNVERIFIED` | Cursor enqueue confirmation | Create did not return matching agent ID and run ID |
+| `CURSOR_REMOTE_LEDGER_UNVERIFIED`, `CURSOR_REMOTE_LEDGER_TRUNCATED` | Existing #1138 ledger inventory | Missing, malformed, or nonexhaustive remote writer history; never admit a new Cursor agent |
+| `CURSOR_REMOTE_RESERVATION_INVALID` | Shared Copilot/Cursor writer guard | Invalid immutable Cursor reservation marker, identity, or safety fields; deny all writer admissions |
+| `CURSOR_RESERVATION_REPLAY_REJECTED` | Cursor durable reservation admission | Exact PR/SHA has an existing Cursor reservation, even if previously released; never relaunch it |
+| `CURSOR_RESERVATION_WRITE_UNVERIFIED` | Cursor pre-launch ledger write | GitHub did not confirm a durable reservation ID; no Cursor API POST |
+| `CURSOR_ACTION_RUN_ID_INVALID` | GitHub Actions reservation attribution | Caller run ID cannot be recorded safely |
+| `REMOTE_WRITER_RECONCILIATION_REQUIRED` | Shared provider/worker fence | An unresolved Copilot or Cursor hold exists in #1138; deny concurrent admission |
+
+**Durable remote-writer reconciliation:** Cursor and Copilot now use the same existing #1138 heartbeat ledger and `wow-v17-engineering-implementation-single-writer` Actions admission lock. The Cursor hold is written **before** its irreversible provider POST; a network or provider error may leave a valid hold, never an automatic retry. The accountable owner may release `hold` only after authenticated remote termination, exact-PR/head reconciliation, and independent review evidence; retain the immutable reservation marker, incident/PR identity, and history rather than deleting comments or permitting same-head replay. Workers and the resident supervisor must treat active or unreadable Cursor holds as an admission stop. This is an admission fence, not a spending cap or independent release approval.
 
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
