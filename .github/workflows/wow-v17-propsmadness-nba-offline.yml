@@ -1,4 +1,4 @@
-name: WOW PropsMadness NBA Offline Contract (No Vendor Access)
+name: WOW PropsMadness Four-Sport Offline Contract (No Vendor Access)
 
 on:
   pull_request:
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Exercise purely synthetic NBA source and leakage guards
+      - name: Validate synthetic four-league source, identity and leakage controls
         working-directory: artifacts/wow-engine
         shell: bash
         run: |
