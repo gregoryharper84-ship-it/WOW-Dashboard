@@ -73,3 +73,18 @@ def test_unknown_markets_fail_before_http(monkeypatch):
     with pytest.raises(PublicPageHold, match="PM_PUBLIC_MARKET_NOT_ALLOWLISTED"):
         probe.probe_public_rendered_once("MLB", "nonsense",
                                          personal_noncommercial_use_confirmed=True)
+
+
+def test_browser_asset_policy_blocks_data_apis_and_third_party_hosts():
+    check = probe._public_browser_asset_allowed
+    assert check("https://propsmadness.com/nfl/props/passing-yards", "document")
+    assert check("https://propsmadness.com/_next/static/chunks/app.js", "script")
+    assert check("https://propsmadness.com/assets/site.css", "stylesheet")
+    assert not check("https://propsmadness.com/api/odds", "xhr")
+    assert not check("https://propsmadness.com/api/odds", "script")
+    assert not check("https://propsmadness.com/graphql", "fetch")
+    assert not check("https://propsmadness.com/private/export", "document")
+    assert not check("https://propsmadness.com/nba/props/points", "websocket")
+    assert not check("https://thirdparty.example/track.js", "script")
+    assert not check("http://propsmadness.com/nfl/props/passing-yards", "document")
+    assert not check("https://propsmadness.com/nba/props/points", "fetch")
