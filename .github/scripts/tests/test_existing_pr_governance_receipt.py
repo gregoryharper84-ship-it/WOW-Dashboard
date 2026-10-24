@@ -1,18 +1,22 @@
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import textwrap
 
 import pytest
+import yaml
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verify_existing_pr_governance_receipt.py"
 SOURCE_REVIEW_SCRIPT = Path(__file__).resolve().parents[1] / "independent_source_review_receipt.py"
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "wow-v17-existing-pr-governance-review.yml"
 REPO_ROOT = Path(__file__).resolve().parents[3]
+QA_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-independent-qa-check.yml"
 TRUSTED_GATE = REPO_ROOT / ".github/workflows/wow-v17-trusted-governance-gate.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-release-production-verification-agent.yml"
 MORNING_GREEN_WORKFLOW = REPO_ROOT / ".github/workflows/wow-v17-morning-green-continuation.yml"
@@ -42,6 +46,131 @@ REVIEWER = {"id": 9001, "login": "independent-reviewer"}
 ALLOWLIST = [REVIEWER]
 
 
+def _workflow_run_sources(path):
+    workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert isinstance(workflow, dict) and workflow.get("name"), f"Invalid workflow YAML: {path}"
+    triggers = workflow.get("on", {})
+    run_trigger = triggers.get("workflow_run", {})
+    return workflow["name"], set(run_trigger.get("workflows", [])), workflow
+
+
+def _workflow_run_graph():
+    workflows = (QA_WORKFLOW, WORKFLOW, TRUSTED_GATE)
+    parsed = [_workflow_run_sources(path) for path in workflows]
+    sources_by_name = {name: sources for name, sources, _ in parsed}
+    definitions = {name: workflow for name, _, workflow in parsed}
+    known_workflows = set(sources_by_name)
+    graph = {name: set() for name in known_workflows}
+    for consumer, sources in sources_by_name.items():
+        for producer in sources & known_workflows:
+            graph[producer].add(consumer)
+    return sources_by_name, graph, definitions
+
+
+def _has_workflow_cycle(graph):
+    visiting = set()
+    visited = set()
+
+    def visit(workflow):
+        if workflow in visiting:
+            return True
+        if workflow in visited:
+            return False
+        visiting.add(workflow)
+        if any(visit(downstream) for downstream in graph[workflow]):
+            return True
+        visiting.remove(workflow)
+        visited.add(workflow)
+        return False
+
+    return any(visit(workflow) for workflow in graph)
+
+
+def test_protected_receipt_test_step_installs_its_yaml_parser_dependency():
+    _, _, workflow = _workflow_run_sources(WORKFLOW)
+    steps = workflow["jobs"]["certify-existing-pr"]["steps"]
+    test_step = next(step for step in steps if step.get("name") == "Test protected receipt verifier")
+
+    assert (
+        "python -m pip install --disable-pip-version-check pytest==9.1.1 PyYAML==6.0.3"
+        in test_step["run"]
+    )
+
+
+def test_protected_governance_workflow_run_graph_is_acyclic_and_detects_the_old_cycle():
+    sources_by_name, graph, definitions = _workflow_run_graph()
+    qa_name = "wow-v17-independent-qa-check"
+    certifier_name = "wow-v17-existing-pr-governance-review"
+    trusted_gate_name = "wow-v17-trusted-governance-gate"
+
+    assert trusted_gate_name not in sources_by_name[qa_name]
+    assert sources_by_name[certifier_name] == {qa_name}
+    assert sources_by_name[trusted_gate_name] == {certifier_name}
+    assert not _has_workflow_cycle(graph)
+
+    qa_workflow = definitions[qa_name]
+    dispatch = qa_workflow["on"]["workflow_dispatch"]["inputs"]
+    assert dispatch["pr_number"]["required"] == "true"
+    assert dispatch["head_sha"]["required"] == "false"
+    assert "github.ref == 'refs/heads/main'" in qa_workflow["jobs"]["qa"]["if"]
+    assert qa_workflow["on"]["workflow_run"]["types"] == ["completed"]
+
+    old_cycle = {workflow: set(downstream) for workflow, downstream in graph.items()}
+    old_cycle[trusted_gate_name].add(qa_name)
+    assert _has_workflow_cycle(old_cycle)
+
+
+def test_workflow_run_events_include_skipped_job_completion_without_reentering_qa():
+    sources_by_name, graph, _ = _workflow_run_graph()
+    qa_name = "wow-v17-independent-qa-check"
+    certifier_name = "wow-v17-existing-pr-governance-review"
+    trusted_gate_name = "wow-v17-trusted-governance-gate"
+
+    regular_suite_consumers = {
+        consumer for consumer, sources in sources_by_name.items()
+        if "wow-verify" in sources
+    }
+    assert regular_suite_consumers == {qa_name}
+
+    def completed_workflow_consumers(producer, *, job_conclusion="success"):
+        assert job_conclusion in {"success", "skipped"}
+        return {
+            consumer for consumer, sources in sources_by_name.items()
+            if producer in sources
+        }
+
+    assert completed_workflow_consumers("wow-verify") == {qa_name}
+    assert completed_workflow_consumers(qa_name, job_conclusion="skipped") == {certifier_name}
+    assert completed_workflow_consumers(certifier_name) == {trusted_gate_name}
+    assert completed_workflow_consumers(trusted_gate_name) == set()
+
+    event_queue = [("wow-verify", "success")] * 31
+    dispatched = Counter()
+    while event_queue:
+        completed, job_conclusion = event_queue.pop()
+        for consumer in completed_workflow_consumers(
+            completed,
+            job_conclusion="skipped" if completed == qa_name else job_conclusion,
+        ):
+            dispatched[consumer] += 1
+            event_queue.append((consumer, "skipped" if consumer == qa_name else "success"))
+
+    assert dispatched == Counter({
+        qa_name: 31,
+        certifier_name: 31,
+        trusted_gate_name: 31,
+    })
+    assert not _has_workflow_cycle(graph)
+
+
+def test_malformed_qa_workflow_run_event_identity_holds(qa_policy_identity_step):
+    result, _, outputs = qa_policy_identity_step(source_prs="{")
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_QA_POLICY_IDENTITY_HOLD:" in result.stderr
+    assert outputs == ""
+
+
 def test_certifier_workflow_consumes_the_protected_qa_review_without_write_permissions():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -67,6 +196,12 @@ def test_certifier_consumes_only_authenticated_qa_review_run_artifacts():
 
     assert "workflow_run:" in workflow
     assert "workflows: [wow-v17-independent-qa-check]" in workflow
+    assert "Resolve exact QA policy identity" in workflow
+    assert "resolve_qa_review_policy(" in workflow
+    assert "SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}" in workflow
+    assert "SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}" in workflow
+    assert "QA_POLICY_EVENT_PR_IDENTITY_MISMATCH" in workflow
+    assert "POLICY_HEAD_SHA" in workflow
     assert "SOURCE_REVIEW_WORKFLOW_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" in workflow
     assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in workflow
     assert "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" in workflow
@@ -75,6 +210,165 @@ def test_certifier_consumes_only_authenticated_qa_review_run_artifacts():
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
     assert ".event == \"workflow_dispatch\" or .event == \"workflow_run\"" in workflow
     assert "ref: main" in workflow
+
+
+def test_zero_credit_qa_identity_does_not_substitute_for_substantive_review():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
+    assert "POLICY_PR" in workflow
+    assert "--source-review-json" in workflow
+    assert "steps.qa_policy.outputs.pr_number" in workflow
+    assert "steps.qa_policy.outputs.head_sha" in workflow
+
+
+def test_zero_credit_policy_artifact_alone_holds_at_the_substantive_review_gate(tmp_path):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    block = workflow.split('          common=(\n', 1)[1].split(
+        "\n      - name: Upload exact-head review-evidence receipt", 1
+    )[0]
+    script = (
+        "set -euo pipefail\n"
+        "evidence=evidence.json\nreceipt=receipt.json\n"
+        "GITHUB_REPOSITORY=gregoryharper84-ship-it/WOW-Dashboard\n"
+        "HEAD_SHA=a\nHEAD_REF=fix\nGITHUB_RUN_ID=1\nGITHUB_RUN_ATTEMPT=1\n"
+        "PR_NUMBER=1822\nINCIDENT=1806\n"
+        "common=(\n" + textwrap.dedent(block)
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=tmp_path,
+        env=os.environ | {
+            "classification": "ORDINARY_ENGINEERING",
+            "TRUSTED_REVIEWERS_JSON": "",
+            "SOURCE_REVIEW_ARTIFACT_ID": "",
+            "RUNNER_TEMP": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in result.stderr
+
+
+def test_manual_certifier_dispatch_preserves_pr_number_and_can_pin_exact_head():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "pr_number:" in workflow
+    assert "head_sha:" in workflow
+    assert "required: false" in workflow
+    assert "INPUT_HEAD_SHA: ${{ inputs.head_sha || '' }}" in workflow
+    assert "EXISTING_PR_INPUT_HEAD_SHA_INVALID" in workflow
+    assert "EXISTING_PR_INPUT_HEAD_SHA_STALE" in workflow
+
+
+@pytest.fixture
+def qa_policy_identity_step(tmp_path):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    step = workflow.split("      - name: Resolve exact QA policy identity\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    scripts = tmp_path / ".github" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "independent_source_review_receipt.py").write_text(
+        """
+import json
+import os
+
+class SourceReviewError(Exception):
+    pass
+
+def resolve_qa_review_policy(**kwargs):
+    with open(os.environ["CALL_CAPTURE"], "w", encoding="utf-8") as output:
+        json.dump(kwargs, output)
+    error = os.environ.get("FAKE_POLICY_ERROR")
+    if error:
+        raise SourceReviewError(error)
+    return {"policy": {"target": {
+        "pr_number": int(os.environ["FAKE_POLICY_PR"]),
+        "head_sha": os.environ["FAKE_POLICY_SHA"],
+        "head_ref": os.environ["FAKE_POLICY_REF"],
+    }}}
+""",
+        encoding="utf-8",
+    )
+
+    def run(*, source_prs="[]", policy_pr="1822", policy_sha=HEAD, error=""):
+        output = tmp_path / "outputs"
+        capture = tmp_path / "capture.json"
+        env = os.environ | {
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_OUTPUT": str(output),
+            "SOURCE_RUN_ID": "12345",
+            "SOURCE_ATTEMPT": "3",
+            "SOURCE_PRS": source_prs,
+            "GH_TOKEN": "unit-test",
+            "CALL_CAPTURE": str(capture),
+            "FAKE_POLICY_PR": policy_pr,
+            "FAKE_POLICY_SHA": policy_sha,
+            "FAKE_POLICY_REF": "fix/issue-1806",
+            "FAKE_POLICY_ERROR": error,
+        }
+        result = subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", script],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        captured = json.loads(capture.read_text(encoding="utf-8")) if capture.exists() else None
+        output_text = output.read_text(encoding="utf-8") if output.exists() else ""
+        return result, captured, output_text
+
+    return run
+
+
+def test_qa_policy_identity_resolves_workflow_run_without_event_pr_metadata(qa_policy_identity_step):
+    result, captured, outputs = qa_policy_identity_step()
+
+    assert result.returncode == 0, result.stderr
+    assert captured == {
+        "repository": REPOSITORY,
+        "run_id": 12345,
+        "run_attempt": 3,
+        "token": "unit-test",
+        "expected_pr_number": None,
+    }
+    assert outputs == f"pr_number=1822\nhead_sha={HEAD}\nhead_ref=fix/issue-1806\n"
+
+
+def test_qa_policy_identity_binds_populated_event_pr_metadata(qa_policy_identity_step):
+    source_prs = json.dumps([{
+        "number": 1822,
+        "head": {"sha": HEAD},
+        "base": {"ref": "main"},
+    }])
+    result, captured, outputs = qa_policy_identity_step(source_prs=source_prs)
+
+    assert result.returncode == 0, result.stderr
+    assert captured["expected_pr_number"] == 1822
+    assert outputs.startswith("pr_number=1822\n")
+
+
+def test_qa_policy_identity_holds_on_event_sha_mismatch(qa_policy_identity_step):
+    source_prs = json.dumps([{
+        "number": 1822,
+        "head": {"sha": "b" * 40},
+        "base": {"ref": "main"},
+    }])
+    result, _, outputs = qa_policy_identity_step(source_prs=source_prs)
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_QA_POLICY_IDENTITY_HOLD:QA_POLICY_EVENT_PR_IDENTITY_MISMATCH" in result.stderr
+    assert outputs == ""
+
+
+def test_qa_policy_identity_holds_when_matching_producer_artifact_is_missing(qa_policy_identity_step):
+    result, _, outputs = qa_policy_identity_step(error="QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING")
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_QA_POLICY_IDENTITY_HOLD:QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING" in result.stderr
+    assert outputs == ""
 
 
 def test_source_review_artifact_name_regex_captures_pr_and_head_under_bash_nounset():
@@ -158,7 +452,14 @@ gh() {
             "GITHUB_OUTPUT": str(tmp_path / "outputs"),
             "EVENT_PR": "1822",
             "INPUT_PR": "",
+            "INPUT_HEAD_SHA": "",
             "INPUT_INCIDENT": "",
+            "SOURCE_PR": "",
+            "SOURCE_HEAD_SHA": "",
+            "SOURCE_HEAD_REF": "",
+            "POLICY_PR": "",
+            "POLICY_HEAD_SHA": "",
+            "POLICY_HEAD_REF": "",
             "TEST_PR_JSON": json.dumps(pr),
         } | overrides
         return subprocess.run(
@@ -242,6 +543,58 @@ def test_workflow_rejects_invalid_pr_number(run_identity_step):
 
     assert result.returncode == 1
     assert "EXISTING_PR_NUMBER_INVALID" in result.stderr
+
+
+def test_workflow_run_uses_authenticated_qa_policy_when_event_has_no_prs(run_identity_step):
+    pr = evidence()["pr"]
+    pr["body"] = "Closes #1806"
+    result = run_identity_step(
+        pr,
+        EVENT_PR="",
+        POLICY_PR="1822",
+        POLICY_HEAD_SHA=HEAD,
+        POLICY_HEAD_REF="fix/issue-1806",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_workflow_run_holds_if_event_and_qa_policy_targets_disagree(run_identity_step):
+    pr = evidence()["pr"]
+    pr["body"] = "Closes #1806"
+    result = run_identity_step(
+        pr,
+        EVENT_PR="1822",
+        POLICY_PR="1823",
+        POLICY_HEAD_SHA=HEAD,
+        POLICY_HEAD_REF="fix/issue-1806",
+    )
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_QA_POLICY_TARGET_MISMATCH" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("requested_head", "expected_error"),
+    [(HEAD, None), ("b" * 40, "EXISTING_PR_INPUT_HEAD_SHA_STALE"), ("invalid", "EXISTING_PR_INPUT_HEAD_SHA_INVALID")],
+)
+def test_manual_dispatch_exact_head_is_optional_but_must_match_when_supplied(
+    run_identity_step, requested_head, expected_error
+):
+    pr = evidence()["pr"]
+    pr["body"] = "Closes #1806"
+    result = run_identity_step(
+        pr,
+        EVENT_PR="",
+        INPUT_PR="1822",
+        INPUT_HEAD_SHA=requested_head,
+    )
+
+    if expected_error is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert expected_error in result.stderr
 
 
 def evidence(*, author=None, review_state="APPROVED", review_sha=HEAD):

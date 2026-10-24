@@ -56,7 +56,7 @@ PRODUCER_RUN = {
 }
 CONSUMER_RUN = {
     **PRODUCER_RUN,
-    "name": f"{review.WORKFLOW_NAME} event=workflow_dispatch pr=1822",
+    "name": review.WORKFLOW_NAME,
     "workflow_id": review.WORKFLOW_ID,
     "repository": {"full_name": review.CANONICAL_REPOSITORY},
     "head_repository": {"full_name": review.CANONICAL_REPOSITORY},
@@ -678,7 +678,10 @@ def test_qa_policy_cli_writes_bounded_exact_target_receipt_and_checksum(tmp_path
     ("workflow_id", 1, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("workflow_id", None, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("workflow_id", True, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("name", f"{review.WORKFLOW_NAME} event=workflow_run pr=AUTO", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("name", "foreign-workflow", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("path", ".github/workflows/other.yml", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
+    ("id", 999, "QA_POLICY_RUN_ID_MISMATCH"),
     ("event", "pull_request_target", "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("head_sha", "c" * 40, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
     ("repository", {"full_name": "fork/WOW-Dashboard"}, "QA_POLICY_RUN_PROVENANCE_MISMATCH"),
@@ -703,18 +706,14 @@ def test_qa_policy_rejects_foreign_failed_or_replayed_producer_run(field, value,
 
 
 @pytest.mark.parametrize(
-    ("event", "display_name"),
-    [
-        ("workflow_dispatch", f"{review.WORKFLOW_NAME} event=workflow_dispatch pr=1963"),
-        ("workflow_run", f"{review.WORKFLOW_NAME} event=workflow_run pr=AUTO"),
-    ],
+    "event", ["workflow_dispatch", "workflow_run"],
 )
-def test_qa_policy_accepts_dynamic_run_name_for_trusted_workflow(event, display_name):
+def test_qa_policy_accepts_static_run_name_for_trusted_workflow(event):
     routes, archive = qa_policy_routes(
         qa_policy(now=datetime.now(timezone.utc) - timedelta(minutes=1), event=event)
     )
     run = routes[f"/actions/runs/{PRODUCER_RUN['id']}"]
-    run["name"] = display_name
+    run["name"] = review.WORKFLOW_NAME
     run["event"] = event
     resolved = review.resolve_qa_review_policy(
         repository=review.CANONICAL_REPOSITORY,
@@ -726,7 +725,7 @@ def test_qa_policy_accepts_dynamic_run_name_for_trusted_workflow(event, display_
         get_json=routes.__getitem__,
         download_artifact=lambda artifact_id: archive,
     )
-    assert resolved["run"]["name"] == display_name
+    assert resolved["run"]["name"] == review.WORKFLOW_NAME
     assert resolved["policy"]["source"]["head_sha"] == MAIN
 
 
@@ -840,10 +839,10 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     review_step = next(step for step in steps if step.get("name") == "Run isolated read-only adversarial review")
     publisher_step = next(step for step in steps if step.get("name") == "Mint checks-only App token")
 
+    assert parsed["run-name"] == review.WORKFLOW_NAME
     assert "github.ref == 'refs/heads/main'" in workflow
     assert parsed["on"]["workflow_run"]["workflows"] == [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
-        "wow-v17-trusted-governance-gate",
     ]
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow

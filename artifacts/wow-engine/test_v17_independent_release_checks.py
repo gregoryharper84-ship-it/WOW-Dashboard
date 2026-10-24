@@ -357,6 +357,8 @@ def test_non_owner_approval_does_not_count_for_trust_roots():
 @pytest.mark.parametrize("path", [
     "artifacts/wow-engine/v17/independent_release_checks.py",   # QA cannot be weakened by an ordinary PR
     "artifacts/wow-engine/v17/agent_identity_policy.py",
+    "artifacts/wow-engine/v17/governance_dispatcher.py",
+    "artifacts/wow-engine/v17/governance_dispatcher_github.py",
     "artifacts/wow-engine/v17/engineering_provider_failover.py",
     "artifacts/wow-engine/v17/persistent_worker_safety.py",      # loaded via inline `from v17.` import
     ".agents/skills/wow-engineering-independent-review-agent/SKILL.md",
@@ -611,7 +613,7 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
 @pytest.mark.parametrize("wf, upstream", [
     (QA_WF, [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
-        "wow-v17-change-impact-gate", "wow-v17-trusted-governance-gate",
+        "wow-v17-change-impact-gate",
     ]),
     (REL_WF, ["wow-v17-independent-qa-check"]),
 ])
@@ -624,7 +626,9 @@ def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
     assert triggers["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "true"
     if wf == QA_WF:
         workflow = yaml.load(wf.read_text(), Loader=yaml.BaseLoader)
-        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in workflow["jobs"]["qa"]["if"]
+        assert "github.ref == 'refs/heads/main'" in workflow["jobs"]["qa"]["if"]
+        assert "vars.WOW_QA_APP_ID != ''" in workflow["jobs"]["qa"]["if"]
+        assert "workflow_run.name" not in workflow["jobs"]["qa"]["if"]
     if wf == REL_WF:
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_id"]["required"] == "true"
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_attempt"]["required"] == "true"
@@ -902,6 +906,79 @@ def test_qa_workflow_resolves_minimal_workflow_run_repositories_against_live_pr(
     )
     assert proc.returncode != 0
     assert "TARGET_PR_IDENTITY_MISMATCH:7" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "wf, input_sha, invalid_code",
+    [
+        (QA_WF, OLD, "QA_INPUT_HEAD_SHA_STALE"),
+        (QA_WF, "not-a-sha", "QA_INPUT_HEAD_SHA_INVALID"),
+        (REL_WF, OLD, "RELEASE_INPUT_HEAD_SHA_STALE"),
+        (REL_WF, "not-a-sha", "RELEASE_INPUT_HEAD_SHA_INVALID"),
+    ],
+)
+def test_manual_dispatch_refuses_invalid_or_stale_exact_head(fake_gh, wf, input_sha, invalid_code):
+    if wf == QA_WF:
+        # The QA SHA guard is in the Resolve target step, BEFORE Decide.
+        # A failed target resolution must never proceed to any decision or publish.
+        (fake_gh / "routes.json").write_text(json.dumps(_routes_for_pr(_evidence_runs())))
+        runner = fake_gh / "runner"
+        runner.mkdir(exist_ok=True)
+        env = dict(
+            os.environ,
+            PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+            FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+            FAKE_GH_LOG=str(fake_gh / "gh.log"),
+            GITHUB_REPOSITORY=REPO,
+            GITHUB_OUTPUT=str(fake_gh / "qa-target.txt"),
+            GH_TOKEN="read-only",
+            EVENT="workflow_dispatch",
+            INPUT_PR="7",
+            INPUT_HEAD_SHA=input_sha,
+            WR_PRS="null",
+        )
+        proc = subprocess.run(
+            ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+            cwd=ROOT, env=env, capture_output=True, text=True,
+        )
+    else:
+        proc, runner, _ = _run_decide(
+            fake_gh,
+            wf,
+            _routes_for_pr(_evidence_runs()),
+            {
+                "EVENT": "workflow_dispatch",
+                "INPUT_PR": "7",
+                "INPUT_HEAD_SHA": input_sha,
+                "WR_PRS": "null",
+                "QA_APP_ID": QA_APP,
+                "RELEASE_APP_ID": REL_APP,
+            },
+        )
+
+    assert proc.returncode != 0
+    assert f"::error::{invalid_code}" in proc.stdout
+    assert not (runner / "decisions" / "decision-7.json").exists()
+
+
+@pytest.mark.parametrize("wf", [QA_WF, REL_WF])
+def test_manual_dispatch_accepts_the_current_exact_head(fake_gh, wf):
+    proc, runner, _ = _run_decide(
+        fake_gh,
+        wf,
+        _routes_for_pr(_evidence_runs()),
+        {
+            "EVENT": "workflow_dispatch",
+            "INPUT_PR": "7",
+            "INPUT_HEAD_SHA": HEAD,
+            "WR_PRS": "null",
+            "QA_APP_ID": QA_APP,
+            "RELEASE_APP_ID": REL_APP,
+        },
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads((runner / "decisions" / "decision-7.json").read_text())["head_sha"] == HEAD
 
 
 def test_release_workflow_end_to_end_requires_qa_from_qa_app(fake_gh):
