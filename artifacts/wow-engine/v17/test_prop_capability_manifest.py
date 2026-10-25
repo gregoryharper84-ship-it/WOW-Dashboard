@@ -1,3 +1,4 @@
+from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
 from v17.prop_capability_manifest import (
     BASKETBALL_PRA,
     BUILD_REQUIRED,
@@ -127,6 +128,9 @@ def test_remaining_cross_sport_build_targets_stay_explicitly_fail_closed():
         ("SOCCER", "SHOTS_ON_TARGET"),
         ("TENNIS", "ACES"),
         ("GOLF", "BIRDIES"),
+        ("PGA", "BIRDIES"),
+        ("CRICKET", "BATTER_RUNS"),
+        ("CRICKET", "BOWLER_WICKETS"),
         ("MMA", "SIGNIFICANT_STRIKES"),
         ("BOXING", "PUNCHES_LANDED"),
     )
@@ -167,7 +171,10 @@ def test_manifest_reports_cross_sport_state_without_claiming_universal_model_sup
     assert ("NHL", "SHOTS_ON_GOAL") in advertised
     assert ("SOCCER", "SHOTS_ON_TARGET") in advertised
     assert ("TENNIS", "ACES") in advertised
-    assert ("GOLF", "BIRDIES") in advertised
+    assert ("PGA", "BIRDIES") in advertised
+    assert ("CRICKET", "BATTER_RUNS") in advertised
+    assert ("CRICKET", "BOWLER_WICKETS") in advertised
+    assert ("GOLF", "BIRDIES") not in advertised
     assert ("MMA", "SIGNIFICANT_STRIKES") in advertised
     assert ("BOXING", "PUNCHES_LANDED") in advertised
 
@@ -184,8 +191,8 @@ def test_manifest_reports_cross_sport_state_without_claiming_universal_model_sup
     assert manifest["candidate_lane_count"] == sum(1 for lane in lanes if lane["lane_status"] == CANDIDATE_ONLY)
     assert manifest["build_required_lane_count"] == sum(1 for lane in lanes if lane["lane_status"] == BUILD_REQUIRED)
     assert manifest["sports_declared"] == [
-        "BOXING", "GOLF", "MLB", "MMA", "NBA", "NCAAB",
-        "NCAAF", "NFL", "NHL", "SOCCER", "TENNIS", "WNBA",
+        "BOXING", "CRICKET", "MLB", "MMA", "NBA", "NCAAB",
+        "NCAAF", "NFL", "NHL", "PGA", "SOCCER", "TENNIS", "WNBA",
     ]
     assert manifest["declaration_is_not_capability"] is True
     assert manifest["adjacent_line_substitution_permitted"] is False
@@ -196,3 +203,22 @@ def test_sport_aliases_resolve_without_changing_authority():
     assert prop_capability("baseball", MLB_1IP_STAT_TYPE).lane_status == SUPPORTED_HOLD_ONLY
     assert prop_capability("womens_nba", "POINTS").lane_status == SUPPORTED_HOLD_ONLY
     assert prop_capability("CFB", "PASS_YDS").lane_status == BUILD_REQUIRED
+
+
+def test_props_share_all_13_canonical_sports_without_publishing_missing_models():
+    manifest = declared_prop_lane_manifest()
+    assert set(manifest["sports_declared"]) == set(EXPECTED_TEAM_EVENT_SPORTS)
+    assert len(manifest["sports_declared"]) == 13
+    assert prop_capability("GOLF", "BIRDIES").sport == "PGA"
+    assert prop_capability("PGA", "BIRDIES").lane_status == BUILD_REQUIRED
+    assert prop_capability("CRICKET", "BATTER_RUNS").lane_status == BUILD_REQUIRED
+    assert prop_capability("T20", "BOWLER_WICKETS").sport == "CRICKET"
+    for sport, stat in (("PGA", "BIRDIES"), ("CRICKET", "BATTER_RUNS"),
+                        ("CRICKET", "BOWLER_WICKETS")):
+        lane = prop_capability(sport, stat)
+        assert lane.controlling_specialist is None
+        assert lane.route_active is False
+        assert lane.publication_allowed is False
+        assert lane.can_execute is False
+    # LPGA requires independent data/fit/entitlement, never inherits PGA.
+    assert prop_capability("LPGA", "BIRDIES").lane_status == NOT_DECLARED
