@@ -237,6 +237,57 @@ def test_existing_pr_ci_resolves_timestamp_ties_by_run_id(
             assert f"EXISTING_PR_REQUIRED_CI_FAILED:{newer['name']}" in proc.stderr
 
 
+@pytest.mark.parametrize(("older_conclusion", "expected"), [
+    ("success", "completed|success"),
+    ("failure", "completed|failure"),
+    ("cancelled", "completed|cancelled"),
+])
+def test_metadata_only_action_required_does_not_shadow_real_ci(older_conclusion, expected):
+    verifier = _load_verifier()
+    head = "a" * 40
+    name, path = next(iter(verifier.REQUIRED_WORKFLOWS.items()))
+    older = {"id": 100, "name": name, "path": path, "head_sha": head,
+             "created_at": "2026-10-25T21:09:16Z", "event": "pull_request",
+             "status": "completed", "conclusion": older_conclusion}
+    prompt = {**older, "id": 101, "created_at": "2026-10-25T21:33:20Z",
+              "conclusion": "action_required"}
+    selected = verifier._latest(
+        [prompt, older], name=name, expected_sha=head, path=path,
+        time_field="created_at", skip_unexecuted_pr_approval=True,
+    )
+    assert f"{selected['status']}|{selected['conclusion']}" == expected
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_run", "workflow_dispatch"])
+def test_non_pull_request_action_required_remains_blocking(event):
+    verifier = _load_verifier()
+    head = "a" * 40
+    name, path = next(iter(verifier.REQUIRED_WORKFLOWS.items()))
+    older = {"id": 100, "name": name, "path": path, "head_sha": head,
+             "created_at": "2026-10-25T21:09:16Z", "event": "pull_request",
+             "status": "completed", "conclusion": "success"}
+    prompt = {**older, "id": 101, "event": event,
+              "created_at": "2026-10-25T21:33:20Z", "conclusion": "action_required"}
+    selected = verifier._latest(
+        [older, prompt], name=name, expected_sha=head, path=path,
+        time_field="created_at", skip_unexecuted_pr_approval=True,
+    )
+    assert selected["id"] == 101
+
+
+def test_action_required_without_prior_execution_cannot_certify():
+    verifier = _load_verifier()
+    head = "a" * 40
+    name, path = next(iter(verifier.REQUIRED_WORKFLOWS.items()))
+    prompt = {"id": 101, "name": name, "path": path, "head_sha": head,
+              "created_at": "2026-10-25T21:33:20Z", "event": "pull_request",
+              "status": "completed", "conclusion": "action_required"}
+    assert verifier._latest(
+        [prompt], name=name, expected_sha=head, path=path,
+        time_field="created_at", skip_unexecuted_pr_approval=True,
+    ) is None
+
+
 def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
     text = WORKFLOW.read_text(encoding="utf-8")
     for required in ("wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate", "wow-v17-engineering-auditor-code-health", "wow-v17-spread-forward-shadow", "wow-v17-release-production-verification-agent"):
