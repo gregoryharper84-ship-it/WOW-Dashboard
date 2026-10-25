@@ -176,9 +176,7 @@ def test_protected_adoption_program_enforces_two_actual_principals():
     text = (ROOT / "artifacts/wow-engine/v17/engineering_authorized_adoption.py").read_text()
     assert 'os.environ.get("APP_TOKEN") == os.environ.get("GH_TOKEN")' in text
     assert 'created[0].get("user", {}).get("login") != APP_AUTHOR' in text
-    assert 'repo_root' not in text or True
     assert "git\", \"push\"" in text
     assert "gh\", \"pr\", \"create\"" in text
     assert "git\", \"restore\"" in text
-    assert "no token" not in text.lower() or True
     assert "auto-merge" in text.lower()
