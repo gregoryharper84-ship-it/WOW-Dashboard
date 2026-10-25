@@ -132,6 +132,35 @@ def test_durable_duplicate_pr_never_selected(monkeypatch):
     assert adoption.discover()["status"] == "NO_ELIGIBLE_SOURCE"
 
 
+def test_global_review_wip_limit_prevents_pr_flood(monkeypatch):
+    app_open = [
+        {"user": {"login": adoption.APP_AUTHOR},
+         "head": {"ref": "wow-engineering/exact-replay-%d-aaaa" % n}}
+        for n in range(3)
+    ]
+    called = []
+    def fetch(path):
+        called.append(path)
+        if path.startswith("pulls?state=open&base=main"):
+            return app_open + [source_pr()]
+        raise AssertionError("review backlog may not dispatch another App PR")
+    monkeypatch.setattr(adoption, "api", fetch)
+    receipt = adoption.discover()
+    assert receipt == {"status": "NO_ELIGIBLE_SOURCE", "detail": "APP_REVIEW_WIP_CAP",
+                       "can_execute": False}
+    assert len(called) == 1
+
+
+def test_app_token_and_read_only_identity_are_required(monkeypatch):
+    monkeypatch.delenv("APP_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "readonly-mock")
+    with pytest.raises(adoption.AdoptionHold, match="APP_TOKEN_AND_READ_TOKEN_REQUIRED_HOLD"):
+        adoption.integrate(2058, SHA)
+    monkeypatch.setenv("APP_TOKEN", "readonly-mock")
+    with pytest.raises(adoption.AdoptionHold, match="READ_AND_WRITE_IDENTITY_NOT_SEPARATED_HOLD"):
+        adoption.integrate(2058, SHA)
+
+
 def test_unreviewed_source_never_selected(monkeypatch):
     def fetch(path):
         if path.startswith("pulls?state=open&base=main"):
