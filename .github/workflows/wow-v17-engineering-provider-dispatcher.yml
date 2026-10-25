@@ -28,6 +28,19 @@ on:
           - openai
           - anthropic
           - gemini
+          - cursor
+      cursor_pr_number:
+        description: Existing PR number for an opt-in Cursor handoff.
+        required: false
+        default: ""
+      cursor_expected_head:
+        description: Exact expected PR head SHA for Cursor handoff.
+        required: false
+        default: ""
+      cursor_task:
+        description: Scoped engineering assignment (max 4000 characters).
+        required: false
+        default: ""
       reason:
         description: Optional dispatch reason.
         required: false
@@ -49,7 +62,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: wow-v17-engineering-provider-dispatcher-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-provider-dispatcher-${{ inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' || inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
@@ -59,6 +72,9 @@ jobs:
     timeout-minutes: 20
     outputs:
       fallback_required: ${{ (steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' && vars.WOW_COPILOT_FALLBACK_ENABLED == 'true') || steps.remote_fence.outcome == 'failure' }}
+      cursor_dispatch: ${{ steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'cursor' && steps.remote_fence.outcome == 'success' }}
+      provider: ${{ steps.route.outputs.provider }}
+      remote_fence: ${{ steps.remote_fence.outcome }}
       target_incident: ${{ steps.route.outputs.target_incident }}
       lease_group: ${{ steps.route.outputs.lease_group }}
       allow_new_assignment: ${{ steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' }}
@@ -215,6 +231,10 @@ jobs:
               action=DISPATCH
               provider=openai
               reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+            elif [ "$force" = "cursor" ]; then
+              action=DISPATCH
+              provider=cursor
+              reason="${MANUAL_REASON:-OWNER_CURSOR_PR_HANDOFF}"
             elif [ "$force" = "gemini" ]; then
               if [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
                  [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ]; then
@@ -306,7 +326,7 @@ jobs:
               parent_run_id: $parent_run_id,
               target_incident: $target_incident,
               lease_group: $lease_group,
-              cursor_status: "CURSOR_NOT_CONFIGURED",
+              cursor_status: (if $provider == "cursor" then null else "CURSOR_NOT_CONFIGURED" end),
               independent_fallback_allowed: $independent_fallback_allowed,
               can_execute: false,
               terminal_authority: "V17_TERMINAL_REDUCER"
@@ -436,7 +456,8 @@ jobs:
             echo "- lease_group: ${{ steps.route.outputs.lease_group || 'GLOBAL' }}"
             echo "- OpenAI primary: wow-v17-chatgpt-engineering-worker"
             echo "- Anthropic fallback: wow-v17-claude-engineering-worker"
-            echo "- Gemini opt-in: wow-v17-gemini-engineering-worker (canary+budget gated)"
+            echo "- Gemini: disabled until separately authorized budget and canary"
+            echo "- Cursor: opt-in existing-PR Cloud Agent only, not automatic fallback"
             echo "- deterministic survival: ${{ steps.route.outputs.action == 'SURVIVAL' }}"
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
@@ -450,7 +471,11 @@ jobs:
 
   independent-provider:
     needs: provider-control
-    if: always() && needs.provider-control.outputs.fallback_required == 'true'
+    if: always() && (
+      needs.provider-control.outputs.cursor_dispatch == 'true' ||
+      (needs.provider-control.outputs.fallback_required == 'true' &&
+       needs.provider-control.outputs.provider != 'cursor')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -469,7 +494,50 @@ jobs:
           ref: main
           persist-credentials: false
 
+      - name: Dispatch scoped Cursor Cloud Agent
+        if: needs.provider-control.outputs.cursor_dispatch == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CURSOR_HANDOFF_ENABLED: ${{ vars.CURSOR_HANDOFF_ENABLED }}
+          CURSOR_SPEND_CAP_CONFIRMED: ${{ vars.CURSOR_SPEND_CAP_CONFIRMED }}
+          CURSOR_PR_NUMBER: ${{ inputs.cursor_pr_number }}
+          CURSOR_INCIDENT: ${{ inputs.target_incident }}
+          CURSOR_EXPECTED_HEAD: ${{ inputs.cursor_expected_head }}
+          CURSOR_TASK: ${{ inputs.cursor_task }}
+          CURSOR_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/cursor-handoff.json"
+          if [ "${CURSOR_HANDOFF_ENABLED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_HANDOFF_DISABLED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_HANDOFF_DISABLED"
+            exit 1
+          fi
+          # This opt-in is an owner's attestation, NOT a provider-enforced price cap.
+          # Never launch while additional spending controls have not been confirmed.
+          if [ "${CURSOR_SPEND_CAP_CONFIRMED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_SPEND_CAP_UNCONFIRMED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_SPEND_CAP_UNCONFIRMED"
+            exit 1
+          fi
+          if [ -z "${CURSOR_PR_NUMBER:-}" ] || [ -z "${CURSOR_INCIDENT:-}" ] || [ -z "${CURSOR_EXPECTED_HEAD:-}" ] || [ -z "${CURSOR_TASK:-}" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_DISPATCH_INPUTS_MISSING","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_DISPATCH_INPUTS_MISSING"
+            exit 1
+          fi
+          python artifacts/wow-engine/v17/cursor_cloud_handoff.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number "$CURSOR_PR_NUMBER" \
+            --incident-number "$CURSOR_INCIDENT" \
+            --actor "$CURSOR_ACTOR" \
+            --expected-head "$CURSOR_EXPECTED_HEAD" \
+            --task "$CURSOR_TASK" \
+            --receipt "$receipt"
+
       - name: Reconcile or admit separately authorized Copilot fallback
+        if: needs.provider-control.outputs.cursor_dispatch != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.WOW_COPILOT_ASSIGNMENT_TOKEN }}
@@ -489,6 +557,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-independent-provider-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/independent-provider-receipt.json
+          path: |
+            ${{ runner.temp }}/independent-provider-receipt.json
+            ${{ runner.temp }}/cursor-handoff.json
           if-no-files-found: error
           retention-days: 14

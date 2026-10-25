@@ -612,13 +612,11 @@ def test_active_work_in_progress_is_counted_per_role():
     class FakeClient:
         def get(self, path):
             if "/workflows/2/runs?" in path:
-                return {
-                    "workflow_runs": [
-                        {"status": "in_progress"},
-                        {"status": "queued"},
-                        {"status": "completed"},
-                    ]
-                }
+                if "status=in_progress" in path:
+                    return {"workflow_runs": [{"id": 10, "status": "in_progress"}]}
+                if "status=queued" in path:
+                    return {"workflow_runs": [{"id": 11, "status": "queued"}]}
+                return {"workflow_runs": []}
             return {"workflow_runs": []}
 
     workflows = {
@@ -894,7 +892,9 @@ def test_role_run_matching_accepts_api_workflow_name_with_display_title():
     }
 
     class FakeClient:
-        def get(self, _):
+        def get(self, path):
+            if path.endswith("/pulls/41"):
+                return {"number": 41, "created_at": "2026-10-21T00:00:00Z"}
             return {"workflow_runs": [run]}
 
     matches = transport.list_role_runs(FakeClient(), 12, "source_review", 41, HEAD)

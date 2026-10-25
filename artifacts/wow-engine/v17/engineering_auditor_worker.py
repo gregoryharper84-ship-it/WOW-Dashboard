@@ -88,7 +88,11 @@ class IndependentPollHealth:
         self.github_error = error
 
     def report_watchdog(self, outcome: str) -> None:
-        if outcome not in {"WATCHDOG_RUN_OBSERVED", "WATCHDOG_HEARTBEAT_MISSING"}:
+        if outcome not in {
+            "WATCHDOG_RUN_OBSERVED",
+            "WATCHDOG_EXTERNAL_OBSERVED",
+            "WATCHDOG_HEARTBEAT_MISSING",
+        }:
             raise ValueError("SIRT_WATCHDOG_OUTCOME_INVALID")
         self.watchdog_outcome = outcome
 
@@ -98,7 +102,7 @@ class IndependentPollHealth:
     def runtime_state(self) -> tuple[str, str]:
         # A healthy generic GitHub API call does not clear a missing or
         # unverified SIRT watchdog. Only a fresh watchdog run does.
-        if self.watchdog_outcome != "WATCHDOG_RUN_OBSERVED":
+        if self.watchdog_outcome not in {"WATCHDOG_RUN_OBSERVED", "WATCHDOG_EXTERNAL_OBSERVED"}:
             return "DEGRADED", (
                 "SIRT_WATCHDOG_HEARTBEAT_MISSING"
                 if self.watchdog_outcome == "WATCHDOG_HEARTBEAT_MISSING"

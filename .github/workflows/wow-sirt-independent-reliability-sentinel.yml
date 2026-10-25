@@ -23,7 +23,11 @@ permissions:
   actions: read
 
 concurrency:
-  group: wow-sirt-independent-reliability-sentinel
+  # Only scheduled runs prove watchdog liveness to the resident auditor. A shared
+  # group lets a queued push/workflow_run run replace a pending scheduled run
+  # (it ends "cancelled" and cannot satisfy the heartbeat), so cron runs queue
+  # in their own group. github.event.schedule is set only for schedule events.
+  group: wow-sirt-independent-reliability-sentinel-${{ github.event.schedule && 'schedule' || 'triggered' }}
   cancel-in-progress: false
 
 jobs:
@@ -47,11 +51,15 @@ jobs:
           WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT: ${{ vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT }}
         run: |
           set -uo pipefail
-          python artifacts/wow-engine/v17/sirt_assurance.py sentinel > "$RUNNER_TEMP/sirt-heartbeat.json"
-          result=$?
+          # The runner shell is bash -e; capture the exit code explicitly so the
+          # blocking evidence is printed and summarized before the step fails.
+          result=0
+          python artifacts/wow-engine/v17/sirt_assurance.py sentinel > "$RUNNER_TEMP/sirt-heartbeat.json" || result=$?
           cat "$RUNNER_TEMP/sirt-heartbeat.json"
           if [ "$result" -ne 0 ]; then
             echo "SIRT watchdog blocked: auditor/worker activity stale, unhealthy, or authoritative evidence unavailable." >> "$GITHUB_STEP_SUMMARY"
+            jq -r '"Status: \(.status // "UNKNOWN")", (.reason // empty | "Reason: \(.)"), ((.signals // [])[] | "- \(.severity) \(.type) \(.identity): \(.reason)")' \
+              "$RUNNER_TEMP/sirt-heartbeat.json" >> "$GITHUB_STEP_SUMMARY" || true
             echo "This is not a betting-model verdict." >> "$GITHUB_STEP_SUMMARY"
             exit "$result"
           fi

@@ -45,3 +45,7 @@ The initial worker deliberately **does not push to GitHub**. Complete #2014's ex
 References: https://geminicli.com/docs/get-started/authentication/ ; https://geminicli.com/docs/cli/headless/ ; https://ai.google.dev/gemini-api/docs/rate-limits .
 
 Related: local Antigravity pilot PR #2010, existing NFL stage-proof issue #1841 / draft PR #1842, AMRT charter.
+
+## Owner cost lock — October 24, 2026
+
+This is source-only integration under the owner's FREE-TIER / NO GOOGLE BILLING instruction. Keep all GEMINI_* activation flags disabled, do not provision or consume API credentials, and do not run a paid or free API canary without a separate explicit authorization for that exact activity and its cost/data scope. Passing CI or merging disabled source does not authorize Gemini API usage.
