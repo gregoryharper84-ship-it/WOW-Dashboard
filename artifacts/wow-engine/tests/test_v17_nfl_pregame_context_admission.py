@@ -221,3 +221,89 @@ def test_missing_required_feature_never_defaults_from_other_values():
     del e[1]["measurements"]["ol_starters_expected"]
     with pytest.raises(NFLContextAdmissionError, match="NFL_CONTEXT_METRIC_CONTRACT_INVALID"):
         _run(e)
+
+
+def test_archived_2025_injury_record_bulk_captured_2026_is_held():
+    from v17.nfl_pregame_context_admission import audit_historical_snapshot_admissibility
+    snapshot = {
+        "snapshot_id": "archived-2025-injuries",
+        "dataset_name": "INJURIES",
+        "source_status": "CAPTURED",
+        "fetched_at": "2026-09-13T18:41:28Z",
+        "source_last_modified": "Mon, 07 Sep 2026 12:23:41 GMT",
+    }
+    result = audit_historical_snapshot_admissibility(
+        snapshot, event_start_time_utc="2025-10-25T17:00:00Z",
+        decision_as_of="2025-10-25T16:30:00Z",
+        rights_state_from_manifest="LICENSE_REVIEW_REQUIRED",
+    )
+    assert result["admission_status"] == "HOLD"
+    assert set(result["blockers"]) == {
+        "NFL_CONTEXT_MANIFEST_RIGHTS_NOT_APPROVED",
+        "NFL_CONTEXT_ARCHIVE_CAPTURE_AFTER_DECISION",
+        "NFL_CONTEXT_HISTORICAL_ROW_AVAILABILITY_UNVERIFIED",
+    }
+    assert result["historical_feature_admitted"] is False
+
+
+def test_archived_2026_weekly_roster_does_not_prove_october_roster_status():
+    from v17.nfl_pregame_context_admission import audit_historical_snapshot_admissibility
+    snapshot = {
+        "snapshot_id": "archived-2026-rosters",
+        "dataset_name": "WEEKLY_ROSTERS", "source_status": "CAPTURED",
+        "fetched_at": "2026-09-13T21:24:28Z",
+    }
+    result = audit_historical_snapshot_admissibility(
+        snapshot, event_start_time_utc="2026-10-25T17:00:00Z",
+        decision_as_of="2026-10-25T16:30:00Z",
+        rights_state_from_manifest="LICENSE_REVIEW_REQUIRED",
+    )
+    assert result["admission_status"] == "HOLD"
+    assert "NFL_CONTEXT_HISTORICAL_ROW_AVAILABILITY_UNVERIFIED" in result["blockers"]
+    assert "NFL_CONTEXT_MANIFEST_RIGHTS_NOT_APPROVED" in result["blockers"]
+
+
+def test_candidate_still_cannot_train_model_without_independent_authentication():
+    from v17.nfl_pregame_context_admission import audit_historical_snapshot_admissibility
+    snapshot = {
+        "snapshot_id": "future-approved-fixture",
+        "dataset_name": "PLAY_BY_PLAY", "source_status": "CAPTURED",
+        "fetched_at": "2026-10-24T10:00:00Z",
+    }
+    result = audit_historical_snapshot_admissibility(
+        snapshot, event_start_time_utc="2026-10-25T17:00:00Z",
+        decision_as_of="2026-10-25T16:30:00Z",
+        rights_state_from_manifest="RESEARCH_APPROVED",
+        row_available_at="2026-10-23T10:00:00Z",
+    )
+    assert result["admission_status"] == "RESEARCH_CANDIDATE_ONLY"
+    assert result["blockers"] == []
+    assert result["row_availability_independently_verified"] is False
+    assert result["historical_feature_admitted"] is False
+    assert result["model_probability_publishable"] is False
+
+
+def test_archive_rejects_row_revision_after_pregame_cutoff():
+    from v17.nfl_pregame_context_admission import audit_historical_snapshot_admissibility
+    result = audit_historical_snapshot_admissibility(
+        {"dataset_name": "INJURIES", "source_status": "CAPTURED",
+         "fetched_at": "2026-10-26T13:00:00Z"},
+        event_start_time_utc="2026-10-25T17:00:00Z",
+        decision_as_of="2026-10-25T16:30:00Z",
+        rights_state_from_manifest="RESEARCH_APPROVED",
+        row_available_at="2026-10-25T18:00:00Z",
+    )
+    assert "NFL_CONTEXT_HISTORICAL_ROW_NOT_PREGAME_AVAILABLE" in result["blockers"]
+    assert "NFL_CONTEXT_ARCHIVE_CAPTURE_AFTER_DECISION" in result["blockers"]
+
+
+def test_archive_invalid_or_timezone_naive_timestamps_fail_closed():
+    from v17.nfl_pregame_context_admission import audit_historical_snapshot_admissibility
+    with pytest.raises(NFLContextAdmissionError, match="NFL_CONTEXT_SOURCE_TIME_INVALID"):
+        audit_historical_snapshot_admissibility(
+            {"dataset_name": "WEEKLY_ROSTERS", "source_status": "CAPTURED",
+             "fetched_at": "2026-09-13 21:24:28"},
+            event_start_time_utc="2026-10-25T17:00:00Z",
+            decision_as_of="2026-10-25T16:30:00Z",
+            rights_state_from_manifest="LICENSE_REVIEW_REQUIRED",
+        )
