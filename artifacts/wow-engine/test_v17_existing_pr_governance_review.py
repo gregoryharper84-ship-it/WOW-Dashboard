@@ -345,7 +345,7 @@ def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
     assert "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" in text
     assert "pull_request:" not in text.replace("pull_request_target:", "")
     assert ".github/scripts/verify_existing_pr_governance_receipt.py" in text
-    assert 'select(.name == $name and .path == $path)' in text
+    assert 'select(.name == $name and .path == $path and .head_sha == $sha)' in text
     assert '\\(.conclusion // "")' in text
     assert '\\(.conclusion // \\"\\")' not in text
 
