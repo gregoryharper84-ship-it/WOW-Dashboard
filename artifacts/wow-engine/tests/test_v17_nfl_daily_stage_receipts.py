@@ -135,6 +135,11 @@ def test_exact_fitted_prediction_proves_only_numeric_package_not_dynamic_stage()
     assert result["probability_package_valid"] is True
     assert result["dynamic_calibration_complete"] is False
     assert result["calibration_status"] == "UNPROVEN"
+    assert result["rank_eligible"] is False
+    assert result["probability_publishable"] is False
+    assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert result["upstream_terminal_label"] == "FINAL_APPROVED"
+    assert result["rank_eligible_pre_audit"] is True
     assert result["calibrated_lower_bound"] == 0.7493
     assert result["can_execute"] is False
     assert validate_governed_scoring_package(result).status == "PASS"
@@ -146,6 +151,9 @@ def test_no_readback_never_borrows_stage_pass_or_changes_probability():
     for rows, fails in (([], False), (None, True), ([row, row], False)):
         result = _prove(req, row, governed, rows=rows, fails=fails)
         assert result["nfl_stage_receipt"]["status"] == "HOLD"
+        assert result["rank_eligible"] is False
+        assert result["probability_publishable"] is False
+        assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
         assert result.get("probability_package_valid") is not True
         assert result.get("dynamic_calibration_complete") is not True
         assert result["calibrated_selection_probability"] == 0.8052
