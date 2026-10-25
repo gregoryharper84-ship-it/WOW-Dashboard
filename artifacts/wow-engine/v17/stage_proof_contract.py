@@ -780,6 +780,13 @@ def apply_scan_row_stage_proof_ceiling(
         return item
     agreement = assess_publication_agreement(item, audit)
     if agreement["status"] != "PASS":
+        # Keep the original model eligibility as a diagnostic, not an active
+        # publication bit; stage/guard disagreement cannot promote a row.
+        if item.get("rank_eligible") is True:
+            item["rank_eligible_pre_audit"] = True
+        item["rank_ceiling_reason"] = (
+            f"PUBLICATION_STAGE_PROOF_NOT_PASS:{agreement.get('reason') or 'STAGE_PROOF_UNPROVEN'}"
+        )
         if item.get("bucket") == MODEL_COMPLETED:
             item["bucket"] = OTHER_GOVERNED_HOLD
         item["rank_eligible"] = False
