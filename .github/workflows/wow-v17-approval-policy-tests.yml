@@ -1,0 +1,61 @@
+name: wow-v17-approval-policy-tests
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/scripts/v17_approval_readiness.py"
+      - ".github/scripts/tests/test_v17_approval_readiness.py"
+      - ".github/workflows/wow-v17-approval-readiness-audit.yml"
+      - ".github/workflows/wow-v17-approval-policy-tests.yml"
+      - ".github/morning-green-protected-paths.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy-regressions:
+    name: V17 approval policy deterministic regression and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Run fail-closed unit tests
+        run: python -m unittest discover -s .github/scripts/tests -p 'test_v17_approval_readiness.py' -v
+      - name: Install YAML validator
+        run: python -m pip install --disable-pip-version-check PyYAML
+      - name: Validate workflows, shell and protected-path registration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          import yaml
+          workflow = Path(".github/workflows/wow-v17-approval-readiness-audit.yml")
+          policy_test = Path(".github/workflows/wow-v17-approval-policy-tests.yml")
+          for path in (workflow, policy_test):
+              data = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+              assert data.get("jobs") and data.get("on")
+              print(f"YAML_VALID {path}")
+          data = yaml.load(workflow.read_text(), Loader=yaml.BaseLoader)
+          steps = data["jobs"]["review-readiness"]["steps"]
+          shell_commands = [s["run"] for s in steps if "run" in s and s.get("shell") == "bash"]
+          assert len(shell_commands) == 1
+          subprocess.run(["bash", "-n"], input=shell_commands[0], text=True, check=True)
+          print("BASH_SYNTAX_VALID")
+          protected = Path(".github/morning-green-protected-paths.txt").read_text()
+          for name in (
+              ".github/scripts/v17_approval_readiness.py",
+              ".github/scripts/tests/test_v17_approval_readiness.py",
+              ".github/workflows/wow-v17-approval-readiness-audit.yml",
+              ".github/workflows/wow-v17-approval-policy-tests.yml",
+          ):
+              assert name in protected, f"PROTECTION_MISSING: {name}"
+          print("PROTECTED_TRUST_ROOTS_REGISTERED")
+          PY

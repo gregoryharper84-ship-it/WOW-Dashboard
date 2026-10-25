@@ -27,3 +27,9 @@ artifacts/wow-engine/**/migrations/**
 **/*auth*
 **/*secret*
 **/*credential*
+
+# Class A independent approval automation is a governance trust root.
+.github/workflows/wow-v17-approval-readiness-audit.yml
+.github/scripts/v17_approval_readiness.py
+.github/scripts/tests/test_v17_approval_readiness.py
+.github/workflows/wow-v17-approval-policy-tests.yml

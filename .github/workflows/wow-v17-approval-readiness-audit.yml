@@ -1,0 +1,131 @@
+name: wow-v17-approval-readiness-audit
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+  pull_request_review:
+    types: [submitted, dismissed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Exact PR number (empty uses opted-in tracked PRs)
+        required: false
+        type: string
+  schedule:
+    - cron: "19 */4 * * *"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+concurrency:
+  group: wow-v17-approval-audit-${ github.event.pull_request.number || inputs.pr_number || 'periodic' }
+  cancel-in-progress: false
+
+jobs:
+  review-readiness:
+    name: Advisory reviewer-readiness evidence (not authorization)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Regression tests from trusted main only
+        run: python -m unittest discover -s .github/scripts/tests -p 'test_v17_approval_readiness.py' -v
+      - name: Audit, request designated reviewers and escalate blockers
+        shell: bash
+        env:
+          GH_TOKEN: ${ github.token }
+          EVENT_PR: ${ github.event.pull_request.number || '' }
+          INPUT_PR: ${ inputs.pr_number || '' }
+          QA_REVIEWERS: ${ vars.WOW_INDEPENDENT_QA_REVIEWERS }
+          RELEASE_REVIEWERS: ${ vars.WOW_INDEPENDENT_RELEASE_REVIEWERS }
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/audit/receipts"
+          if [ -n "$EVENT_PR" ]; then
+            printf '%s\n' "$EVENT_PR" > "$RUNNER_TEMP/audit/targets"
+          elif [ -n "$INPUT_PR" ]; then
+            printf '%s\n' "$INPUT_PR" > "$RUNNER_TEMP/audit/targets"
+          else
+            # Periodic scan opt-in until reviewer authority/protections are verified.
+            gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 40 \
+              --label wow-approval-audit --json number --jq '.[].number' > "$RUNNER_TEMP/audit/targets"
+          fi
+          echo "# V17 Review Readiness (advisory, not a merge/release gate)" >> "$GITHUB_STEP_SUMMARY"
+          echo "No self approval, merger, deployment or wager execution. can_execute=false." >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r PR; do
+            [ -n "$PR" ] || continue
+            [[ "$PR" =~ ^[0-9]+$ ]] || exit 1
+            prfile="$RUNNER_TEMP/audit/pr-$PR.json"
+            files="$RUNNER_TEMP/audit/files-$PR.json"
+            reviews="$RUNNER_TEMP/audit/reviews-$PR.json"
+            receipt="$RUNNER_TEMP/audit/receipts/pr-$PR.json"
+            gh api "/repos/$GITHUB_REPOSITORY/pulls/$PR" > "$prfile"
+            [ "$(jq -r '.base.ref' "$prfile")" = "main" ] || continue
+            [ "$(jq -r '.head.repo.full_name // ""' "$prfile")" = "$GITHUB_REPOSITORY" ] || continue
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls/$PR/files?per_page=100" \
+              --jq '.[].filename' | jq -Rsc 'split("\n") | map(select(length > 0))' > "$files"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls/$PR/reviews?per_page=100" \
+              --jq '.[]' | jq -sc '.' > "$reviews"
+            python .github/scripts/v17_approval_readiness.py --pr-json "$prfile" \
+              --files-json "$files" --reviews-json "$reviews" \
+              --qa-reviewers "$QA_REVIEWERS" --release-reviewers "$RELEASE_REVIEWERS" \
+              --output "$receipt" > /dev/null
+            status=$(jq -r '.status' "$receipt")
+            risk=$(jq -r '.risk_class // "R3_PROTECTED_UNKNOWN"' "$receipt")
+            blockers=$(jq -r '.blockers | join(",")' "$receipt")
+            sha=$(jq -r '.head_sha // ""' "$receipt")
+            {
+              echo "## PR $PR"
+              echo "risk=$risk status=$status head=$sha"
+              echo "blockers: $blockers"
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Requesting review is not an approval. Never request the author or a bot.
+            if [ "$(jq -r '.draft' "$prfile")" = "false" ]; then
+              jq -r '[.qa_request_candidates[]?, .release_request_candidates[]?] | unique | .[:4][]' "$receipt" |
+              while IFS= read -r reviewer; do
+                [ -n "$reviewer" ] || continue
+                payload=$(jq -n --arg user "$reviewer" '{reviewers:[$user]}')
+                gh api --method POST "/repos/$GITHUB_REPOSITORY/pulls/$PR/requested_reviewers" \
+                  --input - >/dev/null <<< "$payload" || echo "::warning::Reviewer request failed for PR $PR."
+              done
+            fi
+            opted=$(jq -r '[.labels[]?.name] | index("wow-approval-audit") != null' "$prfile")
+            case "$risk" in R3_*|CLASS_C_*) tracked=true ;; *) tracked="$opted" ;; esac
+            if [ "$tracked" = "true" ] && [ "$status" = "HELD" ]; then
+              marker="WOW_V17_APPROVAL_AUDIT_PR_$PR"
+              existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
+                --search "$marker in:body" --limit 100 --json number --jq '.[].number' | head -1 || true)
+              if [ -z "$existing" ]; then
+                {
+                  echo "<!-- $marker -->"
+                  echo "Independent reviewer evidence is missing for PR #$PR."
+                  echo "Exact head: $sha"
+                  echo "Risk: $risk"
+                  echo "Blockers: $blockers"
+                  echo "Audit: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+                  echo "Set authorized QA/release collaborators and native repository/production protections."
+                  echo "This issue does not approve, merge or deploy anything."
+                } > "$RUNNER_TEMP/audit/escalation.md"
+                gh issue create --repo "$GITHUB_REPOSITORY" \
+                  --title "[V17 Approval] PR #$PR requires independent review" \
+                  --body-file "$RUNNER_TEMP/audit/escalation.md" || echo "::warning::Escalation creation failed."
+              fi
+            fi
+          done < "$RUNNER_TEMP/audit/targets"
+      - name: Preserve read-only evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v17-approval-audit-${ github.run_id }
+          path: ${ runner.temp }/audit/receipts/*.json
+          if-no-files-found: ignore
+          retention-days: 30
