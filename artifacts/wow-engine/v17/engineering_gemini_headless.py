@@ -93,23 +93,53 @@ def select_incident(
 def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
                  response: Any = None) -> dict[str, Any]:
     """Classify one bounded attempt without persisting log contents or secrets."""
-    value = (stderr or "").lower()
+    # The CLI may put its *only* actionable API error in the JSON response,
+    # not in stderr. Inspect it in memory, but persist only a fixed typed code.
+    # Never save model text, API messages, stderr, or credential fragments.
+    error = response.get("error") if isinstance(response, dict) else None
+    if isinstance(error, dict):
+        hints = " ".join(str(error.get(k, ""))[:2000]
+                         for k in ("code", "status", "type", "message"))
+    elif isinstance(error, str):
+        hints = error[:4000]
+    else:
+        hints = ""
+    value = ((stderr or "")[:8192] + " " + hints).lower()
+    known = next((kind for kind, needles in _EXPLICIT_CODES
+                  if any(needle in value for needle in needles)), None)
     if timed_out:
         code = "GEMINI_CLI_TIMEOUT"
-    elif exit_code == 0:
-        code = ("GEMINI_CLI_COMPLETE" if isinstance(response, dict)
-                and isinstance(response.get("response"), str)
-                and bool(response["response"].strip()) and not response.get("error")
-                else "GEMINI_CLI_RESPONSE_MALFORMED")
+    elif exit_code == 41:
+        code = "GEMINI_API_AUTH_FAILED"
+    elif exit_code == 52:
+        code = "GEMINI_CLI_CONFIG_INVALID"
+    elif exit_code == 44:
+        code = "GEMINI_CLI_SANDBOX_FAILED"
     elif exit_code == 53:
         code = "GEMINI_CLI_TURN_LIMIT"
     elif exit_code == 42:
         code = "GEMINI_CLI_INPUT_INVALID"
+    # Specific unsupported-model/billing refusals must precede broad
+    # "unavailable" signatures used by the upstream-transient detector.
+    elif any(s in value for s in ("billing required", "paid tier", "payment required")):
+        code = "GEMINI_API_BILLING_REQUIRED"
+    elif any(s in value for s in ("model not found", "model is not supported",
+                                  "models/flash", "requested model unavailable")):
+        code = "GEMINI_MODEL_UNAVAILABLE"
+    elif known:
+        code = known
+    elif exit_code == 0 and isinstance(response, dict) and not error and (
+        isinstance(response.get("response"), str) and response["response"].strip()
+    ):
+        code = "GEMINI_CLI_COMPLETE"
+    elif exit_code == 0:
+        code = "GEMINI_CLI_RESPONSE_MALFORMED"
     else:
-        code = next((kind for kind, needles in _EXPLICIT_CODES
-                     if any(needle in value for needle in needles)), "GEMINI_CLI_FAILED")
+        code = "GEMINI_CLI_FAILED"
     return {"status": "COMPLETED" if code == "GEMINI_CLI_COMPLETE" else "HELD",
-            "code": code, "retry_allowed": False, "can_execute": False,
+            "code": code, "exit_code": exit_code,
+            "stderr_present": bool(stderr), "response_error_present": bool(error),
+            "retry_allowed": False, "can_execute": False,
             "terminal_authority": MODEL_AUTHORITY}
 
 

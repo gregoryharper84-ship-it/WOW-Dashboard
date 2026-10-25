@@ -111,6 +111,41 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
                          "GEMINI_API_UPSTREAM_UNAVAILABLE")
         self.assertEqual(gemini.classify_cli(1, "other crash")["code"], "GEMINI_CLI_FAILED")
 
+    def test_structured_cli_error_is_typed_without_persisting_secrets(self):
+        failed = gemini.classify_cli(
+            1, "", response={"error": {
+                "code": 429, "status": "RESOURCE_EXHAUSTED",
+                "message": "quota exceeded: private-token-DO-NOT-PRINT"}})
+        self.assertEqual(failed["code"], "GEMINI_API_QUOTA_EXHAUSTED")
+        self.assertEqual(failed["exit_code"], 1)
+        self.assertTrue(failed["response_error_present"])
+        self.assertFalse(failed["stderr_present"])
+        self.assertNotIn("private-token", str(failed))
+        self.assertFalse(failed["retry_allowed"])
+        self.assertEqual(gemini.classify_cli(
+            1, "", response={"error": {"message": "Billing required"}})["code"],
+            "GEMINI_API_BILLING_REQUIRED")
+        self.assertEqual(gemini.classify_cli(
+            1, "", response={"error": {"message": "requested model unavailable"}})["code"],
+            "GEMINI_MODEL_UNAVAILABLE")
+        self.assertEqual(gemini.classify_cli(
+            1, "unknown internal CLI exception")["code"], "GEMINI_CLI_FAILED")
+
+    def test_cli_exit_codes_without_api_text(self):
+        for exit_code, expected in (
+            (41, "GEMINI_API_AUTH_FAILED"),
+            (52, "GEMINI_CLI_CONFIG_INVALID"),
+            (44, "GEMINI_CLI_SANDBOX_FAILED"),
+            (42, "GEMINI_CLI_INPUT_INVALID"),
+            (53, "GEMINI_CLI_TURN_LIMIT"),
+        ):
+            with self.subTest(exit_code=exit_code):
+                got = gemini.classify_cli(exit_code, "")
+                self.assertEqual(got["code"], expected)
+                self.assertEqual(got["exit_code"], exit_code)
+                self.assertEqual(got["status"], "HELD")
+                self.assertFalse(got["retry_allowed"])
+
     def test_valid_result_requires_actual_response_and_no_error(self):
         ok = gemini.classify_cli(0, "", response={"response": "patch candidate", "stats": {}})
         self.assertEqual(ok["status"], "COMPLETED")
