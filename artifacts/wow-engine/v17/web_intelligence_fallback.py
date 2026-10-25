@@ -1,4 +1,4 @@
-"""NBA V17 web-intelligence *research* fallback; never a probability model.
+"""Multi-sport V17 web-intelligence *research* fallback; never a probability model.
 
 Consumes normalized Scout/Research evidence; deliberately does not search the web
 or trust supplied URLs as proof of what a page says. Upstream acquisition remains
@@ -12,16 +12,11 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 
 from v17.scout_source_policy import COMMON_SOURCE_RULES, evidence_quality, source_rule
+from v17.web_intelligence_sport_profiles import MARKETS, NO_LINE_MARKETS, normalize_sport, weights_for
 
 CAN_EXECUTE = False
 RESEARCH_CEILING = "RESEARCH_INTEREST"
-WEIGHTS = {
-    "TEAM_STRENGTH": 0.30,
-    "INJURIES_LINEUPS": 0.25,
-    "OPPONENT_MATCHUP": 0.20,
-    "PACE_GAME_SCRIPT": 0.15,
-    "VENUE_FATIGUE": 0.10,
-}
+WEIGHTS = weights_for("NBA")  # Compatibility with existing NBA research v1
 # Research heuristics, NOT fitted coefficients or calibration parameters.
 TIER_QUALITY = {
     "TIER_1_OFFICIAL": 1.0,
@@ -99,7 +94,7 @@ def research_fallback(req: Mapping[str, Any], *, now: datetime | None = None) ->
         "schema_version": "WOW_WEB_INTELLIGENCE_FALLBACK_V1",
         "lane": "RESEARCH_ONLY",
         "source_validation": "STRUCTURAL_AND_FRESHNESS_ONLY_NOT_INDEPENDENTLY_FETCH_VERIFIED",
-        "sport": str(req.get("sport") or "").upper(),
+        "sport": normalize_sport(req.get("sport")),
         "official_event_id": req.get("official_event_id"),
         "selection": req.get("selection"),
         "market_type": req.get("market_type"),
@@ -110,7 +105,8 @@ def research_fallback(req: Mapping[str, Any], *, now: datetime | None = None) ->
         "research_score": None,
         "evidence_quality_factor": None,
         "factor_scores": {},
-        "factor_weights": dict(WEIGHTS),
+        "factor_weights": dict(weights_for(req.get("sport")) or {}),
+        "research_profile": "SPORT_SPECIFIC_UNFITTED_HEURISTIC_V1",
         "accepted_evidence": [],
         "rejected_evidence": [],
         "market_audit": _market_audit(req, now),
@@ -131,16 +127,17 @@ def research_fallback(req: Mapping[str, Any], *, now: datetime | None = None) ->
 
     if model_status not in MODEL_FAILURES:
         return finish("FALLBACK_NOT_APPLICABLE")
-    if base["sport"] != "NBA":
+    weights = weights_for(base["sport"])
+    if weights is None:
         return finish("RESEARCH_PROFILE_UNSUPPORTED")
     start = _time(req.get("event_start_time_utc"))
     if not req.get("official_event_id") or not req.get("selection") or not req.get("market_type"):
         return finish("EVENT_OR_SELECTION_IDENTITY_MISSING")
-    if req.get("market_type") not in {"MONEYLINE", "SPREAD", "TOTAL"}:
+    if req.get("market_type") not in MARKETS[base["sport"]]:
         return finish("EXACT_MARKET_UNSUPPORTED")
-    if req.get("market_type") == "MONEYLINE" and req.get("line") is not None:
+    if req.get("market_type") in NO_LINE_MARKETS and req.get("line") is not None:
         return finish("EXACT_MARKET_IDENTITY_INVALID")
-    if req.get("market_type") in {"SPREAD", "TOTAL"} and (
+    if req.get("market_type") not in NO_LINE_MARKETS and (
         isinstance(req.get("line"), bool)
         or not isinstance(req.get("line"), (int, float))
         or not isfinite(req["line"])
@@ -158,7 +155,7 @@ def research_fallback(req: Mapping[str, Any], *, now: datetime | None = None) ->
         source_group = str(item.get("source_group") or "").strip().lower()
         observed = _time(item.get("observed_at"))
         value = item.get("favorability")
-        if factor not in WEIGHTS:
+        if factor not in weights:
             reason = "FACTOR_UNSUPPORTED"
         elif source_class not in COMMON_SOURCE_RULES or source_class in _MARKET_CLASSES:
             reason = "SPORTING_SOURCE_UNSUPPORTED"
@@ -190,7 +187,7 @@ def research_fallback(req: Mapping[str, Any], *, now: datetime | None = None) ->
         if key not in independent or record["datetime"] > independent[key]["datetime"]:
             independent[key] = record
 
-    grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in WEIGHTS}
+    grouped: dict[str, list[dict[str, Any]]] = {key: [] for key in weights}
     for record in independent.values():
         grouped[record["factor"]].append(record)
         base["accepted_evidence"].append({
@@ -211,7 +208,7 @@ def research_fallback(req: Mapping[str, Any], *, now: datetime | None = None) ->
     groups = {record["source_group"] for record in independent.values()}
     mean_source_quality = sum(r["quality"] for r in independent.values()) / len(independent)
     q = min(1.0, len(groups) / 5.0) * mean_source_quality
-    directional = sum(WEIGHTS[k] * (base["factor_scores"][k] - 0.5) for k in WEIGHTS)
+    directional = sum(weights[k] * (base["factor_scores"][k] - 0.5) for k in weights)
     base["evidence_quality_factor"] = round(q, 6)
     base["research_score"] = round(max(0.0, min(100.0, 50 + 100 * q * directional)), 2)
     return finish("RESEARCH_INTEREST")
