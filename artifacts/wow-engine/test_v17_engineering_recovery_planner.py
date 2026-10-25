@@ -35,16 +35,21 @@ def test_retry_cap_stops_further_repair_dispatch():
     result = rp.plan_recovery(
         pr_number=1, findings=["QA_REGRESSION_FAILED"], attempts=3, is_wow_engineering_pr=True
     )
-    assert result["action"] == "NEEDS_OWNER_RETRY_CAP"
-    assert result["label"] == "needs-owner"
+    assert result["action"] == "BLOCKER_TEAM_REENTRY"
+    assert result["reason"] == "REPAIR_RETRY_CAP_EXHAUSTED"
+    assert result["next_owner"] == "ROOT_CAUSE_INVESTIGATOR"
+    assert result["attempts"] == 3
+    assert "label" not in result
+    assert result["can_execute"] is False
 
 
 def test_retry_cap_does_not_decrement_or_reset_attempts():
     result = rp.plan_recovery(
         pr_number=1, findings=["QA_REGRESSION_FAILED"], attempts=5, is_wow_engineering_pr=True
     )
-    assert result["action"] == "NEEDS_OWNER_RETRY_CAP"
+    assert result["action"] == "BLOCKER_TEAM_REENTRY"
     assert result["attempts"] == 5
+    assert result["revisit_trigger"] == "FRESH_ROOT_CAUSE_OR_CHANGED_HEAD_EVIDENCE"
 
 
 def test_qa_trust_root_finding_is_never_dispatched_even_at_zero_attempts():
@@ -150,3 +155,33 @@ def test_cli_plan_outputs_json(capsys):
 
     payload = json.loads(out)
     assert payload["action"] == "DISPATCH_REPAIR"
+
+def test_cap_does_not_override_missing_owner_approval():
+    result = rp.plan_recovery(
+        pr_number=11, findings=["QA_TRUST_ROOT_OWNER_APPROVAL_MISSING"],
+        attempts=4, is_wow_engineering_pr=True,
+    )
+    assert result["action"] == "WAITING_ON_OWNER"
+    assert result["attempts"] == 4
+
+
+def test_cap_does_not_override_pending_ci_evidence():
+    result = rp.plan_recovery(
+        pr_number=11, findings=["RELEASE_QA_MISSING"],
+        attempts=4, is_wow_engineering_pr=True,
+    )
+    assert result["action"] == "WAITING_ON_EVIDENCE"
+    assert result["attempts"] == 4
+
+
+def test_triple_d_reentry_workflow_has_exact_head_and_single_writer_guards():
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/wow-v17-engineering-auto-repair.yml").read_text()
+    assert "steps.plan.outputs.action == 'BLOCKER_TEAM_REENTRY'" in workflow
+    assert "WOW_TRIPLE_D_REENTRY:PR=" in workflow
+    assert "REENTRY_PR_HEAD_STALE_OR_UNTRUSTED" in workflow
+    assert "REENTRY_INCIDENT_NOT_IN_APPROVED_MANIFEST" in workflow
+    assert "REENTRY_INCIDENT_SEVERITY_MISMATCH" in workflow
+    assert "REENTRY_EXISTING_WRITER_QUEUE" in workflow
+    assert "steps.plan.outputs.action == 'NEEDS_OWNER_RETRY_CAP'" not in workflow
