@@ -125,17 +125,20 @@ def _prove(req, row, governed, *, fails=False, rows=None):
     )
 
 
-def test_exact_fitted_prediction_proves_package_calibration_and_full_board():
+def test_exact_fitted_prediction_proves_only_numeric_package_not_dynamic_stage():
     req, row, governed = _fixture()
     result = _prove(req, row, governed)
-    assert result["nfl_stage_receipt"]["status"] == "PASS"
+    assert result["nfl_stage_receipt"]["status"] == "HOLD"
+    assert result["nfl_stage_receipt"]["package_readback_status"] == "PASS"
+    assert result["nfl_stage_receipt"]["dynamic_calibration_stage"] == "EVIDENCE_NOT_EMITTED"
     assert result["prediction_id"] == PRED
     assert result["probability_package_valid"] is True
-    assert result["dynamic_calibration_complete"] is True
+    assert result["dynamic_calibration_complete"] is False
+    assert result["calibration_status"] == "UNPROVEN"
     assert result["calibrated_lower_bound"] == 0.7493
     assert result["can_execute"] is False
     assert validate_governed_scoring_package(result).status == "PASS"
-    assert publication_chain_audit(result).status == "PASS"
+    assert publication_chain_audit(result).status == "BLOCKED"
 
 
 def test_no_readback_never_borrows_stage_pass_or_changes_probability():
@@ -189,8 +192,37 @@ def test_upstream_hold_is_never_upgraded_by_valid_model_stage_proof():
     governed["probability_publishable"] = False
     governed["terminal_label"] = "MODEL_QUALIFIED_HOLD"
     result = _prove(req, row, governed)
-    assert result["nfl_stage_receipt"]["status"] == "PASS"
+    assert result["nfl_stage_receipt"]["status"] == "HOLD"
+    assert result["nfl_stage_receipt"]["package_readback_status"] == "PASS"
     assert result["rank_eligible"] is False
     assert result["probability_publishable"] is False
     assert result["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert publication_chain_audit(result).status == "BLOCKED"
+
+
+def test_health_pass_or_borrowed_upstream_stage_boolean_does_not_certify_calibration():
+    req, row, governed = _fixture()
+    assert row["calibration_health_status"] == "PASS"
+    assert row["model_probability_publishable"] is True
+    governed["dynamic_calibration_complete"] = True  # potentially stale prior output
+    governed["calibration_status"] = "PASS"
+    result = _prove(req, row, governed)
+    assert result["probability_package_valid"] is True
+    assert result["dynamic_calibration_complete"] is False
+    assert result["calibration_status"] == "UNPROVEN"
+    assert result["nfl_stage_receipt"]["status"] == "HOLD"
+    assert "NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_MISSING" in result["nfl_stage_receipt"]["blockers"]
+    assert publication_chain_audit(result).status == "BLOCKED"
+    assert result["can_execute"] is False
+
+
+def test_absent_prediction_does_not_reuse_upstream_calibration_pass():
+    req, row, governed = _fixture()
+    governed["dynamic_calibration_complete"] = True
+    governed["calibration_status"] = "PASS"
+    result = _prove(req, row, governed, rows=[])
+    assert result.get("probability_package_valid") is not True
+    assert result["dynamic_calibration_complete"] is False
+    assert result["calibration_status"] == "UNPROVEN"
+    assert result["nfl_stage_receipt"]["status"] == "HOLD"
+    assert result["can_execute"] is False
