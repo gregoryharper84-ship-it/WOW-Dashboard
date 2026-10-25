@@ -206,3 +206,18 @@ def test_matchup_stats_must_precede_the_timestamp_claimed_by_source():
     e[2]["measurements"]["last_input_game_end_at"] = "2026-10-25T14:01:00Z"
     with pytest.raises(NFLContextAdmissionError, match="NFL_CONTEXT_PRIOR_GAME_LEAKAGE"):
         _run(e)
+
+
+def test_unknown_market_and_postgame_metric_fields_are_not_admitted():
+    for injected in ("sportsbook_implied_prob", "final_home_score", "future_injury_status"):
+        e = _sources()
+        e[2]["measurements"][injected] = 0.90
+        with pytest.raises(NFLContextAdmissionError, match="NFL_CONTEXT_METRIC_CONTRACT_INVALID"):
+            _run(e)
+
+
+def test_missing_required_feature_never_defaults_from_other_values():
+    e = _sources()
+    del e[1]["measurements"]["ol_starters_expected"]
+    with pytest.raises(NFLContextAdmissionError, match="NFL_CONTEXT_METRIC_CONTRACT_INVALID"):
+        _run(e)
