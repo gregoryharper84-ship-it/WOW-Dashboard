@@ -134,7 +134,8 @@ def _reviewer_allowlist(value: object) -> list[dict[str, Any]]:
 
 def _latest(records: Sequence[Mapping[str, Any]], *, name: str, expected_sha: str,
             app_id: int | None = None, path: str | None = None,
-            time_field: str = "started_at") -> Mapping[str, Any] | None:
+            time_field: str = "started_at",
+            skip_unexecuted_pr_approval: bool = False) -> Mapping[str, Any] | None:
     matches = []
     for record in records:
         if record.get("head_sha") != expected_sha or record.get("name") != name:
@@ -145,6 +146,15 @@ def _latest(records: Sequence[Mapping[str, Any]], *, name: str, expected_sha: st
             continue
         started = _timestamp(record.get(time_field), "CHECK_STARTED_AT")
         record_id = _positive_int(record.get("id"), "CHECK_ID")
+        # GitHub's pull_request action_required is a pre-job admission decision,
+        # not an executed regression. Never let a metadata-only re-trigger hide
+        # an earlier genuine exact-head run. Without that run, selection is
+        # empty and certification still fails closed.
+        if (skip_unexecuted_pr_approval
+                and record.get("event") == "pull_request"
+                and record.get("status") == "completed"
+                and record.get("conclusion") == "action_required"):
+            continue
         matches.append((started, record_id, record))
     return max(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
 
@@ -427,7 +437,8 @@ def build_receipt(
     verified_workflows = []
     for name, path in REQUIRED_WORKFLOWS.items():
         run = _latest(
-            workflow_runs, name=name, expected_sha=expected_head_sha, path=path, time_field="created_at"
+            workflow_runs, name=name, expected_sha=expected_head_sha, path=path,
+            time_field="created_at", skip_unexecuted_pr_approval=True
         )
         _require(run is not None, f"REQUIRED_WORKFLOW_MISSING:{name}")
         _require(run.get("status") == "completed" and run.get("conclusion") == "success",
