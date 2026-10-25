@@ -242,3 +242,103 @@ def test_midnight_utc_event_relookup_uses_original_espn_scoreboard_date(monkeypa
     assert seen == ["20261004"]
     assert market.data["_wow_secondary_source"]["prediction_authority"] is False
     assert market.data["_wow_secondary_source"]["can_execute"] is False
+
+
+@pytest.mark.parametrize(
+    ("sport_key", "core_fragment"),
+    [
+        ("baseball_mlb", "/baseball/leagues/mlb/"),
+        ("basketball_ncaab", "/basketball/leagues/mens-college-basketball/"),
+        ("basketball_wnba", "/basketball/leagues/wnba/"),
+        ("icehockey_nhl", "/hockey/leagues/nhl/"),
+    ],
+)
+def test_event_market_uses_espn_core_odds_when_scoreboard_has_no_h2h(
+    monkeypatch,
+    sport_key,
+    core_fragment,
+):
+    event = _event(401908014)
+    event["competitions"][0]["id"] = "401908014"
+    event["competitions"][0]["odds"] = []
+    event["_wow_secondary_scoreboard_dates"] = ["20261004"]
+
+    monkeypatch.setattr(
+        secondary,
+        "_find_event",
+        lambda requested_sport, event_id, context: secondary.SecondaryResult(True, event, 200),
+    )
+    seen = []
+
+    def fake_http_json(url, params=None):
+        seen.append((url, dict(params or {})))
+        return secondary.SecondaryResult(
+            True,
+            {
+                "items": [{
+                    "provider": {"id": "41", "name": "DraftKings"},
+                    "homeTeamOdds": {"moneyLine": -125},
+                    "awayTeamOdds": {"moneyLine": 105},
+                    "lastUpdated": "2026-10-04T15:00:00Z",
+                }]
+            },
+            200,
+        )
+
+    monkeypatch.setattr(secondary, "_http_json", fake_http_json)
+
+    result = secondary.secondary_for_request(
+        f"/odds-api/v4/sports/{sport_key}/events/espn-401908014/odds",
+        {"markets": "h2h"},
+        {"espn-401908014": {"_wow_secondary_scoreboard_dates": ["20261004"]}},
+        primary_failure="ODDS_PROVIDER_NON_JSON:HTTP_429",
+    )
+
+    assert result.ok is True
+    assert result.status == 200
+    assert len(seen) == 1
+    assert core_fragment in seen[0][0]
+    assert seen[0][0].endswith(
+        "/events/401908014/competitions/401908014/odds"
+    )
+    assert seen[0][1] == {"limit": 25}
+    marker = result.data["_wow_secondary_source"]
+    assert marker["provider"] == "ESPN_CORE_ODDS_RESEARCH_FALLBACK"
+    assert marker["provider_detail"] == "DraftKings"
+    assert marker["prediction_authority"] is False
+    assert marker["exact_line_authority"] is False
+    assert marker["can_execute"] is False
+    market = result.data["bookmakers"][0]["markets"][0]
+    assert market["key"] == "h2h"
+    assert market["outcomes"] == [
+        {"name": "Home 401908014", "price": -125},
+        {"name": "Away 401908014", "price": 105},
+    ]
+
+
+def test_empty_espn_core_odds_stays_typed_h2h_unavailable(monkeypatch):
+    event = _event(401908014)
+    event["competitions"][0]["id"] = "401908014"
+    event["competitions"][0]["odds"] = []
+
+    monkeypatch.setattr(
+        secondary,
+        "_find_event",
+        lambda requested_sport, event_id, context: secondary.SecondaryResult(True, event, 200),
+    )
+    monkeypatch.setattr(
+        secondary,
+        "_http_json",
+        lambda url, params=None: secondary.SecondaryResult(True, {"items": []}, 200),
+    )
+
+    result = secondary.secondary_for_request(
+        "/odds-api/v4/sports/baseball_mlb/events/espn-401908014/odds",
+        {"markets": "h2h"},
+        {},
+        primary_failure="ODDS_PROVIDER_NON_JSON:HTTP_429",
+    )
+
+    assert result.ok is False
+    assert result.status == 404
+    assert result.code == "SECONDARY_SOURCE_H2H_UNAVAILABLE"
