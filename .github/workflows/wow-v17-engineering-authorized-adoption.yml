@@ -1,0 +1,98 @@
+# Governed, LLM-free, one-PR-at-a-time Engineering App integration.
+# This is a protected trust root: enabling requires independent review/merge.
+# It never approves, merges, or deploys. Source PR code is never executed here.
+name: wow-v17-engineering-authorized-adoption
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_pr:
+        description: Exact same-repo source PR number reviewed for integration
+        required: true
+        type: string
+      source_sha:
+        description: Full 40-character source PR head SHA (no moving branch refs)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+concurrency:
+  group: wow-v17-engineering-implementation-single-writer
+  cancel-in-progress: false
+
+jobs:
+  adopt:
+    name: Independently authenticated App mechanical source adoption
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'gregoryharper84-ship-it'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: wow-engineering
+    env:
+      WOW_CAN_EXECUTE: 'false'
+      WOW_DRY_RUN_ONLY: 'true'
+      SOURCE_PR: ${{ inputs.source_pr }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Checkout protected main only (no persisted credentials)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate exact source PR, original base, paths, regression provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$WOW_CAN_EXECUTE" = false
+          test "$WOW_DRY_RUN_ONLY" = true
+          python artifacts/wow-engine/v17/engineering_authorized_adoption.py preflight \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-pr "$SOURCE_PR" \
+            --source-sha "$SOURCE_SHA"
+          echo "SRC_PREFLIGHT_ONLY_NOT_AUTHORIZED_MERGE"
+
+      - name: Mint genuine Engineering App credential
+        id: engineering
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require real App credential and separate read/write tokens
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.engineering.outputs.token }}
+          KEY_PRESENT: ${{ steps.engineering.outputs.key-present }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "${KEY_PRESENT:-false}" == true && -n "${APP_TOKEN:-}" ]] || {
+            echo "ENGINEERING_APP_CREDENTIAL_MISSING_HOLD"; exit 1;
+          }
+          [[ "$APP_TOKEN" != "$GH_TOKEN" ]] || {
+            echo "READ_AND_WRITE_IDENTITY_NOT_SEPARATED_HOLD"; exit 1;
+          }
+
+      - name: One authorized App commit, PR, and exact author readback
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.engineering.outputs.token }}
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_authorized_adoption.py integrate \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-pr "$SOURCE_PR" \
+            --source-sha "$SOURCE_SHA"
+          echo "INTEGRATION_PR_CREATED_NOT_REVIEWED_NOT_MERGED_NOT_DEPLOYED"
+          echo "can_execute=false"
