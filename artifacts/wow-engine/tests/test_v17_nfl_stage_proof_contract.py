@@ -788,7 +788,8 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     assert compact_patriots["result_summary"]["calibrated_home_lower_bound"] == PATRIOTS_LOWER_BOUND
     assert compact_patriots["result_summary"]["official_publication_guard"]["status"] == "HELD"
     assert compact_patriots["result_summary"]["publication_chain_audit"]["status"] == "UNPROVEN"
-    assert compact_patriots["result_summary"]["publication_agreement"]["status"] == "UNPROVEN"
+    # COMPACT cannot erase the same upstream official-guard contradiction.
+    assert compact_patriots["result_summary"]["publication_agreement"]["status"] == "CONFLICT"
     assert compact_by_event["mlb-1"]["row_status"] == "COMPLETED"
     compact_nhl = compact_by_event["nhl-1"]
     assert compact_nhl["row_status"] == "HELD"
