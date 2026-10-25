@@ -12,7 +12,7 @@ that gap.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 CONTRACT_VERSION = "wow.v17.stage_proof.v1"
@@ -125,6 +125,97 @@ def _receipt(
     return receipt
 
 
+NFL_FINAL_REFRESH_AUTHORITY = "v17.nfl_team_event_publication._nfl_final_refresh"
+
+
+def _nfl_producer_final_refresh_receipt(
+    identity: Mapping[str, Any], source_snapshot_id: str | None,
+    final_refresh: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Attest only the second, canonical NFL schedule read actually performed.
+
+    A modeled event being PREGAME, SQL final-gates PASS, or calibration health
+    PASS never supplies this proof. The refresh provider must have re-queried the
+    exact modeled source and checked the unchanged schedule content.
+    """
+    if final_refresh is None:
+        return _receipt(
+            stage=STAGE_FINAL_REFRESH,
+            evidence_type=EVIDENCE_NOT_EMITTED, disposition="UNPROVEN",
+            authority=None, reason="NFL_FINAL_REFRESH_OPERATION_NOT_EXECUTED",
+            identity=identity,
+            extra={"scheduled_event_status_accepted_as_proof": False,
+                   "borrowed_mlb_or_flask_receipt": False},
+        )
+    if not isinstance(final_refresh, Mapping):
+        return _receipt(
+            stage=STAGE_FINAL_REFRESH,
+            evidence_type=EVIDENCE_MALFORMED, disposition="FAIL",
+            authority=None, reason="NFL_FINAL_REFRESH_PRODUCER_RECEIPT_MALFORMED",
+            identity=identity,
+        )
+    status = _upper(final_refresh.get("final_refresh_status"))
+    reasons = final_refresh.get("reasons")
+    if (final_refresh.get("source") != "NFL_CANONICAL_SCHEDULE_REQUERY"
+            or not isinstance(reasons, list)
+            or final_refresh.get("can_execute") is not False):
+        return _receipt(
+            stage=STAGE_FINAL_REFRESH,
+            evidence_type=EVIDENCE_MALFORMED, disposition="FAIL",
+            authority=None, reason="NFL_FINAL_REFRESH_PRODUCER_RECEIPT_MALFORMED",
+            identity=identity,
+        )
+    if (status != "PASS" or reasons
+            or final_refresh.get("probability_invalidated") is not False
+            or final_refresh.get("rerun_required") is not False):
+        return _receipt(
+            stage=STAGE_FINAL_REFRESH,
+            evidence_type=EVIDENCE_FAILED, disposition="FAIL",
+            authority=NFL_FINAL_REFRESH_AUTHORITY,
+            reason="NFL_FINAL_REFRESH_PRODUCER_REJECTED", identity=identity,
+            extra={"producer_reasons": list(reasons)},
+        )
+    scored_id = str(final_refresh.get("scored_source_snapshot_id") or "")
+    refreshed_id = str(final_refresh.get("refresh_source_snapshot_id") or "")
+    if not source_snapshot_id or scored_id != str(source_snapshot_id) or not refreshed_id:
+        return _receipt(
+            stage=STAGE_FINAL_REFRESH,
+            evidence_type=EVIDENCE_CONFLICT, disposition="FAIL",
+            authority=NFL_FINAL_REFRESH_AUTHORITY,
+            reason="NFL_FINAL_REFRESH_SOURCE_SNAPSHOT_ID_MISMATCH", identity=identity,
+        )
+    checked_at = _parse_timestamp(final_refresh.get("checked_at"))
+    model_at = _parse_timestamp(final_refresh.get("model_timestamp"))
+    refreshed_at = _parse_timestamp(final_refresh.get("refresh_source_timestamp"))
+    if checked_at is None or model_at is None or refreshed_at is None:
+        return _receipt(
+            stage=STAGE_FINAL_REFRESH,
+            evidence_type=EVIDENCE_MALFORMED, disposition="FAIL",
+            authority=None, reason="NFL_FINAL_REFRESH_TIMESTAMP_INVALID", identity=identity,
+        )
+    if (checked_at < model_at or checked_at < refreshed_at
+            or checked_at - refreshed_at > timedelta(hours=24)):
+        return _receipt(
+            stage=STAGE_FINAL_REFRESH,
+            evidence_type=EVIDENCE_STALE, disposition="FAIL",
+            authority=NFL_FINAL_REFRESH_AUTHORITY,
+            reason="NFL_FINAL_REFRESH_TIMESTAMP_STALE_OR_FUTURE", identity=identity,
+        )
+    return _receipt(
+        stage=STAGE_FINAL_REFRESH,
+        evidence_type=EVIDENCE_EMITTED, disposition="PASS",
+        authority=NFL_FINAL_REFRESH_AUTHORITY,
+        reason=None, identity=identity,
+        extra={"refreshed_at": checked_at.isoformat(),
+               "material_update_timestamp": refreshed_at.isoformat(),
+               "scored_source_snapshot_id": scored_id,
+               "refresh_source_snapshot_id": refreshed_id,
+               "freshness_status": "FRESH",
+               "scheduled_event_status_accepted_as_proof": False,
+               "borrowed_mlb_or_flask_receipt": False},
+    )
+
+
 def build_nfl_stage_proof_contract(
     *,
     research_run_id: str,
@@ -139,13 +230,15 @@ def build_nfl_stage_proof_contract(
     probability_audit_result: Any,
     event_mutex_status: Any,
     calibration_health_status: Any,
+    final_refresh: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the NFL producer's own stage receipts.
 
     Package validation is recorded only when ``_build_governed_probability_package``
     has already returned a package for this call. Dynamic calibration and final
-    refresh stay ``EVIDENCE_NOT_EMITTED`` because this producer does not run
-    those stages. ``calibration_health_status`` is retained as an observation
+    refresh stays ``EVIDENCE_NOT_EMITTED`` unless a real second schedule re-query
+    from the certified NFL producer is passed and independently checked here.
+    ``calibration_health_status`` is retained as an observation
     and is not accepted as dynamic-calibration proof.
     """
     identity = {
@@ -223,18 +316,7 @@ def build_nfl_stage_proof_contract(
             reason="NFL_GOVERNANCE_BRIDGE_DID_NOT_EXECUTE",
             identity=identity,
         )
-    refresh = _receipt(
-        stage=STAGE_FINAL_REFRESH,
-        evidence_type=EVIDENCE_NOT_EMITTED,
-        disposition="UNPROVEN",
-        authority=None,
-        reason="NFL_FINAL_REFRESH_OPERATION_NOT_EXECUTED",
-        identity=identity,
-        extra={
-            "scheduled_event_status_accepted_as_proof": False,
-            "borrowed_mlb_or_flask_receipt": False,
-        },
-    )
+    refresh = _nfl_producer_final_refresh_receipt(identity, source_snapshot_id, final_refresh)
     return {
         "contract_version": CONTRACT_VERSION,
         "producer": NFL_PRODUCER,
@@ -571,6 +653,7 @@ def finalize_nfl_governed_publication(
     model_version: str | None,
     package_validated: bool,
     governance_from_bridge: bool,
+    final_refresh: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attach NFL stage proof and hold publication when proof is incomplete.
 
@@ -593,6 +676,7 @@ def finalize_nfl_governed_publication(
         probability_audit_result=out.get("llp_probability_audit_result"),
         event_mutex_status=out.get("event_mutex_status"),
         calibration_health_status=out.get("calibration_health_status"),
+        final_refresh=final_refresh,
     )
     out["stage_proof_contract"] = contract
     blocker = contract_publication_block(contract)
