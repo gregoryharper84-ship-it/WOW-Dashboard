@@ -618,7 +618,8 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
 @pytest.mark.parametrize("wf, upstream", [
     (QA_WF, [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair",
-        "wow-v17-change-impact-gate", "wow-v17-trusted-governance-gate",
+        # Do not restore the governance completion event: QA -> certifier -> trusted gate -> QA.
+        "wow-v17-change-impact-gate",
     ]),
     (REL_WF, ["wow-v17-independent-qa-check"]),
 ])
