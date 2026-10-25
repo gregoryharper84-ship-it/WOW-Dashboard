@@ -60,13 +60,15 @@ def test_wrong_pr_actor_or_draft_held(author, draft):
                                    requested_pr=1, requested_sha=SHA)
 
 
-@pytest.mark.parametrize("checks", [
-    source_checks(conclusion="failure"), source_checks(conclusion="queued"),
-    source_checks(sha="c" * 40),
-    {"check_runs": source_checks()["check_runs"], "total_count": 99},
+@pytest.mark.parametrize("checks,reason", [
+    (source_checks(conclusion="failure"), "SOURCE_REQUIRED_REGRESSION_RED_HOLD"),
+    (source_checks(conclusion="queued"), "SOURCE_REQUIRED_REGRESSION_RED_HOLD"),
+    (source_checks(sha="c" * 40), "SOURCE_REQUIRED_REGRESSION_MISSING_HOLD"),
+    ({"check_runs": source_checks()["check_runs"], "total_count": 99},
+     "SOURCE_CHECK_INVENTORY_INCOMPLETE_HOLD"),
 ])
-def test_required_exact_head_regressions_cannot_be_faked(checks):
-    with pytest.raises(adoption.AdoptionHold, match="SOURCE_CHECK_"):
+def test_required_exact_head_regressions_cannot_be_faked(checks, reason):
+    with pytest.raises(adoption.AdoptionHold, match=reason):
         adoption.validate_evidence(source_pr(), source_files(), checks,
                                    requested_pr=1, requested_sha=SHA)
 
