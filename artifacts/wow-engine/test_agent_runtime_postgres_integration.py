@@ -389,3 +389,175 @@ def test_receipts_writer_round_trip_through_real_postgrest(receipts_schema):
     with _receipts_conn() as conn, conn.cursor() as cur:
         cur.execute(f"select next_action from {RECEIPTS_TABLE} where receipt_id=%s", (stored["receipt_id"],))
         assert cur.fetchone() == (None,)
+
+
+def test_continuity_outbox_live_postgres_group_and_lease_fences():
+    """Real PostgreSQL 16, ephemeral CI ONLY: exercise staged SQL and role denial.
+
+    This is an isolated test of SQL syntax/constraints/lease epoch semantics.
+    Full concurrent takeover timing and independently authenticated GitHub
+    workflow artifacts still need independent integration certification.
+    """
+    from uuid import uuid4
+    from urllib.parse import urlparse
+
+    if (os.getenv("GITHUB_ACTIONS") != "true"
+            or os.getenv("GITHUB_WORKFLOW") != "wow-engine-verify"
+            or os.getenv("GITHUB_REPOSITORY") != "gregoryharper84-ship-it/WOW-Dashboard"):
+        pytest.skip("Ephemeral protected CI integration PostgreSQL only")
+    dsn = _pg_dsn()
+    assert urlparse(dsn).hostname in {"localhost", "127.0.0.1"}
+    sql = (
+        Path(__file__).parent.parent.parent
+        / "docs/wow/engineering/proposals/WOW_CONTINUITY_OUTBOX_REVIEW_ONLY.sql"
+    ).read_text()
+    assert sql.count("create or replace function public.wow_engineering_continuity_outbox_") == 5
+    a, b = 999999176901, 999999176902
+    owner_a = "github-actions:987654:1:alpha"
+    owner_b = "github-actions:987655:1:bravo"
+    claim_sql = """
+        create or replace function public.wow_engineering_check_writer_lease(
+            p_incident_id bigint, p_owner_id text, p_epoch bigint
+        ) returns boolean language sql
+        set search_path = pg_catalog, public
+        as $$
+            select exists(
+                select 1 from public.wow_engineering_incident_writer_leases
+                where incident_id=p_incident_id and owner_id=p_owner_id
+                  and epoch=p_epoch and state='HELD'
+                  and expires_at > clock_timestamp()
+            )
+        $$;
+    """
+    rpc = "select public.wow_engineering_continuity_outbox_"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        try:
+            # Database belongs to a single ephemeral CI container; cannot
+            # affect the live Supabase project or production Render service.
+            for role in ("anon", "authenticated", "service_role"):
+                exists = conn.execute(
+                    "select exists(select 1 from pg_roles where rolname=%s)",
+                    (role,),
+                ).fetchone()[0]
+                if not exists:
+                    conn.execute("create role " + role + " nologin")
+            conn.execute("""
+                create table public.wow_engineering_incident_writer_leases(
+                    incident_id bigint primary key, owner_id text not null,
+                    epoch bigint not null, lease_group text not null,
+                    state text not null, expires_at timestamptz not null
+                )
+            """)
+            conn.execute(claim_sql)
+            conn.execute(sql)  # Actual SQL parser and DDL, not mock asserts.
+            for n in ("reserve", "abort", "reclaim", "arm", "mark"):
+                assert conn.execute("""
+                    select exists(select 1 from pg_proc p
+                      join pg_namespace n on n.oid=p.pronamespace
+                      where n.nspname='public'
+                      and p.proname=%s and p.prosecdef = true)
+                """, ("wow_engineering_continuity_outbox_" + n,)).fetchone()[0]
+            for role in ("anon", "authenticated", "service_role"):
+                assert conn.execute(
+                    "select has_table_privilege(%s, %s, 'INSERT')",
+                    (role, "public.wow_engineering_continuity_outbox"),
+                ).fetchone()[0] is False
+                assert conn.execute(
+                    "select has_table_privilege(%s, %s, 'UPDATE')",
+                    (role, "public.wow_engineering_continuity_outbox"),
+                ).fetchone()[0] is False
+            assert conn.execute("""
+                select count(*) from pg_indexes
+                where schemaname='public'
+                  and tablename='wow_engineering_continuity_outbox'
+                  and indexname in (
+                    'wow_engineering_continuity_outbox_active_incident',
+                    'wow_engineering_continuity_outbox_active_group')
+            """).fetchone()[0] == 2
+
+            for incident, owner, epoch in ((a, owner_a, 2), (b, owner_b, 5)):
+                conn.execute("""
+                    insert into public.wow_engineering_incident_writer_leases
+                    (incident_id,owner_id,epoch,lease_group,state,expires_at)
+                    values (%s,%s,%s,'P0_AUTONOMY_RESTORE','HELD',now()+interval '15 minutes')
+                """, (incident, owner, epoch))
+            iid_a, iid_b = str(uuid4()), str(uuid4())
+            def reserve(incident, intent, owner, epoch):
+                return conn.execute(
+                    rpc + "reserve(%s,%s::uuid,%s,%s,%s,%s,%s,%s)",
+                    (incident, intent, "a"*40, "DISPATCH_NEW_REPAIR",
+                     None, None, owner, epoch),
+                ).fetchone()[0]
+            first = reserve(a, iid_a, owner_a, 2)
+            assert first["status"] == "RESERVED"
+            assert first["lease_group"] == "P0_AUTONOMY_RESTORE"
+            same_group = reserve(b, iid_b, owner_b, 5)
+            assert same_group["status"] == "IN_FLIGHT"
+            assert conn.execute(
+                rpc + "abort(%s,%s::uuid,%s,%s,%s)",
+                (a, iid_a, owner_a, 2, "MAIN_CHANGED_BEFORE_DISPATCH"),
+            ).fetchone()[0] is True
+            second = reserve(b, iid_b, owner_b, 5)
+            assert second["status"] == "RESERVED"
+            assert conn.execute(
+                "select count(*) from public.wow_engineering_continuity_outbox where state='PREARM_ABORTED'"
+            ).fetchone()[0] == 1
+            assert conn.execute(
+                rpc + "arm(%s,%s::uuid,%s,%s)", (a, iid_a, owner_a, 2)
+            ).fetchone()[0] is False
+            # Real two-session interleaving: ARM holds the authoritative lease
+            # row lock until transaction commit; a competing takeover UPDATE
+            # must block. No local process mutex or mocked DB is involved.
+            from concurrent.futures import ThreadPoolExecutor
+            from threading import Event
+            from time import sleep
+            started = Event()
+
+            def take_over_lease():
+                with psycopg.connect(dsn, autocommit=True) as second_conn:
+                    second_conn.execute("set statement_timeout='5000ms'")
+                    started.set()
+                    second_conn.execute("""
+                        update public.wow_engineering_incident_writer_leases
+                        set epoch=6,owner_id='github-actions:987656:1:charlie'
+                        where incident_id=%s
+                    """, (b,))
+                    return second_conn.execute("""
+                        select epoch from public.wow_engineering_incident_writer_leases
+                        where incident_id=%s
+                    """, (b,)).fetchone()[0]
+
+            conn.execute("begin")
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                try:
+                    assert conn.execute(
+                        rpc + "arm(%s,%s::uuid,%s,%s)", (b, iid_b, owner_b, 5)
+                    ).fetchone()[0] is True
+                    future = pool.submit(take_over_lease)
+                    assert started.wait(2)
+                    sleep(0.15)
+                    assert not future.done(), "lease takeover bypassed held RPC row lock"
+                finally:
+                    conn.execute("commit")  # release lease lock even on assertion failure
+                assert future.result(timeout=5) == 6
+            # Once armed, the old attempt stays held and cannot be reclaimed.
+            assert conn.execute(
+                rpc + "reclaim(%s,%s::uuid,%s,%s)",
+                (b,iid_b,"github-actions:987656:1:charlie",6),
+            ).fetchone()[0] is False
+            assert conn.execute(
+                rpc + "arm(%s,%s::uuid,%s,%s)",(b,iid_b,owner_b,5)
+            ).fetchone()[0] is False
+        finally:
+            for name,args in (
+                ("reserve","bigint,uuid,text,text,bigint,text,text,bigint"),
+                ("abort","bigint,uuid,text,bigint,text"),
+                ("reclaim","bigint,uuid,text,bigint"),
+                ("arm","bigint,uuid,text,bigint"),
+                ("mark","bigint,uuid,text,bigint,text,bigint"),
+            ):
+                conn.execute("drop function if exists public.wow_engineering_continuity_outbox_"
+                             + name + "(" + args + ")")
+            conn.execute("drop function if exists public.wow_engineering_check_writer_lease(bigint,text,bigint)")
+            conn.execute("drop table if exists public.wow_engineering_continuity_outbox")
+            conn.execute("drop table if exists public.wow_engineering_incident_writer_leases")
