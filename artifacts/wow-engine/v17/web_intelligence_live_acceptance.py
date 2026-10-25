@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from v17.web_intelligence_sport_profiles import WEIGHT_PROFILES
+from v17.web_intelligence_sport_profiles import WEIGHT_PROFILES, MARKETS
 
 CAN_EXECUTE = False
 _PROBE_CODES = frozenset({"INSUFFICIENT_RESEARCH_EVIDENCE"})
@@ -32,7 +32,7 @@ def make_synthetic_request(sport: str, *, now: datetime | None = None) -> dict[s
         "sport": sport,
         "official_event_id": "WOW-SYNTHETIC-RESEARCH-SMOKE-NONSPORTING",
         "event_start_time_utc": (now + timedelta(days=1)).isoformat(),
-        "market_type": "MONEYLINE" if sport != "SOCCER" else "THREE_WAY_1X2",
+        "market_type": next((name for name in ("MONEYLINE", "MATCH_WINNER", "THREE_WAY_1X2", "OUTRIGHT") if name in MARKETS[sport]), "TOTAL"),
         "selection": "SYNTHETIC_SIDE",
         "line": None,
         "model_status": "MODEL_UNAVAILABLE",
