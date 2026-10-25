@@ -400,9 +400,20 @@ def _attach_nfl_strict_scoring_package(
         or selected not in {home, away} or home == away
         or not prediction_id or not score_id or not source_id
         or str(governed.get("score_snapshot_id") or "") != score_id
+        or (governed.get("selected_participant") not in (None, selected))
     ):
         raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_IDENTITY_OR_SIDE_INVALID")
     side = "home" if selected == home else "away"
+    opponent_side = "away" if side == "home" else "home"
+    # The fitted NFL scorer selects the more likely side. A different selected
+    # team is an identity inconsistency, never a reason to invert a bound.
+    selected_p = fitted.get(f"calibrated_{side}_probability")
+    opponent_p = fitted.get(f"calibrated_{opponent_side}_probability")
+    if (not isinstance(selected_p, (float, int))
+            or not isinstance(opponent_p, (float, int))
+            or isinstance(selected_p, bool) or isinstance(opponent_p, bool)
+            or selected_p < opponent_p):
+        raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_SELECTED_SIDE_INCONSISTENT")
     for key in (
         f"calibrated_{side}_probability",
         f"calibrated_{side}_lower_bound",
