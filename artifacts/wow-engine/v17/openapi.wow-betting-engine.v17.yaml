@@ -317,7 +317,7 @@ paths:
       responses:
         '200': {description: Research-only score or typed HOLD; never a governed probability}
         '401': {description: Authentication failed}
-        '422': {description: Invalid event, market, evidence or source contract}
+        '422': {description: 'Invalid event, market, evidence or source contract'}
   /v17/research/web-intelligence-fallback/from-scout:
     post:
       operationId: scoreV17MultiSportResearchFromScoutEvidence
