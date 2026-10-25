@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -41,6 +42,10 @@ QA_EVIDENCE_CHECKS = (*REQUIRED_REGRESSION_CHECKS, CHANGE_IMPACT_CHECK)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_PAGES = 10
 PER_PAGE = 100
+NATIVE_REGRESSION_WORKFLOW_ID = 338954264
+NATIVE_REGRESSION_WORKFLOW_PATH = ".github/workflows/wow-verify.yml"
+MAX_NATIVE_RUN_AGE = timedelta(hours=2)
+ACTIVE_WORK_STATUSES = frozenset({"queued", "in_progress", "pending", "waiting"})
 
 Fetch = Callable[[str], tuple[int, Any]]
 QA_WORKFLOW_NAME = "wow-v17-independent-qa-check"
@@ -79,6 +84,133 @@ def _paged(fetch: Fetch, path: str, key: str | None, errors: list[str], label: s
     return items
 
 
+def _paged_exact(
+    fetch: Fetch, path: str, key: str, errors: list[str], label: str,
+) -> list[dict]:
+    """Read a bounded GitHub inventory and require its declared total to match."""
+    items: list[dict] = []
+    sep = "&" if "?" in path else "?"
+    for page in range(1, MAX_PAGES + 1):
+        status, body = fetch(f"{path}{sep}per_page={PER_PAGE}&page={page}")
+        rows = body.get(key) if isinstance(body, dict) else None
+        total = body.get("total_count") if isinstance(body, dict) else None
+        if (
+            status != 200
+            or not isinstance(rows, list)
+            or not isinstance(total, int)
+            or isinstance(total, bool)
+            or total < 0
+        ):
+            errors.append(f"{label}_UNREADABLE:{status}")
+            return []
+        items.extend(rows)
+        if len(items) > total:
+            errors.append(f"{label}_COUNT_INVALID")
+            return []
+        if len(rows) < PER_PAGE:
+            if len(items) != total:
+                errors.append(f"{label}_TRUNCATED")
+                return []
+            return items
+    errors.append(f"{label}_TRUNCATED")
+    return []
+
+
+def _native_workflow_run_matches(
+    run: dict, *, repo: str, pr_number: int, head: str, head_ref: str,
+) -> bool:
+    repository = run.get("repository")
+    head_repository = run.get("head_repository")
+    prs = run.get("pull_requests")
+    if not isinstance(repository, dict) or not isinstance(head_repository, dict) or not isinstance(prs, list):
+        return False
+    return (
+        isinstance(run.get("id"), int)
+        and not isinstance(run.get("id"), bool)
+        and run["id"] > 0
+        and isinstance(run.get("run_attempt"), int)
+        and not isinstance(run.get("run_attempt"), bool)
+        and run["run_attempt"] > 0
+        and run.get("workflow_id") == NATIVE_REGRESSION_WORKFLOW_ID
+        and run.get("path") == NATIVE_REGRESSION_WORKFLOW_PATH
+        and run.get("event") == "pull_request"
+        and run.get("head_sha") == head
+        and run.get("head_branch") == head_ref
+        and repository.get("full_name") == repo
+        and head_repository.get("full_name") == repo
+        and any(
+            isinstance(item, dict)
+            and item.get("number") == pr_number
+            and isinstance(item.get("head"), dict)
+            and item["head"].get("sha") == head
+            and item["head"].get("ref") == head_ref
+            for item in prs
+        )
+    )
+
+
+def _native_workflow_evidence(
+    repo: str, pr: dict, head: str, *, fetch: Fetch, errors: list[str],
+) -> list[dict]:
+    if not SHA_RE.fullmatch(head):
+        return []
+    runs = _paged_exact(
+        fetch,
+        f"repos/{repo}/actions/runs?head_sha={head}&event=pull_request",
+        "workflow_runs",
+        errors,
+        "NATIVE_WORKFLOW_RUNS",
+    )
+    matching = [
+        run for run in runs
+        if isinstance(run, dict)
+        and _native_workflow_run_matches(
+            run,
+            repo=repo,
+            pr_number=int(pr.get("number") or 0),
+            head=head,
+            head_ref=str(pr.get("head_ref") or ""),
+        )
+    ]
+    latest = max(matching, key=lambda run: run["id"], default=None)
+    if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
+        return []
+
+    jobs = _paged_exact(
+        fetch,
+        f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
+        "jobs",
+        errors,
+        "NATIVE_WORKFLOW_JOBS",
+    )
+    return [{
+        key: latest.get(key)
+        for key in (
+            "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
+            "head_branch", "created_at", "status", "repository",
+            "head_repository", "pull_requests",
+        )
+    } | {
+        "jobs": [
+            {"name": job.get("name"), "status": job.get("status")}
+            for job in jobs if isinstance(job, dict)
+        ],
+    }]
+
+
+def _recent_active_timestamp(value: Any, *, now: datetime | None = None) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        created = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        return False
+    age = (now or datetime.now(timezone.utc)) - created
+    return timedelta(0) <= age < MAX_NATIVE_RUN_AGE
+
+
 def gather(
     repo: str,
     pr_number: int,
@@ -108,6 +240,7 @@ def gather(
         errors.append(f"PULL_REQUEST_UNREADABLE:{status}")
         pr = {}
     ev["pr"] = {
+        "number": pr.get("number"),
         "state": pr.get("state"), "draft": pr.get("draft"), "merged": pr.get("merged"),
         "head_sha": (pr.get("head") or {}).get("sha"),
         "head_ref": (pr.get("head") or {}).get("ref"),
@@ -142,8 +275,13 @@ def gather(
     runs = _paged(fetch, f"repos/{repo}/commits/{head}/check-runs", "check_runs", errors, "CHECK_RUNS")
     ev["check_runs"] = [{"id": r.get("id"), "name": r.get("name"), "head_sha": r.get("head_sha"),
                          "status": r.get("status"), "conclusion": r.get("conclusion"),
-                         "app_id": (r.get("app") or {}).get("id"), "completed_at": r.get("completed_at")}
+                         "app_id": (r.get("app") or {}).get("id"),
+                         "completed_at": r.get("completed_at"),
+                         "created_at": r.get("created_at"), "started_at": r.get("started_at")}
                         for r in runs]
+    ev["native_workflow_runs"] = _native_workflow_evidence(
+        repo, ev["pr"], head, fetch=fetch, errors=errors,
+    )
     reviews = _paged(fetch, f"repos/{repo}/pulls/{pr_number}/reviews", None, errors, "REVIEWS")
     ev["reviews"] = [{"user": (r.get("user") or {}).get("login"), "state": r.get("state"),
                       "commit_id": r.get("commit_id"), "submitted_at": r.get("submitted_at")} for r in reviews]
@@ -356,7 +494,7 @@ def _latest(runs: list[dict], name: str, head: str, app_id: int | str) -> dict |
 
 
 def pending_required_regressions(ev: dict) -> list[str]:
-    """Return official, same-head required checks whose latest run is still active."""
+    """Return required checks proven active by official exact-head check or workflow evidence."""
     pr = ev.get("pr") or {}
     head = ev.get("expected_head_sha")
     if (
@@ -386,9 +524,53 @@ def pending_required_regressions(ev: dict) -> list[str]:
             and not isinstance(run.get("id"), bool)
         ]
         latest = max(matches, key=lambda run: run["id"], default=None)
-        if latest and latest.get("status") in {"queued", "in_progress"}:
+        if (
+            latest
+            and latest.get("status") in {"queued", "in_progress"}
+            and _recent_active_timestamp(
+                latest.get("started_at") or latest.get("created_at")
+            )
+        ):
             pending.append(name)
-    return pending
+
+    native_runs = ev.get("native_workflow_runs")
+    if not isinstance(native_runs, list):
+        return pending
+    for run in native_runs:
+        if (
+            not isinstance(run, dict)
+            or not _native_workflow_run_matches(
+                run,
+                repo=str(ev.get("repository") or ""),
+                pr_number=int(pr.get("number") or 0),
+                head=head,
+                head_ref=str(pr.get("head_ref") or ""),
+            )
+            or run.get("status") not in ACTIVE_WORK_STATUSES
+        ):
+            continue
+        if not _recent_active_timestamp(run.get("created_at")):
+            continue
+        jobs = run.get("jobs")
+        if not isinstance(jobs, list):
+            continue
+        active_jobs = {
+            str(job.get("name"))
+            for job in jobs
+            if isinstance(job, dict) and job.get("status") in ACTIVE_WORK_STATUSES
+        }
+        if (
+            "WOW required-three regression" in active_jobs
+            or "WOW required-three collection contract" in active_jobs
+            or any(name.startswith("WOW required-three shard / ") for name in active_jobs)
+        ):
+            pending.append("WOW required-three regression")
+        if (
+            "WOW additional required regression" in active_jobs
+            or any(name.startswith("WOW additional shard / ") for name in active_jobs)
+        ):
+            pending.append("WOW additional required regression")
+    return list(dict.fromkeys(pending))
 
 
 def _owner_approved_at_head(ev: dict, head: str) -> bool:

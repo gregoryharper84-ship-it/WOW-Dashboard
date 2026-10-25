@@ -128,7 +128,7 @@ def evidence(files=("artifacts/wow-engine/v17/x.py",), author="wow-engineering[b
     ev = {
         "repository": REPO, "pr_number": 7, "expected_head_sha": HEAD, "evidence_errors": [],
         "owner_login": OWNER,
-        "pr": {"state": "open", "draft": False, "merged": False, "head_sha": HEAD, "head_repo": REPO,
+        "pr": {"number": 7, "state": "open", "draft": False, "merged": False, "head_sha": HEAD, "head_repo": REPO,
                "head_ref": "fix/issue-1830", "base_ref": "main", "author": author,
                "author_id": 285088163 if author == OWNER else 9001, "changed_files": len(files)},
         "files": list(files),
@@ -423,7 +423,7 @@ def test_release_passes_only_on_qa_app_success_at_exact_head():
 def test_pending_required_regression_is_only_classified_for_latest_trusted_exact_head_run():
     ev = evidence()
     active = run_(m.REQUIRED_REGRESSION_CHECKS[0], app=GHA, rid=900)
-    active.update(status="in_progress", conclusion=None)
+    active.update(status="in_progress", conclusion=None, created_at=datetime.now(timezone.utc).isoformat())
     ev["check_runs"].append(active)
 
     assert m.pending_required_regressions(ev) == [m.REQUIRED_REGRESSION_CHECKS[0]]
@@ -440,6 +440,14 @@ def test_pending_required_regression_is_only_classified_for_latest_trusted_exact
     ev["check_runs"].append(stale)
     assert m.pending_required_regressions(ev) == []
 
+    expired = dict(
+        active,
+        id=904,
+        created_at=(datetime.now(timezone.utc) - m.MAX_NATIVE_RUN_AGE).isoformat(),
+    )
+    ev["check_runs"].append(expired)
+    assert m.pending_required_regressions(ev) == []
+
 
 @pytest.mark.parametrize("pr_changes", [
     {"head_sha": OLD},
@@ -454,6 +462,76 @@ def test_pending_required_regression_never_defers_stale_or_closed_pr(pr_changes)
     active.update(status="queued", conclusion=None)
     ev["check_runs"].append(active)
     ev["pr"].update(pr_changes)
+
+    assert m.pending_required_regressions(ev) == []
+
+
+def _native_verify_run(**overrides):
+    run = {
+        "id": 7001,
+        "run_attempt": 1,
+        "workflow_id": m.NATIVE_REGRESSION_WORKFLOW_ID,
+        "path": m.NATIVE_REGRESSION_WORKFLOW_PATH,
+        "event": "pull_request",
+        "head_sha": HEAD,
+        "head_branch": "fix/issue-1830",
+        "status": "in_progress",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "repository": {"full_name": REPO},
+        "head_repository": {"full_name": REPO},
+        "pull_requests": [{
+            "number": 7,
+            "head": {"sha": HEAD, "ref": "fix/issue-1830"},
+        }],
+        "jobs": [{"name": "WOW required-three regression", "status": "queued"}],
+    }
+    run.update(overrides)
+    return run
+
+
+def test_missing_aggregate_defers_only_for_authentic_active_native_job():
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] != m.REQUIRED_REGRESSION_CHECKS[2]
+    ]
+    ev["native_workflow_runs"] = [_native_verify_run()]
+
+    assert m.pending_required_regressions(ev) == ["WOW required-three regression"]
+
+
+@pytest.mark.parametrize("run_changes", [
+    {"workflow_id": 1},
+    {"path": ".github/workflows/other.yml"},
+    {"event": "workflow_dispatch"},
+    {"head_sha": OLD},
+    {"head_branch": "stale-branch"},
+    {"repository": {"full_name": "fork/WOW-Dashboard"}},
+    {"head_repository": {"full_name": "fork/WOW-Dashboard"}},
+    {"pull_requests": [{"number": 8, "head": {"sha": HEAD, "ref": "fix/issue-1830"}}]},
+    {"status": "completed"},
+    {"created_at": "invalid"},
+    {"jobs": [{"name": "unrelated job", "status": "in_progress"}]},
+])
+def test_missing_aggregate_does_not_defer_for_untrusted_or_unrelated_native_run(run_changes):
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] != m.REQUIRED_REGRESSION_CHECKS[2]
+    ]
+    ev["native_workflow_runs"] = [_native_verify_run(**run_changes)]
+
+    assert m.pending_required_regressions(ev) == []
+
+
+def test_missing_aggregate_does_not_defer_after_native_run_exceeds_pending_bound():
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] != m.REQUIRED_REGRESSION_CHECKS[2]
+    ]
+    expired = (datetime.now(timezone.utc) - m.MAX_NATIVE_RUN_AGE).isoformat()
+    ev["native_workflow_runs"] = [_native_verify_run(created_at=expired)]
 
     assert m.pending_required_regressions(ev) == []
 
@@ -567,6 +645,8 @@ def _gather_routes(files=None, runs=None, changed=None):
         f"repos/{REPO}/pulls/7/files?per_page=100&page=1": (200, files),
         f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1": (200, {"total_count": len(runs), "check_runs": runs}),
         f"repos/{REPO}/pulls/7/reviews?per_page=100&page=1": (200, []),
+        f"repos/{REPO}/actions/runs?head_sha={HEAD}&event=pull_request&per_page=100&page=1":
+            (200, {"total_count": 0, "workflow_runs": []}),
     }
 
 
@@ -1443,9 +1523,28 @@ def test_release_defers_without_publishing_while_exact_head_regression_is_runnin
     qa_run = {"id": 900, "name": m.QA_CHECK, "head_sha": HEAD, "status": "completed",
               "conclusion": "success", "app": {"id": int(QA_APP)},
               "completed_at": "2026-10-09T03:30:00Z"}
-    running = {"id": 901, "name": m.REQUIRED_REGRESSION_CHECKS[0], "head_sha": HEAD,
-               "status": "in_progress", "conclusion": None, "app": {"id": GHA}}
-    routes = _routes_for_pr(_evidence_runs([qa_run, running]))
+    routes = _routes_for_pr(_evidence_runs([qa_run]))
+    checks = routes[f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"][1]["check_runs"]
+    routes[f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"][1]["check_runs"] = [
+        check for check in checks
+        if check["name"] != m.REQUIRED_REGRESSION_CHECKS[2]
+    ]
+    routes[f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"][1]["total_count"] -= 1
+    native_run = _native_verify_run()
+    native_run.update({
+        "repository": {"full_name": REPO},
+        "head_repository": {"full_name": REPO},
+        "pull_requests": [{"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830"}}],
+    })
+    # The Actions API run record carries provenance; its separate jobs endpoint
+    # proves the exact required aggregate is queued before GitHub creates a check run.
+    del native_run["jobs"]
+    routes[f"repos/{REPO}/actions/runs?head_sha={HEAD}&event=pull_request&per_page=100&page=1"] = [
+        200, {"total_count": 1, "workflow_runs": [native_run]},
+    ]
+    routes[f"repos/{REPO}/actions/runs/{native_run['id']}/attempts/1/jobs?per_page=100&page=1"] = [
+        200, {"total_count": 1, "jobs": [{"name": "WOW required-three regression", "status": "queued"}]},
+    ]
 
     proc, runner, env = _run_decide(
         fake_gh, REL_WF, routes,
@@ -1459,8 +1558,8 @@ def test_release_defers_without_publishing_while_exact_head_regression_is_runnin
     assert _release_count_enables_token_and_publish("0") is False
     assert not (fake_gh / "gh.log").exists()
 
-    completed = dict(running, id=902, status="completed", conclusion="success")
-    routes = _routes_for_pr(_evidence_runs([qa_run, completed]))
+    aggregate = run_(m.REQUIRED_REGRESSION_CHECKS[2], app=GHA, rid=903)
+    routes = _routes_for_pr(_evidence_runs([qa_run, aggregate]))
     proc, runner, env = _run_decide(
         fake_gh, REL_WF, routes,
         {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
@@ -1471,6 +1570,73 @@ def test_release_defers_without_publishing_while_exact_head_regression_is_runnin
     decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
     assert decision["conclusion"] == "success"
     assert decision["head_sha"] == HEAD and decision["can_execute"] is False
+    env["GH_TOKEN"] = "release-app-token"
+    published = subprocess.run(
+        ["bash", "-c", _step_script(REL_WF, "Publish exact-head check")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert published.returncode == 0, published.stdout + published.stderr
+    posted = [json.loads(line) for line in (fake_gh / "gh.log").read_text().splitlines()]
+    assert len(posted) == 1
+    assert posted[0]["payload"]["name"] == m.RELEASE_CHECK
+    assert posted[0]["payload"]["head_sha"] == HEAD
+    assert posted[0]["payload"]["conclusion"] == "success"
+
+
+def test_missing_aggregate_without_matching_active_native_work_is_terminal_hold(fake_gh):
+    qa_run = {"id": 900, "name": m.QA_CHECK, "head_sha": HEAD, "status": "completed",
+              "conclusion": "success", "app": {"id": int(QA_APP)},
+              "completed_at": "2026-10-09T03:30:00Z"}
+    routes = _routes_for_pr(_evidence_runs([qa_run]))
+    check_path = f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"
+    routes[check_path][1]["check_runs"] = [
+        check for check in routes[check_path][1]["check_runs"]
+        if check["name"] != m.REQUIRED_REGRESSION_CHECKS[2]
+    ]
+    routes[check_path][1]["total_count"] -= 1
+
+    proc, runner, env = _run_decide(
+        fake_gh, REL_WF, routes,
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in Path(env["GITHUB_OUTPUT"]).read_text()
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "failure"
+    assert f"RELEASE_QA_EVIDENCE_MISSING:{m.REQUIRED_REGRESSION_CHECKS[2]}" in decision["findings"]
+    assert "RELEASE_QA_EVIDENCE_PENDING" not in proc.stdout
+    assert decision["can_execute"] is False
+
+
+def test_missing_aggregate_with_completed_native_failure_is_terminal_hold(fake_gh):
+    qa_run = {"id": 900, "name": m.QA_CHECK, "head_sha": HEAD, "status": "completed",
+              "conclusion": "success", "app": {"id": int(QA_APP)},
+              "completed_at": "2026-10-09T03:30:00Z"}
+    routes = _routes_for_pr(_evidence_runs([qa_run]))
+    check_path = f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"
+    routes[check_path][1]["check_runs"] = [
+        check for check in routes[check_path][1]["check_runs"]
+        if check["name"] != m.REQUIRED_REGRESSION_CHECKS[2]
+    ]
+    routes[check_path][1]["total_count"] -= 1
+    failed = _native_verify_run(status="completed", conclusion="failure")
+    routes[f"repos/{REPO}/actions/runs?head_sha={HEAD}&event=pull_request&per_page=100&page=1"] = [
+        200, {"total_count": 1, "workflow_runs": [failed]},
+    ]
+
+    proc, runner, env = _run_decide(
+        fake_gh, REL_WF, routes,
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in Path(env["GITHUB_OUTPUT"]).read_text()
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "failure"
+    assert f"RELEASE_QA_EVIDENCE_MISSING:{m.REQUIRED_REGRESSION_CHECKS[2]}" in decision["findings"]
+    assert "RELEASE_QA_EVIDENCE_PENDING" not in proc.stdout
+    assert decision["can_execute"] is False
 
 
 def test_completed_required_regression_failure_is_terminal_not_pending(fake_gh):
