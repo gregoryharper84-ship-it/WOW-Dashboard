@@ -288,6 +288,47 @@ def test_action_required_without_prior_execution_cannot_certify():
     ) is None
 
 
+@pytest.mark.parametrize(("new_status", "new_conclusion", "expected"), [
+    ("completed", "action_required", "completed|success"),
+    ("completed", "failure", "completed|failure"),
+    ("in_progress", None, "in_progress|"),
+])
+def test_workflow_selector_uses_executed_exact_head_not_metadata_prompt(
+    new_status, new_conclusion, expected
+):
+    jq = shutil.which("jq")
+    if jq is None:
+        pytest.skip("jq required")
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    line = next(s.strip() for s in workflow.splitlines()
+                if 'select(.status != "completed"' in s)
+    selector = line.split("'", 2)[1]
+    assert '--arg sha "$HEAD_SHA"' in workflow
+    name = "wow-verify"
+    path = ".github/workflows/wow-verify.yml"
+    head = "a" * 40
+    old = {"id": 1, "name": name, "path": path, "head_sha": head,
+           "created_at": "2026-10-25T21:09:16Z", "event": "pull_request",
+           "status": "completed", "conclusion": "success"}
+    new = {**old, "id": 2, "created_at": "2026-10-25T21:33:20Z",
+           "status": new_status, "conclusion": new_conclusion}
+    proc = subprocess.run(
+        [jq, "-r", "--arg", "name", name, "--arg", "path", path,
+         "--arg", "sha", head, selector],
+        input=json.dumps([new, old]), capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == expected.strip()
+    no_prior = subprocess.run(
+        [jq, "-r", "--arg", "name", name, "--arg", "path", path,
+         "--arg", "sha", head, selector],
+        input=json.dumps([new]), capture_output=True, text=True, check=False,
+    )
+    assert no_prior.returncode == 0, no_prior.stderr
+    if new_conclusion == "action_required":
+        assert no_prior.stdout.strip() == ""
+
+
 def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
     text = WORKFLOW.read_text(encoding="utf-8")
     for required in ("wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate", "wow-v17-engineering-auditor-code-health", "wow-v17-spread-forward-shadow", "wow-v17-release-production-verification-agent"):
