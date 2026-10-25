@@ -105,8 +105,11 @@ def discover() -> dict:
     The hourly controller is already scheduled. This function never writes,
     grants approvals, or treats a typed review HOLD as source CI.
     """
-    from v17.agent_identity_policy import governance_trust_roots, is_trust_root
-    roots = frozenset(governance_trust_roots(Path.cwd()))
+    try:
+        from .agent_identity_policy import governance_trust_roots, is_trust_root
+    except ImportError:  # Protected-main CLI from within v17/
+        from agent_identity_policy import governance_trust_roots, is_trust_root
+    roots = frozenset(governance_trust_roots(Path(__file__).resolve().parents[3]))
     considered = 0
     for page in range(1, 5):
         pulls = api(f"pulls?state=open&base=main&per_page=100&page={page}")
