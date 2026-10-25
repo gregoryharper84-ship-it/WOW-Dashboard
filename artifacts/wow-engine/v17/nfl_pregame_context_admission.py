@@ -224,4 +224,59 @@ def build_pregame_context_packet(
     }
 
 
-__all__ = ["SCHEMA_VERSION", "FAMILIES", "NFLContextAdmissionError", "build_pregame_context_packet"]
+
+def audit_historical_snapshot_admissibility(
+    snapshot: Mapping[str, Any],
+    *,
+    event_start_time_utc: str,
+    decision_as_of: str,
+    rights_state_from_manifest: str,
+    row_available_at: str | None = None,
+) -> dict[str, Any]:
+    """Explain why bulk historical archives cannot establish pregame visibility.
+
+    Archive HTTP Last-Modified and season file labels are NOT substitutes for
+    contemporaneous public availability of each exact row. An archive whose
+    source rules pass is only a candidate, never independently authenticated
+    game-day evidence or a fitted model training feature.
+    """
+    kickoff = _time(event_start_time_utc, "NFL_CONTEXT_KICKOFF_INVALID")
+    cutoff = _time(decision_as_of, "NFL_CONTEXT_DECISION_TIME_INVALID")
+    if cutoff >= kickoff:
+        raise NFLContextAdmissionError("NFL_CONTEXT_DECISION_NOT_PREGAME")
+    if not isinstance(snapshot, Mapping):
+        raise NFLContextAdmissionError("NFL_CONTEXT_SOURCE_INVALID")
+    dataset = _require(snapshot.get("dataset_name"), "NFL_CONTEXT_DATASET_MISSING")
+    if dataset not in {"INJURIES", "WEEKLY_ROSTERS", "PLAY_BY_PLAY"}:
+        raise NFLContextAdmissionError("NFL_CONTEXT_DATASET_INVALID")
+    fetched = _time(snapshot.get("fetched_at"), "NFL_CONTEXT_SOURCE_TIME_INVALID")
+    blockers = []
+    if rights_state_from_manifest != "RESEARCH_APPROVED":
+        blockers.append("NFL_CONTEXT_MANIFEST_RIGHTS_NOT_APPROVED")
+    if snapshot.get("source_status") != "CAPTURED":
+        blockers.append("NFL_CONTEXT_SOURCE_CAPTURE_NOT_VERIFIED")
+    if fetched > cutoff:
+        blockers.append("NFL_CONTEXT_ARCHIVE_CAPTURE_AFTER_DECISION")
+    if row_available_at is None:
+        blockers.append("NFL_CONTEXT_HISTORICAL_ROW_AVAILABILITY_UNVERIFIED")
+    else:
+        available = _time(row_available_at, "NFL_CONTEXT_SOURCE_TIME_INVALID")
+        if available > cutoff:
+            blockers.append("NFL_CONTEXT_HISTORICAL_ROW_NOT_PREGAME_AVAILABLE")
+        if available > fetched:
+            blockers.append("NFL_CONTEXT_ROW_AVAILABILITY_AFTER_CAPTURE")
+    return {
+        "dataset_name": dataset,
+        "source_snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "admission_status": "RESEARCH_CANDIDATE_ONLY" if not blockers else "HOLD",
+        "blockers": sorted(set(blockers)),
+        "archive_capture_at": fetched.isoformat(),
+        "row_availability_independently_verified": False,
+        "source_license_independently_verified": False,
+        "historical_feature_admitted": False,
+        "model_probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+__all__ = ["SCHEMA_VERSION", "FAMILIES", "NFLContextAdmissionError", "build_pregame_context_packet", "audit_historical_snapshot_admissibility"]
