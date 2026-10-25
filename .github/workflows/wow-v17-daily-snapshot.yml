@@ -186,7 +186,7 @@ jobs:
           PY
 
   nfl-full-slate-exact-once-acceptance:
-    name: Verify NFL >12 FULL moneyline exact-once production path
+    name: Verify next NFL pregame slate exact-once discovery (not model certification)
     if: inputs.post_deploy_acceptance == true
     needs: daily-snapshot
     runs-on: ubuntu-latest
@@ -197,7 +197,6 @@ jobs:
     env:
       WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
       WOW_USER_TIMEZONE: America/Chicago
-      WOW_NFL_ACCEPTANCE_SLATE_DATE: "2026-10-04"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
@@ -209,7 +208,7 @@ jobs:
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
-      - name: Run serialized future NFL full-slate exact-once acceptance
+      - name: Run serialized next-Sunday NFL full-slate identity acceptance
         shell: bash
         run: |
           python - <<'PY'
@@ -217,6 +216,15 @@ jobs:
           import os
           import urllib.parse
           import urllib.request
+          from datetime import datetime, timedelta, timezone
+          from zoneinfo import ZoneInfo
+
+          # Select a genuinely future Sunday. A historical fixed date fed to
+          # live discovery only produces EVENT_WRONG_DATE (not a model verdict).
+          now = datetime.now(timezone.utc)
+          today = now.astimezone(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date()
+          days_until_next_sunday = (6 - today.weekday()) % 7 or 7
+          slate_date = (today + timedelta(days=days_until_next_sunday)).isoformat()
 
           def fresh_oidc_token():
               base = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
@@ -230,7 +238,7 @@ jobs:
                   return json.load(response)["value"]
 
           payload = {
-              "requested_slate_date": os.environ["WOW_NFL_ACCEPTANCE_SLATE_DATE"],
+              "requested_slate_date": slate_date,
               "requested_timezone": os.environ["WOW_USER_TIMEZONE"],
               "lanes": ["MONEYLINE"],
               "max_props": 0,
@@ -255,6 +263,7 @@ jobs:
           assert result.get("can_execute") is False, result
           assert result.get("global_terminal_authority") == "V17_TERMINAL_REDUCER", result
           assert result.get("automation_auth") == "GITHUB_ACTIONS_OIDC", result
+          assert result.get("requested_slate_date") == slate_date, result
 
           reconciliation = result.get("reconciliation") or {}
           assert reconciliation.get("balanced") is True, reconciliation
@@ -265,13 +274,25 @@ jobs:
 
           rows = [row for row in (result.get("rows") or []) if row.get("lane") == "MONEYLINE"]
           nfl_rows = [row for row in rows if str((row.get("identity") or {}).get("sport") or "").upper() == "NFL"]
-          if len(nfl_rows) <= 12:
-              raise AssertionError(f"NFL_FULL_SLATE_ACCEPTANCE_REQUIRES_GT12_ROWS:{len(nfl_rows)}")
+          if not nfl_rows:
+              raise AssertionError("NFL_NEXT_SLATE_DISCOVERY_EMPTY")
+          if len(nfl_rows) > payload["max_team_events"]:
+              raise AssertionError("NFL_DISCOVERY_EXCEEDS_REQUESTED_LIMIT")
 
           identities = []
           budget_rows = []
           for row in nfl_rows:
               identity = row.get("identity") or {}
+              result_row = row.get("result") or {}
+              if result_row.get("bucket") == "EVENT_WRONG_DATE":
+                  raise AssertionError("NFL_NEXT_SLATE_WRONG_DATE_HOLD")
+              event_at = datetime.fromisoformat(
+                  str(identity.get("commence_time_utc") or "").replace("Z", "+00:00")
+              )
+              if (event_at.utcoffset() is None
+                  or event_at.astimezone(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date().isoformat() != slate_date
+                  or event_at.astimezone(timezone.utc) <= now):
+                  raise AssertionError("NFL_NEXT_SLATE_EVENT_TIME_INVALID")
               event_id = identity.get("official_event_id") or identity.get("event_id") or identity.get("id")
               if not event_id:
                   raise AssertionError("NFL_FULL_SLATE_EVENT_ID_MISSING")
@@ -285,7 +306,8 @@ jobs:
 
           print(json.dumps({
               "status": "PASS",
-              "code": "NFL_FULL_SLATE_EXACT_ONCE_PRODUCTION_ACCEPTANCE_PASS",
+              "code": "NFL_NEXT_SLATE_EXACT_ONCE_DISCOVERY_PASS",
+              "model_terminal_certification": "NOT_PROVEN_BY_DISCOVERY_ACCEPTANCE",
               "run_id": result.get("run_id"),
               "requested_slate_date": result.get("requested_slate_date"),
               "nfl_rows": len(nfl_rows),
