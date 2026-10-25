@@ -67,7 +67,7 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
     # Keep this dedicated sync workflow dependency-free. Full YAML/OpenAPI
     # validation runs in the protected backend regression suite.
     assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 29
-    assert manifest["action_operation_count"] == 27
+    assert manifest["action_operation_count"] == 29
     assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
     assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
     assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
@@ -190,9 +190,9 @@ def test_packet_is_deterministic_for_same_repository_content():
 
 def test_research_fallback_actions_are_authenticated_non_predictive_and_contained_in_single_schema():
     text = SCHEMA.read_text(encoding="utf-8")
-    first = text.index("  /v17/research/web-intelligence-fallback:\\n")
-    second = text.index("  /v17/research/web-intelligence-fallback/from-scout:\\n", first)
-    end = text.index("  /internal/v17/spread-forward-shadow:\\n", second)
+    first = text.index("  /v17/research/web-intelligence-fallback:\n")
+    second = text.index("  /v17/research/web-intelligence-fallback/from-scout:\n", first)
+    end = text.index("  /internal/v17/spread-forward-shadow:\n", second)
     routes = text[first:end]
     assert "operationId: scoreV17WebIntelligenceResearchFallback" in routes
     assert "operationId: scoreV17MultiSportResearchFromScoutEvidence" in routes
