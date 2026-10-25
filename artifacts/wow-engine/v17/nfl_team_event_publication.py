@@ -21,6 +21,7 @@ from nfl_event_model_v17 import (
     load_champion_model,
 )
 from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence, score_nfl_team_event
+from v17.nfl_daily_stage_receipts import attach_nfl_daily_stage_receipt
 
 NFL_ALIASES = frozenset({"NFL", "FOOTBALL_NFL"})
 _PATCH_MARKER = "_v17_nfl_team_event_publication_installed"
@@ -407,6 +408,25 @@ def score_nfl_team_event_request(
 
     refresh = _nfl_final_refresh(effective_req, result, db=db)
     governed = _apply_nfl_final_refresh_ceiling(governed, refresh)
+    # The fitted scorer has already persisted the immutable event prediction.
+    # Re-read that exact row before emitting the two proof fields required by
+    # the full-board auditor. Calibration health alone is not stage proof.
+    governed = attach_nfl_daily_stage_receipt(db=db, req=effective_req, governed=governed)
+    if governed["nfl_stage_receipt"]["status"] != "PASS":
+        governed["probability_publishable"] = False
+        governed["rank_eligible"] = False
+        governed["terminal_label"] = "MODEL_QUALIFIED_HOLD"
+        governed["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
+        governed["code"] = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+        governed["blockers"] = sorted(set([
+            *(str(v) for v in (governed.get("blockers") or [])),
+            *(str(v) for v in governed["nfl_stage_receipt"]["blockers"]),
+        ]))
+        governed["terminal_reducer_input"] = {
+            "status": "HOLD",
+            "terminal_output": "MODEL_QUALIFIED_HOLD",
+            "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+        }
     governed["scout_research_barrier"] = scout_research_barrier
     evidence = dict(effective_req.sport_specific_evidence or {})
     governed["canonical_acquisition"] = {
