@@ -77,7 +77,7 @@ def _first_numeric(detail: Mapping[str, Any], *names: str) -> Any:
 
 def _chain_blocked(audit: Mapping[str, Any] | None) -> bool:
     """True only when an audit ran and proved at least one mandatory stage unproven."""
-    return isinstance(audit, Mapping) and _upper(audit.get("status")) == "BLOCKED"
+    return isinstance(audit, Mapping) and _upper(audit.get("status")) in {"BLOCKED", "UNPROVEN", "CONFLICT"}
 
 
 def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -85,6 +85,19 @@ def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
     candidate_id = _candidate_id(row)
     audit = _publication_audit_for_row(row)
     ceiling_applies = _chain_blocked(audit) and row.get("rank_eligible") is True
+    # Stage-proof demotion runs before full-board reconciliation. Preserve the
+    # typed governed HOLD rather than losing it as OTHER_TYPED_BLOCKER once
+    # both publication flags have correctly been lowered by the reducer.
+    stage_hold = (
+        _chain_blocked(audit) and row.get("bucket") == "OTHER_GOVERNED_HOLD"
+        and isinstance(detail, Mapping)
+        and (detail.get("model_probability_available") is True
+             or detail.get("probability_visibility_status") == "MODELED_HELD"
+             or any(detail.get(k) is not None for k in (
+                 "calibrated_probability", "calibrated_home_probability",
+                 "calibrated_selection_probability",
+             )))
+    )
     result = {
         "candidate_id": candidate_id,
         "sport": row.get("sport"),
@@ -93,6 +106,7 @@ def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "event_key": row.get("event_key"),
         "event_status": row.get("event_status"),
         "source_bucket": row.get("bucket"),
+        **({"status": "HOLD"} if stage_hold else {}),
         "model_status": row.get("model_status") or detail.get("model_status") or detail.get("code"),
         "market_acquisition_status": _market_status(detail),
         "governance_status": _governance_status(detail),
@@ -100,7 +114,7 @@ def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
         # eligibility. The numerical probability fields below are never touched.
         "rank_eligible": row.get("rank_eligible") is True and not ceiling_applies,
         "publication_chain_status": audit.get("status") if isinstance(audit, Mapping) else None,
-        **({"rank_eligible_pre_audit": True} if ceiling_applies else {}),
+        **({"rank_eligible_pre_audit": True} if ceiling_applies or row.get("rank_eligible_pre_audit") is True else {}),
         "probability_publishable": row.get("probability_publishable") is True,
         "calibrated_probability": _first_numeric(
             detail,
@@ -118,7 +132,7 @@ def _flat_terminal_row(row: Mapping[str, Any]) -> dict[str, Any]:
             detail.get("blocker")
             or detail.get("blocker_code")
             or detail.get("reason")
-            or (audit.get("first_blocker") if ceiling_applies else None)
+            or (audit.get("first_blocker") if ceiling_applies or stage_hold else None)
         ),
         "can_execute": False,
     }
