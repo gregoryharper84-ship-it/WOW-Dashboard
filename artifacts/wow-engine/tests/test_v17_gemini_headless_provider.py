@@ -203,6 +203,99 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         self.assertIn('minutes >= 0 else -1', healthy)
         self.assertIn('elif [ "$force" = "gemini" ]', dispatcher)
 
+
+    def test_recovery_is_one_shot_for_reviewed_runtime_changes(self):
+        old_sha = "a" * 40
+        new_sha = "b" * 40
+        runs = [{"headSha": old_sha, "status": "completed",
+                 "conclusion": "failure", "updatedAt": "2026-10-25T01:47:21Z"}]
+        compare = {"status": "ahead", "base_commit": {"sha": old_sha},
+                   "merge_base_commit": {"sha": old_sha},
+                   "total_commits": 2,
+                   "files": [{"filename": "artifacts/wow-engine/v17/engineering_gemini_headless.py",
+                              "status": "modified"}]}
+        result = gemini.admit_reviewed_recovery(runs, compare, new_sha)
+        self.assertEqual(result["status"], "RECOVERY_ADMITTED")
+        self.assertEqual(result["code"], "GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+        self.assertEqual(result["current_head_sha"], new_sha)
+        self.assertFalse(result["can_execute"])
+        self.assertEqual(result["terminal_authority"], "V17_TERMINAL_REDUCER")
+
+        # Durable run inventory consumes the reviewed revision regardless of
+        # whether its last worker succeeded or failed.
+        already = [dict(runs[0], headSha=new_sha)]
+        self.assertEqual(gemini.admit_reviewed_recovery(already, compare, new_sha)["code"],
+                         "GEMINI_RECOVERY_ALREADY_ATTEMPTED_SHA")
+        later = dict(compare, files=[{"filename": "docs/README.md", "status": "modified"}])
+        self.assertEqual(gemini.admit_reviewed_recovery(already, later, "c" * 40)["status"],
+                         "HELD")
+
+    def test_recovery_fail_closed_on_unknown_races_and_history(self):
+        previous, current = "1" * 40, "2" * 40
+        fail = {"headSha": previous, "status": "completed", "conclusion": "failure"}
+        compare = {"status": "ahead", "base_commit": {"sha": previous},
+                   "merge_base_commit": {"sha": previous}, "total_commits": 1,
+                   "files": [{"filename": ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+                              "status": "modified"}]}
+        def code(runs, diff=compare, target=current):
+            return gemini.admit_reviewed_recovery(runs, diff, target)["code"]
+        self.assertEqual(code([]), "GEMINI_RECOVERY_LATEST_RUN_UNVERIFIED")
+        self.assertEqual(code([fail, fail]), "GEMINI_RECOVERY_LATEST_RUN_UNVERIFIED")
+        self.assertEqual(code([dict(fail, status="queued", conclusion=None)]),
+                         "GEMINI_RECOVERY_PREVIOUS_RUN_NOT_FAILED")
+        self.assertEqual(code([dict(fail, status="in_progress", conclusion=None)]),
+                         "GEMINI_RECOVERY_PREVIOUS_RUN_NOT_FAILED")
+        self.assertEqual(code([dict(fail, conclusion="success")]),
+                         "GEMINI_RECOVERY_PREVIOUS_RUN_NOT_FAILED")
+        self.assertEqual(code([dict(fail, headSha="unknown")]),
+                         "GEMINI_RECOVERY_PREVIOUS_SHA_INVALID")
+        self.assertEqual(code([fail], target="broken"),
+                         "GEMINI_RECOVERY_CURRENT_SHA_INVALID")
+        self.assertEqual(code([fail], diff=None), "GEMINI_RECOVERY_COMPARE_UNAVAILABLE")
+        self.assertEqual(code([fail], diff=dict(compare, status="diverged")),
+                         "GEMINI_RECOVERY_SHA_LINEAGE_INVALID")
+        self.assertEqual(code([fail], diff=dict(compare, merge_base_commit={"sha": "f"*40})),
+                         "GEMINI_RECOVERY_SHA_LINEAGE_INVALID")
+        self.assertEqual(code([fail], diff=dict(compare, files=[{"filename": "README.md",
+                                                                 "status": "modified"}])),
+                         "GEMINI_RECOVERY_NO_REVIEWED_RUNTIME_CHANGE")
+        self.assertEqual(code([fail], diff=dict(compare, files=[{
+            "filename": "artifacts/wow-engine/tests/test_v17_gemini_headless_provider.py",
+            "status": "modified"}])), "GEMINI_RECOVERY_NO_REVIEWED_RUNTIME_CHANGE")
+        self.assertEqual(code([fail], diff=dict(compare, total_commits=250)),
+                         "GEMINI_RECOVERY_DIFF_TRUNCATED_OR_INVALID")
+        self.assertEqual(code([fail], diff=dict(compare, files=[{
+            "filename": ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+            "status": "removed"}])), "GEMINI_RECOVERY_NO_REVIEWED_RUNTIME_CHANGE")
+        self.assertNotIn("secret", str(gemini.admit_reviewed_recovery([fail], compare, current)))
+
+    def test_recovery_cli_returns_typed_no_action_without_side_effect(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runs_file, compare_file = root / "runs.json", root / "comparison.json"
+            runs_file.write_text(json.dumps([{
+                "headSha": "a"*40, "status": "completed", "conclusion": "failure"}]))
+            compare_file.write_text(json.dumps({
+                "status": "ahead", "base_commit": {"sha": "a"*40},
+                "merge_base_commit": {"sha": "a"*40}, "total_commits": 1,
+                "files": [{"filename": "artifacts/wow-engine/v17/engineering_gemini_headless.py",
+                           "status": "modified"}]}))
+            output = io.StringIO()
+            with redirect_stdout(output):
+                status = gemini.main(["recovery-admit", "--runs-file", str(runs_file),
+                                      "--comparison-file", str(compare_file),
+                                      "--current-sha", "b"*40])
+            self.assertEqual(status, 0)
+            self.assertEqual(json.loads(output.getvalue())["status"], "RECOVERY_ADMITTED")
+            # No replay for the same code revision, no API call or provider side effects.
+            output = io.StringIO()
+            with redirect_stdout(output):
+                status = gemini.main(["recovery-admit", "--runs-file", str(runs_file),
+                                      "--comparison-file", str(compare_file),
+                                      "--current-sha", "a"*40])
+            self.assertEqual(status, 2)
+            self.assertEqual(json.loads(output.getvalue())["status"], "HELD")
+
     def test_candidate_requires_changed_real_regression_test(self):
         with tempfile.TemporaryDirectory() as root:
             worktree = Path(root)
