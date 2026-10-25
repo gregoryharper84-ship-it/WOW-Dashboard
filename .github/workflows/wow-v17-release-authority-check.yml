@@ -1,5 +1,5 @@
 name: wow-v17-release-authority-check
-run-name: wow-v17-release-authority-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }}
+run-name: wow-v17-release-authority-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }} head=${{ inputs.head_sha || 'AUTO' }}
 
 # Phase C of #1550. Runs from protected main only and never checks out or executes
 # PR code. Evidence is read with the read-only GITHUB_TOKEN; the check is published
@@ -16,8 +16,17 @@ on:
       pr_number:
         description: Pull request number to evaluate at its current exact head.
         required: true
-  schedule:
-    - cron: "47 * * * *"
+        type: string
+      head_sha:
+        description: Optional exact SHA binding
+        required: false
+        type: string
+      qa_run_id:
+        description: Authenticated exact-head QA workflow run that produced the policy receipt.
+        required: true
+      qa_run_attempt:
+        description: Exact attempt number of the producing QA workflow run.
+        required: true
 
 permissions:
   contents: read
@@ -26,16 +35,22 @@ permissions:
   actions: read
 
 concurrency:
-  # One serialized queue per role: later runs see later evidence, so the newest
-  # published check always reflects the most complete evidence for that head.
-  group: wow-v17-release-authority-check
+  # Isolate PRs: other PR events cannot cancel a queued exact-head decision.
+  # Repeat events for one PR remain serialized. A workflow_run with no
+  # associated pull request shares this role's AUTO queue. AUTO is not a
+  # pull request number. A no-target upstream QA run is classified before
+  # policy resolution and publishes no check. A genuine QA target with a
+  # missing or forged policy still fails closed. Queue bounded by GitHub
+  # Actions maximum of 100 pending runs per group.
+  group: wow-v17-release-authority-check-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 'AUTO' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   release:
     # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
     # not red. Once bound, a missing key fails closed in the identity step below.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && vars.WOW_RELEASE_APP_ID != ''
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && vars.WOW_RELEASE_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'skipped')
     environment: wow-release
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -43,7 +58,7 @@ jobs:
       - name: Checkout protected main
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up Python
@@ -63,45 +78,109 @@ jobs:
             exit 1
           fi
 
+      - name: Classify upstream QA applicability
+        id: upstream
+        if: success() && github.event_name == 'workflow_run'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          set -euo pipefail
+          tool=artifacts/wow-engine/v17/independent_release_checks.py
+          [[ "${SOURCE_QA_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "${SOURCE_QA_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::SOURCE_QA_RUN_IDENTITY_INVALID"; exit 1;
+          }
+          err="$RUNNER_TEMP/classify-upstream-qa.err"
+          if ! classified=$(python "$tool" classify-upstream-qa --repo "$GITHUB_REPOSITORY" \
+            --run-id "$SOURCE_QA_RUN_ID" --run-attempt "$SOURCE_QA_RUN_ATTEMPT" \
+            2>"$err"); then
+            reason=$(head -n 1 "$err" | tr -d '\r')
+            echo "::error::${reason}"
+            exit 1
+          fi
+          disposition=$(jq -er '.disposition' <<<"$classified")
+          reason=$(jq -er '.reason' <<<"$classified")
+          if [ "$disposition" = "neutral" ]; then
+            echo "applicable=false" >> "$GITHUB_OUTPUT"
+            echo "reason=$reason" >> "$GITHUB_OUTPUT"
+            echo "::notice::RELEASE_UPSTREAM_QA_NEUTRAL:$reason (no check published)"
+            echo "Release upstream QA is neutral: $reason" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [ "$disposition" = "applicable" ] || {
+            echo "::error::RELEASE_UPSTREAM_QA_DISPOSITION_INVALID"; exit 1;
+          }
+          echo "applicable=true" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+
       - name: Decide at exact head (read-only)
         id: decide
+        if: success() && (github.event_name != 'workflow_run' || steps.upstream.outputs.applicable == 'true')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           INPUT_PR: ${{ inputs.pr_number }}
-          WR_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
           QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
           RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+          REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
+          ZERO_CREDIT_ACTIVATION: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
+          SOURCE_QA_RUN_ID: ${{ github.event.workflow_run.id || inputs.qa_run_id }}
+          SOURCE_QA_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.qa_run_attempt }}
         run: |
           set -euo pipefail
           tool=artifacts/wow-engine/v17/independent_release_checks.py
           out="$RUNNER_TEMP/decisions"; mkdir -p "$out"
+          [[ "${SOURCE_QA_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "${SOURCE_QA_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::SOURCE_QA_RUN_IDENTITY_INVALID"; exit 1;
+          }
+          policy_args=(resolve-qa-policy --repo "$GITHUB_REPOSITORY"
+            --run-id "$SOURCE_QA_RUN_ID" --run-attempt "$SOURCE_QA_RUN_ATTEMPT")
           if [ "$EVENT" = "workflow_dispatch" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR")
-          elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS")
-          else
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY")
+            [[ "${INPUT_PR:-}" =~ ^[1-9][0-9]*$ ]] || {
+              echo "::error::RELEASE_PR_NUMBER_INVALID"; exit 1;
+            }
+            policy_args+=(--pr "$INPUT_PR")
           fi
-          if [ "$(jq '.errors | length' <<<"$resolved")" != "0" ]; then
-            echo "::error::RELEASE_TARGETS_UNRESOLVED: $(jq -c .errors <<<"$resolved")"
-            exit 1
+          policy_bundle=$(python "$tool" "${policy_args[@]}")
+          policy=$(jq -ce '.policy' <<<"$policy_bundle")
+          printf '%s\n' "$policy" > "$out/qa-policy.json"
+          pr=$(jq -r '.target.pr_number' <<<"$policy")
+          head=$(jq -r '.target.head_sha' <<<"$policy")
+          if [ -n "${INPUT_HEAD_SHA:-}" ]; then
+            [[ "$INPUT_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::RELEASE_INPUT_HEAD_SHA_INVALID"; exit 1; }
+            [ "$INPUT_HEAD_SHA" = "$head" ] || { echo "::error::RELEASE_INPUT_HEAD_SHA_STALE"; exit 1; }
           fi
-          i=0
-          while read -r target; do
-            pr=$(jq -r .pr <<<"$target"); head=$(jq -r .head <<<"$target")
-            ev="$out/evidence-$pr.json"
-            python "$tool" gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head" > "$ev"
-            python "$tool" decide-release --evidence "$ev" --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" > "$out/decision-$pr.json"
-            i=$((i + 1))
-          done < <(jq -c '.targets[]' <<<"$resolved")
-          echo "count=$i" >> "$GITHUB_OUTPUT"
-          echo "RELEASE decisions: $i" >> "$GITHUB_STEP_SUMMARY"
+          review_mode=$(jq -r '.mode' <<<"$policy")
+          case "${REVIEW_ACTIVATION:-}" in
+            true) current_review_active=true ;;
+            ""|false) current_review_active=false ;;
+            *) echo "::error::QA_REVIEW_POLICY_INVALID"; exit 1 ;;
+          esac
+          ev="$out/evidence-$pr.json"
+          gather_args=(gather --repo "$GITHUB_REPOSITORY" --pr "$pr" --expected-head "$head"
+            --qa-policy-json "$out/qa-policy.json")
+          case "${ZERO_CREDIT_ACTIVATION:-}" in
+            true) zero_credit_active=true ;;
+            ""|false) zero_credit_active=false ;;
+            *) echo "::error::QA_ZERO_CREDIT_POLICY_INVALID"; exit 1 ;;
+          esac
+          [ "$zero_credit_active" != "true" ] || gather_args+=(--zero-credit-policy-enabled)
+          [ "$current_review_active" != "true" ] || gather_args+=(--current-review-active)
+          [ "$review_mode" != "legacy" ] || gather_args+=(--legacy-review-policy)
+          python "$tool" "${gather_args[@]}" > "$ev"
+          python "$tool" decide-release --evidence "$ev" --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" > "$out/decision-$pr.json"
+          echo "count=1" >> "$GITHUB_OUTPUT"
+          echo "RELEASE decision: PR $pr at $head using QA mode $review_mode" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mint checks-only App token
         id: app_token
-        if: steps.decide.outputs.count != '0'
+        if: steps.decide.outputs.count == '1'
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ vars.WOW_RELEASE_APP_ID }}
@@ -110,7 +189,7 @@ jobs:
           permission-checks: write
 
       - name: Publish exact-head check
-        if: steps.decide.outputs.count != '0'
+        if: steps.decide.outputs.count == '1'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}

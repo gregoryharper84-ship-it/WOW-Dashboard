@@ -1,29 +1,16 @@
 name: wow-sirt-independent-reliability-sentinel
 
-# Independent watchdog of the existing resident auditor. This is NOT a
-# replacement Engineering auditor or an alternate production control plane.
+# Manual, read-only diagnostic. The Render cron is the sole persisted
+# scheduler heartbeat authority; this workflow never substitutes for it.
 on:
-  # Keep the independent quarter-hour schedule. Add redundant read-only
-  # triggers for default-branch registration and hourly engineering completion.
-  # These DO NOT provide an outside-GitHub failure-domain observer.
-  schedule:
-    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/wow-sirt-independent-reliability-sentinel.yml"
-  workflow_run:
-    workflows:
-      - wow-v17-24h-engineering-closure-loop
-    types: [completed]
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: wow-sirt-independent-reliability-sentinel
+  group: wow-sirt-independent-reliability-sentinel-manual
   cancel-in-progress: false
 
 jobs:
@@ -47,11 +34,15 @@ jobs:
           WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT: ${{ vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT }}
         run: |
           set -uo pipefail
-          python artifacts/wow-engine/v17/sirt_assurance.py sentinel > "$RUNNER_TEMP/sirt-heartbeat.json"
-          result=$?
+          # The runner shell is bash -e; capture the exit code explicitly so the
+          # blocking evidence is printed and summarized before the step fails.
+          result=0
+          python artifacts/wow-engine/v17/sirt_assurance.py sentinel > "$RUNNER_TEMP/sirt-heartbeat.json" || result=$?
           cat "$RUNNER_TEMP/sirt-heartbeat.json"
           if [ "$result" -ne 0 ]; then
             echo "SIRT watchdog blocked: auditor/worker activity stale, unhealthy, or authoritative evidence unavailable." >> "$GITHUB_STEP_SUMMARY"
+            jq -r '"Status: \(.status // "UNKNOWN")", (.reason // empty | "Reason: \(.)"), ((.signals // [])[] | "- \(.severity) \(.type) \(.identity): \(.reason)")' \
+              "$RUNNER_TEMP/sirt-heartbeat.json" >> "$GITHUB_STEP_SUMMARY" || true
             echo "This is not a betting-model verdict." >> "$GITHUB_STEP_SUMMARY"
             exit "$result"
           fi

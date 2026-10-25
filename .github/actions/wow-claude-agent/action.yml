@@ -45,14 +45,30 @@ runs:
           turns=24
           tools='Read,Glob,Grep,Bash(python -m pytest:*),Bash(python artifacts/wow-engine/v17/engineering_agent_team.py:*),Bash(git status),Bash(git diff:*),Bash(git log:*)'
         fi
+        # Run 39919042320 job 120299530817 used one CLI (2.1.285), one
+        # claude_args string, and one read-only tool lease. API-key auth
+        # initialized claude-opus-5-5 and returned subtype success with
+        # is_error, zero cost, empty modelUsage, and no structured_output.
+        # OAuth initialized claude-sonnet-5-5 and returned schema-valid JSON.
+        # Pin that proven model for both modes. Do not add another paid retry.
         {
           echo 'claude_args<<EOF'
           echo "--max-turns $turns"
+          echo "--model claude-sonnet-5-5"
           echo "--allowedTools \"$tools\""
           printf '%s\n' "--json-schema '$OUTPUT_SCHEMA'"
           echo 'EOF'
         } >> "$GITHUB_OUTPUT"
 
+    - name: Clear API-key execution transcript before invocation
+      # Pinned base action reuses RUNNER_TEMP/claude-execution-output.json.
+      # Remove prior evidence before this attempt; never infer provider status from a stale file.
+      if: inputs.anthropic_api_key != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ] || { echo "::error::CLAUDE_RUNNER_TEMP_MISSING"; exit 1; }
+        rm -f -- "$RUNNER_TEMP/claude-execution-output.json"
     - name: Run governed Claude agent with API key
       id: claude_api
       if: inputs.anthropic_api_key != ''
@@ -64,6 +80,29 @@ runs:
         claude_args: ${{ steps.config.outputs.claude_args }}
         show_full_output: "false"
 
+    - name: Classify API-key provider failure without provider text
+      # Observation only. Never manufacture structured_output or approval.
+      if: >-
+        always() &&
+        (steps.claude_api.outcome == 'failure' ||
+         (steps.claude_api.outcome == 'success' && steps.claude_api.outputs.structured_output == ''))
+      shell: bash
+      env:
+        CLAUDE_EXECUTION_FILE: ${{ steps.claude_api.outputs.execution_file }}
+        CLAUDE_ATTEMPT: API_KEY
+      run: python3 .github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py
+
+    - name: Clear OAuth execution transcript before invocation
+      # Provider setup can fail before overwriting the shared execution file.
+      if: >-
+        inputs.claude_code_oauth_token != '' &&
+        (inputs.anthropic_api_key == '' || steps.claude_api.outcome == 'failure' ||
+         steps.claude_api.outputs.structured_output == '')
+      shell: bash
+      run: |
+        set -euo pipefail
+        [ -n "${RUNNER_TEMP:-}" ] && [ -d "$RUNNER_TEMP" ] || { echo "::error::CLAUDE_RUNNER_TEMP_MISSING"; exit 1; }
+        rm -f -- "$RUNNER_TEMP/claude-execution-output.json"
     - name: Run governed Claude agent with OAuth
       id: claude_oauth
       # A provider step may exit successfully without required structured_output.
@@ -80,6 +119,17 @@ runs:
         claude_args: ${{ steps.config.outputs.claude_args }}
         show_full_output: "false"
 
+    - name: Classify OAuth provider failure without provider text
+      if: >-
+        always() &&
+        (steps.claude_oauth.outcome == 'failure' ||
+         (steps.claude_oauth.outcome == 'success' && steps.claude_oauth.outputs.structured_output == ''))
+      shell: bash
+      env:
+        CLAUDE_EXECUTION_FILE: ${{ steps.claude_oauth.outputs.execution_file }}
+        CLAUDE_ATTEMPT: OAUTH
+      run: python3 .github/actions/wow-claude-agent/claude_execution_outcome_diagnostic.py
+
     - name: Verify provider result exists
       if: always()
       shell: bash
@@ -90,12 +140,19 @@ runs:
         OAUTH_OUTCOME: ${{ steps.claude_oauth.outcome }}
       run: |
         set -euo pipefail
+        api_present=false
+        oauth_present=false
+        if [ -n "${API_RESULT:-}" ]; then api_present=true; fi
+        if [ -n "${OAUTH_RESULT:-}" ]; then oauth_present=true; fi
+        # Presence and outcomes only. Never print provider text, schemas, or secrets.
+        echo "::notice::claude_attempt model=claude-sonnet-5-5 api_outcome=${API_OUTCOME:-not-run} api_output_present=${api_present} oauth_outcome=${OAUTH_OUTCOME:-not-run} oauth_output_present=${oauth_present}"
         if [ -z "${API_RESULT:-}" ] && [ -z "${OAUTH_RESULT:-}" ]; then
           echo "::error::CLAUDE_STRUCTURED_OUTPUT_MISSING (api_outcome=${API_OUTCOME:-not-run}, oauth_outcome=${OAUTH_OUTCOME:-not-run})."
           exit 1
         fi
         # A nonempty provider string is not sufficient evidence of a typed agent
         # decision. JSON is required; downstream role gates still enforce fields.
+        # Freeform text, including text that says PASS or approved, is rejected.
         RESULT="${API_RESULT:-${OAUTH_RESULT:-}}"
         if ! printf '%s' "$RESULT" | jq -e 'type == "object"' >/dev/null; then
           echo "::error::CLAUDE_STRUCTURED_OUTPUT_INVALID_JSON"
