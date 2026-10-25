@@ -180,9 +180,9 @@ def verify_git_source(base: str, main_sha: str, source_sha: str, paths: list[str
     with tempfile.TemporaryDirectory(prefix="wow-readonly-fetch-") as temp:
         askpass = Path(temp) / "askpass"
         askpass.write_text(
-            '#!/bin/sh\\n'
-            'case "$1" in *Username*) printf "x-access-token\\\\n";;'
-            ' *) printf "%s\\\\n" "$GIT_READ_TOKEN";; esac\\n'
+            '#!/bin/sh\n'
+            'case "$1" in *Username*) printf "x-access-token\\n";;'
+            ' *) printf "%s\\n" "$GIT_READ_TOKEN";; esac\n'
         )
         askpass.chmod(0o700)
         environment = dict(os.environ, GIT_ASKPASS=str(askpass),
@@ -233,8 +233,20 @@ def integrate(pr_number: int, source_sha: str) -> None:
         raise AdoptionHold("DRY_RUN_INVARIANTS_HOLD")
     main_sha, paths, base = preflight(pr_number, source_sha)
     branch = branch_for(pr_number, source_sha)
-    if call("git", "ls-remote", "--heads", "origin", branch):
-        raise AdoptionHold("EXACT_REPLAY_BRANCH_ALREADY_EXISTS_HOLD")
+    # Resolve branch existence with a read-only authenticated askpass, not
+    # a credential-less git ls-remote (private repos would fail every time).
+    with tempfile.TemporaryDirectory(prefix="wow-replay-check-") as temp:
+        askpass = Path(temp) / "askpass"
+        askpass.write_text(
+            '#!/bin/sh\n'
+            'case "$1" in *Username*) printf "x-access-token\\n";;'
+            ' *) printf "%s\\n" "$GIT_READ_TOKEN";; esac\n'
+        )
+        askpass.chmod(0o700)
+        env = dict(os.environ, GIT_ASKPASS=str(askpass),
+                   GIT_READ_TOKEN=os.environ["GH_TOKEN"], GIT_TERMINAL_PROMPT="0")
+        if call("git", "ls-remote", "--heads", "origin", branch, env=env):
+            raise AdoptionHold("EXACT_REPLAY_BRANCH_ALREADY_EXISTS_HOLD")
     call("git", "checkout", "-b", branch, main_sha)
     call("git", "restore", "--source", source_sha, "--staged", "--worktree", "--", *paths)
     diff = call("git", "diff", "--cached", "--name-only").splitlines()
