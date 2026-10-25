@@ -199,3 +199,10 @@ def test_no_market_or_fitted_probabilities_appear_in_packet():
     assert "calibrated_home_probability" not in packet
     assert "sportsbook" not in str(packet).lower()
     assert "odds" not in packet["features"]
+
+
+def test_matchup_stats_must_precede_the_timestamp_claimed_by_source():
+    e = _sources()
+    e[2]["measurements"]["last_input_game_end_at"] = "2026-10-25T14:01:00Z"
+    with pytest.raises(NFLContextAdmissionError, match="NFL_CONTEXT_PRIOR_GAME_LEAKAGE"):
+        _run(e)
