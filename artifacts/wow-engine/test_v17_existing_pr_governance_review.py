@@ -175,6 +175,7 @@ def test_existing_pr_ci_selector_compiles_and_matches_exact_workflow_path():
         ("completed", "success", 0),
         ("completed", "failure", 1),
         ("completed", "cancelled", 1),
+        ("completed", "timed_out", 1),
         ("in_progress", None, 99),
     ],
 )
@@ -250,7 +251,7 @@ def test_metadata_only_action_required_does_not_shadow_real_ci(older_conclusion,
              "created_at": "2026-10-25T21:09:16Z", "event": "pull_request",
              "status": "completed", "conclusion": older_conclusion}
     prompt = {**older, "id": 101, "created_at": "2026-10-25T21:33:20Z",
-              "conclusion": "action_required"}
+              "conclusion": "action_required", "pre_job_zero_jobs_verified": True}
     selected = verifier._latest(
         [prompt, older], name=name, expected_sha=head, path=path,
         time_field="created_at", skip_unexecuted_pr_approval=True,
@@ -282,10 +283,195 @@ def test_action_required_without_prior_execution_cannot_certify():
     prompt = {"id": 101, "name": name, "path": path, "head_sha": head,
               "created_at": "2026-10-25T21:33:20Z", "event": "pull_request",
               "status": "completed", "conclusion": "action_required"}
-    assert verifier._latest(
+    selected = verifier._latest(
         [prompt], name=name, expected_sha=head, path=path,
         time_field="created_at", skip_unexecuted_pr_approval=True,
-    ) is None
+    )
+    assert selected == prompt
+
+
+@pytest.mark.parametrize("proof", [None, False, "true", 1])
+def test_action_required_without_literal_verified_zero_job_proof_stays_selected(proof):
+    verifier = _load_verifier()
+    head = "a" * 40
+    name, path = next(iter(verifier.REQUIRED_WORKFLOWS.items()))
+    success = {"id": 100, "name": name, "path": path, "head_sha": head,
+               "created_at": "2026-10-25T21:09:16Z", "event": "pull_request",
+               "status": "completed", "conclusion": "success"}
+    prompt = {"id": 101, "name": name, "path": path, "head_sha": head,
+              "created_at": "2026-10-25T21:33:20Z", "event": "pull_request",
+              "status": "completed", "conclusion": "action_required"}
+    if proof is not None:
+        prompt["pre_job_zero_jobs_verified"] = proof
+    selected = verifier._latest(
+        [success, prompt], name=name, expected_sha=head, path=path,
+        time_field="created_at", skip_unexecuted_pr_approval=True,
+    )
+    assert selected == prompt
+
+
+def test_action_required_with_authenticated_zero_job_proof_is_skipped():
+    verifier = _load_verifier()
+    head = "a" * 40
+    name, path = next(iter(verifier.REQUIRED_WORKFLOWS.items()))
+    success = {"id": 100, "name": name, "path": path, "head_sha": head,
+               "created_at": "2026-10-25T21:09:16Z", "event": "pull_request",
+               "status": "completed", "conclusion": "success"}
+    prompt = {**success, "id": 101, "created_at": "2026-10-25T21:33:20Z",
+              "conclusion": "action_required", "pre_job_zero_jobs_verified": True}
+    assert verifier._latest(
+        [prompt, success], name=name, expected_sha=head, path=path,
+        time_field="created_at", skip_unexecuted_pr_approval=True,
+    ) == success
+
+
+def _run_existing_pr_regression(tmp_path, runs, jobs_response, *, jobs_rc=0):
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    script = next(
+        step["run"]
+        for step in workflow["jobs"]["certify-existing-pr"]["steps"]
+        if step.get("id") == "regression"
+    )
+    (tmp_path / ".governance-review-evidence").mkdir(exist_ok=True)
+    output = tmp_path / "output"
+    proc = subprocess.run(
+        ["bash", "-c", """
+        gh() {
+          if [[ "$2" == */actions/runs/*/jobs?per_page=100 ]]; then
+            printf '%s\\n' "$JOBS_RESPONSE"
+            return "$JOBS_RC"
+          fi
+          printf '%s\\n' "$WORKFLOW_RUNS"
+        }
+        sleep() { exit 99; }
+        """ + script],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GITHUB_REPOSITORY": "gregoryharper84-ship-it/WOW-Dashboard",
+            "GITHUB_OUTPUT": str(output),
+            "HEAD_SHA": "a" * 40,
+            "WORKFLOW_RUNS": json.dumps({"workflow_runs": runs}),
+            "JOBS_RESPONSE": json.dumps(jobs_response),
+            "JOBS_RC": str(jobs_rc),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return proc, output
+
+
+def _required_runs_with_prompt(head):
+    verifier = _load_verifier()
+    runs = [
+        {"id": index + 100, "name": name, "path": path, "head_sha": head,
+         "created_at": "2026-10-25T21:09:16Z", "event": "pull_request",
+         "status": "completed", "conclusion": "success"}
+        for index, (name, path) in enumerate(verifier.REQUIRED_WORKFLOWS.items())
+    ]
+    prompt = {**runs[0], "id": 1000, "created_at": "2026-10-25T21:33:20Z",
+              "conclusion": "action_required"}
+    runs.append(prompt)
+    return runs, prompt
+
+
+@pytest.mark.parametrize(
+    ("jobs_response", "jobs_rc", "error"),
+    [
+        ({"total_count": 1, "jobs": [{"id": 42}]}, 0, "APPROVAL_IS_NOT_VERIFIED_ZERO_JOB"),
+        ({"total_count": 101, "jobs": []}, 0, "APPROVAL_IS_NOT_VERIFIED_ZERO_JOB"),
+        ({"jobs": []}, 0, "APPROVAL_IS_NOT_VERIFIED_ZERO_JOB"),
+        ({"total_count": 0, "jobs": None}, 0, "APPROVAL_IS_NOT_VERIFIED_ZERO_JOB"),
+        ({"total_count": 0, "jobs": [{"id": 42}]}, 0, "APPROVAL_IS_NOT_VERIFIED_ZERO_JOB"),
+        ({}, 1, "APPROVAL_JOB_READBACK_UNAVAILABLE"),
+    ],
+)
+def test_workflow_requires_authenticated_complete_zero_job_inventory(
+    tmp_path, jobs_response, jobs_rc, error
+):
+    head = "a" * 40
+    runs, _ = _required_runs_with_prompt(head)
+    proc, output = _run_existing_pr_regression(
+        tmp_path, runs, jobs_response, jobs_rc=jobs_rc,
+    )
+    assert proc.returncode == 1
+    assert error in proc.stdout + proc.stderr
+    assert not output.exists()
+
+
+def test_workflow_marks_only_authenticated_zero_job_approval_before_selecting(tmp_path):
+    head = "a" * 40
+    runs, prompt = _required_runs_with_prompt(head)
+    proc, output = _run_existing_pr_regression(
+        tmp_path, runs, {"total_count": 0, "jobs": []},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    evidence = json.loads((tmp_path / ".governance-review-evidence/workflow-runs.json").read_text())
+    verified = next(run for run in evidence if run["id"] == prompt["id"])
+    assert verified["pre_job_zero_jobs_verified"] is True
+    assert output.read_text(encoding="utf-8") == "status=0\n"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("head_sha", "b" * 40),
+        ("path", ".github/workflows/foreign.yml"),
+        ("name", "foreign-workflow"),
+    ],
+)
+def test_workflow_bounds_zero_job_candidates_and_ignores_wrong_run_identity(
+    tmp_path, field, value
+):
+    head = "a" * 40
+    runs, prompt = _required_runs_with_prompt(head)
+    for index in range(20):
+        runs.append({**prompt, "id": 2000 + index})
+    proc, output = _run_existing_pr_regression(
+        tmp_path, runs, {"total_count": 0, "jobs": []},
+    )
+    assert proc.returncode == 1
+    assert "UNEXECUTED_APPROVAL_INVENTORY_INVALID" in proc.stderr
+    assert not output.exists()
+
+    foreign = {**prompt, "id": 3000, field: value}
+    same_head_runs = _required_runs_with_prompt(head)[0]
+    same_head_runs = [run for run in same_head_runs if run["id"] != prompt["id"]]
+    proc, output = _run_existing_pr_regression(
+        tmp_path, same_head_runs + [foreign],
+        {"total_count": 0, "jobs": []},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    evidence = json.loads((tmp_path / ".governance-review-evidence/workflow-runs.json").read_text())
+    assert not any(run.get("pre_job_zero_jobs_verified") for run in evidence)
+    assert output.read_text(encoding="utf-8") == "status=0\n"
+
+
+def test_workflow_rejects_malformed_candidate_run_id(tmp_path):
+    head = "a" * 40
+    runs, prompt = _required_runs_with_prompt(head)
+    prompt["id"] = "1000"
+    runs[-1] = prompt
+    proc, output = _run_existing_pr_regression(
+        tmp_path, runs, {"total_count": 0, "jobs": []},
+    )
+    assert proc.returncode == 1
+    assert "UNEXECUTED_APPROVAL_INVENTORY_INVALID" in proc.stdout + proc.stderr
+    assert not output.exists()
+
+
+def test_workflow_holds_when_verified_zero_job_prompt_has_no_executed_predecessor(tmp_path):
+    head = "a" * 40
+    runs, prompt = _required_runs_with_prompt(head)
+    runs = [run for run in runs if run["id"] != prompt["id"]]
+    runs.append(prompt)
+    runs = [run for run in runs if run["id"] != 100]
+    proc, output = _run_existing_pr_regression(
+        tmp_path, runs, {"total_count": 0, "jobs": []},
+    )
+    assert proc.returncode == 99
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(("new_status", "new_conclusion", "expected"), [
@@ -299,11 +485,16 @@ def test_workflow_selector_uses_executed_exact_head_not_metadata_prompt(
     jq = shutil.which("jq")
     if jq is None:
         pytest.skip("jq required")
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    line = next(s.strip() for s in workflow.splitlines()
-                if 'select(.status != "completed"' in s)
-    selector = line.split("'", 2)[1]
-    assert '--arg sha "$HEAD_SHA"' in workflow
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    regression = next(
+        step["run"]
+        for step in workflow["jobs"]["certify-existing-pr"]["steps"]
+        if step.get("id") == "regression"
+    )
+    selector = regression.split("match=$(jq -r ", 1)[1].split(
+        '<<<"$runs")', 1,
+    )[0].split("'", 1)[1].rsplit("'", 1)[0]
+    assert '--arg sha "$HEAD_SHA"' in regression
     name = "wow-verify"
     path = ".github/workflows/wow-verify.yml"
     head = "a" * 40
@@ -312,6 +503,8 @@ def test_workflow_selector_uses_executed_exact_head_not_metadata_prompt(
            "status": "completed", "conclusion": "success"}
     new = {**old, "id": 2, "created_at": "2026-10-25T21:33:20Z",
            "status": new_status, "conclusion": new_conclusion}
+    if new_conclusion == "action_required":
+        new["pre_job_zero_jobs_verified"] = True
     proc = subprocess.run(
         [jq, "-r", "--arg", "name", name, "--arg", "path", path,
          "--arg", "sha", head, selector],

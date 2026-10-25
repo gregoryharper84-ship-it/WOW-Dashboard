@@ -146,14 +146,13 @@ def _latest(records: Sequence[Mapping[str, Any]], *, name: str, expected_sha: st
             continue
         started = _timestamp(record.get(time_field), "CHECK_STARTED_AT")
         record_id = _positive_int(record.get("id"), "CHECK_ID")
-        # GitHub's pull_request action_required is a pre-job admission decision,
-        # not an executed regression. Never let a metadata-only re-trigger hide
-        # an earlier genuine exact-head run. Without that run, selection is
-        # empty and certification still fails closed.
+        # Only the protected collector sets this marker after the authenticated
+        # jobs API proves the pull_request approval run has a complete empty inventory.
         if (skip_unexecuted_pr_approval
                 and record.get("event") == "pull_request"
                 and record.get("status") == "completed"
-                and record.get("conclusion") == "action_required"):
+                and record.get("conclusion") == "action_required"
+                and record.get("pre_job_zero_jobs_verified") is True):
             continue
         matches.append((started, record_id, record))
     return max(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
