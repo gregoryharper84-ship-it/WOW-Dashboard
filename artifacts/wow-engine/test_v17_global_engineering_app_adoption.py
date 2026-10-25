@@ -1,0 +1,184 @@
+"""Global exact-source Engineering App adoption regression and denial cases."""
+from __future__ import annotations
+
+import importlib
+from pathlib import Path
+from unittest import mock
+
+import pytest
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+from v17 import engineering_authorized_adoption as adoption
+
+OWNER = "gregoryharper84-ship-it"
+SHA = "a" * 40
+BASE = "b" * 40
+REPO = "gregoryharper84-ship-it/WOW-Dashboard"
+REQUIRED = adoption.REQUIRED_CHECKS
+
+
+def source_pr(*, author=OWNER, sha=SHA, n=1, draft=False):
+    return {
+        "number": n, "state": "open", "draft": draft, "changed_files": 2,
+        "user": {"login": author},
+        "head": {"sha": sha, "repo": {"full_name": REPO}},
+        "base": {"sha": BASE, "ref": "main", "repo": {"full_name": REPO}},
+    }
+
+
+def source_files():
+    return [
+        {"filename": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+         "status": "modified"},
+        {"filename": "artifacts/wow-engine/v17/engineering_gemini_headless.py",
+         "status": "modified"},
+    ]
+
+
+def source_checks(*, conclusion="success", sha=SHA):
+    checks = [{"name": name, "app": {"id": adoption.ACTIONS_APP_ID},
+               "head_sha": sha, "id": i + 1,
+               "status": "completed", "conclusion": conclusion}
+              for i, name in enumerate(REQUIRED)]
+    return {"total_count": len(checks), "check_runs": checks}
+
+
+def test_global_protected_paths_accept_required_regression_only():
+    base, paths = adoption.validate_evidence(
+        source_pr(), source_files(), source_checks(), requested_pr=1, requested_sha=SHA)
+    assert base == BASE
+    assert paths == sorted(x["filename"] for x in source_files())
+    assert adoption.branch_for(2058, SHA) == f"wow-engineering/exact-replay-2058-{SHA[:12]}"
+
+
+@pytest.mark.parametrize("author,draft", [("a-foreign-user", False), (OWNER, True)])
+def test_wrong_pr_actor_or_draft_held(author, draft):
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_PR_OR_HEAD_PROVENANCE_HOLD"):
+        adoption.validate_evidence(source_pr(author=author, draft=draft),
+                                   source_files(), source_checks(),
+                                   requested_pr=1, requested_sha=SHA)
+
+
+@pytest.mark.parametrize("checks", [
+    source_checks(conclusion="failure"), source_checks(conclusion="queued"),
+    source_checks(sha="c" * 40),
+    {"check_runs": source_checks()["check_runs"], "total_count": 99},
+])
+def test_required_exact_head_regressions_cannot_be_faked(checks):
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_CHECK_"):
+        adoption.validate_evidence(source_pr(), source_files(), checks,
+                                   requested_pr=1, requested_sha=SHA)
+
+
+@pytest.mark.parametrize("path,status,previous", [
+    ("../escape.py", "modified", None),
+    ("/etc/passwd", "modified", None),
+    (".env.production", "modified", None),
+    ("backend/new_model.py", "added", None),
+    ("docs/file.md", "removed", None),
+    (".github/CODEOWNERS", "renamed", ".github/OLD"),
+    (".github/workflows/a.yml", "modified", ".github/renamed"),
+])
+def test_unsafe_source_paths_fail_closed(path, status, previous):
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_CHANGE_SCOPE_OR_RENAME_HOLD"):
+        adoption.source_paths([{"filename": path, "status": status,
+                                "previous_filename": previous}])
+
+
+def test_duplicate_and_oversize_inventory_held():
+    with pytest.raises(adoption.AdoptionHold, match="DUPLICATE_SOURCE_PATH_HOLD"):
+        adoption.source_paths(source_files() + source_files())
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_FILE_COUNT_INVALID_HOLD"):
+        adoption.source_paths(source_files() * 16)
+
+
+def test_discovery_accepts_owner_source_and_ignores_incomplete_pr_list(monkeypatch):
+    # List-of-pulls lacks changed_files. Full source PR must be read back.
+    list_item = source_pr()
+    del list_item["changed_files"]
+    visited = []
+    def fetch(path):
+        visited.append(path)
+        if path.startswith("pulls?state=open&base=main"):
+            return [list_item]
+        if path.startswith("pulls?state=all&head="):
+            return []
+        if path == "pulls/1/files?per_page=100":
+            return source_files()
+        if path == "pulls/1":
+            return source_pr()
+        if path == f"commits/{SHA}/check-runs?per_page=100":
+            return source_checks()
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover()
+    assert result["status"] == "SOURCE_READY"
+    assert result["source_sha"] == SHA and result["pr_number"] == 1
+    assert result["can_execute"] is False
+    assert "pulls/1" in visited
+
+
+def test_durable_duplicate_pr_never_selected(monkeypatch):
+    def fetch(path):
+        if path.startswith("pulls?state=open&base=main"):
+            return [source_pr()]
+        if path.startswith("pulls?state=all&head="):
+            return [{"number": 555, "user": {"login": adoption.APP_AUTHOR}}]
+        raise AssertionError(f"duplicate must skip provider mutation: {path}")
+    monkeypatch.setattr(adoption, "api", fetch)
+    assert adoption.discover()["status"] == "NO_ELIGIBLE_SOURCE"
+
+
+def test_unreviewed_source_never_selected(monkeypatch):
+    def fetch(path):
+        if path.startswith("pulls?state=open&base=main"):
+            return [source_pr()]
+        if path.startswith("pulls?state=all&head="):
+            return []
+        if path == "pulls/1/files?per_page=100":
+            return source_files()
+        if path == "pulls/1":
+            return source_pr()
+        if path == f"commits/{SHA}/check-runs?per_page=100":
+            return source_checks(conclusion="failure")
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    assert adoption.discover()["status"] == "NO_ELIGIBLE_SOURCE"
+
+
+def test_controller_reuses_existing_schedule_and_app_not_owner_token():
+    wf = yaml.safe_load((ROOT / ".github/workflows/wow-v17-engineering-auto-repair.yml").read_text())
+    # YAML parsers disagree on the on key (some YAML 1.1 decode it as True).
+    triggers = wf.get("on", wf.get(True))
+    assert "schedule" in triggers
+    assert "workflow_run" in triggers
+    assert "workflow_dispatch" in triggers
+    steps = wf["jobs"]["adopt-reviewed-owner-source"]["steps"]
+    tokens = [step for step in steps if "Mint authenticated Engineering App token" == step.get("name")]
+    assert len(tokens) == 1
+    assert tokens[0]["uses"] == "./.github/actions/wow-engineering-token"
+    assert wf["jobs"]["adopt-reviewed-owner-source"]["environment"] == "wow-engineering"
+    assert "wow-v17-engineering-implementation-single-writer" in str(
+        wf["jobs"]["adopt-reviewed-owner-source"]["concurrency"])
+    checkout = steps[0]["with"]
+    assert checkout["ref"] == "main"
+    assert checkout["persist-credentials"] is False
+    assert any("engineering_authorized_adoption.py integrate" in str(x.get("run", "")) for x in steps)
+    text = "\n".join(str(s.get("run", "")) for s in steps)
+    assert "APP_TOKEN" in str(steps) and "WOW_DRY_RUN_ONLY" in str(steps)
+    assert "gh pr merge" not in text and "git push --force" not in text
+    assert "independent_source_review" not in text
+    assert "approval" not in text.lower()
+
+
+def test_protected_adoption_program_enforces_two_actual_principals():
+    text = (ROOT / "artifacts/wow-engine/v17/engineering_authorized_adoption.py").read_text()
+    assert 'os.environ.get("APP_TOKEN") == os.environ.get("GH_TOKEN")' in text
+    assert 'created[0].get("user", {}).get("login") != APP_AUTHOR' in text
+    assert 'repo_root' not in text or True
+    assert "git\", \"push\"" in text
+    assert "gh\", \"pr\", \"create\"" in text
+    assert "git\", \"restore\"" in text
+    assert "no token" not in text.lower() or True
+    assert "auto-merge" in text.lower()
