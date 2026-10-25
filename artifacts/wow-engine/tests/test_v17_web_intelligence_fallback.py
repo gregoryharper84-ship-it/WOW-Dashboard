@@ -114,7 +114,7 @@ def test_event_started_other_sports_or_model_success_never_create_result():
     request["event_start_time_utc"] = "2026-10-25T12:59:00Z"
     assert research_fallback(request, now=NOW)["status"] == "EVENT_NOT_PREGAME"
     request = example()
-    request["sport"] = "NHL"
+    request["sport"] = "BADMINTON"
     assert research_fallback(request, now=NOW)["status"] == "RESEARCH_PROFILE_UNSUPPORTED"
     request = example()
     request["model_status"] = "PASS"
