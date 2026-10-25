@@ -119,13 +119,15 @@ def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
         code = "GEMINI_CLI_TURN_LIMIT"
     elif exit_code == 42:
         code = "GEMINI_CLI_INPUT_INVALID"
-    elif known:
-        code = known
+    # Specific unsupported-model/billing refusals must precede broad
+    # "unavailable" signatures used by the upstream-transient detector.
     elif any(s in value for s in ("billing required", "paid tier", "payment required")):
         code = "GEMINI_API_BILLING_REQUIRED"
     elif any(s in value for s in ("model not found", "model is not supported",
                                   "models/flash", "requested model unavailable")):
         code = "GEMINI_MODEL_UNAVAILABLE"
+    elif known:
+        code = known
     elif exit_code == 0 and isinstance(response, dict) and not error and (
         isinstance(response.get("response"), str) and response["response"].strip()
     ):
