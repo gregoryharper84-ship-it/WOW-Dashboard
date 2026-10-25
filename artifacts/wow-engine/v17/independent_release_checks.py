@@ -43,6 +43,20 @@ MAX_PAGES = 10
 PER_PAGE = 100
 
 Fetch = Callable[[str], tuple[int, Any]]
+QA_WORKFLOW_NAME = "wow-v17-independent-qa-check"
+QA_WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
+# Stable id of that workflow in this repository. GitHub's run `name` is the
+# workflow run-name. Today that is the dynamic shape below. A later change
+# may set it to exactly QA_WORKFLOW_NAME. Neither string is principal evidence.
+QA_WORKFLOW_ID = 380562324
+QA_RUN_NAME_RE = re.compile(
+    r"^wow-v17-independent-qa-check event=(workflow_run|workflow_dispatch) "
+    r"pr=(?:[1-9][0-9]*|AUTO) head=(?:[0-9a-f]{40}|AUTO)$"
+)
+
+
+class UpstreamQaError(Exception):
+    """Typed refusal while classifying the upstream QA run. No check is published."""
 
 
 # ----------------------------------------------------------------------- evidence
@@ -76,6 +90,7 @@ def gather(
     qa_review_policy: dict[str, Any] | None = None,
     current_review_active: bool = False,
     independent_review_active: bool = True,
+    zero_credit_enabled: bool = False,
     source_review_producer_context: bool = False,
     source_review_run_id: int | None = None,
     source_review_run_attempt: int | None = None,
@@ -134,12 +149,13 @@ def gather(
                       "commit_id": r.get("commit_id"), "submitted_at": r.get("submitted_at")} for r in reviews]
     ev["qa_review_policy"] = qa_review_policy
     ev["current_review_active"] = current_review_active
+    ev["zero_credit_enabled"] = zero_credit_enabled
     if qa_review_policy is not None:
         mode = qa_review_policy.get("mode") if isinstance(qa_review_policy, dict) else None
-        if mode not in {"legacy", "independent", "canary"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
             errors.append("QA_REVIEW_POLICY_MODE_INVALID")
         else:
-            independent_review_active = mode != "legacy"
+            independent_review_active = mode in {"independent", "canary"}
             source = qa_review_policy.get("source") or {}
             try:
                 source_review_run_id = int(source.get("run_id"))
@@ -241,6 +257,95 @@ def targets(repo: str, *, pr: str | None = None,
     return {"targets": out, "errors": errors}
 
 
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _qa_run_name_matches(name: Any, event: Any) -> bool:
+    """True for the current dynamic run-name or the exact static workflow name.
+
+    A matching name does not authenticate the run. Callers still require
+    workflow id 380562324, the workflow path, repository, head, attempt, and
+    the single completed ``qa`` job. Any other name is rejected.
+    """
+    if not isinstance(name, str) or not isinstance(event, str):
+        return False
+    if name == QA_WORKFLOW_NAME:
+        return True
+    return (
+        QA_RUN_NAME_RE.fullmatch(name) is not None
+        and name.startswith(f"{QA_WORKFLOW_NAME} event={event} ")
+    )
+
+
+def classify_upstream_qa(
+    repo: str, *, run_id: int, run_attempt: int, fetch: Fetch = gh_fetch,
+) -> dict[str, str]:
+    """Classify a completed QA workflow before Release reads its policy.
+
+    A skipped run, or a completed run whose ``qa`` job was skipped, is neutral:
+    no policy lookup and no Release check. A success or failure job is applicable,
+    and a missing or forged policy on that run still fails closed downstream.
+    Cancelled, foreign, truncated, or mismatched provenance is untrusted.
+    """
+    if not _positive_int(run_id) or not _positive_int(run_attempt):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    status, run = fetch(f"repos/{repo}/actions/runs/{run_id}")
+    if status != 200 or not isinstance(run, dict):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNREADABLE")
+    repository = run.get("repository") if isinstance(run.get("repository"), dict) else {}
+    head_repository = run.get("head_repository") if isinstance(run.get("head_repository"), dict) else {}
+    event = run.get("event")
+    name = run.get("name")
+    # Workflow id and path authenticate the workflow. `name` may be the
+    # current dynamic run-name or exactly "wow-v17-independent-qa-check".
+    name_matches = _qa_run_name_matches(name, event)
+    trusted = (
+        run.get("id") == run_id
+        and run.get("run_attempt") == run_attempt
+        and run.get("workflow_id") == QA_WORKFLOW_ID
+        and run.get("path") == QA_WORKFLOW_PATH
+        and name_matches
+        and run.get("head_branch") == "main"
+        and SHA_RE.fullmatch(str(run.get("head_sha") or "")) is not None
+        and event in {"workflow_run", "workflow_dispatch"}
+        and repository.get("full_name") == repo
+        and head_repository.get("full_name") == repo
+        and run.get("status") == "completed"
+    )
+    if not trusted:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    conclusion = run.get("conclusion")
+    if conclusion == "skipped":
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_SKIPPED"}
+    if conclusion not in {"success", "failure"}:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    job_status, jobs_body = fetch(
+        f"repos/{repo}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
+    )
+    jobs = jobs_body.get("jobs") if isinstance(jobs_body, dict) else None
+    total = jobs_body.get("total_count") if isinstance(jobs_body, dict) else None
+    if (
+        job_status != 200
+        or not isinstance(jobs, list)
+        or not isinstance(total, int)
+        or isinstance(total, bool)
+        or total != len(jobs)
+    ):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNREADABLE")
+    named = [job for job in jobs if isinstance(job, dict) and job.get("name") == "qa"]
+    if len(named) != 1:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    if named[0].get("status") != "completed":
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
+    job_conclusion = named[0].get("conclusion")
+    if job_conclusion == "skipped":
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
+    if job_conclusion not in {"success", "failure"}:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
+    return {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
+
+
 # ----------------------------------------------------------------------- decisions
 
 def _latest(runs: list[dict], name: str, head: str, app_id: int | str) -> dict | None:
@@ -327,8 +432,20 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         mode = policy.get("mode") if isinstance(policy, dict) else None
         target = policy.get("target") if isinstance(policy, dict) else None
         scope = policy.get("canary_scope") if isinstance(policy, dict) else None
-        if mode not in {"legacy", "independent", "canary"}:
+        if mode not in {"legacy", "independent", "canary", "zero_credit"}:
             findings.append("QA_REVIEW_POLICY_MODE_INVALID")
+        elif mode == "zero_credit":
+            # Reduced-assurance evidence checks only: not adversarial source review.
+            if ev.get("zero_credit_enabled") is not True:
+                findings.append("QA_ZERO_CREDIT_POLICY_NOT_ENABLED")
+            if ev.get("current_review_active") is True or ev.get("independent_review_active") is not False:
+                findings.append("QA_ZERO_CREDIT_POLICY_CONFLICT")
+            if ev.get("source_review") is not None:
+                findings.append("QA_ZERO_CREDIT_SOURCE_REVIEW_UNEXPECTED")
+            if not isinstance(target, dict) or (target.get("pr_number") != ev.get("pr_number")
+                    or target.get("head_sha") != head
+                    or target.get("head_ref") != (pr.get("head_ref") or "")):
+                findings.append("QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH")
         elif mode == "legacy":
             if ev.get("independent_review_active") is not False:
                 findings.append("QA_REVIEW_POLICY_MODE_CONFLICT")
@@ -353,7 +470,7 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
     runs = ev.get("check_runs") or []
     expected_checks = QA_EVIDENCE_CHECKS
     trust_root_change = any(is_trust_root(str(f), governance_files) for f in files)
-    if review_active is False and not trust_root_change:
+    if review_active is False and not trust_root_change and (policy or {}).get("mode") != "zero_credit":
         expected_checks = (*expected_checks, TRUSTED_GOVERNANCE_CHECK)
     for name in expected_checks:
         run = _latest(runs, name, head, GITHUB_ACTIONS_APP_ID)
@@ -386,7 +503,7 @@ def release_findings(ev: dict, *, qa_app_id: str, release_app_id: str,
     policy = ev.get("qa_review_policy")
     if not isinstance(policy, dict):
         findings.append("RELEASE_QA_REVIEW_POLICY_MISSING")
-    elif policy.get("mode") not in {"legacy", "independent", "canary"}:
+    elif policy.get("mode") not in {"legacy", "independent", "canary", "zero_credit"}:
         findings.append("RELEASE_QA_REVIEW_POLICY_INVALID")
     head = str((ev.get("pr") or {}).get("head_sha") or "")
     runs = ev.get("check_runs") or []
@@ -405,14 +522,16 @@ def decision(kind: str, findings: list[str], ev: dict) -> dict[str, Any]:
     # only the superseded commit and can never overwrite the current head's check.
     head = ev.get("expected_head_sha")
     passed = not findings
+    no_api = (ev.get("qa_review_policy") or {}).get("mode") == "zero_credit"
     return {
         "check_name": QA_CHECK if kind == "qa" else RELEASE_CHECK,
         "head_sha": head,
         "conclusion": "success" if passed else "failure",
         "findings": findings,
         "title": ("PASS" if passed else f"HOLD: {len(findings)} finding(s)") + f" at {str(head)[:12]}",
-        "summary": ("All exact-head conditions satisfied. Evidence only: not merge, deployment or "
-                    "probability authority. can_execute=false." if passed else
+        "summary": (("ZERO-CREDIT DETERMINISTIC QA ONLY; no semantic/adversarial source review performed. Exact-head evidence satisfied. No merge/deploy authority. can_execute=false." if no_api else
+                     "All exact-head conditions satisfied. Evidence only: not merge, deployment or "
+                     "probability authority. can_execute=false.") if passed else
                     "Typed findings:\n" + "\n".join(f"- `{f}`" for f in findings) +
                     "\n\nFail-closed. can_execute=false."),
         "merge_or_release_authorized": False,
@@ -432,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--pr", required=True, type=int)
     g.add_argument("--expected-head", required=True)
     g.add_argument("--legacy-review-policy", action="store_true")
+    g.add_argument("--zero-credit-policy-enabled", action="store_true")
     g.add_argument("--source-review-json", type=Path)
     g.add_argument("--source-review-run-json", type=Path)
     g.add_argument("--source-review-artifact-id", type=int)
@@ -445,6 +565,10 @@ def main(argv: list[str] | None = None) -> int:
     policy.add_argument("--run-id", required=True, type=int)
     policy.add_argument("--run-attempt", required=True, type=int)
     policy.add_argument("--pr", type=int)
+    classify = sub.add_parser("classify-upstream-qa")
+    classify.add_argument("--repo", required=True)
+    classify.add_argument("--run-id", required=True, type=int)
+    classify.add_argument("--run-attempt", required=True, type=int)
     for name in ("decide-qa", "decide-release"):
         d = sub.add_parser(name)
         d.add_argument("--evidence", required=True)
@@ -468,6 +592,15 @@ def main(argv: list[str] | None = None) -> int:
         except _source_review_module.SourceReviewError as exc:
             raise SystemExit(str(exc)) from exc
         print(json.dumps(resolved, sort_keys=True))
+        return 0
+    if args.cmd == "classify-upstream-qa":
+        try:
+            classified = classify_upstream_qa(
+                args.repo, run_id=args.run_id, run_attempt=args.run_attempt,
+            )
+        except UpstreamQaError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps(classified, sort_keys=True))
         return 0
     if args.cmd == "gather":
         review_args = (
@@ -495,6 +628,7 @@ def main(argv: list[str] | None = None) -> int:
             qa_review_policy=qa_review_policy,
             current_review_active=args.current_review_active,
             independent_review_active=not args.legacy_review_policy,
+            zero_credit_enabled=args.zero_credit_policy_enabled,
             source_review_producer_context=args.source_review_producer_context,
             source_review_run_id=args.source_review_run_id,
             source_review_run_attempt=args.source_review_run_attempt,

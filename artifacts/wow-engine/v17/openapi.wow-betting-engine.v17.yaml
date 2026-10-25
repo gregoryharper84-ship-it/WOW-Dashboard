@@ -299,6 +299,43 @@ paths:
         '200': {description: Governed per-event approvals and typed holds}
         '401': {description: Authentication failed}
         '422': {description: Invalid request or batch size}
+  /v17/research/web-intelligence-fallback:
+    post:
+      operationId: scoreV17WebIntelligenceResearchFallback
+      x-openai-isConsequential: false
+      description: >-
+        Research-only sport-specific context scoring for a known V17 model
+        failure. The 0-100 research_score is NOT a sporting probability, model
+        calibration, lower bound, wager, or approval. Evidence is supplied by
+        the caller and source URLs are structurally, not independently, verified.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WebIntelligenceResearchRequest'}
+      responses:
+        '200': {description: Research-only score or typed HOLD; never a governed probability}
+        '401': {description: Authentication failed}
+        '422': {description: 'Invalid event, market, evidence or source contract'}
+  /v17/research/web-intelligence-fallback/from-scout:
+    post:
+      operationId: scoreV17MultiSportResearchFromScoutEvidence
+      x-openai-isConsequential: false
+      description: >-
+        Adapt already-acquired, source-bound Scout evidence to the research-only
+        multi-sport profile. No web fetching, autonomous probability assignment,
+        terminal publication, or wager execution occurs.
+      security: [{actionBearer: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/WebIntelligenceScoutRequest'}
+      responses:
+        '200': {description: Scout evidence research triage or typed HOLD}
+        '401': {description: Authentication failed}
+        '422': {description: Invalid Scout research envelope}
   /internal/v17/spread-forward-shadow:
     post:
       operationId: scoreWowV17SpreadForwardShadow
@@ -479,6 +516,72 @@ components:
       type: http
       scheme: bearer
   schemas:
+    WebIntelligenceEvidence:
+      type: object
+      additionalProperties: false
+      required: [factor, favorability, source_group, source_class, url, claim, observed_at]
+      properties:
+        factor: {type: string, minLength: 3, maxLength: 60}
+        favorability: {type: number, minimum: 0, maximum: 1}
+        source_group: {type: string, minLength: 1, maxLength: 128}
+        source_class: {type: string, minLength: 1, maxLength: 40}
+        url: {type: string, format: uri, minLength: 8, maxLength: 2048}
+        claim: {type: string, minLength: 1, maxLength: 1000}
+        observed_at: {type: string, format: date-time}
+        confirmed: {type: boolean, default: false}
+        evidence_type: {type: [string, 'null']}
+    WebIntelligenceMarketQuote:
+      type: object
+      additionalProperties: false
+      required: [event_id, market_type, selection, american_odds, observed_at]
+      properties:
+        event_id: {type: string, minLength: 1}
+        market_type: {type: string, minLength: 3}
+        selection: {type: string, minLength: 1}
+        line: {type: [number, 'null']}
+        american_odds: {type: number}
+        observed_at: {type: string, format: date-time}
+        book: {type: [string, 'null']}
+    WebIntelligenceResearchRequest:
+      type: object
+      additionalProperties: false
+      required: [sport, official_event_id, event_start_time_utc, market_type, selection, model_status]
+      properties:
+        sport: {type: string, minLength: 2}
+        official_event_id: {type: string, minLength: 1}
+        event_start_time_utc: {type: string, format: date-time}
+        market_type: {type: string, minLength: 3}
+        selection: {type: string, minLength: 1}
+        line: {type: [number, 'null']}
+        model_status: {type: string, minLength: 3}
+        evidence:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/WebIntelligenceEvidence'}
+        market_quotes:
+          type: array
+          maxItems: 25
+          items: {$ref: '#/components/schemas/WebIntelligenceMarketQuote'}
+    WebIntelligenceScoutRequest:
+      type: object
+      additionalProperties: false
+      required: [candidate, model_status, market_type, selection]
+      properties:
+        candidate:
+          type: object
+          additionalProperties: true
+          description: >-
+            Existing Scout evidence envelope; source identity and directional
+            research assessments must already be present. This payload cannot
+            grant prediction authority.
+        model_status: {type: string, minLength: 3}
+        market_type: {type: string, minLength: 3, maxLength: 40}
+        selection: {type: string, minLength: 1, maxLength: 200}
+        line: {type: [number, 'null']}
+        market_quotes:
+          type: array
+          maxItems: 25
+          items: {$ref: '#/components/schemas/WebIntelligenceMarketQuote'}
     ResumablePickRunRequest:
       type: object
       additionalProperties: false

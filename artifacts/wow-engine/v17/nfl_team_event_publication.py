@@ -6,6 +6,7 @@ delegated to the exact pre-existing scorer, preserving MLB behavior.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from fastapi import HTTPException
@@ -20,9 +21,137 @@ from nfl_event_model_v17 import (
     load_champion_model,
 )
 from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence, score_nfl_team_event
+from v17.nfl_daily_stage_receipts import attach_nfl_daily_stage_receipt
 
 NFL_ALIASES = frozenset({"NFL", "FOOTBALL_NFL"})
 _PATCH_MARKER = "_v17_nfl_team_event_publication_installed"
+
+
+_NFL_SCHEDULE_MAX_AGE = timedelta(hours=24)
+
+
+def _utc_instant(value: Any) -> datetime | None:
+    """Parse a timezone-aware timestamp; naive or malformed values are not proof."""
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(
+            str(value or "").replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+
+
+def _nfl_final_refresh(
+    req: Any, model_result: dict[str, Any], *, db: Any, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Re-read authoritative NFL schedule evidence after inference and before publication.
+
+    This is not a synonym for SQL final_gates_status. A current read must match
+    the modeled event and schedule contents, remain pregame, and be fresh enough
+    to support a final status claim. Never manufacture a successful refresh.
+    """
+    checked_at = now if now is not None else datetime.now(timezone.utc)
+    if checked_at.tzinfo is None:
+        raise ValueError("NFL_FINAL_REFRESH_NOW_MUST_BE_TIMEZONE_AWARE")
+    checked_at = checked_at.astimezone(timezone.utc)
+    reasons: list[str] = []
+    changed = False
+    start = _utc_instant(getattr(req, "event_start_time_utc", None))
+    source_at = _utc_instant(getattr(req, "latest_material_update_timestamp", None))
+    model_at = _utc_instant(model_result.get("model_timestamp"))
+    prior_evidence = getattr(req, "sport_specific_evidence", None) or {}
+    prior_hash = str(prior_evidence.get("schedule_content_sha256") or "")
+    source_id = str(getattr(req, "source_snapshot_id", "") or "")
+    details: dict[str, Any] = {
+        "source": "NFL_CANONICAL_SCHEDULE_REQUERY",
+        "checked_at": checked_at.isoformat(),
+        "scored_source_snapshot_id": source_id or None,
+        "model_timestamp": model_at.isoformat() if model_at else None,
+        "can_execute": False,
+    }
+    if start is None or start <= checked_at:
+        reasons.append("FINAL_REFRESH_EVENT_NOT_PREGAME")
+    if not prior_hash or not source_id or source_at is None:
+        reasons.append("FINAL_REFRESH_SCORED_SOURCE_PROVENANCE_MISSING")
+    if model_at is None or (source_at is not None and model_at < source_at):
+        reasons.append("FINAL_REFRESH_MODEL_TIMESTAMP_NOT_CURRENT")
+
+    try:
+        refreshed = resolve_nfl_team_event_evidence(req, db=db)
+    except Exception:
+        # A refresh failure must never erase the completed numerical model.
+        reasons.append("FINAL_REFRESH_SOURCE_UNAVAILABLE")
+        refreshed = None
+
+    if not isinstance(refreshed, dict) or refreshed.get("ok") is not True:
+        if refreshed is not None:
+            reasons.append("FINAL_REFRESH_CANONICAL_EVENT_UNRESOLVED")
+            details["source_failure_code"] = refreshed.get("code")
+    else:
+        latest_id = str(refreshed.get("canonical_source_snapshot_id") or "")
+        latest_hash = str(refreshed.get("schedule_content_sha256") or "")
+        latest_at = _utc_instant(refreshed.get("canonical_snapshot_timestamp"))
+        details["refresh_source_snapshot_id"] = latest_id or None
+        details["refresh_source_timestamp"] = latest_at.isoformat() if latest_at else None
+        details["identity_resolution"] = refreshed.get("identity_resolution")
+        if (
+            str(refreshed.get("canonical_event_id") or "")
+            != str(getattr(req, "official_event_id", "") or "")
+            or str(refreshed.get("canonical_home_team") or "")
+            != str(prior_evidence.get("canonical_home_team") or "")
+            or str(refreshed.get("canonical_away_team") or "")
+            != str(prior_evidence.get("canonical_away_team") or "")
+        ):
+            reasons.append("FINAL_REFRESH_EVENT_IDENTITY_CHANGED")
+            changed = True
+        if not latest_hash or not prior_hash or latest_hash != prior_hash:
+            reasons.append("FINAL_REFRESH_MATERIAL_SOURCE_CHANGED")
+            changed = True
+        if (
+            latest_at is None
+            or latest_at > checked_at
+            or checked_at - latest_at > _NFL_SCHEDULE_MAX_AGE
+        ):
+            reasons.append("FINAL_REFRESH_SOURCE_STALE_OR_INVALID")
+
+    passed = not reasons
+    return {
+        "final_refresh_status": "PASS" if passed else "HOLD",
+        "reasons": sorted(set(reasons)),
+        "probability_invalidated": changed or start is None or start <= checked_at,
+        "rerun_required": changed,
+        **details,
+    }
+
+
+def _apply_nfl_final_refresh_ceiling(
+    governed: dict[str, Any], refresh: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach independent refresh proof and never upgrade a SQL HOLD."""
+    out = dict(governed)
+    out["llp_governance"] = {
+        **dict(out.get("llp_governance") or {}),
+        "final_refresh": refresh,
+    }
+    if refresh["final_refresh_status"] == "PASS":
+        return out
+
+    # Preserve the completed numerical sporting model and original SQL evidence.
+    out["rank_eligible"] = False
+    out["probability_publishable"] = False
+    out["terminal_label"] = "MODEL_QUALIFIED_HOLD"
+    out["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
+    out["code"] = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+    out["blockers"] = sorted(set([
+        *(str(x) for x in out.get("blockers", [])),
+        *(str(x) for x in refresh["reasons"]),
+    ]))
+    out["terminal_reducer_input"] = {
+        "status": "HOLD",
+        "terminal_output": "MODEL_QUALIFIED_HOLD",
+        "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+    }
+    return out
 
 
 def _nfl_sport(req: Any) -> bool:
@@ -277,6 +406,27 @@ def score_nfl_team_event_request(
     except (NFLModelUnavailable, NFLModelInputsInsufficient, NFLModelOutputInvalid, NFLModelScorerFailed) as exc:
         raise _typed_failure(team_event_module, effective_req, exc) from exc
 
+    refresh = _nfl_final_refresh(effective_req, result, db=db)
+    governed = _apply_nfl_final_refresh_ceiling(governed, refresh)
+    # The fitted scorer has already persisted the immutable event prediction.
+    # Re-read that exact row before emitting the two proof fields required by
+    # the full-board auditor. Calibration health alone is not stage proof.
+    governed = attach_nfl_daily_stage_receipt(db=db, req=effective_req, governed=governed)
+    if governed["nfl_stage_receipt"]["status"] != "PASS":
+        governed["probability_publishable"] = False
+        governed["rank_eligible"] = False
+        governed["terminal_label"] = "MODEL_QUALIFIED_HOLD"
+        governed["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
+        governed["code"] = "LLP_EVENT_GOVERNANCE_NOT_PROVEN"
+        governed["blockers"] = sorted(set([
+            *(str(v) for v in (governed.get("blockers") or [])),
+            *(str(v) for v in governed["nfl_stage_receipt"]["blockers"]),
+        ]))
+        governed["terminal_reducer_input"] = {
+            "status": "HOLD",
+            "terminal_output": "MODEL_QUALIFIED_HOLD",
+            "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+        }
     governed["scout_research_barrier"] = scout_research_barrier
     evidence = dict(effective_req.sport_specific_evidence or {})
     governed["canonical_acquisition"] = {

@@ -127,3 +127,31 @@ def test_unclassified_source_fails_closed():
     readiness = source_readiness("some-new-feed")
     assert readiness.ready_for_candidate_training is False
     assert readiness.blockers == ("MODEL_SOURCE_UNCLASSIFIED",)
+
+
+def test_all_four_unbuilt_fitted_sports_have_typed_source_contracts(monkeypatch):
+    # This is a source-trust gate, not proof that any candidate exists.
+    monkeypatch.delenv("DATA_GOLF_API_KEY", raising=False)
+    monkeypatch.delenv("WOW_DATA_GOLF_COMMERCIAL_TRAINING_ENTITLED", raising=False)
+    monkeypatch.delenv("BOXING_DATA_API_KEY", raising=False)
+    monkeypatch.delenv("RAPIDAPI_KEY", raising=False)
+    monkeypatch.delenv("WOW_BOXING_DATA_TRAINING_ENTITLED", raising=False)
+
+    golf = sport_source_readiness("PGA")
+    mma = sport_source_readiness("MMA")
+    boxing = sport_source_readiness("BOXING")
+    cricket = sport_source_readiness("CRICKET")
+    assert golf["DATA_GOLF"].ready_for_candidate_training is False
+    assert "MODEL_SOURCE_TRAINING_ENTITLEMENT_NOT_CONFIRMED" in golf["DATA_GOLF"].blockers
+    assert mma["UFCSTATS_PUBLIC"].ready_for_candidate_training is True
+    assert SOURCES["UFCSTATS_PUBLIC"].certification_source_review_required is True
+    assert boxing["BOXING_DATA_API"].ready_for_candidate_training is False
+    assert "MODEL_SOURCE_TRAINING_ENTITLEMENT_NOT_CONFIRMED" in boxing["BOXING_DATA_API"].blockers
+    assert cricket["CRICKET_HISTORICAL_MATCHES_UNAPPROVED"].ready_for_candidate_training is False
+    assert cricket["CRICKET_HISTORICAL_MATCHES_UNAPPROVED"].blockers == (
+        "MODEL_SOURCE_NOT_AUTHORIZED_FOR_FITTED_TRAINING",
+    )
+    for sport_sources in (golf, mma, boxing, cricket):
+        assert sport_sources
+        assert all(source.probability_source is False and source.can_execute is False
+                   for source in sport_sources.values())

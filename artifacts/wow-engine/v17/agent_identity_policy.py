@@ -105,7 +105,7 @@ LIVE_ACCEPTANCE_PROBES: dict[str, str] = {
 ALLOWED_DISPOSITIONS = frozenset({"BLOCKED_WITH_EXACT_REASON"})
 TRUST_ROOT_SOURCE = ".github/workflows/wow-v17-existing-pr-governance-review.yml"
 # Governance-workflow seed previously embedded in the existing-PR shell deny list.
-# The receipt classifier treats every .github/ and .agents/ path as a trust root.
+# The receipt classifier treats every .github/, .agents/, and .claude/ path as a trust root.
 # This seed is what governance_trust_roots() scans for files those workflows execute.
 DECLARED_TRUST_ROOT_PATHS = (
     ".github/workflows/wow-verify.yml",
@@ -135,7 +135,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # ----------------------------------------------------------------------------- utils
 
 def trust_root_paths(repo_root: Path) -> list[str]:
-    """Governance-workflow seed paths. Prefix rules cover the rest of .github and .agents."""
+    """Governance-workflow seed paths. Prefixes cover .github, .agents and .claude."""
     source = repo_root / TRUST_ROOT_SOURCE
     if not source.is_file():
         raise ValueError("TRUST_ROOT_SOURCE_MISSING")
@@ -151,8 +151,9 @@ def trust_root_paths(repo_root: Path) -> list[str]:
 GOVERNANCE_WORKFLOWS_EXTRA = (
     ".github/workflows/wow-v17-independent-qa-check.yml",
     ".github/workflows/wow-v17-release-authority-check.yml",
+    ".github/workflows/wow-v17-governance-dispatcher.yml",
 )
-TRUST_ROOT_PREFIXES = (".github/", ".agents/")
+TRUST_ROOT_PREFIXES = (".github/", ".agents/", ".claude/")
 _REF_RE = re.compile(r"((?:artifacts|scripts|\.agents|\.github/scripts)/[A-Za-z0-9_./-]+\.(?:py|json|md|sh|ya?ml|txt))")
 _V17_IMPORT_RE = re.compile(r"\b(?:from|import)\s+v17\.([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -409,7 +410,10 @@ def evaluate(owner: dict[str, Any], *, principals: list[dict] | None = None,
         # or action is a trust root even though no list names it yet.
         probes = [".github/CODEOWNERS", ".github/workflows/__new_workflow__.yml",
                   ".github/actions/__new_action__/action.yml", ".github/scripts/__new_script__.py",
-                  ".agents/skills/__new_skill__/SKILL.md"]
+                  ".agents/skills/__new_skill__/SKILL.md",
+                  ".claude/skills/__new_skill__/SKILL.md",
+                  ".claude/agents/__new_agent__.md",
+                  ".claude/settings.json"]
         for path in trust_roots + probes:
             if f"@{owner_login}" not in _codeowners_owners(codeowners, path):
                 findings.append(f"PROTECTION_CODEOWNERS_UNCOVERED:{path}")

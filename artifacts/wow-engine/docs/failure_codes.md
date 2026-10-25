@@ -12,6 +12,12 @@ This file is the repository source of truth for governed typed failure/status co
 | `PROP_MODEL_REGISTRY_UNAVAILABLE` | prop exact-route artifact registry | The `wow_prop_certified_model_artifact` registry RPC could not be called (transport/auth/service failure). Infrastructure HOLD (`terminal_label=REGISTRY_INFRASTRUCTURE_BLOCKED`, `terminal_cause=INFRASTRUCTURE`) on `/score-pick-request` and HTTP 503 on `/score-prop`; never rewritten to `MODEL_UNAVAILABLE`, since it proves nothing about capability absence. Regression: `tests/test_v17_prop_registry_infra_typed_failure.py`. | No |
 | `PROP_MODEL_REGISTRY_INVALID_RESPONSE` | prop exact-route artifact registry | The registry RPC returned an unusable response shape. Same handling as `PROP_MODEL_REGISTRY_UNAVAILABLE`. | No |
 | `MODEL_OUTPUT_INVALID` | model validation | Selected model returned malformed, non-numeric, schema-invalid, impossible, or non-normalized output. | No |
+| `MODEL_RESOLUTION_FAILED` | cross-sport model registry lookup | Registry resolver raised before a controlling specialist could be selected. Retain the row as `OTHER_GOVERNED_HOLD`; absence of a fitted model is not established. | No |
+| `DISCOVERED_ROW_SCORER_EXCEPTION` | cross-sport row scoring | Untyped exception escaped the selected row scorer; row terminates as `MODEL_SCORER_FAILED` without aborting remaining events. | No |
+| `DISCOVERED_ROW_SCORER_NO_COMPLETION` | cross-sport row scoring | Selected row scorer returned `None` or an empty mapping; model-stage completion absent, recorded as `MODEL_SCORER_FAILED`. | No |
+| `DISCOVERED_ROW_SCORER_RESPONSE_NOT_MAPPING` | cross-sport model output validation | Selected row scorer returned a non-mapping object, recorded as `MODEL_OUTPUT_INVALID`. | No |
+| `DAILY_ROW_DETAIL_PERSISTED_SET_MISMATCH` | Daily full-row persistence readback | Supabase upsert returned without exception but readback indices did not exactly match every expected `(run_id,row_index)`; detail availability is held. | No |
+| `PERSISTENCE_RECONCILIATION_FAILED` | Daily full-row persistence readback | Terminal state of the full-row detail persistence adapter when exact-index readback is incomplete, duplicated, or mismatched. | No |
 | `EVENT_ALREADY_STARTED` | slate/final refresh | Pregame candidate has started or completed and cannot remain on a pregame leaderboard. | No |
 | `MARKET_DATA_UNOBTAINABLE` | market/evidence | Required market evidence could not be acquired. Does not erase an already-completed sporting probability. | Sporting probability may remain eligible; market/value lane blocked |
 | `AUTH_FAILED` | market acquisition | Provider rejected the configured credential (for example HTTP 401/403). Independent from `model_status`. | Does not decide sporting rank |
@@ -156,6 +162,17 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 
 | Code | Owning lane/stage | Exact condition | Rank eligible? |
 |---|---|---|---:|
+| `QA_INPUT_HEAD_SHA_INVALID` | QA manual dispatch | Optional requested head SHA is malformed; no QA decision is published. | N/A |
+| `QA_INPUT_HEAD_SHA_STALE` | QA manual dispatch | Requested head SHA does not equal the current PR head; dispatch aborts. | N/A |
+| `QA_REVIEW_MODES_CONFLICT` | QA mode selection | Zero-credit and API-backed adversarial review flags are both true; neither mode is silently substituted. | N/A |
+| `QA_ZERO_CREDIT_CANARY_CONFLICT` | QA mode selection | Zero-credit mode and independent-review canary were requested simultaneously. | N/A |
+| `QA_ZERO_CREDIT_POLICY_INVALID` | QA and Release mode selection | The zero-credit activation variable has a value other than empty, false, or true. | N/A |
+| `QA_ZERO_CREDIT_POLICY_NOT_ENABLED` | QA evidence | Zero-credit receipt is presented without the explicitly activated reduced-assurance policy. | N/A |
+| `QA_ZERO_CREDIT_POLICY_CONFLICT` | QA evidence | Zero-credit receipt conflicts with active adversarial-review requirement or review-active evidence. | N/A |
+| `QA_ZERO_CREDIT_SOURCE_REVIEW_UNEXPECTED` | QA evidence | Zero-credit procedure carries a purported independent source-review artifact; zero-credit cannot claim one. | N/A |
+| `QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH` | QA evidence | Zero-credit policy does not bind the canonical PR, exact head SHA and head ref. | N/A |
+| `RELEASE_INPUT_HEAD_SHA_INVALID` | Release manual dispatch | Optional Release target head SHA is malformed. | N/A |
+| `RELEASE_INPUT_HEAD_SHA_STALE` | Release manual dispatch | Release requested head SHA does not match authenticated producing QA receipt head. | N/A |
 | `QA_APP_CREDENTIAL_MISSING` | independent QA | `WOW_QA_APP_ID` is not numeric or `WOW_QA_APP_PRIVATE_KEY` is absent; no QA check is published (the required check stays missing, so merges block). | N/A |
 | `QA_REVIEW_PROVIDER_CREDENTIAL_MISSING` | independent QA | Independent-review activation is enabled but the separate `WOW_QA_REVIEW_OPENAI_API_KEY` is absent; no QA decision/check is published. | N/A |
 | `QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD` | independent QA canary | Dispatch requested a canary but its PR number and head SHA do not exactly match the owner-configured single-PR/SHA admission. | N/A |
@@ -200,6 +217,13 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `RELEASE_QA_MISSING` | release authority | No completed `WOW Independent QA exact-head` run from the QA App at this head. | N/A |
 | `RELEASE_QA_FAILED` | release authority | The latest QA App check at this head is not `success`. | N/A |
 | `RELEASE_QA_FOREIGN_SOURCE` | release authority | A `WOW Independent QA exact-head` run exists at this head but from a principal other than the QA App (spoof or misconfiguration). | N/A |
+| `RELEASE_UPSTREAM_QA_APPLICABLE` | release authority | The authenticated upstream QA run completed and its `qa` job concluded `success` or `failure`. Policy resolution still runs; this is not a Release pass. | N/A |
+| `RELEASE_UPSTREAM_QA_DISPOSITION_INVALID` | release authority | Upstream classification returned a disposition other than `neutral` or `applicable`. No Release check is published. | N/A |
+| `RELEASE_UPSTREAM_QA_JOB_INCOMPLETE` | release authority | The upstream `qa` job is not a completed success, failure, or skip. No Release check is published. | N/A |
+| `RELEASE_UPSTREAM_QA_NO_TARGET` | release authority | The upstream QA workflow completed but its `qa` job was skipped, so there is no exact-head target. Neutral: no policy lookup and no Release check. | N/A |
+| `RELEASE_UPSTREAM_QA_SKIPPED` | release authority | The upstream QA workflow conclusion is `skipped`. Neutral: no policy lookup and no Release check. | N/A |
+| `RELEASE_UPSTREAM_QA_UNREADABLE` | release authority | The upstream QA run or its job list could not be read as a complete inventory. No Release check is published. | N/A |
+| `RELEASE_UPSTREAM_QA_UNTRUSTED` | release authority | The upstream run is not the protected-main QA workflow at the claimed attempt, or its repository, event, or job identity does not match. Cancelled runs are untrusted. No Release check is published. | N/A |
 | `TARGET_HEAD_INVALID` | check targeting | A workflow_run pull request entry has no valid 40-hex head SHA; suffixed `:<pr>`. | N/A |
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
 | `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
@@ -218,6 +242,21 @@ Engineering control plane only. None affects sporting probability, rank or `can_
 | `P0_DOMAIN_LEASE_MISSING` | engineering worker target selection | An exact P0 RAPID target was dispatched without a non-GLOBAL domain lease group in the dispatch manifest. Suffixed `:<incident>`. | N/A |
 | `STANDARD_TARGET_MUST_USE_GLOBAL_LEASE` | engineering worker target selection | An exact P1 STANDARD target was dispatched with a domain lease group instead of the GLOBAL writer lease. Suffixed `:<incident>`. | N/A |
 | `TARGET_INCIDENT_NOT_SUPPORTED` | engineering worker target selection | Exact target is neither P0 RAPID nor P1 STANDARD. Suffixed `:<incident>:<severity>:<lane>`. | N/A |
+
+## NFL governed final-refresh proof (October 2026)
+
+These are evidence/freshness publication holds, **not** fitted-model unavailability. Each withholds rank eligibility without erasing completed sporting probabilities. Regression coverage: `tests/test_v17_nfl_final_refresh_proof.py`.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `FINAL_REFRESH_EVENT_NOT_PREGAME` | NFL team-event / final refresh | Event start is at or before the verification instant, or a valid timezone-aware kickoff is absent. | No |
+| `FINAL_REFRESH_SCORED_SOURCE_PROVENANCE_MISSING` | NFL team-event / final refresh | Scored canonical schedule snapshot ID, content hash or capture timestamp is absent. | No |
+| `FINAL_REFRESH_MODEL_TIMESTAMP_NOT_CURRENT` | NFL team-event / final refresh | Model timestamp is missing/invalid or precedes the scored material-update timestamp. | No |
+| `FINAL_REFRESH_SOURCE_UNAVAILABLE` | NFL team-event / final refresh | Re-reading the latest canonical NFL schedule raises or cannot be completed. | No |
+| `FINAL_REFRESH_CANONICAL_EVENT_UNRESOLVED` | NFL team-event / final refresh | The canonical source requery cannot resolve a single matching eligible event. | No |
+| `FINAL_REFRESH_EVENT_IDENTITY_CHANGED` | NFL team-event / final refresh | Canonical event/team identity no longer matches the fitted-model event. | No |
+| `FINAL_REFRESH_MATERIAL_SOURCE_CHANGED` | NFL team-event / final refresh | Canonical NFL schedule content hash differs from that used for the scored prediction; rerun required. | No |
+| `FINAL_REFRESH_SOURCE_STALE_OR_INVALID` | NFL team-event / final refresh | Latest canonical schedule capture lacks a valid UTC timestamp, is future-dated, or exceeds the 24-hour publication freshness window. | No |
 
 ## NFL Pick'em pre-lock full-pool research and zero-point tie settlement (PR #1680)
 
@@ -370,3 +409,91 @@ These are **research feature preparation** failures, not certified model inferen
 | `NCAAF_FORWARD_PRIOR_FORM_INSUFFICIENT` | NCAAF research forward feature builder | One or both teams lack the model's minimum three source-eligible settled prior games; no baseline imputation. | No |
 | `NCAAF_FORWARD_FEATURE_SCHEMA_INVALID` | NCAAF research forward feature builder | Computed numeric features do not exactly match the candidate model schema or finite-number contract. | No |
 | `NCAAF_FORWARD_FEATURE_NOT_PREGAME` | NCAAF research forward feature builder | Latest evidence acquisition timestamp is not strictly before the target event start. | No |
+
+## NBA POINTS source-snapshot bridge diagnostics (P0 #1988)
+
+The optional `v17/nba_points_snapshot_bridge.py` is a **read-only, source-supplied input validator**. It does not authenticate an upstream NBA feed, write a DB row, activate a route, score/calibrate/certify a model, rank or execute. It must be invoked only after source acquisition; `SOURCE_VALIDATED_SNAPSHOT_NOT_PERSISTED` is not a certified hydrated model prediction. Every failure below is a bridge-stage `NBAPointsSourceError`, never `MODEL_UNAVAILABLE`, scorer completion failure, or global terminal label.
+
+| Code or family | Owning lane/stage | Exact condition | Affects sporting probability/rank? |
+|---|---|---|---|
+| `NBA_POINTS_*_MISSING`, `NBA_POINTS_*_INVALID`, `NBA_POINTS_*_NAIVE` | NBA POINTS pregame evidence bridge | A required explicit identifier/time/number is blank, malformed, nonfinite, or timezone-naive | No; no prediction made |
+| `NBA_POINTS_EVENT_NOT_PREGAME`, `NBA_POINTS_CAPTURE_NOT_PREGAME`, `NBA_POINTS_ROSTER_TIMESTAMP_INVALID`, `NBA_POINTS_ROLE_TIMESTAMP_INVALID`, `NBA_POINTS_SOURCE_TIMESTAMP_INVALID`, `NBA_POINTS_LINE_TIMESTAMP_INVALID` | NBA POINTS point-in-time source gating | Event already started or capture/roster/role/game/source/line evidence occurs after allowed pregame cutoff | No; evidence rejected |
+| `NBA_POINTS_TEAM_IDENTITY_CONFLICT`, `NBA_POINTS_CANONICAL_EVENT_UNRESOLVED`, `NBA_POINTS_CANONICAL_EVENT_UNVERIFIED`, `NBA_POINTS_CANONICAL_TEAM_MISMATCH`, `NBA_POINTS_ROSTER_PLAYER_MISMATCH` | NBA POINTS canonical event/player/roster identity | Schedule identity is absent, alias-only or contradicts exactly roster team/player or target event | No |
+| `NBA_POINTS_ADJACENT_LINE_NOT_EXACT`, `NBA_POINTS_EXACT_LINE_MISMATCH`, `NBA_POINTS_LINE_UNSUPPORTED`, `NBA_POINTS_DIRECTION_INVALID`, `NBA_POINTS_PERIOD_UNSUPPORTED` | NBA POINTS exact stat-line/side identity | Source line is adjacent/contradictory, invalid line, unsupported period or non-MORE/LESS side | No |
+| `NBA_POINTS_PLAYER_AVAILABILITY_HOLD`, `NBA_POINTS_ROLE_EVIDENCE_MISSING` | NBA POINTS source role check | Player not affirmatively listed available or missing role evidence | No |
+| `NBA_POINTS_L10_EVIDENCE_INCOMPLETE`, `NBA_POINTS_PRIOR_GAME_INVALID`, `NBA_POINTS_PRIOR_GAME_DUPLICATE_OR_TARGET`, `NBA_POINTS_PRIOR_GAME_PLAYER_MISMATCH`, `NBA_POINTS_PRIOR_GAME_FUTURE_LEAKAGE`, `NBA_POINTS_GAME_BOX_SCORE_MISMATCH`, `NBA_POINTS_SOURCE_TIMESTAMPS_MISSING`, `NBA_POINTS_SOURCE_IDENTITY_INVALID` | NBA POINTS historical-game evidence | Fewer than 10 source stat rows; duplicate/wrong/future game or player; conflict between points and box-score observations; missing provenance | No |
+| `NBA_POINTS_CANONICAL_EVIDENCE_REJECTED`, `NBA_POINTS_SNAPSHOT_IDENTITY_MISMATCH`, `NBA_POINTS_SNAPSHOT_LINE_MISMATCH` | NBA POINTS canonical V17 validator/snapshot handoff | Existing V17 scorer evidence normalizer fails or the immutable snapshot changed event/player/stat/exact line | No |
+
+Regression: `artifacts/wow-engine/tests/test_v17_nba_points_snapshot_bridge.py`, including exact source-line and historical-identity counterexamples. Once a real provider path is integrated, its own source-authenticity/identity checks remain required. `can_execute=false`, `probability_publishable=false` throughout.
+
+### NBA official history cross-source diagnostics (#1988)
+
+`v17/nba_points_official_history.py` is read-only research acquisition. The NBA Stats gamelog and NBA CDN settled boxscore must agree on game ID, player ID, final status, game start and points. It does not claim active-role/roster verification, exact market line, calibrated probability, publication or certification.
+
+| Code or family | Owning stage | Exact condition | Sporting probability/rank changed? |
+|---|---|---|---|
+| `NBA_HISTORY_PLAYER_ID_INVALID`, `NBA_HISTORY_SEASON_SCOPE_INVALID` | NBA POINTS source request | Player identifier is non-numeric/unsafe or season fanout exceeds two explicit seasons | No |
+| `NBA_HISTORY_TIME_INVALID`, `NBA_HISTORY_TIME_NAIVE`, `NBA_HISTORY_EVENT_NOT_PREGAME`, `NBA_HISTORY_GAME_DATE_INVALID` | NBA POINTS temporal source check | Missing/invalid/naive timestamp or target has started | No |
+| `NBA_HISTORY_SOURCE_HTTP_FAILURE`, `NBA_HISTORY_SOURCE_UNAVAILABLE`, `NBA_HISTORY_SOURCE_INVALID`, `NBA_HISTORY_GAMELOG_SCHEMA_INVALID` | NBA Stats/CDN HTTP+schema | Provider HTTP failure, invalid response or missing unique required result set/columns | No |
+| `NBA_HISTORY_PLAYER_ID_MISMATCH`, `NBA_HISTORY_GAME_ID_INVALID`, `NBA_HISTORY_POINTS_INVALID`, `NBA_HISTORY_DUPLICATE_GAME_CONTRADICTION`, `NBA_HISTORY_L10_INSUFFICIENT` | NBA playergamelog history preparation | Historical row player/game/stat invalid, duplicated contradictorily, or fewer than ten eligible prior rows | No |
+| `NBA_HISTORY_BOX_GAME_ID_MISMATCH`, `NBA_HISTORY_GAME_NOT_FINAL`, `NBA_HISTORY_BOX_TIME_CONTRADICTION`, `NBA_HISTORY_BOX_SCORE_SCHEMA_INVALID`, `NBA_HISTORY_BOX_PLAYER_ID_MISSING_OR_DUPLICATE`, `NBA_HISTORY_POINTS_DISAGREE_WITH_BOX` | NBA CDN settled-game reconciliation | Missing exact official game/player, non-final game, impossible kickoff/date, invalid boxscore or disagreed points | No |
+
+Regression: `artifacts/wow-engine/tests/test_v17_nba_points_official_history.py`. MAX 10 CDN game calls plus 1-2 supplied NBA playergamelog seasons; no guessed timestamps, role status, board line, probabilities or wager functions. A successful history retrieval is **not** a complete pregame evidence snapshot.
+
+### NBA POINTS exact quote/roster event binding (#1990)
+
+A numerically matching prop quote is **not** authority for a different event, player, period, stat or direction. The bridge now requires a source-supplied, canonical event-ID-bound current roster and exact board quote; unknown or missing identifiers hold at evidence stage. This does not certify the board source's authenticity or produce a model probability.
+
+| Code | Owning stage | Fail-closed condition |
+|---|---|---|
+| `NBA_POINTS_BOARD_EVENT_MISMATCH` | Exact quote identity | Board quote canonical event ID differs from target |
+| `NBA_POINTS_BOARD_PLAYER_MISMATCH` | Exact quote identity | Quote canonical player ID differs from target |
+| `NBA_POINTS_BOARD_STAT_MISMATCH` | Exact quote identity | Quote stat is not NBA POINTS |
+| `NBA_POINTS_BOARD_DIRECTION_MISMATCH` | Exact quote identity | Quote MORE/LESS side differs from target |
+| `NBA_POINTS_BOARD_PERIOD_MISMATCH` | Exact quote identity | Quote period is not FULL_GAME |
+| `NBA_POINTS_BOARD_START_MISMATCH` | Exact quote identity | Quote event kickoff timestamp differs from target |
+| `NBA_POINTS_ROSTER_EVENT_MISMATCH` | Current roster identity | Source roster event ID differs from the exact canonical target |
+| `NBA_POINTS_*_MISSING` | Source structure | Missing quote/roster identity is held rather than inferred |
+
+Both directions require their own correctly typed exact quote and preserve the already-observed market line. These checks are additional to event cutoff, official history, calibration and terminal governance; `can_execute=false`.
+
+### Cursor Cloud Agent engineering handoff (#2008)
+
+Codes below belong solely to the engineering GitHub-to-Cursor control plane. None grants model qualification, wager execution, merge, or deployment authority. A queued Cloud Agent is not production acceptance.
+
+| Code | Owning stage | Trigger / fail-closed meaning |
+|---|---|---|
+| `CURSOR_HANDOFF_DISABLED` | provider-dispatcher feature gate | Owner opt-in variable is not true; no API call |
+| `CURSOR_DISPATCH_INPUTS_MISSING` | provider-dispatcher admission | Required PR number, expected SHA, or scoped task is empty |
+| `CURSOR_HANDOFF_COMMAND_INVALID` | PR-comment bridge | First line is not exactly `/wow-cursor` |
+| `CURSOR_HANDOFF_TASK_INVALID`, `CURSOR_TASK_INVALID` | PR-comment bridge / adapter input | Task missing, empty or longer than bounded input contract |
+| `CURSOR_PR_IDENTITY_NOT_ELIGIBLE` | PR-comment bridge | PR is not an open same-repository branch targeting main |
+| `CURSOR_IDENTITY_INPUT_INVALID`, `CURSOR_PR_NUMBER_INVALID` | adapter admission | Malformed repository, exact SHA, or PR number |
+| `CURSOR_PR_NOT_OPEN_OR_MISMATCH` | GitHub PR readback | Requested PR is not open or has changed identity |
+| `CURSOR_STALE_PR_HEAD` | GitHub PR head lock | PR head no longer matches caller's immutable expected SHA |
+| `CURSOR_PR_INCIDENT_MISMATCH`, `CURSOR_INCIDENT_ID_INVALID` | canonical PR/incident binding | PR body does not bind exactly one matching open incident, or incident ID is malformed |
+| `CURSOR_INCIDENT_NOT_OPEN_OR_MISMATCH` | GitHub incident readback | Incident is closed, mismatched, or is not an issue in the target repository |
+| `CURSOR_OWNER_NOT_AUTHORIZED` | adapter authorization | Dispatch actor is neither the repository owner nor an explicitly authorized GitHub automation identity |
+| `CURSOR_SHARED_WRITER_LEASE_ACTIVE`, `CURSOR_SHARED_WRITER_LEASE_INVALID`, `CURSOR_SHARED_WRITER_LEASE_UNAVAILABLE` | shared #1138 writer lease | Existing remote/local writer, malformed reservation, or unavailable lease ledger; no Cursor create |
+| `CURSOR_SHARED_WRITER_LEASE_INVENTORY_UNVERIFIED`, `CURSOR_SHARED_WRITER_LEASE_INVENTORY_TRUNCATED` | shared #1138 writer lease | Ledger pagination or response is incomplete; admission fails closed |
+| `CURSOR_SHARED_WRITER_LEASE_RECEIPT_UNVERIFIED` | shared #1138 writer lease | Cursor run receipt could not be bound to the persisted hold; hold remains active |
+| `CURSOR_FORK_HEAD_UNSUPPORTED` | GitHub PR head ownership | Head branch resides outside canonical repository |
+| `CURSOR_UNSAFE_TARGET_BRANCH`, `CURSOR_UNEXPECTED_BASE_BRANCH` | PR branch / base guard | Attempt would write main/master/empty head or operate against non-main base |
+| `CURSOR_GITHUB_AUTH_MISSING`, `CURSOR_GITHUB_PR_HTTP_<status>` | GitHub PR evidence | Missing GitHub credential or PR REST error; no authoritative head validation |
+| `CURSOR_GITHUB_PR_RESPONSE_INVALID`, `CURSOR_GITHUB_INCIDENT_RESPONSE_INVALID`, `CURSOR_CURRENT_MAIN_UNVERIFIED` | GitHub identity evidence | Required same-repository PR, incident, or current-main response is malformed |
+| `CURSOR_API_KEY_MISSING`, `CURSOR_AUTH_OR_ACCESS_DENIED` | Cursor credential gate | No Cursor API key or failed provider authentication/permissions |
+| `CURSOR_BILLING_OR_RATE_LIMIT_BLOCKED` | Cursor spending/rate control | Cursor rejects with HTTP 402/429; no claim of started agent |
+| `CURSOR_AUTOMATIC_INCIDENT_ID_MISSING`, `CURSOR_AUTOMATIC_INCIDENT_NOT_OPEN` | trusted PR-label admission | No canonical linked incident or linked GitHub incident is not open |
+| `CURSOR_SPEND_CAP_UNCONFIRMED` | provider-dispatcher billing opt-in | Owner has not confirmed account spending cap; no Cursor API create |
+| `CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED`, `CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS` | account-wide cost/concurrency gate | Cursor account inventory is incomplete or another agent is active |
+| `CURSOR_AGENT_INVENTORY_UNVERIFIED` | Cursor active-agent inspection | Missing, invalid or truncated PR-scoped agent list |
+| `CURSOR_ACTIVE_PR_AGENT_EXISTS` | Cursor single-PR admission | An active Cloud Agent is already associated with that PR |
+| `CURSOR_DUPLICATE_DISPATCH_SUPPRESSED` | Cursor idempotent create | Server reports `agent_id_conflict` on deterministic agent ID |
+| `CURSOR_API_CONFLICT_UNRESOLVED`, `CURSOR_API_HTTP_<status>` | Cursor create / API | Unclassified 409 or other HTTP error; fail closed |
+| `CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS` | Cursor API preflight | Provider rejects request, target repository or configuration |
+| `CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED`, `CURSOR_API_RESPONSE_INVALID` | Remote evidence | Network, timeout, unparsable or non-object response |
+| `CURSOR_DISPATCH_RECEIPT_UNVERIFIED` | Cursor enqueue confirmation | Create did not return matching agent ID and run ID |
+
+Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
+
+Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.

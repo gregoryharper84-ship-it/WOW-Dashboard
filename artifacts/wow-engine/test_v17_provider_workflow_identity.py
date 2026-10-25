@@ -13,7 +13,8 @@ WORKFLOW = ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml
 
 class ProviderWorkflowIdentityTests(unittest.TestCase):
     def route(self, source, *, auth=True, code="OPENAI_API_QUOTA_EXCEEDED",
-              eligible=True, conclusion="failure", title="lease=GLOBAL incident=AUTO"):
+              eligible=True, conclusion="failure", title="lease=GLOBAL incident=AUTO",
+              secondary="success"):
         text = WORKFLOW.read_text()
         section = text.split("      - name: Resolve provider action", 1)[1]
         script = section.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
@@ -23,7 +24,12 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             bin_dir = root / "bin"
             bin_dir.mkdir()
             gh = bin_dir / "gh"
-            gh.write_text("#!/bin/sh\nprintf 'fixture failed worker log\\n'\n")
+            gh.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = run ] && [ \"$2\" = list ]; then\n"
+                "  printf '[{\"databaseId\":901,\"conclusion\":\"%s\"}]\\n' \"$FAKE_SECONDARY\"\n"
+                "else printf 'fixture failed worker log\\n'; fi\n"
+            )
             gh.chmod(0o755)
             python = bin_dir / "python"
             classification = json.dumps({"code":code, "failover_eligible":eligible})
@@ -38,7 +44,8 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
                        SOURCE_RUN_ID="123", SOURCE_CONCLUSION=conclusion,
                        SOURCE_DISPLAY_TITLE=title, MANUAL_TARGET_INCIDENT="",
                        MANUAL_LEASE_GROUP="", ANTHROPIC_API_KEY="fixture" if auth else "",
-                       CLAUDE_CODE_OAUTH_TOKEN="", OPENAI_API_KEY="")
+                       CLAUDE_CODE_OAUTH_TOKEN="", OPENAI_API_KEY="",
+                       FAKE_SECONDARY=secondary)
             result = subprocess.run(["bash","-c",script], env=env,
                                     capture_output=True,text=True,timeout=10)
             self.assertEqual(result.returncode,0,result.stderr)
@@ -61,12 +68,31 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
         receipt=self.route("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
                            auth=False)
         self.assertEqual(receipt["action"],"SURVIVAL")
-        self.assertEqual(receipt["reason"],"OPENAI_API_QUOTA_EXCEEDED:ANTHROPIC_AUTH_MISSING")
+        self.assertEqual(receipt["reason"],"OPENAI_API_QUOTA_EXCEEDED:ANTHROPIC_UNAVAILABLE_OR_FAILED")
+
+    def test_latest_failed_secondary_is_not_retried(self):
+        receipt=self.route("wow-v17-chatgpt-engineering-worker",
+                           secondary="failure")
+        self.assertEqual(receipt["action"],"SURVIVAL")
+        self.assertEqual(receipt["provider"],"deterministic")
+        self.assertEqual(receipt["reason"],
+                         "OPENAI_API_QUOTA_EXCEEDED:ANTHROPIC_UNAVAILABLE_OR_FAILED")
 
     def test_non_provider_failure_never_dispatches_fallback(self):
         receipt=self.route("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
                            code="NON_PROVIDER_FAILURE",eligible=False)
         self.assertEqual(receipt["action"],"SURVIVAL")
+        self.assertFalse(receipt["independent_fallback_allowed"])
+
+    def test_governance_boundary_never_dispatches_independent_fallback(self):
+        receipt=self.route("wow-v17-chatgpt-engineering-worker",
+                           code="ACTIONABLE_REPAIR_POLICY_BOUNDARY",eligible=False)
+        self.assertFalse(receipt["independent_fallback_allowed"])
+
+    def test_exhausted_primary_and_secondary_admit_only_independent_fallback(self):
+        receipt=self.route("wow-v17-chatgpt-engineering-worker", secondary="failure")
+        self.assertTrue(receipt["independent_fallback_allowed"])
+        self.assertEqual(receipt["cursor_status"], "CURSOR_NOT_CONFIGURED")
 
     def test_claude_failure_does_not_loop_back_to_openai(self):
         receipt=self.route("wow-v17-claude-engineering-worker lease=GLOBAL incident=AUTO",

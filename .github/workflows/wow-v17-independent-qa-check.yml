@@ -1,5 +1,10 @@
 name: wow-v17-independent-qa-check
-run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }}
+# Dynamic run-name stays until a later merge sets this one line to exactly
+# `run-name: wow-v17-independent-qa-check`. Release accepts that static name
+# only with workflow id 380562324 and this file's path. That merge must keep
+# the job `if` below (skip when pull_requests[0] is absent, and keep the
+# trusted-governance-gate exclusion) and the AUTO concurrency group.
+run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }} head=${{ inputs.head_sha || 'AUTO' }}
 
 # Phase C of #1550. Runs from protected main only and never checks out or executes
 # PR code. Evidence is read with the read-only GITHUB_TOKEN; the check is published
@@ -9,13 +14,20 @@ run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inp
 
 on:
   workflow_run:
-    workflows: [wow-verify, wow-engine-verify, wow-v17-rapid-repair, wow-v17-change-impact-gate, wow-v17-trusted-governance-gate]
+    # Break the QA -> existing PR certifier -> trusted gate -> QA completion loop.
+    # Retain all genuine regression triggers and manual exact-head QA.
+    workflows: [wow-verify, wow-engine-verify, wow-v17-rapid-repair, wow-v17-change-impact-gate]
     types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
         description: Pull request number to evaluate at its current exact head.
         required: true
+        type: string
+      head_sha:
+        description: Optional exact SHA binding
+        required: false
+        type: string
       independent_review_canary:
         description: Run the owner-allowlisted exact-PR/SHA reviewer canary while global activation is off.
         type: boolean
@@ -29,16 +41,21 @@ permissions:
   actions: read
 
 concurrency:
-  # One serialized queue per role: later runs see later evidence, so the newest
-  # published check always reflects the most complete evidence for that head.
-  group: wow-v17-independent-qa-check
+  # Isolate PRs: other PR events cannot cancel a queued exact-head decision.
+  # Repeat events for one PR remain serialized. A workflow_run with no
+  # associated pull request shares this role's AUTO queue. AUTO is not a
+  # pull request number; the job is skipped before target resolution.
+  # Malformed or foreign targets that do reach the resolver fail closed.
+  # Queue bounded by GitHub Actions maximum of 100 pending runs per group.
+  group: wow-v17-independent-qa-check-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 'AUTO' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   qa:
     # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
     # not red. Once bound, a missing key fails closed in the identity step below.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true')
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]) && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || (vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true' && vars.WOW_QA_ZERO_CREDIT_MODE != 'true'))
     environment: wow-qa
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -73,15 +90,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           INPUT_PR: ${{ inputs.pr_number }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
           WR_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
         run: |
           set -euo pipefail
           tool=artifacts/wow-engine/v17/independent_release_checks.py
           if [ "$EVENT" = "workflow_dispatch" ]; then
             resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR")
+            if [ -n "${INPUT_HEAD_SHA:-}" ]; then
+              [[ "$INPUT_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::QA_INPUT_HEAD_SHA_INVALID"; exit 1; }
+              jq -e --arg sha "$INPUT_HEAD_SHA" '.targets | length == 1 and .[0].head == $sha' <<<"$resolved" >/dev/null || { echo "::error::QA_INPUT_HEAD_SHA_STALE"; exit 1; }
+            fi
           elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
             resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS")
           else
+            # The job if above skips a workflow_run whose pull_requests array is
+            # empty. Reaching this branch means the guard was bypassed; still
+            # refuse to guess a PR or publish a check.
             echo "::error::QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing"
             exit 1
           fi
@@ -112,6 +137,7 @@ jobs:
         shell: bash
         env:
           REVIEW_ACTIVATION: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE }}
+          ZERO_CREDIT_ACTIVATION: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
           CANARY_REQUESTED: ${{ inputs.independent_review_canary }}
           CANARY_PR: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_PR }}
           CANARY_SHA: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA }}
@@ -125,7 +151,18 @@ jobs:
             ""|false) global_active=false ;;
             *) echo "::error::QA_REVIEW_POLICY_INVALID"; exit 1 ;;
           esac
-          if [ "$global_active" = "true" ]; then
+          case "${ZERO_CREDIT_ACTIVATION:-}" in
+            true) zero_credit_active=true ;;
+            ""|false) zero_credit_active=false ;;
+            *) echo "::error::QA_ZERO_CREDIT_POLICY_INVALID"; exit 1 ;;
+          esac
+          if [ "$zero_credit_active" = "true" ] && [ "$global_active" = "true" ]; then
+            echo "::error::QA_REVIEW_MODES_CONFLICT"; exit 1
+          fi
+          if [ "$zero_credit_active" = "true" ]; then
+            [ "${CANARY_REQUESTED:-false}" != "true" ] || { echo "::error::QA_ZERO_CREDIT_CANARY_CONFLICT"; exit 1; }
+            mode=zero_credit
+          elif [ "$global_active" = "true" ]; then
             mode=independent
           elif [ "${CANARY_REQUESTED:-false}" = "true" ]; then
             [ "$EVENT" = "workflow_dispatch" ] || {
@@ -142,10 +179,11 @@ jobs:
             mode=legacy
           fi
           active=false
-          [ "$mode" = "legacy" ] || active=true
+          [ "$mode" != "independent" ] && [ "$mode" != "canary" ] || active=true
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "review_active=$active" >> "$GITHUB_OUTPUT"
           echo "global_review_active=$global_active" >> "$GITHUB_OUTPUT"
+          echo "zero_credit_active=$zero_credit_active" >> "$GITHUB_OUTPUT"
 
       - name: Build immutable QA review-policy receipt
         id: policy_receipt
@@ -312,6 +350,7 @@ jobs:
           REVIEW_ACTIVE: ${{ steps.policy.outputs.review_active }}
           REVIEW_MODE: ${{ steps.policy.outputs.mode }}
           GLOBAL_REVIEW_ACTIVE: ${{ steps.policy.outputs.global_review_active }}
+          ZERO_CREDIT_ACTIVE: ${{ steps.policy.outputs.zero_credit_active }}
           SOURCE_REVIEW_ARTIFACT_ID: ${{ steps.source_review_artifact.outputs.artifact-id }}
         run: |
           set -euo pipefail
@@ -321,6 +360,7 @@ jobs:
           args=(gather --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" --expected-head "$HEAD_SHA"
             --qa-policy-json "$RUNNER_TEMP/wow-v17-qa-review-policy.json")
           [ "${GLOBAL_REVIEW_ACTIVE:-false}" != "true" ] || args+=(--current-review-active)
+          [ "${ZERO_CREDIT_ACTIVE:-false}" != "true" ] || args+=(--zero-credit-policy-enabled)
           if [ "$REVIEW_ACTIVE" = "true" ]; then
             [[ "$SOURCE_REVIEW_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]] || {
               echo "::error::SOURCE_REVIEW_ARTIFACT_ID_MISSING"; exit 1;
