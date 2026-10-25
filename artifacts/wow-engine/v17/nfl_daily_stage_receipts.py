@@ -145,6 +145,19 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
                 or not isinstance(training_n, int) or training_n <= 0):
             reasons.append("NFL_STAGE_PROOF_DYNAMIC_CALIBRATION_UNPROVEN")
 
+    # A readable persisted score is NOT a reducer decision. Preserve upstream
+    # eligibility solely as a diagnostic; never let this adapter publish a row
+    # with an absent controlling dynamic-calibration producer receipt.
+    if out.get("rank_eligible") is True:
+        out["rank_eligible_pre_audit"] = True
+    if out.get("terminal_label") not in (None, "MODEL_QUALIFIED_HOLD"):
+        out["upstream_terminal_label"] = out["terminal_label"]
+    out["rank_eligible"] = False
+    out["probability_publishable"] = False
+    out["terminal_label"] = "MODEL_QUALIFIED_HOLD"
+    out["terminal_ceiling"] = "MODEL_QUALIFIED_HOLD"
+    out["can_execute"] = False
+
     if reasons:
         # Never adopt a success boolean from an earlier source or a prior event.
         out.pop("probability_package_valid", None)
