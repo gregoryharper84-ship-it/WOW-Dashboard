@@ -326,7 +326,7 @@ def test_workflow_selector_uses_executed_exact_head_not_metadata_prompt(
     )
     assert no_prior.returncode == 0, no_prior.stderr
     if new_conclusion == "action_required":
-        assert no_prior.stdout.strip() == ""
+        assert no_prior.stdout.strip() == "null|"
 
 
 def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
