@@ -18,7 +18,6 @@ API_ROOT = f"https://api.github.com/repos/{REPOSITORY}"
 DEFAULT_TIMEOUT_SECONDS = 10
 SIRT_WATCHDOG_WORKFLOW = "wow-sirt-independent-reliability-sentinel.yml"
 SIRT_WATCHDOG_COMPONENT = f"{REPOSITORY}:{SIRT_WATCHDOG_WORKFLOW}"
-SIRT_WATCHDOG_MAX_AGE = timedelta(minutes=90)
 # Off-GitHub Render cron sentinel (15-minute cadence): two missed cycles plus slack.
 EXTERNAL_SENTINEL_ID = "WOW_SIRT_EXTERNAL_SENTINEL"
 EXTERNAL_SENTINEL_MAX_AGE = timedelta(minutes=35)
@@ -167,7 +166,7 @@ def _external_sentinel_fresh(store: Any, observed: datetime) -> bool:
 
     Fail closed: any missing reader, read error, wrong identity, non-RUNNING
     status, authority mismatch, unparseable/future/stale timestamp is NOT fresh,
-    so the original GitHub-based HEARTBEAT_MISSING verdict stands.
+    so an unverified Render heartbeat never becomes scheduler success.
     """
     reader = getattr(store, "read_runtime_row", None)
     if reader is None:
@@ -194,77 +193,36 @@ def reconcile_sirt_watchdog(
     session: Any = requests,
     now: datetime | None = None,
 ) -> str:
-    """Independent Render-side dead-man check of GitHub's SIRT watchdog.
+    """Observe the independent Render cron's authenticated persisted heartbeat.
 
-    A completed scheduled failure is valid scheduler liveness: SIRT must report
-    broken engineering as BLOCKED, not green. Push/dispatch/workflow_run triggers
-    never prove the 15-minute cron is alive. Skipped, cancelled, malformed,
-    wrong-branch and stale runs cannot satisfy the heartbeat. No GitHub writer.
+    GitHub runs (scheduled, push, or manually dispatched) are not liveness
+    evidence. A missing, stale, foreign, future or unreadable Render pulse
+    fails closed while preserving the existing durable audit-finding identity.
+    This remains a scheduler-liveness decision, not a product/assurance PASS.
     """
     observed = now or utcnow()
-    result = _get(
-        session,
-        f"/actions/workflows/{SIRT_WATCHDOG_WORKFLOW}/runs",
-        params={"branch": "main", "event": "schedule", "per_page": 3},
-    )
-    if not isinstance(result, dict) or not isinstance(result.get("workflow_runs"), list):
-        raise GitHubAuditUnavailable("SIRT_WATCHDOG_RUN_INVENTORY_INVALID")
-
-    eligible: list[tuple[datetime, dict[str, Any]]] = []
-    for run in result["workflow_runs"]:
-        if not isinstance(run, dict):
-            raise GitHubAuditUnavailable("SIRT_WATCHDOG_RUN_INVALID")
-        # Verify the event independently of GitHub's query filtering: a
-        # manually-triggered watchdog must never mask absent scheduled runs.
-        if run.get("head_branch") != "main" or run.get("event") != "schedule":
-            continue
-        if run.get("status") != "completed" or run.get("conclusion") not in {"success", "failure"}:
-            continue
-        if not run.get("id") or not run.get("created_at"):
-            raise GitHubAuditUnavailable("SIRT_WATCHDOG_RUN_IDENTITY_INVALID")
-        try:
-            started_at = parse_timestamp(str(run["created_at"]))
-        except (ValueError, TypeError) as exc:
-            raise GitHubAuditUnavailable("SIRT_WATCHDOG_TIMESTAMP_INVALID") from exc
-        if started_at > observed + timedelta(minutes=2):
-            raise GitHubAuditUnavailable("SIRT_WATCHDOG_TIMESTAMP_IN_FUTURE")
-        eligible.append((started_at, run))
-
-    newest = max(eligible, key=lambda item: item[0]) if eligible else None
-    age = observed - newest[0] if newest else None
-    if age is None or age > SIRT_WATCHDOG_MAX_AGE:
-        if _external_sentinel_fresh(store, observed):
-            store.resolve_finding(
-                "AUDITOR_HEALTH",
-                SIRT_WATCHDOG_COMPONENT,
-                resolution="FRESH_EXTERNAL_SENTINEL_HEARTBEAT_OBSERVED",
-                now=observed,
-            )
-            return "WATCHDOG_EXTERNAL_OBSERVED"
-        store.open_finding(
+    if _external_sentinel_fresh(store, observed):
+        store.resolve_finding(
             "AUDITOR_HEALTH",
-            component=SIRT_WATCHDOG_COMPONENT,
-            severity="P0",
-            source_ref=str(newest[1]["id"]) if newest else None,
-            evidence={
-                "source_system": "GITHUB_ACTIONS",
-                "watchdog_workflow": SIRT_WATCHDOG_WORKFLOW,
-                "event": "schedule",
-                "finding_code": "WATCHDOG_HEARTBEAT_MISSING",
-                "last_completed_run_id": str(newest[1]["id"]) if newest else None,
-                "last_completed_at": iso(newest[0]) if newest else None,
-                "max_age_minutes": 90,
-                "reason": "NO_COMPLETED_SCHEDULED_MAIN_RUN_WITHIN_WINDOW",
-                "can_execute": False,
-            },
+            SIRT_WATCHDOG_COMPONENT,
+            resolution="FRESH_EXTERNAL_SENTINEL_HEARTBEAT_OBSERVED",
             now=observed,
         )
-        return "WATCHDOG_HEARTBEAT_MISSING"
+        return "WATCHDOG_EXTERNAL_OBSERVED"
 
-    store.resolve_finding(
+    store.open_finding(
         "AUDITOR_HEALTH",
-        SIRT_WATCHDOG_COMPONENT,
-        resolution="FRESH_SCHEDULED_WATCHDOG_RUN_OBSERVED",
+        component=SIRT_WATCHDOG_COMPONENT,
+        severity="P0",
+        source_ref=EXTERNAL_SENTINEL_ID,
+        evidence={
+            "source_system": "RENDER_EXTERNAL_SENTINEL",
+            "sentinel_id": EXTERNAL_SENTINEL_ID,
+            "finding_code": "WATCHDOG_HEARTBEAT_MISSING",
+            "max_age_minutes": 35,
+            "reason": "EXTERNAL_SENTINEL_HEARTBEAT_UNVERIFIED",
+            "can_execute": False,
+        },
         now=observed,
     )
-    return "WATCHDOG_RUN_OBSERVED"
+    return "WATCHDOG_HEARTBEAT_MISSING"
