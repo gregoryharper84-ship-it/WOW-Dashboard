@@ -35,6 +35,7 @@ from v17_synthetic_self_acceptance import run_v17_synthetic_self_acceptance
 from recommendation_ledger_api import install_recommendation_ledger_routes
 from team_event_request_runtime import install_team_event_request_routes
 from v17.core_intelligence_compounding_routes import install_compounding_intelligence_routes_read_only
+from v17.web_intelligence_fallback_routes import install_web_intelligence_fallback_routes
 from v17.core_intelligence_event_runtime import install_core_intelligence_event_routes
 from v17.core_intelligence_runtime import install_core_intelligence_routes
 from v17.spread_forward_shadow import warm_ncaaf_forward_context
@@ -220,6 +221,11 @@ if KALSHI_WEATHER_V2_ACTIVE:
 # operations become authoritative for v17 Action schemas. This keeps rollback to
 # WOW_V17_ACTIVE=0 atomic and does not duplicate scoring authority.
 if V17_ACTIVE:
+    # Research-only contingency. Never substitutes for any fitted specialist
+    # or changes the V17 terminal publication pathway.
+    install_web_intelligence_fallback_routes(
+        app, auth_dependency=base.market_api.prod._require_action_api_key,
+    )
     if not any(getattr(route, "path", None) == "/score-team-event" for route in app.router.routes):
         install_v17_team_event_routes(
             app,
