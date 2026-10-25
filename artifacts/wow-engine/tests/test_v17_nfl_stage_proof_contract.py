@@ -760,7 +760,11 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     # The producer claims model publication while the official guard holds it:
     # this is an authentic scorer/guard CONTRADICTION, not mere missing proof.
     assert patriots["result"]["publication_agreement"]["status"] == "CONFLICT"
-    assert patriots["result"]["detail"].get("code") == "STAGE_PROOF_UNPROVEN"
+    # This intentionally sparse historical fixture also lacks the canonical
+    # immutable scoring-package fields. The strict package validator reports
+    # MODEL_OUTPUT_INVALID first; do not disguise that scorer contract failure
+    # as a stage-proof-only hold or fabricate the eight missing fields.
+    assert patriots["result"]["detail"].get("code") == "MODEL_OUTPUT_INVALID"
     assert patriots["result"]["bucket"] != "MODEL_UNAVAILABLE"
     assert full_by_event["mlb-1"]["row_status"] == "COMPLETED"
     assert full_by_event["mlb-1"]["result"]["publication_chain_audit"]["status"] == "PASS"
