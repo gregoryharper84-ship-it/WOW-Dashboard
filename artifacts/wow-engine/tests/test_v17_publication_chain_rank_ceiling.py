@@ -4,7 +4,7 @@ Regression for the NFL contradiction: a row labelled FINAL_APPROVED and
 rank_eligible by the upstream governor, while the separate
 publication_chain_audit proved a mandatory stage (final refresh) unproven.
 
-Invariant under test:  audit BLOCKED  =>  never RANK_ELIGIBLE.
+Invariant under test: any BLOCKED / UNPROVEN / CONFLICT audit never ranks.
 The ceiling only lowers a row. It never changes numerical probabilities,
 never upgrades a row, and never changes can_execute.
 """
@@ -128,21 +128,22 @@ def test_final_approved_row_with_blocked_audit_loses_rank_but_keeps_probability(
     result = enrich_full_board_result(_payload(_nfl_row()))
     row = _by_sport(result)["NFL"]
 
-    assert row["publication_chain_audit"]["status"] == "BLOCKED"
-    assert row["publication_chain_audit"]["first_blocker"] == "FINAL_REFRESH_NOT_COMPLETE"
+    assert row["publication_chain_audit"]["status"] == "UNPROVEN"
+    assert row["publication_chain_audit"]["first_blocker"] == "FINAL_REFRESH_EVIDENCE_NOT_EMITTED"
 
     # ranking withdrawn, with provenance
     assert row["rank_eligible"] is False
     assert row["rank_eligible_pre_audit"] is True
     assert row["rank_ceiling_reason"] == (
-        "PUBLICATION_CHAIN_AUDIT_BLOCKED:FINAL_REFRESH_NOT_COMPLETE"
+        "PUBLICATION_STAGE_PROOF_NOT_PASS:FINAL_REFRESH_EVIDENCE_NOT_EMITTED"
     )
 
     # numerical model result and upstream label are preserved untouched
-    assert row["probability_publishable"] is True
+    assert row["probability_publishable"] is False  # no official publication
     assert row["detail"]["calibrated_probability"] == NFL_P
     assert row["detail"]["calibrated_lower_bound"] == NFL_LB
-    assert row["detail"]["terminal_label"] == "FINAL_APPROVED"
+    assert row["detail"]["upstream_terminal_label"] == "FINAL_APPROVED"
+    assert row["detail"]["terminal_label"] == "MODEL_QUALIFIED_HOLD"
     assert row["can_execute"] is False
 
 
@@ -160,8 +161,8 @@ def test_blocked_audit_row_terminates_exactly_once_as_held_and_coverage_is_not_o
     assert nfl_cov["coverage_status"] != "CANDIDATES_FOUND_AND_ROUTED"
 
     terminal = recon["rows"][0]
-    assert terminal["publication_chain_status"] == "BLOCKED"
-    assert terminal["blocker"] == "FINAL_REFRESH_NOT_COMPLETE"
+    assert terminal["publication_chain_status"] == "UNPROVEN"
+    assert terminal["blocker"] == "FINAL_REFRESH_EVIDENCE_NOT_EMITTED"
     assert terminal["can_execute"] is False
     assert result["publication_complete"] is True
 
@@ -289,7 +290,9 @@ def test_daily_cross_sport_status_follows_the_ceiling_through_the_real_overlay()
     from v17.daily_terminal_reduction import reduce_row_terminal
 
     demoted = _by_sport(enrich_full_board_result(_payload(_nfl_row())))["NFL"]
-    assert demoted["bucket"] == "MODEL_COMPLETED"  # model outcome is preserved
+    assert demoted["bucket"] == "OTHER_GOVERNED_HOLD"  # model result remains in detail
+    assert demoted["detail"]["calibrated_probability"] == NFL_P
+    assert demoted["detail"]["calibrated_lower_bound"] == NFL_LB
     status = _cross_sport_stage_status(demoted)
     assert status == "HELD"
     reduction = reduce_row_terminal([status])
