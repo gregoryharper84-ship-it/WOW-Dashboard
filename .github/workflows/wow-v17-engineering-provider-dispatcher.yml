@@ -479,59 +479,15 @@ jobs:
             echo "- Gemini: disabled until separately authorized budget and canary"
             echo "- Cursor: opt-in existing-PR Cloud Agent only, not automatic fallback"
             echo "- deterministic survival: ${{ steps.route.outputs.action == 'SURVIVAL' }}"
-            if [ "${{ steps.route.outputs.action }}" = SURVIVAL ]; then
-              echo "- provider_generation_allowed: false"
-              echo "- incident_status: OPEN / BLOCKED_WITH_EXACT_REASON"
-              echo "- repair_verified: false"
-            fi
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Surface degraded provider state
         if: steps.route.outputs.action == 'SURVIVAL' || steps.remote_fence.outcome == 'failure'
-        shell: bash
-        env:
-          ROUTE_OUTCOME: ${{ steps.route.outcome }}
-          ROUTE_ACTION: ${{ steps.route.outputs.action }}
-          ROUTE_REASON: ${{ steps.route.outputs.reason }}
-          ROUTE_PARENT: ${{ steps.route.outputs.parent_run_id }}
-          REMOTE_FENCE: ${{ steps.remote_fence.outcome }}
-          SURVIVAL_OUTCOME: ${{ steps.survival.outcome }}
         run: |
-          set -euo pipefail
-          # A verified deterministic control plane may finish successfully
-          # while provider generation remains explicitly BLOCKED. This is
-          # never a claim that a model ran or that an incident was repaired.
-          if [ "$ROUTE_OUTCOME" != success ] || [ "$REMOTE_FENCE" != success ] ||
-             [ "$SURVIVAL_OUTCOME" != success ] || [ "$ROUTE_ACTION" != SURVIVAL ]; then
-            echo "::error::PROVIDER_CONTROL_OR_REMOTE_WRITER_UNVERIFIED"
-            exit 1
-          fi
-          route="$RUNNER_TEMP/provider-route.json"
-          survival="$RUNNER_TEMP/wow-survival/provider-survival-receipt.json"
-          if ! jq -e --arg reason "$ROUTE_REASON" --arg parent "$ROUTE_PARENT" '
-              type == "object"
-              and .action == "SURVIVAL" and .provider == "deterministic"
-              and .reason == $reason and .parent_run_id == $parent
-              and .can_execute == false
-              and .terminal_authority == "V17_TERMINAL_REDUCER"
-            ' "$route" >/dev/null 2>&1 ||
-             ! jq -e --arg reason "$ROUTE_REASON" --arg parent "$ROUTE_PARENT" '
-              type == "object"
-              and .status == "DEGRADED_DETERMINISTIC_SURVIVAL"
-              and .reason == $reason and .parent_run_id == $parent
-              and .provider_generation_allowed == false
-              and .deterministic_checks_allowed == true
-              and .probability_authority == false
-              and .can_execute == false
-              and .terminal_authority == "V17_TERMINAL_REDUCER"
-            ' "$survival" >/dev/null 2>&1; then
-            echo "::error::PROVIDER_SURVIVAL_EVIDENCE_MISSING_OR_INVALID"
-            exit 1
-          fi
-          echo "::warning::ROUTER_HEALTHY_PROVIDER_BLOCKED:$ROUTE_REASON"
-          echo "Provider generation did not run; incident stays OPEN. can_execute=false." >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Both generative engineering paths are unavailable or unsafe to fail over; deterministic survival checks completed."
+          exit 1
 
   independent-provider:
     needs: provider-control
