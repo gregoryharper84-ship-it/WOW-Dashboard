@@ -116,10 +116,21 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
                 or not 0 <= lower <= p <= upper <= 1):
             reasons.append("NFL_STAGE_PROOF_CALIBRATED_BOUNDS_INVALID")
 
+        # NFL currently exposes home/away upper bounds, not a generic
+        # selected-side upper-bound field. Resolve only by the exact selected
+        # team and never borrow the opposite side's bound.
+        selected = str(out.get("selected_participant") or "")
+        if selected == str(getattr(req, "home_team", "") or ""):
+            selected_upper = out.get("calibrated_home_upper_bound")
+        elif selected == str(getattr(req, "away_team", "") or ""):
+            selected_upper = out.get("calibrated_away_upper_bound")
+        else:
+            selected_upper = None
+        selected_upper = out.get("calibrated_selection_upper_bound", selected_upper)
         for field, outer in (
             ("calibrated_selection_probability", out.get("calibrated_selection_probability")),
             ("calibrated_selection_lower_bound", out.get("rank_calibrated_lower_bound")),
-            ("calibrated_selection_upper_bound", out.get("calibrated_selection_upper_bound")),
+            ("calibrated_selection_upper_bound", selected_upper),
         ):
             if not _same_number(row.get(field), outer):
                 reasons.append("NFL_STAGE_PROOF_" + field.upper() + "_MISMATCH")
