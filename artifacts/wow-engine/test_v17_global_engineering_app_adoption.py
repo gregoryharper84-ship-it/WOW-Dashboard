@@ -178,6 +178,75 @@ def test_unreviewed_source_never_selected(monkeypatch):
     assert adoption.discover()["status"] == "NO_ELIGIBLE_SOURCE"
 
 
+def created_app_pr():
+    return {
+        "number": 777, "state": "open", "draft": False,
+        "user": {"login": adoption.APP_AUTHOR},
+        "head": {"ref": adoption.branch_for(2058, SHA), "sha": SHA,
+                 "repo": {"full_name": REPO}},
+        "base": {"ref": "main", "sha": BASE, "repo": {"full_name": REPO}},
+    }
+
+
+def test_created_pr_requires_authenticated_app_identity_and_exact_target():
+    pr = adoption.validate_created_pr(
+        [created_app_pr()], branch=adoption.branch_for(2058, SHA),
+        integrated_sha=SHA, main_sha=BASE)
+    assert pr["number"] == 777
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("user", {"login": OWNER}, "POST_CREATE_APP_PR_ACTOR_MISMATCH_HOLD"),
+    ("head", {"ref": "wrong-branch", "sha": SHA,
+              "repo": {"full_name": REPO}}, "POST_CREATE_APP_PR_BRANCH_MISMATCH_HOLD"),
+    ("head", {"ref": adoption.branch_for(2058, SHA), "sha": "c" * 40,
+              "repo": {"full_name": REPO}}, "POST_CREATE_APP_PR_HEAD_MISMATCH_HOLD"),
+    ("head", {"ref": adoption.branch_for(2058, SHA), "sha": SHA,
+              "repo": {"full_name": "attacker/WOW-Dashboard"}},
+     "POST_CREATE_APP_PR_HEAD_REPOSITORY_MISMATCH_HOLD"),
+    ("base", {"ref": "develop", "sha": BASE,
+              "repo": {"full_name": REPO}}, "POST_CREATE_APP_PR_BASE_REF_MISMATCH_HOLD"),
+    ("base", {"ref": "main", "sha": "c" * 40,
+              "repo": {"full_name": REPO}}, "POST_CREATE_APP_PR_BASE_SHA_MISMATCH_HOLD"),
+    ("base", {"ref": "main", "sha": BASE,
+              "repo": {"full_name": "attacker/WOW-Dashboard"}},
+     "POST_CREATE_APP_PR_BASE_REPOSITORY_MISMATCH_HOLD"),
+    ("state", "closed", "POST_CREATE_APP_PR_NOT_OPEN_HOLD"),
+    ("draft", True, "POST_CREATE_APP_PR_NOT_OPEN_HOLD"),
+    ("number", 0, "POST_CREATE_APP_PR_NUMBER_INVALID_HOLD"),
+])
+def test_created_pr_metadata_mismatch_fails_closed(field, value, reason):
+    pr = created_app_pr()
+    pr[field] = value
+    with pytest.raises(adoption.AdoptionHold, match=reason):
+        adoption.validate_created_pr(
+            [pr], branch=adoption.branch_for(2058, SHA),
+            integrated_sha=SHA, main_sha=BASE)
+
+
+@pytest.mark.parametrize("inventory", [[], [created_app_pr(), created_app_pr()], [None]])
+def test_created_pr_inventory_must_be_unambiguous(inventory):
+    reason = ("POST_CREATE_APP_PR_METADATA_INVALID_HOLD" if inventory == [None]
+              else "POST_CREATE_APP_PR_INVENTORY_HOLD")
+    with pytest.raises(adoption.AdoptionHold, match=reason):
+        adoption.validate_created_pr(
+            inventory, branch=adoption.branch_for(2058, SHA),
+            integrated_sha=SHA, main_sha=BASE)
+
+
+def test_bootstrap_receipt_names_indispensable_exact_head_owner_action():
+    receipt = adoption.review_boundary_receipt(777, SHA)
+    assert receipt == {
+        "status": "PR_CREATED_PENDING_INDEPENDENT_REVIEW",
+        "bootstrap_status": "OWNER_EXACT_HEAD_APPROVAL_REQUIRED",
+        "required_owner_login": OWNER,
+        "required_owner_approval_head": SHA,
+        "pr": 777,
+        "sha": SHA,
+        "can_execute": False,
+    }
+
+
 def test_controller_reuses_existing_schedule_and_app_not_owner_token():
     wf = yaml.safe_load((ROOT / ".github/workflows/wow-v17-engineering-auto-repair.yml").read_text())
     # YAML parsers disagree on the on key (some YAML 1.1 decode it as True).
@@ -206,8 +275,11 @@ def test_controller_reuses_existing_schedule_and_app_not_owner_token():
 def test_protected_adoption_program_enforces_two_actual_principals():
     text = (ROOT / "artifacts/wow-engine/v17/engineering_authorized_adoption.py").read_text()
     assert 'os.environ.get("APP_TOKEN") == os.environ.get("GH_TOKEN")' in text
-    assert 'created[0].get("user", {}).get("login") != APP_AUTHOR' in text
+    assert "author.get(\"login\") == APP_AUTHOR" in text
+    assert "validate_created_pr(" in text
     assert "git\", \"push\"" in text
     assert "gh\", \"pr\", \"create\"" in text
     assert "git\", \"restore\"" in text
+    assert "41898282+github-actions[bot]@users.noreply.github.com" in text
+    assert "wow-engineering[bot]@users.noreply.github.com" not in text
     assert "auto-merge" in text.lower()

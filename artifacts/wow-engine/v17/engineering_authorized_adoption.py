@@ -237,6 +237,52 @@ def preflight(pr_number: int, source_sha: str) -> tuple[str, list[str], str]:
     return main_sha, paths, source_base
 
 
+def validate_created_pr(
+    pulls: list[dict], *, branch: str, integrated_sha: str, main_sha: str,
+) -> dict:
+    if not isinstance(pulls, list) or len(pulls) != 1:
+        raise AdoptionHold("POST_CREATE_APP_PR_INVENTORY_HOLD")
+    pr = pulls[0]
+    if not isinstance(pr, dict):
+        raise AdoptionHold("POST_CREATE_APP_PR_METADATA_INVALID_HOLD")
+    head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+    base = pr.get("base") if isinstance(pr.get("base"), dict) else {}
+    head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+    base_repo = base.get("repo") if isinstance(base.get("repo"), dict) else {}
+    author = pr.get("user") if isinstance(pr.get("user"), dict) else {}
+    checks = (
+        (type(pr.get("number")) is int and pr["number"] > 0,
+         "POST_CREATE_APP_PR_NUMBER_INVALID_HOLD"),
+        (pr.get("state") == "open" and pr.get("draft") is False,
+         "POST_CREATE_APP_PR_NOT_OPEN_HOLD"),
+        (author.get("login") == APP_AUTHOR, "POST_CREATE_APP_PR_ACTOR_MISMATCH_HOLD"),
+        (head_repo.get("full_name") == REPO,
+         "POST_CREATE_APP_PR_HEAD_REPOSITORY_MISMATCH_HOLD"),
+        (head.get("ref") == branch, "POST_CREATE_APP_PR_BRANCH_MISMATCH_HOLD"),
+        (head.get("sha") == integrated_sha, "POST_CREATE_APP_PR_HEAD_MISMATCH_HOLD"),
+        (base_repo.get("full_name") == REPO,
+         "POST_CREATE_APP_PR_BASE_REPOSITORY_MISMATCH_HOLD"),
+        (base.get("ref") == "main", "POST_CREATE_APP_PR_BASE_REF_MISMATCH_HOLD"),
+        (base.get("sha") == main_sha, "POST_CREATE_APP_PR_BASE_SHA_MISMATCH_HOLD"),
+    )
+    for valid, reason in checks:
+        if not valid:
+            raise AdoptionHold(reason)
+    return pr
+
+
+def review_boundary_receipt(pr_number: int, integrated_sha: str) -> dict:
+    return {
+        "status": "PR_CREATED_PENDING_INDEPENDENT_REVIEW",
+        "bootstrap_status": "OWNER_EXACT_HEAD_APPROVAL_REQUIRED",
+        "required_owner_login": OWNER_LOGIN,
+        "required_owner_approval_head": integrated_sha,
+        "pr": pr_number,
+        "sha": integrated_sha,
+        "can_execute": False,
+    }
+
+
 def integrate(pr_number: int, source_sha: str) -> None:
     if not os.environ.get("APP_TOKEN") or not os.environ.get("GH_TOKEN"):
         raise AdoptionHold("APP_TOKEN_AND_READ_TOKEN_REQUIRED_HOLD")
@@ -266,8 +312,8 @@ def integrate(pr_number: int, source_sha: str) -> None:
     if sorted(diff) != paths:
         raise AdoptionHold("REPLAY_CONTENT_DIFF_INCOMPLETE_HOLD")
     call("git", "diff", "--cached", "--check")
-    call("git", "config", "user.name", "WOW Engineering App integrator")
-    call("git", "config", "user.email", "wow-engineering[bot]@users.noreply.github.com")
+    call("git", "config", "user.name", "github-actions[bot]")
+    call("git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
     call("git", "commit", "-m", f"integrate(reviewed source): PR #{pr_number} exact {source_sha}")
     integrated_sha = call("git", "rev-parse", "HEAD")
     # Main might move during this process. A changed base is not silently deployed.
@@ -297,6 +343,8 @@ def integrate(pr_number: int, source_sha: str) -> None:
             f"Integration head: `{integrated_sha}`.\n"
             f"**The App did not independently author, assess or approve the source code.**\n"
             f"Source changed paths: {len(paths)}; copied byte-for-byte for each path.\n"
+            f"Indispensable bootstrap action: `{OWNER_LOGIN}` must approve exact head "
+            f"`{integrated_sha}`; no self-approval is performed.\n"
             f"Mandatory next gates: independent Security/Architect, exact-head QA App, "
             f"Release Authority App, CODEOWNER approval and protected merge.\n"
             f"No auto-merge, deploy, probability change, or orders. "
@@ -308,14 +356,11 @@ def integrate(pr_number: int, source_sha: str) -> None:
              "--head", branch, "--title", f"Engineering App: exact source #{pr_number} integration",
              "--body-file", str(body), env=app_env)
     created = api(f"pulls?state=open&head={REPO.split('/')[0]}:{branch}")
-    if (not isinstance(created, list) or len(created) != 1
-            or created[0].get("user", {}).get("login") != APP_AUTHOR
-            or created[0].get("head", {}).get("sha") != integrated_sha
-            or created[0].get("draft") is True):
-        raise AdoptionHold("POST_CREATE_APP_PR_IDENTITY_NOT_VERIFIED_HOLD")
-    print(json.dumps({"status": "PR_CREATED_PENDING_INDEPENDENT_REVIEW",
-                      "pr": created[0]["number"], "sha": integrated_sha,
-                      "source_sha": source_sha, "can_execute": False}, sort_keys=True))
+    verified = validate_created_pr(
+        created, branch=branch, integrated_sha=integrated_sha, main_sha=main_sha)
+    receipt = review_boundary_receipt(verified["number"], integrated_sha)
+    receipt["source_sha"] = source_sha
+    print(json.dumps(receipt, sort_keys=True))
 
 
 def main() -> None:
