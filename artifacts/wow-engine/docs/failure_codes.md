@@ -258,6 +258,130 @@ These are evidence/freshness publication holds, **not** fitted-model unavailabil
 | `FINAL_REFRESH_MATERIAL_SOURCE_CHANGED` | NFL team-event / final refresh | Canonical NFL schedule content hash differs from that used for the scored prediction; rerun required. | No |
 | `FINAL_REFRESH_SOURCE_STALE_OR_INVALID` | NFL team-event / final refresh | Latest canonical schedule capture lacks a valid UTC timestamp, is future-dated, or exceeds the 24-hour publication freshness window. | No |
 
+## NFL Pick'em pre-lock full-pool research and zero-point tie settlement (PR #1680)
+
+All rows below are typed input gates for a research-only strategy diagnostic or postmortem settlement. None changes fitted sporting probability, can grant probability publication, or permits card execution. Each is covered by direct regression tests or by shared input-family validation paths in the proposed PR.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_EQUITY_AWAY_REQUIRED` | NFL Pick'em full-pool research preflight | Away participant ID absent or blank. | No |
+| `PICKEM_EQUITY_BASELINE_MODEL_CONFLICT` | NFL Pick'em full-pool research preflight | Selected side differs from fitted higher-probability side or calibrated sides do not normalize. | No |
+| `PICKEM_EQUITY_BASELINE_SIDE_REQUIRED` | NFL Pick'em full-pool research preflight | Baseline pool pick absent. | No |
+| `PICKEM_EQUITY_BOUNDS_INVALID` | NFL Pick'em full-pool research preflight | Selected calibrated interval does not contain selected calibrated probability. | No |
+| `PICKEM_EQUITY_BOUNDS_REQUIRED` | NFL Pick'em full-pool research preflight | Selected calibration lower/upper endpoint missing, nonnumeric, or outside [0,1]. | No |
+| `PICKEM_EQUITY_DUPLICATE_EVENT` | NFL Pick'em full-pool research preflight | More than one scored row has the same canonical event ID. | No |
+| `PICKEM_EQUITY_DUPLICATE_OPPONENT` | NFL Pick'em full-pool research preflight | Two frozen opponent entries have the same entry ID. | No |
+| `PICKEM_EQUITY_DUPLICATE_OPPONENT_RECEIPT` | NFL Pick'em full-pool research preflight | Two opponent entries reuse one immutable receipt ID. | No |
+| `PICKEM_EQUITY_DUPLICATE_PREDICTION` | NFL Pick'em full-pool research preflight | Two scored rows reuse one model prediction ID. | No |
+| `PICKEM_EQUITY_EVENT_ID_REQUIRED` | NFL Pick'em full-pool research preflight | Governed scored row has no canonical official event ID. | No |
+| `PICKEM_EQUITY_GAME_COUNT_INVALID` | NFL Pick'em full-pool research preflight | Slate missing, not a sequence, or exceeds 16 events. | No |
+| `PICKEM_EQUITY_HOME_REQUIRED` | NFL Pick'em full-pool research preflight | Home participant ID absent or blank. | No |
+| `PICKEM_EQUITY_KICKOFF_REQUIRED` | NFL Pick'em full-pool research preflight | Kickoff absent or invalid timestamp. | No |
+| `PICKEM_EQUITY_LOCK_INVALID` | NFL Pick'em full-pool research preflight | Pool lock missing or not an offset-aware timestamp. | No |
+| `PICKEM_EQUITY_MAX_FLIPS_INVALID` | NFL Pick'em full-pool research preflight | Research flip budget is not an integer from 0 to 16. | No |
+| `PICKEM_EQUITY_MODEL_TIMESTAMP_INVALID` | NFL Pick'em full-pool research preflight | Pregame model receipt timestamp absent or invalid. | No |
+| `PICKEM_EQUITY_OPPONENT_AUDIENCE_INVALID` | NFL Pick'em full-pool research preflight | Opponent entry not explicitly scoped to OPPONENT_ENTRIES. | No |
+| `PICKEM_EQUITY_OPPONENT_AVAILABILITY_INVALID` | NFL Pick'em full-pool research preflight | Opponent-card available-to-user timestamp absent or invalid. | No |
+| `PICKEM_EQUITY_OPPONENT_AVAILABILITY_SOURCE_REQUIRED` | NFL Pick'em full-pool research preflight | Opponent-card availability provenance absent. | No |
+| `PICKEM_EQUITY_OPPONENT_EVENT_SET_MISMATCH` | NFL Pick'em full-pool research preflight | Opponent card event IDs do not exactly match the modeled slate. | No |
+| `PICKEM_EQUITY_OPPONENT_ID_REQUIRED` | NFL Pick'em full-pool research preflight | Opponent entry identity absent. | No |
+| `PICKEM_EQUITY_OPPONENT_INVALID` | NFL Pick'em full-pool research preflight | Opponent entry is not a mapping. | No |
+| `PICKEM_EQUITY_OPPONENT_NOT_PRELOCK_AVAILABLE` | NFL Pick'em full-pool research preflight | Opponent card was either submitted or available to user after lock. | No |
+| `PICKEM_EQUITY_OPPONENT_RECEIPT_REQUIRED` | NFL Pick'em full-pool research preflight | Opponent entry immutable receipt absent. | No |
+| `PICKEM_EQUITY_OPPONENT_SIDE_INVALID` | NFL Pick'em full-pool research preflight | Opponent pick does not equal one of the modeled participant IDs. | No |
+| `PICKEM_EQUITY_OPPONENT_SUBMISSION_INVALID` | NFL Pick'em full-pool research preflight | Opponent submission timestamp absent or invalid. | No |
+| `PICKEM_EQUITY_POOL_SIZE_INVALID` | NFL Pick'em full-pool research preflight | Declared pool size is not an integer of at least two. | No |
+| `PICKEM_EQUITY_POOL_SIZE_MISMATCH` | NFL Pick'em full-pool research preflight | Number of verified opponent cards differs from declared pool size minus one. | No |
+| `PICKEM_EQUITY_PREDICTION_RECEIPT_REQUIRED` | NFL Pick'em full-pool research preflight | Immutable pregame prediction identity missing. | No |
+| `PICKEM_EQUITY_PRELOCK_OPPONENTS_REQUIRED` | NFL Pick'em full-pool research preflight | Zero prelock opponent entries supplied. | No |
+| `PICKEM_EQUITY_PROBABILITY_INVALID` | NFL Pick'em full-pool research preflight | Selected/home/away probability missing, nonnumeric, or not strictly between zero and one. | No |
+| `PICKEM_EQUITY_SACRIFICE_LIMIT_INVALID` | NFL Pick'em full-pool research preflight | Research correct-pick sacrifice budget is negative or invalid. | No |
+| `PICKEM_EQUITY_SIDE_IDENTITY_INVALID` | NFL Pick'em full-pool research preflight | Home and away IDs conflict or baseline side matches neither. | No |
+| `PICKEM_EQUITY_SOURCE_NOT_READY` | NFL Pick'em full-pool research preflight | Fitted pregame row not PICKEM_READY or can_execute is not false. | No |
+| `PICKEM_EQUITY_SOURCE_SNAPSHOT_REQUIRED` | NFL Pick'em full-pool research preflight | Immutable source evidence snapshot ID absent. | No |
+| `PICKEM_EQUITY_SOURCE_TERMINAL_BLOCKED` | NFL Pick'em full-pool research preflight | Source terminal not an allowed probability-bearing V17 status. | No |
+| `PICKEM_EQUITY_SPECIALIST_MISMATCH` | NFL Pick'em full-pool research preflight | Controlling specialist is not the certified NFL event win specialist. | No |
+| `PICKEM_EQUITY_STALE_OR_POST_LOCK_MODEL` | NFL Pick'em full-pool research preflight | Model timestamp exceeds pool lock, reaches kickoff, or lock is after kickoff. | No |
+| `PICKEM_POSTMORTEM_TIE_NOT_A_PICKABLE_SIDE` | NFL Pick'em settled-week postmortem | Participant attempted to submit TIE as a team selection. | No |
+| `PICKEM_POSTMORTEM_TIE_POLICY_UNSUPPORTED` | NFL Pick'em settled-week postmortem | Explicit supplied tie scoring policy is not NO_POINT. | No |
+| `PICKEM_POSTMORTEM_TIE_RULE_REQUIRED` | NFL Pick'em settled-week postmortem | Official tie is present but the pool NO_POINT policy was not explicitly supplied. | No |
+
+
+## NFL Pick'em pre-lock ownership forecast validation (PR #1680)
+
+Research-only ownership assumptions. These codes never authorize production strategy or change sporting probabilities.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_OWNERSHIP_FORECAST_REQUIRED` | Pick'em ownership research preflight | Forecast is not a mapping. | No |
+| `PICKEM_OWNERSHIP_AUDIENCE_INVALID` | Pick'em ownership research preflight | Forecast audience is not OPPONENT_OWNERSHIP_RESEARCH. | No |
+| `PICKEM_OWNERSHIP_SOURCE_REQUIRED` | Pick'em ownership research preflight | Source ID is missing or empty. | No |
+| `PICKEM_OWNERSHIP_SNAPSHOT_REQUIRED` | Pick'em ownership research preflight | Immutable snapshot ID is missing or empty. | No |
+| `PICKEM_OWNERSHIP_TIMESTAMP_INVALID` | Pick'em ownership research preflight | Source timestamp missing, malformed, or timezone-naive. | No |
+| `PICKEM_OWNERSHIP_AVAILABILITY_INVALID` | Pick'em ownership research preflight | Available-to-user timestamp missing, malformed, or timezone-naive. | No |
+| `PICKEM_OWNERSHIP_POST_LOCK_FORECAST` | Pick'em ownership research preflight | Source or availability time exceeds lock, or availability precedes source creation. | No |
+| `PICKEM_OWNERSHIP_EVENT_ID_INVALID` | Pick'em ownership research preflight | Event ID is missing or duplicated, or an event row is invalid. | No |
+| `PICKEM_OWNERSHIP_TEAM_ID_INVALID` | Pick'em ownership research preflight | Home/away team ID missing or blank. | No |
+| `PICKEM_OWNERSHIP_EVENT_SET_MISMATCH` | Pick'em ownership research preflight | Ownership mapping does not exactly cover the governed event set. | No |
+| `PICKEM_OWNERSHIP_FRACTION_INVALID` | Pick'em ownership research preflight | Opponent home-side selection fraction is nonnumeric, nonfinite or outside [0,1]. | No |
+
+
+## Projected Pick'em research-scenario failure codes (PR #1680)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_PROJECTED_POOL_SIZE_INVALID` | Pick'em projected pool-equity research | Research scenario requires an integer pool size in the supported 2–1000 range. | No |
+| `PICKEM_PROJECTED_DRAW_COUNT_INVALID` | Pick'em projected pool-equity research | Research scenario draw count must be 1000–20000. | No |
+| `PICKEM_PROJECTED_SEED_INVALID` | Pick'em projected pool-equity research | Reproducible research seed must be a valid nonnegative 32-bit integer. | No |
+| `PICKEM_PROJECTED_EVENT_IDENTITY_INVALID` | Pick'em projected pool-equity research | Projected scenario event identity is duplicated or the baseline side mismatches canonical home/away identities. | No |
+
+| `PICKEM_PROJECTED_RESOURCE_BUDGET_EXCEEDED` | Pick'em projected pool-equity research | Requested draws × opponent count × game count exceeds the 8,000,000 work-unit safety limit. | No |
+
+
+## NFL Pick'em time-of-availability replay integrity and tie grading (PR #1680)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_REPLAY_DUPLICATE_OPPONENT_RECEIPT` | NFL Pick'em research historical replay | Two distinct purported opponent entries reuse one immutable receipt. | No |
+| `PICKEM_REPLAY_OPPONENT_AUDIENCE_INVALID` | NFL Pick'em research historical replay | Opponent entry snapshot does not explicitly declare OPPONENT_ENTRIES audience. | No |
+| `PICKEM_REPLAY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION` | NFL Pick'em research historical replay | Opponent card claims to be visible before submission. | No |
+| `PICKEM_REPLAY_OPPONENT_AVAILABILITY_INVALID` | NFL Pick'em research historical replay | Opponent card missing a valid timezone-aware visibility timestamp. | No |
+| `PICKEM_REPLAY_OPPONENT_AVAILABILITY_SOURCE_REQUIRED` | NFL Pick'em research historical replay | Opponent card does not identify the source that establishes pre-lock visibility. | No |
+| `PICKEM_REPLAY_OWNERSHIP_AVAILABILITY_BEFORE_OBSERVATION` | NFL Pick'em research historical replay | Ownership snapshot claims to be visible before its observation. | No |
+| `PICKEM_REPLAY_OWNERSHIP_AVAILABILITY_INVALID` | NFL Pick'em research historical replay | Ownership snapshot missing a valid timezone-aware visibility timestamp. | No |
+| `PICKEM_REPLAY_POST_LOCK_OPPONENT_AVAILABILITY` | NFL Pick'em research historical replay | Submitted opponent card became visible only after contest lock; replay must not use it. | No |
+| `PICKEM_REPLAY_POST_LOCK_OWNERSHIP_AVAILABILITY` | NFL Pick'em research historical replay | Ownership estimate became visible only after contest lock. | No |
+| `PICKEM_REPLAY_TIE_POLICY_UNSUPPORTED` | NFL Pick'em research historical replay | Unrecognized pool scoring contract for tied games. | No |
+| `PICKEM_REPLAY_TIE_RULE_REQUIRED` | NFL Pick'em research historical replay | Official NFL tie requires explicit NO_POINT pool rule before retrospective grading. | No |
+
+| `PICKEM_EQUITY_OPPONENT_AVAILABILITY_BEFORE_SUBMISSION` | NFL Pick'em full-pool research preflight | Opponent card asserts availability to the user before it was submitted; impossible provenance timeline, reject. | No |
+
+
+## NFL Pick'em private visible-pool snapshot receipt codes (#1703, PR #1680)
+
+| Code | Owning lane/stage | Condition | Rank eligible? |
+|---|---|---|---:|
+| `PICKEM_VISIBLE_AUDIENCE_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Snapshot is not expressly all-visible-entries research evidence. | No |
+| `PICKEM_VISIBLE_AVAILABILITY_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Missing or invalid timezone-aware user-visible copy receipt timestamp. | No |
+| `PICKEM_VISIBLE_COPY_ID_REQUIRED` | NFL Pick'em pre-kickoff research evidence capture | Private copied-source file identity is missing. | No |
+| `PICKEM_VISIBLE_COPY_MODIFIED` | NFL Pick'em pre-kickoff research evidence capture | Drive copy modification time differs from frozen creation time. | No |
+| `PICKEM_VISIBLE_COPY_NOT_INDEPENDENT` | NFL Pick'em pre-kickoff research evidence capture | Source sheet and retained copy have identical identities. | No |
+| `PICKEM_VISIBLE_COPY_TIMESTAMP_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Missing or invalid provider creation/modification timestamp. | No |
+| `PICKEM_VISIBLE_CUTOFF_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Missing or invalid earliest game kickoff cutoff. | No |
+| `PICKEM_VISIBLE_EVENT_ID_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Invalid or duplicate certified official event identifier. | No |
+| `PICKEM_VISIBLE_EVENT_SET_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Observed game set is empty, oversized, incomplete or mismatches certified events. | No |
+| `PICKEM_VISIBLE_NOT_BEFORE_KICKOFF` | NFL Pick'em pre-kickoff research evidence capture | Capture was not provably visible before the first game kickoff. | No |
+| `PICKEM_VISIBLE_PARTIAL_OR_DUPLICATE_VOTES` | NFL Pick'em pre-kickoff research evidence capture | One event's observed home and away votes do not equal the declared visible row count. | No |
+| `PICKEM_VISIBLE_PRIVACY_UNVERIFIED` | NFL Pick'em pre-kickoff research evidence capture | Private owner-only copy access has not been verified. | No |
+| `PICKEM_VISIBLE_ROW_COUNT_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Visible participant-row count is missing, zero, noninteger or exceeds research cap. | No |
+| `PICKEM_VISIBLE_SNAPSHOT_REQUIRED` | NFL Pick'em pre-kickoff research evidence capture | Snapshot evidence payload is missing or malformed. | No |
+| `PICKEM_VISIBLE_SOURCE_ID_REQUIRED` | NFL Pick'em pre-kickoff research evidence capture | Original source sheet identity is missing. | No |
+| `PICKEM_VISIBLE_SOURCE_KIND_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Evidence is not a separately preserved Google Drive copy. | No |
+| `PICKEM_VISIBLE_TEAM_COUNTS_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Team-vote keys are wrong, counts nonintegers or unknown team choice. | No |
+| `PICKEM_VISIBLE_TEAM_ID_INVALID` | NFL Pick'em pre-kickoff research evidence capture | Official home/away team identity missing. | No |
+
+`PICKEM_VISIBLE_SAMPLE_RECORDED` is a **research evidence status**, not an approved pick, proven opponent-only forecast, verified full pool, or modeled first-place probability. Participant names and individual rows are not persisted in this aggregate contract. The digest detects aggregate changes but is not a provider signature.
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
