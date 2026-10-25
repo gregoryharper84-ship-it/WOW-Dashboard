@@ -126,7 +126,9 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
             selected_upper = out.get("calibrated_away_upper_bound")
         else:
             selected_upper = None
-        selected_upper = out.get("calibrated_selection_upper_bound", selected_upper)
+        explicit_upper = out.get("calibrated_selection_upper_bound")
+        if explicit_upper is not None:
+            selected_upper = explicit_upper
         for field, outer in (
             ("calibrated_selection_probability", out.get("calibrated_selection_probability")),
             ("calibrated_selection_lower_bound", out.get("rank_calibrated_lower_bound")),
