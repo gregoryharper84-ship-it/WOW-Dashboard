@@ -113,7 +113,7 @@ def test_missing_family_never_defaults_to_zero_or_creates_partial_vector():
     ("source_receipt_id", "", "NFL_CONTEXT_RECEIPT_ID_MISSING"),
     ("content_sha256", "aa", "NFL_CONTEXT_CONTENT_HASH_INVALID"),
     ("observed_at", "2026-10-25T14:30:00Z", "NFL_CONTEXT_SOURCE_TIME_LEAKAGE"),
-    ("published_at", "2026-10-25T14:05:00Z", "NFL_CONTEXT_SOURCE_TIME_LEAKAGE"),
+    ("published_at", "2026-10-25T13:55:00Z", "NFL_CONTEXT_SOURCE_TIME_LEAKAGE"),
     ("captured_at", "2026-10-25T16:45:00Z", "NFL_CONTEXT_SOURCE_TIME_LEAKAGE"),
     ("captured_at", "2026-10-25T16:15:00", "NFL_CONTEXT_SOURCE_TIME_INVALID"),
 ])
