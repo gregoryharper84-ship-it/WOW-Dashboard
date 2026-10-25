@@ -1,6 +1,6 @@
 # WOW V17 Custom GPT editor synchronization
 
-Updated: 2026-10-01
+Updated: 2026-10-15
 
 Status: **RESYNC_REQUIRED_AFTER_PR766__LIVE_ACTION_ACCEPTANCE_REQUIRED**
 
@@ -9,14 +9,15 @@ The production `WOW_BETTING_ENGINE` editor was historically saved/reloaded and A
 ## Current repository contract
 
 - Canonical live Action schema: `artifacts/wow-engine/v17/openapi.wow-betting-engine.v17.yaml`.
+- The deterministic `wow-v17-gpt-editor-sync-packet` workflow now packages the byte-exact canonical OpenAPI file alongside the Instructions text, PrizePicks Knowledge file, and SHA-256 manifest. Import the packaged schema; do not reconstruct an outdated operation subset.
 - Canonical host instructions: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt`.
 - PrizePicks live-host addendum: `artifacts/wow-engine/WOW_V17_CUSTOM_GPT_PRIZEPICKS_SKILL_ADDENDUM.txt`.
 - Custom GPT Instructions field hard limit: **8,000 characters**; repository safety ceiling: **7,500 UTF-8 bytes**.
 - The canonical host-instructions file must satisfy both limits and is pasted into the Instructions field verbatim.
 - The PrizePicks addendum is installed as a **Knowledge file**, not appended to the Instructions field.
-- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **24**, or if a required Action operation is missing.
-- ChatGPT Custom GPT editor constraint observed 2026-09-24: **Action sets cannot have duplicate domains**. Therefore the production WOW Render domain may appear in only one Action group.
-- The canonical live Action schema exposes all **24** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
+- The deterministic editor-sync builder must fail if the canonical Instructions field exceeds either limit, if the canonical Action operation count is not exactly **27**, or if a required Action operation is missing.
+- ChatGPT Custom GPT editor constraint observed 2026-09-27: **Action sets cannot have duplicate domains**. Therefore the production WOW Render domain may appear in only one Action group.
+- The canonical live Action schema exposes all **27** WOW operations under `https://wow-governed-probability-engine.onrender.com`, including the three run-control operations:
   - `getWowV17PickRequestRunState`
   - `runWowV17ResumablePickRequest`
   - `closeWowV17PickRequestRun`
@@ -50,7 +51,7 @@ The PrizePicks Knowledge contract requires the live host to:
 - treat unreadable source pages as source-ingestion blockers, not `MODEL_UNAVAILABLE`; and
 - render distinct `Player`, `Matchup`, `PrizePicks line`, `Offer`, `Available side(s)`, and `Current/live note` columns.
 
-Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 24-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
+Repository merge/CI does not itself update the OpenAI Custom GPT editor. Current live editor parity therefore remains fail closed until the canonical instructions are saved, the PrizePicks addendum is attached as Knowledge, the single canonical 27-operation Action schema is imported with Bearer authentication, the editor is saved/reloaded, and acceptance succeeds from a fresh production WOW chat.
 
 ## Acceptance required to re-attest VERIFIED
 
@@ -58,7 +59,7 @@ The production WOW editor must be saved/reloaded with:
 
 1. `WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt` in the Instructions field;
 2. the PrizePicks addendum attached as Knowledge (`WOW_V17_PRIZEPICKS_HOST_CONTRACT_KNOWLEDGE.txt` from the sync artifact, or the byte-identical canonical addendum source);
-3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from `openapi.wow-betting-engine.v17.yaml`, exposing all 24 operations with existing Bearer authentication preserved.
+3. exactly one WOW Action group for `wow-governed-probability-engine.onrender.com`, imported from the **packaged** `openapi.wow-betting-engine.v17.yaml`, exposing all 27 operations with existing Bearer authentication preserved.
 
 Then a fresh production WOW chat must prove:
 
