@@ -377,6 +377,69 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
     )
 
 
+def _attach_nfl_strict_scoring_package(
+    governed: dict[str, Any], req: Any, fitted: dict[str, Any],
+) -> dict[str, Any]:
+    """Explicitly serialize the already-persisted NFL score to LLP's strict schema.
+
+    The strict scorer validator intentionally rejects generic aliases. This
+    adapter exists only at the controlling NFL producer, after the fitted
+    scorer returned an immutable prediction/score ID, and cannot make a held
+    probability publishable. No side inference or new calibration is performed.
+    """
+    event_id = str(getattr(req, "official_event_id", "") or "")
+    source_id = str(getattr(req, "source_snapshot_id", "") or "")
+    selected = str(fitted.get("selected_participant") or "")
+    home = str(getattr(req, "home_team", "") or "")
+    away = str(getattr(req, "away_team", "") or "")
+    predicted_id = str(fitted.get("canonical_event_id") or "")
+    prediction_id = str(fitted.get("event_prediction_id") or "")
+    score_id = str(fitted.get("score_snapshot_id") or "")
+    if (
+        not event_id or predicted_id != event_id
+        or selected not in {home, away} or home == away
+        or not prediction_id or not score_id or not source_id
+        or str(governed.get("score_snapshot_id") or "") != score_id
+    ):
+        raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_IDENTITY_OR_SIDE_INVALID")
+    side = "home" if selected == home else "away"
+    for key in (
+        f"calibrated_{side}_probability",
+        f"calibrated_{side}_lower_bound",
+        f"calibrated_{side}_upper_bound",
+        "model_timestamp", "model_version", "calibration_method",
+        "calibration_version",
+    ):
+        if fitted.get(key) in (None, ""):
+            raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_PERSISTED_FIELD_MISSING:" + key)
+    timestamp = str(getattr(req, "latest_material_update_timestamp", "") or "")
+    if not timestamp:
+        raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_SOURCE_TIMESTAMP_MISSING")
+    out = dict(governed)
+    out.update({
+        "prediction_id": prediction_id,
+        "calibrated_probability": fitted[f"calibrated_{side}_probability"],
+        "calibrated_lower_bound": fitted[f"calibrated_{side}_lower_bound"],
+        "calibrated_upper_bound": fitted[f"calibrated_{side}_upper_bound"],
+        "immutable_model_timestamp": fitted["model_timestamp"],
+        "source_snapshot_id": source_id,
+        "source_snapshot_timestamp": timestamp,
+        "latest_material_update_timestamp": timestamp,
+        "outcome_space": "HOME_AWAY",
+        "can_execute": False,
+    })
+    # Check the exact same strict contract called by cross_sport_winner_discovery;
+    # NEVER weaken that shared validator or reinterpret an invalid package.
+    from v17.llp_governed_package_scoring import PASS, validate_governed_scoring_package
+
+    audit = validate_governed_scoring_package(out)
+    if audit.status != PASS:
+        raise NFLModelOutputInvalid(
+            "NFL_STRICT_PACKAGE_PRODUCER_VALIDATION_FAILED:" + ",".join(audit.blockers)
+        )
+    return out
+
+
 def score_nfl_team_event_request(
     team_event_module: Any,
     req: Any,
@@ -460,7 +523,7 @@ def score_nfl_team_event_request(
         "latest_material_update_timestamp": envelope.latest_material_update_timestamp,
         "evidence_as_of": envelope.evidence_as_of,
     }
-    return governed
+    return _attach_nfl_strict_scoring_package(governed, effective_req, result)
 
 
 def install_nfl_team_event_publication(team_event_module: Any) -> bool:
