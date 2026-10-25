@@ -143,9 +143,12 @@ def discover() -> dict:
                 continue
             if not any(is_trust_root(path, roots) for path in paths):
                 continue
+            # Pull-list summaries omit changed_files; resolve the exact PR
+            # resource before checking the inventory and immutable head.
+            detail = api(f"pulls/{pr_number}")
             checks = api(f"commits/{sha}/check-runs?per_page=100")
             try:
-                validate_evidence(item, files, checks, requested_pr=pr_number,
+                validate_evidence(detail, files, checks, requested_pr=pr_number,
                                   requested_sha=sha)
             except AdoptionHold:
                 continue
