@@ -65,6 +65,8 @@ async def run_web_research_self_acceptance(
     api_key: str | None = None,
     delay_seconds: float = 10,
     transport: httpx.AsyncBaseTransport | None = None,
+    max_attempts: int = 4,
+    retry_delay_seconds: float = 12.0,
 ) -> dict[str, Any]:
     await asyncio.sleep(max(0, min(float(delay_seconds), 60)))
     secret = (api_key if api_key is not None else os.getenv("WOW_ACTION_API_KEY", "")).strip()
@@ -88,29 +90,43 @@ async def run_web_research_self_acceptance(
     }))
     passed = 0
     code = "PASS"
-    try:
-        async with httpx.AsyncClient(
-            timeout=15.0, transport=transport, follow_redirects=False,
-        ) as client:
-            for path, body in probes:
-                response = await client.post(
-                    url + path, headers={"Authorization": "Bearer " + secret},
-                    json=body,
-                )
-                if response.status_code != 200:
-                    code = "HTTP_" + str(response.status_code)
-                    break
-                if not is_nonpredictive_hold(response.json()):
-                    code = "RESEARCH_NONPREDICTIVE_CONTRACT_FAILED"
-                    break
-                passed += 1
-    except (httpx.HTTPError, ValueError) as exc:
-        code = "HTTP_ACCEPTANCE_" + type(exc).__name__.upper()
+    attempts = 0
+    # A rolling Render cutover can still route a few probes to the old app
+    # instance after the new revision starts. Retry a bounded whole-contract
+    # pass only on transient HTTP responses. Never retry authentication failure,
+    # invalid research authority, or unsupported research semantics into PASS.
+    retryable = {"HTTP_422", "HTTP_502", "HTTP_503", "HTTP_504"}
+    async with httpx.AsyncClient(
+        timeout=15.0, transport=transport, follow_redirects=False,
+    ) as client:
+        for attempts in range(1, max(1, min(int(max_attempts), 5)) + 1):
+            passed = 0
+            code = "PASS"
+            try:
+                for path, body in probes:
+                    response = await client.post(
+                        url + path, headers={"Authorization": "Bearer " + secret},
+                        json=body,
+                    )
+                    if response.status_code != 200:
+                        code = "HTTP_" + str(response.status_code)
+                        break
+                    if not is_nonpredictive_hold(response.json()):
+                        code = "RESEARCH_NONPREDICTIVE_CONTRACT_FAILED"
+                        break
+                    passed += 1
+            except (httpx.HTTPError, ValueError) as exc:
+                code = "HTTP_ACCEPTANCE_" + type(exc).__name__.upper()
+            if code == "PASS" and passed == len(probes):
+                break
+            if code not in retryable or attempts >= max(1, min(int(max_attempts), 5)):
+                break
+            await asyncio.sleep(max(0.0, min(float(retry_delay_seconds), 30.0)))
     status = "PASS" if passed == len(probes) and code == "PASS" else "FAIL"
     logger.warning(
         "WOW_WEB_RESEARCH_LIVE_CANARY status=%s code=%s synthetic_contract_probes=%s/%s "
-        "sport_profiles=%s production_model_acceptance=false can_execute=false",
-        status, code, passed, len(probes), len(WEIGHT_PROFILES),
+        "sport_profiles=%s attempts=%s production_model_acceptance=false can_execute=false",
+        status, code, passed, len(probes), len(WEIGHT_PROFILES), attempts,
     )
     return {
         "status": status,
@@ -118,6 +134,7 @@ async def run_web_research_self_acceptance(
         "synthetic_contract_probes": passed,
         "expected_probes": len(probes),
         "sport_profiles": len(WEIGHT_PROFILES),
+        "attempts": attempts,
         "production_model_acceptance": False,
         "can_execute": False,
     }
