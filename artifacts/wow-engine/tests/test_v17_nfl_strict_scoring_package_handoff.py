@@ -76,11 +76,20 @@ def test_certified_away_selection_uses_immutable_persisted_side(req, fitted):
 
 
 def test_certified_home_selection_is_not_reversed(req, fitted):
-    candidate = {**fitted, "selected_participant": req.home_team}
+    candidate = {
+        **fitted,
+        "selected_participant": req.home_team,
+        "calibrated_home_probability": 0.7443811101006207,
+        "calibrated_home_lower_bound": 0.6884630269920434,
+        "calibrated_home_upper_bound": 0.800299193209198,
+        "calibrated_away_probability": 0.2556188898993793,
+        "calibrated_away_lower_bound": 0.199700806790802,
+        "calibrated_away_upper_bound": 0.3115369730079566,
+    }
     out = _attach_nfl_strict_scoring_package(_governed(candidate), req, candidate)
-    assert out["calibrated_probability"] == fitted["calibrated_home_probability"]
-    assert out["calibrated_lower_bound"] == fitted["calibrated_home_lower_bound"]
-    assert out["calibrated_upper_bound"] == fitted["calibrated_home_upper_bound"]
+    assert out["calibrated_probability"] == candidate["calibrated_home_probability"]
+    assert out["calibrated_lower_bound"] == candidate["calibrated_home_lower_bound"]
+    assert out["calibrated_upper_bound"] == candidate["calibrated_home_upper_bound"]
     assert validate_governed_scoring_package(out).status == PASS
 
 
@@ -110,3 +119,9 @@ def test_missing_authoritative_source_timestamp_never_substituted(req, fitted):
     req.latest_material_update_timestamp = None
     with pytest.raises(NFLModelOutputInvalid, match="SOURCE_TIMESTAMP_MISSING"):
         _attach_nfl_strict_scoring_package(_governed(fitted), req, fitted)
+
+
+def test_stale_selected_participant_never_inverts_fitted_favorite(req, fitted):
+    candidate = {**fitted, "selected_participant": req.home_team}
+    with pytest.raises(NFLModelOutputInvalid, match="SELECTED_SIDE_INCONSISTENT"):
+        _attach_nfl_strict_scoring_package(_governed(candidate), req, candidate)
