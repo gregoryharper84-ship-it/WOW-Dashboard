@@ -8,7 +8,7 @@ on:
       - 'artifacts/wow-engine/v17/propsmadness_nba_offline_adapter.py'
       - 'artifacts/wow-engine/tests/test_propsmadness_nba_offline_adapter.py'
       - 'artifacts/wow-engine/v17/propsmadness_nba_historical_gap_audit.py'
-      - 'artifacts/wow-engine/tests/test_propsmadness_nba_historical_gap_audit.py tests/test_propsmadness_nba_public_explore.py tests/test_propsmadness_multisport_public_explore.py tests/test_propsmadness_manual_workflow_contract.py tests/test_propsmadness_public_browser_probe.py'
+      - 'artifacts/wow-engine/tests/test_propsmadness_nba_historical_gap_audit.py'
       - 'artifacts/wow-engine/v17/propsmadness_nba_public_explore.py'
       - 'artifacts/wow-engine/tests/test_propsmadness_nba_public_explore.py'
       - 'artifacts/wow-engine/v17/propsmadness_multisport_public_explore.py'
@@ -16,6 +16,8 @@ on:
       - 'artifacts/wow-engine/tests/test_propsmadness_manual_workflow_contract.py'
       - 'artifacts/wow-engine/v17/propsmadness_public_browser_probe.py'
       - 'artifacts/wow-engine/tests/test_propsmadness_public_browser_probe.py'
+      - 'artifacts/wow-engine/v17/propsmadness_intelligence_handoff.py'
+      - 'artifacts/wow-engine/tests/test_propsmadness_intelligence_handoff.py'
       - '.github/workflows/wow-propsmadness-public-research-once.yml'
       - 'artifacts/wow-engine/PROPSMADNESS_NBA_FEASIBILITY_AND_IMPLEMENTATION_2018.md'
 
@@ -45,7 +47,7 @@ jobs:
         shell: bash
         run: |
           python -m pip install --disable-pip-version-check pytest
-          python -m pytest --confcutdir=tests -q tests/test_propsmadness_nba_offline_adapter.py tests/test_propsmadness_nba_historical_gap_audit.py
+          python -m pytest --confcutdir=tests -q tests/test_propsmadness_nba_offline_adapter.py tests/test_propsmadness_nba_historical_gap_audit.py tests/test_propsmadness_nba_public_explore.py tests/test_propsmadness_multisport_public_explore.py tests/test_propsmadness_manual_workflow_contract.py tests/test_propsmadness_public_browser_probe.py tests/test_propsmadness_intelligence_handoff.py
       - name: Assert source authorization remains disabled
         working-directory: artifacts/wow-engine
         shell: bash
