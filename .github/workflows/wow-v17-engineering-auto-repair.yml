@@ -8,7 +8,8 @@ name: wow-v17-engineering-auto-repair
 #   retried; they wait on the owner and surface in the daily digest.
 # - Repairable findings dispatch the worker to push a fix to the same branch, up to
 #   3 attempts per PR, tracked via a hidden marker comment on the PR itself.
-# - Past the cap: label `needs-owner` and stop.
+# - Past the cap: retain the P0/P1 incident in the existing Triple D root-cause
+#   queue; no duplicate repair attempts, owner escalation or new writer.
 #
 # Reads with the ambient read-only GITHUB_TOKEN; only the comment/label/dispatch
 # mutations use the wow-engineering App token. can_execute=false; never merges.
@@ -392,18 +393,77 @@ jobs:
             gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body" >/dev/null
           fi
 
-      - name: Label needs-owner past the retry cap
-        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'NEEDS_OWNER_RETRY_CAP'
+      - name: Route exhausted technical repairs to existing Triple D incident
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'BLOCKER_TEAM_REENTRY'
         shell: bash
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
         run: |
           set -euo pipefail
-          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-owner
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --body "NEEDS_OWNER_RETRY_CAP: 3 automatic repair attempts exhausted. Stopping; this PR now requires a human. can_execute=false."
-          echo "PR #${PR_NUMBER}: retry cap exhausted, labelled needs-owner." >> "$GITHUB_STEP_SUMMARY"
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::REENTRY_PR_IDENTITY_INVALID"; exit 1;
+          }
+          # Recheck the same App-authored, non-draft PR/head right before handoff.
+          pr=$(gh api "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")
+          jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
+            '.state == "open" and .draft == false and .head.sha == $sha and
+             .head.repo.full_name == $repo and .base.ref == "main" and
+             .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || {
+            echo "::error::REENTRY_PR_HEAD_STALE_OR_UNTRUSTED"; exit 1;
+          }
+          incident=$(jq -r '.body // ""' <<<"$pr" |
+            python artifacts/wow-engine/v17/engineering_incident_identity.py) || {
+            echo "::error::REENTRY_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1;
+          }
+          issue=$(gh api "/repos/$GITHUB_REPOSITORY/issues/$incident")
+          jq -e '.state == "open"' <<<"$issue" >/dev/null || {
+            echo "::error::REENTRY_INCIDENT_NOT_OPEN"; exit 1;
+          }
+          record=$(jq -c --argjson issue "$incident" \
+            '[.restoration[], .acceleration[]] | map(select(.issue_number == $issue)) | first // empty' \
+            artifacts/wow-engine/v17/engineering_dispatch_manifest.json)
+          [ -n "$record" ] || { echo "::error::REENTRY_INCIDENT_NOT_IN_APPROVED_MANIFEST"; exit 1; }
+          severity=$(jq -r '.severity' <<<"$record")
+          lease_group=$(jq -r '.lease_group // "GLOBAL"' <<<"$record")
+          jq -e --arg severity "$severity" \
+            '[.labels[].name] | index($severity) != null' <<<"$issue" >/dev/null || {
+            echo "::error::REENTRY_INCIDENT_SEVERITY_MISMATCH"; exit 1;
+          }
+          case "$severity:$lease_group" in
+            P0:P0_*) [[ "$lease_group" =~ ^P0_[A-Z0-9_]+$ ]] ;;
+            P1:GLOBAL) ;;
+            *) echo "::error::REENTRY_LEASE_SCOPE_UNTRUSTED"; exit 1 ;;
+          esac
+          # Domain-scoped provider dispatch and existing writer lease remain
+          # responsible for actual repair. Record ONE durable reentry per head.
+          marker="<!-- WOW_TRIPLE_D_REENTRY:PR=$PR_NUMBER:SHA=$HEAD_SHA -->"
+          comments=$(gh api --paginate \
+            "/repos/$GITHUB_REPOSITORY/issues/$incident/comments?per_page=100" | jq -s 'add // []')
+          existing=$(jq -r --arg marker "$marker" \
+            '[.[] | select(.user.login == "wow-engineering[bot]" and
+             (.body | contains($marker)))] | length' <<<"$comments")
+          if [ "$existing" -eq 0 ]; then
+            body="$marker
+          ### Triple D root-cause reentry — technical retry cap
+          - Incident: #$incident
+          - Existing Engineering PR: #$PR_NUMBER
+          - Exact blocked head SHA: $HEAD_SHA
+          - Source independent check ID: $SOURCE_CHECK_ID
+          - Failure: REPAIR_RETRY_CAP_EXHAUSTED
+          - Next owner: ROOT_CAUSE_INVESTIGATOR (existing Engineering/AMRT queue)
+          - Lease group: $lease_group
+          - Next action: reproduce the changed failure; patch on authorized same PR and exact head; verify independently
+          - Re-entry: new root-cause evidence or head change, under existing writer lease
+          - No identical fourth retry; no owner action unless independent security authority truly requires it
+          - Status: BLOCKED_WITH_EXACT_REASON
+          - can_execute: false; terminal_authority: V17_TERMINAL_REDUCER"
+            gh api --method POST "/repos/$GITHUB_REPOSITORY/issues/$incident/comments" \
+              -f body="$body" >/dev/null
+          fi
+          echo "REENTRY_EXISTING_WRITER_QUEUE: incident #$incident, PR #$PR_NUMBER, SHA $HEAD_SHA. No fourth retry or competing writer." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record waiting on CI evidence (non-repairable yet)
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_EVIDENCE'
