@@ -43,6 +43,20 @@ MAX_PAGES = 10
 PER_PAGE = 100
 
 Fetch = Callable[[str], tuple[int, Any]]
+QA_WORKFLOW_NAME = "wow-v17-independent-qa-check"
+QA_WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
+# Stable id of that workflow in this repository. GitHub's run `name` is the
+# workflow run-name. Today that is the dynamic shape below. A later change
+# may set it to exactly QA_WORKFLOW_NAME. Neither string is principal evidence.
+QA_WORKFLOW_ID = 380562324
+QA_RUN_NAME_RE = re.compile(
+    r"^wow-v17-independent-qa-check event=(workflow_run|workflow_dispatch) "
+    r"pr=(?:[1-9][0-9]*|AUTO) head=(?:[0-9a-f]{40}|AUTO)$"
+)
+
+
+class UpstreamQaError(Exception):
+    """Typed refusal while classifying the upstream QA run. No check is published."""
 
 
 # ----------------------------------------------------------------------- evidence
@@ -241,6 +255,95 @@ def targets(repo: str, *, pr: str | None = None,
                                 "head_ref": ((item.get("head") or {}).get("ref"))})
             out = out[:MAX_TARGETS]
     return {"targets": out, "errors": errors}
+
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _qa_run_name_matches(name: Any, event: Any) -> bool:
+    """True for the current dynamic run-name or the exact static workflow name.
+
+    A matching name does not authenticate the run. Callers still require
+    workflow id 380562324, the workflow path, repository, head, attempt, and
+    the single completed ``qa`` job. Any other name is rejected.
+    """
+    if not isinstance(name, str) or not isinstance(event, str):
+        return False
+    if name == QA_WORKFLOW_NAME:
+        return True
+    return (
+        QA_RUN_NAME_RE.fullmatch(name) is not None
+        and name.startswith(f"{QA_WORKFLOW_NAME} event={event} ")
+    )
+
+
+def classify_upstream_qa(
+    repo: str, *, run_id: int, run_attempt: int, fetch: Fetch = gh_fetch,
+) -> dict[str, str]:
+    """Classify a completed QA workflow before Release reads its policy.
+
+    A skipped run, or a completed run whose ``qa`` job was skipped, is neutral:
+    no policy lookup and no Release check. A success or failure job is applicable,
+    and a missing or forged policy on that run still fails closed downstream.
+    Cancelled, foreign, truncated, or mismatched provenance is untrusted.
+    """
+    if not _positive_int(run_id) or not _positive_int(run_attempt):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    status, run = fetch(f"repos/{repo}/actions/runs/{run_id}")
+    if status != 200 or not isinstance(run, dict):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNREADABLE")
+    repository = run.get("repository") if isinstance(run.get("repository"), dict) else {}
+    head_repository = run.get("head_repository") if isinstance(run.get("head_repository"), dict) else {}
+    event = run.get("event")
+    name = run.get("name")
+    # Workflow id and path authenticate the workflow. `name` may be the
+    # current dynamic run-name or exactly "wow-v17-independent-qa-check".
+    name_matches = _qa_run_name_matches(name, event)
+    trusted = (
+        run.get("id") == run_id
+        and run.get("run_attempt") == run_attempt
+        and run.get("workflow_id") == QA_WORKFLOW_ID
+        and run.get("path") == QA_WORKFLOW_PATH
+        and name_matches
+        and run.get("head_branch") == "main"
+        and SHA_RE.fullmatch(str(run.get("head_sha") or "")) is not None
+        and event in {"workflow_run", "workflow_dispatch"}
+        and repository.get("full_name") == repo
+        and head_repository.get("full_name") == repo
+        and run.get("status") == "completed"
+    )
+    if not trusted:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    conclusion = run.get("conclusion")
+    if conclusion == "skipped":
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_SKIPPED"}
+    if conclusion not in {"success", "failure"}:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    job_status, jobs_body = fetch(
+        f"repos/{repo}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
+    )
+    jobs = jobs_body.get("jobs") if isinstance(jobs_body, dict) else None
+    total = jobs_body.get("total_count") if isinstance(jobs_body, dict) else None
+    if (
+        job_status != 200
+        or not isinstance(jobs, list)
+        or not isinstance(total, int)
+        or isinstance(total, bool)
+        or total != len(jobs)
+    ):
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNREADABLE")
+    named = [job for job in jobs if isinstance(job, dict) and job.get("name") == "qa"]
+    if len(named) != 1:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_UNTRUSTED")
+    if named[0].get("status") != "completed":
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
+    job_conclusion = named[0].get("conclusion")
+    if job_conclusion == "skipped":
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
+    if job_conclusion not in {"success", "failure"}:
+        raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
+    return {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
 
 
 # ----------------------------------------------------------------------- decisions
@@ -462,6 +565,10 @@ def main(argv: list[str] | None = None) -> int:
     policy.add_argument("--run-id", required=True, type=int)
     policy.add_argument("--run-attempt", required=True, type=int)
     policy.add_argument("--pr", type=int)
+    classify = sub.add_parser("classify-upstream-qa")
+    classify.add_argument("--repo", required=True)
+    classify.add_argument("--run-id", required=True, type=int)
+    classify.add_argument("--run-attempt", required=True, type=int)
     for name in ("decide-qa", "decide-release"):
         d = sub.add_parser(name)
         d.add_argument("--evidence", required=True)
@@ -485,6 +592,15 @@ def main(argv: list[str] | None = None) -> int:
         except _source_review_module.SourceReviewError as exc:
             raise SystemExit(str(exc)) from exc
         print(json.dumps(resolved, sort_keys=True))
+        return 0
+    if args.cmd == "classify-upstream-qa":
+        try:
+            classified = classify_upstream_qa(
+                args.repo, run_id=args.run_id, run_attempt=args.run_attempt,
+            )
+        except UpstreamQaError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(json.dumps(classified, sort_keys=True))
         return 0
     if args.cmd == "gather":
         review_args = (

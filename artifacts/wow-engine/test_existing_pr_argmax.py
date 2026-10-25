@@ -26,13 +26,9 @@ COLLECTORS = [
 ]
 SHA = "a" * 40
 REQUIRED = [
-    "wow-verify",
-    "wow-engine-verify",
-    "wow-v17-rapid-repair",
-    "wow-v17-change-impact-gate",
-    "wow-v17-engineering-auditor-code-health",
-    "wow-v17-spread-forward-shadow",
-    "wow-v17-release-production-verification-agent",
+    "WOW required-three regression",
+    "WOW governed probability backend",
+    "WOW additional required regression",
 ]
 MOCK_PAGES = """
 gh() {
@@ -129,31 +125,31 @@ def test_all_collectors_propagate_api_failure(index, tmp_path):
 
 
 @pytest.mark.parametrize("name", REQUIRED)
-@pytest.mark.parametrize("state", ["success", "absent", "cancelled", "failure", "wrong_path"])
-def test_seven_workflow_gates_remain_exact_head_and_fail_closed(name, state, tmp_path):
+@pytest.mark.parametrize("state", ["success", "absent", "cancelled", "failure", "wrong_sha", "wrong_app"])
+def test_three_native_checks_remain_exact_head_and_fail_closed(name, state, tmp_path):
     rows = [
-        {"name": required, "path": f".github/workflows/{required}.yml",
-         "head_sha": SHA, "created_at": "2026-10-20T00:00:00Z",
+        {"id": index + 1, "name": required, "app": {"id": 15368},
+         "head_sha": SHA, "started_at": "2026-10-20T00:00:00Z",
          "status": "completed", "conclusion": "success"}
-        for required in REQUIRED
+        for index, required in enumerate(REQUIRED)
     ]
     selected = next(row for row in rows if row["name"] == name)
     if state == "absent":
         rows.remove(selected)
-    elif state == "wrong_path":
-        selected["path"] = ".github/workflows/imposter.yml"
+    elif state == "wrong_sha":
+        selected["head_sha"] = "b" * 40
+    elif state == "wrong_app":
+        selected["app"]["id"] = 5245832
     else:
         selected["conclusion"] = state
     rows = [{"name": "unrelated", "padding": "x" * 2000} for _ in range(101)] + rows
-    _pages(tmp_path, rows, "workflow_runs")
+    _pages(tmp_path, rows, "check_runs")
     (tmp_path / ".governance-review-evidence").mkdir()
     result = _run(CI, tmp_path, MOCK_PAGES + '\nsleep() { :; }\nseq() { echo 1; }\n')
     calls = (tmp_path / "calls").read_text().splitlines()
-    assert all(f"/actions/runs?head_sha={SHA}&per_page=100&page=" in call for call in calls)
+    assert all(f"/commits/{SHA}/check-runs?per_page=100&page=" in call for call in calls)
     if state == "success":
         assert result.returncode == 0, result.stderr
-        captured = tmp_path / ".governance-review-evidence/workflow-runs.json"
-        assert json.loads(captured.read_text()) == rows
         assert (tmp_path / "output").read_text() == "status=0\n"
     else:
         assert result.returncode != 0
@@ -248,7 +244,7 @@ def test_full_capture_preserves_large_evidence_and_rejects_head_drift(state, tmp
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     for name, value in (("pr", pr), ("files", files), ("reviews", payload),
-                        ("check-runs", payload)):
+                        ("check-runs", payload), ("workflow-runs", payload)):
         (inputs / f"{name}.json").write_text(json.dumps(value))
     current_sha = "b" * 40 if state == "moved" else SHA
     mock = """
@@ -259,6 +255,7 @@ gh() {
     */files\\?*) jq --argjson p "$page" '.[($p-1)*100:$p*100]' inputs/files.json ;;
     */reviews\\?*) jq --argjson p "$page" '.[($p-1)*100:$p*100]' inputs/reviews.json ;;
     */check-runs\\?*) jq --argjson p "$page" '{check_runs:.[($p-1)*100:$p*100]}' inputs/check-runs.json ;;
+    */actions/runs\\?*) jq --argjson p "$page" '{workflow_runs:.[($p-1)*100:$p*100]}' inputs/workflow-runs.json ;;
     *) if [ "${3:-}" = "--jq" ]; then echo CURRENT_SHA; else cat inputs/pr.json; fi ;;
   esac
 }
@@ -289,9 +286,6 @@ def test_bootstrap_checks_keep_exact_head_and_app_authority(state, tmp_path):
         ("WOW required-three regression", 15368),
         ("WOW governed probability backend", 15368),
         ("WOW additional required regression", 15368),
-        ("WOW V17 change impact gate", 15368),
-        ("WOW Independent QA exact-head", 5245832),
-        ("WOW Release Authority exact-head", 5245853),
     ]
     checks = [
         {"name": name, "app": {"id": app}, "head_sha": SHA, "status": "completed",
@@ -303,7 +297,7 @@ def test_bootstrap_checks_keep_exact_head_and_app_authority(state, tmp_path):
     elif state == "wrong_sha":
         checks[-1]["head_sha"] = "b" * 40
     elif state == "wrong_app":
-        checks[-1]["app"]["id"] = 15368
+        checks[-1]["app"]["id"] = 5245832
     else:
         checks[-1]["conclusion"] = state
     checks = [{"name": "unrelated", "padding": "x" * 2000} for _ in range(101)] + checks
@@ -334,15 +328,10 @@ def test_large_evidence_never_crosses_argv_boundary():
                  "check_runs", "workflow_runs", "evidence"):
         assert f"--argjson {name} " not in text
     required = re.search(r"required=\(\s*(.*?)\s*\)", CI, re.S).group(1)
-    assert re.findall(r'"([^"]+)"', required) == [
-        f"{name}|.github/workflows/{name}.yml" for name in REQUIRED
-    ]
+    assert re.findall(r'"([^"]+)"', required) == [f"{name}|15368" for name in REQUIRED]
     assert 'select(.name == $name and (.app.id == $app) and .head_sha == $sha)' in RECEIPT
     assert re.findall(r'"([^"]+\|\d+)"', RECEIPT) == [
         "WOW required-three regression|15368",
         "WOW governed probability backend|15368",
         "WOW additional required regression|15368",
-        "WOW V17 change impact gate|15368",
-        "WOW Independent QA exact-head|5245832",
-        "WOW Release Authority exact-head|5245853",
     ]

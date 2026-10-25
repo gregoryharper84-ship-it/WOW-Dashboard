@@ -189,31 +189,31 @@ def test_existing_pr_ci_resolves_timestamp_ties_by_run_id(
     )
     verifier = _load_verifier()
     head = "a" * 40
-    runs = [
+    checks = [
         {
             "id": index + 100,
             "name": name,
-            "path": path,
+            "app": {"id": app_id},
             "head_sha": head,
-            "created_at": "2026-10-21T14:52:46Z",
+            "started_at": "2026-10-21T14:52:46Z",
             "status": "completed",
             "conclusion": "success",
         }
-        for index, (name, path) in enumerate(verifier.REQUIRED_WORKFLOWS.items())
+        for index, (name, app_id) in enumerate(verifier.REQUIRED_CHECKS.items())
     ]
-    older = {**runs[0], "conclusion": older_conclusion}
+    older = {**checks[0], "conclusion": older_conclusion}
     newer = {**older, "id": older["id"] + 1000, "status": status, "conclusion": conclusion}
-    runs[:1] = [newer, older] if newest_first else [older, newer]
+    checks[:1] = [newer, older] if newest_first else [older, newer]
     selected = verifier._latest(
-        runs, name=newer["name"], expected_sha=head, path=newer["path"],
-        time_field="created_at",
+        checks, name=newer["name"], expected_sha=head, app_id=15368,
+        time_field="started_at",
     )
     assert selected["id"] == newer["id"]
     (tmp_path / ".governance-review-evidence").mkdir()
     output = tmp_path / "output"
     proc = subprocess.run(
         ["bash", "-c", """
-        gh() { printf '%s\\n' "$WORKFLOW_RUNS"; }
+        gh() { printf '%s\\n' "$CHECK_RUNS"; }
         sleep() { exit 99; }
         """ + script],
         cwd=tmp_path,
@@ -222,7 +222,7 @@ def test_existing_pr_ci_resolves_timestamp_ties_by_run_id(
             "GITHUB_REPOSITORY": "gregoryharper84-ship-it/WOW-Dashboard",
             "GITHUB_OUTPUT": str(output),
             "HEAD_SHA": head,
-            "WORKFLOW_RUNS": json.dumps({"workflow_runs": runs}),
+            "CHECK_RUNS": json.dumps({"check_runs": checks}),
         },
         text=True,
         capture_output=True,
@@ -237,12 +237,21 @@ def test_existing_pr_ci_resolves_timestamp_ties_by_run_id(
             assert f"EXISTING_PR_REQUIRED_CI_FAILED:{newer['name']}" in proc.stderr
 
 
-def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
+def test_existing_pr_certifier_waits_only_for_three_exact_head_native_checks():
     text = WORKFLOW.read_text(encoding="utf-8")
-    for required in ("wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate", "wow-v17-engineering-auditor-code-health", "wow-v17-spread-forward-shadow", "wow-v17-release-production-verification-agent"):
+    for required in (
+        "WOW required-three regression",
+        "WOW governed probability backend",
+        "WOW additional required regression",
+    ):
         assert required in text
     assert "for _ in $(seq 1 120); do" in text
-    assert 'api_array "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}"' in text
+    assert 'api_array "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs"' in text
+    assert ".head_sha == $sha" in text
+    assert ".app.id == $app" in text
+    assert "WOW V17 change impact gate|15368" not in text
+    assert "WOW Independent QA exact-head|5245832" not in text
+    assert "WOW Release Authority exact-head|5245853" not in text
     assert "EXISTING_PR_REQUIRED_CI_FAILED" in text
     assert "EXISTING_PR_REQUIRED_CI_INCOMPLETE_AFTER_BOUNDED_WAIT" in text
     assert "EXISTING_PR_TRUST_ROOT_CHANGE_REQUIRES_WORKER_OR_BOOTSTRAP" not in text
@@ -253,7 +262,8 @@ def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
     assert "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" in text
     assert "pull_request:" not in text.replace("pull_request_target:", "")
     assert ".github/scripts/verify_existing_pr_governance_receipt.py" in text
-    assert 'select(.name == $name and .path == $path)' in text
+    verifier = (ROOT / ".github/scripts/verify_existing_pr_governance_receipt.py").read_text()
+    assert '_require(item.get("path") == REQUIRED_WORKFLOWS[name]' in verifier
     assert '\\(.conclusion // "")' in text
     assert '\\(.conclusion // \\"\\")' not in text
 

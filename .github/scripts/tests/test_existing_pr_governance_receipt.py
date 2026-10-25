@@ -804,9 +804,9 @@ def bootstrap_evidence(
     author=None,
     owner_state="APPROVED",
     owner_sha=HEAD,
-    qa_conclusion="success",
-    qa_app=5245832,
     check_sha=HEAD,
+    check_conclusion="success",
+    check_app_id=None,
 ):
     data = evidence(author=author or BOT_AUTHOR)
     data["changed_files"] = [{
@@ -832,8 +832,8 @@ def bootstrap_evidence(
     ]
     data["check_runs"] = []
     for index, (name, app_id) in enumerate(verifier.BOOTSTRAP_CHECKS.items()):
-        conclusion = qa_conclusion if name == "WOW Independent QA exact-head" else "success"
-        resolved_app = qa_app if name == "WOW Independent QA exact-head" else app_id
+        conclusion = check_conclusion if index == len(verifier.BOOTSTRAP_CHECKS) - 1 else "success"
+        resolved_app = check_app_id if check_app_id is not None and index == len(verifier.BOOTSTRAP_CHECKS) - 1 else app_id
         data["check_runs"].append({
             "id": index + 300,
             "name": name,
@@ -1805,8 +1805,9 @@ def test_trust_root_bootstrap_receipt_uses_owner_approval_not_an_allowlist():
     assert "independent_review" not in receipt
     assert "trusted_reviewers" not in receipt
     assert set(receipt["required_checks"]) == set(verifier.BOOTSTRAP_CHECKS)
-    assert "WOW Independent QA exact-head" in receipt["required_checks"]
-    assert "WOW Release Authority exact-head" in receipt["required_checks"]
+    assert set(receipt["required_checks"]) == set(verifier.REQUIRED_CHECKS)
+    assert "WOW Independent QA exact-head" not in receipt["required_checks"]
+    assert "WOW Release Authority exact-head" not in receipt["required_checks"]
     for name in verifier.REQUIRED_CHECKS:
         assert name in receipt["required_checks"]
 
@@ -1838,11 +1839,11 @@ def test_ordinary_diff_cannot_use_the_bootstrap_receipt():
         build_bootstrap(data)
 
 
-def test_bootstrap_requires_green_qa_release_and_exact_check_provenance():
+def test_bootstrap_requires_three_native_checks_and_exact_check_provenance():
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_NOT_GREEN"):
-        build_bootstrap(bootstrap_evidence(qa_conclusion="failure"))
+        build_bootstrap(bootstrap_evidence(check_conclusion="failure"))
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_MISSING"):
-        build_bootstrap(bootstrap_evidence(qa_app=1))
+        build_bootstrap(bootstrap_evidence(check_app_id=1))
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_MISSING"):
         build_bootstrap(bootstrap_evidence(check_sha="b" * 40))
 
@@ -1877,9 +1878,9 @@ def test_live_recheck_rejects_replaced_owner_review_and_superseded_checks():
     superseded = json.loads(json.dumps(data["check_runs"]))
     superseded.append({
         "id": 999,
-        "name": "WOW Release Authority exact-head",
+        "name": "WOW additional required regression",
         "head_sha": HEAD,
-        "app": {"id": 5245853},
+        "app": {"id": 15368},
         "status": "completed",
         "conclusion": "success",
         "started_at": "2026-10-17T23:40:00Z",

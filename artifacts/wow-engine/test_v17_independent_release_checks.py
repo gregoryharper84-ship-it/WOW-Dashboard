@@ -607,7 +607,14 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
             assert "${{" not in step.split("run: |", 1)[1], "no expression interpolation inside run scripts"
         if "steps.app_token.outputs.token" in step:
             assert step.startswith("Publish exact-head check"), "App token only reaches the publish step"
-    assert re.search(r"group: wow-v17-[a-z-]+-check\n  cancel-in-progress: false", text)
+    # Protect the *new* exact-PR queue rather than require the obsolete global queue.
+    concurrency = yaml.load(text, Loader=yaml.BaseLoader)["concurrency"]
+    assert concurrency["group"] == (
+        wf.stem + "-${{ inputs.pr_number || "
+        "github.event.workflow_run.pull_requests[0].number || 'AUTO' }}"
+    )
+    assert concurrency["cancel-in-progress"] == "false"
+    assert concurrency["queue"] == "max"
 
 
 @pytest.mark.parametrize("wf, upstream", [
@@ -628,10 +635,266 @@ def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
         workflow = yaml.load(wf.read_text(), Loader=yaml.BaseLoader)
         assert "github.ref == 'refs/heads/main'" in workflow["jobs"]["qa"]["if"]
         assert "vars.WOW_QA_APP_ID != ''" in workflow["jobs"]["qa"]["if"]
-        assert "workflow_run.name" not in workflow["jobs"]["qa"]["if"]
+        assert "github.event.workflow_run.name != 'wow-v17-trusted-governance-gate'" in workflow["jobs"]["qa"]["if"]
+        assert "vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in workflow["jobs"]["qa"]["if"]
+        assert "vars.WOW_QA_ZERO_CREDIT_MODE != 'true'" in workflow["jobs"]["qa"]["if"]
     if wf == REL_WF:
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_id"]["required"] == "true"
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_attempt"]["required"] == "true"
+
+
+def _workflow_on(path):
+    loaded = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+    return loaded["on"] if "on" in loaded else loaded[True]
+
+
+def test_prless_workflow_run_skips_qa_before_target_resolution():
+    job_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
+    assert "github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]" in job_if
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in job_if
+    script = _step_script(QA_WF, "Resolve one exact-head QA target")
+    assert "QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing" in script
+
+
+def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
+    workflow = yaml.load(REL_WF.read_text(), Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["release"]
+    assert "github.event.workflow_run.conclusion != 'skipped'" in job["if"]
+    steps = {step["name"]: step for step in job["steps"]}
+    assert steps["Classify upstream QA applicability"]["if"] == "success() && github.event_name == 'workflow_run'"
+    assert steps["Decide at exact head (read-only)"]["if"] == (
+        "success() && (github.event_name != 'workflow_run' || steps.upstream.outputs.applicable == 'true')"
+    )
+    assert steps["Publish exact-head check"]["if"] == "steps.decide.outputs.count == '1'"
+    assert steps["Mint checks-only App token"]["if"] == "steps.decide.outputs.count == '1'"
+    script = _step_script(REL_WF, "Classify upstream QA applicability")
+    assert "resolve-qa-policy" not in script
+    assert "check-runs" not in script
+    assert "classify-upstream-qa" in script
+
+
+def test_source_qa_release_certifier_dag_has_no_cycle():
+    qa = _workflow_on(QA_WF)["workflow_run"]["workflows"]
+    release = _workflow_on(REL_WF)["workflow_run"]["workflows"]
+    certifier = _workflow_on(ROOT / ".github/workflows/wow-v17-existing-pr-governance-review.yml")
+    gate = _workflow_on(ROOT / ".github/workflows/wow-v17-trusted-governance-gate.yml")
+    assert release == ["wow-v17-independent-qa-check"]
+    assert "wow-v17-release-authority-check" not in qa
+    assert "wow-v17-existing-pr-governance-review" not in qa
+    assert certifier["workflow_run"]["workflows"] == ["wow-v17-independent-qa-check"]
+    assert gate["workflow_run"]["workflows"] == ["wow-v17-existing-pr-governance-review"]
+    qa_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
+    assert "wow-v17-trusted-governance-gate" in qa_if
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in qa_if
+    assert "github.event.workflow_run.pull_requests[0]" in qa_if
+
+
+# Copied from GET /repos/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/40107281706.
+# `name` is the workflow run-name, not the workflow's static name.
+REAL_QA_RUN_40107281706 = {
+    "id": 40107281706,
+    "name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO",
+    "workflow_id": 380562324,
+    "path": ".github/workflows/wow-v17-independent-qa-check.yml",
+    "head_branch": "main",
+    "head_sha": "00f3bc37aeed8007e062b993112221623b19acd3",
+    "event": "workflow_run",
+    "run_attempt": 1,
+    "status": "completed",
+    "conclusion": "failure",
+    "repository": {"full_name": REPO},
+    "head_repository": {"full_name": REPO},
+}
+# Copied from run 40104744926, the successful QA execution for PR 1977, attempt 2.
+REAL_QA_RUN_40104744926 = {
+    "id": 40104744926,
+    "name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO",
+    "workflow_id": 380562324,
+    "path": ".github/workflows/wow-v17-independent-qa-check.yml",
+    "head_branch": "main",
+    "head_sha": "1c4ef99ab3ea8cbd8c9a07cdd3e500257f055acc",
+    "event": "workflow_run",
+    "run_attempt": 2,
+    "status": "completed",
+    "conclusion": "success",
+    "repository": {"full_name": REPO},
+    "head_repository": {"full_name": REPO},
+}
+
+
+def _qa_run(**overrides):
+    body = dict(REAL_QA_RUN_40107281706)
+    body["conclusion"] = "success"
+    body.update(overrides)
+    return body
+
+
+def _qa_jobs(conclusion="success", *, status="completed", extra=()):
+    jobs = [{"name": "qa", "status": status, "conclusion": conclusion}, *extra]
+    return {"total_count": len(jobs), "jobs": jobs}
+
+
+def _classify_fetch(run, jobs=None, *, run_status=200, jobs_status=200):
+    def fetch(path):
+        if path.endswith("/jobs"):
+            return jobs_status, jobs
+        return run_status, run
+    return fetch
+
+
+def test_pull_request_associated_qa_run_is_applicable_before_release_policy():
+    for conclusion in ("success", "failure"):
+        classified = m.classify_upstream_qa(
+            REPO, run_id=40107281706, run_attempt=1,
+            fetch=_classify_fetch(_qa_run(conclusion=conclusion), _qa_jobs(conclusion)),
+        )
+        assert classified == {
+            "disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE",
+        }
+        assert "can_execute" not in classified
+
+
+@pytest.mark.parametrize("run_over, jobs, reason", [
+    ({"conclusion": "skipped"}, _qa_jobs("skipped"), "RELEASE_UPSTREAM_QA_SKIPPED"),
+    ({}, _qa_jobs("skipped"), "RELEASE_UPSTREAM_QA_NO_TARGET"),
+])
+def test_prless_or_skipped_upstream_qa_is_neutral(run_over, jobs, reason):
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(_qa_run(**run_over), jobs),
+    )
+    assert classified == {"disposition": "neutral", "reason": reason}
+
+
+@pytest.mark.parametrize("run_over, jobs, jobs_body_status, code", [
+    ({"head_repository": {"full_name": "other/WOW-Dashboard"}}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"repository": {"full_name": "other/WOW-Dashboard"}}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"path": ".github/workflows/other.yml"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"workflow_id": 380562325}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"workflow_id": "380562324"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check", "workflow_id": 1}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check", "path": ".github/workflows/other.yml"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check", "head_sha": "not-a-sha"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check", "run_attempt": 2}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check",
+      "repository": {"full_name": "other/WOW-Dashboard"}}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check",
+      "head_repository": {"full_name": "other/WOW-Dashboard"}}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check "}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check extra"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check event=push pr=AUTO head=AUTO"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "other-workflow"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO extra"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check event=workflow_dispatch pr=AUTO head=AUTO"}, None, 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"name": "wow-v17-independent-qa-check event=workflow_run pr=AUTO head=AUTO",
+      "workflow_id": 1}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"head_sha": "not-a-sha"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"head_sha": "A" * 40}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"head_branch": "feature"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"run_attempt": 2}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"event": "schedule"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"conclusion": "cancelled"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"id": 1}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({}, _qa_jobs("success", extra=({"name": "qa", "status": "completed", "conclusion": "success"},)), 200,
+     "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({}, {"total_count": 0, "jobs": []}, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({}, _qa_jobs("cancelled"), 200, "RELEASE_UPSTREAM_QA_JOB_INCOMPLETE"),
+    ({}, _qa_jobs("success", status="in_progress"), 200, "RELEASE_UPSTREAM_QA_JOB_INCOMPLETE"),
+    ({}, {"jobs": [{"name": "qa", "status": "completed", "conclusion": "success"}]}, 200,
+     "RELEASE_UPSTREAM_QA_UNREADABLE"),
+    ({}, None, 500, "RELEASE_UPSTREAM_QA_UNREADABLE"),
+])
+def test_malformed_foreign_or_incomplete_upstream_qa_fails_closed(run_over, jobs, jobs_body_status, code):
+    with pytest.raises(m.UpstreamQaError, match=f"^{code}$"):
+        m.classify_upstream_qa(
+            REPO, run_id=40107281706, run_attempt=1,
+            fetch=_classify_fetch(_qa_run(**run_over), jobs, jobs_status=jobs_body_status, run_status=200),
+        )
+
+
+def test_unreadable_upstream_qa_run_fails_closed():
+    with pytest.raises(m.UpstreamQaError, match="^RELEASE_UPSTREAM_QA_UNREADABLE$"):
+        m.classify_upstream_qa(
+            REPO, run_id=40107281706, run_attempt=1,
+            fetch=_classify_fetch(None, None, run_status=404),
+        )
+
+
+def test_non_integer_upstream_identity_fails_closed():
+    with pytest.raises(m.UpstreamQaError, match="^RELEASE_UPSTREAM_QA_UNTRUSTED$"):
+        m.classify_upstream_qa(REPO, run_id=True, run_attempt=1, fetch=_classify_fetch(_qa_run(), _qa_jobs()))
+
+
+def test_static_qa_run_name_is_applicable_with_pinned_workflow_identity():
+    assert m.QA_WORKFLOW_ID == 380562324
+    assert m.QA_WORKFLOW_PATH == ".github/workflows/wow-v17-independent-qa-check.yml"
+    for conclusion in ("success", "failure"):
+        run = _qa_run(
+            name=m.QA_WORKFLOW_NAME,
+            workflow_id=m.QA_WORKFLOW_ID,
+            path=m.QA_WORKFLOW_PATH,
+            conclusion=conclusion,
+        )
+        classified = m.classify_upstream_qa(
+            REPO, run_id=40107281706, run_attempt=1,
+            fetch=_classify_fetch(run, _qa_jobs(conclusion)),
+        )
+        assert classified == {
+            "disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE",
+        }
+        assert "can_execute" not in classified
+
+
+def test_real_successful_qa_run_with_dynamic_name_is_applicable():
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40104744926, run_attempt=2,
+        fetch=_classify_fetch(dict(REAL_QA_RUN_40104744926), _qa_jobs("success")),
+    )
+    assert classified == {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
+    assert "can_execute" not in classified
+
+
+def test_real_failed_qa_run_is_not_rejected_for_its_dynamic_name():
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(dict(REAL_QA_RUN_40107281706), _qa_jobs("failure")),
+    )
+    assert classified == {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
+
+
+def test_real_qa_run_with_skipped_job_stays_neutral():
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(dict(REAL_QA_RUN_40107281706, conclusion="success"), _qa_jobs("skipped")),
+    )
+    assert classified == {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
+
+
+def test_dispatch_run_name_shape_is_trusted_only_with_the_workflow_id():
+    dispatched = _qa_run(
+        event="workflow_dispatch",
+        name="wow-v17-independent-qa-check event=workflow_dispatch pr=1977 head=" + ("a" * 40),
+    )
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(dispatched, _qa_jobs("success")),
+    )
+    assert classified["disposition"] == "applicable"
+    spoofed = dict(dispatched, workflow_id=1)
+    with pytest.raises(m.UpstreamQaError, match="^RELEASE_UPSTREAM_QA_UNTRUSTED$"):
+        m.classify_upstream_qa(
+            REPO, run_id=40107281706, run_attempt=1,
+            fetch=_classify_fetch(spoofed, _qa_jobs("success")),
+        )
 
 
 # --- workflows: execute the real Bash against a fake gh ------------------------------
@@ -820,6 +1083,223 @@ def test_invalid_dispatch_target_fails_without_publishing(fake_gh):
     assert "::error::QA_TARGETS_UNRESOLVED" in proc.stdout
 
 
+def _live_dispatch_pr(sha=HEAD, repo=REPO, number=7):
+    return {
+        "number": number,
+        "head": {"sha": sha, "ref": "fix/issue-1830", "repo": {"full_name": repo}},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+    }
+
+
+def _qa_target_output_enables_publish(pr_number):
+    """Publish uses always(), so a failed resolver still reaches that if.
+
+    An empty pr_number leaves the condition false, so no App token is minted
+    and no check run is posted.
+    """
+    workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
+    assert steps["Mint checks-only App token"]["if"] == "steps.target.outputs.pr_number != ''"
+    assert steps["Publish exact-head check"]["if"] == "always() && steps.target.outputs.pr_number != ''"
+    return pr_number != ""
+
+
+def _run_qa_target(fake_gh, *, input_pr="7", input_head="", wr_prs="null", live=None):
+    pr = live if live is not None else _live_dispatch_pr()
+    routes = {f"repos/{REPO}/pulls/7": [200, pr]}
+    (fake_gh / "routes.json").write_text(json.dumps(routes))
+    out = fake_gh / "resolved.txt"
+    env = dict(
+        os.environ,
+        PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+        FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+        FAKE_GH_LOG=str(fake_gh / "gh.log"),
+        GITHUB_REPOSITORY=REPO,
+        GITHUB_OUTPUT=str(out),
+        GH_TOKEN="read-only",
+        EVENT="workflow_dispatch",
+        INPUT_PR=input_pr,
+        INPUT_HEAD_SHA=input_head,
+        WR_PRS=wr_prs,
+    )
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    return proc, out.read_text() if out.exists() else ""
+
+
+def test_dispatch_matching_head_resolves_that_pr_and_posts_no_check(fake_gh):
+    other_pr = json.dumps([{"number": 8, "head": {"sha": OLD}, "base": {"ref": "main"}}])
+    proc, outputs = _run_qa_target(fake_gh, input_head=HEAD, wr_prs=other_pr)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert outputs.splitlines() == [
+        "pr_number=7",
+        f"head_sha={HEAD}",
+        "head_ref=fix/issue-1830",
+    ]
+    assert _qa_target_output_enables_publish("7") is True
+    assert not (fake_gh / "gh.log").exists()
+
+
+@pytest.mark.parametrize("head, code", [
+    ("not-a-sha", "QA_INPUT_HEAD_SHA_INVALID"),
+    ("A" * 40, "QA_INPUT_HEAD_SHA_INVALID"),
+    (OLD, "QA_INPUT_HEAD_SHA_STALE"),
+    ("c" * 40, "QA_INPUT_HEAD_SHA_STALE"),
+])
+def test_dispatch_stale_or_malformed_head_publishes_no_qa_check(fake_gh, head, code):
+    proc, outputs = _run_qa_target(fake_gh, input_head=head)
+    assert proc.returncode != 0
+    assert f"::error::{code}" in proc.stdout
+    assert "pr_number=" not in outputs
+    assert _qa_target_output_enables_publish("") is False
+    assert not (fake_gh / "gh.log").exists()
+
+
+def test_dispatch_foreign_repository_head_publishes_no_qa_check(fake_gh):
+    proc, outputs = _run_qa_target(
+        fake_gh, input_head=HEAD, live=_live_dispatch_pr(repo="fork/WOW-Dashboard"),
+    )
+    assert proc.returncode != 0
+    assert "::error::QA_INPUT_HEAD_SHA_STALE" in proc.stdout
+    assert "pr_number=" not in outputs
+    assert not (fake_gh / "gh.log").exists()
+
+
+def test_release_dispatch_matching_head_writes_one_decision(fake_gh):
+    qa_run = {"id": 900, "name": m.QA_CHECK, "head_sha": HEAD, "status": "completed",
+              "conclusion": "success", "app": {"id": int(QA_APP)},
+              "completed_at": "2026-10-09T03:30:00Z"}
+    proc, runner, _ = _run_decide(
+        fake_gh, REL_WF, _routes_for_pr(_evidence_runs([qa_run])),
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "INPUT_HEAD_SHA": HEAD, "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in (fake_gh / "out.txt").read_text()
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "success", decision.get("findings")
+    assert decision["can_execute"] is False
+    assert _release_count_enables_token_and_publish("1") is True
+
+
+@pytest.mark.parametrize("head, code", [
+    ("not-a-sha", "RELEASE_INPUT_HEAD_SHA_INVALID"),
+    ("A" * 40, "RELEASE_INPUT_HEAD_SHA_INVALID"),
+    (OLD, "RELEASE_INPUT_HEAD_SHA_STALE"),
+    ("c" * 40, "RELEASE_INPUT_HEAD_SHA_STALE"),
+])
+def test_release_dispatch_stale_or_malformed_head_publishes_nothing(fake_gh, head, code):
+    proc, runner, _ = _run_decide(
+        fake_gh, REL_WF, _routes_for_pr(_evidence_runs()),
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "INPUT_HEAD_SHA": head, "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode != 0
+    assert f"::error::{code}" in proc.stdout
+    assert not (runner / "decisions" / "decision-7.json").exists()
+    written = (fake_gh / "out.txt").read_text() if (fake_gh / "out.txt").exists() else ""
+    assert "count=1" not in written
+    assert _release_count_enables_token_and_publish("") is False
+    assert not (fake_gh / "gh.log").exists()
+
+
+def test_empty_workflow_run_pr_array_still_fails_closed_inside_the_resolver(fake_gh):
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        cwd=ROOT,
+        env=dict(os.environ, PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+                 FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+                 GITHUB_REPOSITORY=REPO, GITHUB_OUTPUT=str(fake_gh / "out"),
+                 GH_TOKEN="read-only", EVENT="workflow_run", INPUT_PR="", WR_PRS="[]"),
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    assert "QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing" in proc.stdout
+    assert not (fake_gh / "gh.log").exists()
+
+
+def _run_classify(fake_gh, routes, run_id="40107281706"):
+    (fake_gh / "routes.json").write_text(json.dumps(routes))
+    runner = fake_gh / "runner"
+    runner.mkdir()
+    out = fake_gh / "out"
+    env = dict(
+        os.environ,
+        PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+        FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+        FAKE_GH_LOG=str(fake_gh / "gh.log"),
+        GITHUB_REPOSITORY=REPO,
+        GITHUB_OUTPUT=str(out),
+        GITHUB_STEP_SUMMARY=str(fake_gh / "summary.md"),
+        GH_TOKEN="read-only",
+        SOURCE_QA_RUN_ID=run_id,
+        SOURCE_QA_RUN_ATTEMPT="1",
+        RUNNER_TEMP=str(runner),
+    )
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(REL_WF, "Classify upstream QA applicability")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    return proc, out.read_text() if out.exists() else ""
+
+
+def test_release_classify_step_treats_skipped_qa_job_as_neutral(fake_gh):
+    run_id = "40107281706"
+    routes = {
+        f"repos/{REPO}/actions/runs/{run_id}": [200, _qa_run(id=int(run_id))],
+        f"repos/{REPO}/actions/runs/{run_id}/attempts/1/jobs": [200, _qa_jobs("skipped")],
+    }
+    proc, outputs = _run_classify(fake_gh, routes, run_id)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "applicable=false" in outputs
+    assert "reason=RELEASE_UPSTREAM_QA_NO_TARGET" in outputs
+    assert "no check published" in proc.stdout
+    assert not (fake_gh / "gh.log").exists()
+
+
+def _release_count_enables_token_and_publish(count):
+    """A skipped Decide step leaves count as GitHub's empty string.
+
+    Empty != '0' is true, which would mint the Release App token and run the
+    publisher with no decision file. Only count == '1' may continue.
+    """
+    workflow = yaml.load(REL_WF.read_text(), Loader=yaml.BaseLoader)
+    steps = {step["name"]: step for step in workflow["jobs"]["release"]["steps"]}
+    for name in ("Mint checks-only App token", "Publish exact-head check"):
+        assert steps[name]["if"] == "steps.decide.outputs.count == '1'"
+    return count == "1"
+
+
+def test_neutral_release_skips_token_and_publishes_nothing(fake_gh):
+    run_id = "40107281706"
+    routes = {
+        f"repos/{REPO}/actions/runs/{run_id}": [200, _qa_run(id=int(run_id))],
+        f"repos/{REPO}/actions/runs/{run_id}/attempts/1/jobs": [200, _qa_jobs("skipped")],
+    }
+    proc, outputs = _run_classify(fake_gh, routes, run_id)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "applicable=false" in outputs
+    # The old inequality treats this empty output as permission to publish.
+    assert ("" != "0") is True
+    assert _release_count_enables_token_and_publish("") is False
+    assert _release_count_enables_token_and_publish("0") is False
+    assert _release_count_enables_token_and_publish("1") is True
+    assert not (fake_gh / "gh.log").exists()
+
+
+def test_release_classify_step_rejects_a_foreign_upstream_run(fake_gh):
+    run_id = "40107281706"
+    foreign = _qa_run(id=int(run_id), head_repository={"full_name": "other/WOW-Dashboard"})
+    routes = {f"repos/{REPO}/actions/runs/{run_id}": [200, foreign]}
+    proc, outputs = _run_classify(fake_gh, routes, run_id)
+    assert proc.returncode != 0
+    assert "RELEASE_UPSTREAM_QA_UNTRUSTED" in proc.stdout
+    assert "applicable=true" not in outputs
+    assert not (fake_gh / "gh.log").exists()
+
+
 def test_provider_failure_publishes_exact_head_qa_app_failure_after_prior_pass(fake_gh):
     runner = fake_gh / "runner"
     runner.mkdir()
@@ -1006,7 +1486,7 @@ def test_automatic_release_uses_only_the_authenticated_qa_run_target(fake_gh):
         {"number": 8, "draft": False, "head": {"sha": OLD, "repo": {"full_name": REPO}}},
     ]]
 
-    proc, runner, _ = _run_decide(
+    proc, runner, env = _run_decide(
         fake_gh,
         REL_WF,
         routes,
@@ -1022,9 +1502,22 @@ def test_automatic_release_uses_only_the_authenticated_qa_run_target(fake_gh):
     )
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in Path(env["GITHUB_OUTPUT"]).read_text()
     decisions = sorted(path.name for path in (runner / "decisions").glob("decision-*.json"))
     assert decisions == ["decision-7.json"]
     assert json.loads((runner / "decisions" / "decision-7.json").read_text())["head_sha"] == HEAD
+    assert json.loads((runner / "decisions" / "decision-7.json").read_text())["can_execute"] is False
+
+
+def test_applicable_release_still_fails_closed_when_qa_policy_is_missing(fake_gh):
+    proc, runner, _ = _run_decide(
+        fake_gh, REL_WF, _routes_for_pr(_evidence_runs()),
+        {"EVENT": "workflow_run", "FAKE_QA_POLICY_MODE": "missing",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode != 0
+    assert "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING" in proc.stderr
+    assert list((runner / "decisions").glob("decision-*.json")) == []
 
 
 def test_release_binds_mode_to_qa_run_across_activation_changes(fake_gh):

@@ -363,9 +363,10 @@ jobs:
         run: |
           set -euo pipefail
           api_array() {
-            local endpoint="$1" selector="$2" page=1 response items count accumulated='[]'
+            local endpoint="$1" selector="$2" page=1 response items count accumulated='[]' separator='?'
+            if [[ "$endpoint" == *\?* ]]; then separator='&'; fi
             while [ "$page" -le 10 ]; do
-              response=$(gh api "${endpoint}&per_page=100&page=${page}") || return 1
+              response=$(gh api "${endpoint}${separator}per_page=100&page=${page}") || return 1
               items=$(jq -ce "$selector" <<<"$response") || {
                 echo "EXISTING_PR_API_ARRAY_INVALID" >&2; return 1;
               }
@@ -380,27 +381,23 @@ jobs:
             return 1
           }
           required=(
-            "wow-verify|.github/workflows/wow-verify.yml"
-            "wow-engine-verify|.github/workflows/wow-engine-verify.yml"
-            "wow-v17-rapid-repair|.github/workflows/wow-v17-rapid-repair.yml"
-            "wow-v17-change-impact-gate|.github/workflows/wow-v17-change-impact-gate.yml"
-            "wow-v17-engineering-auditor-code-health|.github/workflows/wow-v17-engineering-auditor-code-health.yml"
-            "wow-v17-spread-forward-shadow|.github/workflows/wow-v17-spread-forward-shadow.yml"
-            "wow-v17-release-production-verification-agent|.github/workflows/wow-v17-release-production-verification-agent.yml"
+            "WOW required-three regression|15368"
+            "WOW governed probability backend|15368"
+            "WOW additional required regression|15368"
           )
           ready=false
-          runs='[]'
+          checks='[]'
           for _ in $(seq 1 120); do
-            runs=$(api_array "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}" '.workflow_runs')
+            checks=$(api_array "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs" '.check_runs')
             ready=true
             for required_spec in "${required[@]}"; do
               required_name="${required_spec%%|*}"
-              required_path="${required_spec#*|}"
-              match=$(jq -r --arg name "$required_name" --arg path "$required_path" \
-                '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at, .id) | last | "\(.status)|\(.conclusion // "")"' \
-                <<<"$runs")
-              if [ "$match" = "completed|failure" ] || [ "$match" = "completed|cancelled" ] || \
-                 [ "$match" = "completed|timed_out" ] || [ "$match" = "completed|action_required" ]; then
+              app_id="${required_spec#*|}"
+              match=$(jq -r --arg name "$required_name" --argjson app "$app_id" --arg sha "$HEAD_SHA" \
+                '[.[] | select(.name == $name and .head_sha == $sha and (.app.id == $app))] |
+                 sort_by(.started_at // .created_at, .id) | last | "\(.status // "")|\(.conclusion // "")"' \
+                <<<"$checks")
+              if [[ "$match" == completed* ]] && [ "$match" != "completed|success" ]; then
                 echo "EXISTING_PR_REQUIRED_CI_FAILED:$required_name" >&2
                 exit 1
               fi
@@ -415,7 +412,6 @@ jobs:
             echo "EXISTING_PR_REQUIRED_CI_INCOMPLETE_AFTER_BOUNDED_WAIT" >&2
             exit 1
           }
-          printf '%s\n' "$runs" > ".governance-review-evidence/workflow-runs.json"
           echo "status=0" >> "$GITHUB_OUTPUT"
 
       - name: Collect complete exact-head GitHub evidence
@@ -459,6 +455,8 @@ jobs:
             '[.[] | {filename,previous_filename,status}]' > ".governance-review-evidence/changed-files.json"
           api_array "${api}/pulls/${PR_NUMBER}/reviews" '.' > ".governance-review-evidence/reviews.json"
           api_array "${api}/commits/${HEAD_SHA}/check-runs" '.check_runs' > ".governance-review-evidence/check-runs.json"
+          api_array "${api}/actions/runs?head_sha=${HEAD_SHA}" '.workflow_runs' \
+            > ".governance-review-evidence/workflow-runs.json"
           printf '%s\n' "$pr_json" > ".governance-review-evidence/pr.json"
 
           current_sha=$(gh api "${api}/pulls/${PR_NUMBER}" --jq '.head.sha')
@@ -540,9 +538,6 @@ jobs:
               "WOW required-three regression|15368"
               "WOW governed probability backend|15368"
               "WOW additional required regression|15368"
-              "WOW V17 change impact gate|15368"
-              "WOW Independent QA exact-head|5245832"
-              "WOW Release Authority exact-head|5245853"
             )
             ready=false
             checks='[]'

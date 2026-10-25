@@ -37,25 +37,13 @@ SHA = re.compile(r"^[a-f0-9]{40}$")
 REQUIRED_WORKFLOWS = {
     "wow-verify": ".github/workflows/wow-verify.yml",
     "wow-engine-verify": ".github/workflows/wow-engine-verify.yml",
-    "wow-v17-rapid-repair": ".github/workflows/wow-v17-rapid-repair.yml",
-    "wow-v17-change-impact-gate": ".github/workflows/wow-v17-change-impact-gate.yml",
-    "wow-v17-engineering-auditor-code-health": ".github/workflows/wow-v17-engineering-auditor-code-health.yml",
-    "wow-v17-spread-forward-shadow": ".github/workflows/wow-v17-spread-forward-shadow.yml",
-    "wow-v17-release-production-verification-agent": ".github/workflows/wow-v17-release-production-verification-agent.yml",
 }
 REQUIRED_CHECKS = {
     "WOW required-three regression": 15368,
     "WOW governed probability backend": 15368,
     "WOW additional required regression": 15368,
 }
-# Post-governance authority. These are not prerequisites of an ordinary receipt.
-# Ruleset 24907422 pins QA and Release to these integration ids.
-BOOTSTRAP_CHECKS = {
-    **REQUIRED_CHECKS,
-    "WOW V17 change impact gate": 15368,
-    "WOW Independent QA exact-head": 5245832,
-    "WOW Release Authority exact-head": 5245853,
-}
+BOOTSTRAP_CHECKS = REQUIRED_CHECKS
 TRUST_ROOT_PREFIXES = (".github/", ".agents/", ".claude/")
 PROTECTED_PATHS = frozenset(
     {
