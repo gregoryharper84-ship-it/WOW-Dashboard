@@ -265,7 +265,7 @@ def _attach_nfl_feature_consumption_metadata(model_result: dict[str, Any]) -> di
     return out
 
 
-def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envelope: Any, *, db: Any) -> dict[str, Any]:
+def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envelope: Any, *, db: Any, final_refresh: dict[str, Any] | None = None) -> dict[str, Any]:
     package = base._build_governed_probability_package(envelope, model_result)
     if package is None:
         raise NFLModelOutputInvalid("NFL_GOVERNED_PROBABILITY_PACKAGE_INVALID")
@@ -373,6 +373,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
         model_version=model_result.get("model_version"),
         package_validated=True,
         governance_from_bridge=governance_from_bridge,
+        final_refresh=final_refresh,
     )
 
 
@@ -417,11 +418,17 @@ def score_nfl_team_event_request(
         result = score_nfl_team_event(effective_req, db=db)
         result = _attach_nfl_feature_consumption_metadata(result)
         envelope = _nfl_envelope(team_event_module, effective_req)
-        governed = _govern(team_event_module, effective_req, route, result, envelope, db=db)
+        # This authoritative second schedule read occurs after fitted inference
+        # and before either governance or terminal publication. Pass its actual
+        # receipt to the stage-proof producer; a PREGAME flag is never proof.
+        refresh = _nfl_final_refresh(effective_req, result, db=db)
+        governed = _govern(
+            team_event_module, effective_req, route, result, envelope, db=db,
+            final_refresh=refresh,
+        )
     except (NFLModelUnavailable, NFLModelInputsInsufficient, NFLModelOutputInvalid, NFLModelScorerFailed) as exc:
         raise _typed_failure(team_event_module, effective_req, exc) from exc
 
-    refresh = _nfl_final_refresh(effective_req, result, db=db)
     governed = _apply_nfl_final_refresh_ceiling(governed, refresh)
     governed["scout_research_barrier"] = scout_research_barrier
     evidence = dict(effective_req.sport_specific_evidence or {})
