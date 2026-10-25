@@ -15,7 +15,7 @@ def _acceptance_section() -> str:
 def test_nfl_production_acceptance_uses_dynamic_future_slate_and_full_moneyline():
     section = _acceptance_section()
     assert 'WOW_NFL_ACCEPTANCE_SLATE_DATE: "2026-10-04"' not in section
-    assert 'days_until_next_sunday = (6 - today.weekday()) % 7 or 7' in section
+    assert 'days_until_next_sunday = (6 - today.weekday()) % 7' in section
     assert '"requested_slate_date": slate_date' in section
     assert 'result.get("requested_slate_date") == slate_date' in section
     assert '"lanes": ["MONEYLINE"]' in section
@@ -55,15 +55,19 @@ def test_acceptance_requires_discovery_reconciliation_and_unique_event_identity(
     assert '"model_terminal_certification": "NOT_PROVEN_BY_DISCOVERY_ACCEPTANCE"' in section
 
 
-def test_next_sunday_is_strictly_future_for_all_weekdays():
-    """Never replay a historical/started Sunday under a live acceptance name."""
+def test_upcoming_sunday_includes_same_day_before_kickoff():
+    """Sunday 00:01 remains the active pregame slate, not next week."""
     from datetime import date, timedelta
 
     for day in range(19, 26):  # Mon 2026-10-19 through Sun 2026-10-25
         today = date(2026, 10, day)
-        offset = (6 - today.weekday()) % 7 or 7
+        offset = (6 - today.weekday()) % 7
         selected = today + timedelta(days=offset)
-        assert selected > today
+        assert selected >= today
+        if today.weekday() == 6:
+            assert selected == today
+        else:
+            assert selected > today
         assert selected.weekday() == 6
 
 
