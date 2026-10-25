@@ -757,7 +757,9 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     stage_evidence = patriots["result"]["publication_chain_audit"]["stage_evidence"]
     assert stage_evidence["dynamic_calibration_complete"] == "EVIDENCE_NOT_EMITTED"
     assert stage_evidence["final_refresh_passed"] == "EVIDENCE_NOT_EMITTED"
-    assert patriots["result"]["publication_agreement"]["status"] == "UNPROVEN"
+    # The producer claims model publication while the official guard holds it:
+    # this is an authentic scorer/guard CONTRADICTION, not mere missing proof.
+    assert patriots["result"]["publication_agreement"]["status"] == "CONFLICT"
     assert patriots["result"]["detail"].get("code") == "STAGE_PROOF_UNPROVEN"
     assert patriots["result"]["bucket"] != "MODEL_UNAVAILABLE"
     assert full_by_event["mlb-1"]["row_status"] == "COMPLETED"
