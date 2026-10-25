@@ -307,8 +307,35 @@ jobs:
             for required_spec in "${required[@]}"; do
               required_name="${required_spec%%|*}"
               required_path="${required_spec#*|}"
+              # GitHub first-run approval must be independently read back as
+              # zero-job, same-repo/same-head provenance before being excluded.
+              # Never hide a newer real failure, pending run, or unknown state.
+              prompt_ids=$(jq -r --arg name "$required_name" --arg path "$required_path" --arg sha "$HEAD_SHA" \
+                '[.[] | select(.name == $name and .path == $path and .head_sha == $sha
+                         and .event == "pull_request" and .status == "completed"
+                         and .conclusion == "action_required")]
+                 | if length <= 20 and all(.[]; (.id | type) == "number" and .id > 0)
+                   then .[].id else error("UNEXECUTED_APPROVAL_INVENTORY_INVALID") end' <<<"$runs") || {
+                echo "::error::UNEXECUTED_APPROVAL_INVENTORY_INVALID"; exit 1;
+              }
+              while IFS= read -r candidate_run_id; do
+                [ -n "$candidate_run_id" ] || continue
+                jobs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}/jobs?per_page=100") || {
+                  echo "::error::APPROVAL_JOB_READBACK_UNAVAILABLE"; exit 1;
+                }
+                jq -e '.total_count == 0 and (.jobs | type == "array" and length == 0)' <<<"$jobs" >/dev/null || {
+                  echo "::error::APPROVAL_IS_NOT_VERIFIED_ZERO_JOB"; exit 1;
+                }
+                runs=$(jq -c --argjson id "$candidate_run_id" \
+                  'map(if .id == $id then . + {pre_job_zero_jobs_verified:true} else . end)' <<<"$runs") || {
+                  echo "::error::APPROVAL_EVIDENCE_NORMALIZATION_FAILED"; exit 1;
+                }
+              done <<<"$prompt_ids"
               match=$(jq -r --arg name "$required_name" --arg path "$required_path" --arg sha "$HEAD_SHA" \
-                '[.[] | select(.name == $name and .path == $path and .head_sha == $sha) | select(.status != "completed" or .conclusion != "action_required" or .event != "pull_request")] | sort_by(.created_at, .id) | last | "\(.status)|\(.conclusion // "")"' \
+                '[.[] | select(.name == $name and .path == $path and .head_sha == $sha)
+                      | select(.status != "completed" or .conclusion != "action_required"
+                               or .event != "pull_request" or .pre_job_zero_jobs_verified != true)]
+                 | sort_by(.created_at, .id) | last | "\(.status)|\(.conclusion // "")"' \
                 <<<"$runs")
               if [ "$match" = "completed|failure" ] || [ "$match" = "completed|cancelled" ] || \
                  [ "$match" = "completed|timed_out" ] || [ "$match" = "completed|action_required" ]; then
