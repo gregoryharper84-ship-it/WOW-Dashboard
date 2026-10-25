@@ -341,6 +341,19 @@ def test_trust_root_pr_needs_owner_approval_of_this_exact_head():
     assert m.qa_findings(ev) == []  # trust-root QA uses owner approval, not the governance receipt
 
 
+def test_app_reproposal_of_owner_source_requires_independent_exact_head_review():
+    ev = evidence(files=TRUST_ROOT_FILES, author="wow-engineering[bot]", reviews=[
+        {"user": OWNER, "state": "APPROVED", "commit_id": HEAD,
+         "submitted_at": "2026-10-09T02:00:00Z"},
+    ])
+    ev["source_review"] = None
+    assert "QA_INDEPENDENT_SOURCE_REVIEW_MISSING" in m.qa_findings(ev)
+
+    ev["source_review"] = source_review_evidence(
+        TRUST_ROOT_FILES, author="wow-engineering[bot]")
+    assert m.qa_findings(ev) == []
+
+
 def test_later_owner_change_request_revokes_approval():
     ev = evidence(files=TRUST_ROOT_FILES, reviews=[
         {"user": OWNER, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"},

@@ -275,6 +275,10 @@ def review_boundary_receipt(pr_number: int, integrated_sha: str) -> dict:
     return {
         "status": "PR_CREATED_PENDING_INDEPENDENT_REVIEW",
         "bootstrap_status": "OWNER_EXACT_HEAD_APPROVAL_REQUIRED",
+        "source_review_status": "REQUIRED_PENDING",
+        "source_review_workflow": "wow-v17-independent-qa-check",
+        "source_review_head_sha": integrated_sha,
+        "independent_source_review_complete": False,
         "required_owner_login": OWNER_LOGIN,
         "required_owner_approval_head": integrated_sha,
         "pr": pr_number,
@@ -343,6 +347,8 @@ def integrate(pr_number: int, source_sha: str) -> None:
             f"Integration head: `{integrated_sha}`.\n"
             f"**The App did not independently author, assess or approve the source code.**\n"
             f"Source changed paths: {len(paths)}; copied byte-for-byte for each path.\n"
+            f"Independent exact-head source review is still required; source CI and this "
+            f"copy are not review evidence.\n"
             f"Indispensable bootstrap action: `{OWNER_LOGIN}` must approve exact head "
             f"`{integrated_sha}`; no self-approval is performed.\n"
             f"Mandatory next gates: independent Security/Architect, exact-head QA App, "

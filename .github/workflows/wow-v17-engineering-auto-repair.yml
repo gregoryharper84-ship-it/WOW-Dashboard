@@ -491,7 +491,15 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA" \
             | tee "$RUNNER_TEMP/wow-app-adoption-result.json"
-          jq -e '.status == "PR_CREATED_PENDING_INDEPENDENT_REVIEW" and .can_execute == false' \
+          jq -e '.status == "PR_CREATED_PENDING_INDEPENDENT_REVIEW" and
+            .bootstrap_status == "OWNER_EXACT_HEAD_APPROVAL_REQUIRED" and
+            .source_review_status == "REQUIRED_PENDING" and
+            .source_review_workflow == "wow-v17-independent-qa-check" and
+            .source_review_head_sha == .sha and
+            .independent_source_review_complete == false and
+            .required_owner_approval_head == .sha and .can_execute == false' \
             "$RUNNER_TEMP/wow-app-adoption-result.json" >/dev/null
-          jq -c '{status, pr, sha, source_sha, can_execute}' \
+          jq -c '{status, bootstrap_status, source_review_status, source_review_head_sha,
+            independent_source_review_complete, required_owner_approval_head, pr, sha,
+            source_sha, can_execute}' \
             "$RUNNER_TEMP/wow-app-adoption-result.json" >> "$GITHUB_STEP_SUMMARY"

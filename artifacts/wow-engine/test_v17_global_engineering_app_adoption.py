@@ -239,6 +239,10 @@ def test_bootstrap_receipt_names_indispensable_exact_head_owner_action():
     assert receipt == {
         "status": "PR_CREATED_PENDING_INDEPENDENT_REVIEW",
         "bootstrap_status": "OWNER_EXACT_HEAD_APPROVAL_REQUIRED",
+        "source_review_status": "REQUIRED_PENDING",
+        "source_review_workflow": "wow-v17-independent-qa-check",
+        "source_review_head_sha": SHA,
+        "independent_source_review_complete": False,
         "required_owner_login": OWNER,
         "required_owner_approval_head": SHA,
         "pr": 777,
@@ -268,8 +272,15 @@ def test_controller_reuses_existing_schedule_and_app_not_owner_token():
     text = "\n".join(str(s.get("run", "")) for s in steps)
     assert "APP_TOKEN" in str(steps) and "WOW_DRY_RUN_ONLY" in str(steps)
     assert "gh pr merge" not in text and "git push --force" not in text
-    assert "independent_source_review" not in text
-    assert "approval" not in text.lower()
+    assert "independent_source_review.py" not in text
+    assert "gh pr review" not in text.lower()
+    assert "--approve" not in text.lower()
+    integration = next(step["run"] for step in steps
+                       if "engineering_authorized_adoption.py integrate" in step.get("run", ""))
+    assert ".source_review_status == \"REQUIRED_PENDING\"" in integration
+    assert ".independent_source_review_complete == false" in integration
+    assert ".source_review_head_sha == .sha" in integration
+    assert ".required_owner_approval_head == .sha" in integration
 
 
 def test_protected_adoption_program_enforces_two_actual_principals():
