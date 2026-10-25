@@ -173,7 +173,7 @@ def research_fallback(req: Mapping[str, Any], *, now: datetime | None = None) ->
             quality = evidence_quality(source_class, age_minutes=age_minutes,
                                        confirmed=bool(item.get("confirmed", False)),
                                        evidence_type=item.get("evidence_type"))
-            if not quality["usable"]:
+            if not quality["research_usable"]:
                 reason = "SOURCE_STALE_OR_UNCONFIRMED"
         if reason:
             base["rejected_evidence"].append({"index": i, "reason": reason})
