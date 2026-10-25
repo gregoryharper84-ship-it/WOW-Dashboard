@@ -766,7 +766,12 @@ def test_full_and_compact_action_readback_persists_eight_nfl_rows_once():
     # as a stage-proof-only hold or fabricate the eight missing fields.
     assert patriots["result"]["detail"].get("code") == "MODEL_OUTPUT_INVALID"
     assert patriots["result"]["bucket"] != "MODEL_UNAVAILABLE"
-    assert full_by_event["mlb-1"]["row_status"] == "COMPLETED"
+    # This intentionally sparse MLB fixture has legacy stage booleans, but
+    # lacks the strict immutable prediction/source/bounds package required by
+    # the shared full-board scorer. Do not publish it merely because the
+    # individual stage booleans look complete.
+    assert full_by_event["mlb-1"]["row_status"] == "HELD"
+    assert full_by_event["mlb-1"]["probability_publishable"] is False
     assert full_by_event["mlb-1"]["result"]["publication_chain_audit"]["status"] == "PASS"
     nhl = full_by_event["nhl-1"]
     nhl_detail = nhl["result"]["detail"]
