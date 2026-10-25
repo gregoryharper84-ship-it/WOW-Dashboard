@@ -261,6 +261,24 @@ def test_render_deploy_no_deploy_paths_emit_typed_receipts_before_exit():
     assert '"RELEASE_JOURNAL_PREFLIGHT_HOLD_NO_DEPLOY"' in text
 
 
+def test_required_check_timeout_emits_non_deploy_receipt_before_reconciliation():
+    text = _workflow_text()
+    timeout = text.split('if time.time() >= check_deadline:', 1)[1].split(
+        'time.sleep(15)', 1
+    )[0]
+
+    assert '"status": "RELEASE_REQUIRED_CHECKS_TIMEOUT_NO_DEPLOY"' in timeout
+    assert '"target_sha": target_sha' in timeout
+    assert '"missing_required_checks": missing' in timeout
+    assert '"pending_required_checks": pending' in timeout
+    assert '"hold_reason": "RENDER_DEPLOY_REQUIRED_CHECK_TIMEOUT"' in timeout
+    assert '"can_execute": False' in timeout
+    assert "raise SystemExit(0)" in timeout
+    classifier = text.split("- name: Fail closed when no exact deployment advanced", 1)[1]
+    non_advancing = classifier.split("non_advancing = {", 1)[1].split("}", 1)[0]
+    assert '"RELEASE_REQUIRED_CHECKS_TIMEOUT_NO_DEPLOY"' in non_advancing
+
+
 def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     repo_root = Path(__file__).resolve().parents[3]
     text = (repo_root / ".github" / "workflows" / "wow-v17-daily-snapshot.yml").read_text(
