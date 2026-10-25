@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: wow-engine-verify-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   regression-shards:
@@ -331,7 +331,111 @@ jobs:
     needs: [regression-shards, agent-runtime-integration, release-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
+      - name: Refuse stale or unverifiable exact-head verification
+        env:
+          WOW_EVENT_NAME: ${{ github.event_name }}
+          WOW_REPOSITORY: ${{ github.repository }}
+          WOW_REF: ${{ github.ref }}
+          WOW_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          def fail(reason):
+              print(f"::error::EXACT_HEAD_GATE_{reason}")
+              raise SystemExit(1)
+
+          repo = os.environ.get("WOW_REPOSITORY", "")
+          event = os.environ.get("WOW_EVENT_NAME", "")
+          ref = os.environ.get("WOW_REF", "")
+          sha = os.environ.get("WOW_SHA", "")
+          token = os.environ.get("GH_TOKEN", "")
+          path = os.environ.get("GITHUB_EVENT_PATH", "")
+          if not re.fullmatch(r"[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", repo):
+              fail("REPOSITORY_INVALID")
+          if not re.fullmatch(r"[0-9a-f]{40}", sha) or not token or not path:
+              fail("IDENTITY_MISSING")
+          try:
+              with open(path, encoding="utf-8") as f:
+                  payload = json.load(f)
+              if payload.get("repository", {}).get("full_name") != repo:
+                  fail("EVENT_REPOSITORY_MISMATCH")
+              if event == "pull_request":
+                  pr = payload["pull_request"]
+                  number = int(pr["number"])
+                  if number < 1 or ref != f"refs/pull/{number}/merge":
+                      fail("PR_REF_INVALID")
+                  expected = str(pr["head"]["sha"])
+                  expected_repo = str(pr["head"]["repo"]["full_name"])
+                  expected_base_sha = str(pr["base"]["sha"])
+                  if not re.fullmatch(r"[0-9a-f]{40}", expected):
+                      fail("EVENT_HEAD_INVALID")
+                  if not re.fullmatch(r"[0-9a-f]{40}", expected_base_sha):
+                      fail("EVENT_BASE_INVALID")
+                  endpoint = f"pulls/{number}"
+              elif event in ("push", "workflow_dispatch"):
+                  if ref != "refs/heads/main":
+                      fail("PROTECTED_REF_REQUIRED")
+                  expected = sha
+                  expected_repo = repo
+                  endpoint = "branches/main"
+              else:
+                  fail("EVENT_UNSUPPORTED")
+              def get_json(target):
+                  request = urllib.request.Request(
+                      f"https://api.github.com/repos/{repo}/{target}",
+                      headers={
+                          "Authorization": f"Bearer {token}",
+                          "Accept": "application/vnd.github+json",
+                          "X-GitHub-Api-Version": "2022-11-28",
+                      },
+                  )
+                  with urllib.request.urlopen(request, timeout=8) as response:
+                      return json.load(response)
+
+              current = get_json(endpoint)
+              if event == "pull_request":
+                  actual = str(current["head"]["sha"])
+                  actual_repo = str(current["head"]["repo"]["full_name"])
+                  if current.get("state") != "open" or current["base"]["ref"] != "main":
+                      fail("PR_TARGET_CHANGED")
+                  if actual_repo != expected_repo:
+                      fail("HEAD_REPOSITORY_CHANGED")
+                  # GitHub can retain a passing head check after protected
+                  # main moves and invalidates the tested merge/base. Check
+                  # event, current PR base and actual current main atomically
+                  # enough to FAIL CLOSED on any disagreement.
+                  actual_base_sha = str(current["base"]["sha"])
+                  current_main_sha = str(get_json("branches/main")["commit"]["sha"])
+                  if (
+                      not re.fullmatch(r"[0-9a-f]{40}", actual_base_sha)
+                      or not re.fullmatch(r"[0-9a-f]{40}", current_main_sha)
+                      or expected_base_sha != actual_base_sha
+                      or actual_base_sha != current_main_sha
+                  ):
+                      fail("PR_BASE_STALE_OR_UNKNOWN")
+                  # The current merge-ref SHA must be the exact synthetic
+                  # merge commit CI tested, not a superseded PR merge.
+                  merge_sha = str(current["merge_commit_sha"])
+                  if not re.fullmatch(r"[0-9a-f]{40}", merge_sha) or merge_sha != sha:
+                      fail("PR_MERGE_REF_STALE_OR_UNKNOWN")
+              else:
+                  actual = str(current["commit"]["sha"])
+              if not re.fullmatch(r"[0-9a-f]{40}", actual) or actual != expected:
+                  fail("HEAD_STALE_OR_UNKNOWN")
+          except Exception as exc:
+              # Only type names are emitted; never print URL, token or body.
+              fail(f"VERIFICATION_UNAVAILABLE_{type(exc).__name__}")
+          print("EXACT_HEAD_GATE_PASS")
+          PY
       - name: Aggregate protected governed-backend result
         env:
           REGRESSION_RESULT: ${{ needs.regression-shards.result }}
