@@ -300,6 +300,14 @@ def _validate_automated_review(
         )
     except _source_review_module.SourceReviewError as exc:
         raise ExistingPrGovernanceReceiptError(str(exc)) from exc
+    # An authentic REJECT review is valid negative evidence, but can never
+    # authorize a successful governance receipt. Both minting and consuming
+    # schema-v3 receipts call this shared validator.
+    review = artifact.get("review")
+    _require(
+        isinstance(review, Mapping) and review.get("decision") == "PASS",
+        "SOURCE_REVIEW_DECISION_NOT_PASS",
+    )
     return hashlib.sha256(
         (json.dumps(artifact, indent=2, sort_keys=True) + "\n").encode("utf-8")
     ).hexdigest()
