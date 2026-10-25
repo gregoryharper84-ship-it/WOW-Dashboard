@@ -29,6 +29,16 @@ Do not edit until the incident has:
 - risk classification;
 - declared fix boundary.
 
+## Reproduce and test before editing
+
+Before changing files, record the exact error, affected revision/SHA, deterministic reproduction command and input, observed result, expected behavior, and exit code. Trace the failure boundary and state a falsifiable root cause with confidence; distinguish confirmed evidence from assumptions and plausible alternatives.
+
+Add or identify the regression that exercises the original defect before making the fix. Run it against the unfixed revision and record the actual command, expected failure, observed failure, and exit code as pre-fix RED evidence. Never manufacture a RED result by changing the test after the fix. If a genuine pre-fix failure cannot be reproduced, stop and record the limitation rather than claiming test-first proof.
+
+Make the smallest change for a minimal GREEN that turns the same regression passing, then record the exact command and result. Run and name the relevant negative, adjacent-path, and full regression checks; do not weaken a regression to obtain a pass. Preserve typed blockers and limitations, including `MODEL_UNAVAILABLE`, `MODEL_INPUTS_INSUFFICIENT`, `MODEL_SCORER_FAILED`, and `MODEL_OUTPUT_INVALID`.
+
+Implementation remains within the valid single-writer lease. Do not create or use a secondary control plane, competing writer, or unleased implementation path.
+
 ## Implementation rules
 
 1. Invoke `wow-replit-patch-governor` for bounded patch mechanics.
