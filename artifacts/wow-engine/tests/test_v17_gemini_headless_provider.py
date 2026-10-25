@@ -4,6 +4,8 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
+import textwrap
 import sys
 import unittest
 import tempfile
@@ -442,6 +444,51 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         self.assertIn("gemini --help", worker)
         self.assertIn('"maxSessionTurns": 12', worker)
         self.assertIn('"overageStrategy": "never"', worker)
+
+
+    def test_verified_provider_survival_is_warning_not_fake_generation(self):
+        workflow = (ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
+        section = workflow.split("      - name: Surface degraded provider state\\n", 1)[1]
+        script = textwrap.dedent(section.split("        run: |\\n", 1)[1].split(
+            "\\n  independent-provider:", 1)[0])
+        reason = "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED:SECONDARY_UNAVAILABLE_OR_FAILED"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "wow-survival").mkdir()
+            (root / "provider-route.json").write_text(json.dumps({
+                "action": "SURVIVAL", "provider": "deterministic",
+                "reason": reason, "parent_run_id": "40221201555",
+                "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+            }))
+            receipt = root / "wow-survival/provider-survival-receipt.json"
+            receipt.write_text(json.dumps({
+                "status": "DEGRADED_DETERMINISTIC_SURVIVAL",
+                "reason": reason, "parent_run_id": "40221201555",
+                "provider_generation_allowed": False,
+                "deterministic_checks_allowed": True,
+                "probability_authority": False, "can_execute": False,
+                "terminal_authority": "V17_TERMINAL_REDUCER",
+            }))
+            env = dict(os.environ, RUNNER_TEMP=tmp, GITHUB_STEP_SUMMARY=str(root / "summary.md"),
+                       ROUTE_OUTCOME="success", ROUTE_ACTION="SURVIVAL",
+                       ROUTE_REASON=reason, ROUTE_PARENT="40221201555",
+                       REMOTE_FENCE="success", SURVIVAL_OUTCOME="success")
+            def check(**edits):
+                return subprocess.run(["bash", "-e", "-c", script],
+                                      env={**env, **edits}, capture_output=True,
+                                      text=True, timeout=12)
+            passed = check()
+            self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+            self.assertIn("::warning::ROUTER_HEALTHY_PROVIDER_BLOCKED", passed.stdout)
+            self.assertIn("did not run; incident stays OPEN", (root / "summary.md").read_text())
+            self.assertNotIn("FIXED_AND_VERIFIED", passed.stdout)
+            self.assertNotIn("FINAL_APPROVED", passed.stdout)
+            self.assertNotEqual(check(REMOTE_FENCE="failure").returncode, 0)
+            self.assertNotEqual(check(SURVIVAL_OUTCOME="failure").returncode, 0)
+            self.assertNotEqual(check(ROUTE_OUTCOME="failure").returncode, 0)
+            self.assertNotEqual(check(ROUTE_REASON="FORGED_PASS").returncode, 0)
+            receipt.unlink()
+            self.assertNotEqual(check().returncode, 0)
 
 
 if __name__ == "__main__":
