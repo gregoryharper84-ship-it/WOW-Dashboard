@@ -210,3 +210,32 @@ services:
           name: wow-jobs
           type: keyvalue
           property: connectionString
+
+  # Off-GitHub SIRT sentinel (Class B, evidence-only). GitHub's scheduler fires
+  # the 15-minute SIRT sentinel only about every 4.5 hours, so this cron runs
+  # the same read-only assessment outside GitHub and persists a liveness
+  # heartbeat that the resident auditor may accept. Not auto-deployed: creation
+  # and promotion stay under the separately authorized Release Authority.
+  - type: cron
+    name: wow-sirt-external-sentinel
+    runtime: python
+    plan: starter
+    region: oregon
+    rootDir: artifacts/wow-engine
+    schedule: "*/15 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m v17.sirt_external_sentinel
+    autoDeployTrigger: "off"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: WOW_CAN_EXECUTE
+        value: "false"
+      - key: WOW_DRY_RUN_ONLY
+        value: "true"
+      - key: WOW_ENVIRONMENT
+        value: "production"

@@ -201,12 +201,46 @@ def check_runs(client: GitHub, head_sha: str) -> list[dict]:
 
 
 def list_role_runs(client: GitHub, workflow_id: int, role: str, pr_number: int, head_sha: str) -> list[dict]:
-    rows = _paged(
-        client,
-        f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs?branch=main",
-        "workflow_runs",
-        MAX_RUN_PAGES,
-    )
+    # Search the PR's lifetime, splitting overflowing history windows rather
+    # than treating old unrelated runs as a permanent governance deadlock.
+    pull = client.get(f"/repos/{REPOSITORY}/pulls/{pr_number}")
+    if not isinstance(pull, dict) or pull.get("number") != pr_number:
+        raise DispatchError("ROLE_HISTORY_PR_INVALID")
+    try:
+        raw_opened = datetime.fromisoformat(pull["created_at"].replace("Z", "+00:00"))
+        if raw_opened.tzinfo is None or raw_opened.utcoffset() is None:
+            raise ValueError("missing timezone")
+        opened = raw_opened.astimezone(timezone.utc).replace(microsecond=0)
+    except (KeyError, AttributeError, TypeError, ValueError) as exc:
+        raise DispatchError("ROLE_HISTORY_PR_DATE_INVALID") from exc
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    if opened > now:
+        raise DispatchError("ROLE_HISTORY_PR_DATE_INVALID")
+
+    # GitHub searches cap filtered results. Split an overflowing exact-PR
+    # lifetime into disjoint UTC-second windows, including high-volume days.
+    # Never silently truncate; an extreme >500-run single second fails closed.
+    def fetch_window(start: datetime, end: datetime, depth: int = 0) -> list[dict]:
+        if depth > 32:
+            raise DispatchError("GITHUB_INVENTORY_TRUNCATED")
+        lower = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+        upper = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+        path = (
+            f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs"
+            f"?branch=main&created={lower}..{upper}"
+            + ("&event=workflow_dispatch" if role in {"qa", "release"} else "")
+        )
+        try:
+            return _paged(client, path, "workflow_runs", MAX_RUN_PAGES)
+        except DispatchError as exc:
+            if str(exc) != "GITHUB_INVENTORY_TRUNCATED" or start >= end:
+                raise
+            midpoint = start + timedelta(seconds=int((end - start).total_seconds()) // 2)
+            return fetch_window(start, midpoint, depth + 1) + fetch_window(
+                midpoint + timedelta(seconds=1), end, depth + 1
+            )
+
+    rows = fetch_window(opened, now)
     expected_name = policy.run_name(role, pr_number, head_sha)
     found = []
     for run in rows:
@@ -259,17 +293,26 @@ def role_run_statuses(runs: dict[str, dict]) -> dict[str, str]:
 
 def count_wip(client: GitHub, workflows: dict[str, dict]) -> dict[str, int]:
     active = {role: 0 for role in WORKFLOWS}
+    # Only active statuses contribute to concurrency. Historical completed runs
+    # must not consume the bounded page inventory.
+    statuses = ("queued", "in_progress", "waiting", "pending", "requested")
     for role, workflow in workflows.items():
-        rows = _paged(
-            client,
-            f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?branch=main",
-            "workflow_runs",
-            MAX_RUN_PAGES,
-        )
-        active[role] += sum(
-            1 for run in rows
-            if isinstance(run, dict) and run.get("status") in {"queued", "in_progress", "waiting", "pending", "requested"}
-        )
+        seen = set()
+        for status in statuses:
+            rows = _paged(
+                client,
+                f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?branch=main&status={status}",
+                "workflow_runs",
+                MAX_RUN_PAGES,
+            )
+            for run in rows:
+                if not isinstance(run, dict) or run.get("status") != status:
+                    raise DispatchError("GITHUB_ACTIVE_RUN_INVENTORY_INVALID")
+                run_id = run.get("id")
+                if not isinstance(run_id, int) or isinstance(run_id, bool) or run_id <= 0:
+                    raise DispatchError("GITHUB_ACTIVE_RUN_INVENTORY_INVALID")
+                seen.add(run_id)
+        active[role] = len(seen)
     return active
 
 
@@ -775,10 +818,13 @@ def reconcile(
             files = pull_files(client, number, pr.get("changed_files"))
             checks = check_runs(client, head_sha)
             reviews = pull_reviews(client, number)
-            role_runs = matching_role_runs(client, workflows, number, head_sha)
-            statuses = role_run_statuses(role_runs)
             available_roles = set(workflows)
 
+            # Decide static eligibility before scanning costly PR-lifetime
+            # role history. A definite HOLD or DONE cannot be changed by
+            # previously dispatched role runs. Potential dispatch and pending
+            # source review MUST still read verified history, preserving the
+            # singleton queue, prior-failure and signed-reservation guards.
             target_evidence = {
                 "repository": REPOSITORY,
                 "owner_id": owner_id,
@@ -789,13 +835,26 @@ def reconcile(
                 "reviews": reviews,
                 "ancillary_ci_hold": None,
                 "available_roles": available_roles,
-                "completed_role_runs": statuses,
+                "completed_role_runs": {},
                 "zero_credit_mode": zero_credit_mode,
             }
             preflight = policy.classify_target(
                 **target_evidence,
                 source_review="PENDING",
             )
+            role_runs = {}
+            statuses = {}
+            if (
+                preflight.get("action") == "DISPATCH"
+                or preflight.get("findings") == ["SOURCE_REVIEW_PENDING"]
+            ):
+                role_runs = matching_role_runs(client, workflows, number, head_sha)
+                statuses = role_run_statuses(role_runs)
+                target_evidence["completed_role_runs"] = statuses
+                preflight = policy.classify_target(
+                    **target_evidence,
+                    source_review="PENDING",
+                )
             if preflight.get("findings") == ["SOURCE_REVIEW_PENDING"]:
                 source_history = (role_runs.get("source_review") or {}).get("history", [])
                 reviewer_status = source_review_status(

@@ -82,6 +82,17 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
         receipt=self.route("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
                            code="NON_PROVIDER_FAILURE",eligible=False)
         self.assertEqual(receipt["action"],"SURVIVAL")
+        self.assertFalse(receipt["independent_fallback_allowed"])
+
+    def test_governance_boundary_never_dispatches_independent_fallback(self):
+        receipt=self.route("wow-v17-chatgpt-engineering-worker",
+                           code="ACTIONABLE_REPAIR_POLICY_BOUNDARY",eligible=False)
+        self.assertFalse(receipt["independent_fallback_allowed"])
+
+    def test_exhausted_primary_and_secondary_admit_only_independent_fallback(self):
+        receipt=self.route("wow-v17-chatgpt-engineering-worker", secondary="failure")
+        self.assertTrue(receipt["independent_fallback_allowed"])
+        self.assertEqual(receipt["cursor_status"], "CURSOR_NOT_CONFIGURED")
 
     def test_claude_failure_does_not_loop_back_to_openai(self):
         receipt=self.route("wow-v17-claude-engineering-worker lease=GLOBAL incident=AUTO",
