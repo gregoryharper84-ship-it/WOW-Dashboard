@@ -2,7 +2,8 @@
 
 **Authoritative project hub:** [GitHub issue #2076](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/2076)  
 **Product lane:** NFL Pick'em downstream of the existing WOW V17 fitted NFL game-win specialist  
-**Scope:** User-visible weekly pick sheets, prelock pool intelligence, weekly-equity research, tiebreaker support, full-week scoring and continuous learning  
+**Primary objective:** Accurate, reliable, well-calibrated NFL winner predictions and demonstrable improvement after every missed pick  
+**Secondary scope:** User-visible weekly sheets, prelock pool intelligence, tiebreaker support, optional pool-equity research  
 **Serving baseline:** `MAX_EXPECTED_CORRECT`; never silently substitute a research strategy  
 **Execution:** `can_execute=false`; dry run only, no wagers or orders
 
@@ -10,7 +11,9 @@
 
 For every NFL week, generate a complete usable Pick'em card, ready to print and sign **GH** where requested. The form must reflect the correct games and matchups and select a tiebreaker number *not already used* in the connected live weekly Drive sheet. The user receives a transparent distinction between fitted V17 model-based picks and provisional selections where the model has not produced a valid package.
 
-In addition, test whether finite-pool positioning improves **first-place or tie-adjusted first-place** outcomes compared to the established `MAX_EXPECTED_CORRECT` baseline. The objective is measured weekly contest advantage, not maximization of contrarian selections, not an arbitrary weekly percentage target, and never a guaranteed result.
+**Primary success measure:** increase accurate picks on the complete NFL slate without hiding missing predictions; measure real hit rate, model coverage, expected correct, Brier score, log loss and calibration by confidence bucket. Investigate missed picks using only available pre-kickoff information: opponent quality, matchups, injuries and starting lineups, QB and offensive-line strength, game script, coaching scheme, home/road, rest/travel, weather, team trends, late news and source/model freshness. Distinguish correctable failures from ordinary variance. Every proposed improvement must beat the unchanged champion on untouched holdouts and independent review before a probability-serving change.
+
+**Secondary research only:** assess whether pool-positioning can improve first-place or tied-first outcomes **without sacrificing validated sporting accuracy**. Weekly pool position, contrarian differentiation and tiebreaker strategy are not the lead weekly analysis and must never displace missed-pick investigations.
 
 ## Operating lanes
 
@@ -22,7 +25,7 @@ In addition, test whether finite-pool positioning improves **first-place or tie-
 | Selection | Baseline + optional independent research challenger | Explain unchanged/changed sides and expected-correct sacrifice | Challenger research may not silently override production baseline |
 | Tiebreaker | Live weekly Drive entries and certified NFL game-total specialist where available | Unique number plus independently verified total-points source | Never duplicate used tiebreaker numbers or fabricate a model |
 | User artifact | Original weekly sheet or verified template, desired signature | Marked 14–16 game printable PDF/image; GH signature when requested | Verify exact event/side mapping and saved output; never modify user's source sheet without permission |
-| Settlement & learning | Original pregame card, independently final-settled official games, original fitted receipts | Whole-week correctness, Brier/log loss, pool standing and strategy audit | Keep model accuracy, user's submitted card and pool construction separate |
+| Settlement & learning | Original pregame card, independently final-settled official games, original fitted receipts | **Lead with complete-week hit rate, coverage, expected correct, Brier/log loss and game-by-game miss diagnoses; pool standings last** | Keep model accuracy, user's prepared/submitted card and pool construction separate |
 | Reliability & release | Exact SHA, CI, SIRT/Independent QA and Release evidence | Approved research/release only when genuine gates pass | Green CI alone does not establish strategy validation or production deployment |
 
 ## Current linked work
@@ -36,13 +39,22 @@ In addition, test whether finite-pool positioning improves **first-place or tie-
 - [Issue #1090](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1090): fitted total-points tiebreaker specialist history (closed); verify live capability each use
 - [Issue #1116](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1116): proposed `MAX_WEEKLY_WIN_EQUITY` (closed/not planned); not proof of serving deployment
 
+## Accuracy-first measurement and learning
+
+1. Record **all scheduled games** and clearly separate games with certified frozen pregame probabilities, provisional sides, missing packages, unsettled results and officially settled outcomes; never inflate hit rate with coverage omissions.
+2. Grade frozen model winner selections and the user-prepared/submitted GH card **independently**, using the same independently verified final outcomes. Keep submission evidence separate from an assistant-created printable form.
+3. Report exact correctness numerator/denominator, completion coverage, expected correct, binary Brier and log loss, calibration/reliability bins with cohort sizes, and trends across multiple completed weeks. Quantify uncertainty; do not claim that a single upset proves the model is broken.
+4. Diagnose **every miss** using immutable pregame model probability, calibration bounds, opponent/team attributes, injuries, lineups, coaching, home/road, schedule, weather and information freshness. Only attribute causes to evidence genuinely timestamped before that kickoff. Label postgame-only explanations as hypotheses.
+5. Distinguish **avoidable model/source/identity/calibration defects** from unpredictable game variance. Open only evidence-backed smallest-fix experiments; require historical replay, adversarial counterexamples, holdout and independent promotion for Class C model changes.
+6. Present pool rank, contrarian opportunity and tiebreaker analysis **after** accuracy work, unless explicitly requested.
+
 ## Definition of done
 
 **Stage A — usable weekly card:** exact official slate and weekly Drive reconciliation; genuine model packages wherever available, transparent gaps; nonduplicated tiebreaker; verified signed printable artifact; no edits to the source sheet.
 
 **Stage B — trustworthy pool evidence:** protected prelock snapshot, event identity mapping, source/provenance timestamps and exact audience; full pool vs visible sample distinguished; frozen baseline and untouched holdout weeks.
 
-**Stage C — empirically better strategy:** repeatable baseline/challenger comparison across multiple independent weeks, uncertainty assessment, Monday tiebreaker and tied games modeled or limitations explicitly held; independent QA validates uplift.
+**Stage C — better predictions first:** demonstrate measured improvement in full-slate accuracy, calibration and leakage-safe holdout results; then, optionally, validate pool-equity challenger as separate research, not a substitute for model accuracy.
 
 **Stage D — production release:** authorized independent SIRT/QA/Release approval, branch merge, Render deployed exact SHA, real action input-to-result receipt and successful user card verification. No execution authority.
 
@@ -51,8 +63,8 @@ In addition, test whether finite-pool positioning improves **first-place or tie-
 1. Before lock, verify NFL schedule and connected sheet, confirm participant count and all used tiebreakers, archive source-visible evidence with provider time.
 2. Score each game using valid current V17 fitted packages. Research pool ownership separately, without changing sporting probabilities.
 3. Generate GH-marked printable card and a pick ledger. Disclose any unsupported/provisional side.
-4. After official settlement, grade the immutable pregame card; report model calibration, GH score and league result separately.
-5. Deliver actionable regression or evidence tasks to existing Engineering/AMRT and SIRT; accept only verified fixes/reviews/deployments.
+4. After official settlement, lead with frozen model accuracy and completeness, each game's miss, model calibration (Brier/log loss), potential failure mechanisms and safe evidence-backed fixes; separately report GH score, then pool standing as optional context.
+5. Accumulate a multiweek mistake taxonomy, test the smallest supported improvement on untouched holdouts, and deliver actionable regression/evidence tasks to existing Engineering/AMRT and SIRT; accept only verified fixes/reviews/deployments.
 
 ## Project operating principles
 
