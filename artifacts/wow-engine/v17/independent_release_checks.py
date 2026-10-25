@@ -355,6 +355,42 @@ def _latest(runs: list[dict], name: str, head: str, app_id: int | str) -> dict |
     return max(matches, key=lambda r: (str(r.get("completed_at") or ""), int(r.get("id") or 0)), default=None)
 
 
+def pending_required_regressions(ev: dict) -> list[str]:
+    """Return official, same-head required checks whose latest run is still active."""
+    pr = ev.get("pr") or {}
+    head = ev.get("expected_head_sha")
+    if (
+        ev.get("evidence_errors")
+        or not isinstance(head, str)
+        or not SHA_RE.fullmatch(head)
+        or pr.get("head_sha") != head
+        or pr.get("state") != "open"
+        or pr.get("merged") is not False
+        or pr.get("base_ref") != "main"
+        or pr.get("head_repo") != ev.get("repository")
+    ):
+        return []
+
+    runs = ev.get("check_runs")
+    if not isinstance(runs, list):
+        return []
+    pending: list[str] = []
+    for name in REQUIRED_REGRESSION_CHECKS:
+        matches = [
+            run for run in runs
+            if isinstance(run, dict)
+            and run.get("name") == name
+            and run.get("head_sha") == head
+            and str(run.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
+            and isinstance(run.get("id"), int)
+            and not isinstance(run.get("id"), bool)
+        ]
+        latest = max(matches, key=lambda run: run["id"], default=None)
+        if latest and latest.get("status") in {"queued", "in_progress"}:
+            pending.append(name)
+    return pending
+
+
 def _owner_approved_at_head(ev: dict, head: str) -> bool:
     owner = ev.get("owner_login")
     mine = [r for r in ev.get("reviews") or [] if r.get("user") == owner and r.get("state") in
@@ -569,6 +605,8 @@ def main(argv: list[str] | None = None) -> int:
     classify.add_argument("--repo", required=True)
     classify.add_argument("--run-id", required=True, type=int)
     classify.add_argument("--run-attempt", required=True, type=int)
+    readiness = sub.add_parser("classify-release-readiness")
+    readiness.add_argument("--evidence", required=True)
     for name in ("decide-qa", "decide-release"):
         d = sub.add_parser(name)
         d.add_argument("--evidence", required=True)
@@ -601,6 +639,14 @@ def main(argv: list[str] | None = None) -> int:
         except UpstreamQaError as exc:
             raise SystemExit(str(exc)) from exc
         print(json.dumps(classified, sort_keys=True))
+        return 0
+    if args.cmd == "classify-release-readiness":
+        ev = json.loads(Path(args.evidence).read_text())
+        pending = pending_required_regressions(ev)
+        print(json.dumps({
+            "disposition": "pending" if pending else "ready",
+            "pending_checks": pending,
+        }, sort_keys=True))
         return 0
     if args.cmd == "gather":
         review_args = (

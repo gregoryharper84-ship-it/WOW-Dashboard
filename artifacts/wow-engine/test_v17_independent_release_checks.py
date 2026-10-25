@@ -420,6 +420,44 @@ def test_release_passes_only_on_qa_app_success_at_exact_head():
     assert m.release_findings(with_qa(evidence()), qa_app_id=QA_APP, release_app_id=REL_APP) == []
 
 
+def test_pending_required_regression_is_only_classified_for_latest_trusted_exact_head_run():
+    ev = evidence()
+    active = run_(m.REQUIRED_REGRESSION_CHECKS[0], app=GHA, rid=900)
+    active.update(status="in_progress", conclusion=None)
+    ev["check_runs"].append(active)
+
+    assert m.pending_required_regressions(ev) == [m.REQUIRED_REGRESSION_CHECKS[0]]
+
+    completed = dict(active, id=901, status="completed", conclusion="success")
+    ev["check_runs"].append(completed)
+    assert m.pending_required_regressions(ev) == []
+
+    foreign = dict(active, id=902, app_id=REL_APP)
+    ev["check_runs"].append(foreign)
+    assert m.pending_required_regressions(ev) == []
+
+    stale = dict(active, id=903, head_sha=OLD)
+    ev["check_runs"].append(stale)
+    assert m.pending_required_regressions(ev) == []
+
+
+@pytest.mark.parametrize("pr_changes", [
+    {"head_sha": OLD},
+    {"state": "closed"},
+    {"merged": True},
+    {"base_ref": "release"},
+    {"head_repo": "fork/WOW-Dashboard"},
+])
+def test_pending_required_regression_never_defers_stale_or_closed_pr(pr_changes):
+    ev = evidence()
+    active = run_(m.REQUIRED_REGRESSION_CHECKS[0], app=GHA, rid=900)
+    active.update(status="queued", conclusion=None)
+    ev["check_runs"].append(active)
+    ev["pr"].update(pr_changes)
+
+    assert m.pending_required_regressions(ev) == []
+
+
 def test_qa_check_published_by_another_app_is_a_foreign_source():
     findings = m.release_findings(with_qa(evidence(), app=REL_APP), qa_app_id=QA_APP, release_app_id=REL_APP)
     assert "RELEASE_QA_FOREIGN_SOURCE" in findings and "RELEASE_QA_MISSING" in findings
@@ -523,7 +561,7 @@ def _gather_routes(files=None, runs=None, changed=None):
                                           "conclusion": "success", "app": {"id": GHA}}]
     return {
         f"repos/{REPO}": (200, {"owner": {"login": OWNER}}),
-        f"repos/{REPO}/pulls/7": (200, {"number": 7, "state": "open", "draft": False, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
+        f"repos/{REPO}/pulls/7": (200, {"number": 7, "state": "open", "draft": False, "merged": False, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
                                         "base": {"ref": "main", "repo": {"full_name": REPO}}, "user": {"id": 9001, "login": "bot"},
                                         "changed_files": changed if changed is not None else len(files)}),
         f"repos/{REPO}/pulls/7/files?per_page=100&page=1": (200, files),
@@ -1401,6 +1439,62 @@ def test_release_workflow_end_to_end_requires_qa_from_qa_app(fake_gh):
     assert decision["conclusion"] == "failure" and "RELEASE_QA_FOREIGN_SOURCE" in decision["findings"]
 
 
+def test_release_defers_without_publishing_while_exact_head_regression_is_running_then_rechecks(fake_gh):
+    qa_run = {"id": 900, "name": m.QA_CHECK, "head_sha": HEAD, "status": "completed",
+              "conclusion": "success", "app": {"id": int(QA_APP)},
+              "completed_at": "2026-10-09T03:30:00Z"}
+    running = {"id": 901, "name": m.REQUIRED_REGRESSION_CHECKS[0], "head_sha": HEAD,
+               "status": "in_progress", "conclusion": None, "app": {"id": GHA}}
+    routes = _routes_for_pr(_evidence_runs([qa_run, running]))
+
+    proc, runner, env = _run_decide(
+        fake_gh, REL_WF, routes,
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=0" in Path(env["GITHUB_OUTPUT"]).read_text()
+    assert "RELEASE_QA_EVIDENCE_PENDING" in proc.stdout
+    assert not list((runner / "decisions").glob("decision-*.json"))
+    assert _release_count_enables_token_and_publish("0") is False
+    assert not (fake_gh / "gh.log").exists()
+
+    completed = dict(running, id=902, status="completed", conclusion="success")
+    routes = _routes_for_pr(_evidence_runs([qa_run, completed]))
+    proc, runner, env = _run_decide(
+        fake_gh, REL_WF, routes,
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in Path(env["GITHUB_OUTPUT"]).read_text()
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "success"
+    assert decision["head_sha"] == HEAD and decision["can_execute"] is False
+
+
+def test_completed_required_regression_failure_is_terminal_not_pending(fake_gh):
+    qa_run = {"id": 900, "name": m.QA_CHECK, "head_sha": HEAD, "status": "completed",
+              "conclusion": "success", "app": {"id": int(QA_APP)},
+              "completed_at": "2026-10-09T03:30:00Z"}
+    failed = {"id": 901, "name": m.REQUIRED_REGRESSION_CHECKS[0], "head_sha": HEAD,
+              "status": "completed", "conclusion": "failure", "app": {"id": GHA},
+              "completed_at": "2026-10-09T03:40:00Z"}
+    routes = _routes_for_pr(_evidence_runs([qa_run, failed]))
+
+    proc, runner, env = _run_decide(
+        fake_gh, REL_WF, routes,
+        {"EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
+         "QA_APP_ID": QA_APP, "RELEASE_APP_ID": REL_APP},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in Path(env["GITHUB_OUTPUT"]).read_text()
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "failure"
+    assert f"RELEASE_QA_EVIDENCE_FAILED:{m.REQUIRED_REGRESSION_CHECKS[0]}" in decision["findings"]
+    assert decision["can_execute"] is False
+
+
 def test_automatic_release_uses_only_the_authenticated_qa_run_target(fake_gh):
     routes = _routes_for_pr(_evidence_runs([run_(m.QA_CHECK, app=QA_APP)]))
     routes[f"repos/{REPO}/pulls?state=open&base=main&per_page=100"] = [200, [
@@ -1623,7 +1717,9 @@ def test_every_phase_c_code_is_registered():
     emitted = set(re.findall(r'"((?:QA|RELEASE|TARGET)_[A-Z_]+)', MODULE.read_text()))
     emitted |= set(re.findall(r'f"((?:QA|RELEASE|TARGET)_[A-Z_]+)[:"]', MODULE.read_text()))
     for wf in (QA_WF, REL_WF):
-        emitted |= set(re.findall(r"::error::((?:QA|RELEASE)_[A-Z_]+)", wf.read_text()))
+        text = wf.read_text()
+        emitted |= set(re.findall(r"::error::((?:QA|RELEASE)_[A-Z_]+)", text))
+        emitted |= set(re.findall(r"::notice::(RELEASE_QA_EVIDENCE_PENDING)", text))
     # RELEASE_ prefixes a re-derived QA finding; register the prefix rule, not each product.
     emitted = {c for c in emitted if c not in {"QA_EVIDENCE_CHECKS"}}
     registry = (ROOT / "artifacts/wow-engine/docs/failure_codes.md").read_text()
