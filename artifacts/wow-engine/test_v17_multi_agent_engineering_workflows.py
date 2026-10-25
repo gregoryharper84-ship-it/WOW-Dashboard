@@ -4,6 +4,7 @@ from pathlib import Path
 import yaml
 
 from v17.engineering_dispatch_queue import build_queue
+from v17.p0_parallel_dispatch import select_parallel
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -287,20 +288,44 @@ def test_domain_scoped_p0_target_propagates_across_provider_and_workers() -> Non
     assert "marker='<!-- WOW_DUAL_STREAM_HEARTBEAT -->'" not in claude
 
 
-def test_nhl_incident_1952_resolves_as_standard_p1_in_dispatch_queue() -> None:
+def test_all_three_other_p0_sports_have_isolated_rapid_dispatch_records() -> None:
+    """NFL is already rapid P0; NBA/NHL/NCAAF are now genuine queued P0."""
     manifest = json.loads((ROOT / "artifacts/wow-engine/v17/engineering_dispatch_manifest.json").read_text())
-    queue = build_queue(manifest, [{"number": 1952, "title": "NHL", "state": "OPEN"}])
-    records = [r for r in queue["records"] if r["incident_id"] == "1952"]
+    open_rows = [
+        {"number": 1950, "title": "NBA", "state": "OPEN"},
+        {"number": 1952, "title": "NHL", "state": "OPEN"},
+        {"number": 1951, "title": "NCAAF", "state": "OPEN"},
+    ]
+    queue = build_queue(manifest, open_rows)
+    records = {r["incident_id"]: r for r in queue["records"]}
+    expected = {
+        "1950": ("A", "P0_NBA_RESTORE", "NBA_GAME_WIN"),
+        "1952": ("B", "P0_NHL_RESTORE", "NHL_GAME_WIN"),
+        "1951": ("C", "P0_NCAAF_RESTORE", "NCAAF_GAME_WIN"),
+    }
+    assert set(records) == set(expected)
+    for incident, (stream, lease, key) in expected.items():
+        row = records[incident]
+        assert row["severity"] == "P0"
+        assert row["execution_lane"] == "RAPID"
+        assert row["rapid_stream"] == stream
+        assert row["lease_group"] == lease
+        assert key in row["conflict_keys"]
+        assert row["priority_rank"] == 8
+        assert row["work_stream"] == "RESTORATION"
+        assert row["can_execute"] is False
+        assert row["terminal_authority"] == "V17_TERMINAL_REDUCER"
 
-    assert len(records) == 1
-    record = records[0]
-    assert record["severity"] == "P1"
-    assert record["priority_rank"] == 14
-    assert record["execution_lane"] == "STANDARD"
-    assert record["lease_group"] == ""
-    assert record["work_stream"] == "RESTORATION"
-    assert record["conflict_keys"] == ["NHL_CANDIDATE", "ALL_SPORTS_MONEYLINE", "PROP_LIFECYCLE"]
-    assert record["can_execute"] is False
+    # Exactly one writer per sport, no shared-path claim and no betting.
+    for sport_a, entry_a in records.items():
+        for sport_b, entry_b in records.items():
+            if sport_a != sport_b:
+                assert set(entry_a["conflict_keys"]).isdisjoint(entry_b["conflict_keys"])
+                assert entry_a["lease_group"] != entry_b["lease_group"]
+    result = select_parallel(queue["records"])
+    assert result["selected_count"] == 3
+    assert {r["incident_id"] for r in result["selected"]} == set(expected)
+    assert all(r["can_execute"] is False for r in result["selected"])
 
 
 def test_provider_dispatcher_has_typed_failover_and_survival() -> None:
