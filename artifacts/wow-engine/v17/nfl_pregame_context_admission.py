@@ -66,7 +66,7 @@ def _number(value: Any, lo: float, hi: float, code: str) -> float:
     return float(value)
 
 
-def _metrics(family: str, fields: Any, kickoff: datetime) -> dict[str, float]:
+def _metrics(family: str, fields: Any, kickoff: datetime, observed: datetime) -> dict[str, float]:
     if not isinstance(fields, Mapping):
         raise NFLContextAdmissionError("NFL_CONTEXT_METRICS_MISSING")
     if family == "QB_STARTER":
@@ -85,7 +85,7 @@ def _metrics(family: str, fields: Any, kickoff: datetime) -> dict[str, float]:
             "defense_available": float(_int(fields.get("defense_starters_expected"), 0, 11, "NFL_CONTEXT_DEF_COUNT_INVALID")),
         }
     prior_end = _time(fields.get("last_input_game_end_at"), "NFL_CONTEXT_PRIOR_GAME_TIME_INVALID")
-    if prior_end >= kickoff:
+    if prior_end >= kickoff or prior_end > observed:
         raise NFLContextAdmissionError("NFL_CONTEXT_PRIOR_GAME_LEAKAGE")
     sample = _int(fields.get("sample_games"), 1, 32, "NFL_CONTEXT_MATCHUP_SAMPLE_INVALID")
     return {
@@ -155,7 +155,7 @@ def build_pregame_context_packet(
         captured = _time(source.get("captured_at"), "NFL_CONTEXT_SOURCE_TIME_INVALID")
         if not observed <= published <= captured <= cutoff:
             raise NFLContextAdmissionError("NFL_CONTEXT_SOURCE_TIME_LEAKAGE")
-        fields = _metrics(family, source.get("measurements"), kickoff)
+        fields = _metrics(family, source.get("measurements"), kickoff, observed)
         accepted[key] = fields
         receipts.append({
             "side": side, "family": family,
