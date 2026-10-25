@@ -66,12 +66,12 @@ def test_packet_contains_single_domain_action_contract_without_secrets():
 
     # Keep this dedicated sync workflow dependency-free. Full YAML/OpenAPI
     # validation runs in the protected backend regression suite.
-    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 27
-    assert manifest["action_operation_count"] == 27
+    assert schema_text.count("operationId:") == module.REQUIRED_OPERATION_COUNT == 29
+    assert manifest["action_operation_count"] == 29
     assert manifest["action_schema_installation_surface"] == "SINGLE_CUSTOM_ACTION_DOMAIN"
     assert manifest["action_schema_domain"] == "wow-governed-probability-engine.onrender.com"
     assert manifest["run_control_installation_surface"] == "MERGED_INTO_CANONICAL_ACTION_SCHEMA"
-    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_27_OPERATIONS" in manifest["acceptance_required"]
+    assert "IMPORT_SINGLE_CANONICAL_ACTION_SCHEMA_WITH_29_OPERATIONS" in manifest["acceptance_required"]
     assert "FRESH_CHAT_SUBMIT_AND_POLL_DURABLE_WOW_V17_DAILY_SNAPSHOT" in manifest["acceptance_required"]
     assert "scoreWowTeamEventRequest" in manifest["required_operations"]
     assert "FRESH_CHAT_SCORE_WOW_TEAM_EVENT_BATCH" in manifest["acceptance_required"]
@@ -187,3 +187,20 @@ def test_packet_is_deterministic_for_same_repository_content():
     packet_b, manifest_b = module.build_packet()
     assert packet_a == packet_b
     assert manifest_a == manifest_b
+
+def test_research_fallback_actions_are_authenticated_non_predictive_and_contained_in_single_schema():
+    text = SCHEMA.read_text(encoding="utf-8")
+    first = text.index("  /v17/research/web-intelligence-fallback:\n")
+    second = text.index("  /v17/research/web-intelligence-fallback/from-scout:\n", first)
+    end = text.index("  /internal/v17/spread-forward-shadow:\n", second)
+    routes = text[first:end]
+    assert "operationId: scoreV17WebIntelligenceResearchFallback" in routes
+    assert "operationId: scoreV17MultiSportResearchFromScoutEvidence" in routes
+    assert routes.count("security: [{actionBearer: []}]") == 2
+    assert routes.count("x-openai-isConsequential: false") == 2
+    assert "research_score is NOT a sporting probability" in routes
+    assert "No web fetching" in routes
+    assert "WebIntelligenceResearchRequest:" in text
+    assert "WebIntelligenceScoutRequest:" in text
+    assert "additionalProperties: false" in text
+    assert "FRESH_CHAT_SCOUT_RESEARCH_FALLBACK_FAIL_CLOSED" in module.build_packet()[1]["acceptance_required"]

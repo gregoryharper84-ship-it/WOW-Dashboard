@@ -1,7 +1,7 @@
 """Authenticated, research-only V17 web evidence fallback endpoint."""
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel, ConfigDict, Field
@@ -41,7 +41,7 @@ class WebIntelligenceRequest(BaseModel):
     sport: str
     official_event_id: str
     event_start_time_utc: str
-    market_type: Literal["MONEYLINE", "SPREAD", "TOTAL"]
+    market_type: str = Field(min_length=3, max_length=40)
     selection: str
     line: float | None = None
     model_status: str
