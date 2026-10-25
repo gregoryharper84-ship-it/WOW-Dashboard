@@ -228,6 +228,7 @@ def list_role_runs(client: GitHub, workflow_id: int, role: str, pr_number: int, 
         path = (
             f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs"
             f"?branch=main&created={lower}..{upper}"
+            + ("&event=workflow_dispatch" if role in {"qa", "release"} else "")
         )
         try:
             return _paged(client, path, "workflow_runs", MAX_RUN_PAGES)
@@ -817,10 +818,13 @@ def reconcile(
             files = pull_files(client, number, pr.get("changed_files"))
             checks = check_runs(client, head_sha)
             reviews = pull_reviews(client, number)
-            role_runs = matching_role_runs(client, workflows, number, head_sha)
-            statuses = role_run_statuses(role_runs)
             available_roles = set(workflows)
 
+            # Decide static eligibility before scanning costly PR-lifetime
+            # role history. A definite HOLD or DONE cannot be changed by
+            # previously dispatched role runs. Potential dispatch and pending
+            # source review MUST still read verified history, preserving the
+            # singleton queue, prior-failure and signed-reservation guards.
             target_evidence = {
                 "repository": REPOSITORY,
                 "owner_id": owner_id,
@@ -831,13 +835,26 @@ def reconcile(
                 "reviews": reviews,
                 "ancillary_ci_hold": None,
                 "available_roles": available_roles,
-                "completed_role_runs": statuses,
+                "completed_role_runs": {},
                 "zero_credit_mode": zero_credit_mode,
             }
             preflight = policy.classify_target(
                 **target_evidence,
                 source_review="PENDING",
             )
+            role_runs = {}
+            statuses = {}
+            if (
+                preflight.get("action") == "DISPATCH"
+                or preflight.get("findings") == ["SOURCE_REVIEW_PENDING"]
+            ):
+                role_runs = matching_role_runs(client, workflows, number, head_sha)
+                statuses = role_run_statuses(role_runs)
+                target_evidence["completed_role_runs"] = statuses
+                preflight = policy.classify_target(
+                    **target_evidence,
+                    source_review="PENDING",
+                )
             if preflight.get("findings") == ["SOURCE_REVIEW_PENDING"]:
                 source_history = (role_runs.get("source_review") or {}).get("history", [])
                 reviewer_status = source_review_status(
