@@ -21,6 +21,7 @@ from nfl_event_model_v17 import (
     load_champion_model,
 )
 from v17.nfl_team_event_specialist import resolve_nfl_team_event_evidence, score_nfl_team_event
+from v17.stage_proof_contract import finalize_nfl_governed_publication
 
 NFL_ALIASES = frozenset({"NFL", "FOOTBALL_NFL"})
 _PATCH_MARKER = "_v17_nfl_team_event_publication_installed"
@@ -264,7 +265,7 @@ def _attach_nfl_feature_consumption_metadata(model_result: dict[str, Any]) -> di
     return out
 
 
-def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envelope: Any, *, db: Any) -> dict[str, Any]:
+def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envelope: Any, *, db: Any, final_refresh: dict[str, Any] | None = None) -> dict[str, Any]:
     package = base._build_governed_probability_package(envelope, model_result)
     if package is None:
         raise NFLModelOutputInvalid("NFL_GOVERNED_PROBABILITY_PACKAGE_INVALID")
@@ -272,6 +273,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
     score_snapshot_id = model_result.get("score_snapshot_id")
     if not score_snapshot_id:
         raise NFLModelOutputInvalid("NFL_SCORE_SNAPSHOT_ID_MISSING")
+    governance_from_bridge = True
     try:
         rpc = db.rpc(
             "wow_v17_nfl_team_event_governance_bridge",
@@ -286,6 +288,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
         ).execute()
         governance = rpc.data
     except Exception as exc:
+        governance_from_bridge = False
         governance = {
             "status": "UNAVAILABLE",
             "blockers": ["V17_NFL_EVENT_GOVERNANCE_BRIDGE_UNAVAILABLE"],
@@ -297,6 +300,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
         }
 
     if not isinstance(governance, dict):
+        governance_from_bridge = False
         governance = {
             "status": "INVALID",
             "blockers": ["V17_NFL_EVENT_GOVERNANCE_BRIDGE_INVALID_RESPONSE"],
@@ -337,7 +341,7 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
         "can_execute": False,
     }
     if required_pass:
-        return {
+        governed = {
             **common,
             "code": "GOVERNED_PROBABILITY_PUBLISHED",
             "terminal_label": "FINAL_APPROVED",
@@ -346,18 +350,105 @@ def _govern(base: Any, req: Any, route: Any, model_result: dict[str, Any], envel
             "rank_eligible": True,
             "terminal_reducer_input": {"status": "PASS", "terminal_output": "FINAL_APPROVED", "global_terminal_reducer": "V17_TERMINAL_REDUCER"},
         }
+    else:
+        blockers = ["NFL_GOVERNED_PUBLICATION_NOT_PROVEN", *(str(v) for v in (governance.get("blockers") or []))]
+        governed = {
+            **common,
+            "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "terminal_label": str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD"),
+            "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+            "blockers": sorted(set(blockers)),
+            "probability_publishable": False,
+            "rank_eligible": False,
+            "terminal_reducer_input": {"status": governance.get("status", "HOLD"), "terminal_output": "MODEL_QUALIFIED_HOLD", "global_terminal_reducer": "V17_TERMINAL_REDUCER"},
+        }
+    return finalize_nfl_governed_publication(
+        governed,
+        research_run_id=str(req.research_run_id),
+        event_key=str(req.event_key),
+        official_event_id=str(envelope.official_event_id),
+        score_snapshot_id=str(score_snapshot_id) if score_snapshot_id else None,
+        source_snapshot_id=getattr(req, "source_snapshot_id", None),
+        model_artifact_id=model_result.get("model_artifact_id"),
+        model_version=model_result.get("model_version"),
+        package_validated=True,
+        governance_from_bridge=governance_from_bridge,
+        final_refresh=final_refresh,
+    )
 
-    blockers = ["NFL_GOVERNED_PUBLICATION_NOT_PROVEN", *(str(v) for v in (governance.get("blockers") or []))]
-    return {
-        **common,
-        "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
-        "terminal_label": str(governance.get("terminal_label") or "MODEL_QUALIFIED_HOLD"),
-        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
-        "blockers": sorted(set(blockers)),
-        "probability_publishable": False,
-        "rank_eligible": False,
-        "terminal_reducer_input": {"status": governance.get("status", "HOLD"), "terminal_output": "MODEL_QUALIFIED_HOLD", "global_terminal_reducer": "V17_TERMINAL_REDUCER"},
-    }
+
+def _attach_nfl_strict_scoring_package(
+    governed: dict[str, Any], req: Any, fitted: dict[str, Any],
+) -> dict[str, Any]:
+    """Explicitly serialize the already-persisted NFL score to LLP's strict schema.
+
+    The strict scorer validator intentionally rejects generic aliases. This
+    adapter exists only at the controlling NFL producer, after the fitted
+    scorer returned an immutable prediction/score ID, and cannot make a held
+    probability publishable. No side inference or new calibration is performed.
+    """
+    event_id = str(getattr(req, "official_event_id", "") or "")
+    source_id = str(getattr(req, "source_snapshot_id", "") or "")
+    selected = str(fitted.get("selected_participant") or "")
+    home = str(getattr(req, "home_team", "") or "")
+    away = str(getattr(req, "away_team", "") or "")
+    predicted_id = str(fitted.get("canonical_event_id") or "")
+    prediction_id = str(fitted.get("event_prediction_id") or "")
+    score_id = str(fitted.get("score_snapshot_id") or "")
+    if (
+        not event_id or predicted_id != event_id
+        or selected not in {home, away} or home == away
+        or not prediction_id or not score_id or not source_id
+        or str(governed.get("score_snapshot_id") or "") != score_id
+        or (governed.get("selected_participant") not in (None, selected))
+    ):
+        raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_IDENTITY_OR_SIDE_INVALID")
+    side = "home" if selected == home else "away"
+    opponent_side = "away" if side == "home" else "home"
+    # The fitted NFL scorer selects the more likely side. A different selected
+    # team is an identity inconsistency, never a reason to invert a bound.
+    selected_p = fitted.get(f"calibrated_{side}_probability")
+    opponent_p = fitted.get(f"calibrated_{opponent_side}_probability")
+    if (not isinstance(selected_p, (float, int))
+            or not isinstance(opponent_p, (float, int))
+            or isinstance(selected_p, bool) or isinstance(opponent_p, bool)
+            or selected_p < opponent_p):
+        raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_SELECTED_SIDE_INCONSISTENT")
+    for key in (
+        f"calibrated_{side}_probability",
+        f"calibrated_{side}_lower_bound",
+        f"calibrated_{side}_upper_bound",
+        "model_timestamp", "model_version", "calibration_method",
+        "calibration_version",
+    ):
+        if fitted.get(key) in (None, ""):
+            raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_PERSISTED_FIELD_MISSING:" + key)
+    timestamp = str(getattr(req, "latest_material_update_timestamp", "") or "")
+    if not timestamp:
+        raise NFLModelOutputInvalid("NFL_STRICT_PACKAGE_SOURCE_TIMESTAMP_MISSING")
+    out = dict(governed)
+    out.update({
+        "prediction_id": prediction_id,
+        "calibrated_probability": fitted[f"calibrated_{side}_probability"],
+        "calibrated_lower_bound": fitted[f"calibrated_{side}_lower_bound"],
+        "calibrated_upper_bound": fitted[f"calibrated_{side}_upper_bound"],
+        "immutable_model_timestamp": fitted["model_timestamp"],
+        "source_snapshot_id": source_id,
+        "source_snapshot_timestamp": timestamp,
+        "latest_material_update_timestamp": timestamp,
+        "outcome_space": "HOME_AWAY",
+        "can_execute": False,
+    })
+    # Check the exact same strict contract called by cross_sport_winner_discovery;
+    # NEVER weaken that shared validator or reinterpret an invalid package.
+    from v17.llp_governed_package_scoring import PASS, validate_governed_scoring_package
+
+    audit = validate_governed_scoring_package(out)
+    if audit.status != PASS:
+        raise NFLModelOutputInvalid(
+            "NFL_STRICT_PACKAGE_PRODUCER_VALIDATION_FAILED:" + ",".join(audit.blockers)
+        )
+    return out
 
 
 def score_nfl_team_event_request(
@@ -401,11 +492,17 @@ def score_nfl_team_event_request(
         result = score_nfl_team_event(effective_req, db=db)
         result = _attach_nfl_feature_consumption_metadata(result)
         envelope = _nfl_envelope(team_event_module, effective_req)
-        governed = _govern(team_event_module, effective_req, route, result, envelope, db=db)
+        # This authoritative second schedule read occurs after fitted inference
+        # and before either governance or terminal publication. Pass its actual
+        # receipt to the stage-proof producer; a PREGAME flag is never proof.
+        refresh = _nfl_final_refresh(effective_req, result, db=db)
+        governed = _govern(
+            team_event_module, effective_req, route, result, envelope, db=db,
+            final_refresh=refresh,
+        )
     except (NFLModelUnavailable, NFLModelInputsInsufficient, NFLModelOutputInvalid, NFLModelScorerFailed) as exc:
         raise _typed_failure(team_event_module, effective_req, exc) from exc
 
-    refresh = _nfl_final_refresh(effective_req, result, db=db)
     governed = _apply_nfl_final_refresh_ceiling(governed, refresh)
     governed["scout_research_barrier"] = scout_research_barrier
     evidence = dict(effective_req.sport_specific_evidence or {})
@@ -437,7 +534,10 @@ def score_nfl_team_event_request(
         "latest_material_update_timestamp": envelope.latest_material_update_timestamp,
         "evidence_as_of": envelope.evidence_as_of,
     }
-    return governed
+    try:
+        return _attach_nfl_strict_scoring_package(governed, effective_req, result)
+    except NFLModelOutputInvalid as exc:
+        raise _typed_failure(team_event_module, effective_req, exc) from exc
 
 
 def install_nfl_team_event_publication(team_event_module: Any) -> bool:
