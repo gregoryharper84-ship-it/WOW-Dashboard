@@ -12,6 +12,7 @@ from urllib.request import Request, build_opener
 from urllib.error import HTTPError, URLError
 from urllib.robotparser import RobotFileParser
 import re
+from typing import Any
 
 from v17.propsmadness_multisport_public_explore import (
     ROOT, USER_AGENT, MAX_HTML, _config, _RejectRedirects,
