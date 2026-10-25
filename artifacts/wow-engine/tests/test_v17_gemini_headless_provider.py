@@ -448,9 +448,9 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
 
     def test_verified_provider_survival_is_warning_not_fake_generation(self):
         workflow = (ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
-        section = workflow.split("      - name: Surface degraded provider state\\n", 1)[1]
-        script = textwrap.dedent(section.split("        run: |\\n", 1)[1].split(
-            "\\n  independent-provider:", 1)[0])
+        section = workflow.split("      - name: Surface degraded provider state\n", 1)[1]
+        script = textwrap.dedent(section.split("        run: |\n", 1)[1].split(
+            "\n  independent-provider:", 1)[0])
         reason = "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED:SECONDARY_UNAVAILABLE_OR_FAILED"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
