@@ -1,4 +1,4 @@
-"""Exact NFL Daily stage proof from an immutable, event-bound prediction readback.
+"""Exact NFL Daily package readback without invented dynamic-calibration proof.
 
 This does not fit or calibrate a model, alter probabilities, or override LLP.
 A missing, stale, conflicting, or unreadable receipt leaves the original result
@@ -43,7 +43,7 @@ def _same_number(a: Any, b: Any) -> bool:
 
 
 def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, Any]) -> dict[str, Any]:
-    """Attach PASS fields only after exact immutable event/prediction readback.
+    """Attach canonical fitted package only after exact prediction readback.
 
     Caller must still enforce SQL governance, final refresh and terminal reducer.
     Those are independent gates, never replaced by this evidence.
@@ -148,7 +148,8 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
     if reasons:
         # Never adopt a success boolean from an earlier source or a prior event.
         out.pop("probability_package_valid", None)
-        out.pop("dynamic_calibration_complete", None)
+        out["dynamic_calibration_complete"] = False
+        out["calibration_status"] = "UNPROVEN"
         out["nfl_stage_receipt"] = {
             "status": "HOLD",
             "source": STAGE_SOURCE,
@@ -159,8 +160,9 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
         out["can_execute"] = False
         return out
 
-    # All fields below originate from the unique persisted pregame prediction,
-    # not a market estimate, narrative, or a receipt from another event.
+    # Exact stored prediction verifies the numerical package and its identity,
+    # NOT that a distinct dynamic calibration operation emitted a source-bound
+    # stage receipt. Do not promote database calibration-health flags to proof.
     out.update({
         "prediction_id": prediction_id,
         "immutable_model_timestamp": _instant(row["model_timestamp"]).isoformat(),
@@ -171,10 +173,13 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
         "source_snapshot_timestamp": _instant(row["source_snapshot_timestamp"]).isoformat(),
         "outcome_space": "NFL_FULL_GAME_HOME_AWAY",
         "probability_package_valid": True,
-        "dynamic_calibration_complete": True,
-        "calibration_status": "PASS",
+        "dynamic_calibration_complete": False,
+        "calibration_status": "UNPROVEN",
         "nfl_stage_receipt": {
-            "status": "PASS",
+            "status": "HOLD",
+            "package_readback_status": "PASS",
+            "dynamic_calibration_stage": "EVIDENCE_NOT_EMITTED",
+            "blockers": ["NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_MISSING"],
             "source": STAGE_SOURCE,
             "prediction_id": prediction_id,
             "score_snapshot_id": snapshot_id,
