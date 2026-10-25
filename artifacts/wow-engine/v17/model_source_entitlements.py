@@ -164,6 +164,16 @@ SOURCES: dict[str, SourceEntitlement] = {
         fitted_training_allowed_when_ready=True,
         certification_source_review_required=True,
     ),
+    # No verified training license/corpus has been certified for T20 cricket.
+    # Preserve an explicit source ownership gap rather than silently treating
+    # bookmaker schedules or publicly reachable scores as fitted-model inputs.
+    "CRICKET_HISTORICAL_MATCHES_UNAPPROVED": SourceEntitlement(
+        "CRICKET_HISTORICAL_MATCHES_UNAPPROVED",
+        ("CRICKET",),
+        "NO_APPROVED_SOURCE",
+        fitted_training_allowed_when_ready=False,
+        certification_source_review_required=True,
+    ),
     "NCAAB_APPROVED_STATS": SourceEntitlement(
         "NCAAB_APPROVED_STATS",
         ("NCAAB",),
