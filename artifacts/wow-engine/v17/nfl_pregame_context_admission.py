@@ -69,6 +69,18 @@ def _number(value: Any, lo: float, hi: float, code: str) -> float:
 def _metrics(family: str, fields: Any, kickoff: datetime, observed: datetime) -> dict[str, float]:
     if not isinstance(fields, Mapping):
         raise NFLContextAdmissionError("NFL_CONTEXT_METRICS_MISSING")
+    allowed = {
+        "QB_STARTER": {"starter_id", "starter_confirmed", "starter_changed_from_previous_game"},
+        "ROSTER_AVAILABILITY": {
+            "ol_starters_expected", "skill_starters_expected", "defense_starters_expected",
+        },
+        "RUSH_PASS_MATCHUP": {
+            "rush_off_epa_pp", "pass_off_epa_pp", "rush_def_epa_allowed_pp",
+            "pass_def_epa_allowed_pp", "sample_games", "last_input_game_end_at",
+        },
+    }[family]
+    if set(fields) != allowed:
+        raise NFLContextAdmissionError("NFL_CONTEXT_METRIC_CONTRACT_INVALID")
     if family == "QB_STARTER":
         _require(fields.get("starter_id"), "NFL_CONTEXT_STARTER_ID_MISSING")
         if fields.get("starter_confirmed") is not True:
