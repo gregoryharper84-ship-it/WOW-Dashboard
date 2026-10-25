@@ -523,7 +523,10 @@ def score_nfl_team_event_request(
         "latest_material_update_timestamp": envelope.latest_material_update_timestamp,
         "evidence_as_of": envelope.evidence_as_of,
     }
-    return _attach_nfl_strict_scoring_package(governed, effective_req, result)
+    try:
+        return _attach_nfl_strict_scoring_package(governed, effective_req, result)
+    except NFLModelOutputInvalid as exc:
+        raise _typed_failure(team_event_module, effective_req, exc) from exc
 
 
 def install_nfl_team_event_publication(team_event_module: Any) -> bool:
