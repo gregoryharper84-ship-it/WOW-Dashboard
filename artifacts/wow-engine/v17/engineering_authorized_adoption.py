@@ -110,6 +110,19 @@ def discover() -> dict:
     except ImportError:  # Protected-main CLI from within v17/
         from agent_identity_policy import governance_trust_roots, is_trust_root
     roots = frozenset(governance_trust_roots(Path(__file__).resolve().parents[3]))
+    # Global backpressure: don't produce more protected PRs than the existing
+    # review queue can independently certify. No indefinite approval loops.
+    live = api("pulls?state=open&base=main&per_page=100")
+    if not isinstance(live, list):
+        raise AdoptionHold("ACTIVE_APP_PR_INVENTORY_INVALID_HOLD")
+    pending = sum(
+        p.get("user", {}).get("login") == APP_AUTHOR and
+        (p.get("head") or {}).get("ref", "").startswith("wow-engineering/exact-replay-")
+        for p in live
+    )
+    if pending >= 3:
+        return {"status": "NO_ELIGIBLE_SOURCE", "detail": "APP_REVIEW_WIP_CAP",
+                "can_execute": False}
     considered = 0
     for page in range(1, 5):
         pulls = api(f"pulls?state=open&base=main&per_page=100&page={page}")
@@ -261,6 +274,10 @@ def integrate(pr_number: int, source_sha: str) -> None:
     current_main = api("git/ref/heads/main")
     if current_main.get("object", {}).get("sha") != main_sha:
         raise AdoptionHold("MAIN_MOVED_BEFORE_PUSH_HOLD")
+    current_source = api(f"pulls/{pr_number}")
+    if (current_source.get("state") != "open" or
+            current_source.get("head", {}).get("sha") != source_sha):
+        raise AdoptionHold("SOURCE_MOVED_BEFORE_PUSH_HOLD")
     with tempfile.TemporaryDirectory(prefix="wow-exact-adoption-") as temp:
         askpass = Path(temp) / "askpass"
         askpass.write_text(
