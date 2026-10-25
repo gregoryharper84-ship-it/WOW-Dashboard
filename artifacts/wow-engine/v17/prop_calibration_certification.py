@@ -80,6 +80,11 @@ class PropCalibrationCertificationPolicy:
     min_lower_bound_reliability_margin: float
     ece_bins: int = 10
     eligible_calibration_statuses: tuple[str, ...] = ("PLATT_TIME_SPLIT_V1", "ISOTONIC_V1")
+    # No-skill floor: when true, the cohort must beat the reference forecast
+    # that predicts the cohort's own observed hit rate for every row (the
+    # standard Brier-skill-score reference) on BOTH Brier and log loss.  It can
+    # only add blockers; it never relaxes any threshold above.
+    require_skill_over_base_rate: bool = False
     can_execute: bool = CAN_EXECUTE
 
     def validate(self) -> None:
@@ -127,6 +132,8 @@ class PropCalibrationCertificationPacket:
     status: str
     blockers: tuple[str, ...]
     evidence_hash: str
+    base_rate_brier_score: float | None = None
+    base_rate_log_loss: float | None = None
     can_execute: bool = CAN_EXECUTE
 
     def as_dict(self) -> dict[str, Any]:
@@ -298,6 +305,11 @@ def build_calibration_certification_packet(
     ece = _ece(probabilities, outcomes, policy.ece_bins)
     bias = observed - mean_p
     lb_margin = observed - mean_lb
+    # Reference forecast: the cohort's observed hit rate for every row.
+    base_brier = observed * (1.0 - observed)
+    base_log_loss = -(
+        observed * math.log(max(observed, eps)) + (1.0 - observed) * math.log(max(1.0 - observed, eps))
+    )
 
     if n < policy.min_settled_predictions:
         blockers.append("MIN_SETTLED_CALIBRATION_COHORT_NOT_MET")
@@ -311,6 +323,13 @@ def build_calibration_certification_packet(
         blockers.append("CALIBRATION_BIAS_THRESHOLD_FAILED")
     if lb_margin < policy.min_lower_bound_reliability_margin:
         blockers.append("LOWER_BOUND_RELIABILITY_THRESHOLD_FAILED")
+    if policy.require_skill_over_base_rate:
+        # Strict: a tie with the reference (within float rounding) is no skill.
+        tie_tolerance = 1e-12
+        if not brier < base_brier - tie_tolerance:
+            blockers.append("BRIER_NO_SKILL_VS_BASE_RATE")
+        if not log_loss < base_log_loss - tie_tolerance:
+            blockers.append("LOG_LOSS_NO_SKILL_VS_BASE_RATE")
 
     blockers = list(dict.fromkeys(blockers))
     if "MIN_SETTLED_CALIBRATION_COHORT_NOT_MET" in blockers or "CALIBRATION_STATUS_NOT_CERTIFICATION_ELIGIBLE" in blockers:
@@ -345,6 +364,8 @@ def build_calibration_certification_packet(
             "ece": ece,
             "bias": bias,
             "lower_bound_reliability_margin": lb_margin,
+            "base_rate_brier": base_brier,
+            "base_rate_log_loss": base_log_loss,
         },
         "status": status,
         "blockers": blockers,
@@ -366,6 +387,8 @@ def build_calibration_certification_packet(
         status=status,
         blockers=tuple(blockers),
         evidence_hash=_canonical_hash(hash_payload),
+        base_rate_brier_score=base_brier,
+        base_rate_log_loss=base_log_loss,
     )
 
 
