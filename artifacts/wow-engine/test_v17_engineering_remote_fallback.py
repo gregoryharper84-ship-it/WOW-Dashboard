@@ -214,6 +214,57 @@ class RemoteFallbackTests(unittest.TestCase):
         self.api.comments = [{"body": remote.MARKER + "1021 -->\nnot-json"}]
         with self.assertRaises(remote.ProviderUnavailable):
             remote.assert_no_remote_writer(self.api.comments)
+        self.api.comments = [{"body": remote.MARKER + "1021 -->\n[]"}]
+        with self.assertRaisesRegex(remote.ProviderUnavailable, "^REMOTE_RESERVATION_INVALID$"):
+            remote.assert_no_remote_writer(self.api.comments)
+
+    def test_cursor_reservation_uses_shared_writer_ledger_and_holds_until_review(self):
+        agent = "bc-12345678-1234-5678-1234-567812345678"
+        comment_id, lease = remote.reserve_cursor(
+            self.api, [], incident="1021", main_sha=MAIN, pr_number=1948,
+            pr_sha="b" * 40, cursor_agent_id=agent, worker_id="workflow:run:1",
+        )
+        self.assertEqual(comment_id, 55)
+        self.assertEqual(lease["provider"], "cursor")
+        self.assertTrue(lease["hold"])
+        with self.assertRaisesRegex(
+            remote.ProviderUnavailable, "^REMOTE_WRITER_RECONCILIATION_REQUIRED$"
+        ):
+            remote.assert_no_remote_writer(self.api.comments)
+
+        run = remote.record_cursor_dispatch(
+            self.api, comment_id, lease, run_id="cursor-run-1", run_status="CREATING",
+        )
+        self.assertEqual(run["status"], "CURSOR_AGENT_ENQUEUED")
+        self.assertEqual(run["cursor_run_id"], "cursor-run-1")
+        self.assertTrue(remote.reservations(self.api.comments)[0][1]["hold"])
+        reconciled = remote.reconcile(self.api, self.api.comments, "1021")
+        self.assertEqual(reconciled[0]["status"],
+                         "CURSOR_LEASE_REQUIRES_TERMINATION_AND_REVIEW")
+        self.assertTrue(remote.reservations(self.api.comments)[0][1]["hold"])
+
+    def test_cursor_lease_identity_is_validated_and_replay_protected(self):
+        base = remote.receipt(
+            "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id="1021",
+            main_sha=MAIN, hold=True, pr_number="1948", pr_sha="b" * 40,
+            cursor_agent_id="bc-12345678-1234-5678-1234-567812345678",
+            cursor_run_id=None,
+        )
+        self.assertEqual(remote.reservations([{"id": 3, "body": remote._body(base)}])[0][0], 3)
+        for field, value in (("pr_sha", "stale"), ("cursor_agent_id", "unknown")):
+            row = {**base, field: value}
+            with self.subTest(field=field), self.assertRaises(remote.ProviderUnavailable):
+                remote.reservations([{"id": 3, "body": remote._body(row)}])
+        self.api.comments = [{"id": 3, "body": remote._body(base)}]
+        with self.assertRaisesRegex(
+            remote.ProviderUnavailable, "^REMOTE_WRITER_RECONCILIATION_REQUIRED$"
+        ):
+            remote.reserve_cursor(
+                self.api, self.api.comments, incident="1021", main_sha=MAIN,
+                pr_number=1948, pr_sha="c" * 40,
+                cursor_agent_id="bc-87654321-4321-8765-4321-876543218765",
+                worker_id="workflow:run:2",
+            )
 
     def test_actual_source_pr_requires_exact_repo_sha_and_independent_bot(self):
         self.run_fallback()
@@ -300,6 +351,10 @@ class RemoteFallbackTests(unittest.TestCase):
                 routing = text.split("  independent-provider:", 1)[0]
                 self.assertNotIn("group: wow-v17-engineering-implementation-single-writer", routing)
                 self.assertIn("steps.remote_fence.outcome == 'failure'", routing)
+                independent = text.split("  independent-provider:", 1)[1]
+                self.assertIn("issues: write", independent)
+                self.assertIn("Dispatch scoped Cursor Cloud Agent", independent)
+                self.assertIn("group: wow-v17-engineering-implementation-single-writer", independent)
         claude = (root / ".github/workflows/wow-v17-claude-engineering-worker.yml").read_text()
         self.assertLess(claude.index("engineering_remote_fallback.py guard"),
                         claude.index("git switch --detach"))

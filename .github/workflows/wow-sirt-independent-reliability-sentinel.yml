@@ -1,33 +1,16 @@
 name: wow-sirt-independent-reliability-sentinel
 
-# Independent watchdog of the existing resident auditor. This is NOT a
-# replacement Engineering auditor or an alternate production control plane.
+# Manual, read-only diagnostic. The Render cron is the sole persisted
+# scheduler heartbeat authority; this workflow never substitutes for it.
 on:
-  # Keep the independent quarter-hour schedule. Add redundant read-only
-  # triggers for default-branch registration and hourly engineering completion.
-  # These DO NOT provide an outside-GitHub failure-domain observer.
-  schedule:
-    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/wow-sirt-independent-reliability-sentinel.yml"
-  workflow_run:
-    workflows:
-      - wow-v17-24h-engineering-closure-loop
-    types: [completed]
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  # Only scheduled runs prove watchdog liveness to the resident auditor. A shared
-  # group lets a queued push/workflow_run run replace a pending scheduled run
-  # (it ends "cancelled" and cannot satisfy the heartbeat), so cron runs queue
-  # in their own group. github.event.schedule is set only for schedule events.
-  group: wow-sirt-independent-reliability-sentinel-${{ github.event.schedule && 'schedule' || 'triggered' }}
+  group: wow-sirt-independent-reliability-sentinel-manual
   cancel-in-progress: false
 
 jobs:

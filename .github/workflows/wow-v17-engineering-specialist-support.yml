@@ -51,7 +51,83 @@ jobs:
       - name: Verify engineering controller
         run: python artifacts/wow-engine/v17/engineering_agent_team.py self-check
 
+      - name: Check shared OpenAI provider admission
+        id: provider_admission
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          admit=false
+          reason=PROVIDER_INVENTORY_UNVERIFIED
+
+          # Use the same classified, persistent breaker as the engineering dispatcher.
+          # Support-only runs must not directly retry a known-exhausted account.
+          active_breaker() {
+            local run_id="$1" updated_at="$2" logfile classification code age
+            logfile="$RUNNER_TEMP/specialist-provider-${run_id}.log"
+            gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed > "$logfile" 2>&1 || return 1
+            classification=$(python artifacts/wow-engine/v17/engineering_provider_failover.py classify \
+              --provider openai --log-file "$logfile") || return 1
+            code=$(jq -r 'if .failover_eligible == true and .provider_signal != null then .provider_signal else .code end' <<<"$classification") || return 1
+            age=$(python -c 'import datetime as d,sys; print(max(0,(d.datetime.now(d.timezone.utc)-d.datetime.fromisoformat(sys.argv[1].replace("Z","+00:00"))).total_seconds()/60))' "$updated_at") || return 1
+            if [ "$(python artifacts/wow-engine/v17/engineering_provider_failover.py circuit-breaker \
+                 --failure-code "$code" --age-minutes "$age" --cooldown-minutes 120 | jq -r '.active')" = true ]; then
+              printf '%s' "$code"
+            fi
+          }
+
+          if [ -z "${OPENAI_API_KEY:-}" ]; then
+            reason=OPENAI_API_KEY_MISSING
+          elif ! primary=$(gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow wow-v17-chatgpt-engineering-worker.yml \
+                --status completed --limit 1 --json databaseId,conclusion,updatedAt); then
+            reason=PRIMARY_WORKER_INVENTORY_UNVERIFIED
+          elif ! support_failure=$(gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow wow-v17-engineering-specialist-support.yml \
+                --status failure --limit 1 --json databaseId,conclusion,updatedAt); then
+            reason=SPECIALIST_FAILURE_INVENTORY_UNVERIFIED
+          else
+            admit=true
+            reason=PROVIDER_ADMISSION_CLEAR
+            primary_id=$(jq -r '.[0].databaseId // empty' <<<"$primary")
+            primary_state=$(jq -r '.[0].conclusion // empty' <<<"$primary")
+            primary_at=$(jq -r '.[0].updatedAt // empty' <<<"$primary")
+            support_id=$(jq -r '.[0].databaseId // empty' <<<"$support_failure")
+            support_at=$(jq -r '.[0].updatedAt // empty' <<<"$support_failure")
+
+            if [ "$primary_state" = failure ] && [ -n "$primary_id" ]; then
+              if ! code=$(active_breaker "$primary_id" "$primary_at"); then
+                admit=false
+                reason=PRIMARY_PROVIDER_EVIDENCE_UNAVAILABLE
+              elif [ -n "$code" ]; then
+                admit=false
+                reason="CIRCUIT_BREAKER:${code}"
+              fi
+            fi
+
+            # A previous specialist quota failure cannot be cleared by its own
+            # skipped/survival run. Only a newer successful primary worker clears it.
+            if [ "$admit" = true ] && [ -n "$support_id" ]; then
+              if [ "$primary_state" = success ] && [[ "$primary_at" > "$support_at" ]]; then
+                :
+              elif ! code=$(active_breaker "$support_id" "$support_at"); then
+                admit=false
+                reason=SPECIALIST_PROVIDER_EVIDENCE_UNAVAILABLE
+              elif [ -n "$code" ]; then
+                admit=false
+                reason="CIRCUIT_BREAKER:${code}"
+              fi
+            fi
+          fi
+
+          echo "admit=$admit" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "OPENAI_SPECIALIST_PROVIDER_ADMISSION: $reason; admit=$admit" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Verify OpenAI authentication
+        if: steps.provider_admission.outputs.admit == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -169,7 +245,7 @@ jobs:
 
       - name: Specialist support subagent
         id: specialist
-        if: steps.target.outputs.action != 'NO_ACTION'
+        if: steps.target.outputs.action != 'NO_ACTION' && steps.provider_admission.outputs.admit == 'true'
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -196,7 +272,22 @@ jobs:
             echo "- incident: ${{ steps.target.outputs.incident || 'NONE' }}"
             echo "- wait_state: ${{ steps.target.outputs.wait_state || 'NONE' }}"
             echo "- specialist: ${{ steps.route.outputs.subagent || 'NOT_RUN' }}"
+            echo "- provider_admit: ${{ steps.provider_admission.outputs.admit || 'false' }}"
+            echo "- provider_reason: ${{ steps.provider_admission.outputs.reason || 'UNVERIFIED' }}"
+            echo "- specialist_outcome: ${{ steps.specialist.outcome || 'skipped' }}"
             echo "- support_only: true"
             echo "- implementation_lease: false"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Surface quota-admission hold without invoking Codex
+        if: steps.target.outputs.action != 'NO_ACTION' && steps.provider_admission.outputs.admit != 'true'
+        env:
+          PROVIDER_REASON: ${{ steps.provider_admission.outputs.reason }}
+        run: |
+          if [[ "$PROVIDER_REASON" == *OPENAI_API_QUOTA_EXCEEDED* ]]; then
+            echo "::error::Quota exceeded: BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"
+          else
+            echo "::error::BLOCKED_WITH_EXACT_REASON:${PROVIDER_REASON}; Codex not invoked"
+          fi
+          exit 1

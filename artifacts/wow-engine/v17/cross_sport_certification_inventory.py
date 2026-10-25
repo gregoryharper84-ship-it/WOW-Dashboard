@@ -13,22 +13,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Iterable, Literal, Mapping
 
+from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
+
 CAN_EXECUTE = False
 
-CERTIFICATION_SPORTS = (
-    "MLB",
-    "NFL",
-    "NCAAF",
-    "NBA",
-    "WNBA",
-    "NCAAB",
-    "NHL",
-    "SOCCER",
-    "TENNIS",
-    "GOLF",
-    "MMA",
-    "BOXING",
-)
+CERTIFICATION_SPORTS = EXPECTED_TEAM_EVENT_SPORTS
 SURFACES = ("PROP", "TEAM_EVENT")
 
 CertificationStatus = Literal[
@@ -70,6 +59,9 @@ class CertificationAssessment:
 
 def _normalize_sport(value: str) -> str:
     sport = str(value).strip().upper()
+    # Legacy Golf evidence is canonical PGA; LPGA needs an independent route.
+    if sport == "GOLF":
+        sport = "PGA"
     if sport not in CERTIFICATION_SPORTS:
         raise ValueError(f"unsupported certification inventory sport: {sport}")
     return sport

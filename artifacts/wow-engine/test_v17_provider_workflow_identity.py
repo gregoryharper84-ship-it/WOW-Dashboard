@@ -63,7 +63,7 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
                 self.assertEqual(receipt["action"],"DISPATCH")
                 self.assertEqual(receipt["provider"],"anthropic")
                 self.assertEqual(receipt["reason"],"OPENAI_API_QUOTA_EXCEEDED")
-                self.assertTrue(receipt["provider_generation_allowed"])
+                self.assertNotIn("provider_generation_allowed", receipt)
 
     def test_missing_fallback_auth_is_fail_closed(self):
         receipt=self.route("wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
@@ -127,13 +127,13 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             title="lease=GLOBAL incident=2034",
         )
         self.assertEqual(receipt["action"], "SURVIVAL")
-        self.assertEqual(receipt["status"], "BLOCKED_WITH_EXACT_REASON")
         self.assertEqual(
             receipt["reason"],
             "OPENAI_API_QUOTA_EXCEEDED:ANTHROPIC_UNAVAILABLE_OR_FAILED",
         )
-        self.assertEqual(receipt["issue_id"], "2034")
-        self.assertFalse(receipt["provider_generation_allowed"])
+        self.assertEqual(receipt["target_incident"], "2034")
+        self.assertNotIn("status", receipt)
+        self.assertNotIn("provider_generation_allowed", receipt)
         self.assertFalse(receipt["can_execute"])
 
 
@@ -161,36 +161,37 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
     def route_receipt(self):
         return {
             "action": "SURVIVAL",
-            "status": "BLOCKED_WITH_EXACT_REASON",
             "provider": "deterministic",
             "reason": "CIRCUIT_BREAKER:OPENAI_API_QUOTA_EXCEEDED:SECONDARY_UNAVAILABLE_OR_FAILED",
             "parent_run_id": "901",
             "target_incident": "2034",
-            "issue_id": "2034",
             "lease_group": "P0_LLP_RESTORE",
+            "cursor_status": "CURSOR_NOT_CONFIGURED",
             "independent_fallback_allowed": True,
-            "provider_generation_allowed": False,
             "can_execute": False,
             "terminal_authority": "V17_TERMINAL_REDUCER",
         }
 
-    def validate(self, directory, *, route=None, survival=None, **overrides):
+    def validate(self, directory, *, route=None, survival=None,
+                 missing_route=False, missing_survival=False, **overrides):
         route_path = Path(directory) / "provider-route.json"
         survival_dir = Path(directory) / "wow-survival"
         survival_dir.mkdir()
         survival_path = survival_dir / "provider-survival-receipt.json"
-        route_path.write_text(json.dumps(self.route_receipt() if route is None else route))
-        survival_path.write_text(json.dumps(survival or {
-            "status": "DEGRADED_DETERMINISTIC_SURVIVAL",
-            "reason": self.route_receipt()["reason"],
-            "parent_run_id": "901",
-            "priority": {"incident_id": "PM-TEST-001"},
-            "provider_generation_allowed": False,
-            "deterministic_checks_allowed": True,
-            "probability_authority": False,
-            "can_execute": False,
-            "terminal_authority": "V17_TERMINAL_REDUCER",
-        }))
+        if not missing_route:
+            route_path.write_text(json.dumps(self.route_receipt() if route is None else route))
+        if not missing_survival:
+            survival_path.write_text(json.dumps(survival or {
+                "status": "DEGRADED_DETERMINISTIC_SURVIVAL",
+                "reason": self.route_receipt()["reason"],
+                "parent_run_id": "901",
+                "priority": {"incident_id": "PM-TEST-001"},
+                "provider_generation_allowed": False,
+                "deterministic_checks_allowed": True,
+                "probability_authority": False,
+                "can_execute": False,
+                "terminal_authority": "V17_TERMINAL_REDUCER",
+            }))
         env = {
             "RUNNER_TEMP": str(directory),
             "ROUTE_RECEIPT": str(route_path),
@@ -206,6 +207,7 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
             "SURVIVAL_OUTCOME": "success",
             "OPENAI_DISPATCH_OUTCOME": "skipped",
             "ANTHROPIC_DISPATCH_OUTCOME": "skipped",
+            "GEMINI_DISPATCH_OUTCOME": "skipped",
         }
         env.update(overrides)
         return self.run_step("Validate provider-control receipts", env)
@@ -219,6 +221,7 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
             "SURVIVAL_OUTCOME": "success",
             "OPENAI_DISPATCH_OUTCOME": "skipped",
             "ANTHROPIC_DISPATCH_OUTCOME": "skipped",
+            "GEMINI_DISPATCH_OUTCOME": "skipped",
             "RECEIPT_VALIDATION_OUTCOME": "success",
             "RECEIPT_UPLOAD_OUTCOME": "success",
         }
@@ -251,6 +254,7 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
                     "SURVIVAL_OUTCOME": "success",
                     "OPENAI_DISPATCH_OUTCOME": "skipped",
                     "ANTHROPIC_DISPATCH_OUTCOME": "skipped",
+                    "GEMINI_DISPATCH_OUTCOME": "skipped",
                     "RECEIPT_VALIDATION_OUTCOME": "success",
                     "RECEIPT_UPLOAD_OUTCOME": "success",
                 },
@@ -261,6 +265,8 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
             self.assertIn("OPEN / BLOCKED_WITH_EXACT_REASON", text)
             self.assertIn("repair_verified: false", text)
             self.assertIn("provider_generation_allowed: false", text)
+            self.assertIn("REPAIR_DELIVERED=false", text)
+            self.assertIn("survival_receipt_status: DEGRADED_DETERMINISTIC_SURVIVAL", text)
             self.assertNotIn("FIXED_AND_VERIFIED", text)
             self.assertNotIn("PR_CREATED", text)
 
@@ -281,6 +287,16 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
             result = self.validate(directory, SURVIVAL_OUTCOME="failure")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("DETERMINISTIC_SURVIVAL_CHECKS_FAILED", result.stdout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.validate(directory, missing_route=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PROVIDER_ROUTE_RECEIPT_INVALID", result.stdout)
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.validate(directory, missing_survival=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PROVIDER_SURVIVAL_RECEIPT_INVALID", result.stdout)
 
         for outcomes in (
             {"REMOTE_FENCE_OUTCOME": "failure"},
@@ -304,7 +320,9 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
         self.assertIn("steps.provider_receipt.outcome == 'success'", outputs)
         self.assertNotIn("|| steps.remote_fence.outcome == 'failure'", outputs)
         job = self.text.split("  independent-provider:\n", 1)[1]
-        self.assertIn("if: always() && needs.provider-control.outputs.fallback_required == 'true'", job)
+        self.assertIn("needs.provider-control.outputs.fallback_required == 'true'", job)
+        self.assertIn("needs.provider-control.outputs.cursor_dispatch == 'true'", job)
+        self.assertNotIn("needs.provider-control.result == 'failure'", job)
         self.assertIn("group: wow-v17-engineering-implementation-single-writer", job)
         self.assertIn("engineering_remote_fallback.py fallback", job)
         self.assertIn("independent-provider-receipt.json", job)

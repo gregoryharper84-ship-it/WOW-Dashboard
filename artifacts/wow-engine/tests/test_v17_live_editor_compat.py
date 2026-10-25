@@ -95,7 +95,7 @@ def test_live_editor_schema_is_single_domain_and_exposes_all_27_operations():
         for operation in methods.values()
         if isinstance(operation, dict) and "operationId" in operation
     }
-    assert len(operations) == 27
+    assert len(operations) == 29
     assert {
         "scoreWowTeamEventRequest",
         "submitWowV17DailySnapshot",

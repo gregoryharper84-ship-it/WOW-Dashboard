@@ -27,6 +27,20 @@ on:
           - auto
           - openai
           - anthropic
+          - gemini
+          - cursor
+      cursor_pr_number:
+        description: Existing PR number for an opt-in Cursor handoff.
+        required: false
+        default: ""
+      cursor_expected_head:
+        description: Exact expected PR head SHA for Cursor handoff.
+        required: false
+        default: ""
+      cursor_task:
+        description: Scoped engineering assignment (max 4000 characters).
+        required: false
+        default: ""
       reason:
         description: Optional dispatch reason.
         required: false
@@ -48,7 +62,7 @@ permissions:
   issues: read
 
 concurrency:
-  group: wow-v17-engineering-provider-dispatcher-${{ inputs.lease_group || 'GLOBAL' }}
+  group: wow-v17-engineering-provider-dispatcher-${{ inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' || inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
@@ -59,12 +73,22 @@ jobs:
     outputs:
       fallback_required: >-
         ${{ steps.route.outputs.action == 'SURVIVAL'
+          && steps.route.outcome == 'success'
           && steps.route.outputs.independent_fallback_allowed == 'true'
           && vars.WOW_COPILOT_FALLBACK_ENABLED == 'true'
           && steps.remote_fence.outcome == 'success'
           && steps.survival.outcome == 'success'
           && steps.receipt_validation.outcome == 'success'
           && steps.provider_receipt.outcome == 'success' }}
+      cursor_dispatch: >-
+        ${{ steps.route.outputs.action == 'DISPATCH'
+          && steps.route.outcome == 'success'
+          && steps.route.outputs.provider == 'cursor'
+          && steps.remote_fence.outcome == 'success'
+          && steps.receipt_validation.outcome == 'success'
+          && steps.provider_receipt.outcome == 'success' }}
+      provider: ${{ steps.route.outputs.provider }}
+      remote_fence: ${{ steps.remote_fence.outcome }}
       target_incident: ${{ steps.route.outputs.target_incident }}
       lease_group: ${{ steps.route.outputs.lease_group }}
       allow_new_assignment: ${{ steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' }}
@@ -92,6 +116,9 @@ jobs:
           MANUAL_REASON: ${{ inputs.reason }}
           MANUAL_TARGET_INCIDENT: ${{ inputs.target_incident }}
           MANUAL_LEASE_GROUP: ${{ inputs.lease_group }}
+          GEMINI_ENGINEERING_ENABLED: ${{ vars.GEMINI_ENGINEERING_ENABLED }}
+          GEMINI_AUTO_ROUTING_ENABLED: ${{ vars.GEMINI_AUTO_ROUTING_ENABLED }}
+          GEMINI_SPEND_CAP_CONFIRMED: ${{ vars.GEMINI_SPEND_CAP_CONFIRMED }}
           SOURCE_DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |
           set -euo pipefail
@@ -148,6 +175,37 @@ jobs:
             [ "$conclusion" != "failure" ] && [ "$conclusion" != "cancelled" ]
           }
 
+          gemini_canary_healthy() {
+            [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
+            [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ] &&
+            [ "${GEMINI_AUTO_ROUTING_ENABLED:-}" = "true" ] || return 1
+            # Do not autonomously route Gemini until at least one real manual
+            # canary succeeded; a failed latest run opens a persistent breaker.
+            local recent conclusion
+            if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
+                 --workflow wow-v17-gemini-engineering-worker.yml \
+                 --status completed --limit 1 --json databaseId,conclusion,updatedAt 2>/dev/null); then
+              return 1
+            fi
+            conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
+            [ "$conclusion" = "success" ] || return 1
+            # Cost circuit: no repeated automatic paid work more than once/day.
+            # Manual explicit canaries remain available for recovery and diagnostics.
+            local age_minutes
+            age_minutes=$(python - "$recent" <<'PY'
+          import datetime as dt, json, sys
+          try:
+              runs = json.loads(sys.argv[1])
+              when = dt.datetime.fromisoformat(runs[0]["updatedAt"].replace("Z", "+00:00"))
+              minutes = (dt.datetime.now(dt.timezone.utc) - when).total_seconds() / 60
+              print(int(minutes) if minutes >= 0 else -1)
+          except (ValueError, KeyError, IndexError, TypeError):
+              print(-1)
+          PY
+            ) || return 1
+            [[ "$age_minutes" =~ ^[0-9]+$ ]] && [ "$age_minutes" -ge 1440 ]
+          }
+
           if [ "$EVENT_NAME" = "workflow_run" ] && [ "$source_workflow_id" != "wow-v17-nightly-engineering-scan" ]; then
             if [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
@@ -187,6 +245,21 @@ jobs:
               action=DISPATCH
               provider=openai
               reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+            elif [ "$force" = "cursor" ]; then
+              action=DISPATCH
+              provider=cursor
+              reason="${MANUAL_REASON:-OWNER_CURSOR_PR_HANDOFF}"
+            elif [ "$force" = "gemini" ]; then
+              if [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
+                 [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ]; then
+                action=DISPATCH
+                provider=gemini
+                reason="${MANUAL_REASON:-GEMINI_OPERATOR_CANARY}"
+              else
+                action=SURVIVAL
+                provider=deterministic
+                reason=GEMINI_DISABLED_OR_SPEND_UNCONFIRMED
+              fi
             elif [ "$force" = "anthropic" ]; then
               if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
                 action=DISPATCH
@@ -197,6 +270,10 @@ jobs:
                 provider=deterministic
                 reason=ANTHROPIC_AUTH_MISSING
               fi
+            elif gemini_canary_healthy; then
+              action=DISPATCH
+              provider=gemini
+              reason=GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY
             else
               latest=$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
@@ -248,10 +325,6 @@ jobs:
             fi
           fi
 
-          provider_generation_allowed=false
-          if [ "$action" = "DISPATCH" ]; then
-            provider_generation_allowed=true
-          fi
           jq -n \
             --arg action "$action" \
             --arg provider "$provider" \
@@ -260,26 +333,15 @@ jobs:
             --arg target_incident "$target_incident" \
             --arg lease_group "$lease_group" \
             --argjson independent_fallback_allowed "$independent_fallback_allowed" \
-            --argjson provider_generation_allowed \
-              "$provider_generation_allowed" \
             '{
               action: $action,
-              status: (
-                if $action == "SURVIVAL" then "BLOCKED_WITH_EXACT_REASON"
-                else "ROUTER_ACTION_SELECTED"
-                end
-              ),
               provider: $provider,
               reason: $reason,
               parent_run_id: $parent_run_id,
               target_incident: $target_incident,
-              issue_id: (
-                if $target_incident == "" then null else $target_incident end
-              ),
               lease_group: $lease_group,
-              cursor_status: "CURSOR_NOT_CONFIGURED",
+              cursor_status: (if $provider == "cursor" then null else "CURSOR_NOT_CONFIGURED" end),
               independent_fallback_allowed: $independent_fallback_allowed,
-              provider_generation_allowed: $provider_generation_allowed,
               can_execute: false,
               terminal_authority: "V17_TERMINAL_REDUCER"
             }' > "$receipt"
@@ -335,6 +397,23 @@ jobs:
             -f target_incident="$TARGET_INCIDENT" \
             -f lease_group="$LEASE_GROUP"
 
+      - name: Dispatch opt-in Gemini headless worker
+        id: dispatch_gemini
+        if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'gemini' && steps.remote_fence.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
+          LEASE_GROUP: ${{ steps.route.outputs.lease_group }}
+          INVOCATION_MODE: ${{ inputs.force_provider == 'gemini' && 'manual' || 'auto' }}
+        run: |
+          set -euo pipefail
+          gh workflow run wow-v17-gemini-engineering-worker.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f target_incident="$TARGET_INCIDENT" \
+            -f lease_group="$LEASE_GROUP" \
+            -f invocation_mode="$INVOCATION_MODE"
+
       - name: Deterministic survival checks
         id: survival
         if: steps.route.outputs.action == 'SURVIVAL' || steps.remote_fence.outcome == 'failure'
@@ -387,6 +466,7 @@ jobs:
           SURVIVAL_OUTCOME: ${{ steps.survival.outcome }}
           OPENAI_DISPATCH_OUTCOME: ${{ steps.dispatch_openai.outcome }}
           ANTHROPIC_DISPATCH_OUTCOME: ${{ steps.dispatch_anthropic.outcome }}
+          GEMINI_DISPATCH_OUTCOME: ${{ steps.dispatch_gemini.outcome }}
         run: |
           set -euo pipefail
           if [ "$ROUTE_OUTCOME" != "success" ]; then
@@ -408,29 +488,28 @@ jobs:
                   ($action == "NO_ACTION" and .provider == "none")
                   or (
                     $action == "DISPATCH"
-                    and (.provider == "openai" or .provider == "anthropic")
+                    and (
+                      .provider == "openai"
+                      or .provider == "anthropic"
+                      or .provider == "gemini"
+                      or .provider == "cursor"
+                    )
                   )
                   or ($action == "SURVIVAL" and .provider == "deterministic")
-                )
-                and .status == (
-                  if $action == "SURVIVAL" then "BLOCKED_WITH_EXACT_REASON"
-                  else "ROUTER_ACTION_SELECTED"
-                  end
                 )
                 and .reason == $reason
                 and ($reason | type == "string" and length > 0)
                 and .parent_run_id == $parent
                 and ($parent | length > 0)
                 and .target_incident == $target
-                and .issue_id == (
-                  if $target == "" then null else $target end
-                )
                 and .lease_group == $lease
                 and ($lease | length > 0)
                 and .can_execute == false
                 and .terminal_authority == "V17_TERMINAL_REDUCER"
                 and (.independent_fallback_allowed | type == "boolean")
-                and .provider_generation_allowed == ($action == "DISPATCH")
+                and .cursor_status == (
+                  if $provider == "cursor" then null else "CURSOR_NOT_CONFIGURED" end
+                )
               ' "$ROUTE_RECEIPT" >/dev/null 2>&1; then
             echo "::error::PROVIDER_ROUTE_RECEIPT_INVALID"
             exit 1
@@ -441,12 +520,14 @@ jobs:
             exit 1
           fi
           if [ "$ACTION" = "DISPATCH" ]; then
-            if [ "$PROVIDER" = "anthropic" ]; then
-              dispatch_outcome="$ANTHROPIC_DISPATCH_OUTCOME"
-            else
-              dispatch_outcome="$OPENAI_DISPATCH_OUTCOME"
-            fi
-            if [ "$dispatch_outcome" != "success" ]; then
+            case "$PROVIDER" in
+              anthropic) dispatch_outcome="$ANTHROPIC_DISPATCH_OUTCOME" ;;
+              openai) dispatch_outcome="$OPENAI_DISPATCH_OUTCOME" ;;
+              gemini) dispatch_outcome="$GEMINI_DISPATCH_OUTCOME" ;;
+              cursor) dispatch_outcome=external_handoff ;;
+              *) dispatch_outcome=missing ;;
+            esac
+            if [ "$PROVIDER" != "cursor" ] && [ "$dispatch_outcome" != "success" ]; then
               echo "::error::PROVIDER_DISPATCH_FAILED"
               exit 1
             fi
@@ -504,6 +585,7 @@ jobs:
           SURVIVAL_OUTCOME: ${{ steps.survival.outcome }}
           OPENAI_DISPATCH_OUTCOME: ${{ steps.dispatch_openai.outcome }}
           ANTHROPIC_DISPATCH_OUTCOME: ${{ steps.dispatch_anthropic.outcome }}
+          GEMINI_DISPATCH_OUTCOME: ${{ steps.dispatch_gemini.outcome }}
           RECEIPT_VALIDATION_OUTCOME: ${{ steps.receipt_validation.outcome }}
           RECEIPT_UPLOAD_OUTCOME: ${{ steps.provider_receipt.outcome }}
         run: |
@@ -515,6 +597,7 @@ jobs:
               || [ "$SURVIVAL_OUTCOME" = "failure" ] \
               || [ "$OPENAI_DISPATCH_OUTCOME" = "failure" ] \
               || [ "$ANTHROPIC_DISPATCH_OUTCOME" = "failure" ] \
+              || [ "$GEMINI_DISPATCH_OUTCOME" = "failure" ] \
               || [ "$RECEIPT_VALIDATION_OUTCOME" = "failure" ] \
               || [ "$RECEIPT_UPLOAD_OUTCOME" != "success" ]; then
             router_status=BLOCKED_WITH_EXACT_REASON
@@ -523,6 +606,9 @@ jobs:
               && [ "$ROUTE_OUTCOME" = "success" ] \
               && [ "$REMOTE_FENCE_OUTCOME" = "success" ] \
               && [ "$SURVIVAL_OUTCOME" = "success" ] \
+              && [ "$OPENAI_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$ANTHROPIC_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$GEMINI_DISPATCH_OUTCOME" != "failure" ] \
               && [ "$RECEIPT_VALIDATION_OUTCOME" = "success" ] \
               && [ "$RECEIPT_UPLOAD_OUTCOME" = "success" ]; then
             router_status=ROUTER_HEALTHY_PROVIDER_BLOCKED
@@ -545,9 +631,13 @@ jobs:
             echo "- deterministic survival: $deterministic_survival"
             if [ "${ACTION:-}" = "SURVIVAL" ]; then
               echo "- incident_status: OPEN / BLOCKED_WITH_EXACT_REASON"
+              echo "- survival_receipt_status: DEGRADED_DETERMINISTIC_SURVIVAL"
+              echo "- REPAIR_DELIVERED=false"
               echo "- repair_verified: false"
               echo "- provider_generation_allowed: false"
             fi
+            echo "- Gemini: disabled until separately authorized budget and canary"
+            echo "- Cursor: opt-in existing-PR Cloud Agent only, not automatic fallback"
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -561,6 +651,7 @@ jobs:
             steps.survival.outcome == 'failure' ||
             steps.dispatch_openai.outcome == 'failure' ||
             steps.dispatch_anthropic.outcome == 'failure' ||
+            steps.dispatch_gemini.outcome == 'failure' ||
             steps.receipt_validation.outcome == 'failure' ||
             steps.provider_receipt.outcome != 'success'
           )
@@ -573,14 +664,18 @@ jobs:
           SURVIVAL_OUTCOME: ${{ steps.survival.outcome }}
           OPENAI_DISPATCH_OUTCOME: ${{ steps.dispatch_openai.outcome }}
           ANTHROPIC_DISPATCH_OUTCOME: ${{ steps.dispatch_anthropic.outcome }}
+          GEMINI_DISPATCH_OUTCOME: ${{ steps.dispatch_gemini.outcome }}
           RECEIPT_VALIDATION_OUTCOME: ${{ steps.receipt_validation.outcome }}
           RECEIPT_UPLOAD_OUTCOME: ${{ steps.provider_receipt.outcome }}
         run: |
           set -euo pipefail
           if [ "$ACTION" = "SURVIVAL" ] \
-              && [ "$ROUTE_OUTCOME" = "success" ] \
               && [ "$REMOTE_FENCE_OUTCOME" = "success" ] \
+              && [ "$ROUTE_OUTCOME" = "success" ] \
               && [ "$SURVIVAL_OUTCOME" = "success" ] \
+              && [ "$OPENAI_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$ANTHROPIC_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$GEMINI_DISPATCH_OUTCOME" != "failure" ] \
               && [ "$RECEIPT_VALIDATION_OUTCOME" = "success" ] \
               && [ "$RECEIPT_UPLOAD_OUTCOME" = "success" ]; then
             warning_reason=$(printf '%s' "$REASON" \
@@ -598,7 +693,8 @@ jobs:
           elif [ "$SURVIVAL_OUTCOME" = "failure" ]; then
             detail=DETERMINISTIC_SURVIVAL_CHECKS_FAILED
           elif [ "$OPENAI_DISPATCH_OUTCOME" = "failure" ] \
-              || [ "$ANTHROPIC_DISPATCH_OUTCOME" = "failure" ]; then
+              || [ "$ANTHROPIC_DISPATCH_OUTCOME" = "failure" ] \
+              || [ "$GEMINI_DISPATCH_OUTCOME" = "failure" ]; then
             detail=PROVIDER_DISPATCH_FAILED
           elif [ "$RECEIPT_VALIDATION_OUTCOME" = "failure" ]; then
             detail=PROVIDER_RECEIPT_VALIDATION_FAILED
@@ -610,7 +706,11 @@ jobs:
 
   independent-provider:
     needs: provider-control
-    if: always() && needs.provider-control.outputs.fallback_required == 'true'
+    if: always() && (
+      needs.provider-control.outputs.cursor_dispatch == 'true' ||
+      (needs.provider-control.outputs.fallback_required == 'true' &&
+       needs.provider-control.outputs.provider != 'cursor')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -629,7 +729,50 @@ jobs:
           ref: main
           persist-credentials: false
 
+      - name: Dispatch scoped Cursor Cloud Agent
+        if: needs.provider-control.outputs.cursor_dispatch == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          CURSOR_HANDOFF_ENABLED: ${{ vars.CURSOR_HANDOFF_ENABLED }}
+          CURSOR_SPEND_CAP_CONFIRMED: ${{ vars.CURSOR_SPEND_CAP_CONFIRMED }}
+          CURSOR_PR_NUMBER: ${{ inputs.cursor_pr_number }}
+          CURSOR_INCIDENT: ${{ inputs.target_incident }}
+          CURSOR_EXPECTED_HEAD: ${{ inputs.cursor_expected_head }}
+          CURSOR_TASK: ${{ inputs.cursor_task }}
+          CURSOR_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/cursor-handoff.json"
+          if [ "${CURSOR_HANDOFF_ENABLED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_HANDOFF_DISABLED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_HANDOFF_DISABLED"
+            exit 1
+          fi
+          # This opt-in is an owner's attestation, NOT a provider-enforced price cap.
+          # Never launch while additional spending controls have not been confirmed.
+          if [ "${CURSOR_SPEND_CAP_CONFIRMED:-false}" != "true" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_SPEND_CAP_UNCONFIRMED","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_SPEND_CAP_UNCONFIRMED"
+            exit 1
+          fi
+          if [ -z "${CURSOR_PR_NUMBER:-}" ] || [ -z "${CURSOR_INCIDENT:-}" ] || [ -z "${CURSOR_EXPECTED_HEAD:-}" ] || [ -z "${CURSOR_TASK:-}" ]; then
+            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_DISPATCH_INPUTS_MISSING","can_execute":false,"production_verified":false}\n' > "$receipt"
+            echo "::error::CURSOR_DISPATCH_INPUTS_MISSING"
+            exit 1
+          fi
+          python artifacts/wow-engine/v17/cursor_cloud_handoff.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number "$CURSOR_PR_NUMBER" \
+            --incident-number "$CURSOR_INCIDENT" \
+            --actor "$CURSOR_ACTOR" \
+            --expected-head "$CURSOR_EXPECTED_HEAD" \
+            --task "$CURSOR_TASK" \
+            --receipt "$receipt"
+
       - name: Reconcile or admit separately authorized Copilot fallback
+        if: needs.provider-control.outputs.cursor_dispatch != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           COPILOT_ASSIGNMENT_TOKEN: ${{ secrets.WOW_COPILOT_ASSIGNMENT_TOKEN }}
@@ -649,6 +792,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-independent-provider-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/independent-provider-receipt.json
+          path: |
+            ${{ runner.temp }}/independent-provider-receipt.json
+            ${{ runner.temp }}/cursor-handoff.json
           if-no-files-found: error
           retention-days: 14

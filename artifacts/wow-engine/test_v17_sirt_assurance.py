@@ -146,8 +146,10 @@ def test_independent_watchdog_is_separate_from_resident_auditor():
 
     workflow = (Path(__file__).resolve().parents[2]
                 / ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
-    assert "schedule:" in workflow
-    assert 'cron: "7,22,37,52 * * * *"' in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "  schedule:" not in workflow
+    assert "  push:" not in workflow
+    assert "  workflow_run:" not in workflow
     assert "sirt_assurance.py sentinel" in workflow
     assert "secrets.SUPABASE_SERVICE_ROLE_KEY" in workflow
     assert "if: always()" in workflow
@@ -267,23 +269,20 @@ def test_independent_sirt_schedule_can_enforce_resident_dispatcher_after_activat
 
 
 
-def test_sirt_watchdog_has_independent_event_trigger_for_existing_hourly_loop():
-    """A missing cron run must not silently prevent the first watchdog canary.
-
-    Event redundancy is same-domain only; it does NOT certify 24/7 resilience.
-    """
+def test_sirt_manual_diagnostic_is_read_only_and_not_a_second_scheduler():
+    """Render is the sole independent scheduler; GitHub is manual diagnostics only."""
     from pathlib import Path
     wf = (Path(__file__).resolve().parents[2] /
           ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
-    assert 'cron: "7,22,37,52 * * * *"' in wf
-    assert "  workflow_run:\n    workflows:\n      - wow-v17-24h-engineering-closure-loop\n    types: [completed]" in wf
-    assert '  push:\n    branches: [main]\n    paths:\n      - ".github/workflows/wow-sirt-independent-reliability-sentinel.yml"' in wf
+    assert "workflow_dispatch:" in wf
+    assert "  schedule:" not in wf
+    assert "  push:" not in wf
+    assert "  workflow_run:" not in wf
     assert "  contents: read" in wf and "  actions: read" in wf
     for forbidden in ("  contents: write", "  actions: write", "  pull-requests: write",
                       "  issues: write", "  deployments: write", "  id-token: write"):
         assert forbidden not in wf
-    assert "workflow_dispatch:" in wf
-    assert 'vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT' in wf
+    assert "vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT" in wf
 
 
 def test_sirt_incident_history_step_receives_same_supabase_source_as_heartbeat():
@@ -349,10 +348,9 @@ def test_blocked_sentinel_prints_evidence_under_runner_bash_e(tmp_path, exit_cod
     assert "OBSERVED_HEALTHY" not in text
 
 
-def test_scheduled_sentinel_runs_cannot_be_superseded_by_triggered_runs():
-    """Only schedule runs satisfy the auditor watchdog; keep them in their own group."""
+def test_manual_sirt_diagnostic_runs_are_serial_and_cannot_forge_liveness():
     text, wf = _sentinel_workflow()
-    group = wf["concurrency"]["group"]
-    assert "github.event.schedule && 'schedule' || 'triggered'" in group
+    assert wf["concurrency"]["group"] == "wow-sirt-independent-reliability-sentinel-manual"
     assert wf["concurrency"]["cancel-in-progress"] is False
-    assert 'cron: "7,22,37,52 * * * *"' in text
+    assert "workflow_dispatch:" in text
+    assert "  schedule:" not in text

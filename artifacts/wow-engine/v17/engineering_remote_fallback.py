@@ -1,4 +1,4 @@
-"""Opt-in Copilot fallback; Cursor remains unverified and is never invoked.
+"""Opt-in Copilot fallback and shared remote-writer reservation ledger.
 
 Reservations live in the existing #1138 heartbeat ledger. Callers must hold the
 existing Actions implementation-single-writer lock for admission and mutation.
@@ -26,6 +26,7 @@ LEDGER = f"/repos/{REPOSITORY}/issues/1138/comments"
 MARKER = "<!-- WOW_REMOTE_REPAIR_ATTEMPT:"
 COPILOT_ID = 198982749  # github.com/apps/copilot-swe-agent, not the requesting user
 SHA = re.compile(r"[0-9a-f]{40}")
+CURSOR_AGENT_ID = re.compile(r"bc-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}")
 
 
 class ProviderUnavailable(Exception):
@@ -70,19 +71,32 @@ class GitHub:
 def reservations(comments):
     result = []
     for comment in comments:
+        if not isinstance(comment, dict) or not isinstance(comment.get("body"), str):
+            raise ProviderUnavailable("REMOTE_RESERVATION_INVALID")
         body = comment.get("body") or ""
         if MARKER not in body:
             continue
         try:
             receipt = json.loads(body.split("\n", 1)[1])
+            if not isinstance(receipt, dict):
+                raise ValueError()
+            provider = receipt.get("provider")
             if (type(receipt.get("hold")) is not bool
                     or receipt.get("can_execute") is not False
                     or receipt.get("probability_authority") is not False
                     or receipt.get("terminal_authority") != "V17_TERMINAL_REDUCER"
-                    or receipt.get("provider") != "copilot"
+                    or provider not in ("copilot", "cursor")
                     or not re.fullmatch(r"[1-9][0-9]*", str(receipt.get("incident_id", "")))
                     or not SHA.fullmatch(str(receipt.get("main_sha", "")))
                     or body.split("\n", 1)[0] != f"{MARKER}{receipt['incident_id']} -->"):
+                raise ValueError()
+            if provider == "cursor" and (
+                not re.fullmatch(r"[1-9][0-9]*", str(receipt.get("pr_number", "")))
+                or not SHA.fullmatch(str(receipt.get("pr_sha", "")))
+                or not CURSOR_AGENT_ID.fullmatch(str(receipt.get("cursor_agent_id", "")))
+                or (receipt.get("cursor_run_id") is not None
+                    and not str(receipt.get("cursor_run_id", "")).strip())
+            ):
                 raise ValueError()
             result.append((comment["id"], receipt))
         except (KeyError, ValueError, IndexError, TypeError):
@@ -93,6 +107,64 @@ def reservations(comments):
 def assert_no_remote_writer(comments):
     if any(receipt["hold"] for _, receipt in reservations(comments)):
         raise ProviderUnavailable("REMOTE_WRITER_RECONCILIATION_REQUIRED")
+
+
+def assert_no_local_writer(comments):
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    for comment in comments:
+        if not isinstance(comment, dict) or not isinstance(comment.get("body", ""), str):
+            raise ProviderUnavailable("REMOTE_HEARTBEAT_INVALID")
+        body = comment.get("body") or ""
+        if "<!-- WOW_DUAL_STREAM_HEARTBEAT:" not in body or "- worker_mode: RUNNING" not in body:
+            continue
+        expiry = re.search(r"^- lease_expires_at: (.+)$", body, re.M)
+        if not expiry or expiry[1] > now:
+            raise ProviderUnavailable("CONCURRENT_WRITER")
+
+
+def reserve_cursor(api, comments, *, incident, main_sha, pr_number, pr_sha,
+                   cursor_agent_id, worker_id):
+    attempts = reservations(comments)
+    assert_no_remote_writer(comments)
+    assert_no_local_writer(comments)
+    if any(row.get("provider") == "cursor"
+           and str(row.get("pr_number")) == str(pr_number)
+           and row.get("pr_sha") == pr_sha
+           and row.get("cursor_agent_id") == cursor_agent_id
+           for _, row in attempts):
+        raise ProviderUnavailable("CURSOR_DUPLICATE_DISPATCH_SUPPRESSED")
+    result = receipt(
+        "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id=str(incident),
+        lease_group=f"PR_{pr_number}", main_sha=main_sha, hold=True,
+        worker_id=worker_id, assignment_attempts=1, source_pr=pr_number,
+        pr_number=str(pr_number), pr_sha=pr_sha, cursor_agent_id=cursor_agent_id,
+        cursor_run_id=None,
+        next_action="Reconcile this reservation; keep the shared writer hold until Cursor "
+                    "termination and independent review are verified.",
+    )
+    saved = api.request(LEDGER, {"body": _body(result)})
+    if not isinstance(saved, dict):
+        raise ProviderUnavailable("CURSOR_LEASE_RECEIPT_UNVERIFIED")
+    comment_id = saved.get("id")
+    if type(comment_id) is not int or comment_id < 1:
+        raise ProviderUnavailable("CURSOR_LEASE_RECEIPT_UNVERIFIED")
+    return comment_id, result
+
+
+def record_cursor_dispatch(api, comment_id, result, *, run_id, run_status):
+    updated = {
+        **result,
+        "status": "CURSOR_AGENT_ENQUEUED",
+        "cursor_run_id": str(run_id),
+        "cursor_run_status": str(run_status or "UNKNOWN"),
+    }
+    saved = api.request(
+        f"/repos/{REPOSITORY}/issues/comments/{comment_id}",
+        {"body": _body(updated)}, "PATCH",
+    )
+    if not isinstance(saved, dict) or saved.get("id") != comment_id:
+        raise ProviderUnavailable("CURSOR_LEASE_RECEIPT_UPDATE_UNVERIFIED")
+    return updated
 
 
 def receipt(reason, **fields):
@@ -163,6 +235,9 @@ def reconcile(api, comments, incident=""):
         result = {**old, "action": "SURVIVAL"}
         if not old["hold"]:
             result["status"] = "REPLAY_REJECTED_RESERVATION_RELEASED"
+        elif old["provider"] == "cursor":
+            result["status"] = "CURSOR_LEASE_REQUIRES_TERMINATION_AND_REVIEW"
+            api.request(f"/repos/{REPOSITORY}/issues/comments/{cid}", {"body": _body(result)}, "PATCH")
         else:
             pr = _source_pr(api, issue, old["main_sha"])
             result["status"] = ("SOURCE_PR_AWAITING_INDEPENDENT_REVIEW"
@@ -222,13 +297,7 @@ def fallback(env, api, assignment_api, manifest, main_sha):
             return reconcile(api, comments, issue)[0]
         assert_no_remote_writer(comments)
         # Do not take over an existing local lease, even after its workflow ended.
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        for comment in comments:
-            body = comment.get("body") or ""
-            if "<!-- WOW_DUAL_STREAM_HEARTBEAT:" in body and "- worker_mode: RUNNING" in body:
-                expiry = re.search(r"^- lease_expires_at: (.+)$", body, re.M)
-                if not expiry or expiry[1] > now:
-                    raise ProviderUnavailable("CONCURRENT_WRITER")
+        assert_no_local_writer(comments)
         if target.get("assignees"):
             # Existing assignment is ownership, not permission to re-trigger.
             raise ProviderUnavailable("INCIDENT_ALREADY_ASSIGNED")
