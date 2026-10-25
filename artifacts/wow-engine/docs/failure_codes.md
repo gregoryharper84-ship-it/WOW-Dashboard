@@ -217,6 +217,13 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `RELEASE_QA_MISSING` | release authority | No completed `WOW Independent QA exact-head` run from the QA App at this head. | N/A |
 | `RELEASE_QA_FAILED` | release authority | The latest QA App check at this head is not `success`. | N/A |
 | `RELEASE_QA_FOREIGN_SOURCE` | release authority | A `WOW Independent QA exact-head` run exists at this head but from a principal other than the QA App (spoof or misconfiguration). | N/A |
+| `RELEASE_UPSTREAM_QA_APPLICABLE` | release authority | The authenticated upstream QA run completed and its `qa` job concluded `success` or `failure`. Policy resolution still runs; this is not a Release pass. | N/A |
+| `RELEASE_UPSTREAM_QA_DISPOSITION_INVALID` | release authority | Upstream classification returned a disposition other than `neutral` or `applicable`. No Release check is published. | N/A |
+| `RELEASE_UPSTREAM_QA_JOB_INCOMPLETE` | release authority | The upstream `qa` job is not a completed success, failure, or skip. No Release check is published. | N/A |
+| `RELEASE_UPSTREAM_QA_NO_TARGET` | release authority | The upstream QA workflow completed but its `qa` job was skipped, so there is no exact-head target. Neutral: no policy lookup and no Release check. | N/A |
+| `RELEASE_UPSTREAM_QA_SKIPPED` | release authority | The upstream QA workflow conclusion is `skipped`. Neutral: no policy lookup and no Release check. | N/A |
+| `RELEASE_UPSTREAM_QA_UNREADABLE` | release authority | The upstream QA run or its job list could not be read as a complete inventory. No Release check is published. | N/A |
+| `RELEASE_UPSTREAM_QA_UNTRUSTED` | release authority | The upstream run is not the protected-main QA workflow at the claimed attempt, or its repository, event, or job identity does not match. Cancelled runs are untrusted. No Release check is published. | N/A |
 | `TARGET_HEAD_INVALID` | check targeting | A workflow_run pull request entry has no valid 40-hex head SHA; suffixed `:<pr>`. | N/A |
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
 | `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
@@ -325,3 +332,44 @@ A numerically matching prop quote is **not** authority for a different event, pl
 | `NBA_POINTS_*_MISSING` | Source structure | Missing quote/roster identity is held rather than inferred |
 
 Both directions require their own correctly typed exact quote and preserve the already-observed market line. These checks are additional to event cutoff, official history, calibration and terminal governance; `can_execute=false`.
+
+### Cursor Cloud Agent engineering handoff (#2008)
+
+Codes below belong solely to the engineering GitHub-to-Cursor control plane. None grants model qualification, wager execution, merge, or deployment authority. A queued Cloud Agent is not production acceptance.
+
+| Code | Owning stage | Trigger / fail-closed meaning |
+|---|---|---|
+| `CURSOR_HANDOFF_DISABLED` | provider-dispatcher feature gate | Owner opt-in variable is not true; no API call |
+| `CURSOR_DISPATCH_INPUTS_MISSING` | provider-dispatcher admission | Required PR number, expected SHA, or scoped task is empty |
+| `CURSOR_HANDOFF_COMMAND_INVALID` | PR-comment bridge | First line is not exactly `/wow-cursor` |
+| `CURSOR_HANDOFF_TASK_INVALID`, `CURSOR_TASK_INVALID` | PR-comment bridge / adapter input | Task missing, empty or longer than bounded input contract |
+| `CURSOR_PR_IDENTITY_NOT_ELIGIBLE` | PR-comment bridge | PR is not an open same-repository branch targeting main |
+| `CURSOR_IDENTITY_INPUT_INVALID`, `CURSOR_PR_NUMBER_INVALID` | adapter admission | Malformed repository, exact SHA, or PR number |
+| `CURSOR_PR_NOT_OPEN_OR_MISMATCH` | GitHub PR readback | Requested PR is not open or has changed identity |
+| `CURSOR_STALE_PR_HEAD` | GitHub PR head lock | PR head no longer matches caller's immutable expected SHA |
+| `CURSOR_PR_INCIDENT_MISMATCH`, `CURSOR_INCIDENT_ID_INVALID` | canonical PR/incident binding | PR body does not bind exactly one matching open incident, or incident ID is malformed |
+| `CURSOR_INCIDENT_NOT_OPEN_OR_MISMATCH` | GitHub incident readback | Incident is closed, mismatched, or is not an issue in the target repository |
+| `CURSOR_OWNER_NOT_AUTHORIZED` | adapter authorization | Dispatch actor is neither the repository owner nor an explicitly authorized GitHub automation identity |
+| `CURSOR_SHARED_WRITER_LEASE_ACTIVE`, `CURSOR_SHARED_WRITER_LEASE_INVALID`, `CURSOR_SHARED_WRITER_LEASE_UNAVAILABLE` | shared #1138 writer lease | Existing remote/local writer, malformed reservation, or unavailable lease ledger; no Cursor create |
+| `CURSOR_SHARED_WRITER_LEASE_INVENTORY_UNVERIFIED`, `CURSOR_SHARED_WRITER_LEASE_INVENTORY_TRUNCATED` | shared #1138 writer lease | Ledger pagination or response is incomplete; admission fails closed |
+| `CURSOR_SHARED_WRITER_LEASE_RECEIPT_UNVERIFIED` | shared #1138 writer lease | Cursor run receipt could not be bound to the persisted hold; hold remains active |
+| `CURSOR_FORK_HEAD_UNSUPPORTED` | GitHub PR head ownership | Head branch resides outside canonical repository |
+| `CURSOR_UNSAFE_TARGET_BRANCH`, `CURSOR_UNEXPECTED_BASE_BRANCH` | PR branch / base guard | Attempt would write main/master/empty head or operate against non-main base |
+| `CURSOR_GITHUB_AUTH_MISSING`, `CURSOR_GITHUB_PR_HTTP_<status>` | GitHub PR evidence | Missing GitHub credential or PR REST error; no authoritative head validation |
+| `CURSOR_GITHUB_PR_RESPONSE_INVALID`, `CURSOR_GITHUB_INCIDENT_RESPONSE_INVALID`, `CURSOR_CURRENT_MAIN_UNVERIFIED` | GitHub identity evidence | Required same-repository PR, incident, or current-main response is malformed |
+| `CURSOR_API_KEY_MISSING`, `CURSOR_AUTH_OR_ACCESS_DENIED` | Cursor credential gate | No Cursor API key or failed provider authentication/permissions |
+| `CURSOR_BILLING_OR_RATE_LIMIT_BLOCKED` | Cursor spending/rate control | Cursor rejects with HTTP 402/429; no claim of started agent |
+| `CURSOR_AUTOMATIC_INCIDENT_ID_MISSING`, `CURSOR_AUTOMATIC_INCIDENT_NOT_OPEN` | trusted PR-label admission | No canonical linked incident or linked GitHub incident is not open |
+| `CURSOR_SPEND_CAP_UNCONFIRMED` | provider-dispatcher billing opt-in | Owner has not confirmed account spending cap; no Cursor API create |
+| `CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED`, `CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS` | account-wide cost/concurrency gate | Cursor account inventory is incomplete or another agent is active |
+| `CURSOR_AGENT_INVENTORY_UNVERIFIED` | Cursor active-agent inspection | Missing, invalid or truncated PR-scoped agent list |
+| `CURSOR_ACTIVE_PR_AGENT_EXISTS` | Cursor single-PR admission | An active Cloud Agent is already associated with that PR |
+| `CURSOR_DUPLICATE_DISPATCH_SUPPRESSED` | Cursor idempotent create | Server reports `agent_id_conflict` on deterministic agent ID |
+| `CURSOR_API_CONFLICT_UNRESOLVED`, `CURSOR_API_HTTP_<status>` | Cursor create / API | Unclassified 409 or other HTTP error; fail closed |
+| `CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS` | Cursor API preflight | Provider rejects request, target repository or configuration |
+| `CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED`, `CURSOR_API_RESPONSE_INVALID` | Remote evidence | Network, timeout, unparsable or non-object response |
+| `CURSOR_DISPATCH_RECEIPT_UNVERIFIED` | Cursor enqueue confirmation | Create did not return matching agent ID and run ID |
+
+Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
+
+Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.
