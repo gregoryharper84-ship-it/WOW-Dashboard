@@ -19,6 +19,8 @@ def _fixture():
     req = SimpleNamespace(
         official_event_id="2026_07_SF_ATL",
         event_key="NFL:2026_07_SF_ATL",
+        home_team="Atlanta Falcons",
+        away_team="San Francisco 49ers",
         requested_slate_date="2026-10-25",
         source_snapshot_id=SOURCE,
         latest_material_update_timestamp="2026-10-24T16:00:00+00:00",
@@ -62,7 +64,7 @@ def _fixture():
         "calibration_version": row["calibration_version"],
         "calibrated_selection_probability": 0.8052,
         "rank_calibrated_lower_bound": 0.7493,
-        "calibrated_selection_upper_bound": 0.8611,
+        "calibrated_away_upper_bound": 0.8611,
         "llp_probability_audit_result": "PASS_PROBABILITY_AUDIT",
         "event_mutex_status": "PASS",
         "global_terminal_authority": "V17_TERMINAL_REDUCER",
