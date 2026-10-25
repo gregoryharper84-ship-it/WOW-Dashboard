@@ -53,6 +53,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 JOURNAL_KEY_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_COMMENT_PAGES = 5
 MAX_RUN_PAGES = 5
+ACTIVE_RUN_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
 MAX_ARTIFACT_PAGES = 20
 MAX_PULL_PAGES = 10
 MAX_RETRIES = 3
@@ -201,12 +202,42 @@ def check_runs(client: GitHub, head_sha: str) -> list[dict]:
 
 
 def list_role_runs(client: GitHub, workflow_id: int, role: str, pr_number: int, head_sha: str) -> list[dict]:
-    rows = _paged(
-        client,
-        f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs?branch=main",
-        "workflow_runs",
-        MAX_RUN_PAGES,
-    )
+    path = f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}/runs?branch=main"
+    if role != "source_review":
+        path += "&event=workflow_dispatch"
+
+    def read_window(start, end):
+        try:
+            return _paged(
+                client,
+                f"{path}&created={start.isoformat()}..{end.isoformat()}",
+                "workflow_runs",
+                MAX_RUN_PAGES,
+            )
+        except DispatchError as exc:
+            if str(exc) != "GITHUB_INVENTORY_TRUNCATED" or start == end:
+                raise
+            midpoint = start + timedelta(days=(end - start).days // 2)
+            return read_window(start, midpoint) + read_window(midpoint + timedelta(days=1), end)
+
+    try:
+        rows = _paged(client, path, "workflow_runs", MAX_RUN_PAGES)
+    except DispatchError as exc:
+        if str(exc) != "GITHUB_INVENTORY_TRUNCATED":
+            raise
+        workflow = client.get(f"/repos/{REPOSITORY}/actions/workflows/{workflow_id}")
+        created_at = workflow.get("created_at") if isinstance(workflow, dict) else None
+        try:
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                raise ValueError
+            start = created.astimezone(timezone.utc).date()
+        except (AttributeError, TypeError, ValueError) as error:
+            raise DispatchError("GITHUB_WORKFLOW_CREATED_AT_INVALID") from error
+        end = datetime.now(timezone.utc).date()
+        if start > end:
+            raise DispatchError("GITHUB_WORKFLOW_CREATED_AT_INVALID")
+        rows = read_window(start, end)
     expected_name = policy.run_name(role, pr_number, head_sha)
     found = []
     for run in rows:
@@ -260,16 +291,17 @@ def role_run_statuses(runs: dict[str, dict]) -> dict[str, str]:
 def count_wip(client: GitHub, workflows: dict[str, dict]) -> dict[str, int]:
     active = {role: 0 for role in WORKFLOWS}
     for role, workflow in workflows.items():
-        rows = _paged(
-            client,
-            f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?branch=main",
-            "workflow_runs",
-            MAX_RUN_PAGES,
-        )
-        active[role] += sum(
-            1 for run in rows
-            if isinstance(run, dict) and run.get("status") in {"queued", "in_progress", "waiting", "pending", "requested"}
-        )
+        for status in ACTIVE_RUN_STATUSES:
+            rows = _paged(
+                client,
+                f"/repos/{REPOSITORY}/actions/workflows/{workflow['id']}/runs?branch=main&status={status}",
+                "workflow_runs",
+                MAX_RUN_PAGES,
+            )
+            active[role] += sum(
+                1 for run in rows
+                if isinstance(run, dict) and run.get("status") in ACTIVE_RUN_STATUSES
+            )
     return active
 
 

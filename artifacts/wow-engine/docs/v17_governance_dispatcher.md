@@ -98,6 +98,14 @@ role workflows use singleton concurrency groups), and caps total active role
 workflow WIP at four. These bounds do not disable GitHub's separate approval
 requirement for Copilot pull-request CI.
 
+WIP inventories query each active status separately, so completed history cannot
+exhaust their page budget. QA and Release history queries include only manual
+dispatches; source-review history retains both manual and upstream-triggered
+runs. If role history fills the five-page budget, the dispatcher partitions
+UTC creation-date windows from workflow creation through today. Each window
+retains the same cap; a full single-day window still holds rather than accepting
+incomplete history or risking duplicate dispatch.
+
 ## Exact-head manual dispatch
 
 The manual QA and Release workflows retain `pr_number`. Their optional
