@@ -98,7 +98,7 @@ class _Store:
 
 
 class _Session:
-    """GitHub returns only a stale scheduled run (the observed throttling)."""
+    """Historical GitHub runs are irrelevant to the Render heartbeat verdict."""
 
     def __init__(self, runs):
         self.runs = runs
@@ -173,3 +173,25 @@ def test_render_cron_is_not_autodeployed_and_has_no_execution_authority():
     assert env["WOW_CAN_EXECUTE"]["value"] == "false" and env["WOW_DRY_RUN_ONLY"]["value"] == "true"
     assert env["SUPABASE_SERVICE_KEY"]["sync"] is False
     assert "GITHUB" not in " ".join(env)
+
+def test_github_sirt_workflow_is_manual_only_and_keeps_diagnostic_receipts():
+    source = (ROOT / ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
+    assert "workflow_dispatch:" in source
+    assert "  schedule:" not in source
+    assert "  push:" not in source
+    assert "  workflow_run:" not in source
+    assert "sirt-heartbeat.json" in source
+    assert "sirt-failure-families.json" in source
+
+
+def test_external_heartbeat_does_not_call_github_even_if_it_would_fail():
+    class NoGitHub:
+        def get(self, *args, **kwargs):
+            pytest.fail("GitHub must not be queried for Render scheduler liveness")
+
+    fresh = _Store(_beat(timedelta(minutes=1), last_error_code="BLOCKED"))
+    assert reconcile_sirt_watchdog(fresh, session=NoGitHub(), now=NOW) == "WATCHDOG_EXTERNAL_OBSERVED"
+    assert fresh.resolved and not fresh.opened
+    missing = _Store(None)
+    assert reconcile_sirt_watchdog(missing, session=NoGitHub(), now=NOW) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert missing.opened and missing.opened[0][1]["evidence"]["source_system"] == "RENDER_EXTERNAL_SENTINEL"
