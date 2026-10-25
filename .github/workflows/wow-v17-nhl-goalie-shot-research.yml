@@ -1,0 +1,68 @@
+name: wow-v17-nhl-goalie-shot-research
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-nhl-goalie-shot-research.yml"
+      - "artifacts/wow-engine/v17/nhl_goalie_shot_challenger.py"
+      - "artifacts/wow-engine/v17/nhl_goalie_shot_runner.py"
+      - "artifacts/wow-engine/test_v17_nhl_goalie_shot_challenger.py"
+      - "artifacts/wow-engine/nhl_candidate_pipeline.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nhl-goalie-shot-research-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  unit:
+    name: NHL challenger chronology, provenance and regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.txt
+      - name: Verify research challenger without promotion
+        run: python -m pytest -q test_v17_nhl_goalie_shot_challenger.py test_v17_nhl_candidate_pipeline.py
+  historical-replay:
+    name: Manually requested official NHL historical paired replay
+    if: github.event_name == 'workflow_dispatch'
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    env:
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.txt
+      - name: Restore read-only gamebook cache
+        uses: actions/cache@v4
+        with:
+          path: artifacts/wow-engine/.cache/nhl-challenger-boxscores-v1
+          key: nhl-official-boxscores-2021-2025-v1-${{ hashFiles('artifacts/wow-engine/v17/nhl_goalie_shot_runner.py') }}
+      - name: Fit paired V1 and challenger on same frozen intersection
+        run: python -m v17.nhl_goalie_shot_runner
+      - name: Save advisory research receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nhl-goalie-shot-replay
+          path: artifacts/wow-engine/nhl_goalie_shot_report.json
+          if-no-files-found: warn
