@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      WOW_MCP_AUTH_TOKEN: ${{ secrets.WOW_MCP_AUTH_TOKEN }}
       WOW_MCP_REMOTE_URL: https://wow-v17-mcp-acceptance-main.onrender.com/mcp
       WOW_MCP_ACCEPTANCE_SERVICE_ID: srv-dapfrkrbc2fs73fjjsig
     steps:
@@ -48,39 +48,16 @@ jobs:
       - name: Install MCP package from frozen workspace lockfile
         run: pnpm install --frozen-lockfile --filter @workspace/mcp-server...
 
-      - name: Retrieve and mask isolated MCP ingress token from Render
+      # Do not give this test workflow any Render account API key.
+      # The pre-provisioned MCP test token has no Render deployment permissions.
+      - name: Require isolated MCP acceptance token
         shell: bash
         run: |
-          test -n "$RENDER_API_KEY"
-          python - <<'PY'
-          import json
-          import os
-          from urllib.parse import quote
-          from urllib.request import Request, urlopen
-
-          service_id = os.environ["WOW_MCP_ACCEPTANCE_SERVICE_ID"]
-          api_key = os.environ["RENDER_API_KEY"]
-          url = (
-              "https://api.render.com/v1/services/"
-              + quote(service_id, safe="")
-              + "/env-vars/WOW_MCP_SHARED_TOKEN"
-          )
-          request = Request(
-              url,
-              headers={
-                  "Accept": "application/json",
-                  "Authorization": f"Bearer {api_key}",
-              },
-          )
-          with urlopen(request, timeout=30) as response:  # nosec B310: fixed HTTPS Render API origin
-              payload = json.loads(response.read().decode("utf-8"))
-          token = payload.get("value") if isinstance(payload, dict) else None
-          if not isinstance(token, str) or not token:
-              raise SystemExit("MCP_ACCEPTANCE_TOKEN_UNAVAILABLE")
-          print(f"::add-mask::{token}")
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
-              handle.write("WOW_MCP_AUTH_TOKEN=" + token + "\n")
-          PY
+          set -euo pipefail
+          if [ -z "${WOW_MCP_AUTH_TOKEN:-}" ]; then
+            echo "::error::MCP_ACCEPTANCE_TOKEN_UNCONFIGURED"
+            exit 1
+          fi
 
       - name: Run authenticated remote MCP acceptance
         run: pnpm --filter @workspace/mcp-server acceptance:remote:v17
