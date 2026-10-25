@@ -266,9 +266,16 @@ class _WatchdogSession:
 
 
 class _WatchdogStore:
-    def __init__(self):
+    def __init__(self, row=None, raises=False):
         self.opened = []
         self.resolved = []
+        self.row, self.raises = row, raises
+
+    def read_runtime_row(self, auditor_id):
+        assert auditor_id == "WOW_SIRT_EXTERNAL_SENTINEL"
+        if self.raises:
+            raise RuntimeError("read unavailable")
+        return self.row
 
     def open_finding(self, kind, **kwargs):
         self.opened.append((kind, kwargs))
@@ -287,58 +294,63 @@ def _watchdog_run(at, *, conclusion="failure", branch="main", status="completed"
     }
 
 
-def test_render_side_watchdog_deadman_creates_durable_p0_on_missing_runs():
+def _live_external_pulse(now, **overrides):
+    row = {
+        "auditor_id": "WOW_SIRT_EXTERNAL_SENTINEL",
+        "status": "RUNNING",
+        "last_heartbeat_at": now.isoformat(),
+        "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "last_error_code": "BLOCKED",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_render_side_watchdog_opens_durable_p0_when_external_pulse_missing():
     now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
     store, session = _WatchdogStore(), _WatchdogSession([])
     assert reconcile_sirt_watchdog(store, session=session, now=now) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert not session.calls
     assert len(store.opened) == 1
     kind, fields = store.opened[0]
-    assert kind == "AUDITOR_HEALTH"
-    assert fields["severity"] == "P0"
+    assert kind == "AUDITOR_HEALTH" and fields["severity"] == "P0"
     assert fields["evidence"]["finding_code"] == "WATCHDOG_HEARTBEAT_MISSING"
-    assert fields["evidence"]["event"] == "schedule"
+    assert fields["evidence"]["source_system"] == "RENDER_EXTERNAL_SENTINEL"
     assert fields["evidence"]["can_execute"] is False
-    assert fields["evidence"]["last_completed_run_id"] is None
-    assert session.calls[0][1]["params"]["branch"] == "main"
-    assert session.calls[0][1]["params"]["event"] == "schedule"
     assert not store.resolved
 
 
-def test_render_side_watchdog_deadman_rejects_stale_and_skipped_runs():
+def test_render_side_watchdog_accepts_only_authenticated_fresh_external_pulse():
     now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
-    stale = _watchdog_run(now - timedelta(hours=2))
-    skipped = _watchdog_run(now - timedelta(minutes=1), conclusion="skipped")
-    wrong = _watchdog_run(now - timedelta(minutes=1), branch="untrusted")
-    store = _WatchdogStore()
-    assert reconcile_sirt_watchdog(
-        store, session=_WatchdogSession([wrong, skipped, stale]), now=now
-    ) == "WATCHDOG_HEARTBEAT_MISSING"
-    assert store.opened[0][1]["evidence"]["last_completed_run_id"] == "12345"
+    for invalid in (
+        _live_external_pulse(now, status="DEGRADED"),
+        _live_external_pulse(now, terminal_authority="OTHER"),
+        _live_external_pulse(now, can_execute=True),
+        _live_external_pulse(now, auditor_id="FOREIGN"),
+        _live_external_pulse(now, last_heartbeat_at=(now-timedelta(minutes=36)).isoformat()),
+        _live_external_pulse(now, last_heartbeat_at=(now+timedelta(hours=1)).isoformat()),
+        _live_external_pulse(now, last_heartbeat_at="invalid"),
+    ):
+        store = _WatchdogStore(invalid)
+        assert reconcile_sirt_watchdog(store, now=now) == "WATCHDOG_HEARTBEAT_MISSING"
+        assert store.opened and not store.resolved
 
 
-def test_render_side_watchdog_deadman_accepts_failed_watchdog_as_live_not_healthy():
+def test_render_side_watchdog_fresh_blocked_assurance_still_proves_liveness():
     now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
-    store = _WatchdogStore()
-    run = _watchdog_run(now - timedelta(minutes=10), conclusion="failure")
-    assert reconcile_sirt_watchdog(
-        store, session=_WatchdogSession([run]), now=now
-    ) == "WATCHDOG_RUN_OBSERVED"
-    assert not store.opened
+    store = _WatchdogStore(_live_external_pulse(now))
+    session = _WatchdogSession([], code=403)
+    assert reconcile_sirt_watchdog(store, session=session, now=now) == "WATCHDOG_EXTERNAL_OBSERVED"
+    assert not session.calls and not store.opened
     assert store.resolved[0][0] == "AUDITOR_HEALTH"
 
 
-def test_render_side_watchdog_deadman_malformed_or_http_error_fails_closed():
+def test_render_side_watchdog_unreadable_runtime_fails_closed_without_github():
     now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
-    with pytest.raises(GitHubAuditUnavailable, match="SIRT_WATCHDOG_RUN_IDENTITY_INVALID"):
-        reconcile_sirt_watchdog(
-            _WatchdogStore(),
-            session=_WatchdogSession([{"head_branch": "main", "event": "schedule", "status": "completed", "conclusion": "failure"}]),
-            now=now,
-        )
-    with pytest.raises(GitHubAuditUnavailable, match="GITHUB_AUDIT_HTTP_403"):
-        reconcile_sirt_watchdog(
-            _WatchdogStore(), session=_WatchdogSession([], code=403), now=now
-        )
+    store, session = _WatchdogStore(raises=True), _WatchdogSession([])
+    assert reconcile_sirt_watchdog(store, session=session, now=now) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert not session.calls and store.opened
 
 
 def test_render_worker_wires_independent_watchdog_with_typed_degraded_status():
@@ -388,29 +400,13 @@ def test_watchdog_and_github_polls_have_distinct_failure_boundaries():
     assert 'poll_health.report_github(IndependentPollHealth.github_failure(exc))' in source
 
 
-def test_scheduler_watchdog_cannot_be_masked_by_push_or_workflow_run():
+def test_github_scheduler_runs_cannot_mask_missing_render_pulse():
     now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
-    store = _WatchdogStore()
-    runs = [
-        _watchdog_run(now - timedelta(minutes=1), event="push"),
-        _watchdog_run(now - timedelta(minutes=2), event="workflow_run"),
-        _watchdog_run(now - timedelta(minutes=3), event="workflow_dispatch"),
-    ]
-    assert reconcile_sirt_watchdog(
-        store, session=_WatchdogSession(runs), now=now
-    ) == "WATCHDOG_HEARTBEAT_MISSING"
-    assert store.opened[0][0] == "AUDITOR_HEALTH"
-
-
-@pytest.mark.parametrize("conclusion", ["cancelled", "timed_out", "skipped"])
-def test_scheduler_watchdog_does_not_count_incomplete_conclusions(conclusion):
-    now = datetime(2026, 10, 8, 18, 0, tzinfo=timezone.utc)
-    store = _WatchdogStore()
-    assert reconcile_sirt_watchdog(
-        store,
-        session=_WatchdogSession([_watchdog_run(now - timedelta(minutes=1), conclusion=conclusion)]),
-        now=now,
-    ) == "WATCHDOG_HEARTBEAT_MISSING"
+    store, session = _WatchdogStore(), _WatchdogSession([
+        _watchdog_run(now - timedelta(minutes=1), conclusion="success"),
+    ])
+    assert reconcile_sirt_watchdog(store, session=session, now=now) == "WATCHDOG_HEARTBEAT_MISSING"
+    assert not session.calls and store.opened
 
 
 def test_watchdog_finding_type_respects_real_postgres_schema_constraint():
