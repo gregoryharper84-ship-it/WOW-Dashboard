@@ -219,11 +219,12 @@ jobs:
           from datetime import datetime, timedelta, timezone
           from zoneinfo import ZoneInfo
 
-          # Select a genuinely future Sunday. A historical fixed date fed to
-          # live discovery only produces EVENT_WRONG_DATE (not a model verdict).
+          # Select the upcoming Sunday, including today when still pregame.
+          # A historical fixed date fed to live discovery only produces
+          # EVENT_WRONG_DATE (not a model verdict).
           now = datetime.now(timezone.utc)
           today = now.astimezone(ZoneInfo(os.environ["WOW_USER_TIMEZONE"])).date()
-          days_until_next_sunday = (6 - today.weekday()) % 7 or 7
+          days_until_next_sunday = (6 - today.weekday()) % 7
           slate_date = (today + timedelta(days=days_until_next_sunday)).isoformat()
 
           def fresh_oidc_token():
