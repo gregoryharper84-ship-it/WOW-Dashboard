@@ -26,8 +26,11 @@ def projected_digest(game):
     return sha256(json.dumps(canonical,sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 
-def to_source(game):
+def to_source(game, observed_by_team):
+    final_observed = max(observed_by_team[team] for team in game["mirrors"])
     return {
+        "source_game_state":game["gameState"],
+        "source_final_observed_at_utc":final_observed,
         "sport":"NHL","source_provider":"NHL_PUBLIC_WEB_API",
         "historical_reconstruction":True,"can_execute":False,
         "official_event_id":str(game["id"]),
@@ -66,7 +69,11 @@ def test_three_genuine_future_games_have_source_pinned_prior_only_features():
     as_of=body["retrieved_as_of_utc"]
     events={g["id"]:g for g in body["future_targets"]}
     assert {2026020185,2026020186,2026020187}.issubset(events)
-    past=[to_source(g) for g in body["completed_games"]]
+    observed_by_team={
+        r["team"]:r["observed_at_utc"]
+        for r in body["firstparty_observed_receipts"]
+    }
+    past=[to_source(g, observed_by_team) for g in body["completed_games"]]
     for id_ in (2026020185,2026020186,2026020187):
         target=dict(events[id_])
         assert target["gameState"]=="FUT"
@@ -86,6 +93,7 @@ def test_three_genuine_future_games_have_source_pinned_prior_only_features():
         assert outcome["evidence"]["home_prior_games"]>=5
         assert outcome["evidence"]["away_prior_games"]>=5
         assert len(outcome["features"])==6
+        assert outcome["evidence"]["prior_final_result_observed_by_asof"] is True
         assert outcome["starting_goalies_confirmed"] is False
         assert outcome["source_signature_independently_verified"] is False
         assert outcome["completed_league_schedule_coverage_verified"] is False
