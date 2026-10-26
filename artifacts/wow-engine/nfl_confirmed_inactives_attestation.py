@@ -40,13 +40,17 @@ def _utc(value: Any) -> datetime | None:
 def _official_url(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    url = urlsplit(value)
-    host = (url.hostname or "").lower()
+    try:
+        url = urlsplit(value)
+        host = (url.hostname or "").lower()
+        port = url.port
+    except ValueError:
+        return False
     return (
         url.scheme == "https"
         and (host == "nfl.com" or host.endswith(".nfl.com"))
         and not url.username and not url.password
-        and url.port in (None, 443)
+        and port in (None, 443)
         and not url.fragment and not url.query
     )
 
@@ -120,6 +124,7 @@ def verify_confirmed_game_inactives(
             or report.get("latest_observed_coverage") != "complete"
             or report.get("last_check_status") != "succeeded"
             or report.get("retained_previous_report") is True
+            or report.get("latest_revision") != report.get("revision")
         ):
             return {**result, "reason": "REPORT_COVERAGE_OR_REVISION_UNVERIFIED"}
         url = team.get("source_url")
