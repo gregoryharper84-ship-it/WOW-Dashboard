@@ -239,3 +239,66 @@ def test_unhashable_role_in_otherwise_complete_row_is_a_hold_not_a_crash():
     result = audit_challenger_replay(obs)
     assert result["status"] == "EVIDENCE_HOLD"
     assert result["comparisons"][0]["champion_quality"] is None
+
+
+def test_baseline_champion_without_challenger_is_descriptive_only():
+    from v17.sirt_model_progression_audit import audit_champion_baseline
+    champion = [row for row in full_sample() if row["role"] == "CHAMPION"]
+    verdict = audit_champion_baseline(champion)
+    assert verdict["status"] == "RESEARCH_BASELINE_ONLY"
+    assert verdict["baselines"][0]["quality"]["sample_count"] == 30
+    assert verdict["model_promotion_authorized"] is False
+    assert verdict["production_source_verified"] is False
+    assert verdict["can_execute"] is False
+
+
+def test_baseline_missing_attested_rows_fails_closed():
+    from v17.sirt_model_progression_audit import audit_champion_baseline
+    verdict = audit_champion_baseline([])
+    assert verdict["status"] == "EVIDENCE_HOLD"
+    assert verdict["baselines"] == []
+
+
+def test_baseline_invalid_or_unattributed_row_blocks_valid_cohort():
+    from v17.sirt_model_progression_audit import audit_champion_baseline
+    champion = [row for row in full_sample() if row["role"] == "CHAMPION"]
+    for invalid in ({"role": "CHALLENGER", **{k: v for k, v in champion[0].items() if k != "role"}}, None):
+        verdict = audit_champion_baseline(champion + [invalid])
+        assert verdict["status"] == "EVIDENCE_HOLD"
+        assert verdict["baselines"][0]["quality"] is None
+
+
+def test_baseline_duplicate_receipt_and_inconsistent_split_hold():
+    from v17.sirt_model_progression_audit import audit_champion_baseline
+    champion = [row for row in full_sample() if row["role"] == "CHAMPION"]
+    copy = [dict(row) for row in champion]
+    copy[1]["prediction_receipt_ref"] = copy[0]["prediction_receipt_ref"]
+    assert audit_champion_baseline(copy)["status"] == "EVIDENCE_HOLD"
+    copy = [dict(row) for row in champion]
+    copy[1]["out_of_sample_split_ref"] = "OTHER_SPLIT"
+    report = audit_champion_baseline(copy)
+    assert "INCOMPATIBLE_HOLDOUT_SPLITS" in report["baselines"][0]["blockers"]
+
+
+def test_baseline_minimum_rows_validate_properly():
+    from v17.sirt_model_progression_audit import audit_champion_baseline
+    champion = [row for row in full_sample(29) if row["role"] == "CHAMPION"]
+    report = audit_champion_baseline(champion)
+    assert "INSUFFICIENT_HISTORICAL_SAMPLE" in report["baselines"][0]["blockers"]
+    with pytest.raises(ValueError):
+        audit_champion_baseline(champion, minimum_observations=0)
+
+
+def test_baseline_cross_cohort_reuse_blocks_both_artifacts():
+    from v17.sirt_model_progression_audit import audit_champion_baseline
+    rows = [dict(x) for x in full_sample() if x["role"] == "CHAMPION"]
+    others = [dict(x) for x in rows]
+    for row in others:
+        row["cohort_id"] = "NEXT_COHORT"
+        row["event_id"] = "later-" + row["event_id"]
+        row["prediction_receipt_ref"] = "later-" + row["prediction_receipt_ref"]
+    others[0]["prediction_receipt_ref"] = rows[0]["prediction_receipt_ref"]
+    result = audit_champion_baseline(rows + others)
+    assert result["status"] == "EVIDENCE_HOLD"
+    assert len(result["baselines"]) == 2
+    assert all(x["quality"] is None for x in result["baselines"])
