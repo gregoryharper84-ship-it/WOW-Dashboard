@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
@@ -24,6 +25,7 @@ ALLOWED_ROOTS = (
 OWNER_LOGIN = "gregoryharper84-ship-it"
 MAX_CHANGED_FILES = 30
 MAX_SCAN = 50
+MAX_SOURCE_PAGES = 4
 REQUIRED_CHECKS = (
     "WOW required-three regression",
     "WOW governed probability backend",
@@ -99,7 +101,29 @@ def validate_evidence(
 
 
 
-def discover() -> dict:
+def _rotating_owner_window(pulls: list[dict], *, slot: int) -> tuple[list[dict], int]:
+    """Bound API detail checks while eventually inspecting every owner PR.
+
+    Sorting by PR number plus the hour slot is deterministic across retries in
+    the same hour. Rechecking the first 50 newest PRs forever used to starve
+    older valid protected repairs. Rotation never grants approval or dispatch.
+    """
+    owners = sorted(
+        (p for p in pulls
+         if isinstance(p, dict)
+         and p.get("user", {}).get("login") == OWNER_LOGIN
+         and p.get("state") == "open"
+         and p.get("draft") is False
+         and p.get("head", {}).get("repo", {}).get("full_name") == REPO
+         and type(p.get("number")) is int),
+        key=lambda p: p["number"],
+    )
+    windows = max(1, (len(owners) + MAX_SCAN - 1) // MAX_SCAN)
+    start = (slot % windows) * MAX_SCAN
+    return owners[start:start + MAX_SCAN], windows
+
+
+def discover(*, slot: int | None = None) -> dict:
     """Choose at most one green owner source, from any protected path in repo.
 
     The hourly controller is already scheduled. This function never writes,
@@ -123,57 +147,75 @@ def discover() -> dict:
     if pending >= 3:
         return {"status": "NO_ELIGIBLE_SOURCE", "detail": "APP_REVIEW_WIP_CAP",
                 "can_execute": False}
-    considered = 0
-    for page in range(1, 5):
+    # Read the bounded current inventory before choosing an hourly window.
+    # Never infer source CI or trust-root eligibility from list metadata alone.
+    all_pulls: list[dict] = []
+    for page in range(1, MAX_SOURCE_PAGES + 1):
         pulls = api(f"pulls?state=open&base=main&per_page=100&page={page}")
         if not isinstance(pulls, list):
             raise AdoptionHold("SOURCE_PR_INVENTORY_INVALID_HOLD")
-        for item in sorted(pulls, key=lambda p: p.get("number") or 0, reverse=True):
-            if (item.get("user", {}).get("login") != OWNER_LOGIN
-                    or item.get("draft") is True
-                    or item.get("head", {}).get("repo", {}).get("full_name") != REPO):
-                continue
-            if considered >= MAX_SCAN:
-                return {"status": "NO_ELIGIBLE_SOURCE", "can_execute": False,
-                        "detail": "BOUNDED_SOURCE_SCAN"}
-            considered += 1
-            pr_number = item.get("number")
-            sha = (item.get("head") or {}).get("sha")
-            if type(pr_number) is not int or not isinstance(sha, str) or not SHA.fullmatch(sha):
-                continue
-            if type(item.get("changed_files")) is int and item["changed_files"] > MAX_CHANGED_FILES:
-                continue
-            # Durable duplicate detection by deterministic branch/PR lineage.
-            branch = branch_for(pr_number, sha)
-            existing = api(f"pulls?state=all&head={REPO.split('/')[0]}:{branch}&per_page=10")
-            if not isinstance(existing, list):
-                raise AdoptionHold("REPLAY_PR_INVENTORY_INVALID_HOLD")
-            if existing:
-                continue
-            files = api(f"pulls/{pr_number}/files?per_page=100")
-            if not isinstance(files, list):
-                raise AdoptionHold("SOURCE_FILE_INVENTORY_INVALID_HOLD")
-            try:
-                paths = source_paths(files)
-            except AdoptionHold:
-                continue
-            if not any(is_trust_root(path, roots) for path in paths):
-                continue
-            # Pull-list summaries omit changed_files; resolve the exact PR
-            # resource before checking the inventory and immutable head.
-            detail = api(f"pulls/{pr_number}")
-            checks = api(f"commits/{sha}/check-runs?per_page=100")
-            try:
-                validate_evidence(detail, files, checks, requested_pr=pr_number,
-                                  requested_sha=sha)
-            except AdoptionHold:
-                continue
-            return {"status": "SOURCE_READY", "pr_number": pr_number,
-                    "source_sha": sha, "paths": paths,
-                    "can_execute": False}
+        all_pulls.extend(pulls)
         if len(pulls) < 100:
             break
-    return {"status": "NO_ELIGIBLE_SOURCE", "can_execute": False}
+    else:
+        # On a 400+ PR inventory, avoid an unfair partial scan. Expand the
+        # authenticated pagination contract rather than ignoring older rows.
+        return {"status": "NO_ELIGIBLE_SOURCE",
+                "detail": "SOURCE_PR_INVENTORY_PAGE_CAP",
+                "can_execute": False}
+
+    # Respect global App-review WIP across every fetched page, not just the
+    # GitHub first page; three pending adoption PRs do not license a fourth.
+    pending = sum(
+        p.get("user", {}).get("login") == APP_AUTHOR and
+        (p.get("head") or {}).get("ref", "").startswith("wow-engineering/exact-replay-")
+        for p in all_pulls
+    )
+    if pending >= 3:
+        return {"status": "NO_ELIGIBLE_SOURCE", "detail": "APP_REVIEW_WIP_CAP",
+                "can_execute": False}
+
+    if slot is None:
+        slot = int(datetime.now(timezone.utc).timestamp() // 3600)
+    if type(slot) is not int or slot < 0:
+        raise AdoptionHold("SCAN_SLOT_INVALID_HOLD")
+    owner_window, windows = _rotating_owner_window(all_pulls, slot=slot)
+    for item in owner_window:
+        pr_number = item.get("number")
+        sha = (item.get("head") or {}).get("sha")
+        if not isinstance(sha, str) or not SHA.fullmatch(sha):
+            continue
+        if type(item.get("changed_files")) is int and item["changed_files"] > MAX_CHANGED_FILES:
+            continue
+        branch = branch_for(pr_number, sha)
+        existing = api(f"pulls?state=all&head={REPO.split('/')[0]}:{branch}&per_page=10")
+        if not isinstance(existing, list):
+            raise AdoptionHold("REPLAY_PR_INVENTORY_INVALID_HOLD")
+        if existing:
+            continue
+        files = api(f"pulls/{pr_number}/files?per_page=100")
+        if not isinstance(files, list):
+            raise AdoptionHold("SOURCE_FILE_INVENTORY_INVALID_HOLD")
+        try:
+            paths = source_paths(files)
+        except AdoptionHold:
+            continue
+        if not any(is_trust_root(path, roots) for path in paths):
+            continue
+        detail = api(f"pulls/{pr_number}")
+        checks = api(f"commits/{sha}/check-runs?per_page=100")
+        try:
+            validate_evidence(detail, files, checks,
+                              requested_pr=pr_number, requested_sha=sha)
+        except AdoptionHold:
+            continue
+        return {"status": "SOURCE_READY", "pr_number": pr_number,
+                "source_sha": sha, "paths": paths,
+                "can_execute": False}
+    # Every bounded window gets a turn; no permanent newest-first starvation.
+    return {"status": "NO_ELIGIBLE_SOURCE",
+            "detail": "ROTATING_SOURCE_WINDOW" if windows > 1 else "NO_ELIGIBLE_SOURCE",
+            "can_execute": False}
 
 
 def branch_for(requested_pr: int, sha: str) -> str:
