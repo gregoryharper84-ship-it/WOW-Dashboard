@@ -229,6 +229,9 @@ jobs:
             | tee "$RUNNER_TEMP/recovery-plan.json"
           echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
           echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+          echo "progression_state=$(jq -r '.progression_state // "NONE"' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+          echo "required_actor=$(jq -r '.required_actor // "NONE"' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+          echo "owner_intervention_required=$(jq -r '.owner_intervention_required // false' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
 
       - name: Reserve exact-head recovery before dispatch (fail closed on ambiguous outcome)
         id: reservation
@@ -411,11 +414,28 @@ jobs:
         run: |
           echo "PR #${{ matrix.pr_number }}: incomplete CI/QA evidence; no repair dispatched or retry consumed. Await fresh independent verdict." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Record waiting-on-owner (non-repairable finding)
+      - name: Route non-repairable finding without global Engineering stall
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_OWNER'
         shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PROGRESSION: ${{ steps.plan.outputs.progression_state }}
+          ACTOR: ${{ steps.plan.outputs.required_actor }}
+          OWNER_REQUIRED: ${{ steps.plan.outputs.owner_intervention_required }}
         run: |
-          echo "PR #${{ steps.resolve.outputs.pr_number }}: non-repairable trust-root/owner-approval finding; waiting on owner (see daily digest), not retried." >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          case "$PROGRESSION|$ACTOR|$OWNER_REQUIRED" in
+            "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF|INDEPENDENT_ENGINEERING_AUTHOR|false")
+              echo "PR #$PR_NUMBER: independent Engineering source handoff remains routed to the existing adoption worker; no fake self-approval, no repair attempt spent, unrelated work continues." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED|ACTUAL_CODEOWNER|true")
+              echo "PR #$PR_NUMBER: authentic exact-head CODEOWNER decision required for this protected release only; no repair attempt spent, unrelated Engineering work continues." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::RECOVERY_NONREPAIRABLE_ROUTE_INVALID"
+              exit 1
+              ;;
+          esac
 
   adopt-reviewed-owner-source:
     # Reuse this existing hourly/QA HOLD controller. This is NOT another queue,
