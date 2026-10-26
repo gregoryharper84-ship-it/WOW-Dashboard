@@ -15,7 +15,7 @@ jobs:
   terminal-status:
     if: >-
       github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
-      github.ref == 'refs/heads/copilot/fix-285088163-1240256887-ca74cde5-155c-4ec6-a05f-1d9dce20b221'
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: wow-engineering
     timeout-minutes: 5
