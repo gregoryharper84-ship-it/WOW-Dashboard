@@ -217,6 +217,8 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `RELEASE_QA_MISSING` | release authority | No completed `WOW Independent QA exact-head` run from the QA App at this head. | N/A |
 | `RELEASE_QA_FAILED` | release authority | The latest QA App check at this head is not `success`. | N/A |
 | `RELEASE_QA_FOREIGN_SOURCE` | release authority | A `WOW Independent QA exact-head` run exists at this head but from a principal other than the QA App (spoof or misconfiguration). | N/A |
+| `RELEASE_QA_EVIDENCE_PENDING` | release authority | A required regression check is queued/running at this open PR head, proven either by its official check run or by the exact current PR's active `wow-verify` run and named required job (maximum pending age: two hours); no Release check is published, and workflow completion triggers fresh evaluation. | N/A |
+| `RELEASE_READINESS_DISPOSITION_INVALID` | release authority | The release readiness classifier returned neither `pending` nor `ready`; no Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_APPLICABLE` | release authority | The authenticated upstream QA run completed and its `qa` job concluded `success` or `failure`. Policy resolution still runs; this is not a Release pass. | N/A |
 | `RELEASE_UPSTREAM_QA_DISPOSITION_INVALID` | release authority | Upstream classification returned a disposition other than `neutral` or `applicable`. No Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_JOB_INCOMPLETE` | release authority | The upstream `qa` job is not a completed success, failure, or skip. No Release check is published. | N/A |
