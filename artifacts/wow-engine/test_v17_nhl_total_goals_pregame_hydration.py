@@ -47,8 +47,14 @@ def examples():
     }
     # Only records before the simulated as-of are included. They really
     # settled historically, but no time-frozen archived receipt is asserted.
+    # A retro-simulated as-of is never authentic pregame evidence.
+    # Keep only past starts well outside the end-of-game window; the
+    # explicit synthetic final observation is as-of for parity replay.
     past=[x for x in source if datetime.fromisoformat(x["event_start_time"]) <
-          datetime.fromisoformat(simulated_as_of)]
+          datetime.fromisoformat(simulated_as_of)-timedelta(hours=6)]
+    for item in past:
+        item["source_game_state"]="OFF"
+        item["source_final_observed_at_utc"]=simulated_as_of
     return target,past,simulated_as_of,historical
 
 
@@ -82,6 +88,9 @@ def test_prior_game_features_reproduce_real_fitted_training_row_without_result()
     (lambda target,past,as_of:(past.append(deepcopy(past[0]))), "NHL_TOTALS_PREGAME_DUPLICATE_EVENT"),
     (lambda target,past,as_of:(past[0].__setitem__("season","20222023")), "NHL_TOTALS_PREGAME_SEASON_CONFLICT"),
     (lambda target,past,as_of:(past[0].__setitem__("source_payload_sha256","bad")), "NHL_TOTALS_PREGAME_PRIOR_SOURCE_INVALID"),
+    (lambda target,past,as_of:(past[0].__setitem__("source_game_state","LIVE")), "NHL_TOTALS_PREGAME_PRIOR_NOT_FINAL"),
+    (lambda target,past,as_of:(past[0].pop("source_final_observed_at_utc")), "NHL_TOTALS_PREGAME_PRIOR_FINAL_RECEIPT_MISSING"),
+    (lambda target,past,as_of:(past[0].__setitem__("source_final_observed_at_utc",target["startTimeUTC"])), "NHL_TOTALS_PREGAME_RESULT_NOT_KNOWN_AT_ASOF"),
 ])
 def test_pregame_source_identity_conflict_or_future_evidence_fails_closed(change,code):
     target,past,as_of,_=examples()
