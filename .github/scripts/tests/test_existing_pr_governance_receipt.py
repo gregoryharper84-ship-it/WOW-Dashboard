@@ -1368,14 +1368,16 @@ def test_pending_newer_workflow_still_holds_after_bounded_wait(tmp_path):
     assert "EXISTING_PR_REQUIRED_CI_INCOMPLETE_AFTER_BOUNDED_WAIT" in result.stderr
 
 
-def run_receipt_artifact_step(tmp_path, artifacts):
+def run_receipt_artifact_step(tmp_path, artifacts, *, total=None):
+    # Emulate GitHub's exact-name server-filtered artifact inventory, rather
+    # than the old unbounded repository-wide artifact scan.
     workflow = WORKFLOW.read_text(encoding="utf-8")
     step = workflow.split("      - name: Check for an existing exact-head receipt\n", 1)[1]
     script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
     stub = """
 gh() {
   case "$*" in
-    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page="*)
+    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-engineering-governance-${HEAD_SHA}&per_page=100&page=1")
       printf '%s\\n' "$TEST_ARTIFACTS_JSON"
       ;;
     *)
@@ -1391,7 +1393,10 @@ gh() {
         "GITHUB_REPOSITORY": REPOSITORY,
         "GITHUB_OUTPUT": str(output_path),
         "HEAD_SHA": HEAD,
-        "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": artifacts}),
+        "TEST_ARTIFACTS_JSON": json.dumps({
+            "total_count": len(artifacts) if total is None else total,
+            "artifacts": artifacts,
+        }),
     }
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", stub + script],
@@ -1408,7 +1413,7 @@ gh() {
 
 
 def test_existing_governance_receipt_suppresses_duplicate_upload(tmp_path):
-    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    existing = {"id": 13, "name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
     result, output = run_receipt_artifact_step(tmp_path, [existing])
 
     assert result.returncode == 0, result.stderr
@@ -1416,7 +1421,7 @@ def test_existing_governance_receipt_suppresses_duplicate_upload(tmp_path):
 
 
 def test_duplicate_governance_receipts_fail_closed(tmp_path):
-    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    existing = {"id": 13, "name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
     result, _ = run_receipt_artifact_step(tmp_path, [existing, existing])
 
     assert result.returncode == 1
@@ -1424,10 +1429,9 @@ def test_duplicate_governance_receipts_fail_closed(tmp_path):
 
 
 def test_receipt_artifact_inventory_must_finish_within_bound(tmp_path):
-    result, _ = run_receipt_artifact_step(
-        tmp_path,
-        [{"name": f"unrelated-{index}", "expired": False} for index in range(100)],
-    )
+    # More than one bounded page for the exact-name inventory fails closed;
+    # a large set of unrelated repository artifacts no longer blocks progress.
+    result, _ = run_receipt_artifact_step(tmp_path, [], total=101)
 
     assert result.returncode == 1
     assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" in result.stderr
@@ -2035,3 +2039,78 @@ def test_claude_instructions_cannot_use_ordinary_source_receipt(filename, previo
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
                        match='TRUST_ROOT_CHANGE_NOT_CERTIFIABLE'):
         verifier._validate_protected_diff(files, repo_root=REPO_ROOT)
+
+
+def test_exact_name_artifact_inventory_lookup_is_bounded_and_fail_closed(tmp_path):
+    """Do not scan all artifacts; enforce cardinality, identity and expiry."""
+    import shutil
+    if shutil.which("jq") is None:
+        pytest.skip("jq required for protected GitHub runner shell contract")
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    lookup = workflow.split(
+        "      - name: Check for an existing exact-head receipt\n", 1
+    )[1]
+    script = textwrap.dedent(lookup.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    assert "artifacts?name=${artifact_name}&per_page=100&page=1" in script
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" in script
+    head = "b" * 40
+    name = f"wow-v17-engineering-governance-{head}"
+    stub = r'''
+gh() {
+  [ "$1" = "api" ] || return 1
+  [ "$2" = "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-engineering-governance-${HEAD_SHA}&per_page=100&page=1" ] || return 1
+  printf '%s\n' "$TEST_ARTIFACTS_JSON"
+}
+'''
+    def evaluate(items, *, total=None):
+        payload = {"total_count": len(items) if total is None else total, "artifacts": items}
+        target = tmp_path / "output"
+        target.write_text("", encoding="utf-8")
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", stub + script],
+            env=os.environ | {
+                "HEAD_SHA": head,
+                "GITHUB_REPOSITORY": REPOSITORY,
+                "GITHUB_OUTPUT": str(target),
+                "TEST_ARTIFACTS_JSON": json.dumps(payload),
+            },
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        ), target.read_text(encoding="utf-8")
+
+    absent, output = evaluate([])
+    assert absent.returncode == 0, absent.stderr
+    assert "exists=false" in output
+
+    expired, output = evaluate([{"id": 13, "name": name, "expired": True}])
+    assert expired.returncode == 0, expired.stderr
+    assert "exists=false" in output
+
+    present, output = evaluate([{"id": 14, "name": name, "expired": False}])
+    assert present.returncode == 0, present.stderr
+    assert "exists=true" in output
+
+    duplicate, _ = evaluate([
+        {"id": 14, "name": name, "expired": False},
+        {"id": 15, "name": name, "expired": False},
+    ])
+    assert duplicate.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE" in duplicate.stderr
+
+    wrong_name, _ = evaluate([{"id": 14, "name": name + "-other", "expired": False}])
+    assert wrong_name.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" in wrong_name.stderr
+
+    malformed, _ = evaluate([{"id": 14, "name": name}])
+    assert malformed.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" in malformed.stderr
+
+    page_mismatch, _ = evaluate([{"id": 14, "name": name, "expired": False}], total=2)
+    assert page_mismatch.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" in page_mismatch.stderr
+
+    overflow, _ = evaluate([], total=101)
+    assert overflow.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" in overflow.stderr
