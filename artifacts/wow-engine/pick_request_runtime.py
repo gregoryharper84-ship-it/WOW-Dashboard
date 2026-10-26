@@ -49,7 +49,7 @@ from v17.fantasy_score_pick_request_bridge import (
     research_candidate_outcome as _fantasy_research_candidate_outcome,
     research_candidate_preflight as _fantasy_research_candidate_preflight,
 )
-from v17.nfl_player_game_eligibility import (
+from nfl_player_game_eligibility import (
     PLAYER_UNAVAILABLE,
     player_game_availability_blocker,
 )
