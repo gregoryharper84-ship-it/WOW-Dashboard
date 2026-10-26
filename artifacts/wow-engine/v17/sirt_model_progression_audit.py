@@ -239,6 +239,90 @@ def audit_challenger_replay(
     }
 
 
+
+def audit_champion_baseline(
+    observations: Sequence[Mapping[str, Any]], *, minimum_observations: int = 30,
+) -> dict[str, Any]:
+    """Independently grade a frozen champion artifact when no challenger exists.
+
+    This is a descriptive outcome audit, not a certification, drift finding,
+    automatic retraining signal, or permission to use the model in production.
+    Never silently drop invalid, duplicate, or un-attributable source rows.
+    """
+    if type(minimum_observations) is not int or minimum_observations < 1:
+        raise ValueError("MINIMUM_OBSERVATIONS_INVALID")
+    families: dict[tuple[str, str, str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    invalid: set[tuple[str, str, str, str]] = set()
+    seen_events: dict[tuple[str, str, str, str, str], tuple[str, str, str, str]] = {}
+    seen_receipts: dict[str, tuple[str, str, str, str]] = {}
+    findings: list[str] = []
+    unattributed = False
+    for idx, row in enumerate(observations):
+        if not isinstance(row, Mapping):
+            findings.append(f"ROW_{idx}_INVALID")
+            unattributed = True
+            continue
+        identifiers = ("sport", "market_family", "cohort_id", "model_artifact_id")
+        if not all(_text(row.get(k)) for k in identifiers):
+            findings.append(f"ROW_{idx}_COHORT_UNATTRIBUTABLE")
+            unattributed = True
+            continue
+        cohort = tuple(row[k] for k in identifiers)
+        if row.get("role") != "CHAMPION" or not _valid_observation(row):
+            invalid.add(cohort)
+            findings.append(f"ROW_{idx}_CHAMPION_EVIDENCE_UNVERIFIED")
+            continue
+        event_key = cohort[:3] + (row["event_id"], row["market_id"],)
+        prior_event_cohort = seen_events.get(event_key)
+        if prior_event_cohort is not None:
+            invalid.update((cohort, prior_event_cohort))
+            findings.append(f"ROW_{idx}_DUPLICATE_EVENT_MARKET")
+        else:
+            seen_events[event_key] = cohort
+        receipt = row["prediction_receipt_ref"]
+        prior_receipt_cohort = seen_receipts.get(receipt)
+        if prior_receipt_cohort is not None:
+            invalid.update((cohort, prior_receipt_cohort))
+            findings.append(f"ROW_{idx}_PREDICTION_RECEIPT_REUSED")
+        else:
+            seen_receipts[receipt] = cohort
+        families[cohort].append(row)
+    reports = []
+    for cohort in sorted(set(families) | invalid):
+        rows = families.get(cohort, [])
+        reasons = []
+        if len(rows) < minimum_observations:
+            reasons.append("INSUFFICIENT_HISTORICAL_SAMPLE")
+        if cohort in invalid or unattributed:
+            reasons.append("SOURCE_EVIDENCE_INVALID_OR_UNATTRIBUTABLE")
+        splits = {row["out_of_sample_split_ref"] for row in rows}
+        if len(splits) != 1:
+            reasons.append("INCOMPATIBLE_HOLDOUT_SPLITS")
+        if not rows:
+            reasons.append("NO_ATTESTED_ROWS")
+        metrics = None
+        if not reasons:
+            metrics = _quality_metrics([(row["calibrated_probability"], row["outcome"]) for row in rows])
+        reports.append({
+            "sport": cohort[0], "market_family": cohort[1],
+            "cohort_id": cohort[2], "model_artifact_id": cohort[3],
+            "observed_rows": len(rows), "quality": metrics,
+            "assessment": "RESEARCH_BASELINE_ONLY" if metrics is not None else "EVIDENCE_HOLD",
+            "blockers": reasons,
+        })
+    if not observations:
+        findings.append("HISTORICAL_OBSERVATIONS_MISSING")
+    if unattributed:
+        findings.append("UNATTRIBUTED_ROW_BLOCKS_ALL_BASELINES")
+    return {
+        "status": "RESEARCH_BASELINE_ONLY" if reports and not findings
+            and all(report["quality"] is not None for report in reports) else "EVIDENCE_HOLD",
+        "baselines": reports, "findings": findings,
+        "model_promotion_authorized": False,
+        "production_source_verified": False,
+        "can_execute": False, "terminal_authority": TERMINAL_AUTHORITY,
+    }
+
 def audit_confirmed_recurrence(incidents: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Identify repeat *confirmed* causes with missing preventive-test evidence.
 
