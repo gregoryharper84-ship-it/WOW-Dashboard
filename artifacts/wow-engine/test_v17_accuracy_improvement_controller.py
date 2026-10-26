@@ -35,6 +35,12 @@ def case(n=1):
                 "feature_asof_utc": (st-timedelta(hours=3)).isoformat(),
                 "calibrated_probability": p, "calibrated_lower_bound": p-.1,
             })
+        for model in models:
+            for field in ("sport", "event_id", "entity_id", "team_id", "opponent_id",
+                          "stat", "period", "threshold_label", "direction", "offer_type"):
+                model[field] = result["offers"][-1][field]
+            model["source_snapshot_id"] = "source-%d" % i
+            model["locked_at_utc"] = (st-timedelta(hours=1)).isoformat()
         result["evidence_by_offer_id"][oid] = {
             "offer_id": oid, "identity_verification": "OFFICIAL_VERIFIED",
             "pregame_eligibility": "CONFIRMED_ELIGIBLE",
@@ -137,6 +143,8 @@ def test_cross_split_event_leakage():
     payload = case(3)
     payload["offers"][2]["event_id"] = "event-1"
     payload["evidence_by_offer_id"]["offer-2"]["settlement"]["event_id"] = "event-1"
+    for model in ("champion", "challenger"):
+        payload["evidence_by_offer_id"]["offer-2"][model]["event_id"] = "event-1"
     assert evaluate_experiment(payload)["held_codes"]["CROSS_SPLIT_EVENT_LEAKAGE"] == 2
 
 def test_reverse_chronological_split_leakage():
@@ -154,6 +162,8 @@ def test_double_double_separate_route():
         payload["evidence_by_offer_id"]["offer-0"][name]["route"] = "NBA_DOUBLE_DOUBLE"
     for field in ("stat", "threshold_label", "offer_type"):
         payload["evidence_by_offer_id"]["offer-0"]["settlement"][field] = offer[field]
+        for model in ("champion", "challenger"):
+            payload["evidence_by_offer_id"]["offer-0"][model][field] = offer[field]
     assert evaluate_experiment(payload)["paired_research_rows"] == 1
     offer["route"] = "NBA_POINTS"
     with pytest.raises(ExperimentInputError, match="COMPOUND_REQUIRES_SEPARATE_ROUTE"):
@@ -228,3 +238,30 @@ def test_team_opponent_and_period_mandatory_in_original_market():
         del payload["offers"][0][missing]
         with pytest.raises(ExperimentInputError, match="MISSING_OFFER_" + missing.upper()):
             evaluate_experiment(payload)
+
+def test_champion_model_wrong_event_player_team_or_market_held():
+    for field, wrong in (
+        ("event_id", "different-event"), ("entity_id", "former-player"),
+        ("team_id", "OLD_TEAM"), ("opponent_id", "DIFFERENT_OPPONENT"),
+        ("stat", "REBOUNDS"), ("period", "FIRST_HALF"),
+        ("threshold_label", "8+"), ("direction", "LESS"),
+        ("offer_type", "SCALAR"), ("sport", "NFL"),
+    ):
+        payload = case()
+        payload["evidence_by_offer_id"]["offer-0"]["champion"][field] = wrong
+        result = evaluate_experiment(payload)
+        assert result["rows"][0]["code"] == "CHAMPION_EXACT_OFFER_MISMATCH"
+        assert result["paired_research_rows"] == 0
+
+def test_no_immutable_pregame_lock_or_snapshot_held():
+    payload = case()
+    del payload["evidence_by_offer_id"]["offer-0"]["champion"]["locked_at_utc"]
+    assert evaluate_experiment(payload)["rows"][0]["code"] == "CHAMPION_PREGAME_LOCK_REQUIRED"
+    payload = case()
+    payload["evidence_by_offer_id"]["offer-0"]["challenger"]["source_snapshot_id"] = ""
+    assert evaluate_experiment(payload)["rows"][0]["code"] == "CHALLENGER_SOURCE_SNAPSHOT_REQUIRED"
+
+def test_post_start_locked_receipt_is_not_a_pregame_forecast():
+    payload = case()
+    payload["evidence_by_offer_id"]["offer-0"]["champion"]["locked_at_utc"] = "2026-10-01T22:00:00Z"
+    assert evaluate_experiment(payload)["rows"][0]["code"] == "CHAMPION_PREGAME_LEAKAGE"
