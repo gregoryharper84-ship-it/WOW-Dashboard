@@ -44,3 +44,7 @@ To make a recurring family actionable, engineering triage should record a stable
 **Release state:** Code and a PR are not deployment. A worker with `autoDeploy=no` requires an explicit authorized deployment; this new GitHub Actions watchdog becomes scheduled only after merge. Do not claim operation until a real run receipt is observed.
 
 **Global invariants:** `can_execute=false`, `terminal_authority=V17_TERMINAL_REDUCER`, independent specialist probability ownership.
+
+## Global scoped blockers / mandatory continuation
+
+Follow `docs/wow/engineering/GLOBAL_SCOPED_BLOCKER_POLICY.md`. A blocker stops only dependent actions; release held does not mean development halted. Identify the prohibited operation, evidence, dependency and unblock condition; immediately continue authorized independent work within role, ownership, lease, isolation and baseline constraints. Keep development and release states separate. If no permitted action exists, record exact reasons and a revisit trigger. Preserve all safety, independent review and release gates. Policy changes are not proof of deployed worker enforcement.
