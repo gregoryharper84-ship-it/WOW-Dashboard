@@ -328,6 +328,41 @@ def test_hourly_rotation_reaches_old_and_new_owner_prs_without_extra_writers(mon
     assert older["can_execute"] is False and newer["can_execute"] is False
 
 
+
+def test_priority_adoption_scans_p0_without_starving_routine_sources():
+    sources = [source_pr(n=i, sha=f"{i:040x}") for i in range(1, 61)]
+    sources[-1]["labels"] = [{"name": "P0"}]
+    first, _ = adoption._adoption_candidate_window(sources, slot=0)
+    urgent, _ = adoption._adoption_candidate_window(sources, slot=1)
+    fair_next, _ = adoption._adoption_candidate_window(sources, slot=3)
+    assert first[0]["number"] == 1
+    assert urgent[0]["number"] == 60
+    assert len(urgent) <= adoption.MAX_SCAN
+    assert len({x["number"] for x in urgent}) == len(urgent)
+    assert {x["number"] for x in fair_next} == set(range(51, 61))
+
+
+def test_fair_rotation_covers_window_count_divisible_by_three():
+    sources = [source_pr(n=i, sha=f"{i:040x}") for i in range(1, 151)]
+    for row in sources[-10:]:
+        row["labels"] = [{"name": "P0"}]
+    fair = {
+        adoption._adoption_candidate_window(sources, slot=slot)[0][0]["number"]
+        for slot in (0, 3, 6)
+    }
+    assert fair == {1, 51, 101}
+
+
+def test_urgent_metadata_cannot_grant_untrusted_authorship():
+    sources = [source_pr(n=1)]
+    sources[0]["labels"] = [{"name": "P0"}]
+    sources[0]["user"]["login"] = "another-user"
+    window, _ = adoption._adoption_candidate_window(sources, slot=1)
+    assert window == []
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_PR_OR_HEAD_PROVENANCE_HOLD"):
+        adoption.validate_evidence(sources[0], source_files(), source_checks(),
+                                   requested_pr=1, requested_sha=SHA)
+
 def test_review_wip_cap_accounts_for_pending_app_prs_beyond_first_page(monkeypatch):
     owner = source_pr(n=3)
     app = lambda n: {
