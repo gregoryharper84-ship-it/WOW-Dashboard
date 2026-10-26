@@ -17,6 +17,7 @@ REQUIRED_IDENTITIES = (
     "prediction_id", "candidate_id", "event_id", "market_identity",
     "sport", "market_family", "model_version", "model_artifact_id",
     "source_snapshot_hash", "settlement_receipt_ref",
+    "model_fit_receipt_ref", "forward_certification_receipt_ref",
 )
 
 
@@ -43,6 +44,10 @@ def _valid_row(row: Mapping[str, Any]) -> str | None:
         return "EVIDENCE_UNVERIFIED"
     if row.get("can_execute") is not False or row.get("terminal_authority") != AUTHORITY:
         return "GOVERNANCE_UNVERIFIED"
+    if (row.get("out_of_sample_certified") is not True
+            or row.get("calibration_certified") is not True
+            or row.get("lower_bound_certified") is not True):
+        return "FORWARD_CERTIFICATION_UNVERIFIED"
     p = row.get("calibrated_probability")
     lower = row.get("calibrated_lower_bound")
     if (type(p) not in (int, float) or not isfinite(p) or not 0 < p < 1
@@ -53,13 +58,14 @@ def _valid_row(row: Mapping[str, Any]) -> str | None:
     if type(y) is not int or y not in (0, 1):
         return "BINARY_SETTLEMENT_UNVERIFIED"
     stamps = [_utc(row.get(key)) for key in (
-        "source_snapshot_at", "issued_at", "event_start_at",
-        "settled_at", "outcome_recorded_at",
+        "model_fit_cutoff_at", "source_snapshot_at", "issued_at",
+        "event_start_at", "settled_at", "outcome_recorded_at",
     )]
     if any(stamp is None for stamp in stamps):
         return "TIMESTAMP_UNVERIFIED"
-    snapshot, issued, start, settled, recorded = stamps
-    if not (snapshot <= issued < start <= settled <= recorded):
+    fit_cutoff, snapshot, issued, start, settled, recorded = stamps
+    # A retrospective fit after the immutable pregame snapshot is not OOS.
+    if not (fit_cutoff < snapshot <= issued < start <= settled <= recorded):
         return "CHRONOLOGY_OR_LEAKAGE_VIOLATION"
     return None
 
@@ -146,6 +152,10 @@ def evaluate_chronological_evidence(
         if set(slot) != ROLES:
             continue
         champion, challenger = slot["CHAMPION"], slot["CHALLENGER"]
+        if (champion["model_artifact_id"] == challenger["model_artifact_id"]
+                or champion["model_version"] == challenger["model_version"]):
+            findings.append({"index": -1, "code": "PAIRED_MODEL_IDENTITY_COLLISION"})
+            continue
         if (champion["settled_outcome"] != challenger["settled_outcome"]
                 or champion["settlement_receipt_ref"] != challenger["settlement_receipt_ref"]
                 or champion["event_start_at"] != challenger["event_start_at"]
