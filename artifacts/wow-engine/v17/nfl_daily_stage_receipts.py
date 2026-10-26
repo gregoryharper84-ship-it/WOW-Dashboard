@@ -290,9 +290,11 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
     producer_blocker = _actual_producer_receipt(rows[0]) if not reasons else None
     if producer_blocker:
         stage_reasons.append(producer_blocker)
-    if not reasons and not stage_reasons and not _final_refresh_proven(rows[0], out):
+    calibration_proven = not reasons and not producer_blocker
+    refresh_proven = calibration_proven and _final_refresh_proven(rows[0], out)
+    if calibration_proven and not refresh_proven:
         stage_reasons.append("NFL_FINAL_REFRESH_SOURCE_PROOF_UNPROVEN")
-    stage_proven = not reasons and not stage_reasons
+    stage_proven = calibration_proven and refresh_proven
     certified_forward = _forward_certification_proven(db, rows[0]) if stage_proven else False
     upstream_approved = (
         out.get("rank_eligible") is True
@@ -345,8 +347,8 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
         "source_snapshot_timestamp": _instant(row["source_snapshot_timestamp"]).isoformat(),
         "outcome_space": "NFL_FULL_GAME_HOME_AWAY",
         "probability_package_valid": True,
-        "dynamic_calibration_complete": stage_proven,
-        "calibration_status": "PASS" if stage_proven else "UNPROVEN",
+        "dynamic_calibration_complete": calibration_proven,
+        "calibration_status": "PASS" if calibration_proven else "UNPROVEN",
         "rank_eligible": allowed,
         "probability_publishable": allowed,
         "terminal_label": "FINAL_APPROVED" if allowed else "MODEL_QUALIFIED_HOLD",
@@ -355,10 +357,11 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
             "status": "PASS" if stage_proven else "HOLD",
             "package_readback_status": "PASS",
             "dynamic_calibration_stage": (
-                "PASS" if stage_proven else "EVIDENCE_NOT_EMITTED"
+                "PASS" if calibration_proven else "EVIDENCE_NOT_EMITTED"
                 if producer_blocker == "NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_MISSING"
                 else "EVIDENCE_INVALID"
             ),
+            "final_refresh_stage": "PASS" if refresh_proven else "HOLD",
             "forward_certification_status": (
                 "NOT_CHECKED" if not stage_proven else "PASS" if certified_forward else "HOLD"
             ),
