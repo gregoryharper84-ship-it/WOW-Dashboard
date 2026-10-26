@@ -8,7 +8,7 @@ import pytest
 from v17.nhl_total_goals_regime_source import (
     CAN_EXECUTE, PROBABILITY_PUBLISHABLE, GOAL_COUNT_DEFINITION,
     NHLTotalsRegimeSourceError, normalize_official_regime_schedule,
-    reconcile_official_regime_games,
+    reconcile_official_regime_games, reconcile_regime_labels_with_d1_events,
 )
 
 
@@ -102,3 +102,61 @@ def test_mismatched_team_schedule_is_not_accepted():
     with pytest.raises(NHLTotalsRegimeSourceError) as err:
         normalize_official_regime_schedule(schedule(), expected_season=20242025, requested_team="BOS")
     assert err.value.code == "NHL_TOTALS_SCHEDULE_IDENTITY_DRIFT"
+
+
+
+def real_d1():
+    file = Path(__file__).parent / "tests" / "fixtures" / "nhl_totals_d1_schedule_join_three_games.json"
+    return json.loads(file.read_text())["rows"]
+
+
+def test_real_source_join_matches_three_official_event_outcomes():
+    schedule_results = normalize_official_regime_schedule(
+        schedule(), expected_season=20242025, requested_team="NYR"
+    )
+    joined = reconcile_regime_labels_with_d1_events(real_d1(), schedule_results)
+    assert joined["status"] == "NHL_TOTALS_RETROSPECTIVE_SOURCE_LABELS_RECONCILED"
+    assert joined["count"] == 3
+    labels = {r["official_event_id"]: r for r in joined["labels"]}
+    assert labels["2024020007"]["final_period_type"] == "REG"
+    assert labels["2024020030"]["final_period_type"] == "OT"
+    assert labels["2024020728"]["final_period_type"] == "SO"
+    assert labels["2024020728"]["final_total_goals"] == 1
+    assert all(len(r["d1_source_payload_sha256"]) == 64 for r in joined["labels"])
+    assert all(len(r["official_schedule_game_sha256"]) == 64 for r in joined["labels"])
+    assert joined["calibrated_lower_bound"] is None
+    assert joined["probability_publishable"] is False and joined["can_execute"] is False
+
+
+@pytest.mark.parametrize("mutate,code", [
+    (lambda rows: rows[0]["outcome_json"].__setitem__("home_score", 8),
+     "NHL_TOTALS_REGIME_D1_IDENTITY_CONFLICT"),
+    (lambda rows: rows[0].__setitem__("event_start_time", "2024-10-10T23:30:00Z"),
+     "NHL_TOTALS_REGIME_D1_IDENTITY_CONFLICT"),
+    (lambda rows: rows[0].__setitem__("home_participant", "NYR"),
+     "NHL_TOTALS_REGIME_D1_IDENTITY_CONFLICT"),
+    (lambda rows: rows[0].__setitem__("source_payload_sha256", ""),
+     "NHL_TOTALS_REGIME_D1_ROW_INVALID"),
+    (lambda rows: rows[0].__setitem__("can_execute", True),
+     "NHL_TOTALS_REGIME_D1_ROW_INVALID"),
+])
+def test_real_join_conflicts_rejected_without_silent_fallback(mutate, code):
+    rows = real_d1()
+    mutate(rows)
+    schedule_results = normalize_official_regime_schedule(
+        schedule(), expected_season=20242025, requested_team="NYR"
+    )
+    with pytest.raises(NHLTotalsRegimeSourceError) as e:
+        reconcile_regime_labels_with_d1_events(rows, schedule_results)
+    assert e.value.code == code
+
+
+def test_incomplete_or_duplicate_join_refused():
+    games = normalize_official_regime_schedule(schedule(), expected_season=20242025, requested_team="NYR")
+    rows = real_d1()
+    with pytest.raises(NHLTotalsRegimeSourceError) as e:
+        reconcile_regime_labels_with_d1_events(rows[:2], games)
+    assert e.value.code == "NHL_TOTALS_REGIME_D1_COHORT_MISSING"
+    with pytest.raises(NHLTotalsRegimeSourceError) as e:
+        reconcile_regime_labels_with_d1_events(rows+[rows[0]], games)
+    assert e.value.code == "NHL_TOTALS_REGIME_D1_DUPLICATE"
