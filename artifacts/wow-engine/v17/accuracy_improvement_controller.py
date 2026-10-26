@@ -73,7 +73,7 @@ def _offer(raw: Any) -> dict[str, str]:
     keys = (
         "offer_id", "original_label", "event_id", "entity_id", "stat",
         "threshold_label", "direction", "offer_type", "sport", "route",
-        "event_start_utc",
+        "team_id", "opponent_id", "period", "event_start_utc",
     )
     row = {key: _str(raw.get(key), "MISSING_OFFER_" + key.upper()) for key in keys}
     row["offer_type"] = row["offer_type"].upper()
@@ -148,7 +148,8 @@ def _grade(offer: Mapping[str, str], evidence: Any) -> dict[str, Any]:
             raise ExperimentInputError("OFFICIAL_SETTLEMENT_MISSING")
         for key in ("source_id", "verification_id", "receipt_id"):
             _str(settlement.get(key), "SETTLEMENT_" + key.upper() + "_REQUIRED")
-        for key in ("offer_id", "event_id", "entity_id", "stat", "threshold_label", "direction", "offer_type"):
+        for key in ("offer_id", "event_id", "entity_id", "team_id", "opponent_id",
+                    "stat", "period", "threshold_label", "direction", "offer_type"):
             if settlement.get(key) != offer[key]:
                 raise ExperimentInputError("SETTLEMENT_EXACT_MARKET_MISMATCH")
         if _time(settlement.get("settled_at_utc"), "INVALID_SETTLEMENT_TIMESTAMP") < start:

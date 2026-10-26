@@ -17,7 +17,8 @@ def case(n=1):
         threshold = "7+" if i == 0 else "4.5"
         result["offers"].append({
             "offer_id": oid, "original_label": "Player %d %s assists" % (i, threshold),
-            "event_id": "event-" + str(i), "entity_id": "player-" + str(i), "stat": "ASSISTS",
+            "event_id": "event-" + str(i), "entity_id": "player-" + str(i),
+            "team_id": "MIA", "opponent_id": "BOS", "period": "FULL_GAME", "stat": "ASSISTS",
             "threshold_label": threshold, "direction": "MORE",
             "offer_type": "AT_LEAST" if i == 0 else "SCALAR", "sport": "NBA",
             "route": "NBA_ASSISTS", "event_start_utc": st.isoformat(),
@@ -46,7 +47,8 @@ def case(n=1):
                            "outcome": 1},
         }
         settlement = result["evidence_by_offer_id"][oid]["settlement"]
-        for field in ("offer_id", "event_id", "entity_id", "stat", "threshold_label", "direction", "offer_type"):
+        for field in ("offer_id", "event_id", "entity_id", "team_id", "opponent_id",
+                      "stat", "period", "threshold_label", "direction", "offer_type"):
             settlement[field] = result["offers"][-1][field]
     return result
 
@@ -167,8 +169,10 @@ def test_adjacent_line_receipt_mismatch():
 
 def test_wrong_official_settlement_market_cannot_grade():
     for field, wrong in (("entity_id", "OTHER_PLAYER"), ("event_id", "OTHER_GAME"),
-                         ("stat", "POINTS"), ("threshold_label", "8+"),
-                         ("direction", "LESS"), ("offer_type", "SCALAR")):
+                         ("team_id", "OLD_TEAM"), ("opponent_id", "OTHER_OPPONENT"),
+                         ("period", "FIRST_HALF"), ("stat", "POINTS"),
+                         ("threshold_label", "8+"), ("direction", "LESS"),
+                         ("offer_type", "SCALAR")):
         payload = case()
         payload["evidence_by_offer_id"]["offer-0"]["settlement"][field] = wrong
         assert evaluate_experiment(payload)["rows"][0]["code"] == "SETTLEMENT_EXACT_MARKET_MISMATCH"
@@ -214,3 +218,10 @@ def test_preserves_scorer_failure_not_model_unavailable():
     assert evaluate_experiment(payload)["rows"][0]["code"] == "MODEL_SCORER_FAILED"
     del payload["evidence_by_offer_id"]["offer-0"]["backend_receipt_id"]
     assert evaluate_experiment(payload)["rows"][0]["code"] == "BACKEND_FAILURE_RECEIPT_REQUIRED"
+
+def test_team_opponent_and_period_mandatory_in_original_market():
+    for missing in ("team_id", "opponent_id", "period"):
+        payload = case()
+        del payload["offers"][0][missing]
+        with pytest.raises(ExperimentInputError, match="MISSING_OFFER_" + missing.upper()):
+            evaluate_experiment(payload)
