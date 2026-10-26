@@ -31,6 +31,7 @@ SIRT audits the resulting evidence; Engineer/AMRT repairs, model owners maintain
 
 New pure functions in `v17.sirt_model_progression_audit`:
 
+- `audit_champion_baseline`: independently describe a previously frozen champion model's settled out-of-sample outcomes even when no genuine challenger exists. Hold on missing evidence, fewer than 30 observations, repeated receipts/events, incompatible holdout splits, or unverifiable source identity. The baseline is useful for monitoring but never certifies, promotes or activates a model.
 - `audit_challenger_replay`: compare champion and challenger Brier scores only for *paired* immutable out-of-sample pregame records from the identical `sport/market_family/cohort_id/event_id/market_id`. Require source snapshots, immutable prediction receipts, calibration references, independently verified settlement, prediction before start, settlement after start, and single artifact version per cohort.
 - Refuse a comparison for missing pairs, duplicates, incompatible holdout splits, mismatched settled outcomes, unverified rows, live-model substitutions or inadequate denominators. An unattributable malformed row blocks all cohort comparisons rather than allowing a clean-looking subset. Default 30 matched pairs is a reporting floor, **not certification sufficiency**.
 - The same paired replay emits Brier score, log loss, signed calibration bias, and ten-bin expected calibration error (ECE) for each model. When genuine earlier/later event windows exist it also reports their descriptive metric differences. No automatic drift finding, statistical significance, model promotion, or publication results from these descriptive measurements.
@@ -49,7 +50,7 @@ python -m pytest -q test_v17_sirt_model_progression_audit.py
 python v17/sirt_model_progression_audit.py --evidence-json /path/to/immutable-evidence.json
 ```
 
-Isolated fixture run: **31 passed locally on October 26, 2026**. The exact GitHub PR head still requires its own CI and protected reviews. This is not live production evidence.
+Isolated fixture run: **37 passed locally on October 26, 2026**. The exact GitHub PR head still requires its own CI and protected reviews. This is not live production evidence.
 
 ### Integration after source review
 
