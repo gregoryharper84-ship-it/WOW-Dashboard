@@ -11,6 +11,7 @@ on:
       - wow-v17-nightly-engineering-scan
       - wow-v17-chatgpt-engineering-worker
       - wow-v17-claude-engineering-worker
+      - wow-v17-gemini-engineering-worker
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -124,6 +125,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           FORCE_PROVIDER: ${{ inputs.force_provider }}
           MANUAL_REASON: ${{ inputs.reason }}
@@ -142,7 +144,9 @@ jobs:
           parent_run="${SOURCE_RUN_ID:-$GITHUB_RUN_ID}"
           target_incident="${MANUAL_TARGET_INCIDENT:-}"
           lease_group="${MANUAL_LEASE_GROUP:-GLOBAL}"
-          if [ "$EVENT_NAME" = "workflow_run" ]; then
+          source_workflow_id="${SOURCE_WORKFLOW%% *}"
+          if [ "$EVENT_NAME" = "workflow_run" ] \
+              && [ "$source_workflow_id" != "wow-v17-gemini-engineering-worker" ]; then
             if [[ "${SOURCE_DISPLAY_TITLE:-}" =~ incident=([0-9]+) ]]; then
               target_incident="${BASH_REMATCH[1]}"
             fi
@@ -158,7 +162,6 @@ jobs:
           fi
           # Classify against the exact workflow identity, not a suffixed
           # Actions display title. Preserve SOURCE_WORKFLOW in receipts.
-          source_workflow_id="${SOURCE_WORKFLOW%% *}"
           receipt="$RUNNER_TEMP/provider-route.json"
 
           classify_run() {
@@ -186,6 +189,173 @@ jobs:
             # Account/structured-output failures require an explicit recovery
             # probe, never hourly repetition. No prior run permits one probe.
             [ "$conclusion" != "failure" ] && [ "$conclusion" != "cancelled" ]
+          }
+
+          gemini_child_held() {
+            jq -cn --arg code "$1" '{
+              status:"HELD",code:$code,fallback_eligible:false,
+              can_execute:false,terminal_authority:"V17_TERMINAL_REDUCER"
+            }'
+          }
+
+          verify_gemini_child() {
+            local run_file="$RUNNER_TEMP/gemini-source-run.json"
+            local artifacts_file="$RUNNER_TEMP/gemini-source-artifacts.json"
+            local issues_file="$RUNNER_TEMP/gemini-source-issues.json"
+            local artifact_dir="$RUNNER_TEMP/gemini-source-artifact"
+            local run_attempt artifact_name provenance result
+            if ! [[ "${SOURCE_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] \
+                || ! [[ "${SOURCE_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]]; then
+              gemini_child_held GEMINI_CHILD_SOURCE_ID_INVALID
+              return
+            fi
+            if ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" \
+                > "$run_file" 2>/dev/null; then
+              gemini_child_held GEMINI_CHILD_SOURCE_UNVERIFIED
+              return
+            fi
+            run_attempt=$(jq -er '.run_attempt | select(type == "number" and . >= 1)' \
+              "$run_file" 2>/dev/null) || {
+              gemini_child_held GEMINI_CHILD_SOURCE_ID_INVALID
+              return
+            }
+            if [ "$run_attempt" != "$SOURCE_RUN_ATTEMPT" ]; then
+              gemini_child_held GEMINI_CHILD_SOURCE_ATTEMPT_MISMATCH
+              return
+            fi
+            if ! gh api \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$run_attempt/artifacts?per_page=100" \
+                > "$artifacts_file" 2>/dev/null; then
+              gemini_child_held GEMINI_CHILD_ARTIFACT_METADATA_UNVERIFIED
+              return
+            fi
+            provenance=$(python artifacts/wow-engine/v17/engineering_provider_failover.py \
+              verify-gemini-provenance \
+              --run-json "$run_file" \
+              --artifacts-json "$artifacts_file" \
+              --expected-run-id "$SOURCE_RUN_ID" \
+              --expected-run-attempt "$SOURCE_RUN_ATTEMPT" \
+              --repository "$GITHUB_REPOSITORY" 2>/dev/null) || true
+            if ! jq -e '.status == "VERIFIED_PROVENANCE"' \
+                <<<"$provenance" >/dev/null 2>&1; then
+              if jq -e 'type == "object" and (.code | type == "string")' \
+                  <<<"$provenance" >/dev/null 2>&1; then
+                printf '%s\n' "$provenance"
+              else
+                gemini_child_held GEMINI_CHILD_PROVENANCE_UNVERIFIED
+              fi
+              return
+            fi
+            artifact_name=$(jq -r '.artifact_name' <<<"$provenance")
+            mkdir -p "$artifact_dir"
+            if ! gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+                --name "$artifact_name" --dir "$artifact_dir" >/dev/null 2>&1; then
+              gemini_child_held GEMINI_CHILD_ARTIFACT_MISSING
+              return
+            fi
+            if ! gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
+                --json number,title,body,state,updatedAt > "$issues_file" 2>/dev/null; then
+              gemini_child_held GEMINI_CHILD_INCIDENT_STATUS_UNVERIFIED
+              return
+            fi
+            result=$(python artifacts/wow-engine/v17/engineering_provider_failover.py \
+              verify-gemini-child \
+              --run-json "$run_file" \
+              --artifacts-json "$artifacts_file" \
+              --receipt-dir "$artifact_dir" \
+              --expected-run-id "$SOURCE_RUN_ID" \
+              --expected-run-attempt "$SOURCE_RUN_ATTEMPT" \
+              --repository "$GITHUB_REPOSITORY" \
+              --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+              --issues "$issues_file" 2>/dev/null) || true
+            if jq -e 'type == "object" and (.status | type == "string")' \
+                <<<"$result" >/dev/null 2>&1; then
+              printf '%s\n' "$result"
+            else
+              gemini_child_held GEMINI_CHILD_EVIDENCE_INVALID
+            fi
+          }
+
+          route_existing_provider() {
+            local origin="$1"
+            local latest latest_id latest_conclusion classification code eligible
+            local age_minutes breaker=false breaker_code=""
+            local prefix=""
+            if [ -n "$origin" ]; then
+              prefix="${origin}:"
+            fi
+            if ! latest=$(gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow wow-v17-chatgpt-engineering-worker.yml \
+                --status completed \
+                --limit 1 \
+                --json databaseId,conclusion,updatedAt 2>/dev/null) \
+                || ! jq -e 'type == "array"' <<<"$latest" >/dev/null 2>&1; then
+              action=SURVIVAL
+              provider=deterministic
+              reason="${prefix}OPENAI_WORKER_INVENTORY_UNVERIFIED"
+              return
+            fi
+            latest_id=$(jq -r '.[0].databaseId // empty' <<<"$latest")
+            latest_conclusion=$(jq -r '.[0].conclusion // empty' <<<"$latest")
+            if [ -n "$latest_id" ] && [ "$latest_conclusion" = "failure" ]; then
+              if ! classification=$(classify_run "$latest_id" openai); then
+                action=SURVIVAL
+                provider=deterministic
+                reason="${prefix}OPENAI_FAILURE_CLASSIFICATION_UNVERIFIED"
+                return
+              fi
+              code=$(jq -r '.code // empty' <<<"$classification") || code=""
+              eligible=$(jq -r '.failover_eligible // false' <<<"$classification") || eligible=false
+              if [ -z "$code" ]; then
+                action=SURVIVAL
+                provider=deterministic
+                reason="${prefix}OPENAI_FAILURE_CLASSIFICATION_UNVERIFIED"
+                return
+              fi
+              if [ "$origin" != "" ] && [ "$eligible" != "true" ]; then
+                action=SURVIVAL
+                provider=deterministic
+                reason="${prefix}OPENAI_FAILURE_NOT_FALLBACK_ELIGIBLE:$code"
+                return
+              fi
+              breaker_code="$code"
+              age_minutes=$(python -c 'import datetime as dt,json,sys; rows=json.loads(sys.argv[1]); stamp=(rows[0].get("updatedAt") if rows else None); print("999999" if not stamp else max(0.0,(dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(stamp.replace("Z","+00:00"))).total_seconds()/60.0))' "$latest")
+              breaker=$(python artifacts/wow-engine/v17/engineering_provider_failover.py circuit-breaker \
+                --failure-code "$breaker_code" \
+                --age-minutes "$age_minutes" \
+                --cooldown-minutes 120 | jq -r '.active')
+            fi
+
+            if [ "$breaker" = "true" ]; then
+              if secondary_usable; then
+                action=DISPATCH
+                provider=anthropic
+                reason="${prefix}CIRCUIT_BREAKER:${breaker_code}"
+              else
+                action=SURVIVAL
+                provider=deterministic
+                reason="${prefix}CIRCUIT_BREAKER:${breaker_code}:SECONDARY_UNAVAILABLE_OR_FAILED"
+                independent_fallback_allowed=true
+              fi
+            elif [ -n "${OPENAI_API_KEY:-}" ]; then
+              action=DISPATCH
+              provider=openai
+              if [ -n "$origin" ]; then
+                reason="${origin}:OPENAI_PRIMARY_AVAILABLE"
+              else
+                reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
+              fi
+            elif secondary_usable; then
+              action=DISPATCH
+              provider=anthropic
+              reason="${prefix}OPENAI_API_KEY_MISSING"
+            else
+              action=SURVIVAL
+              provider=deterministic
+              reason="${prefix}NO_HEALTHY_ENGINEERING_PROVIDER_AVAILABLE"
+              independent_fallback_allowed=true
+            fi
           }
 
           gemini_canary_healthy() {
@@ -249,7 +419,23 @@ jobs:
           }
 
           if [ "$EVENT_NAME" = "workflow_run" ] && [ "$source_workflow_id" != "wow-v17-nightly-engineering-scan" ]; then
-            if [ "$SOURCE_CONCLUSION" = "success" ]; then
+            if [ "$source_workflow_id" = "wow-v17-gemini-engineering-worker" ]; then
+              gemini_result=$(verify_gemini_child)
+              gemini_status=$(jq -r '.status // "HELD"' <<<"$gemini_result")
+              gemini_code=$(jq -r '.code // "GEMINI_CHILD_EVIDENCE_INVALID"' <<<"$gemini_result")
+              if [ "$gemini_status" = "VERIFIED_PROVIDER_FAILURE" ] \
+                  && [ "$(jq -r '.fallback_eligible // false' <<<"$gemini_result")" = "true" ]; then
+                target_incident=$(jq -r '.target_incident' <<<"$gemini_result")
+                lease_group=$(jq -r '.lease_group' <<<"$gemini_result")
+                route_existing_provider "$gemini_code"
+              elif [ "$gemini_status" = "VERIFIED_TESTED_CANDIDATE" ]; then
+                reason=GEMINI_TESTED_CANDIDATE_REQUIRES_INDEPENDENT_REVIEW
+              else
+                action=SURVIVAL
+                provider=deterministic
+                reason="$gemini_code"
+              fi
+            elif [ "$SOURCE_CONCLUSION" = "success" ]; then
               reason="${SOURCE_WORKFLOW}_SUCCESS"
             elif [ "$source_workflow_id" = "wow-v17-chatgpt-engineering-worker" ]; then
               classification=$(classify_run "$SOURCE_RUN_ID" openai)
@@ -317,53 +503,7 @@ jobs:
               provider=gemini
               reason="$gemini_route_reason"
             else
-              latest=$(gh run list \
-                --repo "$GITHUB_REPOSITORY" \
-                --workflow wow-v17-chatgpt-engineering-worker.yml \
-                --status completed \
-                --limit 1 \
-                --json databaseId,conclusion,updatedAt)
-              latest_id=$(jq -r '.[0].databaseId // empty' <<<"$latest")
-              latest_conclusion=$(jq -r '.[0].conclusion // empty' <<<"$latest")
-              breaker=false
-              breaker_code=""
-              if [ -n "$latest_id" ] && [ "$latest_conclusion" = "failure" ]; then
-                classification=$(classify_run "$latest_id" openai)
-                breaker_code=$(jq -r '.code' <<<"$classification")
-                age_minutes=$(python -c 'import datetime as dt,json,sys; rows=json.loads(sys.argv[1]); stamp=(rows[0].get("updatedAt") if rows else None); print("999999" if not stamp else max(0.0,(dt.datetime.now(dt.timezone.utc)-dt.datetime.fromisoformat(stamp.replace("Z","+00:00"))).total_seconds()/60.0))' "$latest")
-                breaker=$(python artifacts/wow-engine/v17/engineering_provider_failover.py circuit-breaker \
-                  --failure-code "$breaker_code" \
-                  --age-minutes "$age_minutes" \
-                  --cooldown-minutes 120 | jq -r '.active')
-              fi
-
-              if [ "$breaker" = "true" ]; then
-                # A configured key is not evidence of restored quota. Never
-                # dispatch OpenAI while its verified breaker remains active.
-                if secondary_usable; then
-                  action=DISPATCH
-                  provider=anthropic
-                  reason="CIRCUIT_BREAKER:${breaker_code}"
-                else
-                  action=SURVIVAL
-                  provider=deterministic
-                  reason="CIRCUIT_BREAKER:${breaker_code}:SECONDARY_UNAVAILABLE_OR_FAILED"
-                  independent_fallback_allowed=true
-                fi
-              elif [ -n "${OPENAI_API_KEY:-}" ]; then
-                action=DISPATCH
-                provider=openai
-                reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
-              elif secondary_usable; then
-                action=DISPATCH
-                provider=anthropic
-                reason=OPENAI_API_KEY_MISSING
-              else
-                action=SURVIVAL
-                provider=deterministic
-                reason=NO_HEALTHY_ENGINEERING_PROVIDER_AVAILABLE
-                independent_fallback_allowed=true
-              fi
+              route_existing_provider ""
             fi
           fi
 
@@ -655,12 +795,18 @@ jobs:
               && [ "$RECEIPT_UPLOAD_OUTCOME" = "success" ]; then
             router_status=ROUTER_HEALTHY_PROVIDER_BLOCKED
           fi
+          if [[ "${REASON:-}" == GEMINI_* ]]; then
+            router_status=BLOCKED_WITH_EXACT_REASON
+          fi
           {
             echo "# WOW V17 Engineering Provider Dispatcher"
             echo "- router_status: $router_status"
             echo "- action: ${ACTION:-UNKNOWN}"
             echo "- selected_provider: ${PROVIDER:-UNKNOWN}"
             echo "- reason: ${REASON:-UNKNOWN}"
+            if [[ "${REASON:-}" == GEMINI_* ]]; then
+              echo "- provider_dispatch_acceptance_is_not_candidate_acceptance: true"
+            fi
             echo "- parent_run_id: ${PARENT_RUN_ID:-NONE}"
             echo "- issue_id: ${TARGET_INCIDENT:-AUTO}"
             echo "- lease_group: ${LEASE_GROUP:-GLOBAL}"
