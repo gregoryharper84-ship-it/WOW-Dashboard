@@ -374,3 +374,24 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
 Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.
+
+
+### NBA literal offer identity (host-only research; incident #2109)
+
+These are **pre-Action source-ingestion** diagnostics, never backend scorer terminals or model certification. No implied MORE/LESS, no X+ numeric-line conversion, no double-double scalar proxy, no probability publication; `can_execute=false`.
+
+| Code | Emitting boundary | Description |
+| --- | --- | --- |
+| `NBA_OFFER_ROW_KEY_MISSING` | NBA offer parser | Original source row key absent. |
+| `NBA_OFFER_PLAYER_MISSING` | NBA offer parser | Source player label absent. |
+| `NBA_OFFER_MATCHUP_MISSING` | NBA offer parser | Original matchup label absent. |
+| `NBA_OFFER_LABEL_MISSING` | NBA offer parser | Original offer text absent. |
+| `NBA_OFFER_CAPTURE_INVALID` | NBA offer parser | Supplied source capture field empty; absent capture remains unknown. |
+| `NBA_OFFER_PLATFORM_INVALID` | NBA offer parser | Supplied platform label empty. |
+| `NBA_OFFER_THRESHOLD_UNSUPPORTED` | NBA offer parser | At-least threshold outside bounded integer-count parser support. |
+| `NBA_OFFER_LINE_INVALID`, `NBA_OFFER_LINE_UNSUPPORTED` | NBA offer parser | Numeric OVER parsing/finite positive range invalid. |
+| `NBA_OFFER_UNRECOGNIZED_LABEL` | NBA offer parser | Unknown offer text; do not invent stat, period or direction. |
+| `NBA_OFFER_ROW_INVALID` | NBA source reconciliation | Non-object row or wrong source input shape. |
+| `NBA_OFFER_SOURCE_ROW_COLLISION` | NBA source reconciliation | Duplicate source key; never silently erase or merge distinct ladders. |
+
+Host-only nonterminal holds: `AT_LEAST_THRESHOLD_ADAPTER_NOT_VERIFIED`, `PREGAME_EVIDENCE_AND_SOURCE_METADATA_UNRESOLVED`, `COMPOUND_ROUTE_NOT_VERIFIED`. These do not imply a scoring Action was invoked.
