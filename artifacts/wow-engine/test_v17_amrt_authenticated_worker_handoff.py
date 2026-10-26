@@ -79,7 +79,13 @@ def receipt_writer(monkeypatch):
 def test_all_five_existing_specialists_reach_canonical_append_only_writer(
     specialist, receipt_writer
 ):
-    stages = {name: {"status": "PASS", "evidence_ref": "receipt:" + name}\n              for name in STAGES}\n    got = persist_authenticated_specialist_handoff(\n        **args(specialist=specialist, producer_stages=stages))
+    stages = {
+        name: {"status": "PASS", "evidence_ref": "receipt:" + name}
+        for name in STAGES
+    }
+    got = persist_authenticated_specialist_handoff(
+        **args(specialist=specialist, producer_stages=stages)
+    )
     assert got["receipt_id"] == "verified-test-receipt"
     assert len(receipt_writer) == 1
     row = receipt_writer[0]
