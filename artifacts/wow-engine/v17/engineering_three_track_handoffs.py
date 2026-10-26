@@ -50,7 +50,12 @@ def _validate_config(config: dict[str, Any]) -> list[dict[str, Any]]:
     if config.get("no_new_dispatcher") is not True:
         raise HandoffContractError("NEW_DISPATCHER_FORBIDDEN")
     tracks = config.get("tracks")
-    if not isinstance(tracks, list) or tuple(x.get("id") for x in tracks if isinstance(x, dict)) != TRACKS:
+    if (
+        not isinstance(tracks, list)
+        or len(tracks) != len(TRACKS)
+        or any(not isinstance(x, dict) for x in tracks)
+        or tuple(x.get("id") for x in tracks) != TRACKS
+    ):
         raise HandoffContractError("TRACK_ORDER_OR_COVERAGE_INVALID")
     issues = set()
     for track in tracks:
