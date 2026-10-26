@@ -35,7 +35,9 @@ def test_no_new_writer_only_protected_lease_fenced_amrt_worker_step(path):
     assert "github.ref == 'refs/heads/main'" in checkout["if"]
     assert "steps.mutation_gate.outputs.allowed == 'true'" in handoff["if"]
     assert "github.ref == 'refs/heads/main'" in handoff["if"]
-    # An admitted AMRT persistence/readback failure must fail this existing job.\n    assert handoff.get("continue-on-error", False) is False\n    assert "set -euo pipefail" in handoff["run"]
+    # An admitted AMRT persistence/readback failure must fail this existing job.
+    assert handoff.get("continue-on-error", False) is False
+    assert "set -euo pipefail" in handoff["run"]
     assert handoff["env"]["WOW_CAN_EXECUTE"] == "false"
     assert handoff["env"]["WOW_DRY_RUN_ONLY"] == "true"
     assert "steps.eng_token.outputs.token" in handoff["env"]["GH_TOKEN"]
