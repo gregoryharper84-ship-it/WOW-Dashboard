@@ -379,27 +379,37 @@ jobs:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
-          artifact_match_count=0
-          for page in $(seq 1 20); do
-            response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}") || {
-              echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_UNAVAILABLE" >&2; exit 1;
-            }
-            items=$(jq -ce 'if (.artifacts | type) == "array" then .artifacts else error("invalid") end' \
-              <<<"$response") || {
-                echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
-              }
-            count=$(jq 'length' <<<"$items")
-            page_matches=$(jq -ce --arg name "wow-v17-engineering-governance-${HEAD_SHA}" \
-              '[.[] | select(.name == $name and .expired == false)] | length' <<<"$items") || {
-                echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
-              }
-            artifact_match_count=$((artifact_match_count + page_matches))
-            [ "$count" -lt 100 ] && break
-            [ "$page" -lt 20 ] || {
-              echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1;
-            }
-          done
+          # GitHub supports server-side artifact name filtering. Scanning all
+          # repository artifacts (20 x 100) fails deterministically at scale,
+          # despite the exact expected artifact name already being known.
+          # Keep exact-name and duplicate validation. If a single name exceeds
+          # one full page, fail closed rather than truncating provenance.
           artifact_name="wow-v17-engineering-governance-${HEAD_SHA}"
+          response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100&page=1") || {
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_UNAVAILABLE" >&2; exit 1;
+          }
+          filtered_total=$(jq -er '
+            if (.total_count | type) == "number" and
+               .total_count >= 0 and
+               (.total_count | floor) == .total_count
+            then .total_count else error("invalid total") end
+          ' <<<"$response") || {
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
+          }
+          [ "$filtered_total" -le 100 ] || {
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1;
+          }
+          artifact_match_count=$(jq -er --arg name "$artifact_name" --argjson total "$filtered_total" '
+            if (.artifacts | type) != "array" or
+               (.artifacts | length) != $total or
+               any(.artifacts[]; .name != $name or
+                   (.expired != true and .expired != false) or
+                   (.id | type) != "number" or .id <= 0)
+            then error("invalid filtered artifact inventory")
+            else [.artifacts[] | select(.expired == false)] | length end
+          ' <<<"$response") || {
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
+          }
           if [ "$artifact_match_count" -eq 1 ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "::notice::EXISTING_PR_RECEIPT_ARTIFACT_ALREADY_PRESENT:$HEAD_SHA"
