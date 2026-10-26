@@ -37,7 +37,11 @@ def valid_numeric_package(row: Mapping[str, Any]) -> bool:
     return all(_nonempty(row.get(key)) for key in (
         "controlling_specialist", "model_artifact_id", "model_timestamp",
         "terminal_receipt_ref",
-    )) and row.get("probability_receipt_verified") is True
+    )) and all(row.get(key) is True for key in (
+        "probability_receipt_verified", "terminal_receipt_verified",
+        "model_invoked_verified", "fitted_specialist_certified",
+        "calibration_evidence_verified",
+    ))
 
 
 def audit_handoffs(handoffs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
