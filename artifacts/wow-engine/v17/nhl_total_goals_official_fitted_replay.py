@@ -11,7 +11,6 @@ sporting probability, never a V17 serving scorer.
 """
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 import json
@@ -20,7 +19,7 @@ from v17.nhl_total_goals_challenger import (
     TotalRow, fit_total_goals_candidate,
 )
 from v17.nhl_total_goals_official_fixture import (
-    APPROVED_SEASONS, load_checked_in_season,
+    load_checked_in_season,
     build_real_reconstructed_regime_rows,
 )
 from v17.nhl_total_goals_regime_mixture_research import (
