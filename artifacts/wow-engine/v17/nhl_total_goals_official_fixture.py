@@ -30,6 +30,23 @@ EXPECTED_GAMES = 1312
 EXPECTED_TEAM_MIRRORS = 2624
 APPROVED_SEASONS = frozenset(range(2021, 2026))
 
+# Full-season canonical-game SHA256 matched independently against the WOW D1
+# validation DB on 2026-10-26. The second commitment covers the NHL public
+# final REG/OT/SO classifications (which do NOT exist in the D1 game table).
+# This does not certify source license, historical pregame timing or the model.
+PINNED_OFFICIAL_SOURCE_CHECKSUMS = {
+    2021: ("df61708c88ccd73c768bd3c460f1281465664ebb724b69dc73e2fcdca469d7ba",
+           "6b59e3d7a71c4dd96100c9169728d3f259cfc4db4d1817b1e4b344e51bc05c1d"),
+    2022: ("d5dc6272742bb8d089f2933b1a1c7c109957d2e7843e049ced385e65d59b2d8a",
+           "246fd855db10a11f3315e69f40052a81ca06b8f6556e493ddcced80b9eb2cbf9"),
+    2023: ("b1bf59a4746cb6fa58cc3ace0a27502e75db851025b08003934eda9fb9bfbe25",
+           "6b57bfe4a6190e302edf3b047273dd243f27a49e71f898873990509fe63cf02b"),
+    2024: ("8b40660b2327dd9aaf2b1f0f3e1b1c96a117b53d23faf52f8d6e1dce69a53995",
+           "ce3a8431a18070b1464becf550671585794a88153333865f7b97e816ade288a7"),
+    2025: ("5390675a5829359217c5778f57d92ea7aa7cb54d48cee8a61ec6c5b21664472e",
+           "3cded0f5a74b2e4c8fb1fc842f94d0700453205e41017f4e3d8928a86cbf05f2"),
+}
+
 
 class NHLProjectedSourceError(ValueError):
     def __init__(self, code: str, detail: str):
@@ -149,6 +166,29 @@ def parse_projected_official_season(encoded: str, *, year: int) -> tuple[list[Of
     if len(seen) != EXPECTED_GAMES:
         raise NHLProjectedSourceError(
             "NHL_TOTALS_OFFICIAL_DUPLICATE_EVENT", str(season)
+        )
+    # Verify every event identity/time/team/score AND terminal-regime label,
+    # not merely the five per-season game counts. Canonical source digest was
+    # independently reproduced from frozen NHL public projection and stored
+    # D1 final-game result identities across all 6,560 official games.
+    canonical = sorted(raw, key=lambda game: int(game["id"]))
+    identity = "\\n".join(
+        "|".join((
+            str(g["id"]), str(g["startTimeUTC"]),
+            str(g["homeTeam"]["abbrev"]), str(g["awayTeam"]["abbrev"]),
+            str(g["homeTeam"]["score"]), str(g["awayTeam"]["score"]),
+        )) for g in canonical
+    )
+    endings = "\\n".join(
+        str(g["id"]) + "|" + str(g["gameOutcome"]["lastPeriodType"])
+        for g in canonical
+    )
+    source_sha = sha256(identity.encode()).hexdigest()
+    regime_sha = sha256(endings.encode()).hexdigest()
+    if (source_sha, regime_sha) != PINNED_OFFICIAL_SOURCE_CHECKSUMS[year]:
+        raise NHLProjectedSourceError(
+            "NHL_TOTALS_OFFICIAL_SOURCE_FINGERPRINT_MISMATCH",
+            str(season),
         )
     admitted.sort(key=lambda g: (g.start_utc, g.event_id))
     period_counts = {r:sum(1 for x in admitted if x.final_regime==r) for r in ("REG","OT","SO")}
