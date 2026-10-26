@@ -55,9 +55,9 @@ def test_training_data_is_authentic_but_missing_2023_calibration_is_not_a_model(
     assert e.value.code=="NHL_REGIME_HOLDOUT_INSUFFICIENT"
 
 
-def test_nonexistent_2023_fixture_produces_typed_acquisition_hold():
+def test_missing_local_fixture_produces_typed_acquisition_hold(tmp_path):
     with pytest.raises(NHLProjectedSourceError) as e:
-        load_checked_in_season(2023,fixture_directory=FIXTURES)
+        load_checked_in_season(2023,fixture_directory=tmp_path)
     assert e.value.code=="NHL_TOTALS_OFFICIAL_FIXTURE_MISSING"
 
 
