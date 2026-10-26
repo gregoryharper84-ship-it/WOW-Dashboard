@@ -72,6 +72,17 @@ def prepare_shadow_feature_handoff(
         ref = f.get("source_reference")
         _require(isinstance(ref, str) and HEX64.fullmatch(ref) is not None
                  and ref not in seen, "INTEL_SHADOW_SOURCE_REFERENCE_INVALID")
+        # A caller can mutate a nominally compiled research snapshot before
+        # handoff. A plausible 64-character digest is not proof of provenance:
+        # require exact agreement with its unverified original URL/record.
+        source_url, source_record_id = f.get("source_url"), f.get("source_record_id")
+        _require(isinstance(source_url, str) and source_url.startswith("https://")
+                 and isinstance(source_record_id, str) and bool(source_record_id.strip()),
+                 "INTEL_SHADOW_SOURCE_REFERENCE_INVALID")
+        expected_ref = hashlib.sha256(
+            f"{source_url}|{source_record_id}".encode()
+        ).hexdigest()
+        _require(ref == expected_ref, "INTEL_SHADOW_SOURCE_REFERENCE_INVALID")
         seen.add(ref)
         allowed.add(ref)
     _require(set(proposed_targets).issubset(allowed), "INTEL_SHADOW_UNKNOWN_TARGET_REF")
