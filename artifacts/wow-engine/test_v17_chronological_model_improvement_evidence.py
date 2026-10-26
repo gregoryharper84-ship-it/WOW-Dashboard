@@ -1,0 +1,139 @@
+"""Chronological and adversarial model-improvement evidence tests."""
+import pytest
+
+from v17.chronological_model_improvement_evidence import (
+    evaluate_chronological_evidence,
+)
+
+
+def sample(i, role="CHAMPION", **overrides):
+    result = {
+        "prediction_id": f"{role}-pred-{i}",
+        "candidate_id": f"game-{i}",
+        "event_id": f"event-{i}",
+        "market_identity": "NFL:ML:HOME",
+        "sport": "NFL",
+        "market_family": "MONEYLINE",
+        "model_role": role,
+        "model_version": "fitted-v1" if role == "CHAMPION" else "shadow-v2",
+        "model_artifact_id": "fitted:v1" if role == "CHAMPION" else "shadow:v2",
+        "source_snapshot_hash": "genuine-source-hash-reference",
+        "settlement_receipt_ref": f"official-result-{i}",
+        "source_snapshot_at": "2026-10-25T14:00:00Z",
+        "issued_at": "2026-10-25T15:00:00Z",
+        "event_start_at": "2026-10-25T17:00:00Z",
+        "settled_at": "2026-10-25T20:00:00Z",
+        "outcome_recorded_at": "2026-10-25T20:05:00Z",
+        "calibrated_probability": .55 if role == "CHAMPION" else .75,
+        "calibrated_lower_bound": .5,
+        "settled_outcome": 1,
+        "source_verified": True,
+        "outcome_verified": True,
+        "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    result.update(overrides)
+    return result
+
+
+def test_champion_challenger_paired_forward_receipts():
+    rows = [sample(i, role) for i in range(25)
+            for role in ("CHAMPION", "CHALLENGER")]
+    result = evaluate_chronological_evidence(rows)
+    assert result["audit_complete"]
+    assert result["rows_verified"] == 50
+    assert result["paired_count"] == 25
+    assert result["paired_comparison_ready"]
+    assert len(result["cohorts"]) == 2
+    assert all(cohort["evidence_sufficient"] for cohort in result["cohorts"])
+    assert result["paired_metrics"]["brier_improvement"] > 0
+    assert result["paired_metrics"]["log_loss_improvement"] > 0
+    assert result["automatic_promotion_allowed"] is False
+    assert result["model_release_authorized"] is False
+    assert result["can_execute"] is False
+
+
+def test_unpaired_models_never_claim_challenger_improvement():
+    result = evaluate_chronological_evidence([sample(i) for i in range(25)])
+    assert result["audit_complete"]
+    assert result["paired_count"] == 0
+    assert result["paired_metrics"] is None
+    assert not result["paired_comparison_ready"]
+
+
+@pytest.mark.parametrize("change,code", [
+    ({"source_snapshot_at": "2026-10-25T16:00:00Z"}, "CHRONOLOGY"),
+    ({"source_snapshot_at": "2026-10-25T19:00:00Z"}, "CHRONOLOGY"),
+    ({"issued_at": "2026-10-25T17:00:00Z"}, "CHRONOLOGY"),
+    ({"settled_at": "2026-10-25T16:00:00Z"}, "CHRONOLOGY"),
+    ({"outcome_recorded_at": "2026-10-25T19:59:59Z"}, "CHRONOLOGY"),
+    ({"issued_at": "2026-10-25T15:00:00"}, "TIMESTAMP_UNVERIFIED"),
+    ({"outcome_verified": False}, "EVIDENCE_UNVERIFIED"),
+    ({"source_verified": None}, "EVIDENCE_UNVERIFIED"),
+    ({"calibrated_probability": float("nan")}, "CALIBRATION"),
+    ({"calibrated_lower_bound": .9}, "CALIBRATION"),
+    ({"calibrated_probability": True}, "CALIBRATION"),
+    ({"settled_outcome": True}, "BINARY_SETTLEMENT"),
+    ({"settled_outcome": 2}, "BINARY_SETTLEMENT"),
+    ({"model_artifact_id": ""}, "IDENTITY"),
+    ({"can_execute": True}, "GOVERNANCE"),
+    ({"terminal_authority": "model-agent"}, "GOVERNANCE"),
+])
+def test_bad_evidence_is_held_and_never_published(change, code):
+    result = evaluate_chronological_evidence([sample(1, **change)], min_samples=1)
+    assert not result["audit_complete"]
+    assert result["rows_verified"] == 0
+    assert result["rows_held"] == 1
+    assert code in result["findings"][0]["code"]
+    assert result["paired_metrics"] is None
+
+
+def test_small_cohort_is_unknown_not_winner():
+    result = evaluate_chronological_evidence(
+        [sample(1), sample(1, "CHALLENGER")],
+        min_samples=25,
+    )
+    assert result["audit_complete"]
+    assert result["paired_count"] == 1
+    assert not result["paired_comparison_ready"]
+    assert result["paired_metrics"] is None
+    assert all(x["metrics"] is None for x in result["cohorts"])
+
+
+def test_duplicate_prediction_cannot_inflate_sample_size():
+    result = evaluate_chronological_evidence([sample(1), sample(1)], min_samples=1)
+    assert not result["audit_complete"]
+    assert result["rows_held"] == 1
+    assert result["paired_metrics"] is None
+    assert any(x["code"] == "DUPLICATE_MODEL_PREDICTION" for x in result["findings"])
+
+
+def test_cross_model_settlement_conflict_vetoes_comparison():
+    rows = [sample(i, role) for i in range(25)
+            for role in ("CHAMPION", "CHALLENGER")]
+    rows[-1]["settled_outcome"] = 0
+    result = evaluate_chronological_evidence(rows)
+    assert any(x["code"] == "PAIRED_SETTLEMENT_MISMATCH" for x in result["findings"])
+    assert not result["paired_comparison_ready"]
+    assert result["paired_metrics"] is None
+
+
+def test_same_role_multiple_versions_cannot_be_paired_ambiguously():
+    rows = [sample(1), sample(1, model_version="other", prediction_id="different")]
+    result = evaluate_chronological_evidence(rows, min_samples=1)
+    assert not result["audit_complete"]
+    assert any(x["code"] == "AMBIGUOUS_PAIRED_MODEL_VERSION" for x in result["findings"])
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, "25"])
+def test_sample_minimum_must_be_fixed_positive_integer(value):
+    with pytest.raises(ValueError, match="MIN_SAMPLES_INVALID"):
+        evaluate_chronological_evidence([], min_samples=value)
+
+
+def test_no_settled_rows_is_unknown_not_a_green_report():
+    result = evaluate_chronological_evidence([])
+    assert not result["audit_complete"]
+    assert result["rows_received"] == 0
+    assert result["cohorts"] == []
+    assert result["paired_metrics"] is None
