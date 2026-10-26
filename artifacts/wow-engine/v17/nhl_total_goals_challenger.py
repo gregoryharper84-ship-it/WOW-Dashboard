@@ -5,7 +5,7 @@ Only prior settled results contribute to reconstructed features; within the
 same scheduled timestamp, no outcomes are visible to any other fixture.
 These retrospectively reconstructed features are NOT archived pregame snapshots.
 
-Pre-registered season split: 2019-22 fit, 2023 calibration, 2024 untouched
+Pre-registered season split: 2021-22 fit, 2023 calibration, 2024 untouched
 validation, >=2025 forward reserve. Poisson regression is a testable baseline,
 NOT an approved/governed NHL totals probability or goalie-aware specialist.
 """
@@ -32,7 +32,7 @@ AUTOMATIC_PROMOTION = False
 CONTROLLING_TERMINAL = "V17_TERMINAL_REDUCER"
 MODEL_FAMILY = "NHL_TOTAL_GOALS_POISSON_RESEARCH_V1"
 SCHEMA_VERSION = "NHL_TOTALS_PRIOR_GAMES_V1"
-TRAIN_SEASONS = frozenset({2019, 2020, 2021, 2022})
+TRAIN_SEASONS = frozenset({2021, 2022})
 CALIBRATION_SEASON = 2023
 VALIDATION_SEASON = 2024
 FORWARD_RESERVE_FROM = 2025
