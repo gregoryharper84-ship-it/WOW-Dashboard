@@ -325,8 +325,11 @@ def test_registered_backend_verifier_can_attest_model_result_only_when_enrolled(
         evidence_attestation_verifier=verifier,
     )
     result = _score(_request("NBA"))
-    assert result["cross_sport_evidence_attested"] is True
-    assert result["cross_sport_evidence_producer_status"] == "VERIFIED"
+    # This simple scoring fixture has no complete numerical-consumption receipt:
+    # a registered verifier must not transform that deficit into a PASS.
+    assert result["cross_sport_evidence_attested"] is False
+    assert result["cross_sport_evidence_producer_status"] == "UNVERIFIED"
+    assert result["cross_sport_evidence"]["feature_consumption_receipt_id"] == result["feature_consumption_receipt_id"]
     assert team_event_bridge_health()["NBA"]["cross_sport_evidence_verifier_registered"] is True
 
 
