@@ -1,0 +1,154 @@
+# STAGED ONLY: Not an installed GitHub Actions workflow. Requires independent trusted engineering author and CODEOWNER approval before promotion to .github/workflows/.
+name: wow-v17-flint-engineering-worker
+run-name: >-
+  wow-v17-flint-engineering-worker incident=${{ inputs.target_incident }} lease=${{ inputs.lease_group }}
+
+# Opt-in, human-triggered research candidate only. No schedule, auto-routing,
+# repository writes, patch application, PR creation, deploy or release authority.
+on:
+  workflow_dispatch:
+    inputs:
+      target_incident:
+        description: Exact OPEN incident already recorded in canonical Conductor manifest
+        required: true
+        type: string
+      lease_group:
+        description: Must match the canonical manifest lease group
+        required: true
+        type: string
+        default: P0_LLP_RESTORE
+      consent_external_title:
+        description: I authorize sending the selected issue number/title (no body or code) to OpenRouter for ONE research-only inference
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: wow-v17-engineering-implementation-single-writer
+  cancel-in-progress: false
+
+jobs:
+  manual-flint-triage:
+    name: One-shot Flint AMRT diagnostic (never a repair approval)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: wow-engineering
+    steps:
+      - name: Checkout trusted main without writer credentials
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Require explicit manual consent and trusted source
+        shell: bash
+        env:
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_EVENT: ${{ github.event_name }}
+          EXTERNAL_TITLE_CONSENT: ${{ inputs.consent_external_title }}
+        run: |
+          set -euo pipefail
+          if [ "$SOURCE_REF" != "refs/heads/main" ] || [ "$SOURCE_EVENT" != "workflow_dispatch" ]; then
+            echo "::error::FLINT_TRUSTED_MAIN_MANUAL_DISPATCH_REQUIRED"
+            exit 1
+          fi
+          if [ "$EXTERNAL_TITLE_CONSENT" != "true" ]; then
+            echo "::error::FLINT_EXTERNAL_TITLE_CONSENT_REQUIRED"
+            exit 1
+          fi
+          # A moving main must not silently change the source being evaluated.
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo "::error::FLINT_SOURCE_SHA_CHANGED_AFTER_DISPATCH"
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/wow-flint"
+
+      - name: Fence unresolved remote writers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
+
+      - name: Select one canonical OPEN engineering incident
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INCIDENT: ${{ inputs.target_incident }}
+          REQUESTED_LEASE: ${{ inputs.lease_group }}
+        run: |
+          set -euo pipefail
+          [[ "$INCIDENT" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::FLINT_INCIDENT_ID_INVALID"
+            exit 1
+          }
+          # The explicit issue can be older than the first 200 OPEN results.
+          # Fetch exact identity independently so a truncated list cannot
+          # falsely report an eligible existing issue as missing.
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
+            --json number,title,state,updatedAt \
+            > "$RUNNER_TEMP/wow-flint/visible-issues.json"
+          gh issue view "$INCIDENT" --repo "$GITHUB_REPOSITORY" \
+            --json number,title,state,updatedAt \
+            > "$RUNNER_TEMP/wow-flint/exact-issue.json"
+          python - "$RUNNER_TEMP/wow-flint/visible-issues.json" \
+                   "$RUNNER_TEMP/wow-flint/exact-issue.json" \
+                   "$RUNNER_TEMP/wow-flint/issues.json" <<'PY'
+          import json, pathlib, sys
+          recent = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          exact = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          if not isinstance(recent, list) or not isinstance(exact, dict):
+              raise SystemExit("FLINT_OPEN_ISSUE_EVIDENCE_INVALID")
+          if exact.get("state") != "OPEN":
+              raise SystemExit("FLINT_EXACT_ISSUE_NOT_OPEN")
+          rows = [r for r in recent if r.get("number") != exact.get("number")]
+          rows.append(exact)
+          pathlib.Path(sys.argv[3]).write_text(json.dumps(rows))
+          PY
+          python artifacts/wow-engine/v17/engineering_gemini_headless.py select \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --issues "$RUNNER_TEMP/wow-flint/issues.json" \
+            --target "$INCIDENT" --lease-group "$REQUESTED_LEASE" \
+            > "$RUNNER_TEMP/wow-flint/selection.json"
+          test "$(jq -r '.status' "$RUNNER_TEMP/wow-flint/selection.json")" = "SELECTED" || {
+            echo "::error::FLINT_CANONICAL_INCIDENT_NOT_SELECTED"
+            exit 1
+          }
+
+      - name: One bounded OpenRouter Flint research inference
+        id: flint
+        shell: bash
+        env:
+          # Key exists ONLY in this model step; never exposed to issue listing,
+          # GH token steps, shell logging, or upload-artifact invocation.
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          FLINT_ENGINEERING_ENABLED: "true"
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_openrouter_flint_worker.py \
+            --selection "$RUNNER_TEMP/wow-flint/selection.json" \
+            --source-sha "$(git rev-parse HEAD)" \
+            --receipt-file "$RUNNER_TEMP/wow-flint/worker-receipt.json" \
+            --diagnostic-file "$RUNNER_TEMP/wow-flint/diagnostic-candidate.json" \
+            --acknowledged
+          echo "Flint produced an untrusted, analysis-only candidate; no source/test change or release evidence." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload typed read-only Flint evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-flint-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/wow-flint/selection.json
+            ${{ runner.temp }}/wow-flint/worker-receipt.json
+            ${{ runner.temp }}/wow-flint/diagnostic-candidate.json
