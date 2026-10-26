@@ -444,9 +444,9 @@ jobs:
               ;;
           esac
 
-  adopt-reviewed-owner-source:
-    # Reuse this existing hourly/QA HOLD controller. This is NOT another queue,
-    # scheduler or certification authority. Discover one exact-head source only.
+  adoption-readonly-preflight:
+    # Read-only inventory/provenance verification runs OUTSIDE the protected
+    # implementation writer lock. Provider leases and code authority untouched.
     if: >-
       github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
       (github.event_name != 'workflow_run' ||
@@ -457,6 +457,48 @@ jobs:
            github.event.workflow_run.name == 'wow-engine-verify')) ||
          startsWith(github.event.workflow_run.name, 'wow-v17-independent-qa-check') ||
          startsWith(github.event.workflow_run.name, 'wow-v17-release-authority-check'))))
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      status: ${{ steps.source.outputs.status }}
+      pr_number: ${{ steps.source.outputs.pr_number }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Checkout protected main for read-only discovery
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Select one independently re-proposable source
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_authorized_adoption.py discover \
+            --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/wow-source-adoption.json"
+          jq -e '.can_execute == false and (.status == "SOURCE_READY" or .status == "NO_ELIGIBLE_SOURCE")' \
+            "$RUNNER_TEMP/wow-source-adoption.json" >/dev/null
+          jq -c '{status, pr_number, source_sha, can_execute}' \
+            "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$(jq -r .status "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(jq -r '.pr_number // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(jq -r '.source_sha // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+
+
+  adopt-reviewed-owner-source:
+    # Reuse this existing hourly/QA HOLD controller. This is NOT another queue,
+    # scheduler or certification authority. Discover one exact-head source only.
+    needs: adoption-readonly-preflight
+    if: needs.adoption-readonly-preflight.outputs.status == 'SOURCE_READY'
     concurrency:
       group: wow-v17-engineering-implementation-single-writer
       cancel-in-progress: false
@@ -494,31 +536,13 @@ jobs:
             exit 1
           }
 
-      - name: Select one independently re-proposable source
-        id: source
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python artifacts/wow-engine/v17/engineering_authorized_adoption.py discover \
-            --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/wow-source-adoption.json"
-          jq -e '.can_execute == false and (.status == "SOURCE_READY" or .status == "NO_ELIGIBLE_SOURCE")' \
-            "$RUNNER_TEMP/wow-source-adoption.json" >/dev/null
-          jq -c '{status, pr_number, source_sha, can_execute}' \
-            "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
-          echo "status=$(jq -r .status "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$(jq -r '.pr_number // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$(jq -r '.source_sha // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
-
       - name: Re-propose immutable source through authenticated Engineering App
-        if: steps.source.outputs.status == 'SOURCE_READY'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           APP_TOKEN: ${{ steps.engineering_app.outputs.token }}
-          SOURCE_PR: ${{ steps.source.outputs.pr_number }}
-          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          SOURCE_PR: ${{ needs.adoption-readonly-preflight.outputs.pr_number }}
+          SOURCE_SHA: ${{ needs.adoption-readonly-preflight.outputs.source_sha }}
           WOW_CAN_EXECUTE: "false"
           WOW_DRY_RUN_ONLY: "true"
         run: |
