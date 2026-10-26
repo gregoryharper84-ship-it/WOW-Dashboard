@@ -188,7 +188,7 @@ def test_closed_nfl_precedent_cannot_be_listed_as_active_dispatch_issue():
     scope = config()["tracks"][0]["scope"]
     assert "NFL #1841" not in scope
     assert "NFL #1562" in scope
-    assert "NBA #1988" in scope
+    assert "NBA props #1988" in scope
 
 
 def test_track_configuration_enforces_existing_issue_owners():
