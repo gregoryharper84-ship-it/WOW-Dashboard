@@ -15,8 +15,8 @@ NBA_EXACT_ROUTES = {"POINTS", "REBOUNDS", "ASSISTS", "PRA",
 def test_nba_ownership_is_exact_and_still_nonexecuting():
     sql = MIGRATION.read_text()
     match = re.search(
-        r"elsif v_sport='NBA' and v_key in \\((.*?)\\) then\\s*"
-        r"--[^\\n]*\\n\\s*v_controller := 'wow.nba-player-prop-probability-expert'",
+        r"elsif v_sport='NBA' and v_key in \((.*?)\) then\s*"
+        r"--[^\n]*\n\s*v_controller := 'wow.nba-player-prop-probability-expert'",
         sql, re.S,
     )
     assert match is not None
@@ -49,7 +49,7 @@ def test_historical_inventory_is_exact_and_no_offer_conversion():
     assert sum(r["offer_kind"] == "AT_LEAST" for r in rows) == 22
     assert sum(r["offer_kind"] == "OVER" for r in rows) == 4
     assert sum(r["offer_kind"] == "COMPOUND" for r in rows) == 1
-    assert all(re.fullmatch(r"\\d+\\+ (assists|rebounds|points)", r["original_offer"])
+    assert all(re.fullmatch(r"\d+\+ (assists|rebounds|points)", r["original_offer"])
                for r in rows if r["offer_kind"] == "AT_LEAST")
     assert all(r["route"] == "DOUBLE_DOUBLE" for r in rows if r["offer_kind"] == "COMPOUND")
     assert board["offer_conversions_authorized"] is False
