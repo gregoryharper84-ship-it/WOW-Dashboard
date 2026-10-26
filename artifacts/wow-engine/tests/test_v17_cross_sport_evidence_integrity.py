@@ -41,6 +41,10 @@ def envelope(sport: str) -> dict:
         "scorer_official_event_id": "event-123",
         "event_start_utc": t.isoformat(),
         "model_timestamp": (t-timedelta(hours=1)).isoformat(),
+        "final_refresh_status": "PASS",
+        "current_event_status": "SCHEDULED",
+        "final_refresh_at": (t-timedelta(minutes=15)).isoformat(),
+        "current_material_update_at": (t-timedelta(hours=2)).isoformat(),
         "participants": [participant(1), participant(2)],
         "feature_snapshot_hash": "a" * 64,
         "model_consumed_feature_hash": "a" * 64,
@@ -149,3 +153,21 @@ def test_certified_uncertainty_requires_model_scenario_receipt():
     assert "PARTICIPANT_1_SCENARIO_MODEL_PROOF_MISSING" in blockers
     item["participants"][1]["scenario_model_receipt_id"] = "certified-scenario-42"
     assert audit_cross_sport_evidence_integrity(item)["evidence_status"] == "PASS"
+
+
+def test_final_refresh_must_be_pregame_and_after_model():
+    item = envelope("SOCCER")
+    item["current_event_status"] = "LIVE"
+    item["final_refresh_status"] = "UNVERIFIED"
+    decision = audit_cross_sport_evidence_integrity(item)
+    assert "CURRENT_EVENT_NOT_PREGAME" in decision["blockers"]
+    assert "FINAL_REFRESH_NOT_PROVEN" in decision["blockers"]
+
+
+def test_late_material_change_invalidates_current_probability_not_history():
+    item = envelope("NFL")
+    item["current_material_update_at"] = "2026-10-26T18:30:00+00:00"
+    decision = audit_cross_sport_evidence_integrity(item)
+    assert decision["evidence_status"] == "HELD"
+    assert "FRESH_MATERIAL_UPDATE_REQUIRES_RESCORING" in decision["blockers"]
+    assert decision["can_execute"] is False
