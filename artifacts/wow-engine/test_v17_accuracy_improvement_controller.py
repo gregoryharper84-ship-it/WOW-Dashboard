@@ -45,6 +45,9 @@ def case(n=1):
                            "settled_at_utc": (st+timedelta(hours=3)).isoformat(),
                            "outcome": 1},
         }
+        settlement = result["evidence_by_offer_id"][oid]["settlement"]
+        for field in ("offer_id", "event_id", "entity_id", "stat", "threshold_label", "direction", "offer_type"):
+            settlement[field] = result["offers"][-1][field]
     return result
 
 def test_board_preserves_literal_at_least_and_dry_run():
@@ -161,6 +164,23 @@ def test_adjacent_line_receipt_mismatch():
     payload = case()
     payload["evidence_by_offer_id"]["offer-0"]["challenger"]["offer_id"] = "adjacent-5.5"
     assert evaluate_experiment(payload)["rows"][0]["code"] == "CHALLENGER_EXACT_OFFER_MISMATCH"
+
+def test_wrong_official_settlement_market_cannot_grade():
+    for field, wrong in (("entity_id", "OTHER_PLAYER"), ("event_id", "OTHER_GAME"),
+                         ("stat", "POINTS"), ("threshold_label", "8+"),
+                         ("direction", "LESS"), ("offer_type", "SCALAR")):
+        payload = case()
+        payload["evidence_by_offer_id"]["offer-0"]["settlement"][field] = wrong
+        assert evaluate_experiment(payload)["rows"][0]["code"] == "SETTLEMENT_EXACT_MARKET_MISMATCH"
+
+def test_cross_route_pooled_brier_cannot_promote():
+    payload = case(35)
+    payload["offers"][3]["route"] = "NBA_REBOUNDS"
+    for model in ("champion", "challenger"):
+        payload["evidence_by_offer_id"]["offer-3"][model]["route"] = "NBA_REBOUNDS"
+    result = evaluate_experiment(payload)
+    assert result["certification_disposition"] == "CROSS_ROUTE_AGGREGATION_NOT_CERTIFIABLE"
+    assert len(result["holdout_by_sport_route"]) == 2
 
 def test_missing_settlement():
     payload = case()

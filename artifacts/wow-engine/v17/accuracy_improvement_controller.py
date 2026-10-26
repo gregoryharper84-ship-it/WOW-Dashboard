@@ -148,6 +148,9 @@ def _grade(offer: Mapping[str, str], evidence: Any) -> dict[str, Any]:
             raise ExperimentInputError("OFFICIAL_SETTLEMENT_MISSING")
         for key in ("source_id", "verification_id", "receipt_id"):
             _str(settlement.get(key), "SETTLEMENT_" + key.upper() + "_REQUIRED")
+        for key in ("offer_id", "event_id", "entity_id", "stat", "threshold_label", "direction", "offer_type"):
+            if settlement.get(key) != offer[key]:
+                raise ExperimentInputError("SETTLEMENT_EXACT_MARKET_MISMATCH")
         if _time(settlement.get("settled_at_utc"), "INVALID_SETTLEMENT_TIMESTAMP") < start:
             raise ExperimentInputError("SETTLEMENT_BEFORE_EVENT_START")
         outcome = settlement.get("outcome")
@@ -165,6 +168,7 @@ def _grade(offer: Mapping[str, str], evidence: Any) -> dict[str, Any]:
         result.update(
             status="PAIRED_RESEARCH_GRADE", code="OFFLINE_ATTESTED_NOT_PRODUCTION_CERTIFIED",
             split=split, sport=offer["sport"], route=offer["route"],
+            stat=offer["stat"], offer_type=offer["offer_type"],
             event_id=offer["event_id"], event_start_utc=start.isoformat(),
             outcome=outcome, champion_probability=champion[0], challenger_probability=challenger[0],
             champion_lower_bound=champion[1], challenger_lower_bound=challenger[1],
@@ -259,7 +263,10 @@ def evaluate_experiment(payload: Mapping[str, Any]) -> dict[str, Any]:
     challenger = _metrics(holdout, "challenger")
     interval = _ci(holdout)
     difference = round(champion["brier"] - challenger["brier"], 8) if holdout else None
-    if event_count < MIN_HOLDOUT_EVENTS:
+    routes = {(r["sport"], r["route"]) for r in holdout}
+    if len(routes) > 1:
+        disposition = "CROSS_ROUTE_AGGREGATION_NOT_CERTIFIABLE"
+    elif event_count < MIN_HOLDOUT_EVENTS:
         disposition = "INSUFFICIENT_UNSEEN_EVENTS"
     elif interval is None or interval[0] <= 0:
         disposition = "NO_STATISTICALLY_CONFIRMED_IMPROVEMENT"
@@ -272,6 +279,14 @@ def evaluate_experiment(payload: Mapping[str, Any]) -> dict[str, Any]:
         hypotheses.append({"failure_code": code, "frequency": frequency,
                            "category": category, "next_experiment": proposal,
                            "auto_dispatch": False})
+    by_route: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in holdout:
+        by_route[row["sport"] + ":" + row["route"]].append(row)
+    segments = {key: {
+        "holdout_event_count": len({r["event_id"] for r in part}),
+        "champion_metrics": _metrics(part, "champion"),
+        "challenger_metrics": _metrics(part, "challenger"),
+    } for key, part in sorted(by_route.items())}
     return {
         "experiment_id": experiment_id, "status": "RESEARCH_ONLY",
         "can_execute": False, "automatic_promotion": False,
@@ -280,6 +295,7 @@ def evaluate_experiment(payload: Mapping[str, Any]) -> dict[str, Any]:
         "original_offer_count": len(offers), "reconciled_offer_count": len(rows),
         "paired_research_rows": len(paired), "holdout_event_count": event_count,
         "held_codes": dict(sorted(failures.items())), "recovery_experiment_candidates": hypotheses,
+        "holdout_by_sport_route": segments,
         "holdout_champion_metrics": champion, "holdout_challenger_metrics": challenger,
         "brier_improvement_champion_minus_challenger": difference,
         "brier_improvement_event_bootstrap_95_ci": interval,
