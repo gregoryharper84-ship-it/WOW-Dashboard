@@ -30,7 +30,7 @@ Read alongside [AMRT recovery](WOW_AMRT_RECOVERY_TEAM.md), [AMRT registry](WOW_A
 
 ## Minimum proof before claiming a model restored
 
-The existing AMRT closure gate **still controls infrastructure closure**. The source-only module \`v17.product_outcome_acceptance\` adds a stricter read-only *model restoration evidence assessment*:
+The existing AMRT closure gate **still controls infrastructure closure**. The source-only module `v17.product_outcome_acceptance` adds a stricter read-only *model restoration evidence assessment*:
 
 - Real sport/market controlling route and certified fitted artifact; actual model invocation (not market odds, Scout confidence or a guessed percentage)
 - Valid raw/calibrated probability and calibrated lower bound; dynamic calibration and failure-path validity where certified
@@ -38,7 +38,7 @@ The existing AMRT closure gate **still controls infrastructure closure**. The so
 - Complete requested denominator and row-level terminal receipt, with explicit typed holds and no silent omissions
 - Matching authenticated Action/deployment/run identity, immutable storage readback and protected independent QA/Release authorization
 - SIRT independent production evidence and regression comparison, including related neighboring routes
-- \`can_execute=false\` and \`V17_TERMINAL_REDUCER\` invariant
+- `can_execute=false` and `V17_TERMINAL_REDUCER` invariant
 
 **A completed valid sporting probability survives an unrelated downstream market price failure.** Missing price can hold market/value publication, but cannot be rewritten as MODEL_UNAVAILABLE or erase the already completed sporting probability. Conversely, a missing fitted artifact, bad calibration or stale pregame result cannot be repaired with sportsbook odds, external projections, a generic LLM estimate or an invented lower bound.
 
@@ -46,16 +46,16 @@ State separation remains mandatory: BACKEND_RUNTIME, MODEL_CAPABILITY, REPOSITOR
 
 ## Read-only source acceptance audit (no new runtime authority)
 
-- \`artifacts/wow-engine/v17/product_outcome_acceptance.py\` — consumes attributed external receipts, returns conservation/product metrics and model-specific closure evidence. It never calls remote APIs, changes model or infrastructure state, grants an approval, or creates a runtime failure code.
-- \`artifacts/wow-engine/test_v17_product_outcome_acceptance.py\` — exercises false greens, missing bound/receipt, live-model mismatch, held/scored distinction, unreconciled rows, double counting, zero denominators, identity mismatches, omitted independent verification.
+- `artifacts/wow-engine/v17/product_outcome_acceptance.py` — consumes attributed external receipts, returns conservation/product metrics and model-specific closure evidence. It never calls remote APIs, changes model or infrastructure state, grants an approval, or creates a runtime failure code.
+- `artifacts/wow-engine/test_v17_product_outcome_acceptance.py` — exercises false greens, missing bound/receipt, live-model mismatch, held/scored distinction, unreconciled rows, double counting, zero denominators, identity mismatches, omitted independent verification.
 - **Current integration status:** These are source-only evaluators; do not claim them as live telemetry until the existing authenticated worker/validation reporting consumer is explicitly connected and observed on a real production receipt.
 
-Run focused tests from \`artifacts/wow-engine\`:
+Run focused tests from `artifacts/wow-engine`:
 
-\`\`\`bash
+```bash
 python -m pytest -q test_v17_product_outcome_acceptance.py \
     test_v17_amrt_closure_gate.py test_v17_amrt_operational_lanes.py
-\`\`\`
+```
 
 ## Rollout within existing control plane
 
@@ -71,4 +71,4 @@ python -m pytest -q test_v17_product_outcome_acceptance.py \
 
 An incident stays owned during any HOLD. The receipt must identify the smallest exact next authorized operation and triggering condition; never keep it as vague "in progress." Independent verification can legitimately HOLD unsafe claims, but Engineering/AMRT must continue non-conflicting authorized work and prepare a bounded repair. Raise user action only when the exact operation truly needs an owner's privilege or explicit authorization; an already-set provider budget or an ordinary temporary quota is not, by itself, a reason to stop unrelated work.
 
-**Terminal safety:** \`can_execute=false\`; no live wagers, trading, orders or model-probability substitution. **No green by declaration.** A reviewed source PR, passing CI, merged docs, model registry and service health cannot substitute for authentic production probabilities, persisted receipts and independent verification.
+**Terminal safety:** `can_execute=false`; no live wagers, trading, orders or model-probability substitution. **No green by declaration.** A reviewed source PR, passing CI, merged docs, model registry and service health cannot substitute for authentic production probabilities, persisted receipts and independent verification.
