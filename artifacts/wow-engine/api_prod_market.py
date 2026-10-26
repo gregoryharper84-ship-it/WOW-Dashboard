@@ -30,6 +30,7 @@ from nfl_player_game_eligibility import (
     PLAYER_UNAVAILABLE,
     player_game_availability_blocker,
 )
+from nfl_roster_negative_availability import read_espn_nfl_roster_negative
 from prop_market_audit import audit_candidate_market
 from prop_settlement import (
     LINEUP_PAYOUT_CONTEXT_REQUIRED,
@@ -854,13 +855,40 @@ def score_prop(
     # trusted, event-specific availability attestor is certified here, NFL
     # player props are held before fitted scoring and prediction persistence.
     if str(req.sport or "").strip().upper() == "NFL":
-        code = player_game_availability_blocker(evidence.get("role_status"))
+        role = evidence.get("role_status")
+        role = role if isinstance(role, dict) else {}
+        code = player_game_availability_blocker(role)
+
+        # Query fresh provider data using only a provider-identity-bound player,
+        # team and exact canonical event. Server-owned HTTP fetch: never accept
+        # caller's arbitrary "ACTIVE" assertion as positive eligibility proof.
+        # ESPN roster IR/out can invalidate; its absence cannot enable scoring.
+        availability_source = None
+        if (
+            code != PLAYER_UNAVAILABLE
+            and str(role.get("verified_canonical_event_id") or "") == str(req.event_id)
+            and str(role.get("player") or "").strip().casefold() == str(req.player).strip().casefold()
+            and str(role.get("espn_athlete_id") or "").isdigit()
+        ):
+            with _score_stage_timer(
+                "nfl_roster_negative_availability",
+                sport=req.sport,
+                stat_type=req.stat_type,
+                direction=req.direction,
+            ):
+                availability_source = read_espn_nfl_roster_negative(
+                    team=str(role.get("team") or ""),
+                    espn_athlete_id=str(role["espn_athlete_id"]),
+                )
+            if availability_source.get("code") == PLAYER_UNAVAILABLE:
+                code = PLAYER_UNAVAILABLE
         unavailable = code == PLAYER_UNAVAILABLE
         raise HTTPException(
             status_code=422,
             detail={
                 "code": code,
                 "failure_class": "EVENT_INVALIDATED" if unavailable else "ACQUISITION_BLOCKED",
+                "availability_source": availability_source,
                 "model_evaluated": False,
                 "specialist_invoked": False,
                 "probability_publishable": False,
