@@ -174,13 +174,16 @@ def test_pregame_receipt_does_not_retroactively_attest_reused_old_predictions():
 
 
 class _Query:
-    def __init__(self, rows):
+    def __init__(self, rows, *, filter_field=None):
         self.rows = rows
+        self.filter_field = filter_field
 
     def select(self, *_a):
         return self
 
-    def eq(self, *_a):
+    def eq(self, field, value):
+        if field == self.filter_field:
+            self.rows = [row for row in self.rows if row.get(field) == value]
         return self
 
     def order(self, *_a, **_kw):
@@ -194,7 +197,7 @@ class _Query:
 
 
 class _CertifiedDb:
-    def __init__(self, approved, graded, status="PASS"):
+    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None):
         self.model = {
             "active": True, "promoted": True,
             "probability_publishable": approved,
@@ -205,12 +208,22 @@ class _CertifiedDb:
             "certification_recommendation": "FORWARD_EVIDENCE_PASS",
             "blockers": [],
         }
+        count = graded if unique_games is None else unique_games
+        self.grades = [
+            {
+                "official_event_id": f"nfl-game-{i}",
+                "model_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
+            }
+            for i in range(count)
+        ]
 
     def table(self, name):
         if name == "wow_nfl_event_fitted_model_artifacts":
             return _Query([self.model])
         if name == "wow_nfl_forward_calibration_health":
             return _Query([self.health])
+        if name == "wow_nfl_forward_shadow_grades":
+            return _Query(self.grades, filter_field="model_version")
         raise AssertionError(name)
 
 
@@ -224,3 +237,11 @@ def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
     assert _forward_certification_proven(_CertifiedDb(False, 100), row) is False
     assert _forward_certification_proven(_CertifiedDb(True, 100, "FAIL"), row) is False
     assert _forward_certification_proven(_CertifiedDb(True, 100), row) is True
+    # Never borrow a global PASS from another fitted model's settled events.
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, grade_version="NFL_OTHER_MODEL_VERSION"), row
+    ) is False
+    # A cohort can report 100 yet have too few distinct exact-version grades.
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, unique_games=53), row
+    ) is False
