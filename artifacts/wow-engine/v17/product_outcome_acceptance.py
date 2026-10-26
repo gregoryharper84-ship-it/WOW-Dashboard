@@ -294,6 +294,22 @@ def model_restoration_acceptance(
             blockers.append("PRODUCT_" + key.upper() + "_UNPROVEN")
     if not valid_numeric_package(product_receipt):
         blockers.append("PRODUCT_NUMERIC_PACKAGE_UNPROVEN")
+    # Closing an entire restoration is stronger than observing a syntactically
+    # valid fitted package. The persisted terminal receipt must bind to the
+    # same immutable source candidate, official event and exact market.
+    candidate_id = product_receipt.get("candidate_id")
+    event_id = product_receipt.get("event_id")
+    market_id = product_receipt.get("market_identity")
+    if not (
+        _nonempty(candidate_id)
+        and _nonempty(event_id)
+        and _nonempty(market_id)
+        and product_receipt.get("terminal_receipt_identity_verified") is True
+        and product_receipt.get("terminal_receipt_source_candidate_id") == candidate_id
+        and product_receipt.get("terminal_receipt_event_id") == event_id
+        and product_receipt.get("terminal_receipt_market_identity") == market_id
+    ):
+        blockers.append("PRODUCT_TERMINAL_RECEIPT_IDENTITY_UNPROVEN")
     expected = product_receipt.get("requested_canonical_count")
     terminal = product_receipt.get("verified_terminal_count")
     if (type(expected) is not int or expected < 1
