@@ -75,6 +75,9 @@ def valid_product():
         "full_requested_scope_reconciled": True,
         "sirt_independent_verification": True,
         "run_id": "run-1", "deployed_sha": "b" * 40,
+        "requested_canonical_count": 1, "verified_terminal_count": 1,
+        "scope_evidence_ref": "source:run-1",
+        "terminal_receipts_reconciled_verified": True,
     })
     return result
 
@@ -268,3 +271,18 @@ def test_zero_market_empty_source_must_be_explicitly_attested():
         [req(expected_canonical_count=0, no_current_candidates_verified=False)], [],
     )
     assert result["completed_requests"] == 0
+
+
+@pytest.mark.parametrize("changes", [
+    {"requested_canonical_count": 27, "verified_terminal_count": 8},
+    {"requested_canonical_count": 27, "verified_terminal_count": 27,
+     "scope_evidence_ref": ""},
+    {"requested_canonical_count": True},
+    {"verified_terminal_count": None},
+    {"terminal_receipts_reconciled_verified": False},
+])
+def test_true_production_model_restoration_requires_reconciled_scope(changes):
+    product = {**valid_product(), **changes}
+    r = model_restoration_acceptance(valid_closure(), product)
+    assert r["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "PRODUCT_EXACT_SCOPE_RECEIPTS_UNPROVEN" in r["blockers"]
