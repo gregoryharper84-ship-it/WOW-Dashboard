@@ -24,8 +24,13 @@ price, a public projection or generic reasoning for an absent fitted model, and
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date as _date
+from datetime import datetime
+from datetime import time as _time
+from datetime import timedelta, timezone
 from time import monotonic
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -37,6 +42,8 @@ from v17.llp_governed_package_scoring import (
     MODEL_OUTPUT_INVALID,
     MODEL_SCORER_FAILED,
     MODEL_UNAVAILABLE,
+    PASS as MODEL_PACKAGE_PASS,
+    validate_governed_scoring_package,
 )
 from v17.team_event_capability_manifest import (
     EXPECTED_TEAM_EVENT_SPORTS,
@@ -639,6 +646,60 @@ def _slate_date_matches(commence_time: Any, slate_date: str, tz_name: str) -> bo
     return local.date().isoformat() == str(slate_date)
 
 
+# The requested slate (local date, timezone) for the discovery pass in flight.
+# Feed adapters compute their provider query window when they are called, and
+# consult ``slate_bounded_window`` so they ask the provider for the requested
+# local day instead of an unbounded rolling horizon from "now".
+_SLATE_FETCH_WINDOW: ContextVar[tuple[str, str] | None] = ContextVar(
+    "wow_slate_fetch_window", default=None
+)
+_MAX_SLATE_WINDOW_HOURS = 168
+
+
+def slate_bounded_window(
+    started: datetime, default_end: datetime
+) -> tuple[datetime, datetime]:
+    """Return the provider query window for the discovery pass in flight.
+
+    Discovery only: this narrows which events a provider is asked for and never
+    touches classification, routing, or probabilities. ``_purge_bucket`` still
+    labels any event outside the requested local slate ``EVENT_WRONG_DATE``.
+
+    Outside a discovery pass, or whenever the slate cannot be resolved into a
+    usable window, the caller's original ``(started, default_end)`` window is
+    returned unchanged, so this can only ever fall back to prior behaviour.
+
+    The window is ``[max(now, slate_start), slate_end)`` in the requested
+    timezone, capped at ``_MAX_SLATE_WINDOW_HOURS`` from ``started``. It is keyed
+    off the requested slate, not "now", so a request for a later slate is not
+    truncated at the rolling horizon.
+    """
+    context = _SLATE_FETCH_WINDOW.get()
+    if not context:
+        return started, default_end
+    slate_date, tz_name = context
+    try:
+        day = _date.fromisoformat(str(slate_date))
+    except (TypeError, ValueError):
+        return started, default_end
+    try:
+        tz = ZoneInfo(str(tz_name))
+    except Exception:  # noqa: BLE001 - mirror _slate_date_matches: unusable zone -> UTC
+        tz = timezone.utc
+    slate_start = datetime.combine(day, _time.min, tzinfo=tz).astimezone(timezone.utc)
+    slate_end = datetime.combine(day + timedelta(days=1), _time.min, tzinfo=tz).astimezone(
+        timezone.utc
+    )
+    # Exclusive upper bound: an event at local midnight belongs to the next day.
+    end = min(slate_end - timedelta(seconds=1), started + timedelta(hours=_MAX_SLATE_WINDOW_HOURS))
+    start = max(started, slate_start)
+    if end <= start:
+        # Slate already over or beyond the cap: keep prior behaviour rather than
+        # issue an empty or inverted provider query.
+        return started, default_end
+    return start, end
+
+
 def normalize_discovered_event(
     raw: Mapping[str, Any],
     *,
@@ -740,7 +801,50 @@ def discovery_budget_seconds() -> float:
     return max(0.5, min(configured, 120.0))
 
 
+@contextmanager
+def slate_window_context(requested_slate_date: Any, requested_timezone: Any):
+    """Publish the requested slate for one discovery pass (reset on exit).
+
+    Every production discovery entry point (this module's wrapper and the
+    acquisition-fairness owner installed by ``v17_observability``) must run its
+    pass inside this context so feed adapters bound their query window.
+    """
+    token = _SLATE_FETCH_WINDOW.set((str(requested_slate_date), str(requested_timezone)))
+    try:
+        yield
+    finally:
+        _SLATE_FETCH_WINDOW.reset(token)
+
+
 def discover_winner_slate(
+    *,
+    requested_slate_date: str,
+    requested_timezone: str,
+    fetch_sport_events: Callable[..., Iterable[Mapping[str, Any]]],
+    supported_sports: Iterable[str] = SUPPORTED_DISCOVERY_SPORTS,
+    discovery_targets: Mapping[str, tuple[DiscoveryTarget, ...]] | None = None,
+    include_regime_variants: bool = False,
+    now: datetime | None = None,
+    budget_seconds: float | None = None,
+) -> DiscoveryInventory:
+    """Discover the slate with feed query windows bound to the requested local day.
+
+    Thin wrapper over ``_discover_winner_slate``; classification is unchanged.
+    """
+    with slate_window_context(requested_slate_date, requested_timezone):
+        return _discover_winner_slate(
+            requested_slate_date=requested_slate_date,
+            requested_timezone=requested_timezone,
+            fetch_sport_events=fetch_sport_events,
+            supported_sports=supported_sports,
+            discovery_targets=discovery_targets,
+            include_regime_variants=include_regime_variants,
+            now=now,
+            budget_seconds=budget_seconds,
+        )
+
+
+def _discover_winner_slate(
     *,
     requested_slate_date: str,
     requested_timezone: str,
@@ -1184,12 +1288,16 @@ def route_discovered_slate(
             rows.append(
                 RoutedRow(
                     identity=event.identity(),
-                    bucket=MODEL_UNAVAILABLE,
-                    model_status=MODEL_UNAVAILABLE,
+                    bucket=OTHER_GOVERNED_HOLD,
+                    model_status="MODEL_RESOLUTION_FAILED",
                     detail={
+                        "code": "MODEL_RESOLUTION_FAILED",
                         "reason": "MODEL_RESOLUTION_FAILED",
                         "error_type": type(exc).__name__,
                         "model_invoked": False,
+                        "probability_publishable": False,
+                        "rank_eligible": False,
+                        "can_execute": False,
                     },
                 )
             )
@@ -1234,12 +1342,86 @@ def route_discovered_slate(
             )
             continue
 
-        result = score_row(event, model)
-        payload = dict(result or {})
+        # A single faulty scorer must not abort the frozen full-slate inventory.
+        # Classify invocation failures separately from a genuinely absent model.
+        try:
+            result = score_row(event, model)
+        except Exception as exc:  # noqa: BLE001 - per-row fail-closed boundary
+            # A specialist may raise a typed HTTPException with a native
+            # model/input/identity code. Preserve it instead of inventing an
+            # invocation failure; only untyped exceptions become scorer failures.
+            native_detail = getattr(exc, "detail", None)
+            if isinstance(native_detail, Mapping) and native_detail.get("code"):
+                payload = {
+                    **dict(native_detail),
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+            else:
+                payload = {
+                    "code": MODEL_SCORER_FAILED,
+                    "reason": "DISCOVERED_ROW_SCORER_EXCEPTION",
+                    "error_type": type(exc).__name__,
+                    "scoring_attempted": True,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+        else:
+            if result is None or (isinstance(result, Mapping) and not result):
+                payload = {
+                    "code": MODEL_SCORER_FAILED,
+                    "reason": "DISCOVERED_ROW_SCORER_NO_COMPLETION",
+                    "scoring_attempted": True,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+            elif not isinstance(result, Mapping):
+                payload = {
+                    "code": MODEL_OUTPUT_INVALID,
+                    "reason": "DISCOVERED_ROW_SCORER_RESPONSE_NOT_MAPPING",
+                    "scoring_attempted": True,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+            else:
+                payload = dict(result)
         code = payload.get("code") or payload.get("model_status") or payload.get("terminal_status")
         completed = (
             payload.get("probability_publishable") is True and payload.get("rank_eligible") is True
         )
+        # Contradictory success booleans never override a typed hard failure.
+        if completed and _text(code).upper() in {
+            MODEL_UNAVAILABLE,
+            MODEL_INPUTS_INSUFFICIENT,
+            MODEL_SCORER_FAILED,
+            MODEL_OUTPUT_INVALID,
+            "STALE_MODEL_OUTPUT",
+            "MODEL_ROUTE_UNSUPPORTED",
+        }:
+            completed = False
+            payload = {
+                **payload,
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            }
+        if completed:
+            package_audit = validate_governed_scoring_package(payload)
+            if package_audit.status != MODEL_PACKAGE_PASS:
+                payload = {
+                    **payload,
+                    "code": package_audit.status,
+                    "model_package_validation": package_audit.as_dict(),
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                    "can_execute": False,
+                }
+                code = package_audit.status
+                completed = False
         if completed:
             rows.append(
                 RoutedRow(

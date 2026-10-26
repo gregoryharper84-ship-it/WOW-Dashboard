@@ -6,8 +6,14 @@ def test_prop_parity_accounts_for_all_canonical_sports():
     rows = prop_sport_parity()
     assert set(rows) == set(EXPECTED_TEAM_EVENT_SPORTS)
     assert len(rows) == 13
-    assert rows["PGA"]["manifest_sport"] == "GOLF"
-    assert rows["CRICKET"]["declared_lane_count"] == 0
+    assert rows["PGA"]["manifest_sport"] == "PGA"
+    assert rows["PGA"]["build_required_lane_count"] == 3
+    assert rows["CRICKET"]["manifest_sport"] == "CRICKET"
+    assert rows["CRICKET"]["declared_lane_count"] == 2
+    for sport in ("PGA", "CRICKET"):
+        assert rows[sport]["certified_production_lane_count"] == 0
+        assert rows[sport]["automatic_row_hydration_supported"] is False
+        assert rows[sport]["daily_autonomous_discovery_supported"] is False
 
 
 def test_prop_parity_distinguishes_row_hydration_from_autonomous_discovery():

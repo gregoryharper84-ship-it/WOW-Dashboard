@@ -1,0 +1,107 @@
+name: WOW NCAAF 44 Prospective Postgame Research Audit
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/wow-ncaaf-44-prospective-postgame.yml
+      - artifacts/wow-engine/scripts/ncaaf_44_prospective_grader.py
+      - artifacts/wow-engine/tests/test_ncaaf_44_prospective_grader.py
+      - artifacts/wow-engine/data/research/ncaaf_result_form_44_pregame_shadow_20261022.json
+      - artifacts/wow-engine/data/research/ncaaf_result_form_forward_features_20261022.json
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/wow-ncaaf-44-prospective-postgame.yml
+  workflow_dispatch:
+  # Short, date-gated 2026 follow-up; future-year runs terminate inertly.
+  schedule:
+    - cron: "30 14 25-28 10 *"
+
+permissions:
+  contents: read
+
+# Superseded PRs can cancel; each live research capture has a unique run ID.
+concurrency:
+  group: wow-ncaaf-44-postgame-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify-frozen-grade-contract:
+    name: Verify unchanged Oct22 shadow and negative tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Run immutable prediction and source-integrity tests
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/ncaaf_44_prospective_grader.py
+          PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_ncaaf_44_prospective_grader.py' -v
+          test "$(git hash-object data/research/ncaaf_result_form_44_pregame_shadow_20261022.json)" = "3816d37075faeeaf0b9f5ac91d77b731681975b5"
+          echo "NCAAF_ORIGINAL_PREGAME_SHADOW_GIT_BLOB_EXACT"
+
+  postgame-capture-oct25-to-oct28-only:
+    name: Capture actual ESPN final outcomes; grade only verified completed events
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+    needs: verify-frozen-grade-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify strictly bounded 2026 postgame window
+        id: window
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from datetime import datetime, timezone
+          import os
+          now = datetime.now(timezone.utc)
+          start = datetime(2026, 10, 25, 12, tzinfo=timezone.utc)
+          end = datetime(2026, 11, 1, tzinfo=timezone.utc)
+          allowed = start <= now < end
+          print(f"Research postgame permitted: {allowed}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"allowed={'true' if allowed else 'false'}\n")
+          PY
+
+      - name: Fetch and grade immutable candidate cohort
+        if: ${{ steps.window.outputs.allowed == 'true' }}
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$GITHUB_EVENT_NAME" = "schedule" || test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          python3 scripts/ncaaf_44_prospective_grader.py \
+            --shadow data/research/ncaaf_result_form_44_pregame_shadow_20261022.json \
+            --features data/research/ncaaf_result_form_forward_features_20261022.json \
+            --out "$RUNNER_TEMP/ncaaf-44-postgame/report.json" \
+            --head-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --fetch-live
+          sha256sum "$RUNNER_TEMP/ncaaf-44-postgame/report.json" \
+            > "$RUNNER_TEMP/ncaaf-44-postgame/report-sha256.txt"
+
+      - name: Archive full RAW ESPN source bytes and grade receipt
+        if: ${{ steps.window.outputs.allowed == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-ncaaf-44-postgame-research-${{ github.run_id }}
+          path: ${{ runner.temp }}/ncaaf-44-postgame/
+          retention-days: 90
+          if-no-files-found: error

@@ -188,6 +188,7 @@ jobs:
               case "$event" in
                 pull_request_target) protected_main_source=true ;;
                 workflow_dispatch) [ "$head_branch" = "main" ] && protected_main_source=true ;;
+                workflow_run) [ "$head_branch" = "main" ] && protected_main_source=true ;;
                 *) exit 1 ;;
               esac
               ;;
@@ -220,12 +221,32 @@ jobs:
           WORKFLOW_NAME: ${{ steps.governance_workflow.outputs.name }}
           HEAD_SHA: ${{ steps.merged.outputs.head_sha }}
           HEAD_REF: ${{ steps.merged.outputs.head_ref }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
         run: |
           set -euo pipefail
           mkdir -p artifacts/wow-engine/v17/.release-evidence
           zip_path="$RUNNER_TEMP/governance.zip"
           receipt="artifacts/wow-engine/v17/.release-evidence/governance-receipt.json"
           checksum="$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
+          live_reviews="$RUNNER_TEMP/wow-live-reviews.json"
+
+          if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
+            pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+            jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
+              '.head.sha == $sha and .head.repo.full_name == $repo and
+               .base.ref == "main" and .base.repo.full_name == $repo' <<<"$pr_json" >/dev/null || {
+                echo "RELEASE_GOVERNANCE_PR_IDENTITY_MISMATCH" >&2; exit 1;
+              }
+            reviews='[]'
+            for page in $(seq 1 10); do
+              response=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100&page=${page}")
+              count=$(jq 'length' <<<"$response")
+              reviews=$(jq -cn --argjson old "$reviews" --argjson new "$response" '$old + $new')
+              [ "$count" -lt 100 ] && break
+              [ "$page" -lt 10 ] || { echo "RELEASE_GOVERNANCE_REVIEW_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1; }
+            done
+            printf '%s\n' "$reviews" > "$live_reviews"
+          fi
 
           gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$zip_path"
           unzip -p "$zip_path" wow-engineering-governance-receipt.json > "$receipt"
@@ -241,15 +262,37 @@ jobs:
           verifier=".github/scripts/verify_engineering_governance_receipt.py"
           if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
             verifier=".github/scripts/verify_existing_pr_governance_receipt.py"
+            cert_mode=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")' "$receipt")
+            live_checks="$RUNNER_TEMP/wow-live-checks.json"
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+              checks='[]'
+              for page in $(seq 1 10); do
+                response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}")
+                items=$(jq -ce '.check_runs' <<<"$response")
+                count=$(jq 'length' <<<"$items")
+                checks=$(jq -cn --argjson old "$checks" --argjson new "$items" '$old + $new')
+                [ "$count" -lt 100 ] && break
+                [ "$page" -lt 10 ] || { echo "RELEASE_GOVERNANCE_CHECK_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1; }
+              done
+              printf '%s\n' "$checks" > "$live_checks"
+            fi
           fi
 
+          extra_args=()
+          if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
+            extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+              extra_args+=(--live-checks-json "$live_checks")
+            fi
+          fi
           python "$verifier" \
             --receipt "$receipt" \
             --repository "$GITHUB_REPOSITORY" \
             --head-sha "$HEAD_SHA" \
             --head-ref "$HEAD_REF" \
             --workflow-run-id "$RUN_ID" \
-            --workflow-name "$WORKFLOW_NAME"
+            --workflow-name "$WORKFLOW_NAME" \
+            "${extra_args[@]}"
 
       - name: Capture deterministic release evidence
         if: steps.pr.outputs.number != ''
@@ -287,9 +330,10 @@ jobs:
             You are the independent WOW V17 RELEASE_OBSERVABILITY_AGENT running on OpenAI/ChatGPT tooling only.
             Read .agents/skills/wow-engineering-release-observability-agent/SKILL.md,
             the merged PR, and artifacts/wow-engine/v17/.release-evidence/**.
-            The deterministic workflow has already required exact-head CI plus a trusted
-            Lead/Triage/Engineering/Independent Review/QA governance receipt tied to the exact
-            pre-merge head and has proven the GitHub merge SHA is on protected main. Independently
+            The deterministic workflow has required exact-head source-pinned regression CI and a
+            trusted receipt proving an active independent allowlisted APPROVED review on that exact
+            pre-merge head. Independent QA and Release checks remain separate mandatory gates. The
+            workflow has also proven the GitHub merge SHA is on protected main. Independently
             verify production liveness/governance and exact deployed-SHA evidence. Do not edit, merge, deploy,
             or change sporting probability behavior. If exact production SHA cannot
             be independently proven, return PENDING. Preserve can_execute=false.

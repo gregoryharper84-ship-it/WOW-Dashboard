@@ -280,13 +280,17 @@ jobs:
           SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
           SOURCE_APP_ID: ${{ matrix.source_app_id }}
           SOURCE_ROLE: ${{ matrix.source_role }}
+          ANTHROPIC_AVAILABLE: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
           set -euo pipefail
           pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
           jq -e --arg sha "$HEAD_SHA" '.head.sha == $sha and .state == "open" and .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || { echo "::error::REPAIR_HEAD_STALE"; exit 1; }
           body=$(jq -r '.body // ""' <<<"$pr")
-          incident=$(sed -nE 's/^Incident:[[:space:]]*\x60?([0-9]+)\x60?[[:space:]]*$/\1/p' <<<"$body" | head -1)
-          [[ "$incident" =~ ^[1-9][0-9]*$ ]] || { echo "::error::REPAIR_INCIDENT_MISSING"; exit 1; }
+          # Same strict incident parser in both OpenAI and Claude recovery paths.
+          # Accept #1688 / `1688` / 1688, never missing or conflicting fields.
+          incident=$(printf '%s\n' "$body" | python artifacts/wow-engine/v17/engineering_incident_identity.py) || {
+            echo "::error::REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1;
+          }
           issue=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${incident}")
           jq -e '.state == "open"' <<<"$issue" >/dev/null || { echo "::error::REPAIR_INCIDENT_NOT_OPEN"; exit 1; }
           # Route only an existing manifest-authorized incident. GitHub is the
@@ -328,9 +332,37 @@ jobs:
             <<<"$latest_authored" >/dev/null || {
             echo "::error::DISPATCH_HOLD_SUPERSEDED_REQUIRES_RECONCILIATION"; exit 1;
           }
-          gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
-            -f target_incident="$incident" -f lease_group="$lease_group" \
-            -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
+          # Reuse the existing governed provider classifier, not an arbitrary
+          # narrative failure. Only a typed failover-eligible OpenAI failure
+          # permits Claude to assume this *same* incident/PR/head/lease identity.
+          provider=openai
+          latest=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow wow-v17-chatgpt-engineering-worker.yml \
+            --status completed --limit 1 --json databaseId,conclusion)
+          recent_id=$(jq -r '.[0].databaseId // empty' <<<"$latest")
+          recent_conclusion=$(jq -r '.[0].conclusion // ""' <<<"$latest")
+          if [ "${ANTHROPIC_AVAILABLE:-false}" = "true" ] &&
+             [[ "$recent_id" =~ ^[1-9][0-9]*$ ]] && [ "$recent_conclusion" = "failure" ]; then
+            gh run view "$recent_id" --repo "$GITHUB_REPOSITORY" --log-failed \
+              > "$RUNNER_TEMP/openai-failure.log" 2>&1 || true
+            classification=$(python artifacts/wow-engine/v17/engineering_provider_failover.py classify \
+              --provider openai --log-file "$RUNNER_TEMP/openai-failure.log")
+            if [ "$(jq -r '.failover_eligible' <<<"$classification")" = "true" ]; then
+              provider=anthropic
+            fi
+          fi
+          if [ "$provider" = "anthropic" ]; then
+            gh workflow run wow-v17-claude-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
+              -f fallback_reason=OPENAI_PROVEN_PROVIDER_FAILURE \
+              -f parent_run_id="${recent_id}" \
+              -f target_incident="$incident" -f lease_group="$lease_group" \
+              -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
+          else
+            gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
+              -f target_incident="$incident" -f lease_group="$lease_group" \
+              -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
+          fi
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
           echo "accepted=true" >> "$GITHUB_OUTPUT"
           echo "Targeted dispatch accepted: PR #$PR_NUMBER incident #$incident expected SHA $HEAD_SHA ($severity/$lease_group)." >> "$GITHUB_STEP_SUMMARY"
 
@@ -384,3 +416,90 @@ jobs:
         shell: bash
         run: |
           echo "PR #${{ steps.resolve.outputs.pr_number }}: non-repairable trust-root/owner-approval finding; waiting on owner (see daily digest), not retried." >> "$GITHUB_STEP_SUMMARY"
+
+  adopt-reviewed-owner-source:
+    # Reuse this existing hourly/QA HOLD controller. This is NOT another queue,
+    # scheduler or certification authority. Discover one exact-head source only.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+    environment: wow-engineering
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout protected main, never PR code as authority
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Mint authenticated Engineering App token
+        id: engineering_app
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Verify independent App identity available
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.engineering_app.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          [ "$KEY_PRESENT" = "true" ] || {
+            echo "::error::ENGINEERING_APP_IDENTITY_UNAVAILABLE"
+            exit 1
+          }
+
+      - name: Select one independently re-proposable source
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_authorized_adoption.py discover \
+            --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/wow-source-adoption.json"
+          jq -e '.can_execute == false and (.status == "SOURCE_READY" or .status == "NO_ELIGIBLE_SOURCE")' \
+            "$RUNNER_TEMP/wow-source-adoption.json" >/dev/null
+          jq -c '{status, pr_number, source_sha, can_execute}' \
+            "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$(jq -r .status "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(jq -r '.pr_number // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(jq -r '.source_sha // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Re-propose immutable source through authenticated Engineering App
+        if: steps.source.outputs.status == 'SOURCE_READY'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.engineering_app.outputs.token }}
+          SOURCE_PR: ${{ steps.source.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          WOW_CAN_EXECUTE: "false"
+          WOW_DRY_RUN_ONLY: "true"
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_authorized_adoption.py integrate \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA" \
+            | tee "$RUNNER_TEMP/wow-app-adoption-result.json"
+          jq -e '.status == "PR_CREATED_PENDING_INDEPENDENT_REVIEW" and
+            .bootstrap_status == "OWNER_EXACT_HEAD_APPROVAL_REQUIRED" and
+            .source_review_status == "REQUIRED_PENDING" and
+            .source_review_workflow == "wow-v17-independent-qa-check" and
+            .source_review_head_sha == .sha and
+            .independent_source_review_complete == false and
+            .required_owner_approval_head == .sha and .can_execute == false' \
+            "$RUNNER_TEMP/wow-app-adoption-result.json" >/dev/null
+          jq -c '{status, bootstrap_status, source_review_status, source_review_head_sha,
+            independent_source_review_complete, required_owner_approval_head, pr, sha,
+            source_sha, can_execute}' \
+            "$RUNNER_TEMP/wow-app-adoption-result.json" >> "$GITHUB_STEP_SUMMARY"

@@ -327,6 +327,19 @@ def _settlement_basis(sport: str) -> str:
     }.get(sport, "FULL_GAME_OUTRIGHT")
 
 
+def _cross_sport_stage_status(row: dict[str, Any]) -> str:
+    """Native Daily stage terminal for one discovered cross-sport row.
+
+    ``bucket`` records the model outcome and is set before the full-board
+    overlay runs. The overlay may later withdraw ``rank_eligible`` when the
+    publication-chain audit proves a mandatory stage unproven; a row without
+    rank eligibility is not an approved stage. Pre-overlay, MODEL_COMPLETED
+    already implies rank_eligible, so this only ever lowers a row to HELD.
+    """
+    completed = row.get("bucket") == discovery.MODEL_COMPLETED
+    return "COMPLETED" if completed and row.get("rank_eligible") is True else "HELD"
+
+
 def _cross_sport_moneyline_rows(
     req: DailySnapshotRequest,
     *,
@@ -431,9 +444,7 @@ def _cross_sport_moneyline_rows(
             },
             row,
             assert_no_terminal_upgrade(
-                reduce_row_terminal(
-                    ["COMPLETED" if row.get("bucket") == discovery.MODEL_COMPLETED else "HELD"]
-                )
+                reduce_row_terminal([_cross_sport_stage_status(row)])
             ),
         )
         for row in scan["rows"]
@@ -471,6 +482,20 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         return {"run_id": f"v17-daily-{uuid4()}", "terminal": True, "run_status": "RUN_INVALID_REQUEST", "rows": [], "blockers": ["REQUESTED_SLATE_DATE_INVALID"], "can_execute": False}
 
     run_id = f"v17-daily-{uuid4()}"
+    # Server-generated, non-secret provenance; never trust a client-supplied identity.
+    # The same context is persisted with every detail row, so two concurrent
+    # runs of the same event inventory can be reconciled by requested local date.
+    request_context = {
+        "request_trace_id": str(uuid4()),
+        "requested_slate_date": req.requested_slate_date,
+        "requested_timezone": req.requested_timezone,
+        "caller_class": (
+            "INTERNAL_AUTOMATION" if type(req).__name__ == "InternalDailySnapshotRequest"
+            else "V17_DAILY_ACTION"
+        ),
+        "accepted_at_utc": datetime.now(timezone.utc).isoformat(),
+        "can_execute": False,
+    }
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
     requested_lanes = set(req.lanes)
@@ -648,7 +673,9 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
     }
     # Full per-row evidence is persisted before the response is compacted, so
     # compact transport relocates evidence rather than discarding it.
-    detail_persistence = persist_row_detail(db, run_id=run_id, rows=rows)
+    detail_persistence = persist_row_detail(
+        db, run_id=run_id, rows=rows, request_context=request_context
+    )
     blockers.extend(detail_persistence.get("blockers") or [])
 
     run_status = "COMPLETED"
@@ -662,6 +689,8 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         "run_status": run_status,
         "requested_slate_date": req.requested_slate_date,
         "requested_timezone": req.requested_timezone,
+        "request_trace_id": request_context["request_trace_id"],
+        "caller_class": request_context["caller_class"],
         "requested_lanes": sorted(requested_lanes),
         "rows": rows,
         "reconciliation": _reconcile(rows),
