@@ -100,13 +100,14 @@ def evaluate_chronological_evidence(
         raise ValueError("MIN_SAMPLES_INVALID")
     findings: list[dict[str, Any]] = []
     accepted: list[Mapping[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    # Each immutable prediction receipt is globally unique, including across roles.
+    seen: set[str] = set()
     for index, row in enumerate(rows):
         if not isinstance(row, Mapping):
             findings.append({"index": index, "code": "EVIDENCE_RECORD_INVALID"})
             continue
         error = _valid_row(row)
-        key = (str(row.get("prediction_id")), str(row.get("model_role")))
+        key = str(row.get("prediction_id"))
         if key in seen:
             error = "DUPLICATE_MODEL_PREDICTION"
         seen.add(key)
@@ -147,7 +148,8 @@ def evaluate_chronological_evidence(
                 or champion["settlement_receipt_ref"] != challenger["settlement_receipt_ref"]
                 or champion["event_start_at"] != challenger["event_start_at"]
                 or champion["issued_at"] != challenger["issued_at"]
-                or champion["source_snapshot_at"] != challenger["source_snapshot_at"]):
+                or champion["source_snapshot_at"] != challenger["source_snapshot_at"]
+                or champion["source_snapshot_hash"] != challenger["source_snapshot_hash"]):
             findings.append({"index": -1, "code": "PAIRED_SETTLEMENT_MISMATCH"})
             continue
         paired.append((champion, challenger))
