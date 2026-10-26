@@ -106,17 +106,21 @@ def build_all_sport_recovery_proof_matrix(
     An Action receipt is route-scoped here for *preflight* only: a second receipt
     for that route is ambiguous rather than silently treated as a replacement.
     """
-    inventory = tuple(dict.fromkeys(_sport(s) for s in sports))
-    if not inventory or any(not s for s in inventory):
+    baseline_sports = tuple(dict.fromkeys(_sport(s) for s in sports))
+    if not baseline_sports or any(not s for s in baseline_sports):
         raise ValueError("nonempty sport inventory required")
 
     routes: dict[tuple[str, str, str], Mapping[str, Any]] = {}
     for row in team_rows:
+        if row.get("can_execute") is True:
+            raise ValueError("execution authority forbidden in inventory")
         key = _route(row.get("sport"), TEAM)
         if not key[0] or key in routes:
             raise ValueError("duplicate or empty team-event route")
         routes[key] = row
     for row in prop_rows:
+        if row.get("can_execute") is True:
+            raise ValueError("execution authority forbidden in inventory")
         key = _route(row.get("sport"), PROP, row.get("stat_type"))
         if not key[0] or not key[2] or key in routes:
             raise ValueError("duplicate or empty exact-stat prop route")
@@ -124,12 +128,18 @@ def build_all_sport_recovery_proof_matrix(
 
     proofs: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
     for receipt in receipt_rows:
+        if receipt.get("can_execute") is True:
+            raise ValueError("execution authority forbidden in receipt")
         key = _route(receipt.get("sport"), _text(receipt.get("lane")).upper(),
                      receipt.get("stat_type"))
         if key[1] not in {TEAM, PROP} or not key[0]:
             raise ValueError("invalid receipt route identity")
         proofs.setdefault(key, []).append(receipt)
 
+    # Catalogued sports cannot disappear; additionally admit newly observed
+    # specialist sports without changing this source file.
+    extra_sports = sorted({key[0] for key in (*routes, *proofs)} - set(baseline_sports))
+    inventory = (*baseline_sports, *extra_sports)
     result: list[dict[str, Any]] = []
     for sport in inventory:
         items = [(key, row) for key, row in routes.items() if key[0] == sport]
