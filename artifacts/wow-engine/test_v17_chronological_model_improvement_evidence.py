@@ -262,3 +262,42 @@ def test_mixed_champion_artifact_or_certification_cannot_pool_forward_cohort(fie
     assert result["automatic_promotion_allowed"] is False
     assert result["model_release_authorized"] is False
     assert result["can_execute"] is False
+
+
+
+def test_one_game_with_many_markets_cannot_dominate_forward_calibration():
+    # Twenty-five settled games are 25 independent game outcomes, not 125.
+    # All additional candidates belong to only the first official event.
+    rows = [
+        sample(i, role) for i in range(25)
+        for role in ("CHAMPION", "CHALLENGER")
+    ]
+    for candidate_no in range(100):
+        for role in ("CHAMPION", "CHALLENGER"):
+            rows.append(sample(
+                1000 + candidate_no, role,
+                event_id="event-0",
+                candidate_id=f"player-{candidate_no}",
+                market_identity=f"NFL:PLAYER_MARKET:{candidate_no}",
+                settlement_receipt_ref=f"official-event0-market-{candidate_no}",
+                calibrated_probability=.10 if role == "CHAMPION" else .11,
+                calibrated_lower_bound=.05,
+            ))
+    result = evaluate_chronological_evidence(rows)
+    assert result["audit_complete"]
+    assert result["metric_weighting"] == "EQUAL_OFFICIAL_EVENT"
+    assert result["paired_count"] == 125
+    assert result["paired_distinct_events"] == 25
+    assert result["paired_comparison_ready"]
+    # Event balancing means the one 101-row game carries 1/25 of the mass.
+    event_zero_brier = (.45 ** 2 + 100 * .90 ** 2) / 101
+    expected = (event_zero_brier + 24 * .45 ** 2) / 25
+    assert result["paired_metrics"]["champion"]["brier"] == pytest.approx(
+        expected, abs=1e-8,
+    )
+    assert .22 < result["paired_metrics"]["champion"]["brier"] < .24
+    # Calibration error must also use event mass, not raw candidate volume.
+    assert result["paired_metrics"]["champion"]["ece_10_bin"] < .5
+    assert all(c["distinct_forward_events"] == 25 for c in result["cohorts"])
+    assert result["automatic_promotion_allowed"] is False
+    assert result["model_release_authorized"] is False
