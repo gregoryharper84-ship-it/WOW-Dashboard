@@ -274,6 +274,12 @@ class RecoveryEscalationDeadlockBreaker:
         if not _valid_ref(incident.get("incident_id")) or not _valid_ref(incident.get("owner_id")):
             return _dec(self.NAME, "HELD", incident, "ECOSYSTEM_CONDUCTOR",
                         ("CANONICAL_OWNER_UNRESOLVED",))
+        # Never recommend code repair/fallback while a second, or unknown,
+        # implementation writer may own the fenced incident lease.
+        if (not _valid_ref(incident.get("lease_owner"))
+                or incident["lease_owner"] != incident["owner_id"]):
+            return _dec(self.NAME, "HELD", incident, "ECOSYSTEM_CONDUCTOR",
+                        ("LEASE_OWNER_IDENTITY_UNVERIFIED",))
         if incident.get("source_pr_open") is True:
             if incident.get("review_rejected") is True or incident.get("ci_failed") is True:
                 return _dec(self.NAME, "PR_REVIEW", incident, "CODE_CI_ENGINEER",
