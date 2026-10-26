@@ -5,12 +5,11 @@ route step must still fetch the real check and verify exact App, PR and SHA.
 These tests use workflow source as the executable contract; no GitHub secrets.
 """
 from pathlib import Path
-import re
 
 import pytest
 import yaml
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 QA = ROOT / "workflows" / "wow-v17-independent-qa-check.yml"
 CERT = ROOT / "workflows" / "wow-v17-existing-pr-governance-review.yml"
 SOURCE = ROOT / "scripts" / "independent_source_review_receipt.py"
