@@ -113,14 +113,20 @@ jobs:
           artifact_name="wow-v17-engineering-governance-${head_sha}"
           artifact_matches='[]'
 
-          for _ in $(seq 1 180); do
-            artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
+          # A missing certifier receipt must never consume the whole GitHub
+          # installation rate budget. Keep only a bounded, sparse exact-head
+          # lookup; an unavailable or untrusted receipt still fails closed.
+          for _ in $(seq 1 8); do
+            if ! artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20"); then
+              echo "GOVERNANCE_ARTIFACT_LOOKUP_FAILED" >&2
+              exit 1
+            fi
             artifact_matches=$(jq -c --arg name "$artifact_name" \
               '[.artifacts[] | select(.expired == false and .name == $name)]' <<<"$artifacts")
             if [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ]; then
               break
             fi
-            sleep 10
+            sleep 30
           done
           [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ] || {
             echo "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE: no unique exact-head artifact for ${head_sha}." >&2
