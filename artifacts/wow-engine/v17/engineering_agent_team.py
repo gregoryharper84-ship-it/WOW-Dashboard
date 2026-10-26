@@ -148,14 +148,15 @@ SPECIALIST_SUBAGENTS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Blocked/deferred are *owned nonfinal* dispositions. Never turn them into
+# terminal closure, and never blindly dispatch a held item as a fresh repair.
 TERMINAL_ISSUE_STATES = {
     "VERIFIED_CLOSED",
     "FIXED_AND_VERIFIED",
     "DUPLICATE",
     "NOT_REPRODUCIBLE",
-    "BLOCKED_WITH_EXACT_REASON",
-    "DEFERRED_WITH_JUSTIFICATION",
 }
+NONFINAL_OWNED_HOLDS = {"BLOCKED_WITH_EXACT_REASON", "DEFERRED_WITH_JUSTIFICATION"}
 
 SEVERITY_WEIGHT = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
 ACTIVE_RELEASE_STATES = {"DEPLOYED_PENDING_VERIFY", "MERGED_PENDING_DEPLOY", "PR_CREATED"}
@@ -445,7 +446,9 @@ def _record_id(record: dict[str, Any]) -> str:
 
 def is_actionable(record: dict[str, Any]) -> bool:
     state = str(record.get("state") or "OPEN").upper()
-    if state in TERMINAL_ISSUE_STATES:
+    if state in TERMINAL_ISSUE_STATES or state in NONFINAL_OWNED_HOLDS:
+        # Require an independently evidenced lifecycle transition to OPEN/
+        # REPAIR before writer admission; a 'ready' boolean cannot mint a lease.
         return False
     wait_state = str(record.get("wait_state") or "").upper()
     if wait_state in PARKED_WAIT_STATES:
@@ -461,7 +464,13 @@ def reliability_blocks_frontier(records: list[dict[str, Any]]) -> bool:
     approved engineering queue has no actionable item. Severity changes order,
     not whether closure work deserves capacity.
     """
-    return any(is_actionable(record) for record in records)
+    return any(
+        is_actionable(record) or (
+            str(record.get("state") or "").upper() in NONFINAL_OWNED_HOLDS
+            and str(record.get("severity") or "").upper() in {"P0", "P1", "P2", "P3"}
+        )
+        for record in records
+    )
 
 
 def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
@@ -472,7 +481,7 @@ def select_priority_incident(records: list[dict[str, Any]]) -> PriorityDecision:
             severity="NONE",
             state="NONE",
             reason="No actionable incident in durable ledger.",
-            frontier_allowed=True,
+            frontier_allowed=not reliability_blocks_frontier(records),
         )
 
     def sort_key(record: dict[str, Any]) -> tuple[Any, ...]:
@@ -670,9 +679,18 @@ def closure_wip(records: list[dict[str, Any]]) -> dict[str, Any]:
     active = [r for r in records if is_actionable(r)]
     product = [r for r in active if str(r.get("severity") or "").upper() in {"P0", "P1"}]
     supporting = [r for r in active if r not in product]
+    held = [r for r in records if str(r.get("state") or "").upper() in NONFINAL_OWNED_HOLDS]
+    held_owned = [
+        r for r in held
+        if str(r.get("current_owner") or r.get("owner") or "").strip()
+        and str(r.get("next_action") or "").strip()
+    ]
     return {
         "product_recovery_active": len(product),
         "supporting_investigation_active": len(supporting),
+        "nonfinal_held_total": len(held),
+        "nonfinal_held_owned": len(held_owned),
+        "nonfinal_held_missing_handoff": len(held) - len(held_owned),
         "product_recovery_limit": MAX_ACTIVE_PRODUCT_RECOVERY,
         "supporting_investigation_limit": MAX_ACTIVE_SUPPORTING_INVESTIGATION,
         "new_product_work_allowed": len(product) < MAX_ACTIVE_PRODUCT_RECOVERY,
@@ -834,6 +852,13 @@ def self_check() -> dict[str, Any]:
     assert reliability_blocks_frontier([{"severity": "P1", "state": "OPEN"}])
     assert reliability_blocks_frontier([{"severity": "P2", "state": "OPEN"}])
     assert not is_actionable({"severity": "P0", "state": "PR_CREATED", "wait_state": "REVIEW_PENDING"})
+    held = {"incident_id": "1688", "severity": "P0", "state": "BLOCKED_WITH_EXACT_REASON",
+            "current_owner": "ENGINEERING_AGENT", "next_action": "Investigate typed failure"}
+    assert not is_actionable(held)
+    assert reliability_blocks_frontier([held])
+    assert select_priority_incident([held]).frontier_allowed is False
+    assert closure_wip([held])["nonfinal_held_owned"] == 1
+    assert closure_wip([{**held, "next_action": ""}])["nonfinal_held_missing_handoff"] == 1
     parked_then_executable = [
         {"incident_id": "960", "severity": "P0", "state": "PR_CREATED", "wait_state": "REVIEW_PENDING"},
         {"incident_id": "502", "severity": "P0", "state": "OPEN"},
