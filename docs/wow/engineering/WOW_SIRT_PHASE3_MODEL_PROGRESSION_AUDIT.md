@@ -43,7 +43,7 @@ cd artifacts/wow-engine
 python -m pytest -q test_v17_sirt_model_progression_audit.py
 ```
 
-Isolated fixture run: **17 passed locally on October 26, 2026**. The exact GitHub PR head still requires its own CI and protected reviews. This is not live production evidence.
+Isolated fixture run: **20 passed locally on October 26, 2026**. The exact GitHub PR head still requires its own CI and protected reviews. This is not live production evidence.
 
 ### Integration after source review
 
