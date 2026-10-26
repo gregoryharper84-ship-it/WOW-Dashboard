@@ -15,6 +15,9 @@ def pair(i, role, outcome=1, probability=None, **kw):
         "prediction_receipt_ref": f"model:{role}:{i}",
         "source_snapshot_ref": f"snapshot:{i}",
         "calibration_evidence_ref": f"calibration:{role}:{i}",
+        "out_of_sample_split_ref": "holdout:oct2026",
+        "model_owner_principal": "model-owner",
+        "settlement_verifier_principal": "independent-settlement",
         "settlement_evidence_ref": f"settlement:{i}",
         "role": role, "regime": "PREGAME", "out_of_sample_verified": True,
         "settlement_verified": True, "point_in_time_snapshot_verified": True,
@@ -54,6 +57,8 @@ def test_matched_replay_is_still_research_only_even_when_challenger_better():
     {"calibration_evidence_ref": ""},
     {"prediction_receipt_ref": ""},
     {"settlement_evidence_ref": ""},
+    {"out_of_sample_split_ref": ""},
+    {"settlement_verifier_principal": "model-owner"},
 ])
 def test_bad_evidence_blocks_entire_cohort(change):
     obs = full_sample()
@@ -94,8 +99,8 @@ def test_different_model_artifact_within_cohort_cannot_be_merged():
 
 def test_confirmed_recurrence_requires_regression_proof_and_does_not_self_fix():
     incidents = [
-        {"incident_id": "1", "root_cause_status": "CONFIRMED", "confirmed_root_cause_id": "identity-key", "prevention_regression_ref": "test:one"},
-        {"incident_id": "2", "root_cause_status": "CONFIRMED", "confirmed_root_cause_id": "identity-key"},
+        {"incident_id": "1", "root_cause_status": "CONFIRMED", "confirmed_root_cause_id": "identity-key", "root_cause_evidence_ref": "issue:1", "prevention_regression_ref": "test:one"},
+        {"incident_id": "2", "root_cause_status": "CONFIRMED", "confirmed_root_cause_id": "identity-key", "root_cause_evidence_ref": "issue:2"},
         {"incident_id": "3", "root_cause_status": "SUSPECTED", "confirmed_root_cause_id": "identity-key"},
     ]
     result = audit_confirmed_recurrence(incidents)
@@ -108,7 +113,16 @@ def test_confirmed_recurrence_requires_regression_proof_and_does_not_self_fix():
 
 
 def test_duplicate_incident_is_not_inflated():
-    rows = [{"incident_id": "1", "root_cause_status": "CONFIRMED", "root_cause_code": "x"}] * 2
+    rows = [{"incident_id": "1", "root_cause_status": "CONFIRMED", "root_cause_code": "x", "root_cause_evidence_ref": "issue:1"}] * 2
     result = audit_confirmed_recurrence(rows)
     assert result["status"] == "EVIDENCE_HOLD"
     assert result["families"][0]["occurrences"] == 1
+
+
+def test_root_cause_without_evidence_is_not_confirmed_recurrence():
+    rows = [{"incident_id": "1", "root_cause_status": "CONFIRMED", "root_cause_code": "x"},
+            {"incident_id": "2", "root_cause_status": "CONFIRMED", "root_cause_code": "x",
+             "root_cause_evidence_ref": "issue:2"}]
+    result = audit_confirmed_recurrence(rows)
+    assert result["families"][0]["occurrences"] == 1
+    assert result["families"][0]["recurring"] is False
