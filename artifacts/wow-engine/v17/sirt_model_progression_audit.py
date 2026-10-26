@@ -253,7 +253,7 @@ def audit_champion_baseline(
         raise ValueError("MINIMUM_OBSERVATIONS_INVALID")
     families: dict[tuple[str, str, str, str], list[Mapping[str, Any]]] = defaultdict(list)
     invalid: set[tuple[str, str, str, str]] = set()
-    seen_events: dict[tuple[str, str, str, str, str], tuple[str, str, str, str]] = {}
+    seen_events: dict[tuple[str, str, str, str], tuple[str, str, str, str]] = {}
     seen_receipts: dict[str, tuple[str, str, str, str]] = {}
     findings: list[str] = []
     unattributed = False
@@ -272,7 +272,7 @@ def audit_champion_baseline(
             invalid.add(cohort)
             findings.append(f"ROW_{idx}_CHAMPION_EVIDENCE_UNVERIFIED")
             continue
-        event_key = cohort[:3] + (row["event_id"], row["market_id"],)
+        event_key = (row["sport"], row["market_family"], row["event_id"], row["market_id"])
         prior_event_cohort = seen_events.get(event_key)
         if prior_event_cohort is not None:
             invalid.update((cohort, prior_event_cohort))
