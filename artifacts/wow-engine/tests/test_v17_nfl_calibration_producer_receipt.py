@@ -159,6 +159,7 @@ def test_final_refresh_must_be_real_current_and_identity_matched():
         outcome = _prove(req, row, edited)
         assert outcome["nfl_stage_receipt"]["status"] == "HOLD", field
         assert "NFL_FINAL_REFRESH_SOURCE_PROOF_UNPROVEN" in outcome["nfl_stage_receipt"]["blockers"]
+        assert outcome["dynamic_calibration_complete"] is True  # independent stage
         assert outcome["can_execute"] is False
 
 
@@ -170,3 +171,56 @@ def test_pregame_receipt_does_not_retroactively_attest_reused_old_predictions():
     assert outcome["nfl_stage_receipt"]["status"] == "HOLD"
     assert "NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_MISSING" in outcome["nfl_stage_receipt"]["blockers"]
     assert outcome["rank_eligible"] is False
+
+
+class _Query:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def select(self, *_a):
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def order(self, *_a, **_kw):
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self.rows)
+
+
+class _CertifiedDb:
+    def __init__(self, approved, graded, status="PASS"):
+        self.model = {
+            "active": True, "promoted": True,
+            "probability_publishable": approved,
+        }
+        self.health = {
+            "graded_n": graded, "minimum_forward_required": 100,
+            "status": status,
+            "certification_recommendation": "FORWARD_EVIDENCE_PASS",
+            "blockers": [],
+        }
+
+    def table(self, name):
+        if name == "wow_nfl_event_fitted_model_artifacts":
+            return _Query([self.model])
+        if name == "wow_nfl_forward_calibration_health":
+            return _Query([self.health])
+        raise AssertionError(name)
+
+
+def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+
+    _, row, _ = _bound_evidence()
+    # Honest 53/100 forward cohort cannot become certified by setting a flag.
+    assert _forward_certification_proven(_CertifiedDb(True, 53), row) is False
+    # Even a fully graded healthy cohort cannot silently promote a champion.
+    assert _forward_certification_proven(_CertifiedDb(False, 100), row) is False
+    assert _forward_certification_proven(_CertifiedDb(True, 100, "FAIL"), row) is False
+    assert _forward_certification_proven(_CertifiedDb(True, 100), row) is True
