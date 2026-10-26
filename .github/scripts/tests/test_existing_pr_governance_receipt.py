@@ -1372,13 +1372,13 @@ def run_receipt_artifact_step(tmp_path, artifacts, *, total=None):
     # Emulate GitHub's exact-name server-filtered artifact inventory, rather
     # than the old unbounded repository-wide artifact scan.
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    step = workflow.split("      - name: Check for an existing exact-head receipt\\n", 1)[1]
-    script = textwrap.dedent(step.split("        run: |\\n", 1)[1].split("\\n      - name:", 1)[0])
+    step = workflow.split("      - name: Check for an existing exact-head receipt\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
     stub = """
 gh() {
   case "$*" in
     "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-engineering-governance-${HEAD_SHA}&per_page=100&page=1")
-      printf '%s\\\\n' "$TEST_ARTIFACTS_JSON"
+      printf '%s\\n' "$TEST_ARTIFACTS_JSON"
       ;;
     *)
       echo "UNEXPECTED_GH_INVOCATION:$*" >&2
