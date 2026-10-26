@@ -234,3 +234,31 @@ def test_same_model_version_cannot_be_counted_as_new_challenger():
     assert result["paired_metrics"] is None
     assert any(x["code"] == "PAIRED_MODEL_IDENTITY_COLLISION"
                for x in result["findings"])
+
+
+@pytest.mark.parametrize("field,replacement", [
+    ("model_artifact_id", "fitted:v1-other"),
+    ("model_fit_receipt_ref", "immutable-fit-other"),
+    ("forward_certification_receipt_ref", "independent-forward-other"),
+])
+def test_mixed_champion_artifact_or_certification_cannot_pool_forward_cohort(field, replacement):
+    # Same version label, 25 distinct events and authentic-looking matched rows
+    # must not manufacture a single certified champion identity.
+    rows = [sample(i, role) for i in range(25)
+            for role in ("CHAMPION", "CHALLENGER")]
+    for i in range(1, 25, 2):
+        rows[2 * i][field] = replacement
+    result = evaluate_chronological_evidence(rows)
+    assert result["rows_verified"] == 50
+    assert result["paired_count"] == 25
+    assert result["paired_distinct_events"] == 25
+    assert not result["audit_complete"]
+    assert not result["paired_comparison_ready"]
+    assert result["paired_metrics"] is None
+    assert any(finding["code"] == "MODEL_COHORT_ARTIFACT_DRIFT"
+               and finding["model_role"] == "CHAMPION"
+               for finding in result["findings"])
+    assert all(cohort["metrics"] is None for cohort in result["cohorts"])
+    assert result["automatic_promotion_allowed"] is False
+    assert result["model_release_authorized"] is False
+    assert result["can_execute"] is False

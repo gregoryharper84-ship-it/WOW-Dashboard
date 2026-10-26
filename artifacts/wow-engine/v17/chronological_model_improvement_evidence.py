@@ -126,6 +126,21 @@ def evaluate_chronological_evidence(
     for row in accepted:
         cohorts[(row["sport"], row["market_family"], row["model_role"],
                  row["model_version"])].append(row)
+    # A version label alone does not identify a single fitted, certified model.
+    # Mixed immutable artifacts/fit receipts within one role would silently pool
+    # unrelated forward samples and manufacture a sufficient comparison cohort.
+    for (sport, market, role, version), samples in sorted(cohorts.items()):
+        identities = {
+            (row["model_artifact_id"], row["model_fit_receipt_ref"],
+             row["forward_certification_receipt_ref"])
+            for row in samples
+        }
+        if len(identities) != 1:
+            findings.append({
+                "index": -1, "code": "MODEL_COHORT_ARTIFACT_DRIFT",
+                "sport": sport, "market_family": market,
+                "model_role": role, "model_version": version,
+            })
     by_lane: list[dict[str, Any]] = []
     for (sport, market, role, version), samples in sorted(cohorts.items()):
         distinct_events = len({row["event_id"] for row in samples})
