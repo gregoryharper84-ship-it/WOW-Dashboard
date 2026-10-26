@@ -37,7 +37,11 @@ from v17.team_event_capability_manifest import (
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
-from v17.cross_sport_evidence_integrity import evaluate_scored_cross_sport_evidence
+from v17.cross_sport_evidence_integrity import (
+    CRITICAL_STATUS_CONTRACT,
+    TEAM_ROSTER_SPORTS,
+    evaluate_scored_cross_sport_evidence,
+)
 from v17.team_event_model_registry_audit import (
     certification_state,
     probe_sport,
@@ -440,6 +444,23 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
             "cross_sport_evidence_verifier_registered": bool(
                 registered and callable(registration.evidence_attestation_verifier)
             ),
+            "cross_sport_evidence_readiness": {
+                "status": (
+                    "ENFORCEMENT_CONFIGURED"
+                    if registered and registration.evidence_integrity_required
+                    and callable(registration.evidence_attestation_verifier)
+                    else "PRODUCER_NOT_ENROLLED"
+                    if registered else "MODEL_BRIDGE_NOT_REGISTERED"
+                ),
+                "critical_status_contract": CRITICAL_STATUS_CONTRACT.get(sport),
+                "requires_personnel_reconciliation": sport in TEAM_ROSTER_SPORTS,
+                "numerical_feature_consumption_required": True,
+                "fresh_pregame_refresh_required": True,
+                "trusted_producer_verifier_present": bool(
+                    registered and callable(registration.evidence_attestation_verifier)
+                ),
+                "can_execute": False,
+            },
             "feature_schema_version": (
                 registration.feature_schema_version if registered else None
             ),
