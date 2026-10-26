@@ -169,6 +169,28 @@ def test_out_of_order_science_is_rejected_without_a_recovery_source():
         build_queue(config(), {"science": science()})
 
 
+@pytest.mark.parametrize("bad_tracks", [
+    None,
+    [],
+    ["TRACK_1_RECOVERY", "TRACK_2_MODEL_SCIENCE", "TRACK_3_PREVENTION"],
+    [{"id": "TRACK_1_RECOVERY"}, {"id": "TRACK_2_MODEL_SCIENCE"},
+     {"id": "TRACK_3_PREVENTION"}, "unsafe-extra"],
+    [{"id": "TRACK_1_RECOVERY"}, "unsafe-middle", {"id": "TRACK_3_PREVENTION"}],
+])
+def test_malformed_track_inventory_fails_closed_with_typed_error(bad_tracks):
+    candidate = config()
+    candidate["tracks"] = bad_tracks
+    with pytest.raises(HandoffContractError, match="TRACK_ORDER_OR_COVERAGE_INVALID"):
+        build_queue(candidate)
+
+
+def test_closed_nfl_precedent_cannot_be_listed_as_active_dispatch_issue():
+    scope = config()["tracks"][0]["scope"]
+    assert "NFL #1841" not in scope
+    assert "NFL #1562" in scope
+    assert "NBA #1988" in scope
+
+
 def test_track_configuration_enforces_existing_issue_owners():
     c = config()
     c["tracks"][2]["tracking_issue"] = c["tracks"][1]["tracking_issue"]
