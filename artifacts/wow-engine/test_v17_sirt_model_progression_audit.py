@@ -151,3 +151,12 @@ def test_offline_cli_cannot_turn_invalid_input_into_pass(tmp_path):
     body = json.loads(result.stdout)
     assert body["status"] == "EVIDENCE_HOLD"
     assert body["can_execute"] is False
+
+
+def test_different_holdout_splits_cannot_be_compared():
+    obs = full_sample()
+    obs[1] = {**obs[1], "out_of_sample_split_ref": "different_holdout"}
+    result = audit_challenger_replay(obs)
+    assert result["status"] == "EVIDENCE_HOLD"
+    assert "HOLDOUT_SPLIT_DISAGREEMENT" in result["comparisons"][0]["blockers"]
+    assert result["comparisons"][0]["challenger_minus_champion_brier"] is None
