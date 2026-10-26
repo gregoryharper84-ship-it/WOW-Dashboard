@@ -9,6 +9,7 @@ from v17.nhl_total_goals_regime_source import (
     CAN_EXECUTE, PROBABILITY_PUBLISHABLE, GOAL_COUNT_DEFINITION,
     NHLTotalsRegimeSourceError, normalize_official_regime_schedule,
     reconcile_official_regime_games, reconcile_regime_labels_with_d1_events,
+    fetch_historical_regime_cohort,
 )
 
 
@@ -160,3 +161,82 @@ def test_incomplete_or_duplicate_join_refused():
     with pytest.raises(NHLTotalsRegimeSourceError) as e:
         reconcile_regime_labels_with_d1_events(rows+[rows[0]], games)
     assert e.value.code == "NHL_TOTALS_REGIME_D1_DUPLICATE"
+
+
+
+def test_bounded_official_source_fetch_is_partial_research_only(monkeypatch):
+    from types import SimpleNamespace
+    import v17.model_source_entitlements as entitlements
+
+    monkeypatch.setattr(entitlements, "source_readiness",
+                        lambda source_id: SimpleNamespace(
+                            ready_for_candidate_training=True, blockers=[]
+                        ))
+    original = next(x for x in schedule()["games"] if x["gameOutcome"]["lastPeriodType"] == "OT")
+
+    class Response:
+        status_code = 200
+        def json(self):
+            return {"games": [original]}
+
+    class Session:
+        def __init__(self):
+            self.urls = []
+        def get(self, url, **kwargs):
+            self.urls.append(url)
+            assert kwargs["timeout"] == 20
+            return Response()
+
+    session = Session()
+    rows, audit = fetch_historical_regime_cohort(
+        (2024,), session=session,
+        teams_override_for_research={2024: ("NYR", "UTA")}
+    )
+    assert audit["status"] == "NHL_TOTALS_OFFICIAL_REGIME_PARTIAL_RESEARCH_ONLY"
+    assert audit["by_season"]["20242025"]["coverage_verified"] is False
+    assert audit["unique_events"] == 1
+    assert len(session.urls) == 2
+    assert session.urls[0].endswith("/NYR/20242025")
+    assert session.urls[1].endswith("/UTA/20242025")
+    assert rows[0].full_game_total == 11
+    assert audit["can_execute"] is False
+    assert audit["calibrated_lower_bound"] is None
+
+
+def test_official_source_429_is_typed_not_an_estimated_fallback(monkeypatch):
+    from types import SimpleNamespace
+    import v17.model_source_entitlements as entitlements
+    monkeypatch.setattr(entitlements, "source_readiness",
+                        lambda _: SimpleNamespace(ready_for_candidate_training=True))
+    class Response:
+        status_code = 429
+    class Session:
+        def get(self, url, **kwargs):
+            return Response()
+    with pytest.raises(NHLTotalsRegimeSourceError) as err:
+        fetch_historical_regime_cohort((2024,), session=Session(),
+                                       teams_override_for_research={2024: ("NYR",)})
+    assert err.value.code == "NHL_TOTALS_COHORT_HTTP_429"
+
+
+def test_2026_incomplete_season_must_not_be_declared_historical():
+    class Session:
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("should reject before network")
+    with pytest.raises(NHLTotalsRegimeSourceError) as err:
+        fetch_historical_regime_cohort((2026,), session=Session())
+    assert err.value.code == "NHL_TOTALS_COHORT_SEASONS_INVALID"
+
+
+def test_research_entitlement_unready_blocks_before_network(monkeypatch):
+    from types import SimpleNamespace
+    import v17.model_source_entitlements as entitlements
+    monkeypatch.setattr(entitlements, "source_readiness",
+                        lambda _: SimpleNamespace(ready_for_candidate_training=False,
+                                                  blockers=("NHL_SOURCE_POLICY_UNVERIFIED",)))
+    class Session:
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("should reject before network")
+    with pytest.raises(NHLTotalsRegimeSourceError) as err:
+        fetch_historical_regime_cohort((2024,), session=Session())
+    assert err.value.code == "NHL_TOTALS_COHORT_SOURCE_NOT_READY"
