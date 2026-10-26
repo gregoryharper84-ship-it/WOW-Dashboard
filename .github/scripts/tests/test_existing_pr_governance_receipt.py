@@ -366,8 +366,15 @@ def test_every_certification_step_is_gated_on_the_route():
     assert steps
     for step in steps:
         assert "        if: steps.route.outputs.applicable == 'true'" in step, step.splitlines()[0]
-    # Duplicate deliveries of one QA run share a concurrency group and cancel each other.
-    assert "group: wow-v17-existing-pr-governance-${{ github.event.workflow_run.id" in workflow
+    # Duplicate source QA deliveries serialize on their run ID; release-check
+    # re-entry is grouped by exact head, not a changing PR run identifier.
+    # A queued duplicate must not cancel an already certifying run.
+    assert (
+        "group: wow-v17-existing-pr-governance-"
+        "${{ github.event.check_run.head_sha || github.event.pull_request.head.sha || "
+        "github.event.workflow_run.id || inputs.pr_number }}"
+    ) in workflow
+    assert "cancel-in-progress: false" in workflow
 
 
 def evidence(*, author=None, review_state="APPROVED", review_sha=HEAD):
