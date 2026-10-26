@@ -26,6 +26,10 @@ from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop
 from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
 from prop_evidence_repair import repair_prop_evidence
 from prop_fitted_provider import PropFittedProviderUnavailable
+from v17.nfl_player_game_eligibility import (
+    PLAYER_UNAVAILABLE,
+    player_game_availability_blocker,
+)
 from prop_market_audit import audit_candidate_market
 from prop_settlement import (
     LINEUP_PAYOUT_CONTEXT_REQUIRED,
@@ -850,18 +854,8 @@ def score_prop(
     # trusted, event-specific availability attestor is certified here, NFL
     # player props are held before fitted scoring and prediction persistence.
     if str(req.sport or "").strip().upper() == "NFL":
-        role = evidence.get("role_status")
-        role = role if isinstance(role, dict) else {}
-        designation = str(
-            role.get("game_availability_status")
-            or role.get("availability_status")
-            or ""
-        ).strip().upper().replace(" ", "_").replace("-", "_")
-        unavailable = designation in {
-            "OUT", "IR", "INJURED_RESERVE", "INACTIVE", "SUSPENDED",
-            "PUP", "NFI", "DOUBTFUL",
-        }
-        code = "PLAYER_UNAVAILABLE" if unavailable else "PLAYER_AVAILABILITY_UNVERIFIED"
+        code = player_game_availability_blocker(evidence.get("role_status"))
+        unavailable = code == PLAYER_UNAVAILABLE
         raise HTTPException(
             status_code=422,
             detail={
