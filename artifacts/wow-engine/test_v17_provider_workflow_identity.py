@@ -1,5 +1,6 @@
 """Execute the real provider-routing shell with bounded provider/CLI fixtures."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -7,6 +8,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+import zipfile
 from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -142,7 +144,8 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
 class GeminiWorkerCompletionRouteTests(unittest.TestCase):
     def _run_gemini_route(self, *, conclusion="failure", issue_state="OPEN",
                           openai=True, anthropic=False, missing_artifact=False,
-                          source_event="workflow_dispatch", primary_failure_log=""):
+                          source_event="workflow_dispatch", primary_failure_log="",
+                          artifact_variant="valid"):
         if not shutil.which("jq"):
             self.skipTest("Workflow shell fixture requires jq (present on GitHub Actions)")
         text = WORKFLOW.read_text()
@@ -155,8 +158,8 @@ class GeminiWorkerCompletionRouteTests(unittest.TestCase):
             fixture_root.mkdir()
             receipt_dir = fixture_root / "receipts"
             receipt_dir.mkdir()
-            sha = "a" * 40
-            run_id = 123456
+            sha = "d129f421b8f4f21ec17fe6dec0a5b8195e210226"
+            run_id = 40292121097
             attempt = 1
             repository = "gregoryharper84-ship-it/WOW-Dashboard"
             repository_id = 1240256887
@@ -175,10 +178,10 @@ class GeminiWorkerCompletionRouteTests(unittest.TestCase):
             artifacts = {
                 "total_count": 1,
                 "artifacts": [{
-                    "id": 777,
+                    "id": 12635928678,
                     "name": f"wow-gemini-candidate-{run_id}-{attempt}",
                     "expired": False,
-                    "digest": "sha256:" + "b" * 64,
+                    "digest": "",
                     "workflow_run": {
                         "id": run_id,
                         "repository_id": repository_id,
@@ -256,6 +259,32 @@ class GeminiWorkerCompletionRouteTests(unittest.TestCase):
             for name, value in receipts.items():
                 path = receipt_dir / name
                 path.write_text(value if isinstance(value, str) else json.dumps(value))
+            artifact_zip = fixture_root / "artifact.zip"
+            with zipfile.ZipFile(artifact_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(receipt_dir.iterdir()):
+                    archive.write(path, path.name)
+            artifacts["artifacts"][0]["digest"] = (
+                "sha256:" + hashlib.sha256(artifact_zip.read_bytes()).hexdigest()
+            )
+            if artifact_variant == "wrong_attempt":
+                artifacts["artifacts"][0]["name"] = (
+                    f"wow-gemini-candidate-{run_id}-{attempt + 1}"
+                )
+            elif artifact_variant == "duplicate":
+                artifacts["artifacts"].append({
+                    **artifacts["artifacts"][0],
+                    "id": 12635928679,
+                })
+                artifacts["total_count"] = 2
+            elif artifact_variant == "cross_repository":
+                artifacts["artifacts"][0]["workflow_run"]["repository_id"] += 1
+            elif artifact_variant == "paginated":
+                artifacts["total_count"] = 101
+            elif artifact_variant == "digest_mismatch":
+                artifacts["artifacts"][0]["digest"] = "sha256:" + "0" * 64
+            elif artifact_variant == "missing":
+                artifacts["total_count"] = 0
+                artifacts["artifacts"] = []
             (fixture_root / "run.json").write_text(json.dumps(run))
             (fixture_root / "artifacts.json").write_text(json.dumps(artifacts))
             (fixture_root / "issues.json").write_text(json.dumps(issues))
@@ -268,17 +297,13 @@ class GeminiWorkerCompletionRouteTests(unittest.TestCase):
                 "#!/bin/bash\n"
                 "if [ \"$1\" = api ]; then\n"
                 "  case \"$2\" in\n"
-                "    *\"/attempts/1/artifacts?per_page=100\") cat \"$FIXTURE_ROOT/artifacts.json\" ;;\n"
-                "    *\"/actions/runs/123456\") cat \"$FIXTURE_ROOT/run.json\" ;;\n"
+                "    *\"/actions/runs/40292121097/artifacts?per_page=100\") "
+                "cat \"$FIXTURE_ROOT/artifacts.json\" ;;\n"
+                "    *\"/actions/artifacts/12635928678/zip\") "
+                "[ \"$FIXTURE_MISSING_ARTIFACT\" != true ] && cat \"$FIXTURE_ROOT/artifact.zip\" ;;\n"
+                "    *\"/actions/runs/40292121097\") cat \"$FIXTURE_ROOT/run.json\" ;;\n"
                 "    *) exit 70 ;;\n"
                 "  esac\n"
-                "elif [ \"$1\" = run ] && [ \"$2\" = download ]; then\n"
-                "  if [ \"$FIXTURE_MISSING_ARTIFACT\" = true ]; then exit 4; fi\n"
-                "  shift 2; destination=\n"
-                "  while [ \"$#\" -gt 0 ]; do\n"
-                "    if [ \"$1\" = --dir ]; then destination=$2; shift 2; else shift; fi\n"
-                "  done\n"
-                "  mkdir -p \"$destination\"; cp -R \"$FIXTURE_ROOT/receipts/.\" \"$destination/\"\n"
                 "elif [ \"$1\" = issue ] && [ \"$2\" = list ]; then\n"
                 "  cat \"$FIXTURE_ROOT/issues.json\"\n"
                 "elif [ \"$1\" = run ] && [ \"$2\" = view ]; then\n"
@@ -338,7 +363,7 @@ class GeminiWorkerCompletionRouteTests(unittest.TestCase):
         receipt = self._run_gemini_route()
         self.assertEqual((receipt["action"], receipt["provider"]), ("DISPATCH", "openai"))
         self.assertTrue(receipt["reason"].startswith("GEMINI_API_UPSTREAM_UNAVAILABLE:"))
-        self.assertEqual(receipt["parent_run_id"], "123456")
+        self.assertEqual(receipt["parent_run_id"], "40292121097")
         self.assertEqual(receipt["target_incident"], "1951")
         self.assertEqual(receipt["lease_group"], "P0_NCAAF_RESTORE")
 
@@ -351,9 +376,23 @@ class GeminiWorkerCompletionRouteTests(unittest.TestCase):
         self.assertEqual((closed["action"], closed["provider"]), ("SURVIVAL", "deterministic"))
         self.assertEqual(closed["reason"], "GEMINI_CHILD_INCIDENT_NOT_CURRENTLY_OPEN")
 
-        missing = self._run_gemini_route(missing_artifact=True)
+        missing = self._run_gemini_route(missing_artifact=True, artifact_variant="missing")
         self.assertEqual((missing["action"], missing["provider"]), ("SURVIVAL", "deterministic"))
         self.assertEqual(missing["reason"], "GEMINI_CHILD_ARTIFACT_MISSING")
+
+        missing_archive = self._run_gemini_route(missing_artifact=True)
+        self.assertEqual((missing_archive["action"], missing_archive["provider"]),
+                         ("SURVIVAL", "deterministic"))
+        self.assertEqual(missing_archive["reason"], "GEMINI_CHILD_ARTIFACT_MISSING")
+
+        for variant in (
+            "wrong_attempt", "duplicate", "cross_repository", "paginated",
+            "digest_mismatch",
+        ):
+            with self.subTest(artifact_variant=variant):
+                invalid = self._run_gemini_route(artifact_variant=variant)
+                self.assertEqual((invalid["action"], invalid["provider"]),
+                                 ("SURVIVAL", "deterministic"))
 
         no_provider = self._run_gemini_route(openai=False, anthropic=False)
         self.assertEqual((no_provider["action"], no_provider["provider"]), ("SURVIVAL", "deterministic"))

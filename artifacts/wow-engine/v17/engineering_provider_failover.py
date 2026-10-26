@@ -260,38 +260,76 @@ def verify_gemini_worker_provenance(
         return held("GEMINI_CHILD_SOURCE_PROVENANCE_MISMATCH")
 
     artifact_rows = artifacts.get("artifacts")
+    total_count = artifacts.get("total_count")
     if (
         not isinstance(artifact_rows, list)
-        or not isinstance(artifacts.get("total_count"), int)
-        or isinstance(artifacts.get("total_count"), bool)
-        or artifacts.get("total_count") != len(artifact_rows)
-        or len(artifact_rows) != 1
+        or not isinstance(total_count, int)
+        or isinstance(total_count, bool)
+        or total_count < 0
+        or total_count > 100
+        or total_count != len(artifact_rows)
     ):
+        return held("GEMINI_CHILD_ARTIFACT_INVENTORY_UNVERIFIED")
+
+    artifact_prefix = f"wow-gemini-candidate-{run_id}-"
+    attempt_pattern = re.compile(
+        rf"^{re.escape(artifact_prefix)}([1-9][0-9]*)$"
+    )
+    candidate_artifacts = []
+    seen_attempts = set()
+    seen_ids = set()
+    for row in artifact_rows:
+        if not isinstance(row, dict):
+            return held("GEMINI_CHILD_ARTIFACT_INVENTORY_UNVERIFIED")
+        name = row.get("name")
+        if not isinstance(name, str) or not name.startswith(artifact_prefix):
+            continue
+        match = attempt_pattern.fullmatch(name)
+        if not match:
+            return held("GEMINI_CHILD_ARTIFACT_PROVENANCE_MISMATCH")
+        artifact_attempt = int(match.group(1))
+        artifact_run = row.get("workflow_run")
+        artifact_id = row.get("id")
+        if (
+            artifact_attempt > run_attempt
+            or artifact_attempt in seen_attempts
+            or not isinstance(artifact_id, int)
+            or isinstance(artifact_id, bool)
+            or artifact_id <= 0
+            or artifact_id in seen_ids
+            or not isinstance(row.get("digest"), str)
+            or not _SHA256.fullmatch(row["digest"])
+            or not isinstance(artifact_run, dict)
+            or not isinstance(artifact_run.get("id"), int)
+            or isinstance(artifact_run.get("id"), bool)
+            or artifact_run.get("id") != run_id
+            or not isinstance(artifact_run.get("repository_id"), int)
+            or isinstance(artifact_run.get("repository_id"), bool)
+            or artifact_run.get("repository_id") != source_repo["id"]
+            or not isinstance(artifact_run.get("head_repository_id"), int)
+            or isinstance(artifact_run.get("head_repository_id"), bool)
+            or artifact_run.get("head_repository_id") != source_repo["id"]
+            or artifact_run.get("head_branch") != "main"
+            or artifact_run.get("head_sha") != source_sha
+        ):
+            return held("GEMINI_CHILD_ARTIFACT_PROVENANCE_MISMATCH")
+        seen_attempts.add(artifact_attempt)
+        seen_ids.add(artifact_id)
+        candidate_artifacts.append((artifact_attempt, row))
+
+    matching_artifacts = [
+        row for artifact_attempt, row in candidate_artifacts
+        if artifact_attempt == run_attempt
+    ]
+    if not matching_artifacts:
+        return held("GEMINI_CHILD_ARTIFACT_MISSING")
+    if len(matching_artifacts) != 1:
         return held("GEMINI_CHILD_ARTIFACT_MISSING_OR_AMBIGUOUS")
-    artifact = artifact_rows[0]
+    artifact = matching_artifacts[0]
     expected_name = f"wow-gemini-candidate-{run_id}-{run_attempt}"
-    artifact_run = artifact.get("workflow_run") if isinstance(artifact, dict) else None
     if (
-        not isinstance(artifact, dict)
-        or artifact.get("name") != expected_name
+        artifact.get("name") != expected_name
         or artifact.get("expired") is not False
-        or not isinstance(artifact.get("id"), int)
-        or isinstance(artifact.get("id"), bool)
-        or artifact.get("id") <= 0
-        or not isinstance(artifact.get("digest"), str)
-        or not _SHA256.fullmatch(artifact["digest"])
-        or not isinstance(artifact_run, dict)
-        or not isinstance(artifact_run.get("id"), int)
-        or isinstance(artifact_run.get("id"), bool)
-        or artifact_run.get("id") != run_id
-        or not isinstance(artifact_run.get("repository_id"), int)
-        or isinstance(artifact_run.get("repository_id"), bool)
-        or artifact_run.get("repository_id") != source_repo["id"]
-        or not isinstance(artifact_run.get("head_repository_id"), int)
-        or isinstance(artifact_run.get("head_repository_id"), bool)
-        or artifact_run.get("head_repository_id") != source_repo["id"]
-        or artifact_run.get("head_branch") != "main"
-        or artifact_run.get("head_sha") != source_sha
     ):
         return held("GEMINI_CHILD_ARTIFACT_PROVENANCE_MISMATCH")
 
@@ -302,6 +340,7 @@ def verify_gemini_worker_provenance(
         "source_run_attempt": run_attempt,
         "source_head_sha": source_sha,
         "artifact_id": artifact["id"],
+        "artifact_digest": artifact["digest"],
         "artifact_name": expected_name,
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
