@@ -284,13 +284,16 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
                 or not isinstance(training_n, int) or training_n <= 0):
             reasons.append("NFL_STAGE_PROOF_DYNAMIC_CALIBRATION_UNPROVEN")
 
+    # Numerical-package proof and subsequent operation proof are separate.
+    # Missing calibration must not erase a valid immutable fitted probability.
+    stage_reasons: list[str] = []
     producer_blocker = _actual_producer_receipt(rows[0]) if not reasons else None
     if producer_blocker:
-        reasons.append(producer_blocker)
-    refresh_proven = not reasons and _final_refresh_proven(rows[0], out)
-    if not reasons and not refresh_proven:
-        reasons.append("NFL_FINAL_REFRESH_SOURCE_PROOF_UNPROVEN")
-    certified_forward = _forward_certification_proven(db, rows[0]) if not reasons else False
+        stage_reasons.append(producer_blocker)
+    if not reasons and not stage_reasons and not _final_refresh_proven(rows[0], out):
+        stage_reasons.append("NFL_FINAL_REFRESH_SOURCE_PROOF_UNPROVEN")
+    stage_proven = not reasons and not stage_reasons
+    certified_forward = _forward_certification_proven(db, rows[0]) if stage_proven else False
     upstream_approved = (
         out.get("rank_eligible") is True
         and out.get("probability_publishable") is True
@@ -331,7 +334,7 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
     # identity-bound final schedule re-query. Forward certification is a
     # different accuracy requirement: 53 actual graded games cannot become 100
     # through a stage-proof patch.
-    allowed = bool(upstream_approved and certified_forward)
+    allowed = bool(upstream_approved and stage_proven and certified_forward)
     out.update({
         "prediction_id": prediction_id,
         "immutable_model_timestamp": _instant(row["model_timestamp"]).isoformat(),
@@ -342,18 +345,24 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
         "source_snapshot_timestamp": _instant(row["source_snapshot_timestamp"]).isoformat(),
         "outcome_space": "NFL_FULL_GAME_HOME_AWAY",
         "probability_package_valid": True,
-        "dynamic_calibration_complete": True,
-        "calibration_status": "PASS",
+        "dynamic_calibration_complete": stage_proven,
+        "calibration_status": "PASS" if stage_proven else "UNPROVEN",
         "rank_eligible": allowed,
         "probability_publishable": allowed,
         "terminal_label": "FINAL_APPROVED" if allowed else "MODEL_QUALIFIED_HOLD",
         "terminal_ceiling": "FINAL_APPROVED" if allowed else "MODEL_QUALIFIED_HOLD",
         "nfl_stage_receipt": {
-            "status": "PASS",
+            "status": "PASS" if stage_proven else "HOLD",
             "package_readback_status": "PASS",
-            "dynamic_calibration_stage": "PASS",
-            "forward_certification_status": "PASS" if certified_forward else "HOLD",
-            "blockers": [],
+            "dynamic_calibration_stage": (
+                "PASS" if stage_proven else "EVIDENCE_NOT_EMITTED"
+                if producer_blocker == "NFL_DYNAMIC_CALIBRATION_PRODUCER_RECEIPT_MISSING"
+                else "EVIDENCE_INVALID"
+            ),
+            "forward_certification_status": (
+                "NOT_CHECKED" if not stage_proven else "PASS" if certified_forward else "HOLD"
+            ),
+            "blockers": stage_reasons,
             "source": STAGE_SOURCE,
             "prediction_id": prediction_id,
             "score_snapshot_id": snapshot_id,
@@ -368,7 +377,8 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
     if not allowed:
         out["blockers"] = sorted(set([
             *(str(value) for value in out.get("blockers", [])),
-            "NFL_FORWARD_CERTIFICATION_UNPROVEN" if not certified_forward
-            else "NFL_UPSTREAM_TERMINAL_UNPROVEN",
+            *stage_reasons,
+            "NFL_FORWARD_CERTIFICATION_UNPROVEN" if stage_proven and not certified_forward
+            else "NFL_UPSTREAM_TERMINAL_UNPROVEN" if stage_proven else "NFL_STAGE_PROOF_UNPROVEN",
         ]))
     return out
