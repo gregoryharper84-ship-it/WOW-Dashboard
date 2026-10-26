@@ -169,3 +169,24 @@ def test_missing_owner_approval_does_not_spawn_fake_independent_implementation()
     assert result["required_actor"] == "ACTUAL_CODEOWNER"
     assert result["next_action"] == "FRESH_EXACT_HEAD_OWNER_APPROVAL"
     assert result["can_execute"] is False
+
+
+def test_owner_authored_non_bot_trust_root_is_retained_for_independent_reentry():
+    result = rp.plan_recovery(
+        pr_number=2125, findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+        attempts=0, is_wow_engineering_pr=False,
+    )
+    assert result["action"] == "WAITING_ON_OWNER"
+    assert result["required_actor"] == "INDEPENDENT_ENGINEERING_AUTHOR"
+    assert result["next_action"] == "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE"
+    assert result["attempts"] == 0
+    assert result["can_execute"] is False
+
+
+def test_non_bot_unrelated_qa_finding_remains_ignored():
+    result = rp.plan_recovery(
+        pr_number=2125, findings=["QA_REGRESSION_FAILED"],
+        attempts=0, is_wow_engineering_pr=False,
+    )
+    assert result["action"] == "IGNORE"
+    assert result["can_execute"] is False

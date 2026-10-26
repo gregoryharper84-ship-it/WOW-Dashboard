@@ -70,6 +70,21 @@ def plan_recovery(
     before this call (0 on the first HOLD). The returned `attempts` is what the caller
     should persist going forward.
     """
+    # Trust-root owner-authorship is a cross-repository admission problem,
+    # not a reason to silently drop a user-authored PR from recovery triage.
+    # This route is advisory only; source adoption requires an independently
+    # authenticated agent and positively reconciled canonical writer lease.
+    if not is_wow_engineering_pr and "QA_TRUST_ROOT_OWNER_AUTHORED" in findings:
+        return {
+            "pr_number": pr_number,
+            "action": "WAITING_ON_OWNER",
+            "required_actor": "INDEPENDENT_ENGINEERING_AUTHOR",
+            "next_action": "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE",
+            "findings": list(findings),
+            "non_repairable_findings": ["QA_TRUST_ROOT_OWNER_AUTHORED"],
+            "attempts": attempts,
+            "can_execute": False,
+        }
     if not is_wow_engineering_pr:
         return {
             "pr_number": pr_number,
