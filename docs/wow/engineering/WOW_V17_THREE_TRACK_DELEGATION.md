@@ -26,7 +26,9 @@ Independent SIRT / QA observability (Track 3)
        ↘ defects return to the SAME existing incident/Conductor, not a new ticket
 ```
 
-Incident labels in this document are navigation candidates, not permission to dispatch. The Conductor must re-check each candidate's live GitHub OPEN state and incident/lease identity before worker admission. **NFL #1841 was confirmed CLOSED on October 26, 2026** and must not be re-dispatched; preserve it only as historical root-cause evidence.\n\nA **confirmed diagnosis** may be passed into non-serving research before a production fix is complete, but is never called production verified. This permits safe scientific work without falsely loosening model publication. If Track 2 has no authenticated upstream evidence, it stays `WAITING_FOR_TRACK_1_EVIDENCE`. If Track 3 has no replay/holdout/counterexample-backed Track 2 receipt, it stays `WAITING_FOR_TRACK_2_EVIDENCE`.
+Incident labels in this document are navigation candidates, not permission to dispatch. The Conductor must re-check each candidate's live GitHub OPEN state and incident/lease identity before worker admission. **NFL #1841 was confirmed CLOSED on October 26, 2026** and must not be re-dispatched; preserve it only as historical root-cause evidence.
+
+A **confirmed diagnosis** may be passed into non-serving research before a production fix is complete, but is never called production verified. This permits safe scientific work without falsely loosening model publication. If Track 2 has no authenticated upstream evidence, it stays `WAITING_FOR_TRACK_1_EVIDENCE`. If Track 3 has no replay/holdout/counterexample-backed Track 2 receipt, it stays `WAITING_FOR_TRACK_2_EVIDENCE`.
 
 The queue compiler in `artifacts/wow-engine/v17/engineering_three_track_handoffs.py` enforces:
 - Exact fixed Track 1 → 2 → 3 topology and one existing owner issue per track.
