@@ -361,7 +361,7 @@ class HandoffTests(unittest.TestCase):
             bindir.mkdir()
             marker = root / "python-called"
             stub = bindir / "python"
-            stub.write_text('#!/bin/sh\\n: > "$CURSOR_PYTHON_CALL_MARKER"\\n')
+            stub.write_text('#!/bin/sh\n: > "$CURSOR_PYTHON_CALL_MARKER"\n')
             stub.chmod(0o755)
             runner = root / "runner"
             runner.mkdir()
