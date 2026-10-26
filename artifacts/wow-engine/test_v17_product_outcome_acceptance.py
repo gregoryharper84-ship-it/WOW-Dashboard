@@ -20,6 +20,8 @@ def scored(**overrides):
         "model_artifact_id": "fitted:v17", "model_timestamp": "2026-10-25T16:00:00Z",
         "terminal_receipt_ref": "receipt:1",
         "probability_receipt_verified": True,
+        "terminal_receipt_verified": True, "model_invoked_verified": True,
+        "fitted_specialist_certified": True, "calibration_evidence_verified": True,
         "rank_eligible": True, "terminal_rank_eligible_verified": True,
         "event_status": "PREGAME",
         "market_status": "MARKET_DATA_UNOBTAINABLE",
@@ -125,6 +127,10 @@ def test_pending_candidate_prevents_false_completion():
     {"controlling_specialist": ""},
     {"terminal_receipt_ref": ""},
     {"probability_receipt_verified": False},
+    {"terminal_receipt_verified": False},
+    {"model_invoked_verified": False},
+    {"fitted_specialist_certified": False},
+    {"calibration_evidence_verified": False},
 ])
 def test_unproven_scored_row_fails_closed(changes):
     row = scored(**changes)
