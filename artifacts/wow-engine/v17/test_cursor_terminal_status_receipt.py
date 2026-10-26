@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pytest
 
-from artifacts.wow_engine.v17 import cursor_terminal_status_receipt as receipt
+# The source tree is artifacts/wow-engine (hyphenated), not an importable
+# artifacts.wow_engine namespace. Load the co-located module without changing
+# application imports, the writer lease, or any protected workflow.
+_receipt_path = Path(__file__).with_name("cursor_terminal_status_receipt.py")
+_spec = importlib.util.spec_from_file_location("cursor_terminal_status_receipt", _receipt_path)
+assert _spec is not None and _spec.loader is not None
+receipt = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(receipt)
 
 
 def _responses(*, run_status="FINISHED", latest_run_id=None, head_sha=None,
