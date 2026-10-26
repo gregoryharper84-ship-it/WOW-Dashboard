@@ -97,10 +97,14 @@ def test_health_separates_catalog_support_from_registered_model_support():
     assert health["MLB"]["status"] == "UP"
     assert health["MLB"]["feature_consumption_receipt_enabled"] is True
     assert health["MLB"]["feature_schema_version"] is None
+    assert health["MLB"]["cross_sport_evidence_readiness"]["status"] == "PRODUCER_NOT_ENROLLED"
+    assert health["MLB"]["cross_sport_evidence_readiness"]["critical_status_contract"] == "STARTERS_LINEUPS"
     for sport in ("NFL", "NBA", "NCAAF", "NCAAB", "SOCCER", "TENNIS", "PGA"):
         assert health[sport]["status"] == "MODEL_UNAVAILABLE"
         assert health[sport]["registered"] is False
         assert health[sport]["feature_consumption_receipt_enabled"] is False
+        assert health[sport]["cross_sport_evidence_readiness"]["status"] == "MODEL_BRIDGE_NOT_REGISTERED"
+        assert health[sport]["cross_sport_evidence_readiness"]["critical_status_contract"]
         assert health[sport]["discovery_supported"] is True
         assert health[sport]["can_execute"] is False
 
@@ -331,6 +335,7 @@ def test_registered_backend_verifier_can_attest_model_result_only_when_enrolled(
     assert result["cross_sport_evidence_producer_status"] == "UNVERIFIED"
     assert result["cross_sport_evidence"]["feature_consumption_receipt_id"] == result["feature_consumption_receipt_id"]
     assert team_event_bridge_health()["NBA"]["cross_sport_evidence_verifier_registered"] is True
+    assert team_event_bridge_health()["NBA"]["cross_sport_evidence_readiness"]["status"] == "ENFORCEMENT_CONFIGURED"
 
 
 def test_legacy_scorer_evidence_claim_never_activates_enrollment():
