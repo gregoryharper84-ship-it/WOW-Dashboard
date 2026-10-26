@@ -143,6 +143,67 @@ def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
             "terminal_authority": MODEL_AUTHORITY}
 
 
+
+# Use GitHub Actions' existing run history as the durable one-shot attempt
+# ledger, not a second scheduler or mutable status file.
+_RECOVERY_CODE_PATHS = frozenset({
+    "artifacts/wow-engine/v17/engineering_gemini_headless.py",
+    ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+})
+
+
+def admit_reviewed_recovery(
+    runs: Any, comparison: Any, current_sha: str,
+) -> dict[str, Any]:
+    """Permit one new canary only after a reviewed main runtime change."""
+    def hold(code: str) -> dict[str, Any]:
+        return {"status": "HELD", "code": code, "can_execute": False,
+                "terminal_authority": MODEL_AUTHORITY}
+
+    if not _SHA.fullmatch(str(current_sha or "")):
+        return hold("GEMINI_RECOVERY_CURRENT_SHA_INVALID")
+    if not isinstance(runs, list) or len(runs) != 1 or not isinstance(runs[0], dict):
+        return hold("GEMINI_RECOVERY_LATEST_RUN_UNVERIFIED")
+    latest = runs[0]
+    previous_sha = latest.get("headSha")
+    if not isinstance(previous_sha, str) or not _SHA.fullmatch(previous_sha):
+        return hold("GEMINI_RECOVERY_PREVIOUS_SHA_INVALID")
+    if latest.get("status") != "completed" or latest.get("conclusion") != "failure":
+        return hold("GEMINI_RECOVERY_PREVIOUS_RUN_NOT_FAILED")
+    if previous_sha == current_sha:
+        return hold("GEMINI_RECOVERY_ALREADY_ATTEMPTED_SHA")
+    if not isinstance(comparison, dict):
+        return hold("GEMINI_RECOVERY_COMPARE_UNAVAILABLE")
+    # Ahead plus a matching merge-base proves the current SHA descended from
+    # the last failed worker's exact source commit.
+    if (comparison.get("status") != "ahead"
+            or not isinstance(comparison.get("base_commit"), dict)
+            or comparison["base_commit"].get("sha") != previous_sha
+            or not isinstance(comparison.get("merge_base_commit"), dict)
+            or comparison["merge_base_commit"].get("sha") != previous_sha):
+        return hold("GEMINI_RECOVERY_SHA_LINEAGE_INVALID")
+    files = comparison.get("files")
+    if (not isinstance(files, list) or not files or len(files) >= 300
+            or not isinstance(comparison.get("total_commits"), int)
+            or comparison["total_commits"] < 1 or comparison["total_commits"] >= 250):
+        return hold("GEMINI_RECOVERY_DIFF_TRUNCATED_OR_INVALID")
+    relevant = [
+        f for f in files if isinstance(f, dict)
+        and f.get("filename") in _RECOVERY_CODE_PATHS
+        and f.get("status") == "modified"
+    ]
+    if not relevant:
+        return hold("GEMINI_RECOVERY_NO_REVIEWED_RUNTIME_CHANGE")
+    return {
+        "status": "RECOVERY_ADMITTED",
+        "code": "GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX",
+        "previous_head_sha": previous_sha, "current_head_sha": current_sha,
+        "changed_runtime_files": sorted(f["filename"] for f in relevant),
+        "can_execute": False, "terminal_authority": MODEL_AUTHORITY,
+    }
+
+
 def inspect_changed_paths(paths: list[str]) -> dict[str, Any]:
     """Reject trust-root modifications from a generated candidate, not silently apply."""
     if not paths or len(paths) > 100 or any(not isinstance(p, str) for p in paths):
@@ -228,6 +289,10 @@ def main(argv: list[str] | None = None) -> int:
     classify.add_argument("--stderr-file", required=True)
     classify.add_argument("--response-file", required=True)
     classify.add_argument("--timed-out", action="store_true")
+    recovery = sub.add_parser("recovery-admit")
+    recovery.add_argument("--runs-file", required=True)
+    recovery.add_argument("--comparison-file", required=True)
+    recovery.add_argument("--current-sha", required=True)
     changed = sub.add_parser("inspect-patch")
     changed.add_argument("--files-json", required=True)
     verify = sub.add_parser("verify-candidate")
@@ -250,6 +315,12 @@ def main(argv: list[str] | None = None) -> int:
                 response = None
             result = classify_cli(args.exit_code, Path(args.stderr_file).read_text(encoding="utf-8"),
                                   timed_out=args.timed_out, response=response)
+        elif args.action == "recovery-admit":
+            result = admit_reviewed_recovery(
+                json.loads(Path(args.runs_file).read_text(encoding="utf-8")),
+                json.loads(Path(args.comparison_file).read_text(encoding="utf-8")),
+                args.current_sha,
+            )
         elif args.action == "inspect-patch":
             result = inspect_changed_paths(json.loads(Path(args.files_json).read_text(encoding="utf-8")))
         else:
@@ -261,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
                   "error_type": type(exc).__name__, "can_execute": False,
                   "terminal_authority": MODEL_AUTHORITY}
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["status"] in {"SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TESTED_CANDIDATE"} else 2
+    return 0 if result["status"] in {"SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TESTED_CANDIDATE", "RECOVERY_ADMITTED"} else 2
 
 
 if __name__ == "__main__":

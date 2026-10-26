@@ -179,19 +179,39 @@ jobs:
             [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
             [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ] &&
             [ "${GEMINI_AUTO_ROUTING_ENABLED:-}" = "true" ] || return 1
-            # Do not autonomously route Gemini until at least one real manual
-            # canary succeeded; a failed latest run opens a persistent breaker.
-            local recent conclusion
+            # Durable run history: never mistake a queued candidate for a
+            # successful canary, and never repeat the last attempted source.
+            local recent conclusion status age_minutes previous_sha current_sha comparison recovery
+            gemini_route_reason=GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY
             if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
                  --workflow wow-v17-gemini-engineering-worker.yml \
-                 --status completed --limit 1 --json databaseId,conclusion,updatedAt 2>/dev/null); then
+                 --limit 1 --json headSha,status,conclusion,updatedAt 2>/dev/null); then
               return 1
             fi
+            status=$(jq -r '.[0].status // empty' <<<"$recent") || return 1
             conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
+            [ "$status" = "completed" ] || return 1
+            if [ "$conclusion" = "failure" ]; then
+              # A reviewed runtime fix (not time passing or an unrelated
+              # commit) permits exactly one bounded recovery canary.
+              previous_sha=$(jq -r '.[0].headSha // empty' <<<"$recent") || return 1
+              [[ "$previous_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+              current_sha=$(git rev-parse HEAD) || return 1
+              comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/${previous_sha}...${current_sha}" 2>/dev/null) || return 1
+              printf '%s' "$recent" > "$RUNNER_TEMP/wow-gemini-latest-run.json"
+              printf '%s' "$comparison" > "$RUNNER_TEMP/wow-gemini-compare.json"
+              recovery=$(python artifacts/wow-engine/v17/engineering_gemini_headless.py \
+                recovery-admit --runs-file "$RUNNER_TEMP/wow-gemini-latest-run.json" \
+                --comparison-file "$RUNNER_TEMP/wow-gemini-compare.json" \
+                --current-sha "$current_sha") || return 1
+              [ "$(jq -r '.status' <<<"$recovery")" = "RECOVERY_ADMITTED" ] || return 1
+              gemini_route_reason=GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX
+              return 0
+            fi
             [ "$conclusion" = "success" ] || return 1
-            # Cost circuit: no repeated automatic paid work more than once/day.
-            # Manual explicit canaries remain available for recovery and diagnostics.
-            local age_minutes
+            # Existing 24-hour cost circuit after successful model work.
+            # Failed-model recovery is instead bounded once per reviewed
+            # runtime revision, never once per clock tick.
             age_minutes=$(python - "$recent" <<'PY'
           import datetime as dt, json, sys
           try:
@@ -273,7 +293,7 @@ jobs:
             elif gemini_canary_healthy; then
               action=DISPATCH
               provider=gemini
-              reason=GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY
+              reason="$gemini_route_reason"
             else
               latest=$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
