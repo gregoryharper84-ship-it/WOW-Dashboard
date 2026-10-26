@@ -148,6 +148,10 @@ def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
         if verified_event_id and verified_event_id != request_event_id:
             raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH")
 
+    identity_status = str(role.get("identity_binding_status") or "").strip().upper()
+    if identity_status and identity_status not in {"PASS", "PROVIDER_IDENTITY_ONLY"}:
+        raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS")
+
     # P0 #2131: active roster membership and historic logs do not prove
     # game participation. Every NFL row fails closed before snapshot/scorer;
     # neither caller "AVAILABLE" nor ambiguous DOUBTFUL grants admission.
@@ -157,9 +161,6 @@ def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
             raise ValueError("PLAYER_UNAVAILABLE:NEGATIVE_GAME_STATUS_EVIDENCE")
         raise ValueError("PLAYER_AVAILABILITY_UNVERIFIED:TRUSTED_EVENT_PROOF_MISSING")
 
-    identity_status = str(role.get("identity_binding_status") or "").strip().upper()
-    if identity_status and identity_status not in {"PASS", "PROVIDER_IDENTITY_ONLY"}:
-        raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS")
     return normalized
 
 
