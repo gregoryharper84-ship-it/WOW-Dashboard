@@ -102,3 +102,9 @@ def test_empty_and_tiny_cohort_rejected():
         parse_rows([])
     with pytest.raises(ResearchInputError, match="INSUFFICIENT_CHRONOLOGICAL_COHORT"):
         chronological_partition(parse_rows(fixture()[:5]), TRAIN_END, VAL_END)
+
+
+def test_numpy_vector_from_catboost_optuna_scores_without_truth_ambiguity():
+    import numpy as np
+    result = metric_packet(np.array([0.75, 0.25]), [1, 0])
+    assert result["brier"] == pytest.approx(0.0625)
