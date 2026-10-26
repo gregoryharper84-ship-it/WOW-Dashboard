@@ -211,4 +211,63 @@ def audit_cross_sport_evidence_integrity(envelope: Mapping[str, Any]) -> dict[st
     return core
 
 
-__all__ = ["CAN_EXECUTE", "CRITICAL_STATUS_CONTRACT", "POLICY_VERSION", "TEAM_ROSTER_SPORTS", "audit_cross_sport_evidence_integrity"]
+def evaluate_scored_cross_sport_evidence(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Use the same admission decision at scoring and official publication.
+
+    Enrollment and attestation must be set by the trusted bridge rather than
+    interpreted from source prose. An unadmitted envelope is not PASS.
+    """
+    required = result.get("cross_sport_evidence_required") is True
+    envelope = result.get("cross_sport_evidence")
+    if not required:
+        return {
+            "evidence_status": "NOT_ENFORCED",
+            "blockers": (
+                ["UNENROLLED_EVIDENCE_CANNOT_PROVE_PUBLICATION"]
+                if envelope is not None else []
+            ),
+            "can_execute": False,
+        }
+    if result.get("cross_sport_evidence_attested") is not True:
+        return {
+            "evidence_status": "HELD",
+            "blockers": ["TRUSTED_EVIDENCE_PRODUCER_ATTESTATION_MISSING"],
+            "can_execute": False,
+        }
+    if not isinstance(envelope, Mapping):
+        return {
+            "evidence_status": "HELD",
+            "blockers": ["REQUIRED_CROSS_SPORT_EVIDENCE_ENVELOPE_MISSING"],
+            "can_execute": False,
+        }
+    audit = audit_cross_sport_evidence_integrity(envelope)
+    bindings = {
+        "sport": "sport",
+        "official_event_id": "official_event_id",
+        "prediction_id": "prediction_id",
+        "feature_consumption_receipt_id": "feature_consumption_receipt_id",
+    }
+    mismatches = [
+        key
+        for key, evidence_key in bindings.items()
+        if not _text(result.get(key))
+        or _text(result.get(key)) != _text(envelope.get(evidence_key))
+    ]
+    # The scorer's fitted artifact identity cannot silently change between
+    # numerical output and the evidence envelope.
+    result_artifact = _text(
+        result.get("model_artifact_version") or result.get("model_version")
+    )
+    if not result_artifact or result_artifact != _text(envelope.get("model_artifact_version")):
+        mismatches.append("model_artifact_version")
+    if mismatches:
+        audit = dict(audit)
+        audit["evidence_status"] = "HELD"
+        audit["blockers"] = list(dict.fromkeys(
+            [*audit["blockers"], "SCORED_EVENT_EVIDENCE_IDENTITY_MISMATCH"]
+        ))
+        audit["binding_mismatches"] = mismatches
+    return audit
+
+
+__all__ = ["CAN_EXECUTE", "CRITICAL_STATUS_CONTRACT", "POLICY_VERSION", "TEAM_ROSTER_SPORTS", "audit_cross_sport_evidence_integrity", "evaluate_scored_cross_sport_evidence"]
