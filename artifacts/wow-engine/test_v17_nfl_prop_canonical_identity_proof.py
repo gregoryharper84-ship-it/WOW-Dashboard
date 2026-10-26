@@ -114,7 +114,7 @@ def test_provider_backed_nfl_evidence_without_verified_canonical_id_fails_closed
         runtime._validate_evidence(row, "RECEIVING_YARDS")
 
 
-@pytest.mark.parametrize("availability", ["OUT", "IR", "injured reserve", "inactive", "suspended", "doubtful"])
+@pytest.mark.parametrize("availability", ["OUT", "IR", "injured reserve", "inactive", "suspended"])
 def test_nfl_known_unavailable_is_rejected_before_scoring(availability: str) -> None:
     row = _row("2026_02_NYG_LA", "2026_02_NYG_LA")
     row.evidence.role_status["game_availability_status"] = availability
@@ -122,7 +122,7 @@ def test_nfl_known_unavailable_is_rejected_before_scoring(availability: str) -> 
         runtime._validate_evidence(row, "RECEIVING_YARDS")
 
 
-@pytest.mark.parametrize("availability", ["ACTIVE", "AVAILABLE", "PROBABLE", "QUESTIONABLE"])
+@pytest.mark.parametrize("availability", ["ACTIVE", "AVAILABLE", "PROBABLE", "QUESTIONABLE", "DOUBTFUL"])
 def test_nfl_caller_claim_of_playability_cannot_bypass_trusted_source(availability: str) -> None:
     row = _row("2026_02_NYG_LA", "2026_02_NYG_LA")
     row.evidence.role_status["game_availability_status"] = availability
