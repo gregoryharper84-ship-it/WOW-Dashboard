@@ -250,3 +250,94 @@ def reconcile_regime_labels_with_d1_events(
         "model_probability": None, "calibrated_lower_bound": None,
         "probability_publishable": False, "can_execute": False,
     }
+
+
+
+def fetch_historical_regime_cohort(
+    start_years: Sequence[int], *,
+    session: Any,
+    teams_override_for_research: Mapping[int, Sequence[str]] | None = None,
+) -> tuple[list[NHLOfficialRegimeResult], dict[str, Any]]:
+    """Retrieve official full-season REG/OT/SO labels, without persisting.
+
+    When no override is used, require exactly 1,312 unique completed 82-game
+    NHL regular-season results per 32-team year. Overrides support isolated
+    source-contract *tests only* and are explicitly NOT coverage verified.
+    No live prediction, implicit partial cohort acceptance, or fallback data.
+    """
+    from nhl_candidate_pipeline import teams_for_start_year
+    from v17.model_source_entitlements import source_readiness
+
+    if not start_years or not all(type(year) is int for year in start_years):
+        raise NHLTotalsRegimeSourceError("NHL_TOTALS_COHORT_SEASONS_INVALID", "season years required")
+    years = sorted(set(start_years))
+    if years[0] < 2021 or years[-1] > 2025:
+        raise NHLTotalsRegimeSourceError("NHL_TOTALS_COHORT_SEASONS_INVALID", "only fully historical 2021-25")
+    readiness = source_readiness(SOURCE_ID)
+    if not readiness.ready_for_candidate_training:
+        raise NHLTotalsRegimeSourceError(
+            "NHL_TOTALS_COHORT_SOURCE_NOT_READY", ",".join(readiness.blockers)
+        )
+    whole = []
+    by_season = {}
+    for year in years:
+        season = int(f"{year}{year+1}")
+        official_teams = tuple(teams_for_start_year(year))
+        requested_teams = tuple(
+            teams_override_for_research[year] if teams_override_for_research
+            and year in teams_override_for_research else official_teams
+        )
+        if (not requested_teams or len(set(requested_teams)) != len(requested_teams)
+            or any(t not in official_teams for t in requested_teams)):
+            raise NHLTotalsRegimeSourceError("NHL_TOTALS_COHORT_TEAMS_INVALID", str(year))
+        schedules = []
+        for team in requested_teams:
+            url = f"https://api-web.nhle.com/v1/club-schedule-season/{team}/{season}"
+            try:
+                response = session.get(
+                    url, timeout=20, headers={"User-Agent": "WOW-V17-NHL-Totals-Research/1.0"}
+                )
+            except Exception as exc:
+                raise NHLTotalsRegimeSourceError(
+                    "NHL_TOTALS_COHORT_TRANSPORT_FAILED", f"{team}: {type(exc).__name__}"
+                ) from exc
+            if response.status_code != 200:
+                raise NHLTotalsRegimeSourceError(
+                    f"NHL_TOTALS_COHORT_HTTP_{response.status_code}", team
+                )
+            try:
+                data = response.json()
+            except Exception as exc:
+                raise NHLTotalsRegimeSourceError(
+                    "NHL_TOTALS_COHORT_RESPONSE_INVALID", team
+                ) from exc
+            schedules.append(normalize_official_regime_schedule(
+                data, expected_season=season, requested_team=team,
+            ))
+        unique, audit = reconcile_official_regime_games(schedules)
+        full = requested_teams == official_teams
+        if full:
+            if (len(unique) != 1312 or audit["source_instances"] != 2624
+                or audit["mirrored_event_count"] != 1312
+                or any(row["source_instance_count"] != 2 for row in audit["source_version_ledger"])):
+                raise NHLTotalsRegimeSourceError(
+                    "NHL_TOTALS_COHORT_COVERAGE_INCOMPLETE",
+                    f"season={season}; events={len(unique)}; instances={audit['source_instances']}",
+                )
+        else:
+            # A small research subset must not be marked as complete.
+            audit["coverage_verified"] = False
+        audit["season"] = season
+        audit["coverage_verified"] = full
+        by_season[str(season)] = audit
+        whole.extend(unique)
+    whole.sort(key=lambda row: (row.event_start_utc, row.official_event_id))
+    return whole, {
+        "status": ("NHL_TOTALS_OFFICIAL_REGIME_COHORT_RECONCILED"
+                   if all(row["coverage_verified"] for row in by_season.values())
+                   else "NHL_TOTALS_OFFICIAL_REGIME_PARTIAL_RESEARCH_ONLY"),
+        "by_season": by_season, "unique_events": len(whole),
+        "historical_reconstruction": True, "archived_pregame_snapshot": False,
+        "model_probability": None, "calibrated_lower_bound": None,
+        "probability_publishable": False, "can_execute": False,
+    }
