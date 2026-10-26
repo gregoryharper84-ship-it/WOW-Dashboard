@@ -92,6 +92,24 @@ def hydrate_nhl_total_goals_pregame(
             g=_game(row)
         except (NHLTotalsResearchError, TypeError, AttributeError) as exc:
             raise NHLTotalsPregameSourceError("NHL_TOTALS_PREGAME_PRIOR_SOURCE_INVALID",str(exc)) from exc
+        # A prior kickoff is NOT evidence that the game had finished at
+        # this target's as-of time. Require an individually source-observed
+        # final-state receipt for every included historical outcome.
+        try:
+            final_state=row["source_game_state"]
+            observed_final=_timestamp(row["source_final_observed_at_utc"])
+        except (KeyError, TypeError, ValueError, NHLTotalsResearchError) as exc:
+            raise NHLTotalsPregameSourceError(
+                "NHL_TOTALS_PREGAME_PRIOR_FINAL_RECEIPT_MISSING",g["id"]
+            ) from exc
+        if final_state not in ("OFF","FINAL"):
+            raise NHLTotalsPregameSourceError(
+                "NHL_TOTALS_PREGAME_PRIOR_NOT_FINAL",g["id"]
+            )
+        if observed_final<g["start"] or observed_final>as_of or observed_final>=kickoff:
+            raise NHLTotalsPregameSourceError(
+                "NHL_TOTALS_PREGAME_RESULT_NOT_KNOWN_AT_ASOF",g["id"]
+            )
         if g["id"] in ids or g["id"]==event_id:
             raise NHLTotalsPregameSourceError("NHL_TOTALS_PREGAME_DUPLICATE_EVENT",g["id"])
         ids.add(g["id"])
@@ -137,6 +155,7 @@ def hydrate_nhl_total_goals_pregame(
         "official_snapshot_id":snapshot_id,
         "official_payload_sha256":str(source_sha).lower(),
         "completed_source_games_supplied":len(parsed),
+        "prior_final_result_observed_by_asof":True,
         "home_prior_games":len(h),
         "away_prior_games":len(a),
         "home_history_ids":[r[3] for r in h],
