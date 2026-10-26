@@ -110,6 +110,7 @@ def test_golf_field_may_have_more_than_two_participants():
     third = deepcopy(item["participants"][1])
     third.update(participant_id="p-3", snapshot_id="snap-3")
     item["participants"].append(third)
+    item["official_participant_ids"].append("p-3")
     assert audit_cross_sport_evidence_integrity(item)["evidence_status"] == "PASS"
 
 
