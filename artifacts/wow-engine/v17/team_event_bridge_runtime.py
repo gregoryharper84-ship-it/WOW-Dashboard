@@ -267,27 +267,32 @@ def _attach_feature_consumption_receipt(
     # Never construct proof from research prose or caller-supplied snapshots.
     # The official publication guard enforces it when this registered sport
     # is certified for the cross-sport evidence contract.
-    # Quarantine any returned producer claim until an explicitly registered,
-    # backend-controlled verifier binds it to the exact scored result. A request
-    # may never supply an attestation via sport_specific_evidence.
+    # Quarantine any returned producer claim until the verifier binds it to
+    # the *actual* scorer receipt produced here. A verifier alone is not
+    # sufficient when critical numerical features are unproven or stale.
     envelope = out.get("cross_sport_evidence")
     out["cross_sport_evidence_required"] = registration.evidence_integrity_required
     out["cross_sport_evidence_attested"] = False
     out["cross_sport_evidence_producer_status"] = (
         "UNVERIFIED" if registration.evidence_integrity_required else "NOT_ENROLLED"
     )
-    if (
-        registration.evidence_integrity_required
-        and isinstance(envelope, Mapping)
-        and registration.evidence_attestation_verifier is not None
-    ):
-        try:
-            attested = registration.evidence_attestation_verifier(envelope, out) is True
-        except Exception:
-            attested = False
-        if attested:
-            out["cross_sport_evidence_attested"] = True
-            out["cross_sport_evidence_producer_status"] = "VERIFIED"
+    if registration.evidence_integrity_required and isinstance(envelope, Mapping):
+        frozen_envelope = dict(envelope)
+        frozen_envelope["feature_consumption_receipt_id"] = receipt["feature_consumption_receipt_id"]
+        out["cross_sport_evidence"] = frozen_envelope
+        if (
+            receipt.get("receipt_complete") is True
+            and receipt.get("consumption_verification_status") == "VERIFIED"
+            and receipt.get("critical_consumption_complete") is True
+            and registration.evidence_attestation_verifier is not None
+        ):
+            try:
+                attested = registration.evidence_attestation_verifier(frozen_envelope, out) is True
+            except Exception:
+                attested = False
+            if attested:
+                out["cross_sport_evidence_attested"] = True
+                out["cross_sport_evidence_producer_status"] = "VERIFIED"
     out["can_execute"] = False
     return out
 
