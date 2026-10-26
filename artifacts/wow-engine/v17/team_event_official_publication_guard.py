@@ -285,6 +285,10 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
             ) or (
                 str(payload.get("prediction_id") or "").strip()
                 != str(evidence_envelope.get("prediction_id") or "").strip()
+            ) or (
+                not payload.get("feature_consumption_receipt_id")
+                or str(payload.get("feature_consumption_receipt_id"))
+                != str(evidence_envelope.get("feature_consumption_receipt_id") or "")
             ):
                 evidence_audit = dict(evidence_audit)
                 evidence_audit["evidence_status"] = "HELD"
