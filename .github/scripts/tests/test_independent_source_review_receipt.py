@@ -1107,10 +1107,10 @@ def test_qa_producer_fails_closed_on_wrong_workflow_identity(field, value):
 
 
 def test_both_qa_producer_payloads_use_pinned_workflow_id():
-    source = (ROOT / ".github/workflows/wow-v17-independent-qa-check.yml").read_text()
+    source = WORKFLOW.read_text(encoding="utf-8")
     assert source.count("--argjson workflow_id 380562324") == 2
     assert source.count("workflow_id:$workflow_id") == 2
-    script = (ROOT / ".github/scripts/independent_source_review_receipt.py").read_text()
+    script = SCRIPT.read_text(encoding="utf-8")
     assert 'run.get("name") == WORKFLOW_NAME' not in script
     assert 'and workflow_id == WORKFLOW_ID' in script
     assert 'run.get("path") == WORKFLOW_PATH' in script
