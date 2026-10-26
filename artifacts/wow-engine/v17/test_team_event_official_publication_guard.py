@@ -202,7 +202,9 @@ def test_opted_in_scoring_with_current_verified_evidence_can_pass():
     row = governed_result()
     row["sport"] = "NBA"
     row["official_event_id"] = "event-test"
+    row["prediction_id"] = "prediction-test"
     row["cross_sport_evidence_required"] = True
+    row["cross_sport_evidence_attested"] = True
     row["cross_sport_evidence"] = _certified_sample_evidence()
     decision = evaluate_team_event_official_publication(row)
     assert decision["status"] == "PASS"
@@ -214,7 +216,9 @@ def test_stale_or_mismatched_producer_evidence_blocks_publication():
     row = governed_result()
     row["sport"] = "NBA"
     row["official_event_id"] = "event-test"
+    row["prediction_id"] = "prediction-test"
     row["cross_sport_evidence_required"] = True
+    row["cross_sport_evidence_attested"] = True
     row["cross_sport_evidence"] = _certified_sample_evidence()
     row["cross_sport_evidence"]["model_consumed_feature_hash"] = "b" * 64
     decision = evaluate_team_event_official_publication(row)
@@ -228,7 +232,9 @@ def test_cross_sport_evidence_event_identity_conflict_holds():
     row = governed_result()
     row["sport"] = "NFL"
     row["official_event_id"] = "event-test"
+    row["prediction_id"] = "prediction-test"
     row["cross_sport_evidence_required"] = True
+    row["cross_sport_evidence_attested"] = True
     row["cross_sport_evidence"] = _certified_sample_evidence("NBA")
     decision = evaluate_team_event_official_publication(row)
     assert decision["status"] == "HELD"
@@ -238,3 +244,38 @@ def test_cross_sport_evidence_event_identity_conflict_holds():
 def test_legacy_results_never_claim_unearned_evidence_proof():
     decision = evaluate_team_event_official_publication(governed_result())
     assert decision["evidence_integrity_audit"]["evidence_status"] == "NOT_ENFORCED"
+
+
+def test_scorer_claim_cannot_self_attest_and_publish():
+    row = governed_result()
+    row["sport"] = "NBA"
+    row["official_event_id"] = "event-test"
+    row["prediction_id"] = "prediction-test"
+    row["cross_sport_evidence_required"] = True
+    row["cross_sport_evidence"] = _certified_sample_evidence()
+    row["cross_sport_evidence_producer_status"] = "VERIFIED"
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["status"] == "HELD"
+    assert "TRUSTED_EVIDENCE_PRODUCER_ATTESTATION_MISSING" in decision["evidence_integrity_audit"]["blockers"]
+
+
+def test_evidence_envelope_is_not_promoted_without_registered_enforcement():
+    row = governed_result()
+    row["cross_sport_evidence"] = _certified_sample_evidence()
+    row["cross_sport_evidence_attested"] = True
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["evidence_integrity_audit"]["evidence_status"] == "NOT_ENFORCED"
+    assert "UNENROLLED_EVIDENCE_CANNOT_PROVE_PUBLICATION" in decision["evidence_integrity_audit"]["blockers"]
+
+
+def test_mismatched_prediction_id_blocks_even_if_attested():
+    row = governed_result()
+    row["sport"] = "NBA"
+    row["official_event_id"] = "event-test"
+    row["prediction_id"] = "different-prediction"
+    row["cross_sport_evidence_required"] = True
+    row["cross_sport_evidence_attested"] = True
+    row["cross_sport_evidence"] = _certified_sample_evidence()
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["official_publication_allowed"] is False
+    assert "SCORED_EVENT_EVIDENCE_IDENTITY_MISMATCH" in decision["evidence_integrity_audit"]["blockers"]
