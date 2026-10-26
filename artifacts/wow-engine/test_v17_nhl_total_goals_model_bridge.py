@@ -132,9 +132,7 @@ def test_mutated_official_regime_is_not_trusted():
     labels=[dict(x) for x in bad["labels"]]
     bad["labels"]=labels
     index=next(i for i,x in enumerate(labels) if x["final_period_type"]=="SO")
-    labels[index]["final_period_type"]="OT"
-    # A regime-flip with the same goal total is not distinguishable from an
-    # unauthenticated altered result by this bridge alone. Evidence hash
-    # identity MUST be independently source verified by upstream producer.
-    joined,_=build_regime_model_research_rows(rows,bad)
-    assert {r.event_id:r.terminal_regime for r in joined}["2024020728"]=="OT"
+    labels[index]["final_period_type"]="UNKNOWN"
+    with pytest.raises(NHLTotalsModelBridgeError) as error:
+        build_regime_model_research_rows(rows,bad)
+    assert error.value.code=="NHL_TOTALS_BRIDGE_REGIME_CONFLICT"
