@@ -13,6 +13,7 @@ def governed_result() -> dict:
         "calibrated_probability": 0.62,
         "calibrated_lower_bound": 0.58,
         "model_artifact_version": "fitted-test-v1",
+        "immutable_model_timestamp": "2026-10-26T22:00:00+00:00",
         "feature_consumption_receipt_id": "receipt-test",
         "llp_governance": {
             "probability_publishable": True,
