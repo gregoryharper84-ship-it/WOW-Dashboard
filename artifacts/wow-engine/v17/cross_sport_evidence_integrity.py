@@ -66,6 +66,12 @@ def audit_cross_sport_evidence_integrity(envelope: Mapping[str, Any]) -> dict[st
         blockers.append("SPORT_CONTRACT_UNRESOLVED")
     if not event_id:
         blockers.append("OFFICIAL_EVENT_ID_UNRESOLVED")
+    if not _text(envelope.get("official_event_snapshot_id")):
+        blockers.append("OFFICIAL_EVENT_SNAPSHOT_MISSING")
+    if not _text(envelope.get("prediction_id")):
+        blockers.append("IMMUTABLE_PREDICTION_ID_MISSING")
+    if _text(envelope.get("scorer_official_event_id")) != event_id:
+        blockers.append("SCORER_EVENT_BINDING_UNPROVEN")
 
     started_at = _timestamp(envelope.get("event_start_utc"))
     model_at = _timestamp(envelope.get("model_timestamp"))
@@ -73,6 +79,15 @@ def audit_cross_sport_evidence_integrity(envelope: Mapping[str, Any]) -> dict[st
         blockers.append("PREGAME_TIMESTAMP_PROOF_MISSING")
     elif model_at >= started_at:
         blockers.append("NOT_A_PREGAME_MODEL_SNAPSHOT")
+    event_update_at = _timestamp(envelope.get("official_event_updated_at"))
+    if event_update_at is None:
+        blockers.append("OFFICIAL_EVENT_FRESHNESS_UNVERIFIED")
+    elif model_at is not None and event_update_at > model_at:
+        blockers.append("OFFICIAL_EVENT_CHANGED_AFTER_MODEL")
+
+    official_participants = _id_list(envelope.get("official_participant_ids"))
+    if official_participants is None or len(official_participants) < 2:
+        blockers.append("OFFICIAL_PARTICIPANT_SET_UNRESOLVED")
 
     participants = envelope.get("participants")
     if not isinstance(participants, list) or len(participants) < 2:
@@ -84,6 +99,8 @@ def audit_cross_sport_evidence_integrity(envelope: Mapping[str, Any]) -> dict[st
             blockers.append("PARTICIPANT_IDENTITY_CONFLICT")
         if sport != "PGA" and len(participants) != 2:
             blockers.append("TWO_SIDE_EVENT_IDENTITY_UNRESOLVED")
+        if official_participants and set(ids) != set(official_participants):
+            blockers.append("OFFICIAL_PARTICIPANT_SET_MISMATCH")
 
     for index, participant in enumerate(participants):
         if not isinstance(participant, Mapping):
