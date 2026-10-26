@@ -29,6 +29,8 @@ def test_explicit_external_data_consent_and_main_only():
     assert 'SOURCE_EVENT' in source
     assert 'workflow_dispatch' in source
     assert 'persist-credentials: false' in source
+    assert 'FLINT_SOURCE_SHA_CHANGED_AFTER_DISPATCH' in source
+    assert 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' in source
 
 
 def test_canonical_queue_and_remote_writer_guard():
