@@ -160,3 +160,51 @@ def test_different_holdout_splits_cannot_be_compared():
     assert result["status"] == "EVIDENCE_HOLD"
     assert "HOLDOUT_SPLIT_DISAGREEMENT" in result["comparisons"][0]["blockers"]
     assert result["comparisons"][0]["challenger_minus_champion_brier"] is None
+
+
+def test_phase3_quality_metrics_and_chronological_shift_remain_descriptive():
+    result = audit_challenger_replay(full_sample())
+    data = result["comparisons"][0]
+    assert data["champion_quality"]["sample_count"] == 30
+    assert data["challenger_quality"]["brier"] < data["champion_quality"]["brier"]
+    assert data["challenger_quality"]["log_loss"] < data["champion_quality"]["log_loss"]
+    assert data["champion_quality"]["expected_calibration_error_10_bins"] > 0
+    assert data["metrics_are_descriptive_not_statistical_certification"]
+    assert data["temporal_quality_shift"]["status"] == "DESCRIPTIVE_ONLY_NO_DRIFT_CERTIFICATION"
+    assert data["temporal_quality_shift"]["earlier_pairs"] == 15
+    assert data["temporal_quality_shift"]["recent_pairs"] == 15
+    assert result["model_promotion_authorized"] is False
+
+def test_same_model_artifact_cannot_claim_challenger_improvement():
+    obs = full_sample()
+    for row in obs:
+        if row["role"] == "CHALLENGER":
+            row["model_artifact_id"] = "fitted-champion"
+    verdict = audit_challenger_replay(obs)["comparisons"][0]
+    assert "CHAMPION_CHALLENGER_NOT_DISTINCT" in verdict["blockers"]
+    assert verdict["challenger_quality"] is None
+
+def test_prediction_receipt_reused_across_events_blocks_cohort():
+    obs = full_sample()
+    obs[2]["prediction_receipt_ref"] = obs[0]["prediction_receipt_ref"]
+    result = audit_challenger_replay(obs)
+    assert result["status"] == "EVIDENCE_HOLD"
+    assert any("PREDICTION_RECEIPT_REUSED" in x for x in result["findings"])
+    assert result["comparisons"][0]["champion_quality"] is None
+
+def test_simultaneous_kickoffs_do_not_claim_temporal_drift():
+    obs = full_sample()
+    for row in obs:
+        row["predicted_at"] = "2026-09-30T20:00:00Z"
+        row["event_start_at"] = "2026-10-01T00:00:00Z"
+        row["settled_at"] = "2026-10-01T04:00:00Z"
+    result = audit_challenger_replay(obs)["comparisons"][0]
+    assert result["temporal_quality_shift"]["status"] == "TEMPORAL_COMPARISON_UNAVAILABLE"
+    assert result["champion_quality"] is not None
+
+def test_held_cohort_never_reports_quality_metrics():
+    obs = full_sample()
+    obs[0]["out_of_sample_verified"] = False
+    result = audit_challenger_replay(obs)["comparisons"][0]
+    assert result["champion_quality"] is None
+    assert result["temporal_quality_shift"] is None
