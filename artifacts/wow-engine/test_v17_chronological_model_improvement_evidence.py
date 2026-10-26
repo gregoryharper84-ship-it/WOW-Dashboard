@@ -19,6 +19,12 @@ def sample(i, role="CHAMPION", **overrides):
         "model_artifact_id": "fitted:v1" if role == "CHAMPION" else "shadow:v2",
         "source_snapshot_hash": "genuine-source-hash-reference",
         "settlement_receipt_ref": f"official-result-{i}",
+        "model_fit_receipt_ref": f"immutable-fit-{role}",
+        "forward_certification_receipt_ref": f"independent-forward-{role}",
+        "model_fit_cutoff_at": "2026-10-25T13:00:00Z",
+        "out_of_sample_certified": True,
+        "calibration_certified": True,
+        "lower_bound_certified": True,
         "source_snapshot_at": "2026-10-25T14:00:00Z",
         "issued_at": "2026-10-25T15:00:00Z",
         "event_start_at": "2026-10-25T17:00:00Z",
@@ -83,6 +89,13 @@ def test_unpaired_models_never_claim_challenger_improvement():
 
 @pytest.mark.parametrize("change,code", [
     ({"source_snapshot_at": "2026-10-25T16:00:00Z"}, "CHRONOLOGY"),
+    ({"model_fit_cutoff_at": "2026-10-25T14:01:00Z"}, "CHRONOLOGY"),
+    ({"model_fit_cutoff_at": "2026-10-25T14:00:00"}, "TIMESTAMP_UNVERIFIED"),
+    ({"model_fit_receipt_ref": ""}, "IDENTITY"),
+    ({"forward_certification_receipt_ref": ""}, "IDENTITY"),
+    ({"out_of_sample_certified": False}, "FORWARD_CERTIFICATION"),
+    ({"calibration_certified": False}, "FORWARD_CERTIFICATION"),
+    ({"lower_bound_certified": False}, "FORWARD_CERTIFICATION"),
     ({"source_snapshot_at": "2026-10-25T19:00:00Z"}, "CHRONOLOGY"),
     ({"issued_at": "2026-10-25T17:00:00Z"}, "CHRONOLOGY"),
     ({"settled_at": "2026-10-25T16:00:00Z"}, "CHRONOLOGY"),
@@ -200,3 +213,24 @@ def test_same_candidate_string_from_other_sport_cannot_cross_pair():
     result = evaluate_chronological_evidence(rows, min_samples=1)
     assert result["paired_count"] == 0
     assert not result["paired_comparison_ready"]
+
+
+def test_same_model_artifact_cannot_masquerade_as_independent_challenger():
+    rows = [sample(1), sample(1, "CHALLENGER",
+                              model_artifact_id="fitted:v1")]
+    result = evaluate_chronological_evidence(rows, min_samples=1)
+    assert not result["audit_complete"]
+    assert result["paired_count"] == 0
+    assert not result["paired_comparison_ready"]
+    assert any(x["code"] == "PAIRED_MODEL_IDENTITY_COLLISION"
+               for x in result["findings"])
+
+
+def test_same_model_version_cannot_be_counted_as_new_challenger():
+    rows = [sample(1), sample(1, "CHALLENGER",
+                              model_version="fitted-v1")]
+    result = evaluate_chronological_evidence(rows, min_samples=1)
+    assert not result["audit_complete"]
+    assert result["paired_metrics"] is None
+    assert any(x["code"] == "PAIRED_MODEL_IDENTITY_COLLISION"
+               for x in result["findings"])
