@@ -467,7 +467,7 @@ def reliability_blocks_frontier(records: list[dict[str, Any]]) -> bool:
     return any(
         is_actionable(record) or (
             str(record.get("state") or "").upper() in NONFINAL_OWNED_HOLDS
-            and str(record.get("severity") or "").upper() in {"P0", "P1", "P2", "P3"}
+            and str(record.get("severity") or "").upper() in {"P0", "P1"}
         )
         for record in records
     )
