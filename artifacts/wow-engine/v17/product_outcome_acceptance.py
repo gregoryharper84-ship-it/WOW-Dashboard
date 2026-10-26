@@ -317,6 +317,32 @@ def model_restoration_acceptance(
             or not _nonempty(product_receipt.get("scope_evidence_ref"))
             or product_receipt.get("terminal_receipts_reconciled_verified") is not True):
         blockers.append("PRODUCT_EXACT_SCOPE_RECEIPTS_UNPROVEN")
+    # Receipt totals (including 27/27) are not proof the ORIGINAL offered
+    # markets were reconciled. Require an independently sourced exact identity
+    # inventory and an equal, unique terminal inventory: substitution, missing
+    # rows and duplicate IDs all fail closed even when total counts agree.
+    requested_ids = product_receipt.get("requested_candidate_ids")
+    terminal_ids = product_receipt.get("verified_terminal_candidate_ids")
+    valid_requested = (
+        type(expected) is int and expected >= 1
+        and isinstance(requested_ids, (list, tuple))
+        and len(requested_ids) == expected
+        and all(_nonempty(value) for value in requested_ids)
+        and len(set(requested_ids)) == expected
+    )
+    valid_terminal = (
+        type(terminal) is int and terminal >= 1
+        and isinstance(terminal_ids, (list, tuple))
+        and len(terminal_ids) == terminal
+        and all(_nonempty(value) for value in terminal_ids)
+        and len(set(terminal_ids)) == terminal
+    )
+    if not (
+        valid_requested and valid_terminal
+        and set(requested_ids) == set(terminal_ids)
+        and candidate_id in requested_ids
+    ):
+        blockers.append("PRODUCT_EXACT_SCOPE_IDENTITIES_UNPROVEN")
     if product_receipt.get("event_status") == "LIVE" and product_receipt.get("dedicated_live_specialist_certified") is not True:
         blockers.append("PRODUCT_LIVE_MODEL_UNCERTIFIED")
     if product_receipt.get("run_id") != closure_receipt.get("action_run_id"):
