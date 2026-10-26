@@ -140,6 +140,7 @@ def create_run(
     )
 
     client = get_client()
+    canonical_request = {field: getattr(req, field) for field in _REQUEST_HASH_FIELDS}
     run_row, reused = repository.create_run(
         client,
         idempotency_key=idempotency_key,
@@ -148,6 +149,7 @@ def create_run(
         requested_as_of=req.as_of,
         user_timezone=req.user_timezone,
         governance_version=GOVERNANCE_VERSION,
+        request_payload=canonical_request,
     )
     if not reused:
         repository.record_audit_event(
@@ -157,7 +159,7 @@ def create_run(
         try:
             started = Orchestrator(client).start_run(
                 run=run_row,
-                request={field: getattr(req, field) for field in _REQUEST_HASH_FIELDS},
+                request=canonical_request,
             )
             run_row = started["run"]
         except Exception as exc:
@@ -178,6 +180,7 @@ def create_run(
         "status": status,
         "terminal": status in RUN_TERMINAL_STATES,
         "poll_url": f"/wow/runs/{run_row['run_id']}/manifest",
+        "product_truth_url": f"/wow/runs/{run_row['run_id']}/product-truth",
         "reused": reused,
         "can_execute": False,
     }
@@ -245,6 +248,34 @@ def get_manifest(run_id: str) -> dict[str, Any]:
         "candidates": candidates,
         "can_execute": False,
     }
+
+
+@app.get("/wow/runs/{run_id}/product-truth")
+def get_product_truth(run_id: str) -> dict[str, Any]:
+    """Return the Betting Intelligence product-level truth for a durable run.
+
+    A persisted immutable terminal snapshot is preferred. For an in-flight or
+    older run without one, derive the same projection directly from the
+    authoritative run/candidate ledger rather than returning a false gap.
+    """
+    client = get_client()
+    run_row = repository.get_run(client, run_id)
+    if run_row is None:
+        raise HTTPException(status_code=404, detail={"code": "RUN_NOT_FOUND"})
+
+    persisted = repository.get_latest_product_truth_snapshot(client, run_id)
+    if persisted is not None:
+        return {**persisted, "persisted": True, "can_execute": False}
+
+    from v17.betting_intelligence_control_plane import build_agent_runtime_product_truth
+
+    candidates = repository.list_run_candidates(client, run_id)
+    snapshot = build_agent_runtime_product_truth(
+        run_row,
+        candidates,
+        independent_verification=False,
+    )
+    return {**snapshot, "persisted": False, "can_execute": False}
 
 
 @app.get("/wow/runs/{run_id}/audit")
