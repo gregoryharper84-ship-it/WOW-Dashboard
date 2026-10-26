@@ -192,3 +192,60 @@ def audit_confirmed_recurrence(incidents: Sequence[Mapping[str, Any]]) -> dict[s
         "families": families, "findings": findings,
         "can_execute": False, "terminal_authority": TERMINAL_AUTHORITY,
     }
+
+
+def audit_evidence_snapshot(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Compose both Phase-3 audits from an externally supplied immutable snapshot.
+
+    A JSON file is *not* automatically certified production data; consumers must
+    check its identity, coverage and source provenance independently.
+    """
+    records = payload.get("observations") if isinstance(payload, Mapping) else None
+    incidents = payload.get("incidents") if isinstance(payload, Mapping) else None
+    if not isinstance(records, list) or not isinstance(incidents, list):
+        return {
+            "status": "EVIDENCE_HOLD", "findings": ["SNAPSHOT_SCHEMA_INCOMPLETE"],
+            "production_source_verified": False, "can_execute": False,
+            "terminal_authority": TERMINAL_AUTHORITY,
+        }
+    models = audit_challenger_replay(records)
+    recurrence = audit_confirmed_recurrence(incidents)
+    return {
+        "status": (
+            "RESEARCH_EVALUATION_ONLY"
+            if models["status"] == "RESEARCH_EVALUATION_ONLY"
+            and recurrence["status"] == "OBSERVED_INCIDENT_HISTORY"
+            else "EVIDENCE_HOLD"
+        ),
+        "historical_quality": models,
+        "confirmed_recurrence": recurrence,
+        "production_source_verified": False,
+        "model_promotion_authorized": False,
+        "can_execute": False, "terminal_authority": TERMINAL_AUTHORITY,
+    }
+
+
+def main() -> int:
+    """Offline/read-only SIRT input adapter; no secrets, DB connections or writes."""
+    import argparse
+    import json
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="SIRT read-only historical model evidence audit")
+    parser.add_argument("--evidence-json", required=True, help="Immutable JSON snapshot with observations and incidents")
+    args = parser.parse_args()
+    try:
+        payload = json.loads(Path(args.evidence_json).read_text(encoding="utf-8"))
+        result = audit_evidence_snapshot(payload)
+    except (OSError, ValueError, TypeError):
+        result = {
+            "status": "EVIDENCE_HOLD", "findings": ["SNAPSHOT_UNAVAILABLE_OR_INVALID"],
+            "production_source_verified": False, "can_execute": False,
+            "terminal_authority": TERMINAL_AUTHORITY,
+        }
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result["status"] == "RESEARCH_EVALUATION_ONLY" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
