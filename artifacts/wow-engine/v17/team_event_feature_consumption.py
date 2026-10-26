@@ -408,8 +408,21 @@ def build_feature_consumption_receipt(
         for detail in feature_details
         if detail["critical"]
     )
+    # A scorer can explicitly consume an input that was stale or conflicted.
+    # That is evidence of numerical usage, not permission to treat the feature
+    # package as current and publication-ready. This applies across all sports.
+    model_context_not_current = sorted(
+        detail["feature_id"]
+        for detail in feature_details
+        if detail["role"] in CANONICAL_FEATURE_ROLES
+        and (
+            detail["value_status"] in {"STALE", "CONFLICTED"}
+            or detail["freshness_status"] in {"STALE", "CONFLICTED"}
+        )
+    )
     receipt_complete = bool(
         schema != "UNDECLARED"
+        and not model_context_not_current
         and verification_status == "VERIFIED"
         and role_contract_complete
         and provenance_complete
@@ -455,6 +468,7 @@ def build_feature_consumption_receipt(
         "role_contract_complete": role_contract_complete,
         "provenance_complete": provenance_complete,
         "critical_consumption_complete": critical_consumption_complete,
+        "model_context_not_current_feature_ids": model_context_not_current,
         "receipt_complete": receipt_complete,
         "unexpected_consumed_feature_ids": unexpected_consumed,
         "unexpected_rejected_feature_ids": unexpected_rejected,
