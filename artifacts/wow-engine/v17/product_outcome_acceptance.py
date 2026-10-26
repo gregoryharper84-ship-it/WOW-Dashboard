@@ -71,6 +71,8 @@ def product_outcome_scorecard(
     """
     issues: list[str] = []
     seen: set[tuple[str, str]] = set()
+    # A persisted scorer/terminal receipt cannot certify two different source rows.
+    seen_scored_receipts: set[str] = set()
     per_request: dict[str, list[str]] = defaultdict(list)
     per_request_ids: dict[str, set[str]] = defaultdict(set)
     integrity_failed_requests: set[str] = set()
@@ -110,6 +112,26 @@ def product_outcome_scorecard(
             ))
         if state == "SCORED":
             valid = valid and valid_numeric_package(row)
+            # A boolean receipt flag is insufficient without the exact source
+            # candidate, official event and market bound to that same receipt.
+            binding_valid = (
+                row.get("terminal_receipt_identity_verified") is True
+                and _nonempty(row.get("event_id"))
+                and _nonempty(row.get("market_identity"))
+                and row.get("terminal_receipt_source_candidate_id") == candidate_id
+                and row.get("terminal_receipt_event_id") == row.get("event_id")
+                and row.get("terminal_receipt_market_identity") == row.get("market_identity")
+            )
+            if not binding_valid:
+                issues.append(f"ROW_{i}_TERMINAL_RECEIPT_IDENTITY_UNVERIFIED")
+                valid = False
+            receipt_ref = row.get("terminal_receipt_ref")
+            if _nonempty(receipt_ref):
+                if receipt_ref in seen_scored_receipts:
+                    issues.append(f"ROW_{i}_TERMINAL_RECEIPT_REUSED")
+                    valid = False
+                else:
+                    seen_scored_receipts.add(receipt_ref)
             if row.get("event_status") == "LIVE":
                 valid = valid and row.get("dedicated_live_specialist_certified") is True
         if row.get("rank_eligible") is True:

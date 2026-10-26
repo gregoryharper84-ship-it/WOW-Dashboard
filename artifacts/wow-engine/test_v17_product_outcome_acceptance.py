@@ -27,6 +27,18 @@ def scored(**overrides):
         "market_status": "MARKET_DATA_UNOBTAINABLE",
     }
     result.update(overrides)
+    # Fixture-only independent source/receipt binding; production readers must
+    # authenticate these fields rather than infer them from candidate labels.
+    result.setdefault("event_id", "official-game-1")
+    result.setdefault("market_identity", "NFL:ML:HOME")
+    result.setdefault("terminal_receipt_identity_verified", True)
+    result.setdefault("terminal_receipt_source_candidate_id", result["candidate_id"])
+    result.setdefault("terminal_receipt_event_id", result["event_id"])
+    result.setdefault("terminal_receipt_market_identity", result["market_identity"])
+    if "terminal_receipt_ref" not in overrides:
+        result["terminal_receipt_ref"] = (
+            f"receipt:{result['request_id']}:{result['candidate_id']}"
+        )
     return result
 
 
@@ -435,3 +447,38 @@ def test_unattributed_extra_row_suppresses_apparent_full_conservation():
     assert result["reliable_decision_availability"] is None
     assert result["rank_eligible_candidates"] is None
     assert "ROW_1_IDENTITY_MISSING" in result["findings"]
+
+
+
+def test_distinct_27_source_rows_cannot_recycle_one_terminal_receipt():
+    ids = [f"source-row-{i}" for i in range(27)]
+    rows = [scored(candidate_id=cid) for cid in ids]
+    for row in rows:
+        row["terminal_receipt_ref"] = "receipt:reused-across-27"
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=27, expected_candidate_ids=ids)], rows,
+    )
+    assert result["rows_unique"] == 27
+    assert result["rows_missing_from_declared_scope"] == 0
+    assert result["completed_requests"] == 0
+    assert result["rows_unresolved"] == 26
+    assert result["candidate_conservation_rate"] == pytest.approx(1 / 27)
+    assert not result["audit_complete"]
+    assert any("TERMINAL_RECEIPT_REUSED" in issue for issue in result["findings"])
+
+
+@pytest.mark.parametrize("change", [
+    {"terminal_receipt_source_candidate_id": "different-source-row"},
+    {"terminal_receipt_event_id": "different-official-event"},
+    {"terminal_receipt_market_identity": "different-market"},
+    {"terminal_receipt_identity_verified": False},
+    {"event_id": ""},
+    {"market_identity": ""},
+])
+def test_scored_terminal_receipt_must_bind_source_event_and_market(change):
+    result = product_outcome_scorecard([req()], [scored(**change)])
+    assert result["completed_requests"] == 0
+    assert result["rows_unresolved"] == 1
+    assert not result["audit_complete"]
+    assert any("TERMINAL_RECEIPT_IDENTITY_UNVERIFIED" in issue
+               for issue in result["findings"])
