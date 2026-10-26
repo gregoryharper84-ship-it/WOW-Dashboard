@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from v17.nfl_player_game_eligibility import (
+from nfl_player_game_eligibility import (
     PLAYER_UNAVAILABLE,
     PLAYER_AVAILABILITY_UNVERIFIED,
     player_game_availability_blocker,
