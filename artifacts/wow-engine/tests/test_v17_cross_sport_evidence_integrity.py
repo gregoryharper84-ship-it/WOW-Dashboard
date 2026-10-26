@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from v17.cross_sport_evidence_integrity import (
+    CRITICAL_STATUS_CONTRACT,
     TEAM_ROSTER_SPORTS,
     audit_cross_sport_evidence_integrity,
 )
@@ -20,6 +21,9 @@ def envelope(sport: str) -> dict:
             "participant_id": f"p-{i}",
             "snapshot_id": f"snap-{i}",
             "verification_status": "VERIFIED",
+            "critical_status_contract": CRITICAL_STATUS_CONTRACT[sport],
+            "critical_status": "PASS",
+            "critical_status_snapshot_id": f"critical-{i}",
             "source_id": f"authoritative-{i}",
             "source_timestamp": (t-timedelta(hours=2)).isoformat(),
             "effective_at": (t-timedelta(days=1)).isoformat(),
@@ -128,3 +132,20 @@ def test_mismatched_prediction_event_and_late_schedule_update_hold():
     blockers = audit_cross_sport_evidence_integrity(item)["blockers"]
     assert "SCORER_EVENT_BINDING_UNPROVEN" in blockers
     assert "OFFICIAL_EVENT_CHANGED_AFTER_MODEL" in blockers
+
+
+@pytest.mark.parametrize("sport", EXPECTED_TEAM_EVENT_SPORTS)
+def test_every_sport_requires_exact_critical_status_contract(sport):
+    item = envelope(sport)
+    item["participants"][0]["critical_status_contract"] = "GENERIC_VERIFIED"
+    blockers = audit_cross_sport_evidence_integrity(item)["blockers"]
+    assert "PARTICIPANT_0_CRITICAL_STATUS_CONTRACT_MISMATCH" in blockers
+
+
+def test_certified_uncertainty_requires_model_scenario_receipt():
+    item = envelope("MLB")
+    item["participants"][1]["critical_status"] = "MODELED_UNCERTAINTY_CERTIFIED"
+    blockers = audit_cross_sport_evidence_integrity(item)["blockers"]
+    assert "PARTICIPANT_1_SCENARIO_MODEL_PROOF_MISSING" in blockers
+    item["participants"][1]["scenario_model_receipt_id"] = "certified-scenario-42"
+    assert audit_cross_sport_evidence_integrity(item)["evidence_status"] == "PASS"
