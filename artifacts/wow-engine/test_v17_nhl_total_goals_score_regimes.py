@@ -126,3 +126,44 @@ def test_shootout_does_not_silently_guess_winning_goal(mutate):
     with pytest.raises(NHLScoringRegimeError) as err:
         reconcile_official_gamecenter_landing(p)
     assert err.value.code == "NHL_TOTALS_FINAL_SCORE_REGIME_MISMATCH"
+
+
+
+def test_authentic_nhl_gamecenter_reg_ot_so_fixtures_are_reconciled():
+    """Verified 2024-25 official public NHL landing projections, not model outputs."""
+    import json
+    from pathlib import Path
+    location = Path(__file__).parent / "tests" / "fixtures" / "nhl_official_scoring_regimes_2024.json"
+    records = json.loads(location.read_text())["records"]
+    expected = {
+        2024020001: ("REG", 5, 0, 0),
+        2024020009: ("OT", 11, 1, 0),
+        2024020022: ("SO", 5, 0, 1),
+    }
+    assert len(records) == 3
+    for row in records:
+        raw = row["scoring"]
+        id_ = raw["id"]
+        assert row["source_url"].endswith(f"/{id_}/landing")
+        assert row["retrospective"] is True
+        model = reconcile_official_gamecenter_landing(raw)
+        period, count, ot, award = expected[id_]
+        assert model.final_period_type == period
+        assert model.official_final_total == count
+        assert model.reconciled_total == count
+        assert model.actual_overtime_goals == ot
+        assert model.shootout_awarded_goal == award
+        assert model.probability_publishable is False
+        assert model.can_execute is False
+
+
+def test_authentic_shootout_summary_rejects_winner_tampering():
+    import json
+    from pathlib import Path
+    file = Path(__file__).parent / "tests" / "fixtures" / "nhl_official_scoring_regimes_2024.json"
+    records = json.loads(file.read_text())["records"]
+    payload = deepcopy(next(x["scoring"] for x in records if x["scoring"]["periodDescriptor"]["periodType"]=="SO"))
+    payload["summary"]["shootout"]["events"][-1]["teamAbbrev"] = {"default": "VAN"}
+    with pytest.raises(NHLScoringRegimeError) as e:
+        reconcile_official_gamecenter_landing(payload)
+    assert e.value.code == "NHL_TOTALS_FINAL_SCORE_REGIME_MISMATCH"
