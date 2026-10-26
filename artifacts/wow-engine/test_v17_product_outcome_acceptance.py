@@ -38,6 +38,11 @@ def req(**overrides):
         "provider_attempts": 1, "repair_cycles": 0,
     }
     result.update(overrides)
+    # A one-market board still requires its exact source ID, not just count=1.
+    if "expected_candidate_ids" not in overrides:
+        result["expected_candidate_ids"] = (
+            ["evt-1"] if result["expected_canonical_count"] == 1 else None
+        )
     return result
 
 
@@ -381,3 +386,40 @@ def test_extra_terminal_rows_cannot_produce_false_full_conservation():
     assert result["candidate_conservation_rate"] is None
     assert any("SCOPE_COUNT_MISMATCH:2/1" in issue
                for issue in result["findings"])
+
+
+def test_single_market_substitution_is_not_a_complete_source_board():
+    result = product_outcome_scorecard([req()], [scored(candidate_id="substituted")])
+    assert result["completed_requests"] == 0
+    assert result["candidate_conservation_rate"] is None
+    assert result["rows_missing_from_declared_scope"] == 1
+    assert any("IDENTITY_MISMATCH" in issue for issue in result["findings"])
+
+
+def test_single_market_missing_identity_inventory_fails_closed():
+    result = product_outcome_scorecard(
+        [req(expected_candidate_ids=None)], [scored()],
+    )
+    assert result["completed_requests"] == 0
+    assert result["candidate_conservation_rate"] is None
+    assert any("CANONICAL_IDENTITY_SCOPE_UNATTESTED" in issue
+               for issue in result["findings"])
+
+
+def test_orphan_terminal_row_cannot_inflate_conservation_or_availability():
+    result = product_outcome_scorecard([], [scored(request_id="unknown")])
+    assert not result["audit_complete"]
+    assert result["candidate_conservation_rate"] is None
+    assert result["reliable_decision_availability"] is None
+    assert result["rank_eligible_candidates"] is None
+    assert "ROW_REQUEST_NOT_IN_INVENTORY:unknown" in result["findings"]
+
+
+def test_unsupported_request_row_cannot_inflate_conservation():
+    result = product_outcome_scorecard(
+        [req(supported=False)], [scored()],
+    )
+    assert result["candidate_conservation_rate"] is None
+    assert result["rank_eligible_candidates"] is None
+    assert result["completed_requests"] == 0
+    assert "ROW_REQUEST_NOT_SUPPORTED:req-1" in result["findings"]
