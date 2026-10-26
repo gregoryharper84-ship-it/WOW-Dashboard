@@ -177,10 +177,20 @@ jobs:
             base_branch=$(jq -r '.base.ref // ""' <<<"$pr")
             pr_state=$(jq -r '.state // ""' <<<"$pr")
             source_kind="GITHUB_PR_EXACT_HEAD"
-            if [ -z "$incident" ]; then
-              incident=$(jq -r '.body // ""' <<<"$pr" | sed -n 's/^Incident: `\([^`]*\)`.*/\1/p' | head -n 1)
+            source_incident=$(jq -r '.body // ""' <<<"$pr" | sed -n 's/^Incident: `\([^`]*\)`.*/\1/p' | head -n 1)
+            if [ -n "$source_incident" ]; then
+              # User supplied incident IDs cannot override the PR's source attribution.
+              if [ -n "$incident" ] && [ "$incident" != "$source_incident" ]; then
+                echo "::error::SUPPORT_PARENT_INCIDENT_MISMATCH"
+                exit 1
+              fi
+              incident="$source_incident"
+            elif [ -n "$incident" ] && [ "$incident" != "PR-${pr_number}" ]; then
+              echo "::error::SUPPORT_PARENT_INCIDENT_UNPROVEN"
+              exit 1
+            else
+              incident="PR-${pr_number}"
             fi
-            [ -n "$incident" ] || incident="PR-${pr_number}"
 
             checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" \
               -H 'Accept: application/vnd.github+json' --jq '.check_runs')
