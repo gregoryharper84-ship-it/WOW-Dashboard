@@ -117,6 +117,9 @@ def audit_challenger_replay(
             if first["event_start_at"] != second["event_start_at"]:
                 mismatches.append("EVENT_TIME_DISAGREEMENT")
                 continue
+            if first["out_of_sample_split_ref"] != second["out_of_sample_split_ref"]:
+                mismatches.append("HOLDOUT_SPLIT_DISAGREEMENT")
+                continue
             champion_sq.append((first["calibrated_probability"] - first["outcome"]) ** 2)
             challenger_sq.append((second["calibrated_probability"] - second["outcome"]) ** 2)
         if any(len(s) != 1 for s in artifact_ids.get(cohort, {}).values()):
