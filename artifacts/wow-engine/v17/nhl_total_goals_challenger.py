@@ -225,6 +225,8 @@ def _metrics(rows: Sequence[TotalRow], mean_goals: np.ndarray) -> dict[str, floa
         "under_5_5_brier": float(np.mean((p_under_55 - y_under) ** 2)),
         "under_6_0_unconditional_win_brier": float(np.mean((p_under_60 - y_under) ** 2)),
         "under_6_0_mean_push_probability": float(np.mean(poisson.pmf(6, mean_goals))),
+        "under_6_0_observed_push_frequency": float(np.mean(true_goals == 6)),
+        "under_6_0_push_calibration_bias": float(np.mean(poisson.pmf(6, mean_goals)) - np.mean(true_goals == 6)),
     }
 
 
