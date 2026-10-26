@@ -4,6 +4,11 @@ from __future__ import annotations
 import pytest
 
 from v17.team_event_capability_manifest import EXPECTED_TEAM_EVENT_SPORTS
+from v17.cross_sport_evidence_integrity import (
+    CRITICAL_STATUS_CONTRACT,
+    TEAM_ROSTER_SPORTS,
+    audit_cross_sport_evidence_integrity,
+)
 from v17.team_event_producer_adoption import inspect_team_event_producer_adoption
 
 
@@ -153,3 +158,145 @@ def test_vector_digest_requires_matching_hash_and_fitted_policy():
         })
         assert got["components"]["scorer_numeric_vector_equivalence"] == "NOT_PROVEN"
         assert "SCORER_FROZEN_VECTOR_EQUIVALENCE_NOT_PROVEN" in got["blockers"]
+
+
+def _admitted_fixture(sport):
+    """Synthetic trusted-bridge output, not a live certified specialist."""
+    from datetime import datetime, timedelta, timezone
+
+    tip = datetime(2026, 10, 26, 19, tzinfo=timezone.utc)
+
+    def participant(n):
+        item = {
+            "participant_id": f"side-{n}",
+            "snapshot_id": f"source-side-{n}",
+            "source_id": f"synthetic-source-{n}",
+            "source_timestamp": (tip-timedelta(hours=2)).isoformat(),
+            "effective_at": (tip-timedelta(days=1)).isoformat(),
+            "latest_material_update_at": (tip-timedelta(hours=2)).isoformat(),
+            "verification_status": "VERIFIED",
+            "critical_status_contract": CRITICAL_STATUS_CONTRACT[sport],
+            "critical_status": "PASS",
+            "critical_status_snapshot_id": f"critical-{n}",
+        }
+        if sport in TEAM_ROSTER_SPORTS:
+            item.update(roster_reconciliation_status="PASS", personnel_snapshot_id=f"roster-{n}")
+        return item
+
+    envelope = {
+        "sport": sport,
+        "official_event_id": "event-100",
+        "official_event_snapshot_id": "snapshot-event-100",
+        "prediction_id": "prediction-100",
+        "scorer_official_event_id": "event-100",
+        "official_participant_ids": ["side-1", "side-2"],
+        "participants": [participant(1), participant(2)],
+        "event_start_utc": tip.isoformat(),
+        "model_timestamp": (tip-timedelta(hours=1)).isoformat(),
+        "official_event_updated_at": (tip-timedelta(hours=2)).isoformat(),
+        "final_refresh_status": "PASS",
+        "final_refresh_at": (tip-timedelta(minutes=15)).isoformat(),
+        "current_event_status": "PREGAME",
+        "current_material_update_at": (tip-timedelta(hours=2)).isoformat(),
+        "feature_snapshot_hash": "a" * 64,
+        "model_consumed_feature_hash": "a" * 64,
+        "feature_consumption_verification_status": "VERIFIED",
+        "critical_feature_consumption_complete": True,
+        "feature_consumption_receipt_id": "receipt-100",
+        "model_artifact_version": "synthetic-artifact-v1",
+        "model_invoked": True,
+        "required_modules": ["hydrate", "fitted_score", "calibrate"],
+        "completed_modules": ["hydrate", "fitted_score", "calibrate"],
+        "stage_errors": [],
+    }
+    audit = audit_cross_sport_evidence_integrity(envelope)
+    assert audit["evidence_status"] == "PASS", audit
+    result = {
+        "sport": sport,
+        "official_event_id": envelope["official_event_id"],
+        "prediction_id": envelope["prediction_id"],
+        "model_artifact_version": envelope["model_artifact_version"],
+        "model_timestamp": envelope["model_timestamp"],
+        "cross_sport_evidence": envelope,
+        "cross_sport_evidence_required": True,
+        "cross_sport_evidence_attested": True,
+        "cross_sport_evidence_audit": audit,
+        "can_execute": False,
+    }
+    if sport == "NFL":
+        result["nfl_stage_receipt"] = {"status": "PASS"}
+    receipt = {
+        "receipt_complete": True,
+        "numerical_consumption_proven": True,
+        "critical_consumption_complete": True,
+        "consumption_verification_status": "VERIFIED",
+        "feature_consumption_receipt_id": "receipt-100",
+    }
+    return result, receipt
+
+
+@pytest.mark.parametrize("sport", EXPECTED_TEAM_EVENT_SPORTS)
+def test_each_sport_has_one_clean_attested_producer_diagnostic(sport):
+    result, receipt = _admitted_fixture(sport)
+    got = _inspect(sport, result, receipt)
+    assert got["status"] == "PRODUCER_ADMISSION_PASS", (sport, got)
+    assert got["blockers"] == []
+    assert got["components"]["scorer_numeric_vector_equivalence"] == "ATTESTED_FROZEN_VECTOR_MATCH"
+    assert got["components"]["backend_score_source_reference"] == "ATTESTED_SOURCE_SNAPSHOT_REFERENCE"
+    assert got["source_snapshot_id"] == "snapshot-event-100"
+    assert got["scorer_numeric_vector_hash"] == "a" * 64
+    if sport != "NFL":
+        assert got["components"]["fitted_scorer_row_hash"] == "NOT_APPLICABLE"
+        assert got["components"]["nfl_schedule_final_refresh"] == "NOT_APPLICABLE"
+    else:
+        assert got["components"]["nfl_schedule_final_refresh"] == "ATTESTED_FINAL_REFRESH"
+    assert got["publication_authority"] is False
+    assert got["can_execute"] is False
+    assert got["terminal_authority"] == "V17_TERMINAL_REDUCER"
+
+
+@pytest.mark.parametrize("sport", EXPECTED_TEAM_EVENT_SPORTS)
+def test_attestation_without_exact_consumption_receipt_is_held(sport):
+    result, receipt = _admitted_fixture(sport)
+    result["cross_sport_evidence"]["feature_consumption_receipt_id"] = "wrong-receipt"
+    got = _inspect(sport, result, receipt)
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
+    assert "PRODUCER_ATTESTATION_NOT_ENROLLED_OR_NOT_PASS" in got["blockers"]
+    assert got["components"]["backend_score_source_reference"] == "MISSING"
+    assert got["publication_authority"] is False
+
+
+@pytest.mark.parametrize("sport", EXPECTED_TEAM_EVENT_SPORTS)
+def test_attestation_does_not_override_missing_numerical_proof(sport):
+    result, receipt = _admitted_fixture(sport)
+    receipt["numerical_consumption_proven"] = False
+    got = _inspect(sport, result, receipt)
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
+    assert "NUMERICAL_CONSUMPTION_RECEIPT_NOT_COMPLETE" in got["blockers"]
+
+
+@pytest.mark.parametrize("sport", EXPECTED_TEAM_EVENT_SPORTS)
+def test_wrong_prediction_binding_held_across_sports(sport):
+    result, receipt = _admitted_fixture(sport)
+    result["prediction_id"] = "another-prediction"
+    got = _inspect(sport, result, receipt)
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
+    assert "PRODUCER_ATTESTATION_NOT_ENROLLED_OR_NOT_PASS" in got["blockers"]
+
+
+def test_nfl_admitted_producer_still_requires_durable_stage_receipt():
+    result, receipt = _admitted_fixture("NFL")
+    del result["nfl_stage_receipt"]
+    got = _inspect("NFL", result, receipt)
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
+    assert "NFL_DURABLE_STAGE_RECEIPT_NOT_PROVEN" in got["blockers"]
+
+
+@pytest.mark.parametrize("sport", ("NBA", "NHL", "SOCCER"))
+def test_unauthenticated_source_envelope_never_creates_positive(sport):
+    result, receipt = _admitted_fixture(sport)
+    result["cross_sport_evidence_attested"] = False
+    got = _inspect(sport, result, receipt)
+    assert got["source_snapshot_id"] is None
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
+    assert got["scorer_numeric_vector_hash"] is None
