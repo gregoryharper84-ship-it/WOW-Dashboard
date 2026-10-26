@@ -144,6 +144,24 @@ def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
         if verified_event_id and verified_event_id != request_event_id:
             raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH")
 
+    # P0 #2131: game participation is NOT implied by ESPN roster membership,
+    # canonical identity, historical logs, or a caller-supplied "ACTIVE" claim.
+    # There is not yet a trusted event-specific availability attestor wired to
+    # this score boundary; fail closed for *every* NFL player prop until one is
+    # independently reviewed. No unverified positive status is an exception.
+    if str(normalized.get("sport") or "").strip().upper() == "NFL":
+        designation = str(
+            role.get("game_availability_status")
+            or role.get("availability_status")
+            or ""
+        ).strip().upper().replace(" ", "_").replace("-", "_")
+        if designation in {
+            "OUT", "IR", "INJURED_RESERVE", "INACTIVE", "SUSPENDED",
+            "PUP", "NFI", "DOUBTFUL",
+        }:
+            raise ValueError("PLAYER_UNAVAILABLE:OFFICIAL_GAME_ELIGIBILITY_NOT_MET")
+        raise ValueError("PLAYER_AVAILABILITY_UNVERIFIED:TRUSTED_EVENT_PROOF_MISSING")
+
     identity_status = str(role.get("identity_binding_status") or "").strip().upper()
     if identity_status and identity_status not in {"PASS", "PROVIDER_IDENTITY_ONLY"}:
         raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:IDENTITY_BINDING_NOT_PASS")
