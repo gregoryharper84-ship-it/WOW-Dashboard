@@ -68,6 +68,7 @@ def product_outcome_scorecard(
     issues: list[str] = []
     seen: set[tuple[str, str]] = set()
     per_request: dict[str, list[str]] = defaultdict(list)
+    integrity_failed_requests: set[str] = set()
     counts: Counter[str] = Counter()
     by_lane: dict[str, Counter[str]] = defaultdict(Counter)
     eligible_count = 0
@@ -84,6 +85,7 @@ def product_outcome_scorecard(
         key = (request_id, candidate_id)
         if key in seen:
             issues.append(f"ROW_{i}_DUPLICATE_CANONICAL_ID")
+            integrity_failed_requests.add(request_id)
             continue
         seen.add(key)
         valid = state in ALL_DISPOSITIONS and _nonempty(row.get("current_owner"))
@@ -99,6 +101,7 @@ def product_outcome_scorecard(
             valid = valid and state == "SCORED" and row.get("terminal_rank_eligible_verified") is True
         if not valid:
             issues.append(f"ROW_{i}_UNPROVEN_DISPOSITION")
+            integrity_failed_requests.add(request_id)
             state = "UNRESOLVED"
         per_request[request_id].append(state)
         counts[state] += 1
@@ -111,11 +114,14 @@ def product_outcome_scorecard(
         elif row.get("eligible") is not False:
             unknown_eligibility = True
             issues.append(f"ROW_{i}_ELIGIBILITY_UNATTESTED")
+            integrity_failed_requests.add(request_id)
 
     unique_requests: set[str] = set()
     supported_count = 0
     completed_count = 0
     first_pass_count = 0
+    missing_rows = 0
+    unknown_scope = False
     for i, req in enumerate(requests):
         rid = req.get("request_id")
         if not _nonempty(rid) or rid in unique_requests:
@@ -128,10 +134,24 @@ def product_outcome_scorecard(
             continue
         supported_count += 1
         dispositions = per_request.get(rid, [])
-        empty_verified = not dispositions and req.get("no_current_candidates_verified") is True
+        expected = req.get("expected_canonical_count")
+        # The source/discovery inventory must attest the intended denominator.
+        # Eight terminal rows from a 27-market board are never a 100% result.
+        if type(expected) is not int or expected < 0 or not _nonempty(req.get("scope_evidence_ref")):
+            issues.append(f"REQUEST_{i}_SCOPE_UNATTESTED")
+            integrity_failed_requests.add(rid)
+            unknown_scope = True
+            continue
+        if len(dispositions) != expected:
+            issues.append(f"REQUEST_{i}_SCOPE_COUNT_MISMATCH:{len(dispositions)}/{expected}")
+            integrity_failed_requests.add(rid)
+            missing_rows += max(0, expected - len(dispositions))
+        empty_verified = expected == 0 and req.get("no_current_candidates_verified") is True
         complete = (
             req.get("output_delivered_verified") is True
-            and (empty_verified or (bool(dispositions) and all(s in TERMINAL_DISPOSITIONS for s in dispositions)))
+            and rid not in integrity_failed_requests
+            and len(dispositions) == expected
+            and (empty_verified or (expected > 0 and all(s in TERMINAL_DISPOSITIONS for s in dispositions)))
         )
         if complete:
             completed_count += 1
@@ -143,6 +163,7 @@ def product_outcome_scorecard(
             issues.append("ROW_REQUEST_NOT_IN_INVENTORY:" + rid)
 
     canonical_count = len(seen)
+    accounted_count = canonical_count + missing_rows
     terminal_count = sum(counts[s] for s in TERMINAL_DISPOSITIONS)
     return {
         "can_execute": False,
@@ -151,8 +172,11 @@ def product_outcome_scorecard(
         "findings": issues,
         "rows_unique": canonical_count,
         "rows_terminal": terminal_count,
-        "rows_unresolved": canonical_count - terminal_count,
-        "candidate_conservation_rate": terminal_count / canonical_count if canonical_count else None,
+        "rows_missing_from_declared_scope": missing_rows,
+        "rows_unresolved": accounted_count - terminal_count,
+        "candidate_conservation_rate": (
+            terminal_count / accounted_count if accounted_count and not unknown_scope else None
+        ),
         "supported_requests": supported_count,
         "completed_requests": completed_count,
         "product_outcome_completion_rate": completed_count / supported_count if supported_count else None,
