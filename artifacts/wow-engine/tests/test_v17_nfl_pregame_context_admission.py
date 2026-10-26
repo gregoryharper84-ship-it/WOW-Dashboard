@@ -188,6 +188,22 @@ def test_shuffling_sources_does_not_change_evidence_digest():
     assert _run(items)["packet_sha256"] == _run(list(reversed(items)))["packet_sha256"]
 
 
+def test_receipt_digest_binds_valid_source_timeline_and_kind():
+    baseline = _run()
+    for field, value in (
+        ("observed_at", "2026-10-25T13:59:00Z"),
+        ("published_at", "2026-10-25T14:11:00Z"),
+        ("source_kind", "OFFICIAL_INACTIVES"),
+    ):
+        evidence = _sources()
+        evidence[0][field] = value
+        changed = _run(evidence)
+        assert changed["packet_sha256"] != baseline["packet_sha256"], field
+        assert changed["features"] == baseline["features"]
+        assert changed["can_execute"] is False
+        assert "starter_id" not in str(changed)
+
+
 def test_changing_raw_football_evidence_changes_digest():
     e = _sources()
     e[2]["measurements"]["rush_off_epa_pp"] = 0.04
