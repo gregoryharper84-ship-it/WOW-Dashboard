@@ -57,6 +57,14 @@ def inspect_team_event_producer_adoption(
 
     scorer_feature_hash = _text(result.get("feature_row_hash"))
     fitted_hash_seen = bool(_SHA256.fullmatch(scorer_feature_hash))
+    frozen_vector_hash = _text(result.get("feature_snapshot_hash"))
+    scorer_consumed_hash = _text(result.get("model_consumed_feature_hash"))
+    scorer_vector_proven = (
+        bool(_SHA256.fullmatch(frozen_vector_hash))
+        and frozen_vector_hash.lower() == scorer_consumed_hash.lower()
+        and _text(result.get("feature_vector_hash_policy"))
+        == "NFL_CANONICAL_NUMERIC_VECTOR_SCHEMA_ORDER_V1"
+    )
     # An NFL feature-row hash is not automatically the shared freeze-to-consume
     # vector hash. Do not claim the stronger equality until certified.
     numerical_receipt_complete = (
@@ -100,6 +108,10 @@ def inspect_team_event_producer_adoption(
             "HASH_PRESENT_NOT_VECTOR_EQUIVALENCE"
             if fitted_hash_seen else "NOT_PROVEN"
         ),
+        "scorer_numeric_vector_equivalence": (
+            "SCORER_VECTOR_MATCH_NOT_SOURCE_AUTHENTICATION"
+            if scorer_vector_proven else "NOT_PROVEN"
+        ),
         "nfl_schedule_final_refresh": (
             "SCHEDULE_ONLY_PASS" if nfl_schedule_refresh_present else
             "NOT_PROVEN" if normalized == "NFL" else "NOT_APPLICABLE"
@@ -120,6 +132,8 @@ def inspect_team_event_producer_adoption(
         blockers.append("NUMERICAL_CONSUMPTION_RECEIPT_NOT_COMPLETE")
     if not fitted_hash_seen:
         blockers.append("FITTED_FEATURE_ROW_DIGEST_NOT_RETURNED")
+    if not scorer_vector_proven:
+        blockers.append("SCORER_FROZEN_VECTOR_EQUIVALENCE_NOT_PROVEN")
     if normalized == "NFL" and not nfl_schedule_refresh_present:
         blockers.append("NFL_FINAL_SCHEDULE_REFRESH_NOT_PROVEN")
     if normalized == "NFL" and not nfl_stage_pass:
@@ -130,7 +144,6 @@ def inspect_team_event_producer_adoption(
     if not authenticated_enrollment:
         blockers.extend([
             "AUTHENTICATED_SOURCE_AND_PARTICIPANT_SNAPSHOTS_NOT_PROVEN",
-            "SCORER_FROZEN_VECTOR_EQUIVALENCE_NOT_PROVEN",
             "PRODUCER_ATTESTATION_NOT_ENROLLED_OR_NOT_PASS",
         ])
         if normalized in TEAM_ROSTER_SPORTS:
@@ -141,11 +154,12 @@ def inspect_team_event_producer_adoption(
     blockers = list(dict.fromkeys(blockers))
     output: dict[str, Any] = {
         "sport": normalized,
-        "status": "PRODUCER_ADMISSION_PASS" if authenticated_enrollment else "PRODUCER_PROOF_INCOMPLETE",
+        "status": "PRODUCER_ADMISSION_PASS" if authenticated_enrollment and not blockers else "PRODUCER_PROOF_INCOMPLETE",
         "evidence_integrity_status": evidence.get("evidence_status") or "NOT_ENFORCED",
         "components": components,
         "source_snapshot_id": source_id or None,
         "fitted_scorer_feature_row_hash": scorer_feature_hash if fitted_hash_seen else None,
+        "scorer_numeric_vector_hash": scorer_consumed_hash if scorer_vector_proven else None,
         "consumption_receipt_id": _text(consumption_receipt.get("feature_consumption_receipt_id")) or None,
         "blockers": blockers,
         "publication_authority": False,
