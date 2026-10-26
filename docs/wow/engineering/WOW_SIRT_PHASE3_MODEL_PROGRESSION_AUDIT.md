@@ -3,7 +3,7 @@
 **Change owner:** SIRT independent assurance only.  
 **Build state:** Phase 3 evaluator source candidate; NOT a deployed autonomous worker, active production monitor, model certification, or production restoration.  
 **Priority:** P0 NFL/NBA/NHL/NCAAF restoration remains ahead of unrelated feature expansion.  
-**Safety:** \`can_execute=false\`; \`V17_TERMINAL_REDUCER\` remains authoritative.
+**Safety:** `can_execute=false`; `V17_TERMINAL_REDUCER` remains authoritative.
 
 ## Phase 1 — Autonomous recovery (Engineering/AMRT, existing work)
 
@@ -21,27 +21,27 @@ SIRT does not run Engineering workers, assume lease ownership, approve provider 
 
 ## Phase 2 — Product acceptance (Engineering/LLP/WOW Betting Intelligence)
 
-Use the existing source-only \`v17.product_outcome_acceptance\` evaluator from merged PR #2088 and the existing model acceptance harness #1935 / cross-sport factory #1689. Do not build another acceptance controller.
+Use the existing source-only `v17.product_outcome_acceptance` evaluator from merged PR #2088 and the existing model acceptance harness #1935 / cross-sport factory #1689. Do not build another acceptance controller.
 
-**Production evidence required**: an exact current sport-market request with controlling fitted specialist, producer-attested calibration/refresh, valid pregame/live boundary, conserved requested inventory, row-level terminal receipts, matching Action/Render/DB run identity, independent QA/Release and SIRT production readback. NBA 27-market replay requires 27 original labels with distinct \`MODEL_UNAVAILABLE\`, unattempted, invalid-input and validly scored dispositions; no silent omissions or fabricated probabilities.
+**Production evidence required**: an exact current sport-market request with controlling fitted specialist, producer-attested calibration/refresh, valid pregame/live boundary, conserved requested inventory, row-level terminal receipts, matching Action/Render/DB run identity, independent QA/Release and SIRT production readback. NBA 27-market replay requires 27 original labels with distinct `MODEL_UNAVAILABLE`, unattempted, invalid-input and validly scored dispositions; no silent omissions or fabricated probabilities.
 
 SIRT audits the resulting evidence; Engineer/AMRT repairs, model owners maintain probability correctness, and Independent Verification remains the separate closure authority.
 
 ## Phase 3 — Historical model improvement (this SIRT source build)
 
-New pure functions in \`v17.sirt_model_progression_audit\`:
+New pure functions in `v17.sirt_model_progression_audit`:
 
-- \`audit_challenger_replay\`: compare champion and challenger Brier scores only for *paired* immutable out-of-sample pregame records from the identical \`sport/market_family/cohort_id/event_id/market_id\`. Require source snapshots, immutable prediction receipts, calibration references, independently verified settlement, prediction before start, settlement after start, and single artifact version per cohort.
+- `audit_challenger_replay`: compare champion and challenger Brier scores only for *paired* immutable out-of-sample pregame records from the identical `sport/market_family/cohort_id/event_id/market_id`. Require source snapshots, immutable prediction receipts, calibration references, independently verified settlement, prediction before start, settlement after start, and single artifact version per cohort.
 - Refuse a comparison for missing pairs, duplicates, mismatched settled outcomes, unverified rows, live-model substitutions or inadequate denominators. Default 30 matched pairs is a reporting floor, **not certification sufficiency**.
-- \`audit_confirmed_recurrence\`: identify recurring independently confirmed root causes and incidents missing prevention regression receipts. Unconfirmed symptom similarity cannot establish common cause.
-- Outputs are always \`RESEARCH_ONLY_NO_PROMOTION\` or evidence holds; the auditor never changes fitted probability, promotes a challenger, certifies an in-play model, opens orders or authorizes release.
+- `audit_confirmed_recurrence`: identify recurring independently confirmed root causes and incidents missing prevention regression receipts. Unconfirmed symptom similarity cannot establish common cause.
+- Outputs are always `RESEARCH_ONLY_NO_PROMOTION` or evidence holds; the auditor never changes fitted probability, promotes a challenger, certifies an in-play model, opens orders or authorizes release.
 
 ### Verification
 
-\`\`\`bash
+```bash
 cd artifacts/wow-engine
 python -m pytest -q test_v17_sirt_model_progression_audit.py
-\`\`\`
+```
 
 Isolated fixture run: **17 passed locally on October 26, 2026**. The exact GitHub PR head still requires its own CI and protected reviews. This is not live production evidence.
 
