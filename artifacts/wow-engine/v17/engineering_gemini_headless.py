@@ -96,7 +96,7 @@ def select_incident(
 
 
 def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
-                 response: Any = None) -> dict[str, Any]:
+                 response: Any = None, source_sha: str = "") -> dict[str, Any]:
     """Classify one bounded attempt without persisting log contents or secrets."""
     # The CLI may put its *only* actionable API error in the JSON response,
     # not in stderr. Inspect it in memory, but persist only a fixed typed code.
@@ -141,11 +141,17 @@ def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
         code = "GEMINI_CLI_RESPONSE_MALFORMED"
     else:
         code = "GEMINI_CLI_FAILED"
-    return {"status": "COMPLETED" if code == "GEMINI_CLI_COMPLETE" else "HELD",
-            "code": code, "exit_code": exit_code,
-            "stderr_present": bool(stderr), "response_error_present": bool(error),
-            "retry_allowed": False, "can_execute": False,
-            "terminal_authority": MODEL_AUTHORITY}
+    result = {"status": "COMPLETED" if code == "GEMINI_CLI_COMPLETE" else "HELD",
+              "code": code, "exit_code": exit_code,
+              "stderr_present": bool(stderr), "response_error_present": bool(error),
+              "retry_allowed": False, "can_execute": False,
+              "terminal_authority": MODEL_AUTHORITY}
+    if source_sha:
+        if not _SHA.fullmatch(source_sha):
+            result.update(status="HELD", code="GEMINI_SOURCE_HEAD_INVALID")
+        else:
+            result["source_head_sha"] = source_sha
+    return result
 
 
 def admit_one_shot_recovery(runs: Any, comparison: Any, current_sha: str) -> dict[str, Any]:
@@ -287,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     classify.add_argument("--exit-code", type=int, required=True)
     classify.add_argument("--stderr-file", required=True)
     classify.add_argument("--response-file", required=True)
+    classify.add_argument("--source-sha", default="")
     classify.add_argument("--timed-out", action="store_true")
     recovery = sub.add_parser("recovery-admit")
     recovery.add_argument("--runs-file", required=True)
@@ -313,7 +320,8 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, json.JSONDecodeError):
                 response = None
             result = classify_cli(args.exit_code, Path(args.stderr_file).read_text(encoding="utf-8"),
-                                  timed_out=args.timed_out, response=response)
+                                  timed_out=args.timed_out, response=response,
+                                  source_sha=args.source_sha)
         elif args.action == "recovery-admit":
             result = admit_one_shot_recovery(
                 json.loads(Path(args.runs_file).read_text(encoding="utf-8")),
