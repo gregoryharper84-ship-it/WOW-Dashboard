@@ -11,7 +11,7 @@
       "id": "TRACK_1_RECOVERY",
       "tracking_issue": 2078,
       "owner": "WOW Engineering / AMRT under existing Conductor",
-      "scope": "Debug/Dissolve/Deploy verification: NFL #1562 (active parent; #1841 closed Oct 26 and historical only), NBA #1950 plus NBA props #1988, NHL #1952, NCAAF #1951, shared acquisition #823; verify each issue remains open at admission, retain one accountable incident owner and existing writer lease per issue",
+      "scope": "Debug/Dissolve/Deploy verification: NFL #1562 (active parent), NBA #1950 plus NBA props #1988, NHL #1952, NCAAF #1951, shared acquisition #823; verify each issue remains open at admission, retain one accountable incident owner and existing writer lease per issue",
       "acceptance": "First failing boundary, reproducible source, exact-head regression, separate QA/Release approval, deployed SHA, real Action->scorer->terminal->persistence receipt; preserve unresolved MODEL_UNAVAILABLE or typed input/scorer errors",
       "change_classes": [
         "A",
