@@ -174,7 +174,11 @@ def _adoption_candidate_window(pulls: list[dict], *, slot: int) -> tuple[list[di
     prevents a flood of P0s from creating new permanent starvation.
     Labels/titles are untrusted scheduling hints, not security evidence.
     """
-    fair, windows = _rotating_owner_window(pulls, slot=slot)
+    # Fair-cycle index is independent of priority cadence: all owner windows
+    # are visited even when window count shares factors with three.
+    fair, windows = _rotating_owner_window(
+        pulls, slot=(slot // 3 if slot % 3 == 0 else slot)
+    )
     if slot % 3 == 0:
         return fair, windows
     owner_candidates = [
