@@ -106,7 +106,8 @@ def test_admitted_scorer_evidence_is_read_only_not_a_second_publisher():
         "cross_sport_evidence_attested": True,
         "cross_sport_evidence_audit": {"evidence_status": "PASS"},
     })
-    assert got["status"] == "PRODUCER_ADMISSION_PASS"
+    # Raw proof flags alone are not a source/feature package.
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
     assert got["publication_authority"] is False
     assert got["can_execute"] is False
     assert got["blockers"][:2] == [
@@ -118,3 +119,37 @@ def test_admitted_scorer_evidence_is_read_only_not_a_second_publisher():
 def test_unknown_sport_is_not_silently_supported():
     with pytest.raises(ValueError, match="SPORT_CONTRACT_UNRESOLVED"):
         _inspect("UNKNOWN")
+
+
+def test_nfl_scorer_vector_equality_only_closes_vector_gap():
+    result = {
+        "canonical_acquisition": {
+            "status": "PASS", "source_snapshot_id": "nfl-source-2",
+        },
+        "model_timestamp": "2026-10-26T15:00:00+00:00",
+        "feature_row_hash": "a" * 64,
+        "feature_snapshot_hash": "b" * 64,
+        "model_consumed_feature_hash": "b" * 64,
+        "feature_vector_hash_policy": "NFL_CANONICAL_NUMERIC_VECTOR_SCHEMA_ORDER_V1",
+    }
+    got = _inspect("NFL", result)
+    assert got["components"]["scorer_numeric_vector_equivalence"] == (
+        "SCORER_VECTOR_MATCH_NOT_SOURCE_AUTHENTICATION"
+    )
+    assert "SCORER_FROZEN_VECTOR_EQUIVALENCE_NOT_PROVEN" not in got["blockers"]
+    assert "AUTHENTICATED_SOURCE_AND_PARTICIPANT_SNAPSHOTS_NOT_PROVEN" in got["blockers"]
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
+
+
+def test_vector_digest_requires_matching_hash_and_fitted_policy():
+    for consumed, policy in [
+        ("c" * 64, "NFL_CANONICAL_NUMERIC_VECTOR_SCHEMA_ORDER_V1"),
+        ("b" * 64, "UNTRUSTED_POLICY"),
+    ]:
+        got = _inspect("NFL", {
+            "feature_snapshot_hash": "b" * 64,
+            "model_consumed_feature_hash": consumed,
+            "feature_vector_hash_policy": policy,
+        })
+        assert got["components"]["scorer_numeric_vector_equivalence"] == "NOT_PROVEN"
+        assert "SCORER_FROZEN_VECTOR_EQUIVALENCE_NOT_PROVEN" in got["blockers"]
