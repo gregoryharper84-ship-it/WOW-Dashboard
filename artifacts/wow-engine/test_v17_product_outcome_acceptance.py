@@ -12,6 +12,7 @@ def scored(**overrides):
         "request_id": "req-1", "candidate_id": "evt-1",
         "sport": "NFL", "market_family": "MONEYLINE",
         "disposition": "SCORED", "eligible": True,
+        "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
         "current_owner": "LLP_TEAM_BETTING_ENGINE",
         "raw_model_probability": .63,
         "calibrated_probability": .61, "calibrated_lower_bound": .55,
@@ -334,3 +335,30 @@ def test_unverifiable_identity_inventory_never_certifies_full_board(ids):
     )
     assert result["completed_requests"] == 0
     assert not result["audit_complete"]
+
+
+def test_terminal_row_must_have_reducer_provenance_and_no_execution():
+    for change in (
+        {"terminal_authority": None},
+        {"terminal_authority": "SCORER"},
+        {"can_execute": True},
+        {"can_execute": None},
+    ):
+        result = product_outcome_scorecard([req()], [scored(**change)])
+        assert not result["audit_complete"]
+        assert result["rows_unresolved"] == 1
+        assert result["completed_requests"] == 0
+        assert result["rank_eligible_candidates"] == 0
+        assert result["can_execute"] is False
+
+
+def test_held_row_without_reducer_provenance_is_not_terminal_proof():
+    result = product_outcome_scorecard(
+        [req()], [scored(disposition="HELD", rank_eligible=False,
+            current_owner="AMRT", failure_code="MODEL_UNAVAILABLE",
+            evidence_ref="source:unavailable", next_action="restore specialist",
+            reentry_trigger="certified model present", terminal_authority="SCORER")],
+    )
+    assert not result["audit_complete"]
+    assert result["rows_unresolved"] == 1
+    assert result["completed_requests"] == 0
