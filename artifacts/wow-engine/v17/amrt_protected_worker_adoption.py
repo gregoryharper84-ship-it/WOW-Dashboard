@@ -182,7 +182,8 @@ def run_worker_handoffs(
             verified_worker_id=worker_id,
             verified_accountable_owner_id=incident["owner_id"],
             verified_owner_evidence_ref=incident["issue_ref"],
-            observed_at=now, head_sha=head_sha,
+            # Fresh, not the timestamp captured at initial workflow admission.
+            observed_at=datetime.now(timezone.utc), head_sha=head_sha,
             supabase_url=supabase_url, service_credential=service_credential,
             # Empty map is truthful: this specialist reports the missing
             # discovery stage rather than a fabricated producer PASS.
@@ -236,8 +237,13 @@ def main() -> int:
                   + ":" + result["disposition"])
         return 0
     except Exception as exc:
-        # Never include raw remote exception messages, credentials or URLs.
-        print("AMRT_HANDOFF_HELD:" + type(exc).__name__, file=sys.stderr)
+        # Only literal AMRT codes are safe to emit. Arbitrary upstream
+        # exception bodies might embed credentials, URLs or PII.
+        reason = str(exc)
+        code = (reason if isinstance(exc, ValueError)
+                and re.fullmatch(r"AMRT_[A-Z0-9_]{1,80}", reason)
+                else type(exc).__name__.upper())
+        print("AMRT_HANDOFF_HELD:" + code, file=sys.stderr)
         return 1
 
 
