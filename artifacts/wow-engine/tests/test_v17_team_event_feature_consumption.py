@@ -205,3 +205,41 @@ def test_fresh_verified_model_features_still_complete():
     )
     assert receipt["model_context_not_current_feature_ids"] == []
     assert receipt["receipt_complete"] is True
+
+
+def test_explicit_empty_consumed_feature_list_does_not_certify_model_use():
+    receipt = _receipt(
+        _request(),
+        _result(consumed_feature_ids=[]),
+    )
+    assert receipt["consumption_verification_status"] == "VERIFIED"
+    assert receipt["features_consumed"] == 0
+    assert receipt["numerical_features_consumed"] == 0
+    assert receipt["numerical_consumption_proven"] is False
+    assert receipt["receipt_complete"] is False
+
+
+def test_admin_only_contract_cannot_prove_numerical_model_use():
+    from types import SimpleNamespace
+
+    req = SimpleNamespace(
+        official_event_id="event-admin-1",
+        sport_specific_evidence={"settlement_basis": "FULL_GAME"},
+    )
+    result = _result(
+        consumed_feature_ids=[],
+        prediction_id="prediction-admin-1",
+    )
+    receipt = build_feature_consumption_receipt(
+        req=req,
+        sport="PGA",
+        controlling_specialist="PGA_TEST_ONLY",
+        required_inputs=("official_event_id", "settlement_basis"),
+        result=result,
+        feature_schema_version="PGA_ADMIN_ONLY_TEST_V1",
+        declared_feature_roles={"settlement_basis": "CONTRACT_ONLY"},
+    )
+    assert receipt["role_contract_complete"] is True
+    assert receipt["critical_consumption_complete"] is True
+    assert receipt["numerical_consumption_proven"] is False
+    assert receipt["receipt_complete"] is False
