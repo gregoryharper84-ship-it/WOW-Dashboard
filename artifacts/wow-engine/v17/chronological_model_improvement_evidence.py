@@ -122,11 +122,13 @@ def evaluate_chronological_evidence(
                  row["model_version"])].append(row)
     by_lane: list[dict[str, Any]] = []
     for (sport, market, role, version), samples in sorted(cohorts.items()):
-        sufficient = len(samples) >= min_samples and not findings
+        distinct_events = len({row["event_id"] for row in samples})
+        sufficient = len(samples) >= min_samples and distinct_events >= min_samples and not findings
         by_lane.append({
             "sport": sport, "market_family": market,
             "model_role": role, "model_version": version,
-            "n": len(samples), "evidence_sufficient": sufficient,
+            "n": len(samples), "distinct_forward_events": distinct_events,
+            "evidence_sufficient": sufficient,
             "metrics": _metrics(samples) if sufficient else None,
         })
 
@@ -153,7 +155,11 @@ def evaluate_chronological_evidence(
             findings.append({"index": -1, "code": "PAIRED_SETTLEMENT_MISMATCH"})
             continue
         paired.append((champion, challenger))
-    paired_sufficient = len(paired) >= min_samples and not findings
+    paired_distinct_events = len({champion["event_id"] for champion, _ in paired})
+    paired_sufficient = (
+        len(paired) >= min_samples and paired_distinct_events >= min_samples
+        and not findings
+    )
     paired_metrics = None
     if paired_sufficient:
         champion_metric = _metrics([x for x, _ in paired])
@@ -173,6 +179,7 @@ def evaluate_chronological_evidence(
         "rows_received": len(rows), "rows_verified": len(accepted),
         "rows_held": len(rows) - len(accepted), "findings": findings,
         "cohorts": by_lane, "paired_count": len(paired),
+        "paired_distinct_events": paired_distinct_events,
         "paired_comparison_ready": paired_sufficient,
         "paired_metrics": paired_metrics,
         "next_owner": "MODEL_EXCELLENCE_RESEARCH" if paired_sufficient
