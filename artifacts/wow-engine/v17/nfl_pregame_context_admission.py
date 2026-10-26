@@ -173,6 +173,8 @@ def build_pregame_context_packet(
             "side": side, "family": family,
             "source_receipt_id": receipt_id, "source_publisher": publisher,
             "rights_receipt_id": license_id, "content_sha256": content_hash,
+            "source_kind": source["source_kind"],
+            "observed_at": observed.isoformat(), "published_at": published.isoformat(),
             "captured_at": captured.isoformat(),
         })
 
