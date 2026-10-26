@@ -26,6 +26,7 @@ OWNER_LOGIN = "gregoryharper84-ship-it"
 MAX_CHANGED_FILES = 30
 MAX_SCAN = 50
 MAX_SOURCE_PAGES = 4
+MAX_CHECK_PAGES = 5
 REQUIRED_CHECKS = (
     "WOW required-three regression",
     "WOW governed probability backend",
@@ -99,6 +100,46 @@ def validate_evidence(
             raise AdoptionHold("SOURCE_REQUIRED_REGRESSION_RED_HOLD")
     return base, paths
 
+
+
+def _exact_head_checks(sha: str) -> dict:
+    """Fetch complete bounded GitHub check-run evidence, never a truncated PASS.
+
+    Busy PRs accumulate more than the GitHub API's first 100 checks from reruns
+    and matrix jobs. Treat an unreadable or capped inventory as an explicit
+    infrastructure hold, not as the absence of a reviewed candidate.
+    """
+    if not SHA.fullmatch(sha):
+        raise AdoptionHold("SOURCE_CHECK_SHA_INVALID_HOLD")
+    prefix = f"commits/{sha}/check-runs?per_page=100"
+    first = api(prefix)
+    if not isinstance(first, dict):
+        raise AdoptionHold("SOURCE_CHECK_INVENTORY_INVALID_HOLD")
+    total = first.get("total_count")
+    rows = first.get("check_runs")
+    if type(total) is not int or total < 0 or not isinstance(rows, list):
+        raise AdoptionHold("SOURCE_CHECK_INVENTORY_INVALID_HOLD")
+    if total > MAX_CHECK_PAGES * 100 or len(rows) > total:
+        raise AdoptionHold("SOURCE_CHECK_INVENTORY_PAGE_CAP_HOLD")
+    current = list(rows)
+    page = 2
+    while len(current) < total and page <= MAX_CHECK_PAGES:
+        payload = api(prefix + f"&page={page}")
+        if (not isinstance(payload, dict)
+                or payload.get("total_count") != total
+                or not isinstance(payload.get("check_runs"), list)
+                or not payload["check_runs"]):
+            raise AdoptionHold("SOURCE_CHECK_INVENTORY_INCOMPLETE_HOLD")
+        current.extend(payload["check_runs"])
+        page += 1
+    if len(current) != total:
+        raise AdoptionHold("SOURCE_CHECK_INVENTORY_INCOMPLETE_HOLD")
+    ids = [r.get("id") for r in current if isinstance(r, dict)]
+    if (len(ids) != total or
+            any(type(x) is not int or x <= 0 for x in ids) or
+            len(set(ids)) != total):
+        raise AdoptionHold("SOURCE_CHECK_INVENTORY_DUPLICATE_OR_INVALID_HOLD")
+    return {"total_count": total, "check_runs": current}
 
 
 def _rotating_owner_window(pulls: list[dict], *, slot: int) -> tuple[list[dict], int]:
@@ -203,7 +244,7 @@ def discover(*, slot: int | None = None) -> dict:
         if not any(is_trust_root(path, roots) for path in paths):
             continue
         detail = api(f"pulls/{pr_number}")
-        checks = api(f"commits/{sha}/check-runs?per_page=100")
+        checks = _exact_head_checks(sha)
         try:
             validate_evidence(detail, files, checks,
                               requested_pr=pr_number, requested_sha=sha)
@@ -271,7 +312,7 @@ def verify_git_source(base: str, main_sha: str, source_sha: str, paths: list[str
 def preflight(pr_number: int, source_sha: str) -> tuple[str, list[str], str]:
     pr = api(f"pulls/{pr_number}")
     files = api(f"pulls/{pr_number}/files?per_page=100")
-    checks = api(f"commits/{source_sha}/check-runs?per_page=100")
+    checks = _exact_head_checks(source_sha)
     base, paths = validate_evidence(pr, files, checks,
                                     requested_pr=pr_number, requested_sha=source_sha)
     main_sha = call("git", "rev-parse", "refs/remotes/origin/main")
