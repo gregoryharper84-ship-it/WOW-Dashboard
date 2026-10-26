@@ -145,7 +145,7 @@ def test_upset_lane_requires_verified_underdog_status():
 
 def _certified_sample_evidence(sport: str = "NBA") -> dict:
     from datetime import datetime, timedelta, timezone
-    from v17.cross_sport_evidence_integrity import TEAM_ROSTER_SPORTS
+    from v17.cross_sport_evidence_integrity import CRITICAL_STATUS_CONTRACT, TEAM_ROSTER_SPORTS
 
     start = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
 
@@ -155,6 +155,9 @@ def _certified_sample_evidence(sport: str = "NBA") -> dict:
             "snapshot_id": f"snapshot-{index}",
             "source_id": f"source-{index}",
             "verification_status": "VERIFIED",
+            "critical_status_contract": CRITICAL_STATUS_CONTRACT[sport],
+            "critical_status": "PASS",
+            "critical_status_snapshot_id": f"critical-{index}",
             "source_timestamp": (start - timedelta(hours=3)).isoformat(),
             "effective_at": (start - timedelta(days=1)).isoformat(),
             "latest_material_update_at": (start - timedelta(hours=3)).isoformat(),
