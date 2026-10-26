@@ -212,6 +212,13 @@ def model_restoration_acceptance(
             blockers.append("PRODUCT_" + key.upper() + "_UNPROVEN")
     if not valid_numeric_package(product_receipt):
         blockers.append("PRODUCT_NUMERIC_PACKAGE_UNPROVEN")
+    expected = product_receipt.get("requested_canonical_count")
+    terminal = product_receipt.get("verified_terminal_count")
+    if (type(expected) is not int or expected < 1
+            or type(terminal) is not int or terminal != expected
+            or not _nonempty(product_receipt.get("scope_evidence_ref"))
+            or product_receipt.get("terminal_receipts_reconciled_verified") is not True):
+        blockers.append("PRODUCT_EXACT_SCOPE_RECEIPTS_UNPROVEN")
     if product_receipt.get("event_status") == "LIVE" and product_receipt.get("dedicated_live_specialist_certified") is not True:
         blockers.append("PRODUCT_LIVE_MODEL_UNCERTIFIED")
     if product_receipt.get("run_id") != closure_receipt.get("action_run_id"):
