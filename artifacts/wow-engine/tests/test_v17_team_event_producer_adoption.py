@@ -217,6 +217,7 @@ def _admitted_fixture(sport):
         "sport": sport,
         "official_event_id": envelope["official_event_id"],
         "prediction_id": envelope["prediction_id"],
+        "feature_consumption_receipt_id": "receipt-100",
         "model_artifact_version": envelope["model_artifact_version"],
         "model_timestamp": envelope["model_timestamp"],
         "cross_sport_evidence": envelope,
@@ -302,3 +303,24 @@ def test_unauthenticated_source_envelope_never_creates_positive(sport):
     assert got["source_snapshot_id"] is None
     assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
     assert got["scorer_numeric_vector_hash"] is None
+
+
+@pytest.mark.parametrize("sport", EXPECTED_TEAM_EVENT_SPORTS)
+def test_stale_reported_audit_cannot_override_mutated_frozen_evidence(sport):
+    result, receipt = _admitted_fixture(sport)
+    # Producer attested the original vector; a later mutation cannot reuse
+    # the immutable preflight receipt to claim a positive admission.
+    result["cross_sport_evidence"]["model_consumed_feature_hash"] = "c" * 64
+    got = _inspect(sport, result, receipt)
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
+    assert got["publication_authority"] is False
+    assert "PRODUCER_ATTESTATION_NOT_ENROLLED_OR_NOT_PASS" in got["blockers"]
+
+
+@pytest.mark.parametrize("sport", EXPECTED_TEAM_EVENT_SPORTS)
+def test_postscoring_model_timestamp_mutation_blocks_diagnostic_pass(sport):
+    result, receipt = _admitted_fixture(sport)
+    result["model_timestamp"] = "2026-10-26T18:45:00+00:00"
+    got = _inspect(sport, result, receipt)
+    assert got["status"] == "PRODUCER_PROOF_INCOMPLETE"
+    assert got["can_execute"] is False
