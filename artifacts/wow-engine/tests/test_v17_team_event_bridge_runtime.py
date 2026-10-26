@@ -274,3 +274,73 @@ def test_three_team_research_card_requires_three_valid_fresh_packages():
     assert result["rank_eligible"] is True
     assert result["blockers"] == []
     assert result["can_execute"] is False
+
+
+def test_cross_sport_enforcement_registration_requires_backend_verifier():
+    with pytest.raises(ValueError, match="certified cross-sport evidence verifier required"):
+        _register(
+            "NBA",
+            lambda *args, **kwargs: _valid_package("nba-evidence"),
+            evidence_integrity_required=True,
+        )
+    assert "NBA" not in TEAM_EVENT_BRIDGES
+
+
+def test_model_scorer_cannot_self_attest_evidence_status():
+    def scorer(*args, **kwargs):
+        result = _valid_package("nba-evidence")
+        result["cross_sport_evidence"] = {"claimed": "VERIFIED"}
+        result["cross_sport_evidence_attested"] = True
+        result["cross_sport_evidence_required"] = False
+        return result
+
+    _register(
+        "NBA",
+        scorer,
+        evidence_integrity_required=True,
+        evidence_attestation_verifier=lambda envelope, model_result: False,
+    )
+    result = _score(_request("NBA"))
+    assert result["cross_sport_evidence_required"] is True
+    assert result["cross_sport_evidence_attested"] is False
+    assert result["cross_sport_evidence_producer_status"] == "UNVERIFIED"
+    assert result["calibrated_probability"] == 0.72
+    assert result["can_execute"] is False
+
+
+def test_registered_backend_verifier_can_attest_model_result_only_when_enrolled():
+    def scorer(*args, **kwargs):
+        result = _valid_package("nba-evidence")
+        result["cross_sport_evidence"] = {"trusted_snapshot_id": "verified-source-1"}
+        return result
+
+    verifier = lambda envelope, model_result: (
+        envelope.get("trusted_snapshot_id") == "verified-source-1"
+        and model_result.get("candidate_id") == "nba-evidence"
+    )
+    _register(
+        "NBA",
+        scorer,
+        evidence_integrity_required=True,
+        evidence_attestation_verifier=verifier,
+    )
+    result = _score(_request("NBA"))
+    assert result["cross_sport_evidence_attested"] is True
+    assert result["cross_sport_evidence_producer_status"] == "VERIFIED"
+    assert team_event_bridge_health()["NBA"]["cross_sport_evidence_verifier_registered"] is True
+
+
+def test_legacy_scorer_evidence_claim_never_activates_enrollment():
+    def scorer(*args, **kwargs):
+        result = _valid_package("nba-unenrolled")
+        result["cross_sport_evidence"] = {"claimed": "VERIFIED"}
+        result["cross_sport_evidence_attested"] = True
+        result["cross_sport_evidence_required"] = True
+        return result
+
+    _register("NBA", scorer)
+    result = _score(_request("NBA"))
+    assert result["cross_sport_evidence_required"] is False
+    assert result["cross_sport_evidence_attested"] is False
+    assert result["cross_sport_evidence_producer_status"] == "NOT_ENROLLED"
+    assert team_event_bridge_health()["NBA"]["cross_sport_evidence_enforced"] is False
