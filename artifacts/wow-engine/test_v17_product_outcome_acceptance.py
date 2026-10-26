@@ -96,6 +96,8 @@ def valid_product():
         "sirt_independent_verification": True,
         "run_id": "run-1", "deployed_sha": "b" * 40,
         "requested_canonical_count": 1, "verified_terminal_count": 1,
+        "requested_candidate_ids": ["evt-1"],
+        "verified_terminal_candidate_ids": ["evt-1"],
         "scope_evidence_ref": "source:run-1",
         "terminal_receipts_reconciled_verified": True,
     })
@@ -501,3 +503,68 @@ def test_model_restoration_closure_requires_same_persisted_terminal_identity(ide
     assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
     assert "PRODUCT_TERMINAL_RECEIPT_IDENTITY_UNPROVEN" in result["blockers"]
     assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("bad_scope", [
+    {"requested_candidate_ids": None},
+    {"verified_terminal_candidate_ids": None},
+    {"requested_candidate_ids": ["other-market"]},
+    {"verified_terminal_candidate_ids": ["substituted-market"]},
+    {"requested_candidate_ids": ["evt-1", "evt-1"]},
+    {"verified_terminal_candidate_ids": ["evt-1", "evt-1"]},
+    {"requested_candidate_ids": "evt-1"},
+    {"verified_terminal_candidate_ids": [""]},
+    {"requested_candidate_ids": [True]},
+])
+def test_model_closure_requires_exact_original_single_market_ids(bad_scope):
+    product = {**valid_product(), **bad_scope}
+    result = model_restoration_acceptance(valid_closure(), product)
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "PRODUCT_EXACT_SCOPE_IDENTITIES_UNPROVEN" in result["blockers"]
+
+
+def test_model_closure_does_not_replace_two_original_markets_with_two_substitutes():
+    product = {
+        **valid_product(),
+        "requested_canonical_count": 2,
+        "verified_terminal_count": 2,
+        "requested_candidate_ids": ["source-market-1", "source-market-2"],
+        "verified_terminal_candidate_ids": ["source-market-1", "substituted-market"],
+        "candidate_id": "source-market-1",
+        "terminal_receipt_source_candidate_id": "source-market-1",
+    }
+    result = model_restoration_acceptance(valid_closure(), product)
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "PRODUCT_EXACT_SCOPE_IDENTITIES_UNPROVEN" in result["blockers"]
+
+
+def test_model_closure_accepts_identical_unique_27_source_ids_in_different_order():
+    ids = [f"source-market-{i}" for i in range(27)]
+    product = {
+        **valid_product(),
+        "requested_canonical_count": 27,
+        "verified_terminal_count": 27,
+        "requested_candidate_ids": ids,
+        "verified_terminal_candidate_ids": list(reversed(ids)),
+        "candidate_id": ids[0],
+        "terminal_receipt_source_candidate_id": ids[0],
+    }
+    result = model_restoration_acceptance(valid_closure(), product)
+    assert result["status"] == "FIXED_AND_VERIFIED"
+    assert result["blockers"] == ()
+
+
+def test_model_closure_disallows_duplicate_27_terminal_ids_despite_count_match():
+    ids = [f"source-market-{i}" for i in range(27)]
+    product = {
+        **valid_product(),
+        "requested_canonical_count": 27,
+        "verified_terminal_count": 27,
+        "requested_candidate_ids": ids,
+        "verified_terminal_candidate_ids": ids[:-1] + [ids[0]],
+        "candidate_id": ids[0],
+        "terminal_receipt_source_candidate_id": ids[0],
+    }
+    result = model_restoration_acceptance(valid_closure(), product)
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "PRODUCT_EXACT_SCOPE_IDENTITIES_UNPROVEN" in result["blockers"]
