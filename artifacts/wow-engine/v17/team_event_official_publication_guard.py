@@ -251,12 +251,9 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
             if governance.get(field) != expected:
                 blockers.append(f"TEAM_EVENT_LLP_GOVERNANCE_NOT_PROVEN:{field}")
 
-    # Cross-sport preflight is enforced when an authenticated backend producer
-    # explicitly opts this result into the V17 evidence-proof contract, or
-    # supplies an evidence envelope. Older scorers without a certified producer
-    # stay visibly NOT_ENFORCED rather than being called evidence-verified.
-    # A later rollout must set cross_sport_evidence_required at the trusted
-    # producer; untrusted callers must not be able to turn the gate off.
+    # A backend bridge can enable this only with a registered trusted verifier.
+    # Never self-certify a score merely because its payload includes a plausible
+    # snapshot or a producer-authentication string supplied by research.
     evidence_required = payload.get("cross_sport_evidence_required") is True
     evidence_envelope = payload.get("cross_sport_evidence")
     evidence_audit: dict[str, Any] = {
@@ -264,8 +261,20 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
         "blockers": [],
         "can_execute": False,
     }
-    if evidence_required or evidence_envelope is not None:
-        if isinstance(evidence_envelope, Mapping):
+    if evidence_required:
+        if payload.get("cross_sport_evidence_attested") is not True:
+            evidence_audit = {
+                "evidence_status": "HELD",
+                "blockers": ["TRUSTED_EVIDENCE_PRODUCER_ATTESTATION_MISSING"],
+                "can_execute": False,
+            }
+        elif not isinstance(evidence_envelope, Mapping):
+            evidence_audit = {
+                "evidence_status": "HELD",
+                "blockers": ["REQUIRED_CROSS_SPORT_EVIDENCE_ENVELOPE_MISSING"],
+                "can_execute": False,
+            }
+        else:
             evidence_audit = audit_cross_sport_evidence_integrity(evidence_envelope)
             if (
                 payload.get("sport")
@@ -273,6 +282,9 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
             ) or (
                 payload.get("official_event_id")
                 and str(payload["official_event_id"]).strip() != evidence_audit["official_event_id"]
+            ) or (
+                payload.get("prediction_id")
+                and str(payload["prediction_id"]).strip() != str(evidence_envelope.get("prediction_id") or "")
             ):
                 evidence_audit = dict(evidence_audit)
                 evidence_audit["evidence_status"] = "HELD"
@@ -280,14 +292,16 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
                     *evidence_audit["blockers"],
                     "SCORED_EVENT_EVIDENCE_IDENTITY_MISMATCH",
                 ]
-        else:
-            evidence_audit = {
-                "evidence_status": "HELD",
-                "blockers": ["REQUIRED_CROSS_SPORT_EVIDENCE_ENVELOPE_MISSING"],
-                "can_execute": False,
-            }
         if evidence_audit["evidence_status"] != "PASS":
             blockers.append("TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED")
+    elif evidence_envelope is not None:
+        # The flag is set by the trusted bridge registration, not by research.
+        # A stray envelope is visible as unadmitted evidence, never PASS.
+        evidence_audit = {
+            "evidence_status": "NOT_ENFORCED",
+            "blockers": ["UNENROLLED_EVIDENCE_CANNOT_PROVE_PUBLICATION"],
+            "can_execute": False,
+        }
 
     blockers = list(dict.fromkeys(blockers))
     allowed = not blockers
