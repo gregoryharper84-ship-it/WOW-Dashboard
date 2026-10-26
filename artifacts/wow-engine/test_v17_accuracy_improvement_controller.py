@@ -136,6 +136,7 @@ def test_reused_model_receipt_held_for_both_rows():
 def test_cross_split_event_leakage():
     payload = case(3)
     payload["offers"][2]["event_id"] = "event-1"
+    payload["evidence_by_offer_id"]["offer-2"]["settlement"]["event_id"] = "event-1"
     assert evaluate_experiment(payload)["held_codes"]["CROSS_SPLIT_EVENT_LEAKAGE"] == 2
 
 def test_reverse_chronological_split_leakage():
@@ -151,6 +152,8 @@ def test_double_double_separate_route():
                  offer_type="COMPOUND", route="NBA_DOUBLE_DOUBLE")
     for name in ("champion", "challenger"):
         payload["evidence_by_offer_id"]["offer-0"][name]["route"] = "NBA_DOUBLE_DOUBLE"
+    for field in ("stat", "threshold_label", "offer_type"):
+        payload["evidence_by_offer_id"]["offer-0"]["settlement"][field] = offer[field]
     assert evaluate_experiment(payload)["paired_research_rows"] == 1
     offer["route"] = "NBA_POINTS"
     with pytest.raises(ExperimentInputError, match="COMPOUND_REQUIRES_SEPARATE_ROUTE"):
