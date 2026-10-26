@@ -264,6 +264,46 @@ def fit_total_goals_candidate(
         validation_dataset_hash=_hash([asdict(r) for r in val]),
     )
     val_mean = _mean(val_x, artifact)
+    # Exploratory parity comparison. The 2024-25 holdout was consulted when
+    # selecting parity as a challenger: it is NO LONGER an untouched test set.
+    from v17.nhl_total_goals_parity_challenger import (
+        fit_parity_calibration, parity_adjusted_research_outcomes,
+    )
+    parity_cal = fit_parity_calibration(cal, season=CALIBRATION_SEASON)
+    odd_share = parity_cal["odd_total_share"]
+    predicted_parity_u55 = np.asarray([
+        parity_adjusted_research_outcomes(float(mu), odd_share, line=5.5, side="UNDER")[
+            "research_win_probability"
+        ] for mu in val_mean
+    ])
+    predicted_parity_six = np.asarray([
+        parity_adjusted_research_outcomes(float(mu), odd_share, line=6.0, side="UNDER")[
+            "research_push_probability"
+        ] for mu in val_mean
+    ])
+    observed_under = np.asarray([r.total_goals <= 5 for r in val], dtype=float)
+    observed_six = np.asarray([r.total_goals == 6 for r in val], dtype=float)
+    predicted_poisson_u55 = poisson.cdf(5, val_mean)
+    brier_gain = (
+        np.square(predicted_poisson_u55 - observed_under)
+        - np.square(predicted_parity_u55 - observed_under)
+    )
+    parity_comparison = {
+        "status": "EXPLORATORY_DEVELOPMENT_COMPARISON_ONLY",
+        "holdout_used_during_model_selection": True,
+        "calibration_odd_share": float(odd_share),
+        "under55_parity_brier": float(np.mean(np.square(predicted_parity_u55 - observed_under))),
+        "under55_poisson_brier": float(np.mean(np.square(predicted_poisson_u55 - observed_under))),
+        "paired_under55_brier_improvement": float(np.mean(brier_gain)),
+        "paired_under55_brier_standard_error": float(
+            np.std(brier_gain, ddof=1) / np.sqrt(len(brier_gain))
+        ),
+        "parity_predicted_exact_six_probability": float(np.mean(predicted_parity_six)),
+        "poisson_predicted_exact_six_probability": float(np.mean(poisson.pmf(6, val_mean))),
+        "observed_exact_six_frequency": float(np.mean(observed_six)),
+        "calibrated_lower_bound": None,
+        "probability_publishable": False, "can_execute": False,
+    }
     # Historical constant-rate Poisson is a research baseline only, not an input/prior.
     baseline_rate = float(np.mean(train_y))
     baseline_mean = np.full(len(val), baseline_rate)
@@ -274,6 +314,7 @@ def fit_total_goals_candidate(
         "forward_reserve_n": len(reserve), "fixed_alpha": FIXED_ALPHA,
         "validation": _metrics(val, val_mean),
         "constant_baseline_validation": _metrics(val, baseline_mean),
+        "parity_research_comparison": parity_comparison,
         "training_dataset_hash": artifact.train_dataset_hash,
         "calibration_dataset_hash": artifact.calibration_dataset_hash,
         "validation_dataset_hash": artifact.validation_dataset_hash,
