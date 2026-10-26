@@ -258,6 +258,10 @@ def test_controller_reuses_existing_schedule_and_app_not_owner_token():
     assert "schedule" in triggers
     assert "workflow_run" in triggers
     assert "workflow_dispatch" in triggers
+    observer = wf["jobs"]["adoption-readonly-preflight"]
+    assert "concurrency" not in observer
+    assert "environment" not in observer
+    assert "engineering_authorized_adoption.py discover" in str(observer["steps"])
     steps = wf["jobs"]["adopt-reviewed-owner-source"]["steps"]
     tokens = [step for step in steps if "Mint authenticated Engineering App token" == step.get("name")]
     assert len(tokens) == 1
@@ -479,11 +483,17 @@ def test_ci_completion_wakes_existing_single_writer_adoption():
     assert "wow-v17-independent-qa-check" in hold
     assert "wow-v17-release-authority-check" in hold
     assert "wow-verify" not in hold
+    observer = wf["jobs"]["adoption-readonly-preflight"]
+    expr = observer["if"]
     adopter = wf["jobs"]["adopt-reviewed-owner-source"]
-    expr = adopter["if"]
+    assert adopter["needs"] == "adoption-readonly-preflight"
+    assert adopter["if"] == "needs.adoption-readonly-preflight.outputs.status == 'SOURCE_READY'"
+    assert "concurrency" not in observer
     assert "github.event.workflow_run.conclusion == 'success'" in expr
     assert "github.event.workflow_run.event == 'pull_request'" in expr
     assert "github.event.workflow_run.head_repository.full_name == github.repository" in expr
     assert "github.event.workflow_run.name == 'wow-verify'" in expr
     assert "github.event.workflow_run.name == 'wow-engine-verify'" in expr
     assert "wow-v17-engineering-implementation-single-writer" in str(adopter["concurrency"])
+    assert "SOURCE_PR: ${{ needs.adoption-readonly-preflight.outputs.pr_number }}" in str(adopter["steps"])
+    assert "SOURCE_SHA: ${{ needs.adoption-readonly-preflight.outputs.source_sha }}" in str(adopter["steps"])
