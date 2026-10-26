@@ -778,7 +778,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           CURSOR_HANDOFF_ENABLED: ${{ vars.CURSOR_HANDOFF_ENABLED }}
-          CURSOR_SPEND_CAP_CONFIRMED: ${{ vars.CURSOR_SPEND_CAP_CONFIRMED }}
           CURSOR_PR_NUMBER: ${{ inputs.cursor_pr_number }}
           CURSOR_INCIDENT: ${{ inputs.target_incident }}
           CURSOR_EXPECTED_HEAD: ${{ inputs.cursor_expected_head }}
@@ -792,13 +791,9 @@ jobs:
             echo "::error::CURSOR_HANDOFF_DISABLED"
             exit 1
           fi
-          # This opt-in is an owner's attestation, NOT a provider-enforced price cap.
-          # Never launch while additional spending controls have not been confirmed.
-          if [ "${CURSOR_SPEND_CAP_CONFIRMED:-false}" != "true" ]; then
-            printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_SPEND_CAP_UNCONFIRMED","can_execute":false,"production_verified":false}\n' > "$receipt"
-            echo "::error::CURSOR_SPEND_CAP_UNCONFIRMED"
-            exit 1
-          fi
+          # The owner confirmed a $30 Cursor account-level spending cap on 2026-10-24.
+          # A second GitHub attestation is redundant. Cursor HTTP 402/429 billing or
+          # rate-limit rejections remain fail-closed in cursor_cloud_handoff.py.
           if [ -z "${CURSOR_PR_NUMBER:-}" ] || [ -z "${CURSOR_INCIDENT:-}" ] || [ -z "${CURSOR_EXPECTED_HEAD:-}" ] || [ -z "${CURSOR_TASK:-}" ]; then
             printf '{"status":"BLOCKED_WITH_EXACT_REASON","code":"CURSOR_DISPATCH_INPUTS_MISSING","can_execute":false,"production_verified":false}\n' > "$receipt"
             echo "::error::CURSOR_DISPATCH_INPUTS_MISSING"
