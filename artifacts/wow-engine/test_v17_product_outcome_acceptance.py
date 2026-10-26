@@ -31,6 +31,7 @@ def req(**overrides):
     result = {
         "request_id": "req-1", "supported": True,
         "output_delivered_verified": True,
+        "expected_canonical_count": 1, "scope_evidence_ref": "source:run-1",
         "provider_attempts": 1, "repair_cycles": 0,
     }
     result.update(overrides)
@@ -162,7 +163,7 @@ def test_empty_snapshot_not_green_or_divided_by_zero():
 def test_no_candidates_must_be_explicitly_attested():
     assert product_outcome_scorecard([req()], [])["completed_requests"] == 0
     assert product_outcome_scorecard(
-        [req(no_current_candidates_verified=True)], [],
+        [req(expected_canonical_count=0, no_current_candidates_verified=True)], [],
     )["completed_requests"] == 1
 
 
@@ -213,3 +214,57 @@ def test_model_repair_must_not_false_close(closure_change, product_change, code)
     r = model_restoration_acceptance(closure, product)
     assert r["status"] == "BLOCKED_WITH_EXACT_REASON"
     assert any(code in item for item in r["blockers"])
+
+
+def test_historical_27_market_partial_replay_never_claims_full_board():
+    # Exact scope known independently: eight returned holds/rows cannot close 27.
+    rows = [scored(candidate_id=f"source-row-{i}") for i in range(8)]
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=27, scope_evidence_ref="source:27-market-transcription")],
+        rows,
+    )
+    assert result["rows_missing_from_declared_scope"] == 19
+    assert result["rows_unresolved"] == 19
+    assert result["candidate_conservation_rate"] == pytest.approx(8 / 27)
+    assert result["product_outcome_completion_rate"] == 0
+    assert result["first_pass_completion_rate"] == 0
+    assert not result["audit_complete"]
+    assert any("SCOPE_COUNT_MISMATCH:8/27" in issue for issue in result["findings"])
+
+
+@pytest.mark.parametrize("bad_count", [None, True, -1, 1.5, "27"])
+def test_supported_scope_requires_verified_integer_denominator(bad_count):
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=bad_count)], [scored()],
+    )
+    assert result["completed_requests"] == 0
+    assert result["candidate_conservation_rate"] is None
+    assert any("SCOPE_UNATTESTED" in issue for issue in result["findings"])
+
+
+def test_empty_source_reference_cannot_authorize_full_board():
+    result = product_outcome_scorecard(
+        [req(scope_evidence_ref="")], [scored()],
+    )
+    assert result["completed_requests"] == 0
+    assert not result["audit_complete"]
+
+
+def test_duplicate_canonical_row_prevents_request_completion():
+    result = product_outcome_scorecard([req()], [scored(), scored()])
+    assert result["completed_requests"] == 0
+    assert not result["audit_complete"]
+
+
+def test_scored_row_missing_proof_invalidates_entire_request_completion():
+    result = product_outcome_scorecard(
+        [req()], [scored(calibrated_probability=float("nan"))],
+    )
+    assert result["completed_requests"] == 0
+
+
+def test_zero_market_empty_source_must_be_explicitly_attested():
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=0, no_current_candidates_verified=False)], [],
+    )
+    assert result["completed_requests"] == 0
