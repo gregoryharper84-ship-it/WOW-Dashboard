@@ -6,6 +6,7 @@ import hashlib
 from datetime import date, datetime
 import gzip
 import io
+import json
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -530,6 +531,27 @@ def score_nfl_team_event(req: Any, *, db: Any) -> dict[str, Any]:
         raise
     except Exception as exc:
         raise NFLModelScorerFailed("NFL_FITTED_SCORER_FAILED") from exc
+
+
+    # Bind the *already executed* calibration operation to this exact request.
+    # An idempotent reused prediction only ever returns its stored snapshot:
+    # older snapshots without evidence cannot be backfilled or attested here.
+    produced = model_result.get("calibration_operation_receipt")
+    if isinstance(produced, dict) and produced.get("status") == "COMPLETED":
+        bound = {
+            **produced,
+            "research_run_id": str(req.research_run_id),
+            "prediction_identity_key": prediction_identity_key,
+            "official_event_id": canonical_game_id,
+            "event_key": str(req.event_key),
+            "requested_slate_date": str(req.requested_slate_date),
+            "event_start_time_utc": str(req.event_start_time_utc),
+            "source_snapshot_id": str(req.source_snapshot_id),
+            "source_snapshot_timestamp": str(req.latest_material_update_timestamp),
+        }
+        encoded = json.dumps(bound, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        bound["evidence_sha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        model_result["calibration_operation_receipt"] = bound
 
     home_probability = float(model_result["calibrated_home_probability"])
     if home_probability >= 0.5:
