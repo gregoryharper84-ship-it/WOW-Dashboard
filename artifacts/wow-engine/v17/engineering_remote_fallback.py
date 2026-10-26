@@ -253,7 +253,7 @@ def reconcile(api, comments, incident=""):
 
 def fallback(env, api, assignment_api, manifest, main_sha):
     """Admission is metadata-only; no issue text or process environment is sent."""
-    result = receipt("CURSOR_NOT_CONFIGURED")
+    result = receipt("COPILOT_NOT_CONFIGURED")
     if not (
         env.get("WOW_COPILOT_FALLBACK_ENABLED") == "true"
         and env.get("COPILOT_ASSIGNMENT_TOKEN")

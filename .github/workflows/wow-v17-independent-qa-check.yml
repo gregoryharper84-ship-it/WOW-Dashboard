@@ -14,7 +14,9 @@ run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inp
 
 on:
   workflow_run:
-    workflows: [wow-verify, wow-engine-verify, wow-v17-rapid-repair, wow-v17-change-impact-gate, wow-v17-trusted-governance-gate]
+    # Break the QA -> existing PR certifier -> trusted gate -> QA completion loop.
+    # Retain all genuine regression triggers and manual exact-head QA.
+    workflows: [wow-verify, wow-engine-verify, wow-v17-rapid-repair, wow-v17-change-impact-gate]
     types: [completed]
   workflow_dispatch:
     inputs:

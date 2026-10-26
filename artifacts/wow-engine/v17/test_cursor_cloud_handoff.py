@@ -395,7 +395,8 @@ class HandoffTests(unittest.TestCase):
         cursor_job = workflow["jobs"]["independent-provider"]
         self.assertIn("steps.remote_fence.outcome == 'success'", cursor_dispatch)
         self.assertIn("needs.provider-control.outputs.cursor_dispatch == 'true'", cursor_job["if"])
-        self.assertIn("remote_fence.outcome == 'failure'", provider_control["outputs"]["fallback_required"])
+        self.assertIn("steps.remote_fence.outcome == 'success'", provider_control["outputs"]["fallback_required"])
+        self.assertNotIn("remote_fence.outcome == 'failure'", provider_control["outputs"]["fallback_required"])
 
     def test_invalid_agent_receipt_fails_closed(self):
         for response in (

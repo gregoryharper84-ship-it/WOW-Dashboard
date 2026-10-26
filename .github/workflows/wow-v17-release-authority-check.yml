@@ -174,6 +174,18 @@ jobs:
           [ "$current_review_active" != "true" ] || gather_args+=(--current-review-active)
           [ "$review_mode" != "legacy" ] || gather_args+=(--legacy-review-policy)
           python "$tool" "${gather_args[@]}" > "$ev"
+          readiness=$(python "$tool" classify-release-readiness --evidence "$ev")
+          disposition=$(jq -er '.disposition' <<<"$readiness")
+          if [ "$disposition" = "pending" ]; then
+            checks=$(jq -er '.pending_checks | join(", ")' <<<"$readiness")
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::RELEASE_QA_EVIDENCE_PENDING:$checks (no check published)"
+            echo "Release deferred until exact-head native regression completes: $checks. No Release check published." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [ "$disposition" = "ready" ] || {
+            echo "::error::RELEASE_READINESS_DISPOSITION_INVALID"; exit 1;
+          }
           python "$tool" decide-release --evidence "$ev" --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" > "$out/decision-$pr.json"
           echo "count=1" >> "$GITHUB_OUTPUT"
           echo "RELEASE decision: PR $pr at $head using QA mode $review_mode" >> "$GITHUB_STEP_SUMMARY"
