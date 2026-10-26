@@ -449,6 +449,8 @@ def verify_gemini_worker_completion(
         "source_run_id": provenance["source_run_id"],
         "source_run_attempt": provenance["source_run_attempt"],
         "source_head_sha": source_sha,
+        "artifact_id": provenance["artifact_id"],
+        "artifact_digest": provenance["artifact_digest"],
         "target_incident": str(issue_number),
         "issue_number": issue_number,
         "lease_group": lease_group,
