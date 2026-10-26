@@ -132,6 +132,7 @@ def product_outcome_scorecard(
 
     unique_requests: set[str] = set()
     supported_count = 0
+    supported_request_ids: set[str] = set()
     completed_count = 0
     first_pass_count = 0
     missing_rows = 0
@@ -147,6 +148,7 @@ def product_outcome_scorecard(
                 issues.append(f"REQUEST_{i}_SUPPORT_UNATTESTED")
             continue
         supported_count += 1
+        supported_request_ids.add(rid)
         dispositions = per_request.get(rid, [])
         expected = req.get("expected_canonical_count")
         # The source/discovery inventory must attest the intended denominator.
@@ -165,7 +167,7 @@ def product_outcome_scorecard(
         # A matching row count does not prove the same original market labels
         # survived. Multi-candidate boards must supply the exact source IDs.
         expected_ids = req.get("expected_candidate_ids")
-        if expected > 1 or expected_ids is not None:
+        if expected > 0 or expected_ids is not None:
             ids_valid = (
                 isinstance(expected_ids, (list, tuple))
                 and len(expected_ids) == expected
@@ -206,6 +208,12 @@ def product_outcome_scorecard(
     for rid in per_request:
         if rid not in unique_requests:
             issues.append("ROW_REQUEST_NOT_IN_INVENTORY:" + rid)
+            unknown_scope = True
+            unknown_eligibility = True
+        elif rid not in supported_request_ids:
+            issues.append("ROW_REQUEST_NOT_SUPPORTED:" + rid)
+            unknown_scope = True
+            unknown_eligibility = True
 
     canonical_count = len(seen)
     accounted_count = canonical_count + missing_rows
@@ -230,7 +238,7 @@ def product_outcome_scorecard(
         "product_outcome_completion_rate": completed_count / supported_count if supported_count else None,
         "first_pass_completion_rate": first_pass_count / supported_count if supported_count else None,
         "eligible_candidates": eligible_count if not unknown_eligibility else None,
-        "rank_eligible_candidates": rank_eligible_count,
+        "rank_eligible_candidates": rank_eligible_count if not unknown_eligibility else None,
         "reliable_decision_availability": (
             rank_eligible_count / eligible_count if eligible_count and not unknown_eligibility else None
         ),
