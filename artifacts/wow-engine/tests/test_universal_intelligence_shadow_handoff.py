@@ -93,6 +93,10 @@ def test_snapshot_forgery_and_poststart_blocked(change, code):
     ({"source_attestation": "CERTIFIED"}, "INTEL_SHADOW_ROW_AUTHORITY_CONFLICT"),
     ({"retrieved_at": "2026-10-25T21:00:00+00:00"}, "INTEL_SHADOW_CHRONOLOGY_INVALID"),
     ({"source_reference": "forged"}, "INTEL_SHADOW_SOURCE_REFERENCE_INVALID"),
+    ({"source_reference": "b" * 64}, "INTEL_SHADOW_SOURCE_REFERENCE_INVALID"),
+    ({"source_record_id": "different-original"}, "INTEL_SHADOW_SOURCE_REFERENCE_INVALID"),
+    ({"source_url": "https://altered.example.net/records/123"},
+     "INTEL_SHADOW_SOURCE_REFERENCE_INVALID"),
 ))
 def test_bad_row_authority_provenance_and_chronology(change, code):
     snap = snapshot()
