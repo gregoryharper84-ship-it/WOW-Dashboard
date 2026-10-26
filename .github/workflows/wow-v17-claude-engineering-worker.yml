@@ -628,7 +628,6 @@ jobs:
 
       - name: Record lease-fenced AMRT specialist decisions
         if: steps.mutation_gate.outputs.allowed == 'true' && github.ref == 'refs/heads/main'
-        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ steps.eng_token.outputs.token }}
