@@ -294,3 +294,81 @@ def test_protected_adoption_program_enforces_two_actual_principals():
     assert "41898282+github-actions[bot]@users.noreply.github.com" in text
     assert "wow-engineering[bot]@users.noreply.github.com" not in text
     assert "auto-merge" in text.lower()
+
+
+def test_hourly_rotation_reaches_old_and_new_owner_prs_without_extra_writers(monkeypatch):
+    """Regression: newest-first constant MAX_SCAN previously starved older PRs."""
+    sources = [source_pr(n=n, sha=f"{n:040x}") for n in range(1, 61)]
+    selected = []
+    def fetch(path):
+        if path == "pulls?state=open&base=main&per_page=100":
+            return sources
+        if path == "pulls?state=open&base=main&per_page=100&page=1":
+            return sources
+        if path.startswith("pulls?state=all&head="):
+            # Mark every candidate except the two fixtures already replayed.
+            n = int(path.split("exact-replay-")[1].split("-")[0])
+            return [] if n in {1, 60} else [{"number": 999}]
+        if path in {"pulls/1/files?per_page=100", "pulls/60/files?per_page=100"}:
+            return source_files()
+        if path == "pulls/1":
+            return sources[0]
+        if path == "pulls/60":
+            return sources[-1]
+        if path == f"commits/{sources[0]['head']['sha']}/check-runs?per_page=100":
+            return source_checks(sha=sources[0]["head"]["sha"])
+        if path == f"commits/{sources[-1]['head']['sha']}/check-runs?per_page=100":
+            return source_checks(sha=sources[-1]["head"]["sha"])
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    older = adoption.discover(slot=0)
+    newer = adoption.discover(slot=1)
+    assert (older["status"], older["pr_number"]) == ("SOURCE_READY", 1)
+    assert (newer["status"], newer["pr_number"]) == ("SOURCE_READY", 60)
+    assert older["can_execute"] is False and newer["can_execute"] is False
+
+
+def test_review_wip_cap_accounts_for_pending_app_prs_beyond_first_page(monkeypatch):
+    owner = source_pr(n=3)
+    app = lambda n: {
+        "number": n, "state": "open", "draft": False,
+        "user": {"login": adoption.APP_AUTHOR},
+        "head": {"ref": f"wow-engineering/exact-replay-{n}-aaaaaaaaaaaa",
+                 "repo": {"full_name": REPO}},
+    }
+    first = [owner, app(10), app(11)] + [
+        {"number": n, "state": "open", "draft": False,
+         "user": {"login": "another-user"}, "head": {"repo": {"full_name": REPO}}}
+        for n in range(97)
+    ]
+    assert len(first) == 100
+    def fetch(path):
+        if path in ("pulls?state=open&base=main&per_page=100",
+                    "pulls?state=open&base=main&per_page=100&page=1"):
+            return first
+        if path == "pulls?state=open&base=main&per_page=100&page=2":
+            return [app(12)]
+        raise AssertionError("review WIP must fail closed before a source read: " + path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover(slot=0)
+    assert result["detail"] == "APP_REVIEW_WIP_CAP"
+    assert result["can_execute"] is False
+
+
+def test_inventory_page_limit_does_not_silently_ignore_older_prs(monkeypatch):
+    full = [source_pr(n=n, sha=f"{n:040x}") for n in range(1, 101)]
+    def fetch(path):
+        if path.startswith("pulls?state=open&base=main&per_page=100"):
+            return full
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover(slot=0)
+    assert result["detail"] == "SOURCE_PR_INVENTORY_PAGE_CAP"
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("slot", [-1, "not-an-hour", False])
+def test_invalid_scan_slot_is_held(slot, monkeypatch):
+    monkeypatch.setattr(adoption, "api", lambda path: [])
+    with pytest.raises(adoption.AdoptionHold, match="SCAN_SLOT_INVALID_HOLD"):
+        adoption.discover(slot=slot)
