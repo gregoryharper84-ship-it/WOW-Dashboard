@@ -102,7 +102,15 @@ def inspect_lookup_readiness(
     if not isinstance(original_offers, list) or not original_offers:
         raise ReceiptReadinessError("ORIGINAL_OFFERS_REQUIRED")
     try:
-        offers = [_offer(raw) for raw in original_offers]
+        offers = []
+        for raw in original_offers:
+            offer = _offer(raw)
+            # Explicit name-binding data must come from the caller's canonical
+            # identity adapter; the controller must never parse player names
+            # out of a screenshot label.
+            if isinstance(raw, Mapping) and isinstance(raw.get("canonical_player_name"), str):
+                offer["canonical_player_name"] = raw["canonical_player_name"].strip()
+            offers.append(offer)
     except ExperimentInputError as exc:
         raise ReceiptReadinessError(str(exc)) from exc
     keys = [o["offer_id"] for o in offers]
