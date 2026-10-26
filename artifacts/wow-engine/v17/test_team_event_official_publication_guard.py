@@ -12,6 +12,7 @@ def governed_result() -> dict:
         "event_mutex_status": "PASS",
         "calibrated_probability": 0.62,
         "calibrated_lower_bound": 0.58,
+        "feature_consumption_receipt_id": "receipt-test",
         "llp_governance": {
             "probability_publishable": True,
             "rank_eligible": True,
@@ -175,6 +176,7 @@ def _certified_sample_evidence(sport: str = "NBA") -> dict:
         "official_event_updated_at": (start-timedelta(hours=3)).isoformat(),
         "prediction_id": "prediction-test",
         "scorer_official_event_id": "event-test",
+        "feature_consumption_receipt_id": "receipt-test",
         "event_start_utc": start.isoformat(),
         "model_timestamp": (start - timedelta(hours=1)).isoformat(),
         "final_refresh_status": "PASS",
