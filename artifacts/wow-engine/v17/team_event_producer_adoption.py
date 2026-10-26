@@ -15,6 +15,7 @@ import re
 from v17.cross_sport_evidence_integrity import (
     CRITICAL_STATUS_CONTRACT,
     TEAM_ROSTER_SPORTS,
+    evaluate_scored_cross_sport_evidence,
 )
 
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -62,6 +63,15 @@ def inspect_team_event_producer_adoption(
     evidence = evidence if isinstance(evidence, Mapping) else {}
     envelope = result.get("cross_sport_evidence")
     envelope = envelope if isinstance(envelope, Mapping) else {}
+    # Recalculate the governed admission contract rather than trusting stale
+    # serialized PASS text or a modified envelope after the bridge scored it.
+    # This remains diagnostic-only and cannot authenticate upstream sources.
+    current_audit = evaluate_scored_cross_sport_evidence(result)
+    audit_identity_consistent = (
+        current_audit.get("evidence_status") == "PASS"
+        and bool(_text(evidence.get("audit_id")))
+        and _text(evidence.get("audit_id")) == _text(current_audit.get("audit_id"))
+    )
 
     # These fields are written by the trusted registered bridge after its
     # verifier and deterministic cross-sport audit. The read-only diagnostic
@@ -81,6 +91,7 @@ def inspect_team_event_producer_adoption(
         result.get("cross_sport_evidence_required") is True
         and result.get("cross_sport_evidence_attested") is True
         and evidence.get("evidence_status") == "PASS"
+        and audit_identity_consistent
         and _text(evidence.get("sport")) == normalized
         and _text(envelope.get("sport")).upper() == normalized
         and identity_bound
