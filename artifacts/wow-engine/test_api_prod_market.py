@@ -502,3 +502,68 @@ def test_score_stage_timer_success_is_timing_only(caplog):
     assert "stage=prediction_persistence" in log_text
     assert "status=PASS" in log_text
     assert "private-prediction-id" not in log_text
+
+
+@pytest.mark.parametrize(
+    "designation,expected",
+    [
+        (None, "PLAYER_AVAILABILITY_UNVERIFIED"),
+        ("ACTIVE", "PLAYER_AVAILABILITY_UNVERIFIED"),
+        ("AVAILABLE", "PLAYER_AVAILABILITY_UNVERIFIED"),
+        ("QUESTIONABLE", "PLAYER_AVAILABILITY_UNVERIFIED"),
+        ("IR", "PLAYER_UNAVAILABLE"),
+        ("OUT", "PLAYER_UNAVAILABLE"),
+        ("injured reserve", "PLAYER_UNAVAILABLE"),
+    ],
+)
+def test_nfl_direct_score_prop_holds_unverified_game_eligibility_before_fitted_model(
+    monkeypatch, designation, expected
+):
+    # The actual Oct 26 Hurts failure entered through scoreWowProp with a
+    # previously frozen evidence snapshot, not /score-pick-request hydration.
+    calls = {"score": 0, "persist": 0}
+
+    def forbidden_score(**_kwargs):
+        calls["score"] += 1
+        raise AssertionError("NFL scorer must not run for roster-only evidence")
+
+    _install_common(monkeypatch, forbidden_score)
+    monkeypatch.setattr(
+        api_prod_market.prod.base_api, "_persist_fn",
+        lambda _row: calls.__setitem__("persist", calls["persist"] + 1),
+    )
+    frozen = _ready_evidence()
+    frozen["player"] = "Jalen Hurts"
+    frozen["role_status"] = {
+        "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+        "player": "Jalen Hurts",
+        "espn_athlete_id": "4040715",
+        "event_id": "401873009",
+        "canonical_event_id": "2026_07_DAL_PHI",
+        "verified_canonical_event_id": "2026_07_DAL_PHI",
+    }
+    if designation is not None:
+        frozen["role_status"]["game_availability_status"] = designation
+
+    # Independently verify the normalized retrieval path reaches the guard.
+    monkeypatch.setattr(api_prod_market, "repair_prop_evidence", lambda *_args, **_kwargs: frozen)
+    req = _request_payload()
+    req.update(
+        {
+            "sport": "NFL",
+            "player": "Jalen Hurts",
+            "event_id": "2026_07_DAL_PHI",
+            "stat_type": "ANYTIME_TD",
+            "line": 0.5,
+            "direction": "LESS",
+        }
+    )
+    response = client.post("/score-prop", json=req, headers=AUTH)
+    assert response.status_code == 422
+    body = response.json()["detail"]
+    assert body["code"] == expected
+    assert body["model_evaluated"] is False
+    assert body["specialist_invoked"] is False
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False
+    assert calls == {"score": 0, "persist": 0}
