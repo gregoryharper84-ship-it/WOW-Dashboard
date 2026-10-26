@@ -46,7 +46,7 @@ def _valid_observation(row: Mapping[str, Any]) -> bool:
     )
     if any(not _text(row.get(k)) for k in required):
         return False
-    if row.get("role") not in {"CHAMPION", "CHALLENGER"}:
+    if not isinstance(row.get("role"), str) or row.get("role") not in {"CHAMPION", "CHALLENGER"}:
         return False
     if row.get("regime") != "PREGAME":
         # A live model requires a separate independently certified replay contract.
@@ -129,6 +129,7 @@ def audit_challenger_replay(
     )
     findings: list[str] = []
     invalid_cohorts: set[tuple[str, str, str]] = set()
+    unattributed_invalid_rows = False
     seen_receipts: dict[str, tuple[str, str, str]] = {}
     seen_event_roles: dict[tuple[str, str, str, str, str], tuple[str, str, str]] = {}
     for index, row in enumerate(observations):
@@ -138,6 +139,8 @@ def audit_challenger_replay(
                 "sport", "market_family", "cohort_id"
             )):
                 invalid_cohorts.add((row["sport"], row["market_family"], row["cohort_id"]))
+            else:
+                unattributed_invalid_rows = True
             continue
         cohort = (row["sport"], row["market_family"], row["cohort_id"])
         key = (row["event_id"], row["market_id"])
@@ -163,6 +166,11 @@ def audit_challenger_replay(
         else:
             pair[role] = row
         artifact_ids[cohort][role].add(row["model_artifact_id"])
+    if unattributed_invalid_rows:
+        # Unknown identity means the unassigned record could belong to ANY cohort.
+        # Do not present a clean-looking subcohort that ignores a dropped row.
+        invalid_cohorts.update(cohorts)
+        findings.append("UNATTRIBUTED_ROW_BLOCKS_ALL_COHORTS")
     comparisons: list[dict[str, Any]] = []
     for cohort in sorted(set(cohorts) | invalid_cohorts):
         pairs = cohorts.get(cohort, {})
@@ -194,6 +202,8 @@ def audit_challenger_replay(
             mismatches.append("CHAMPION_CHALLENGER_NOT_DISTINCT")
         if cohort in invalid_cohorts:
             mismatches.append("INVALID_SOURCE_ROW")
+        if unattributed_invalid_rows:
+            mismatches.append("SOURCE_ROW_COHORT_UNATTRIBUTABLE")
         if len(champion_sq) < minimum_pairs:
             mismatches.append("INSUFFICIENT_MATCHED_SAMPLE")
         problems = sorted(set(mismatches))
