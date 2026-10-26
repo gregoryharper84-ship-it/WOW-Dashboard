@@ -347,3 +347,97 @@ def test_legacy_scorer_evidence_claim_never_activates_enrollment():
     assert result["cross_sport_evidence_attested"] is False
     assert result["cross_sport_evidence_producer_status"] == "NOT_ENROLLED"
     assert team_event_bridge_health()["NBA"]["cross_sport_evidence_enforced"] is False
+
+
+def test_full_enrolled_backend_verified_wnba_evidence_preserves_governed_probability():
+    # Synthetic contract test only; no WNBA champion model is certified here.
+    request = SimpleNamespace(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        candidate_family="TEAM_EVENT",
+        sport="WNBA",
+        league="WNBA",
+        official_event_id="event-1",
+        sport_specific_evidence={
+            "home_win_pct": 0.62,
+            "away_win_pct": 0.48,
+            "calibration_artifact": {"artifact_id": "cal-test"},
+            "feature_provenance": {
+                "home_win_pct": {"source": "test-source", "provenance_id": "h"},
+                "away_win_pct": {"source": "test-source", "provenance_id": "a"},
+                "calibration_artifact": {"source": "test-calibrator", "provenance_id": "c"},
+            },
+        },
+    )
+
+    def participant(index):
+        return {
+            "participant_id": f"side-{index}",
+            "snapshot_id": f"snapshot-{index}",
+            "verification_status": "VERIFIED",
+            "source_id": f"synthetic-source-{index}",
+            "critical_status_contract": "ROTATION_INJURY",
+            "critical_status": "PASS",
+            "critical_status_snapshot_id": f"status-{index}",
+            "roster_reconciliation_status": "PASS",
+            "personnel_snapshot_id": f"roster-{index}",
+            "source_timestamp": "2026-09-09T16:00:00+00:00",
+            "effective_at": "2026-09-08T16:00:00+00:00",
+            "latest_material_update_at": "2026-09-09T16:00:00+00:00",
+        }
+
+    def scorer(*args, **kwargs):
+        out = _valid_package("candidate-1")
+        out.update({
+            "sport": "WNBA",
+            "prediction_id": "prediction-1",
+            "official_event_id": "event-1",
+            "consumed_feature_ids": ["home_win_pct", "away_win_pct"],
+            "cross_sport_evidence": {
+                "sport": "WNBA",
+                "official_event_id": "event-1",
+                "official_event_snapshot_id": "event-source-1",
+                "scorer_official_event_id": "event-1",
+                "prediction_id": "prediction-1",
+                "official_participant_ids": ["side-1", "side-2"],
+                "participants": [participant(1), participant(2)],
+                "event_start_utc": "2026-09-09T19:00:00+00:00",
+                "model_timestamp": "2026-09-09T17:00:00+00:00",
+                "official_event_updated_at": "2026-09-09T16:00:00+00:00",
+                "current_event_status": "PREGAME",
+                "current_material_update_at": "2026-09-09T16:00:00+00:00",
+                "final_refresh_at": "2026-09-09T18:00:00+00:00",
+                "final_refresh_status": "PASS",
+                "feature_snapshot_hash": "a" * 64,
+                "model_consumed_feature_hash": "a" * 64,
+                "model_artifact_version": "fake-certified-v1",
+                "model_invoked": True,
+                "required_modules": ["hydration", "fitted_score", "calibration"],
+                "completed_modules": ["hydration", "fitted_score", "calibration"],
+                "stage_errors": [],
+            },
+        })
+        return out
+
+    _register(
+        "WNBA",
+        scorer,
+        required_inputs=("official_event_id", "home_win_pct", "away_win_pct", "calibration_artifact"),
+        feature_schema_version="WNBA_SYNTHETIC_FEATURES_V1",
+        feature_roles={"home_win_pct": "MODEL_PRIMARY", "away_win_pct": "MODEL_PRIMARY"},
+        critical_features=("home_win_pct", "away_win_pct"),
+        evidence_integrity_required=True,
+        evidence_attestation_verifier=lambda envelope, model_result: (
+            envelope.get("official_event_snapshot_id") == "event-source-1"
+            and model_result.get("prediction_id") == envelope.get("prediction_id")
+            and model_result["feature_consumption_receipt"]["receipt_complete"] is True
+        ),
+    )
+    result = _score(request)
+    assert result["feature_consumption_receipt"]["numerical_consumption_proven"] is True
+    assert result["cross_sport_evidence_attested"] is True
+    assert result["evidence_integrity_status"] == "PASS"
+    assert result["probability_publishable"] is True
+    assert result["rank_eligible"] is True
+    assert result["calibrated_probability"] == 0.72
+    assert result["calibrated_lower_bound"] == 0.66
+    assert result["can_execute"] is False
