@@ -372,3 +372,65 @@ def test_invalid_scan_slot_is_held(slot, monkeypatch):
     monkeypatch.setattr(adoption, "api", lambda path: [])
     with pytest.raises(adoption.AdoptionHold, match="SCAN_SLOT_INVALID_HOLD"):
         adoption.discover(slot=slot)
+
+
+def test_more_than_100_real_check_runs_are_admitted_without_evidence_loss(monkeypatch):
+    """Exact-head pagination does not permanently starve busy reviewed PRs."""
+    rows = [
+        {"id": i + 1, "name": "irrelevant check", "app": {"id": adoption.ACTIONS_APP_ID},
+         "status": "completed", "conclusion": "success", "head_sha": SHA}
+        for i in range(147)
+    ] + [
+        {"id": 148 + i, "name": name, "app": {"id": adoption.ACTIONS_APP_ID},
+         "status": "completed", "conclusion": "success", "head_sha": SHA}
+        for i, name in enumerate(REQUIRED)
+    ]
+    assert len(rows) == 150
+    seen = []
+    def fetch(path):
+        seen.append(path)
+        if path == f"commits/{SHA}/check-runs?per_page=100":
+            return {"total_count": 150, "check_runs": rows[:100]}
+        if path == f"commits/{SHA}/check-runs?per_page=100&page=2":
+            return {"total_count": 150, "check_runs": rows[100:]}
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    checks = adoption._exact_head_checks(SHA)
+    assert checks["total_count"] == 150
+    assert len(checks["check_runs"]) == 150
+    assert len(seen) == 2
+    base, paths = adoption.validate_evidence(
+        source_pr(), source_files(), checks,
+        requested_pr=1, requested_sha=SHA,
+    )
+    assert base == BASE and len(paths) == 2
+
+
+@pytest.mark.parametrize("bad_second,reason", [
+    ({"total_count": 151, "check_runs": [{"id": 200}]},
+     "SOURCE_CHECK_INVENTORY_INCOMPLETE_HOLD"),
+    ({"total_count": 150, "check_runs": []},
+     "SOURCE_CHECK_INVENTORY_INCOMPLETE_HOLD"),
+    ({"total_count": 150, "check_runs": [{"id": i + 1} for i in range(50)]},
+     "SOURCE_CHECK_INVENTORY_DUPLICATE_OR_INVALID_HOLD"),
+])
+def test_check_run_page_mutation_or_duplication_fails_closed(monkeypatch, bad_second, reason):
+    first = {"total_count": 150, "check_runs": [{"id": i + 1} for i in range(100)]}
+    def fetch(path):
+        if path.endswith("per_page=100"):
+            return first
+        if path.endswith("page=2"):
+            return bad_second
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    with pytest.raises(adoption.AdoptionHold, match=reason):
+        adoption._exact_head_checks(SHA)
+
+
+def test_overlarge_check_run_inventory_is_typed_hold(monkeypatch):
+    monkeypatch.setattr(
+        adoption, "api",
+        lambda path: {"total_count": adoption.MAX_CHECK_PAGES * 100 + 1, "check_runs": []},
+    )
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_CHECK_INVENTORY_PAGE_CAP_HOLD"):
+        adoption._exact_head_checks(SHA)
