@@ -35,6 +35,18 @@ concurrency:
 jobs:
   certify-existing-pr:
     name: Existing PR trusted governance certification
+    # GitHub emits check_run:completed for every App and CI job. Reject
+    # unrelated events before starting a runner; the route step still verifies
+    # live exact App/check/run/PR/SHA identity for applicable Release successes.
+    # Keep pull_request_target, workflow_dispatch and real QA workflow_run
+    # events available for normal and late independent governance.
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      (github.event_name != 'check_run' ||
+       (github.event.check_run.app.id == 5245853 &&
+        github.event.check_run.name == 'WOW Release Authority exact-head' &&
+        github.event.check_run.status == 'completed' &&
+        github.event.check_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
