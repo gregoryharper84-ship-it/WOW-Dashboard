@@ -4,6 +4,11 @@ from __future__ import annotations
 import copy
 import json
 
+from v17.engineering_agent_team import (
+    NONFINAL_OWNED_HOLDS, TERMINAL_ISSUE_STATES, closure_wip,
+    is_actionable, reliability_blocks_frontier, select_priority_incident,
+)
+
 from v17.engineering_phase12_delegation import (
     CAN_EXECUTE, DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS,
     TERMINAL_AUTHORITY, admission_receipt, validate_support_packet,
@@ -94,3 +99,40 @@ def test_malformed_checks_fail_closed():
     for data in ["none", "null", "{}", '[["status"]]', '[{"status":"completed"}]']:
         packet["check_state"] = data
         assert "SUPPORT_CHECK_STATE_INVALID" in validate_support_packet(packet)
+
+
+def test_blocked_incident_is_retained_not_retried_or_falsely_closed():
+    incident = {
+        "incident_id": "1688", "severity": "P0", "state": "BLOCKED_WITH_EXACT_REASON",
+        "current_owner": "ENGINEERING_AGENT", "next_action": "Reproduce with fresh evidence",
+        "reentry_ready": True,  # A flag alone is not a validated writer lease.
+    }
+    assert incident["state"] in NONFINAL_OWNED_HOLDS
+    assert incident["state"] not in TERMINAL_ISSUE_STATES
+    assert is_actionable(incident) is False
+    assert reliability_blocks_frontier([incident]) is True
+    decision = select_priority_incident([incident])
+    assert decision.incident_id is None
+    assert decision.frontier_allowed is False
+    counts = closure_wip([incident])
+    assert counts["nonfinal_held_owned"] == 1
+    assert counts["new_product_work_allowed"] is True
+
+
+def test_missing_owner_in_nonfinal_hold_is_visible():
+    incident = {
+        "incident_id": "1021", "severity": "P1", "state": "DEFERRED_WITH_JUSTIFICATION",
+        "current_owner": "", "next_action": "",
+    }
+    assert closure_wip([incident])["nonfinal_held_missing_handoff"] == 1
+    assert reliability_blocks_frontier([incident]) is True
+
+
+def test_only_actionable_work_reenters_and_lower_held_does_not_starve_improvement():
+    held = {"incident_id": "100", "severity": "P2", "state": "DEFERRED_WITH_JUSTIFICATION"}
+    assert is_actionable(held) is False
+    assert reliability_blocks_frontier([held]) is False
+    actionable = {"incident_id": "101", "severity": "P0", "state": "OPEN"}
+    assert select_priority_incident([held, actionable]).incident_id == "101"
+    closed = {"incident_id": "102", "severity": "P0", "state": "FIXED_AND_VERIFIED"}
+    assert select_priority_incident([closed]).frontier_allowed is True
