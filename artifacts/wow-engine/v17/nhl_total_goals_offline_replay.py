@@ -8,7 +8,6 @@ is a distinct contract from this research-only historical replay.
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
 from v17.nhl_total_goals_source_adapter import adapt_persisted_nhl_games
