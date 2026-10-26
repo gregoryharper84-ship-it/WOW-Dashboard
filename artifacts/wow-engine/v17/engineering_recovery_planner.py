@@ -80,6 +80,13 @@ def plan_recovery(
             "action": "WAITING_ON_OWNER",
             "required_actor": "INDEPENDENT_ENGINEERING_AUTHOR",
             "next_action": "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE",
+            # The existing Engineering App adoption worker owns re-entry.
+            # Preserve action for durable queue/backward compatibility only.
+            "progression_state": "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF",
+            "reentry_trigger": "EXISTING_HOURLY_ADOPTION_AND_QA_HOLD_WORKER",
+            "owner_intervention_required": False,
+            "unrelated_work_may_progress": True,
+            "release_admission": "DENIED_UNTIL_INDEPENDENT_EVIDENCE",
             "findings": list(findings),
             "non_repairable_findings": ["QA_TRUST_ROOT_OWNER_AUTHORED"],
             "attempts": attempts,
@@ -114,6 +121,13 @@ def plan_recovery(
                                else "ACTUAL_CODEOWNER"),
             "next_action": ("INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE"
                             if owner_authored else "FRESH_EXACT_HEAD_OWNER_APPROVAL"),
+            "progression_state": ("AUTOMATED_INDEPENDENT_SOURCE_HANDOFF" if owner_authored
+                                  else "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED"),
+            "reentry_trigger": ("EXISTING_HOURLY_ADOPTION_AND_QA_HOLD_WORKER" if owner_authored
+                                 else "AUTHENTIC_GITHUB_CODEOWNER_REVIEW_AT_EXACT_SHA"),
+            "owner_intervention_required": not owner_authored,
+            "unrelated_work_may_progress": True,
+            "release_admission": "DENIED_UNTIL_INDEPENDENT_EVIDENCE",
             "findings": list(findings),
             "non_repairable_findings": non_repairable,
             "attempts": attempts,
