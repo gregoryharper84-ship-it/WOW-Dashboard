@@ -41,7 +41,8 @@ def _valid_observation(row: Mapping[str, Any]) -> bool:
     required = (
         "sport", "market_family", "cohort_id", "event_id", "market_id",
         "model_artifact_id", "prediction_receipt_ref", "settlement_evidence_ref",
-        "calibration_evidence_ref", "source_snapshot_ref",
+        "calibration_evidence_ref", "source_snapshot_ref", "out_of_sample_split_ref",
+        "model_owner_principal", "settlement_verifier_principal",
     )
     if any(not _text(row.get(k)) for k in required):
         return False
@@ -53,6 +54,8 @@ def _valid_observation(row: Mapping[str, Any]) -> bool:
     if row.get("out_of_sample_verified") is not True or row.get("settlement_verified") is not True:
         return False
     if row.get("point_in_time_snapshot_verified") is not True:
+        return False
+    if row["model_owner_principal"] == row["settlement_verifier_principal"]:
         return False
     prob = row.get("calibrated_probability")
     if not _probability(prob) or type(row.get("outcome")) is not int or row["outcome"] not in (0, 1):
@@ -164,7 +167,8 @@ def audit_confirmed_recurrence(incidents: Sequence[Mapping[str, Any]]) -> dict[s
             continue
         seen.add(identifier)
         cause = row.get("confirmed_root_cause_id") or row.get("root_cause_code")
-        if row.get("root_cause_status") != "CONFIRMED" or not _text(cause):
+        if (row.get("root_cause_status") != "CONFIRMED" or not _text(cause)
+                or not _text(row.get("root_cause_evidence_ref"))):
             continue
         causes[cause].append(row)
     families = []
