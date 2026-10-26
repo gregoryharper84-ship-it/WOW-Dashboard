@@ -1651,4 +1651,11 @@ def test_existing_manual_qa_release_accept_exact_optional_head_sha(workflow_name
     assert "INPUT_HEAD_SHA: ${{ inputs.head_sha }}" in workflow
     assert "INPUT_HEAD_SHA_INVALID" in workflow
     assert "INPUT_HEAD_SHA_STALE" in workflow
-    assert "head=${{ inputs.head_sha || 'AUTO' }}" in workflow
+    # Manual exact-head validation must remain independent of GitHub's mutable
+    # display run-name. QA's pinned name is required by strict receipt clients;
+    # Release may retain its diagnostic display suffix.
+    if workflow_name == "wow-v17-independent-qa-check.yml":
+        assert "run-name: wow-v17-independent-qa-check\n" in workflow
+        assert "run-name: wow-v17-independent-qa-check event=" not in workflow
+    else:
+        assert "head=${{ inputs.head_sha || 'AUTO' }}" in workflow
