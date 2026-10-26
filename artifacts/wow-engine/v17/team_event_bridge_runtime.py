@@ -66,6 +66,10 @@ class TeamEventBridgeRegistration:
     feature_schema_version: str | None = None
     feature_roles: Mapping[str, str] | None = None
     critical_features: tuple[str, ...] = ()
+    # Set only after a sport-specific backend producer has been certified to
+    # emit an authenticated/frozen cross-sport evidence envelope. False does
+    # not claim the preflight passed; bridge health exposes non-enforcement.
+    evidence_integrity_required: bool = False
     # Season regimes this fitted artifact is contracted to score. Defaults to
     # regular season only: a regular-season model has no calibration evidence
     # for preseason, playoff, spring-training or summer-league play and must not
@@ -94,6 +98,7 @@ def register_team_event_bridge(
     feature_schema_version: str | None = None,
     feature_roles: Mapping[str, str] | None = None,
     critical_features: tuple[str, ...] | None = None,
+    evidence_integrity_required: bool = False,
     supported_regimes: tuple[str, ...] | None = None,
 ) -> TeamEventBridgeRegistration:
     """Register one exact bridge; callers must already own certification proof.
@@ -116,6 +121,7 @@ def register_team_event_bridge(
         ),
         feature_roles=dict(feature_roles) if feature_roles is not None else None,
         critical_features=tuple(critical_features or ()),
+        evidence_integrity_required=evidence_integrity_required is True,
         supported_regimes=tuple(supported_regimes or (REGULAR_SEASON,)),
         can_execute=False,
     )
@@ -249,6 +255,11 @@ def _attach_feature_consumption_receipt(
     )
     out["feature_consumption_receipt_id"] = receipt["feature_consumption_receipt_id"]
     out["feature_consumption_receipt"] = receipt
+    # The controlling scorer may provide a server-produced evidence envelope.
+    # Never construct proof from research prose or caller-supplied snapshots.
+    # The official publication guard enforces it when this registered sport
+    # is certified for the cross-sport evidence contract.
+    out["cross_sport_evidence_required"] = registration.evidence_integrity_required
     out["can_execute"] = False
     return out
 
@@ -368,6 +379,9 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
                 else TEAM_EVENT_INPUT_CONTRACTS.get(sport, ())
             ),
             "feature_consumption_receipt_enabled": registered,
+            "cross_sport_evidence_enforced": bool(
+                registration.evidence_integrity_required if registered else False
+            ),
             "feature_schema_version": (
                 registration.feature_schema_version if registered else None
             ),
