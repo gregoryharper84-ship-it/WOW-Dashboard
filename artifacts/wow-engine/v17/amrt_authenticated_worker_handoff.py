@@ -42,6 +42,10 @@ def persist_authenticated_specialist_handoff(
     # record; never copied from candidate PR source or an agent response.
     verified_latest_epoch: int,
     verified_worker_id: str,
+    # From a separate authenticated read of the canonical GitHub issue.
+    # It is NOT the temporary GitHub Actions writer principal.
+    verified_accountable_owner_id: str,
+    verified_owner_evidence_ref: str,
     observed_at: datetime,
     head_sha: str,
     supabase_url: str,
@@ -75,10 +79,19 @@ def persist_authenticated_specialist_handoff(
         raise ValueError("AMRT_VERIFIED_LEASE_EPOCH_MISSING")
     if not isinstance(verified_worker_id, str) or not _WORKER.fullmatch(verified_worker_id):
         raise ValueError("AMRT_VERIFIED_WORKER_ID_INVALID")
+    # GitHub issue accountability and the ephemeral mutation lease are two
+    # distinct, independently checked identities. Do NOT rewrite owner_id to
+    # the worker ID merely to pass a single-writer fence.
+    issue_ref = "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/" + issue
+    if (not isinstance(verified_accountable_owner_id, str)
+            or not verified_accountable_owner_id.strip()
+            or verified_accountable_owner_id != incident.get("owner_id")
+            or verified_owner_evidence_ref != issue_ref
+            or incident.get("canonical_owner_source_ref") != issue_ref):
+        raise ValueError("AMRT_ACCOUNTABLE_ISSUE_OWNER_UNVERIFIED")
     if (lease.work_item_id != issue
             or lease.worker_id != verified_worker_id
             or incident.get("lease_owner") != verified_worker_id
-            or incident.get("owner_id") != verified_worker_id
             or incident.get("lease_authority") != "EXISTING_AUTHENTICATED_ENGINEERING_WORKER"):
         raise ValueError("AMRT_CANONICAL_OWNER_OR_WRITER_MISMATCH")
 
