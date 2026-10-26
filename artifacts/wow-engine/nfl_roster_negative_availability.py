@@ -61,7 +61,8 @@ def read_espn_nfl_roster_negative(
             params={},
             headers={"User-Agent": "WOW-Research/1.0", "Accept": "application/json"},
             timeout=TIMEOUT_SECONDS,
-            follow_redirects=True,
+            # Provider evidence must never silently follow off-origin redirects.
+            follow_redirects=False,
         )
         if int(getattr(response, "status_code", 0)) != 200:
             return {**result, "reason": "SOURCE_HTTP_NOT_OK"}
