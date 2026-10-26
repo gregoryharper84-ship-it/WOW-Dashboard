@@ -154,6 +154,7 @@ def test_duplicate_thesis_never_multiplies_proof():
     assert r["rows_unique"] == 1
     assert not r["audit_complete"]
     assert "ROW_1_DUPLICATE_CANONICAL_ID" in r["findings"]
+    assert r["candidate_conservation_rate"] is None
 
 
 def test_unattributed_hold_cannot_be_counted_as_closed():
@@ -368,3 +369,15 @@ def test_held_row_without_reducer_provenance_is_not_terminal_proof():
     assert not result["audit_complete"]
     assert result["rows_unresolved"] == 1
     assert result["completed_requests"] == 0
+
+
+def test_extra_terminal_rows_cannot_produce_false_full_conservation():
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=1)],
+        [scored(candidate_id="evt-1"), scored(candidate_id="unexpected")],
+    )
+    assert not result["audit_complete"]
+    assert result["completed_requests"] == 0
+    assert result["candidate_conservation_rate"] is None
+    assert any("SCOPE_COUNT_MISMATCH:2/1" in issue
+               for issue in result["findings"])
