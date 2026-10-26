@@ -412,7 +412,10 @@ def score_nfl_team_event_request(
     # Re-read that exact row before emitting the two proof fields required by
     # the full-board auditor. Calibration health alone is not stage proof.
     governed = attach_nfl_daily_stage_receipt(db=db, req=effective_req, governed=governed)
-    if governed["nfl_stage_receipt"]["status"] != "PASS":
+    # A valid calibration stage is not terminal acceptance. The producer adapter
+    # also enforces independently certified forward evidence and SQL authority.
+    if (governed["nfl_stage_receipt"]["status"] != "PASS"
+            or governed.get("probability_publishable") is not True):
         governed["probability_publishable"] = False
         governed["rank_eligible"] = False
         governed["terminal_label"] = "MODEL_QUALIFIED_HOLD"
