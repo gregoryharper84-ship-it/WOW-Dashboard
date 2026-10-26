@@ -222,3 +222,20 @@ def test_reused_event_market_role_across_cohorts_blocks_both():
     assert result["status"] == "EVIDENCE_HOLD"
     assert any("CROSS_COHORT_EVENT_REUSED" in x for x in result["findings"])
     assert all("INVALID_SOURCE_ROW" in item["blockers"] for item in result["comparisons"])
+
+
+def test_unattributed_invalid_record_invalidates_otherwise_verified_cohorts():
+    obs = full_sample()
+    obs.append({"sport": ["NFL"], "market_family": "MONEYLINE", "cohort_id": "2026_OCT_TEST"})
+    result = audit_challenger_replay(obs)
+    assert result["status"] == "EVIDENCE_HOLD"
+    assert "UNATTRIBUTED_ROW_BLOCKS_ALL_COHORTS" in result["findings"]
+    assert "SOURCE_ROW_COHORT_UNATTRIBUTABLE" in result["comparisons"][0]["blockers"]
+    assert result["comparisons"][0]["champion_quality"] is None
+
+def test_unhashable_role_in_otherwise_complete_row_is_a_hold_not_a_crash():
+    obs = full_sample()
+    obs[1] = {**obs[1], "role": ["CHALLENGER"]}
+    result = audit_challenger_replay(obs)
+    assert result["status"] == "EVIDENCE_HOLD"
+    assert result["comparisons"][0]["champion_quality"] is None
