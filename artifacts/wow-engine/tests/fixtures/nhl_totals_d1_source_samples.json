@@ -1,0 +1,178 @@
+# Historical public NHL game results from WOW validation D1; source payload hashes retained.
+{
+  "research_only": true,
+  "as_of": "2026-10-26",
+  "source": "wow_d1_source_events",
+  "rows": [
+    {
+      "season": "20232024",
+      "official_event_id": "2023021048",
+      "event_start_time": "2024-03-14 23:00:00+00",
+      "home_participant": "DET",
+      "away_participant": "ARI",
+      "outcome_json": {
+        "away_score": 4,
+        "home_score": 1,
+        "positive_outcome": false
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "3fce6346a44b749a8b5e300bbe44f6ad01e486f88c7dbe10a853b365140043ca",
+      "source_retrieved_at": "2026-09-15 19:49:52.906318+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20232024",
+      "official_event_id": "2023021048",
+      "event_start_time": "2024-03-14 23:00:00+00",
+      "home_participant": "DET",
+      "away_participant": "ARI",
+      "outcome_json": {
+        "away_score": 4,
+        "home_score": 1,
+        "positive_outcome": false
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "c494f1408be9d110aad400b2c306a34b4271d3062bff45bd2bd2cbc06e6d4fa8",
+      "source_retrieved_at": "2026-10-23 00:27:11.724042+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20242025",
+      "official_event_id": "2024020001",
+      "event_start_time": "2024-10-04 17:00:00+00",
+      "home_participant": "BUF",
+      "away_participant": "NJD",
+      "outcome_json": {
+        "away_score": 4,
+        "home_score": 1,
+        "positive_outcome": false
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "894166a034a1c96fc6505e265d0b4e9ee4caf1b8f498c96aa3488163412bf325",
+      "source_retrieved_at": "2026-09-15 19:50:21.142407+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20242025",
+      "official_event_id": "2024020002",
+      "event_start_time": "2024-10-05 14:00:00+00",
+      "home_participant": "NJD",
+      "away_participant": "BUF",
+      "outcome_json": {
+        "away_score": 1,
+        "home_score": 3,
+        "positive_outcome": true
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "08e59300a6afdc9292f027f296327f060e58c56ec6f553c1381f04c3a69ef0dd",
+      "source_retrieved_at": "2026-09-15 19:50:21.142407+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20242025",
+      "official_event_id": "2024020003",
+      "event_start_time": "2024-10-08 20:30:00+00",
+      "home_participant": "SEA",
+      "away_participant": "STL",
+      "outcome_json": {
+        "away_score": 3,
+        "home_score": 2,
+        "positive_outcome": false
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "8d76cd7d6440a57f2c70de17f4f0649149f95e39dcfcd90b1ca6704645d9c5d9",
+      "source_retrieved_at": "2026-09-15 19:50:36.54476+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20242025",
+      "official_event_id": "2024020004",
+      "event_start_time": "2024-10-08 23:00:00+00",
+      "home_participant": "FLA",
+      "away_participant": "BOS",
+      "outcome_json": {
+        "away_score": 4,
+        "home_score": 6,
+        "positive_outcome": true
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "2b54cec88b19d35eff4d8925460666067afcf4ea392f6afd3510dd8b1c74c8ae",
+      "source_retrieved_at": "2026-09-15 19:50:20.253902+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20242025",
+      "official_event_id": "2024020005",
+      "event_start_time": "2024-10-09 02:00:00+00",
+      "home_participant": "UTA",
+      "away_participant": "CHI",
+      "outcome_json": {
+        "away_score": 2,
+        "home_score": 5,
+        "positive_outcome": true
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "cb76ed91b17dda80ef30c87bbd17de1659d363aa9d7da68b5396fc790743dae7",
+      "source_retrieved_at": "2026-09-15 19:50:24.941871+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20242025",
+      "official_event_id": "2024020006",
+      "event_start_time": "2024-10-09 23:00:00+00",
+      "home_participant": "MTL",
+      "away_participant": "TOR",
+      "outcome_json": {
+        "away_score": 0,
+        "home_score": 1,
+        "positive_outcome": true
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "997645e862dad770b7f8aace6c8197b7fc8863efb16c0cf41fab1d65f7a85f51",
+      "source_retrieved_at": "2026-09-15 19:50:31.76902+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20252026",
+      "official_event_id": "2025020994",
+      "event_start_time": "2026-03-08 00:00:00+00",
+      "home_participant": "TOR",
+      "away_participant": "TBL",
+      "outcome_json": {
+        "away_score": 5,
+        "home_score": 2,
+        "positive_outcome": false
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "da629707525b50cf85df48f044c667fdfcded32e57d6a3a006871a93231b6eaf",
+      "source_retrieved_at": "2026-09-15 19:51:05.440853+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    },
+    {
+      "season": "20252026",
+      "official_event_id": "2025020994",
+      "event_start_time": "2026-03-08 00:00:00+00",
+      "home_participant": "TOR",
+      "away_participant": "TBL",
+      "outcome_json": {
+        "away_score": 5,
+        "home_score": 2,
+        "positive_outcome": false
+      },
+      "source_provider": "NHL_PUBLIC_WEB_API",
+      "source_payload_sha256": "a4e326a9c96fd664c208817c56330a4dbeb41c943e5622d35ea950fa21a8649c",
+      "source_retrieved_at": "2026-10-01 02:43:06.854908+00",
+      "historical_reconstruction": true,
+      "can_execute": false
+    }
+  ]
+}
