@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from v17.amrt_authenticated_worker_handoff import persist_authenticated_specialist_handoff
-from v17.amrt_specialist_agents import AGENT_TO_EXISTING_ROLE
+from v17.amrt_specialist_agents import AGENT_TO_EXISTING_ROLE, STAGES
 from v17.persistent_worker_safety import Lease
 
 NOW = datetime(2026, 10, 26, 21, 0, tzinfo=timezone.utc)
@@ -79,7 +79,7 @@ def receipt_writer(monkeypatch):
 def test_all_five_existing_specialists_reach_canonical_append_only_writer(
     specialist, receipt_writer
 ):
-    got = persist_authenticated_specialist_handoff(**args(specialist=specialist))
+    stages = {name: {"status": "PASS", "evidence_ref": "receipt:" + name}\n              for name in STAGES}\n    got = persist_authenticated_specialist_handoff(\n        **args(specialist=specialist, producer_stages=stages))
     assert got["receipt_id"] == "verified-test-receipt"
     assert len(receipt_writer) == 1
     row = receipt_writer[0]
@@ -153,3 +153,15 @@ def test_stale_lease_fence_from_authoritative_worker_is_not_bypassed(receipt_wri
             lease=Lease("1841", WORKER, 6, (NOW + timedelta(hours=1)).isoformat()),
         ))
     assert not receipt_writer
+
+
+def test_missing_producer_stages_cannot_create_specialist_attributed_receipt(receipt_writer):
+    # The existing adapter returns a generic seven-role HOLD BEFORE the
+    # Dependency Investigator is called. It must not be mislabeled as a genuine
+    # five-specialist execution/persisted handoff.
+    with pytest.raises(ValueError, match="AMRT_SPECIALIST_RECEIPT_INVALID"):
+        persist_authenticated_specialist_handoff(**args(
+            specialist="MODEL_DEPENDENCY_INVESTIGATOR",
+            producer_stages=None,
+        ))
+    assert receipt_writer == []
