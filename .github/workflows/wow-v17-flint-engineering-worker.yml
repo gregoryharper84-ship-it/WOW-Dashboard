@@ -80,9 +80,33 @@ jobs:
           REQUESTED_LEASE: ${{ inputs.lease_group }}
         run: |
           set -euo pipefail
+          [[ "$INCIDENT" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::FLINT_INCIDENT_ID_INVALID"
+            exit 1
+          }
+          # The explicit issue can be older than the first 200 OPEN results.
+          # Fetch exact identity independently so a truncated list cannot
+          # falsely report an eligible existing issue as missing.
           gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
-            --json number,title,body,state,updatedAt \
-            > "$RUNNER_TEMP/wow-flint/issues.json"
+            --json number,title,state,updatedAt \
+            > "$RUNNER_TEMP/wow-flint/visible-issues.json"
+          gh issue view "$INCIDENT" --repo "$GITHUB_REPOSITORY" \
+            --json number,title,state,updatedAt \
+            > "$RUNNER_TEMP/wow-flint/exact-issue.json"
+          python - "$RUNNER_TEMP/wow-flint/visible-issues.json" \
+                   "$RUNNER_TEMP/wow-flint/exact-issue.json" \
+                   "$RUNNER_TEMP/wow-flint/issues.json" <<'PY'
+          import json, pathlib, sys
+          recent = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          exact = json.loads(pathlib.Path(sys.argv[2]).read_text())
+          if not isinstance(recent, list) or not isinstance(exact, dict):
+              raise SystemExit("FLINT_OPEN_ISSUE_EVIDENCE_INVALID")
+          if exact.get("state") != "OPEN":
+              raise SystemExit("FLINT_EXACT_ISSUE_NOT_OPEN")
+          rows = [r for r in recent if r.get("number") != exact.get("number")]
+          rows.append(exact)
+          pathlib.Path(sys.argv[3]).write_text(json.dumps(rows))
+          PY
           python artifacts/wow-engine/v17/engineering_gemini_headless.py select \
             --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
             --issues "$RUNNER_TEMP/wow-flint/issues.json" \
