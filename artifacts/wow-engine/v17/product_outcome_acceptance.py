@@ -89,7 +89,14 @@ def product_outcome_scorecard(
             integrity_failed_requests.add(request_id)
             continue
         seen.add(key)
-        valid = state in ALL_DISPOSITIONS and _nonempty(row.get("current_owner"))
+        # The audit must not launder a caller-claimed disposition into an
+        # authoritative terminal result or an executable wagering decision.
+        valid = (
+            state in ALL_DISPOSITIONS
+            and _nonempty(row.get("current_owner"))
+            and row.get("terminal_authority") == TERMINAL_AUTHORITY
+            and row.get("can_execute") is False
+        )
         if state in {"HELD", "REJECTED", "PURGED", "PENDING"}:
             valid = valid and all(_nonempty(row.get(k)) for k in (
                 "failure_code", "evidence_ref", "next_action", "reentry_trigger",
