@@ -167,8 +167,32 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     if not isinstance(models, list) or len(models) != 1 or not isinstance(health, list) or len(health) != 1:
         return False
     model, assessment = models[0], health[0]
+    minimum = assessment.get("minimum_forward_required")
+    # Health is a global snapshot. Verify that its cohort actually contains
+    # enough unique prospective grades for this prediction's exact model version.
+    # A different champion's 100 games can never authorize this model.
+    if not isinstance(minimum, int) or minimum < 100:
+        return False
+    try:
+        grade_result = (
+            db.table("wow_nfl_forward_shadow_grades")
+            .select("official_event_id")
+            .eq("model_version", str(row["model_version"]))
+            .limit(minimum * 2)
+            .execute()
+        )
+        grades = grade_result.data
+        if not isinstance(grades, list):
+            return False
+        unique_games = {
+            str(g.get("official_event_id"))
+            for g in grades if isinstance(g, Mapping) and g.get("official_event_id")
+        }
+    except Exception:
+        return False
     return bool(
-        model.get("active") is True
+        len(unique_games) >= minimum
+        and model.get("active") is True
         and model.get("promoted") is True
         and model.get("probability_publishable") is True
         and isinstance(assessment.get("graded_n"), int)
