@@ -71,24 +71,47 @@ def _valid_row(row: Mapping[str, Any]) -> str | None:
 
 
 def _metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, float]:
-    n = len(rows)
-    brier = sum((float(row["calibrated_probability"]) - row["settled_outcome"]) ** 2
-                for row in rows) / n
-    log_loss = -sum(
-        row["settled_outcome"] * log(float(row["calibrated_probability"]))
-        + (1 - row["settled_outcome"]) * log(1 - float(row["calibrated_probability"]))
-        for row in rows
-    ) / n
-    bins: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    """Proper scores and ECE balanced by independent official event.
+
+    A game with many correlated candidate markets must have the same overall
+    influence as a game with one candidate. Row-level counts are still exposed
+    separately as descriptive inventory, never independent sample size.
+    """
+    by_event: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
-        bins[min(9, int(float(row["calibrated_probability"]) * 10))].append(row)
-    ece = sum(
-        len(bucket) / n * abs(
-            sum(float(row["calibrated_probability"]) for row in bucket) / len(bucket)
-            - sum(row["settled_outcome"] for row in bucket) / len(bucket)
-        )
-        for bucket in bins.values()
+        by_event[row["event_id"]].append(row)
+    n_events = len(by_event)
+    weighted: list[tuple[Mapping[str, Any], float]] = []
+    for event_rows in by_event.values():
+        event_row_weight = 1.0 / (n_events * len(event_rows))
+        weighted.extend((row, event_row_weight) for row in event_rows)
+
+    brier = sum(
+        weight * (float(row["calibrated_probability"]) - row["settled_outcome"]) ** 2
+        for row, weight in weighted
     )
+    log_loss = -sum(
+        weight * (
+            row["settled_outcome"] * log(float(row["calibrated_probability"]))
+            + (1 - row["settled_outcome"]) * log(1 - float(row["calibrated_probability"]))
+        )
+        for row, weight in weighted
+    )
+    bins: dict[int, list[tuple[Mapping[str, Any], float]]] = defaultdict(list)
+    for row, weight in weighted:
+        bucket = min(9, int(float(row["calibrated_probability"]) * 10))
+        bins[bucket].append((row, weight))
+    ece = 0.0
+    for bucket_rows in bins.values():
+        mass = sum(weight for _, weight in bucket_rows)
+        forecast = sum(
+            weight * float(row["calibrated_probability"])
+            for row, weight in bucket_rows
+        ) / mass
+        observed = sum(
+            weight * row["settled_outcome"] for row, weight in bucket_rows
+        ) / mass
+        ece += mass * abs(forecast - observed)
     return {"brier": round(brier, 8), "log_loss": round(log_loss, 8),
             "ece_10_bin": round(ece, 8)}
 
@@ -203,6 +226,7 @@ def evaluate_chronological_evidence(
         "audit_complete": not findings and bool(accepted),
         "rows_received": len(rows), "rows_verified": len(accepted),
         "rows_held": len(rows) - len(accepted), "findings": findings,
+        "metric_weighting": "EQUAL_OFFICIAL_EVENT",
         "cohorts": by_lane, "paired_count": len(paired),
         "paired_distinct_events": paired_distinct_events,
         "paired_comparison_ready": paired_sufficient,
