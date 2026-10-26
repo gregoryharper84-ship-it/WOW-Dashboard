@@ -667,3 +667,28 @@ def test_release_verification_requires_trusted_exact_head_governance_and_exact_m
     assert '--workflow-run-id "$RUN_ID"' in text
     assert '--workflow-name "$WORKFLOW_NAME"' in text
     assert "trusted_handoff_receipt: VERIFIED" in text
+
+
+
+def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
+    """P1 regression: don't occupy 30min runners on obsolete exact-head SHAs.
+
+    This does not grant QA/review acceptance, remove artifact hashes, or change
+    the independent workflow_run path. Superseded PR heads are nonapplicable.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    text = (root / ".github/workflows/wow-v17-trusted-governance-gate.yml").read_text()
+    assert "cancel-in-progress: true" in text
+    assert "format('pr-{0}', github.event.pull_request.number)" in text
+    assert "format('run-{0}', github.event.workflow_run.id)" in text
+    assert "github.event.pull_request.head.sha) }}" not in text.split("concurrency:")[1].split("jobs:")[0]
+    assert "for _ in $(seq 1 18); do" in text
+    assert 'gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"' in text
+    assert 'if [ "$current_head" != "$head_sha" ]; then' in text
+    assert "GOVERNANCE_STALE_HEAD_DEFERRED" in text
+    assert 'echo "applicable=false" >> "$GITHUB_OUTPUT"' in text
+    assert "GOVERNANCE_LIVE_PR_LOOKUP_FAILED" in text
+    assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in text
+    assert "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH" in text
