@@ -160,7 +160,7 @@ def test_phase12_pr_lifecycle_declaration_remains_explicit_and_fail_closed():
         "changes_failure_path_weighting",
     )
     paths = ("artifacts/wow-engine/v17/engineering_agent_team.py",)
-    body = "\\n".join((
+    body = "\n".join((
         "Incident: `1021`",
         "Lifecycle-Control-Plane: true",
         "Change-Class: B",
