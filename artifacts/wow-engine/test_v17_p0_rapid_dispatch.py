@@ -25,6 +25,7 @@ def test_p0_parallel_rapid_dispatch_contract() -> None:
     assert "status,displayTitle" in text
     assert 'contains(\\\"lease=${lease_group}\\\")' in text
     assert "wow-v17-engineering-provider-dispatcher.yml" in text
+    assert "wow-v17-gemini-engineering-worker.yml" in text
     assert "-f force_provider=auto" in text
     assert '-f target_incident="$incident"' in text
     assert '-f lease_group="$lease_group"' in text

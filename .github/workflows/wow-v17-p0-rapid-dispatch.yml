@@ -55,7 +55,8 @@ jobs:
           for workflow in \
             wow-v17-engineering-provider-dispatcher.yml \
             wow-v17-chatgpt-engineering-worker.yml \
-            wow-v17-claude-engineering-worker.yml
+            wow-v17-claude-engineering-worker.yml \
+            wow-v17-gemini-engineering-worker.yml
           do
             for status in queued in_progress waiting requested pending
             do
@@ -174,7 +175,8 @@ jobs:
             for workflow in \
               wow-v17-engineering-provider-dispatcher.yml \
               wow-v17-chatgpt-engineering-worker.yml \
-              wow-v17-claude-engineering-worker.yml
+              wow-v17-claude-engineering-worker.yml \
+              wow-v17-gemini-engineering-worker.yml
             do
               count=$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
