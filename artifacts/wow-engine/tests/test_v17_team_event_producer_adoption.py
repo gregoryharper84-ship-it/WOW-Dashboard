@@ -55,6 +55,8 @@ def test_nfl_real_response_components_do_not_self_certify_producer():
     receipt = {
         "receipt_complete": True,
         "numerical_consumption_proven": True,
+        "critical_consumption_complete": True,
+        "consumption_verification_status": "VERIFIED",
         "feature_consumption_receipt_id": "numerical-1",
     }
     got = _inspect("NFL", result, receipt)
