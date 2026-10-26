@@ -117,4 +117,4 @@ def test_hypothetical_result_observed_after_as_of_is_not_pregame_history():
     past[0]["event_start_time"]=target["startTimeUTC"]
     with pytest.raises(NHLTotalsPregameSourceError) as err:
         hydrate_nhl_total_goals_pregame(past,target,evidence_as_of_utc=as_of)
-    assert err.value.code=="NHL_TOTALS_PREGAME_FUTURE_GAME_LEAKAGE"
+    assert err.value.code=="NHL_TOTALS_PREGAME_RESULT_NOT_KNOWN_AT_ASOF"
