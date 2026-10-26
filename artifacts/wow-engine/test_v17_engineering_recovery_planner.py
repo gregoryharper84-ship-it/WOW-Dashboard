@@ -224,3 +224,18 @@ def test_codeowner_approval_is_external_but_unrelated_work_is_not_stopped():
     assert result["unrelated_work_may_progress"] is True
     assert result["release_admission"] == "DENIED_UNTIL_INDEPENDENT_EVIDENCE"
     assert result["attempts"] == 1 and result["can_execute"] is False
+
+
+
+def test_protected_recovery_workflow_routes_author_vs_codeowner_without_fake_approval():
+    from pathlib import Path
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github/workflows/wow-v17-engineering-auto-repair.yml"
+    ).read_text()
+    assert "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF|INDEPENDENT_ENGINEERING_AUTHOR|false" in workflow
+    assert "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED|ACTUAL_CODEOWNER|true" in workflow
+    assert "RECOVERY_NONREPAIRABLE_ROUTE_INVALID" in workflow
+    assert "unrelated Engineering work continues" in workflow
+    assert "gh pr review --approve" not in workflow
+    assert "gh pr merge" not in workflow
