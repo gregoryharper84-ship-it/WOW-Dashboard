@@ -482,3 +482,22 @@ def test_scored_terminal_receipt_must_bind_source_event_and_market(change):
     assert not result["audit_complete"]
     assert any("TERMINAL_RECEIPT_IDENTITY_UNVERIFIED" in issue
                for issue in result["findings"])
+
+
+@pytest.mark.parametrize("identity_change", [
+    {"terminal_receipt_identity_verified": False},
+    {"terminal_receipt_source_candidate_id": "other-market-row"},
+    {"terminal_receipt_event_id": "other-official-event"},
+    {"terminal_receipt_market_identity": "NFL:ML:AWAY"},
+    {"candidate_id": ""},
+    {"event_id": ""},
+    {"market_identity": ""},
+])
+def test_model_restoration_closure_requires_same_persisted_terminal_identity(identity_change):
+    # Positive booleans for CI, calibration and SIRT cannot close a score
+    # whose terminal receipt belongs to a different official source market.
+    product = {**valid_product(), **identity_change}
+    result = model_restoration_acceptance(valid_closure(), product)
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
+    assert "PRODUCT_TERMINAL_RECEIPT_IDENTITY_UNPROVEN" in result["blockers"]
+    assert result["can_execute"] is False
