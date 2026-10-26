@@ -1659,3 +1659,24 @@ def test_existing_manual_qa_release_accept_exact_optional_head_sha(workflow_name
         assert "run-name: wow-v17-independent-qa-check event=" not in workflow
     else:
         assert "head=${{ inputs.head_sha || 'AUTO' }}" in workflow
+
+
+def test_existing_pr_certifier_prechecks_authentic_release_event_before_runner():
+    """Reject unrelated check_run storms without removing late Release re-entry."""
+    source = (ROOT / ".github/workflows/wow-v17-existing-pr-governance-review.yml").read_text()
+    parsed = yaml.load(source, Loader=yaml.BaseLoader)
+    gate = parsed["jobs"]["certify-existing-pr"]["if"]
+    for part in (
+        "github.event_name != 'check_run'",
+        "github.event.check_run.app.id == 5245853",
+        "github.event.check_run.name == 'WOW Release Authority exact-head'",
+        "github.event.check_run.status == 'completed'",
+        "github.event.check_run.conclusion == 'success'",
+    ):
+        assert part in gate
+    assert "check_run" in parsed["on"]
+    assert "workflow_run" in parsed["on"]
+    assert "pull_request_target" in parsed["on"]
+    assert 'live_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}")' in source
+    assert "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE" in source
+    assert "cancel-in-progress: false" in source
