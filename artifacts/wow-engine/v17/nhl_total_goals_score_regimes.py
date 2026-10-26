@@ -80,12 +80,31 @@ def reconcile_official_gamecenter_landing(payload: Mapping[str, Any]) -> Histori
             raise ValueError("scoring periods missing")
         reg_home = reg_away = ot_home = ot_away = empty_net = 0
         saw_ot = False
+        saw_so = False
+        shootout_scoring_team = None
+        # The first-party summary includes one awarded SO goal; it is NOT
+        # another skater goal and must never be counted twice.
+        expected_periods = {
+            "REG": [("REG", 1), ("REG", 2), ("REG", 3)],
+            "OT": [("REG", 1), ("REG", 2), ("REG", 3), ("OT", 4)],
+            "SO": [("REG", 1), ("REG", 2), ("REG", 3), ("OT", 4), ("SO", 5)],
+        }[period]
+        seen_periods = []
+        def goal_team_abbrev(value: Any) -> str:
+            # The official API currently uses {"default": "VAN"},
+            # while historical adapters may supply an uppercase string.
+            if isinstance(value, Mapping):
+                value = value.get("default")
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("scoring team abbreviation missing")
+            return value.strip().upper()
         for period_row in scoring:
             pdesc = period_row["periodDescriptor"]
             period_type = pdesc["periodType"]
             number = pdesc["number"]
             if type(number) is not int:
                 raise ValueError("period number invalid")
+            seen_periods.append((period_type, number))
             goals = period_row["goals"]
             if not isinstance(goals, list):
                 raise ValueError("period goals invalid")
@@ -97,9 +116,17 @@ def reconcile_official_gamecenter_landing(payload: Mapping[str, Any]) -> Histori
                     raise ValueError("overtime period invalid")
                 saw_ot = True
             elif period_type == "SO":
-                # Shootout attempts are not counted as scored skater goals.
-                if goals:
-                    raise ValueError("shootout summary requires separate adapter")
+                if number != 5 or saw_so or not saw_ot or len(goals) != 1:
+                    raise ValueError("shootout scoring summary invalid")
+                saw_so = True
+                awarded = goals[0]
+                if type(awarded.get("isHome")) is not bool:
+                    raise ValueError("shootout scorer side unresolved")
+                shootout_scoring_team = (
+                    home_abbrev if awarded["isHome"] else away_abbrev
+                )
+                if goal_team_abbrev(awarded.get("teamAbbrev")) != shootout_scoring_team:
+                    raise ValueError("shootout scoring team conflict")
                 continue
             else:
                 raise ValueError("unsupported scoring period")
@@ -108,7 +135,7 @@ def reconcile_official_gamecenter_landing(payload: Mapping[str, Any]) -> Histori
                     raise ValueError("scoring-side identity missing")
                 is_home = goal["isHome"]
                 expected = home_abbrev if is_home else away_abbrev
-                if str(goal.get("teamAbbrev") or "").upper() != expected:
+                if goal_team_abbrev(goal.get("teamAbbrev")) != expected:
                     raise ValueError("scoring team conflict")
                 if period_type == "REG":
                     if is_home:
@@ -122,6 +149,8 @@ def reconcile_official_gamecenter_landing(payload: Mapping[str, Any]) -> Histori
                         ot_away += 1
                 if goal.get("goalModifier") == "empty-net":
                     empty_net += 1
+        if seen_periods != expected_periods:
+            raise ValueError("period summary incomplete or out of order")
         if period == "REG":
             if saw_ot or (hs, aas) != (reg_home, reg_away):
                 raise ValueError("regulation final score mismatch")
@@ -133,11 +162,25 @@ def reconcile_official_gamecenter_landing(payload: Mapping[str, Any]) -> Histori
                 raise ValueError("overtime score mismatch")
             shootout_awarded = 0
         else:
-            if reg_home != reg_away or ot_home or ot_away:
+            if reg_home != reg_away or ot_home or ot_away or not saw_so:
                 raise ValueError("shootout requires game tied through overtime")
             diffs = (hs - reg_home, aas - reg_away)
             if sorted(diffs) != [0, 1]:
                 raise ValueError("shootout final must award exactly one goal")
+            award_side = home_abbrev if diffs[0] == 1 else away_abbrev
+            if shootout_scoring_team != award_side:
+                raise ValueError("shootout award contradicts final winner")
+            shootout_info = payload["summary"]["shootout"]
+            events = shootout_info["events"]
+            if not isinstance(events, list):
+                raise ValueError("shootout attempts missing")
+            winning_events = [e for e in events if e.get("gameWinner") is True]
+            if len(winning_events) != 1:
+                raise ValueError("shootout winner missing or ambiguous")
+            winner = winning_events[0]
+            if (winner.get("result") != "goal"
+                or goal_team_abbrev(winner.get("teamAbbrev")) != award_side):
+                raise ValueError("shootout result and scoring award disagree")
             shootout_awarded = 1
         official_total = hs + aas
         reconstructed = reg_home + reg_away + ot_home + ot_away + shootout_awarded
