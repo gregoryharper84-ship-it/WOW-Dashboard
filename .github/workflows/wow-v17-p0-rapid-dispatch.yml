@@ -51,8 +51,38 @@ jobs:
             --output "$RUNNER_TEMP/wow-dispatch-queue.json" \
             > /dev/null
 
+          active_run_files=()
+          for workflow in \
+            wow-v17-engineering-provider-dispatcher.yml \
+            wow-v17-chatgpt-engineering-worker.yml \
+            wow-v17-claude-engineering-worker.yml \
+            wow-v17-gemini-engineering-worker.yml
+          do
+            for status in queued in_progress waiting requested pending
+            do
+              run_file="$RUNNER_TEMP/${workflow}-${status}.json"
+              gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow "$workflow" \
+                --status "$status" \
+                --limit 1000 \
+                --json status,displayTitle \
+                > "$run_file"
+              run_count=$(jq 'length' "$run_file")
+              if [ "$run_count" -ge 1000 ]; then
+                echo "ACTIVE_WRITER_INVENTORY_TRUNCATED:${workflow}:${status}" >&2
+                exit 1
+              fi
+              active_run_files+=("$run_file")
+            done
+          done
+          jq -s 'add' "${active_run_files[@]}" > "$RUNNER_TEMP/wow-active-writer-runs.json"
+
           python artifacts/wow-engine/v17/p0_parallel_dispatch.py \
             --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --active-runs "$RUNNER_TEMP/wow-active-writer-runs.json" \
+            --run-number "$GITHUB_RUN_NUMBER" \
             --output "$RUNNER_TEMP/wow-p0-parallel.json" \
             > /dev/null
 
@@ -145,7 +175,8 @@ jobs:
             for workflow in \
               wow-v17-engineering-provider-dispatcher.yml \
               wow-v17-chatgpt-engineering-worker.yml \
-              wow-v17-claude-engineering-worker.yml
+              wow-v17-claude-engineering-worker.yml \
+              wow-v17-gemini-engineering-worker.yml
             do
               count=$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
