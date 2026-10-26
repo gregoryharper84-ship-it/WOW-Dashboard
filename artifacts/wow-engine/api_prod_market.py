@@ -26,7 +26,7 @@ from prop_discrete_engine import PropCalibrationUnavailable, score_discrete_prop
 from prop_distribution_contract import PropDistributionContractError, PropInferenceRequest
 from prop_evidence_repair import repair_prop_evidence
 from prop_fitted_provider import PropFittedProviderUnavailable
-from v17.nfl_player_game_eligibility import (
+from nfl_player_game_eligibility import (
     PLAYER_UNAVAILABLE,
     player_game_availability_blocker,
 )
