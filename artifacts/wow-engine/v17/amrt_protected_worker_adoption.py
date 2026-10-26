@@ -202,13 +202,25 @@ def main() -> int:
         _must(os.getenv("WOW_CAN_EXECUTE", "false").lower() == "false"
               and os.getenv("WOW_DRY_RUN_ONLY", "true").lower() == "true",
               "AMRT_EXECUTION_GOVERNANCE_INVALID")
-        issue_number = os.environ["AMRT_SELECTED_INCIDENT"]
+        issue_number = os.getenv("AMRT_SELECTED_INCIDENT", "").strip()
+        # A non-AMRT incident follows the existing engineering workflow,
+        # not a second specialist dispatch path.
+        if not issue_number or issue_number == "NONE":
+            print("AMRT_NOT_ADMITTED_NO_OP")
+            return 0
         lease_group = os.environ["AMRT_LEASE_GROUP"]
         worker_id = os.environ["AMRT_WORKER_ID"]
         sha = os.environ["GITHUB_SHA"]
-        base = Path("artifacts/wow-engine/v17")
+        base = Path(__file__).resolve().parent
         manifest = json.loads((base / "engineering_dispatch_manifest.json").read_text())
-        lease_data = json.loads((base / ".agent-handoff/lease.json").read_text())
+        entries = [item for item in manifest.get("restoration", [])
+                   if str(item.get("issue_number")) == issue_number]
+        if len(entries) == 1 and entries[0].get("amrt_owned") is not True:
+            print("AMRT_NOT_ADMITTED_NO_OP")
+            return 0
+        lease_data = json.loads(
+            Path("artifacts/wow-engine/v17/.agent-handoff/lease.json").read_text()
+        )
         token = os.environ["GH_TOKEN"]
         results = run_worker_handoffs(
             read=lambda path: github_read(path, token),
