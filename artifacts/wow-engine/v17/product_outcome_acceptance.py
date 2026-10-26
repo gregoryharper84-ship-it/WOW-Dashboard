@@ -219,6 +219,9 @@ def product_outcome_scorecard(
                         unknown_scope = True
         missing_rows += missing_for_request
         empty_verified = expected == 0 and req.get("no_current_candidates_verified") is True
+        if expected == 0 and not empty_verified:
+            issues.append(f"REQUEST_{i}_EMPTY_SCOPE_NOT_INDEPENDENTLY_VERIFIED")
+            integrity_failed_requests.add(rid)
         complete = (
             not unattributed_row_present
             and req.get("output_delivered_verified") is True
@@ -247,6 +250,10 @@ def product_outcome_scorecard(
     if any("DUPLICATE_CANONICAL_ID" in finding for finding in issues):
         unknown_scope = True
     terminal_count = sum(counts[s] for s in TERMINAL_DISPOSITIONS)
+    # Empty/unupported-only inventory is not a certified clean board.
+    # Do not mint an audit PASS when no supported scope was ever attested.
+    if supported_count == 0:
+        issues.append("NO_SUPPORTED_VERIFIED_REQUEST_SCOPE")
     return {
         "can_execute": False,
         "terminal_authority": TERMINAL_AUTHORITY,
