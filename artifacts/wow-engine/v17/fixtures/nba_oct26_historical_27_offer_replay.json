@@ -15,7 +15,16 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": "mitchell_ast7",
       "acceptance_state": "BACKEND_HELD_MODEL_UNAVAILABLE",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": {
+        "stat_type": "ASSISTS",
+        "submitted_direction": "MORE",
+        "submitted_line": 6.5,
+        "terminal_code": "MODEL_UNAVAILABLE",
+        "model_evaluated": false,
+        "acquisition_mode": "NOT_ATTEMPTED_ROUTE_BLOCKED"
+      },
+      "threshold_semantics_certified": "NOT_CERTIFIED_HALF_LINE_CONVERSION"
     },
     {
       "source_index": 2,
@@ -25,7 +34,16 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": "mitchell_ast8",
       "acceptance_state": "BACKEND_HELD_MODEL_UNAVAILABLE",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": {
+        "stat_type": "ASSISTS",
+        "submitted_direction": "MORE",
+        "submitted_line": 7.5,
+        "terminal_code": "MODEL_UNAVAILABLE",
+        "model_evaluated": false,
+        "acquisition_mode": "NOT_ATTEMPTED_ROUTE_BLOCKED"
+      },
+      "threshold_semantics_certified": "NOT_CERTIFIED_HALF_LINE_CONVERSION"
     },
     {
       "source_index": 3,
@@ -35,7 +53,16 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": "mitchell_pts10",
       "acceptance_state": "BACKEND_HELD_MODEL_UNAVAILABLE",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": {
+        "stat_type": "POINTS",
+        "submitted_direction": "MORE",
+        "submitted_line": 9.5,
+        "terminal_code": "MODEL_UNAVAILABLE",
+        "model_evaluated": false,
+        "acquisition_mode": "NOT_ATTEMPTED_ROUTE_BLOCKED"
+      },
+      "threshold_semantics_certified": "NOT_CERTIFIED_HALF_LINE_CONVERSION"
     },
     {
       "source_index": 4,
@@ -45,7 +72,16 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": "mcdaniels_reb5",
       "acceptance_state": "BACKEND_HELD_MODEL_UNAVAILABLE",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": {
+        "stat_type": "REBOUNDS",
+        "submitted_direction": "MORE",
+        "submitted_line": 4.5,
+        "terminal_code": "MODEL_UNAVAILABLE",
+        "model_evaluated": false,
+        "acquisition_mode": "NOT_ATTEMPTED_ROUTE_BLOCKED"
+      },
+      "threshold_semantics_certified": "NOT_CERTIFIED_HALF_LINE_CONVERSION"
     },
     {
       "source_index": 5,
@@ -55,7 +91,16 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": "mcdaniels_reb6",
       "acceptance_state": "BACKEND_HELD_MODEL_UNAVAILABLE",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": {
+        "stat_type": "REBOUNDS",
+        "submitted_direction": "MORE",
+        "submitted_line": 5.5,
+        "terminal_code": "MODEL_UNAVAILABLE",
+        "model_evaluated": false,
+        "acquisition_mode": "NOT_ATTEMPTED_ROUTE_BLOCKED"
+      },
+      "threshold_semantics_certified": "NOT_CERTIFIED_HALF_LINE_CONVERSION"
     },
     {
       "source_index": 6,
@@ -65,7 +110,16 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": "mcdaniels_pts_over135",
       "acceptance_state": "BACKEND_HELD_MODEL_UNAVAILABLE",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": {
+        "stat_type": "POINTS",
+        "submitted_direction": "MORE",
+        "submitted_line": 13.5,
+        "terminal_code": "MODEL_UNAVAILABLE",
+        "model_evaluated": false,
+        "acquisition_mode": "NOT_ATTEMPTED_ROUTE_BLOCKED"
+      },
+      "threshold_semantics_certified": "EXACT_OVER_LINE_RECORDED"
     },
     {
       "source_index": 7,
@@ -75,7 +129,16 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": "booker_reb5",
       "acceptance_state": "BACKEND_HELD_MODEL_UNAVAILABLE",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": {
+        "stat_type": "REBOUNDS",
+        "submitted_direction": "MORE",
+        "submitted_line": 4.5,
+        "terminal_code": "MODEL_UNAVAILABLE",
+        "model_evaluated": false,
+        "acquisition_mode": "NOT_ATTEMPTED_ROUTE_BLOCKED"
+      },
+      "threshold_semantics_certified": "NOT_CERTIFIED_HALF_LINE_CONVERSION"
     },
     {
       "source_index": 8,
@@ -85,7 +148,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 9,
@@ -95,7 +160,16 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": "markkanen_reb_over65",
       "acceptance_state": "BACKEND_HELD_MODEL_UNAVAILABLE",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": {
+        "stat_type": "REBOUNDS",
+        "submitted_direction": "MORE",
+        "submitted_line": 6.5,
+        "terminal_code": "MODEL_UNAVAILABLE",
+        "model_evaluated": false,
+        "acquisition_mode": "NOT_ATTEMPTED_ROUTE_BLOCKED"
+      },
+      "threshold_semantics_certified": "EXACT_OVER_LINE_RECORDED"
     },
     {
       "source_index": 10,
@@ -105,7 +179,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 11,
@@ -115,7 +191,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 12,
@@ -125,7 +203,9 @@
       "route": "DOUBLE_DOUBLE",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 13,
@@ -135,7 +215,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 14,
@@ -145,7 +227,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 15,
@@ -155,7 +239,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 16,
@@ -165,7 +251,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 17,
@@ -175,7 +263,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 18,
@@ -185,7 +275,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 19,
@@ -195,7 +287,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 20,
@@ -205,7 +299,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 21,
@@ -215,7 +311,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 22,
@@ -225,7 +323,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 23,
@@ -235,7 +335,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 24,
@@ -245,7 +347,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 25,
@@ -255,7 +359,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 26,
@@ -265,7 +371,9 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     },
     {
       "source_index": 27,
@@ -275,7 +383,11 @@
       "route": "NBA_SCALAR",
       "backend_retry_row_key": null,
       "acceptance_state": "NOT_SUBMITTED",
-      "prediction_id": null
+      "prediction_id": null,
+      "observed_backend_request": null,
+      "threshold_semantics_certified": "NOT_SUBMITTED"
     }
-  ]
+  ],
+  "observation_scope": "Exact backend row-state receipts: two four-row Action retries; six N+ offers were represented as N-0.5 in the submitted payload; this is observed, not authorized threshold translation.",
+  "original_source_medium": "secondary text transcription; original screenshots not available for independent revalidation"
 }
