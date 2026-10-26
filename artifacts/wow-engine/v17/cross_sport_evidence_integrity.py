@@ -260,6 +260,11 @@ def evaluate_scored_cross_sport_evidence(result: Mapping[str, Any]) -> dict[str,
     )
     if not result_artifact or result_artifact != _text(envelope.get("model_artifact_version")):
         mismatches.append("model_artifact_version")
+    result_model_at = _timestamp(
+        result.get("immutable_model_timestamp") or result.get("model_timestamp")
+    )
+    if result_model_at is None or result_model_at != _timestamp(envelope.get("model_timestamp")):
+        mismatches.append("model_timestamp")
     if mismatches:
         audit = dict(audit)
         audit["evidence_status"] = "HELD"
