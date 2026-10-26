@@ -1113,12 +1113,25 @@ def install_pick_request_routes(
                 acquisition["status"] = "PASS"
             except ValueError as exc:
                 acquisition["status"] = "FAILED_VALIDATION"
+                # Preserve event-unavailable vs. unverified eligibility as
+                # distinct, auditable pre-scorer failures; do not generalize
+                # either to an absent fitted model or an assumed LESS win.
+                diagnostic = str(exc)
+                availability_code = diagnostic.split(":", 1)[0]
+                code = (
+                    availability_code
+                    if sport == "NFL" and availability_code in {
+                        "PLAYER_UNAVAILABLE", "PLAYER_AVAILABILITY_UNVERIFIED"
+                    }
+                    else "RUN_INVALID_ACQUISITION_INCOMPLETE"
+                )
                 outcomes.append(
                     _terminal(
                         row_key,
-                        "REJECTED",
-                        "RUN_INVALID_ACQUISITION_INCOMPLETE",
-                        detail={"blocker": str(exc), "specialist_invoked": False},
+                        "REJECTED" if code == "PLAYER_UNAVAILABLE" else "HELD",
+                        code,
+                        detail={"blocker": code if code != "RUN_INVALID_ACQUISITION_INCOMPLETE" else diagnostic,
+                                "specialist_invoked": False},
                         acquisition=acquisition,
                     )
                 )
