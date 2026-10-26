@@ -37,6 +37,7 @@ from v17.team_event_capability_manifest import (
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
+from v17.cross_sport_evidence_integrity import evaluate_scored_cross_sport_evidence
 from v17.team_event_model_registry_audit import (
     certification_state,
     probe_sport,
@@ -295,6 +296,25 @@ def _attach_feature_consumption_receipt(
             if attested:
                 out["cross_sport_evidence_attested"] = True
                 out["cross_sport_evidence_producer_status"] = "VERIFIED"
+    audit = evaluate_scored_cross_sport_evidence(out)
+    out["cross_sport_evidence_audit"] = audit
+    out["evidence_integrity_status"] = audit["evidence_status"]
+    if registration.evidence_integrity_required and audit["evidence_status"] != "PASS":
+        # Publication is withheld at the scorer return itself, even if a
+        # downstream consumer forgets to call the separate official guard.
+        # The fitted probability, bounds and the actual controlling reducer
+        # disposition remain unchanged for immutable diagnostic receipts.
+        out["prepublication_claim"] = {
+            "probability_publishable": out.get("probability_publishable"),
+            "rank_eligible": out.get("rank_eligible"),
+        }
+        out["probability_publishable"] = False
+        out["rank_eligible"] = False
+        existing = out.get("publication_blockers")
+        prior = list(existing) if isinstance(existing, list) else []
+        out["publication_blockers"] = list(dict.fromkeys([
+            *prior, "TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED", *audit.get("blockers", [])
+        ]))
     out["can_execute"] = False
     return out
 
