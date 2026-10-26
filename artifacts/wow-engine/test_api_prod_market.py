@@ -514,6 +514,7 @@ def test_score_stage_timer_success_is_timing_only(caplog):
         ("IR", "PLAYER_UNAVAILABLE"),
         ("OUT", "PLAYER_UNAVAILABLE"),
         ("injured reserve", "PLAYER_UNAVAILABLE"),
+        ("DOUBTFUL", "PLAYER_AVAILABILITY_UNVERIFIED"),
     ],
 )
 def test_nfl_direct_score_prop_holds_unverified_game_eligibility_before_fitted_model(
