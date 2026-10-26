@@ -136,3 +136,15 @@ def test_only_actionable_work_reenters_and_lower_held_does_not_starve_improvemen
     assert select_priority_incident([held, actionable]).incident_id == "101"
     closed = {"incident_id": "102", "severity": "P0", "state": "FIXED_AND_VERIFIED"}
     assert select_priority_incident([closed]).frontier_allowed is True
+
+
+def test_protected_workflow_performs_attributed_support_handoff():
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/wow-v17-engineering-specialist-support.yml").read_text()
+    assert "SUPPORT_PARENT_INCIDENT_MISMATCH" in workflow
+    assert "SUPPORT_PARENT_INCIDENT_UNPROVEN" in workflow
+    assert "Validate bounded specialist handoff" in workflow
+    assert "engineering_phase12_delegation.py validate-support-packet" in workflow
+    assert workflow.index("Validate bounded specialist handoff") < workflow.index("Specialist support subagent")
+    assert "terminal_authority:\"V17_TERMINAL_REDUCER\"" in workflow
