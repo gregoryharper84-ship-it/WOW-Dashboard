@@ -32,7 +32,6 @@
 /artifacts/wow-engine/v17/amrt_receipt_bridge.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/amrt_specialist_agents.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_receipts.py @gregoryharper84-ship-it
-/artifacts/wow-engine/v17/p0_parallel_dispatch.py @gregoryharper84-ship-it
 # Protected list mirrored from .github/workflows/wow-v17-existing-pr-governance-review.yml:
 /.github/workflows/wow-verify.yml @gregoryharper84-ship-it
 /.github/workflows/wow-engine-verify.yml @gregoryharper84-ship-it
