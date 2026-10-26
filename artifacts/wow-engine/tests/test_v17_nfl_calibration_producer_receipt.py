@@ -22,6 +22,7 @@ def _scorer_output():
     model = SimpleNamespace(
         feature_schema_version=FEATURE_SCHEMA_VERSION,
         feature_order=tuple(FEATURE_ORDER),
+        feature_order_hash="test-only-order-hash",
         scaler_mean=np.zeros(n),
         scaler_scale=np.ones(n),
         coefficients=np.zeros(n),
