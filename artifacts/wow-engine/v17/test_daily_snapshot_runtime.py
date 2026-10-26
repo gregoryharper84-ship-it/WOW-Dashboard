@@ -30,8 +30,14 @@ class Query:
 
 
 class DB:
-    def __init__(self): self.acquisition_rows = []
+    def __init__(self):
+        self.acquisition_rows = []
+        # Real row-detail readback must see rows written by a prior Query.
+        # This test fake intentionally preserves the upsert across table() calls.
+        self.row_detail_rows = []
     def table(self, name):
+        if name == "wow_v17_daily_run_row_detail":
+            return Query(self.row_detail_rows)
         if name == "wow_prop_evidence_snapshots":
             return Query([{"source_snapshot_id":"snap-prop","event_id":"p1","event_start_time":FUTURE,"sport":"MLB","player":"P","stat_type":"strikeouts","line":4.5,"hydration_status":"PASS","blockers":[]}])
         if name == "wow_v17_daily_run_acquisition_detail":
@@ -353,6 +359,7 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
         }
 
     monkeypatch.setattr(nhl_event_identity, "resolve_nhl_current_event_identity", _nhl_schedule_match)
+
 
     # No non-MLB bridge is registered, so every discovered non-MLB row must be
     # retained as MODEL_UNAVAILABLE rather than disappear from the board.
