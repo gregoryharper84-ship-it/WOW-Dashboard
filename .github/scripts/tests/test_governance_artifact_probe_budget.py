@@ -19,9 +19,10 @@ def _direct_pr_artifact_lookup() -> str:
 
 def test_direct_pr_artifact_poll_is_bounded_and_sparse():
     section = _direct_pr_artifact_lookup()
-    match = re.search(r"for _ in \\\$\\(seq 1 (\\d+)\\); do", section)
-    assert match, "direct PR artifact probe must be explicit"
-    assert 1 <= int(match.group(1)) <= 8
+    poll_clause = "for _ in $(seq 1 "
+    assert poll_clause in section, "direct PR artifact probe must be explicit"
+    poll_count = int(section.split(poll_clause, 1)[1].split("); do", 1)[0])
+    assert 1 <= poll_count <= 8
     assert "sleep 30" in section
     assert "GOVERNANCE_ARTIFACT_LOOKUP_FAILED" in section
     assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in section
