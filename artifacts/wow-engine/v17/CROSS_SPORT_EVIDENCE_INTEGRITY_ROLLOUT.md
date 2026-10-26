@@ -22,7 +22,12 @@ a spread-scoring model exists.
 - Official-publication guard HOLD for missing or contradictory proof **when the
   backend scorer is enrolled**. Probability fields are never rewritten.
 - Per-bridge `evidence_integrity_required` registration switch (defaults false)
-  and health visibility `cross_sport_evidence_enforced`.
+  and health visibility `cross_sport_evidence_enforced`. Enrollment now
+  requires a callable backend-controlled `evidence_attestation_verifier` that
+  binds evidence to the scorer result. Untrusted `VERIFIED` strings and
+  caller-supplied snapshots cannot alone activate the publication gate.
+- Shared feature-consumption receipt completeness now rejects stale/conflicted
+  sport-model features even when `consumed_feature_ids` proves numerical use.
 - `can_execute=false`, calibrated-lower-bound and sole
   `V17_TERMINAL_REDUCER` authority unchanged.
 
@@ -50,7 +55,7 @@ deterministic audit identity; it is not a cryptographic source signature.
    consumption merely because a source field was fetched.
 4. Emit required/completed module list from actual backend module instrumentation,
    stage errors and model artifact version. Version/freeze the producer contract.
-5. Bind these server-produced fields to the exact canonical event/candidate and
+5. Register a trusted backend evidence attestation verifier, separate from the model's self-reported fields, and reject unverified/contradictory producer claims. Bind these server-produced fields to the exact canonical event/candidate and
    immutable pregame prediction receipt; enforce model timestamp after the newest
    material update and before event start.
 6. Run chronological and source-contradiction replay, current-slate canaries,
