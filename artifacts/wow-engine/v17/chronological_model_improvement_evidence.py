@@ -130,9 +130,10 @@ def evaluate_chronological_evidence(
         })
 
     # Match on stable event/market/candidate identity, not relative row order.
-    pairs: dict[tuple[str, str, str], dict[str, Mapping[str, Any]]] = defaultdict(dict)
+    pairs: dict[tuple[str, str, str, str, str], dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for row in accepted:
-        key = (row["candidate_id"], row["event_id"], row["market_identity"])
+        key = (row["sport"], row["market_family"], row["candidate_id"],
+               row["event_id"], row["market_identity"])
         slot = pairs[key]
         if row["model_role"] in slot:
             findings.append({"index": -1, "code": "AMBIGUOUS_PAIRED_MODEL_VERSION"})
@@ -144,7 +145,9 @@ def evaluate_chronological_evidence(
         champion, challenger = slot["CHAMPION"], slot["CHALLENGER"]
         if (champion["settled_outcome"] != challenger["settled_outcome"]
                 or champion["settlement_receipt_ref"] != challenger["settlement_receipt_ref"]
-                or champion["event_start_at"] != challenger["event_start_at"]):
+                or champion["event_start_at"] != challenger["event_start_at"]
+                or champion["issued_at"] != challenger["issued_at"]
+                or champion["source_snapshot_at"] != challenger["source_snapshot_at"]):
             findings.append({"index": -1, "code": "PAIRED_SETTLEMENT_MISMATCH"})
             continue
         paired.append((champion, challenger))
@@ -166,7 +169,7 @@ def evaluate_chronological_evidence(
         "automatic_promotion_allowed": False,
         "audit_complete": not findings and bool(accepted),
         "rows_received": len(rows), "rows_verified": len(accepted),
-        "rows_held": len(findings), "findings": findings,
+        "rows_held": len(rows) - len(accepted), "findings": findings,
         "cohorts": by_lane, "paired_count": len(paired),
         "paired_comparison_ready": paired_sufficient,
         "paired_metrics": paired_metrics,
