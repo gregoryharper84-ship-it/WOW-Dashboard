@@ -172,14 +172,14 @@ def parse_projected_official_season(encoded: str, *, year: int) -> tuple[list[Of
     # independently reproduced from frozen NHL public projection and stored
     # D1 final-game result identities across all 6,560 official games.
     canonical = sorted(raw, key=lambda game: int(game["id"]))
-    identity = "\\n".join(
+    identity = "\n".join(
         "|".join((
             str(g["id"]), str(g["startTimeUTC"]),
             str(g["homeTeam"]["abbrev"]), str(g["awayTeam"]["abbrev"]),
             str(g["homeTeam"]["score"]), str(g["awayTeam"]["score"]),
         )) for g in canonical
     )
-    endings = "\\n".join(
+    endings = "\n".join(
         str(g["id"]) + "|" + str(g["gameOutcome"]["lastPeriodType"])
         for g in canonical
     )
