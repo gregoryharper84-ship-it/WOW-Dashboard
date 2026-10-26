@@ -88,3 +88,33 @@ def test_invalid_archive_is_not_silently_empty_corpus():
     with pytest.raises(NHLProjectedSourceError) as error:
         parse_projected_official_season("!!!",year=2021)
     assert error.value.code=="NHL_TOTALS_OFFICIAL_ARCHIVE_INVALID"
+
+
+
+def test_valid_looking_result_timestamp_change_breaks_independent_d1_checksum():
+    path = FIXTURES / "nhl_official_regimes_20212022.json.gz.b64"
+    body = json.loads(gzip.decompress(base64.b64decode(path.read_text())))
+    old = body["records"][0]["startTimeUTC"]
+    body["records"][0]["startTimeUTC"] = (
+        old.replace("Z", ".001Z")
+    )
+    encoded=base64.b64encode(gzip.compress(json.dumps(body).encode())).decode()
+    with pytest.raises(NHLProjectedSourceError) as e:
+        parse_projected_official_season(encoded,year=2021)
+    assert e.value.code == "NHL_TOTALS_OFFICIAL_SOURCE_FINGERPRINT_MISMATCH"
+
+
+def test_valid_looking_regime_flip_breaks_first_party_outcome_checksum():
+    path = FIXTURES / "nhl_official_regimes_20212022.json.gz.b64"
+    body = json.loads(gzip.decompress(base64.b64decode(path.read_text())))
+    candidate = next(
+        r for r in body["records"]
+        if r["gameOutcome"]["lastPeriodType"]=="REG"
+        and abs(r["homeTeam"]["score"]-r["awayTeam"]["score"])==1
+    )
+    assert (candidate["homeTeam"]["score"]+candidate["awayTeam"]["score"])%2==1
+    candidate["gameOutcome"]["lastPeriodType"] = "SO"
+    encoded=base64.b64encode(gzip.compress(json.dumps(body).encode())).decode()
+    with pytest.raises(NHLProjectedSourceError) as e:
+        parse_projected_official_season(encoded,year=2021)
+    assert e.value.code == "NHL_TOTALS_OFFICIAL_SOURCE_FINGERPRINT_MISMATCH"
