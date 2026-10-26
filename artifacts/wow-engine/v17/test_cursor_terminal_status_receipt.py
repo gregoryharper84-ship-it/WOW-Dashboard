@@ -133,3 +133,18 @@ def test_credentials_are_required_without_any_api_call():
         receipt.collect_receipt("", "github-token", api=unexpected_call)
     with pytest.raises(receipt.ReceiptBlocked, match="GITHUB_READ_TOKEN_MISSING"):
         receipt.collect_receipt("cursor-secret", "", api=unexpected_call)
+
+def test_terminal_probe_bootstrap_requires_protected_main_and_no_write_permissions():
+    """Collector adoption must not require the very terminal evidence it collects."""
+    workflow_path = (
+        Path(__file__).resolve().parents[3]
+        / ".github/workflows/wow-v17-cursor-terminal-status-receipt.yml"
+    )
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert "\n  workflow_dispatch:\n" in workflow
+    assert "github.ref == 'refs/heads/main'" in workflow
+    assert "refs/heads/copilot/" not in workflow
+    assert "permissions:\n  contents: read\n  pull-requests: read" in workflow
+    assert "cursor_terminal_status_receipt.py" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "cancel-in-progress: false" in workflow
