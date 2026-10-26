@@ -495,5 +495,17 @@ def test_ci_completion_wakes_existing_single_writer_adoption():
     assert "github.event.workflow_run.name == 'wow-verify'" in expr
     assert "github.event.workflow_run.name == 'wow-engine-verify'" in expr
     assert "wow-v17-engineering-implementation-single-writer" in str(adopter["concurrency"])
-    assert "SOURCE_PR: ${{ needs.adoption-readonly-preflight.outputs.pr_number }}" in str(adopter["steps"])
-    assert "SOURCE_SHA: ${{ needs.adoption-readonly-preflight.outputs.source_sha }}" in str(adopter["steps"])
+    # Assert parsed workflow semantics, not Python's repr of YAML dicts:
+    # str(steps) quotes keys/values and can false-fail correctly wired env.
+    sources = [
+        step for step in adopter["steps"]
+        if step.get("name") == "Re-propose immutable source through authenticated Engineering App"
+    ]
+    assert len(sources) == 1
+    source = sources[0]
+    assert source["env"]["SOURCE_PR"] == "${{ needs.adoption-readonly-preflight.outputs.pr_number }}"
+    assert source["env"]["SOURCE_SHA"] == "${{ needs.adoption-readonly-preflight.outputs.source_sha }}"
+    assert source["env"]["WOW_CAN_EXECUTE"] == "false"
+    assert source["env"]["WOW_DRY_RUN_ONLY"] == "true"
+    assert '--source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA"' in source["run"]
+    assert source["env"]["APP_TOKEN"] == "${{ steps.engineering_app.outputs.token }}"
