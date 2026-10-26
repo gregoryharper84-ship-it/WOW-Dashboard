@@ -429,7 +429,7 @@ def test_unattributed_extra_row_suppresses_apparent_full_conservation():
     result = product_outcome_scorecard(
         [req()], [scored(), scored(candidate_id="")],
     )
-    assert result["completed_requests"] == 1  # known request itself is terminal
+    assert result["completed_requests"] == 0  # unassigned row blocks complete scope
     assert not result["audit_complete"]  # extra unknown row is not reconciled
     assert result["candidate_conservation_rate"] is None
     assert result["reliable_decision_availability"] is None
