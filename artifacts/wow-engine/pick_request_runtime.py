@@ -49,6 +49,10 @@ from v17.fantasy_score_pick_request_bridge import (
     research_candidate_outcome as _fantasy_research_candidate_outcome,
     research_candidate_preflight as _fantasy_research_candidate_preflight,
 )
+from v17.nfl_player_game_eligibility import (
+    PLAYER_UNAVAILABLE,
+    player_game_availability_blocker,
+)
 from v17.prediction_receipt_lookup_runtime import install_prediction_receipt_lookup_route
 from v17.top10_model_reconciliation import enforce_top10_completion
 from v17.mlb_1ip_line_expansion_maintenance import install_mlb_1ip_line_expansion_maintenance_route
@@ -144,22 +148,13 @@ def _validate_evidence(row: Any, canonical_stat: str) -> dict[str, Any]:
         if verified_event_id and verified_event_id != request_event_id:
             raise ValueError("PROP_EVENT_IDENTITY_CONFLICT:NFL_CANONICAL_EVENT_ID_MISMATCH")
 
-    # P0 #2131: game participation is NOT implied by ESPN roster membership,
-    # canonical identity, historical logs, or a caller-supplied "ACTIVE" claim.
-    # There is not yet a trusted event-specific availability attestor wired to
-    # this score boundary; fail closed for *every* NFL player prop until one is
-    # independently reviewed. No unverified positive status is an exception.
+    # P0 #2131: active roster membership and historic logs do not prove
+    # game participation. Every NFL row fails closed before snapshot/scorer;
+    # neither caller "AVAILABLE" nor ambiguous DOUBTFUL grants admission.
     if str(normalized.get("sport") or "").strip().upper() == "NFL":
-        designation = str(
-            role.get("game_availability_status")
-            or role.get("availability_status")
-            or ""
-        ).strip().upper().replace(" ", "_").replace("-", "_")
-        if designation in {
-            "OUT", "IR", "INJURED_RESERVE", "INACTIVE", "SUSPENDED",
-            "PUP", "NFI", "DOUBTFUL",
-        }:
-            raise ValueError("PLAYER_UNAVAILABLE:OFFICIAL_GAME_ELIGIBILITY_NOT_MET")
+        eligibility_code = player_game_availability_blocker(role)
+        if eligibility_code == PLAYER_UNAVAILABLE:
+            raise ValueError("PLAYER_UNAVAILABLE:NEGATIVE_GAME_STATUS_EVIDENCE")
         raise ValueError("PLAYER_AVAILABILITY_UNVERIFIED:TRUSTED_EVENT_PROOF_MISSING")
 
     identity_status = str(role.get("identity_binding_status") or "").strip().upper()
