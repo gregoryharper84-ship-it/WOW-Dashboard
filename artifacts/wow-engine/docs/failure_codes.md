@@ -395,3 +395,7 @@ Every Cursor create first persists a held reservation to the shared #1138 writer
 | `OUTPUT_INVALID` | Flint pilot completion schema | Malformed, oversized or missing nonempty response message |
 
 All receipts force `agent_activation=false`, `production_routing_changed=false`, `can_execute=false`, and `terminal_authority=V17_TERMINAL_REDUCER`. Actual credentials, source data, response text and upstream errors are not logged by the probe.
+
+### Flint opt-in research worker (manual-only, no production routing)
+
+The separate `engineering_openrouter_flint_worker.py` returns one of these `status` values: `MANUAL_ACK_REQUIRED`, `FLINT_ENGINEERING_DISABLED`, `KEY_MISSING`, `SOURCE_SHA_INVALID` (preflight); `INCIDENT_SELECTION_INVALID` (not an OPEN manifest-verified issue or inadequate identity/lease controls); `AUTH_FAILED`, `PAYMENT_REQUIRED`, `RATE_LIMITED`, `UPSTREAM_FAILURE`, `HTTP_FAILURE`, `TRANSPORT_FAILURE` (provider/transport); `OUTPUT_INVALID`, `DIAGNOSTIC_INVALID` (untrusted completion invalid); or `TRIAGE_CANDIDATE_ONLY` (one validated structured response, **not** verified root cause, test, code or deployment). All remain `can_execute=false` with no assigned writer lease, no betting-probability authority, and `V17_TERMINAL_REDUCER` final authority. Only manual `workflow_dispatch` may invoke this research candidate; no shared dispatcher changes are included.
