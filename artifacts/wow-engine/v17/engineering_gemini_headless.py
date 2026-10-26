@@ -122,6 +122,8 @@ def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
         code = "GEMINI_CLI_SANDBOX_FAILED"
     elif exit_code == 53:
         code = "GEMINI_CLI_TURN_LIMIT"
+    elif exit_code == 55:
+        code = "GEMINI_CLI_UNTRUSTED_WORKSPACE"
     elif exit_code == 42:
         code = "GEMINI_CLI_INPUT_INVALID"
     # Specific unsupported-model/billing refusals must precede broad
@@ -152,6 +154,37 @@ def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
         else:
             result["source_head_sha"] = source_sha
     return result
+
+
+def validate_workspace(worktree: str | Path, runner_temp: str | Path,
+                       main_sha: str) -> dict[str, Any]:
+    """Trust only the exact isolated candidate worktree at the verified main HEAD."""
+    if not isinstance(main_sha, str) or not _SHA.fullmatch(main_sha):
+        return {"status": "HELD", "code": "GEMINI_WORKSPACE_MAIN_HEAD_INVALID",
+                "can_execute": False}
+    try:
+        temp_root = Path(runner_temp).resolve(strict=True)
+        candidate = Path(worktree).resolve(strict=True)
+        expected = temp_root / "wow-gemini" / "candidate"
+        if candidate != expected or not candidate.is_dir():
+            return {"status": "HELD", "code": "GEMINI_WORKSPACE_PATH_INVALID",
+                    "can_execute": False}
+        head = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError):
+        return {"status": "HELD", "code": "GEMINI_WORKSPACE_HEAD_UNVERIFIED",
+                "can_execute": False}
+    if head != main_sha:
+        return {"status": "HELD", "code": "GEMINI_WORKSPACE_HEAD_MISMATCH",
+                "can_execute": False}
+    repository_gemini = candidate / ".gemini"
+    if repository_gemini.exists() or repository_gemini.is_symlink():
+        return {"status": "HELD", "code": "GEMINI_REPOSITORY_SETTINGS_NOT_TRUSTED",
+                "can_execute": False}
+    return {"status": "TRUSTED", "code": "GEMINI_WORKSPACE_TRUSTED",
+            "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
 
 
 def admit_one_shot_recovery(runs: Any, comparison: Any, current_sha: str) -> dict[str, Any]:
@@ -304,6 +337,10 @@ def main(argv: list[str] | None = None) -> int:
     verify = sub.add_parser("verify-candidate")
     verify.add_argument("--files-json", required=True)
     verify.add_argument("--worktree", required=True)
+    workspace = sub.add_parser("validate-workspace")
+    workspace.add_argument("--worktree", required=True)
+    workspace.add_argument("--runner-temp", required=True)
+    workspace.add_argument("--main-sha", required=True)
     args = parser.parse_args(argv)
     try:
         if args.action == "admit":
@@ -330,6 +367,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.action == "inspect-patch":
             result = inspect_changed_paths(json.loads(Path(args.files_json).read_text(encoding="utf-8")))
+        elif args.action == "validate-workspace":
+            result = validate_workspace(args.worktree, args.runner_temp, args.main_sha)
         else:
             result = verify_candidate(Path(args.worktree),
                 json.loads(Path(args.files_json).read_text(encoding="utf-8")))
@@ -340,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
                   "terminal_authority": MODEL_AUTHORITY}
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in {
-        "SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED",
+        "SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TRUSTED",
         "TESTED_CANDIDATE", "RECOVERY_ADMITTED",
     } else 2
 

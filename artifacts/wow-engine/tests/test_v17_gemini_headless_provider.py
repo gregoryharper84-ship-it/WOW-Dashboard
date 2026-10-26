@@ -142,6 +142,7 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
             (44, "GEMINI_CLI_SANDBOX_FAILED"),
             (42, "GEMINI_CLI_INPUT_INVALID"),
             (53, "GEMINI_CLI_TURN_LIMIT"),
+            (55, "GEMINI_CLI_UNTRUSTED_WORKSPACE"),
         ):
             with self.subTest(exit_code=exit_code):
                 got = gemini.classify_cli(exit_code, "")
@@ -149,6 +150,84 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
                 self.assertEqual(got["exit_code"], exit_code)
                 self.assertEqual(got["status"], "HELD")
                 self.assertFalse(got["retry_allowed"])
+
+    def test_untrusted_workspace_exit_is_typed_and_redacted(self):
+        failure = gemini.classify_cli(
+            55, "FatalUntrustedWorkspaceError private-path-and-token",
+            source_sha="a" * 40,
+        )
+        self.assertEqual(failure["status"], "HELD")
+        self.assertEqual(failure["code"], "GEMINI_CLI_UNTRUSTED_WORKSPACE")
+        self.assertEqual(failure["source_head_sha"], "a" * 40)
+        self.assertEqual(failure["exit_code"], 55)
+        self.assertFalse(failure["response_error_present"])
+        self.assertFalse(failure["retry_allowed"])
+        self.assertFalse(failure["can_execute"])
+        self.assertNotIn("private-path", str(failure))
+        self.assertNotIn("API", failure["code"])
+
+    def test_workspace_trust_requires_exact_temp_path_head_and_no_repo_gemini(self):
+        with tempfile.TemporaryDirectory() as root:
+            temp_root = Path(root)
+            candidate = temp_root / "wow-gemini" / "candidate"
+            candidate.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(candidate)], check=True)
+            subprocess.run(
+                ["git", "-C", str(candidate), "config", "user.email", "test@example.invalid"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(candidate), "config", "user.name", "Test"],
+                check=True,
+            )
+            (candidate / "source.py").write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(candidate), "add", "source.py"], check=True)
+            subprocess.run(
+                ["git", "-C", str(candidate), "commit", "-qm", "fixture"], check=True,
+            )
+            head = subprocess.run(
+                ["git", "-C", str(candidate), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+            trusted = gemini.validate_workspace(candidate, temp_root, head)
+            self.assertEqual(trusted["status"], "TRUSTED")
+            self.assertFalse(trusted["can_execute"])
+            self.assertEqual(trusted["terminal_authority"], "V17_TERMINAL_REDUCER")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                cli_result = gemini.main([
+                    "validate-workspace", "--worktree", str(candidate),
+                    "--runner-temp", str(temp_root), "--main-sha", head,
+                ])
+            self.assertEqual(cli_result, 0)
+            self.assertEqual(json.loads(output.getvalue())["code"], "GEMINI_WORKSPACE_TRUSTED")
+            self.assertEqual(
+                gemini.validate_workspace(candidate, temp_root, "b" * 40)["code"],
+                "GEMINI_WORKSPACE_HEAD_MISMATCH",
+            )
+            rogue_checkout = temp_root / "elsewhere"
+            rogue_checkout.mkdir()
+            self.assertEqual(
+                gemini.validate_workspace(rogue_checkout, temp_root, head)["code"],
+                "GEMINI_WORKSPACE_PATH_INVALID",
+            )
+
+            for rogue_entry in (
+                "settings.json", "extensions/rogue.json", "hooks/rogue.js",
+            ):
+                with self.subTest(rogue_entry=rogue_entry):
+                    rogue_file = candidate / ".gemini" / rogue_entry
+                    rogue_file.parent.mkdir(parents=True, exist_ok=True)
+                    rogue_file.write_text("untrusted", encoding="utf-8")
+                    result = gemini.validate_workspace(candidate, temp_root, head)
+                    self.assertEqual(
+                        result["code"], "GEMINI_REPOSITORY_SETTINGS_NOT_TRUSTED",
+                    )
+                    rogue_file.unlink()
+                    for parent in (rogue_file.parent, rogue_file.parent.parent):
+                        if parent != candidate and parent.exists() and not any(parent.iterdir()):
+                            parent.rmdir()
 
     def test_valid_result_requires_actual_response_and_no_error(self):
         source_sha = "a" * 40
@@ -255,8 +334,32 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         self.assertIn('source_head_sha=$(git rev-parse HEAD)', worker)
         self.assertIn('--source-sha "$source_head_sha"', worker)
         self.assertIn('--exit-code "$rc"', worker)
-        self.assertIn('timeout 900s gemini', worker)
+        self.assertIn(
+            'timeout 900s env GEMINI_CLI_TRUST_WORKSPACE=true gemini', worker,
+        )
         self.assertIn('"maxSessionTurns": 12', worker)
+
+    def test_worker_scopes_workspace_trust_and_rejects_repo_configuration(self):
+        worker = (ROOT / ".github/workflows/wow-v17-gemini-engineering-worker.yml").read_text()
+        prepare_start = worker.index("- name: Prepare isolated disposable candidate worktree")
+        execute_start = worker.index("- name: Execute one bounded headless Gemini CLI candidate session")
+        inspect_start = worker.index("- name: Inspect candidate changes without PR writes")
+        prepare = worker[prepare_start:execute_start]
+        execute = worker[execute_start:inspect_start]
+        self.assertIn("--runner-temp \"$runner_temp\"", prepare)
+        self.assertIn('--main-sha "$(git rev-parse HEAD)"', prepare)
+        self.assertIn("validate-workspace", prepare)
+        self.assertIn("workspace.json", worker)
+        self.assertNotIn("GEMINI_API_KEY", prepare)
+        self.assertEqual(worker.count("GEMINI_CLI_TRUST_WORKSPACE=true"), 1)
+        self.assertNotIn("export GEMINI_CLI_TRUST_WORKSPACE", worker)
+        self.assertNotIn("GEMINI_CLI_TRUST_WORKSPACE:", worker)
+        self.assertIn("GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}", execute)
+        self.assertNotIn(
+            "GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}", worker[inspect_start:],
+        )
+        self.assertNotIn("GH_TOKEN:", worker[inspect_start:])
+        self.assertIn("timeout 900s env GEMINI_CLI_TRUST_WORKSPACE=true gemini", execute)
 
     def test_one_shot_recovery_requires_a_new_reviewed_runtime_revision(self):
         previous_sha, current_sha = "a" * 40, "b" * 40
