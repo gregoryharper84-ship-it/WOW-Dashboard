@@ -15,8 +15,8 @@ from v17.nhl_total_goals_challenger import (
 def fixture_games():
     names = ["BOS", "NYR", "LAK", "DAL", "SEA", "CAR", "VAN", "TOR"]
     result = []
-    for year in range(2019, 2026):
-        for day in range(42):
+    for year in range(2021, 2026):
+        for day in range(44):
             # Concurrent games with disjoint teams, four per day; deterministic rotations.
             opponents = [names[(i + day) % 8] for i in range(8)]
             for pair in range(4):
@@ -40,7 +40,7 @@ def fixture_games():
 
 def test_research_challenger_fit_is_not_governed_probability():
     rows, audit = build_total_rows(fixture_games())
-    assert audit["source_rows"] == 7 * 42 * 4
+    assert audit["source_rows"] == 5 * 44 * 4
     assert audit["eligible_rows"] > 700
     assert audit["historical_reconstruction"] is True
     assert audit["archive_pregame_snapshot_claimed"] is False
@@ -64,7 +64,7 @@ def test_research_challenger_fit_is_not_governed_probability():
 def test_same_timestamp_other_game_is_not_a_feature_dependency():
     games = fixture_games()
     baseline, _ = build_total_rows(games)
-    target = next(r for r in baseline if r.season_start_year == 2019)
+    target = next(r for r in baseline if r.season_start_year == 2021)
     same_timestamp = next(g for g in games if g["event_start_time"] == target.start_utc and g["official_event_id"] != target.event_id)
     same_row_id = same_timestamp["official_event_id"]
     previous_features = {r.event_id: r.features for r in baseline}
@@ -126,7 +126,7 @@ def test_overlapping_team_at_same_timestamp_rejected():
 
 
 def test_insufficient_holdout_is_explicit():
-    games = [g for g in fixture_games() if g["season"].startswith("2019")]
+    games = [g for g in fixture_games() if g["season"].startswith("2021")]
     rows, _ = build_total_rows(games)
     with pytest.raises(NHLTotalsResearchError) as err:
         fit_total_goals_candidate(rows)
