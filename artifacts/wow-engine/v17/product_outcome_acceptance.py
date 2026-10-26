@@ -91,6 +91,7 @@ def product_outcome_scorecard(
         if key in seen:
             issues.append(f"ROW_{i}_DUPLICATE_CANONICAL_ID")
             integrity_failed_requests.add(request_id)
+            unknown_eligibility = True
             continue
         seen.add(key)
         # The audit must not launder a caller-claimed disposition into an
@@ -159,6 +160,8 @@ def product_outcome_scorecard(
         if len(dispositions) != expected:
             issues.append(f"REQUEST_{i}_SCOPE_COUNT_MISMATCH:{len(dispositions)}/{expected}")
             integrity_failed_requests.add(rid)
+            if len(dispositions) > expected:
+                unknown_scope = True
         # A matching row count does not prove the same original market labels
         # survived. Multi-candidate boards must supply the exact source IDs.
         expected_ids = req.get("expected_candidate_ids")
@@ -206,6 +209,9 @@ def product_outcome_scorecard(
 
     canonical_count = len(seen)
     accounted_count = canonical_count + missing_rows
+    # Duplicate identities cannot substantiate a complete conserved board.
+    if any("DUPLICATE_CANONICAL_ID" in finding for finding in issues):
+        unknown_scope = True
     terminal_count = sum(counts[s] for s in TERMINAL_DISPOSITIONS)
     return {
         "can_execute": False,
