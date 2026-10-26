@@ -71,8 +71,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      fallback_required: ${{ (steps.route.outputs.action == 'SURVIVAL' && steps.route.outputs.independent_fallback_allowed == 'true' && vars.WOW_COPILOT_FALLBACK_ENABLED == 'true') || steps.remote_fence.outcome == 'failure' }}
-      cursor_dispatch: ${{ steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'cursor' && steps.remote_fence.outcome == 'success' }}
+      fallback_required: >-
+        ${{ steps.route.outputs.action == 'SURVIVAL'
+          && steps.route.outcome == 'success'
+          && steps.route.outputs.independent_fallback_allowed == 'true'
+          && vars.WOW_COPILOT_FALLBACK_ENABLED == 'true'
+          && steps.remote_fence.outcome == 'success'
+          && steps.survival.outcome == 'success'
+          && steps.receipt_validation.outcome == 'success'
+          && steps.provider_receipt.outcome == 'success' }}
+      cursor_dispatch: >-
+        ${{ steps.route.outputs.action == 'DISPATCH'
+          && steps.route.outcome == 'success'
+          && steps.route.outputs.provider == 'cursor'
+          && steps.remote_fence.outcome == 'success'
+          && steps.receipt_validation.outcome == 'success'
+          && steps.provider_receipt.outcome == 'success' }}
       provider: ${{ steps.route.outputs.provider }}
       remote_fence: ${{ steps.remote_fence.outcome }}
       target_incident: ${{ steps.route.outputs.target_incident }}
@@ -350,6 +364,7 @@ jobs:
         run: python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
 
       - name: Dispatch OpenAI primary worker
+        id: dispatch_openai
         if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'openai' && steps.remote_fence.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -364,6 +379,7 @@ jobs:
             -f lease_group="$LEASE_GROUP"
 
       - name: Dispatch Anthropic fallback worker
+        id: dispatch_anthropic
         if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'anthropic' && steps.remote_fence.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -382,6 +398,7 @@ jobs:
             -f lease_group="$LEASE_GROUP"
 
       - name: Dispatch opt-in Gemini headless worker
+        id: dispatch_gemini
         if: steps.route.outputs.action == 'DISPATCH' && steps.route.outputs.provider == 'gemini' && steps.remote_fence.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -432,12 +449,122 @@ jobs:
             --parent-run-id "$PARENT_RUN_ID" \
             --output "$RUNNER_TEMP/wow-survival/provider-survival-receipt.json"
 
+      - name: Validate provider-control receipts
+        id: receipt_validation
+        if: always()
+        shell: bash
+        env:
+          ROUTE_RECEIPT: ${{ steps.route.outputs.receipt }}
+          ACTION: ${{ steps.route.outputs.action }}
+          PROVIDER: ${{ steps.route.outputs.provider }}
+          REASON: ${{ steps.route.outputs.reason }}
+          PARENT_RUN_ID: ${{ steps.route.outputs.parent_run_id }}
+          TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
+          LEASE_GROUP: ${{ steps.route.outputs.lease_group }}
+          ROUTE_OUTCOME: ${{ steps.route.outcome }}
+          REMOTE_FENCE_OUTCOME: ${{ steps.remote_fence.outcome }}
+          SURVIVAL_OUTCOME: ${{ steps.survival.outcome }}
+          OPENAI_DISPATCH_OUTCOME: ${{ steps.dispatch_openai.outcome }}
+          ANTHROPIC_DISPATCH_OUTCOME: ${{ steps.dispatch_anthropic.outcome }}
+          GEMINI_DISPATCH_OUTCOME: ${{ steps.dispatch_gemini.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$ROUTE_OUTCOME" != "success" ]; then
+            echo "::error::PROVIDER_ROUTE_FAILED"
+            exit 1
+          fi
+          if [ -z "$ROUTE_RECEIPT" ] || ! jq -e \
+              --arg action "$ACTION" \
+              --arg provider "$PROVIDER" \
+              --arg reason "$REASON" \
+              --arg parent "$PARENT_RUN_ID" \
+              --arg target "$TARGET_INCIDENT" \
+              --arg lease "$LEASE_GROUP" \
+              '
+                type == "object"
+                and .action == $action
+                and .provider == $provider
+                and (
+                  ($action == "NO_ACTION" and .provider == "none")
+                  or (
+                    $action == "DISPATCH"
+                    and (
+                      .provider == "openai"
+                      or .provider == "anthropic"
+                      or .provider == "gemini"
+                      or .provider == "cursor"
+                    )
+                  )
+                  or ($action == "SURVIVAL" and .provider == "deterministic")
+                )
+                and .reason == $reason
+                and ($reason | type == "string" and length > 0)
+                and .parent_run_id == $parent
+                and ($parent | length > 0)
+                and .target_incident == $target
+                and .lease_group == $lease
+                and ($lease | length > 0)
+                and .can_execute == false
+                and .terminal_authority == "V17_TERMINAL_REDUCER"
+                and (.independent_fallback_allowed | type == "boolean")
+                and .cursor_status == (
+                  if $provider == "cursor" then null else "CURSOR_NOT_CONFIGURED" end
+                )
+              ' "$ROUTE_RECEIPT" >/dev/null 2>&1; then
+            echo "::error::PROVIDER_ROUTE_RECEIPT_INVALID"
+            exit 1
+          fi
+          if [ "$ACTION" != "NO_ACTION" ] \
+              && [ "$REMOTE_FENCE_OUTCOME" != "success" ]; then
+            echo "::error::REMOTE_WRITER_RECONCILIATION_REQUIRED"
+            exit 1
+          fi
+          if [ "$ACTION" = "DISPATCH" ]; then
+            case "$PROVIDER" in
+              anthropic) dispatch_outcome="$ANTHROPIC_DISPATCH_OUTCOME" ;;
+              openai) dispatch_outcome="$OPENAI_DISPATCH_OUTCOME" ;;
+              gemini) dispatch_outcome="$GEMINI_DISPATCH_OUTCOME" ;;
+              cursor) dispatch_outcome=external_handoff ;;
+              *) dispatch_outcome=missing ;;
+            esac
+            if [ "$PROVIDER" != "cursor" ] && [ "$dispatch_outcome" != "success" ]; then
+              echo "::error::PROVIDER_DISPATCH_FAILED"
+              exit 1
+            fi
+          fi
+          if [ "$ACTION" = "SURVIVAL" ]; then
+            if [ "$SURVIVAL_OUTCOME" != "success" ]; then
+              echo "::error::DETERMINISTIC_SURVIVAL_CHECKS_FAILED"
+              exit 1
+            fi
+            survival_receipt="$RUNNER_TEMP/wow-survival/provider-survival-receipt.json"
+            if [ ! -s "$survival_receipt" ] || ! jq -e \
+                --arg reason "$REASON" \
+                --arg parent "$PARENT_RUN_ID" \
+                '
+                  type == "object"
+                  and .status == "DEGRADED_DETERMINISTIC_SURVIVAL"
+                  and .reason == $reason
+                  and .parent_run_id == $parent
+                  and .provider_generation_allowed == false
+                  and .deterministic_checks_allowed == true
+                  and .probability_authority == false
+                  and .can_execute == false
+                  and .terminal_authority == "V17_TERMINAL_REDUCER"
+                  and (.priority.incident_id | type == "string" and length > 0)
+                ' "$survival_receipt" >/dev/null 2>&1; then
+              echo "::error::PROVIDER_SURVIVAL_RECEIPT_INVALID"
+              exit 1
+            fi
+          fi
+
       - name: Upload provider-control receipt
+        id: provider_receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-engineering-provider-receipt-${{ github.run_id }}-${{ github.run_attempt }}
-          if-no-files-found: ignore
+          if-no-files-found: error
           path: |
             ${{ steps.route.outputs.receipt }}
             ${{ runner.temp }}/wow-survival/*.json
@@ -445,28 +572,136 @@ jobs:
 
       - name: Record provider-control summary
         if: always()
+        shell: bash
+        env:
+          ACTION: ${{ steps.route.outputs.action }}
+          PROVIDER: ${{ steps.route.outputs.provider }}
+          REASON: ${{ steps.route.outputs.reason }}
+          PARENT_RUN_ID: ${{ steps.route.outputs.parent_run_id }}
+          TARGET_INCIDENT: ${{ steps.route.outputs.target_incident }}
+          LEASE_GROUP: ${{ steps.route.outputs.lease_group }}
+          ROUTE_OUTCOME: ${{ steps.route.outcome }}
+          REMOTE_FENCE_OUTCOME: ${{ steps.remote_fence.outcome }}
+          SURVIVAL_OUTCOME: ${{ steps.survival.outcome }}
+          OPENAI_DISPATCH_OUTCOME: ${{ steps.dispatch_openai.outcome }}
+          ANTHROPIC_DISPATCH_OUTCOME: ${{ steps.dispatch_anthropic.outcome }}
+          GEMINI_DISPATCH_OUTCOME: ${{ steps.dispatch_gemini.outcome }}
+          RECEIPT_VALIDATION_OUTCOME: ${{ steps.receipt_validation.outcome }}
+          RECEIPT_UPLOAD_OUTCOME: ${{ steps.provider_receipt.outcome }}
         run: |
+          set -euo pipefail
+          router_status=ROUTER_READY
+          if [ "$ACTION" = "SURVIVAL" ] \
+              || [ "$REMOTE_FENCE_OUTCOME" = "failure" ] \
+              || [ "$ROUTE_OUTCOME" != "success" ] \
+              || [ "$SURVIVAL_OUTCOME" = "failure" ] \
+              || [ "$OPENAI_DISPATCH_OUTCOME" = "failure" ] \
+              || [ "$ANTHROPIC_DISPATCH_OUTCOME" = "failure" ] \
+              || [ "$GEMINI_DISPATCH_OUTCOME" = "failure" ] \
+              || [ "$RECEIPT_VALIDATION_OUTCOME" = "failure" ] \
+              || [ "$RECEIPT_UPLOAD_OUTCOME" != "success" ]; then
+            router_status=BLOCKED_WITH_EXACT_REASON
+          fi
+          if [ "$ACTION" = "SURVIVAL" ] \
+              && [ "$ROUTE_OUTCOME" = "success" ] \
+              && [ "$REMOTE_FENCE_OUTCOME" = "success" ] \
+              && [ "$SURVIVAL_OUTCOME" = "success" ] \
+              && [ "$OPENAI_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$ANTHROPIC_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$GEMINI_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$RECEIPT_VALIDATION_OUTCOME" = "success" ] \
+              && [ "$RECEIPT_UPLOAD_OUTCOME" = "success" ]; then
+            router_status=ROUTER_HEALTHY_PROVIDER_BLOCKED
+          fi
           {
             echo "# WOW V17 Engineering Provider Dispatcher"
-            echo "- action: ${{ steps.route.outputs.action || 'UNKNOWN' }}"
-            echo "- selected_provider: ${{ steps.route.outputs.provider || 'UNKNOWN' }}"
-            echo "- reason: ${{ steps.route.outputs.reason || 'UNKNOWN' }}"
-            echo "- parent_run_id: ${{ steps.route.outputs.parent_run_id || 'NONE' }}"
-            echo "- target_incident: ${{ steps.route.outputs.target_incident || 'AUTO' }}"
-            echo "- lease_group: ${{ steps.route.outputs.lease_group || 'GLOBAL' }}"
+            echo "- router_status: $router_status"
+            echo "- action: ${ACTION:-UNKNOWN}"
+            echo "- selected_provider: ${PROVIDER:-UNKNOWN}"
+            echo "- reason: ${REASON:-UNKNOWN}"
+            echo "- parent_run_id: ${PARENT_RUN_ID:-NONE}"
+            echo "- issue_id: ${TARGET_INCIDENT:-AUTO}"
+            echo "- lease_group: ${LEASE_GROUP:-GLOBAL}"
             echo "- OpenAI primary: wow-v17-chatgpt-engineering-worker"
             echo "- Anthropic fallback: wow-v17-claude-engineering-worker"
+            deterministic_survival=false
+            if [ "${ACTION:-}" = "SURVIVAL" ]; then
+              deterministic_survival=true
+            fi
+            echo "- deterministic survival: $deterministic_survival"
+            if [ "${ACTION:-}" = "SURVIVAL" ]; then
+              echo "- incident_status: OPEN / BLOCKED_WITH_EXACT_REASON"
+              echo "- survival_receipt_status: DEGRADED_DETERMINISTIC_SURVIVAL"
+              echo "- REPAIR_DELIVERED=false"
+              echo "- repair_verified: false"
+              echo "- provider_generation_allowed: false"
+            fi
             echo "- Gemini: disabled until separately authorized budget and canary"
             echo "- Cursor: opt-in existing-PR Cloud Agent only, not automatic fallback"
-            echo "- deterministic survival: ${{ steps.route.outputs.action == 'SURVIVAL' }}"
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Surface degraded provider state
-        if: steps.route.outputs.action == 'SURVIVAL' || steps.remote_fence.outcome == 'failure'
+        if: >-
+          always() && (
+            steps.route.outputs.action == 'SURVIVAL' ||
+            steps.route.outcome != 'success' ||
+            steps.remote_fence.outcome == 'failure' ||
+            steps.survival.outcome == 'failure' ||
+            steps.dispatch_openai.outcome == 'failure' ||
+            steps.dispatch_anthropic.outcome == 'failure' ||
+            steps.dispatch_gemini.outcome == 'failure' ||
+            steps.receipt_validation.outcome == 'failure' ||
+            steps.provider_receipt.outcome != 'success'
+          )
+        shell: bash
+        env:
+          ACTION: ${{ steps.route.outputs.action }}
+          REASON: ${{ steps.route.outputs.reason }}
+          ROUTE_OUTCOME: ${{ steps.route.outcome }}
+          REMOTE_FENCE_OUTCOME: ${{ steps.remote_fence.outcome }}
+          SURVIVAL_OUTCOME: ${{ steps.survival.outcome }}
+          OPENAI_DISPATCH_OUTCOME: ${{ steps.dispatch_openai.outcome }}
+          ANTHROPIC_DISPATCH_OUTCOME: ${{ steps.dispatch_anthropic.outcome }}
+          GEMINI_DISPATCH_OUTCOME: ${{ steps.dispatch_gemini.outcome }}
+          RECEIPT_VALIDATION_OUTCOME: ${{ steps.receipt_validation.outcome }}
+          RECEIPT_UPLOAD_OUTCOME: ${{ steps.provider_receipt.outcome }}
         run: |
-          echo "::error::Both generative engineering paths are unavailable or unsafe to fail over; deterministic survival checks completed."
+          set -euo pipefail
+          if [ "$ACTION" = "SURVIVAL" ] \
+              && [ "$REMOTE_FENCE_OUTCOME" = "success" ] \
+              && [ "$ROUTE_OUTCOME" = "success" ] \
+              && [ "$SURVIVAL_OUTCOME" = "success" ] \
+              && [ "$OPENAI_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$ANTHROPIC_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$GEMINI_DISPATCH_OUTCOME" != "failure" ] \
+              && [ "$RECEIPT_VALIDATION_OUTCOME" = "success" ] \
+              && [ "$RECEIPT_UPLOAD_OUTCOME" = "success" ]; then
+            warning_reason=$(printf '%s' "$REASON" \
+              | LC_ALL=C tr -cd 'A-Za-z0-9_:.-' \
+              | cut -c1-200)
+            echo "::warning::ROUTER_HEALTHY_PROVIDER_BLOCKED:$warning_reason"
+            exit 0
+          fi
+          detail=PROVIDER_CONTROL_PLANE_FAILED
+          if [ "$REMOTE_FENCE_OUTCOME" != "success" ] \
+              && [ "$ACTION" != "NO_ACTION" ]; then
+            detail=REMOTE_WRITER_RECONCILIATION_REQUIRED
+          elif [ "$ROUTE_OUTCOME" != "success" ]; then
+            detail=PROVIDER_ROUTE_FAILED
+          elif [ "$SURVIVAL_OUTCOME" = "failure" ]; then
+            detail=DETERMINISTIC_SURVIVAL_CHECKS_FAILED
+          elif [ "$OPENAI_DISPATCH_OUTCOME" = "failure" ] \
+              || [ "$ANTHROPIC_DISPATCH_OUTCOME" = "failure" ] \
+              || [ "$GEMINI_DISPATCH_OUTCOME" = "failure" ]; then
+            detail=PROVIDER_DISPATCH_FAILED
+          elif [ "$RECEIPT_VALIDATION_OUTCOME" = "failure" ]; then
+            detail=PROVIDER_RECEIPT_VALIDATION_FAILED
+          elif [ "$RECEIPT_UPLOAD_OUTCOME" != "success" ]; then
+            detail=PROVIDER_RECEIPT_ARTIFACT_MISSING
+          fi
+          echo "::error::BLOCKED_WITH_EXACT_REASON:$detail"
           exit 1
 
   independent-provider:

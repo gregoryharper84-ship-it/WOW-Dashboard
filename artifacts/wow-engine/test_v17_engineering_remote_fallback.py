@@ -110,7 +110,7 @@ class RemoteFallbackTests(unittest.TestCase):
                     "WOW_COPILOT_FALLBACK_REPOSITORY"):
             with self.subTest(key=key):
                 self.assertEqual(self.run_fallback({**ENV, key: ""})["status"],
-                                 "CURSOR_NOT_CONFIGURED")
+                                 "COPILOT_NOT_CONFIGURED")
                 self.assertEqual(self.api.calls, [])
         self.assertEqual(self.run_fallback({**ENV, "ALLOW_NEW_ASSIGNMENT": "false"})["status"],
                          "COPILOT_ADMISSION_NOT_AUTHORIZED")
@@ -119,7 +119,7 @@ class RemoteFallbackTests(unittest.TestCase):
     def test_default_zero_additional_api_spend_preserves_native_detection(self):
         result = self.run_fallback({})
         self.assertEqual(result["action"], "SURVIVAL")
-        self.assertEqual(result["status"], "CURSOR_NOT_CONFIGURED")
+        self.assertEqual(result["status"], "COPILOT_NOT_CONFIGURED")
         self.assertEqual(self.api.calls, [])
         root = Path(__file__).resolve().parents[2]
         dispatcher = (root / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
@@ -129,6 +129,15 @@ class RemoteFallbackTests(unittest.TestCase):
         self.assertIn("name: Deterministic survival checks", dispatcher)
         self.assertIn("engineering_provider_failover.py survival-receipt", dispatcher)
         self.assertIn("vars.WOW_COPILOT_FALLBACK_ENABLED == 'true'", dispatcher)
+
+    def test_unbudgeted_fallback_writes_hold_without_api_spend_or_reservation(self):
+        result = self.run_fallback({
+            **ENV,
+            "WOW_COPILOT_FALLBACK_BUDGET_APPROVED": "false",
+        })
+        self.assertEqual(result["status"], "COPILOT_NOT_CONFIGURED")
+        self.assertEqual(self.api.calls, [])
+        self.assertEqual(self.api.launches, [])
 
     def test_wrong_branch_repo_sha_and_domain(self):
         for key, value in (("GITHUB_REF", "refs/heads/feature"),
