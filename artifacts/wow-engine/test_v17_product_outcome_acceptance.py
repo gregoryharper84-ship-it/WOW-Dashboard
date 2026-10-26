@@ -568,3 +568,42 @@ def test_model_closure_disallows_duplicate_27_terminal_ids_despite_count_match()
     result = model_restoration_acceptance(valid_closure(), product)
     assert result["status"] == "BLOCKED_WITH_EXACT_REASON"
     assert "PRODUCT_EXACT_SCOPE_IDENTITIES_UNPROVEN" in result["blockers"]
+
+
+def test_empty_request_inventory_is_unknown_not_a_green_audit():
+    result = product_outcome_scorecard([], [])
+    assert not result["audit_complete"]
+    assert result["supported_requests"] == 0
+    assert result["product_outcome_completion_rate"] is None
+    assert "NO_SUPPORTED_VERIFIED_REQUEST_SCOPE" in result["findings"]
+    assert result["can_execute"] is False
+
+
+def test_unsupported_only_board_cannot_claim_clean_audit():
+    result = product_outcome_scorecard([req(supported=False)], [])
+    assert not result["audit_complete"]
+    assert result["supported_requests"] == 0
+    assert result["completed_requests"] == 0
+    assert "NO_SUPPORTED_VERIFIED_REQUEST_SCOPE" in result["findings"]
+
+
+def test_zero_market_claim_without_discovery_attestation_is_not_green():
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=0, no_current_candidates_verified=False)], [],
+    )
+    assert not result["audit_complete"]
+    assert result["completed_requests"] == 0
+    assert any("EMPTY_SCOPE_NOT_INDEPENDENTLY_VERIFIED" in x
+               for x in result["findings"])
+
+
+def test_independently_verified_zero_market_scope_remains_valid():
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=0, no_current_candidates_verified=True)], [],
+    )
+    assert result["audit_complete"]
+    assert result["supported_requests"] == 1
+    assert result["completed_requests"] == 1
+    assert result["candidate_conservation_rate"] is None
+    assert result["reliable_decision_availability"] is None
+    assert result["can_execute"] is False
