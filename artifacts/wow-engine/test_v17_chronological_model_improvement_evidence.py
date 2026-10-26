@@ -149,6 +149,30 @@ def test_same_event_different_source_cutoffs_is_not_a_valid_pair():
     assert any(x["code"] == "PAIRED_SETTLEMENT_MISMATCH" for x in result["findings"])
 
 
+
+def test_same_prediction_id_across_roles_cannot_count_twice():
+    # Roles cannot share a supposedly immutable prediction receipt identifier.
+    rows = [sample(1), sample(1, "CHALLENGER", prediction_id="CHAMPION-pred-1")]
+    result = evaluate_chronological_evidence(rows, min_samples=1)
+    assert result["rows_verified"] == 1
+    assert result["rows_held"] == 1
+    assert not result["audit_complete"]
+    assert result["paired_count"] == 0
+    assert any(x["code"] == "DUPLICATE_MODEL_PREDICTION" for x in result["findings"])
+
+
+def test_same_as_of_timestamp_with_different_snapshot_hash_cannot_pair():
+    # Timestamp equality is insufficient proof of identical point-in-time inputs.
+    rows = [sample(1), sample(
+        1, "CHALLENGER", source_snapshot_hash="different-pregame-inputs",
+    )]
+    result = evaluate_chronological_evidence(rows, min_samples=1)
+    assert result["rows_verified"] == 2
+    assert not result["paired_comparison_ready"]
+    assert result["paired_metrics"] is None
+    assert any(x["code"] == "PAIRED_SETTLEMENT_MISMATCH" for x in result["findings"])
+
+
 def test_same_candidate_string_from_other_sport_cannot_cross_pair():
     rows = [sample(1), sample(
         1, "CHALLENGER", sport="NBA", market_family="PLAYER_POINTS",
