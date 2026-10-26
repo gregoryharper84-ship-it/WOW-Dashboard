@@ -55,3 +55,22 @@ OpenRouter Free currently advertises 50 free-model requests/day and 20/minute; l
 - https://openrouter.ai/pricing
 - https://openrouter.ai/developers
 - https://openrouter.ai/privacy
+
+## Stage 2 — Manual AMRT engineering diagnostic (source-only candidate)
+
+A second source-only worker now exists at `artifacts/wow-engine/v17/engineering_openrouter_flint_worker.py`, with the **manual-only** workflow `.github/workflows/wow-v17-flint-engineering-worker.yml`. This is not activated until the reviewed workflow exists on protected `main`.
+
+**Owner setup already reported:** An `OPENROUTER_API_KEY` was added to the `wow-engineering` GitHub Environment, but the connector cannot reveal its value or independently prove that the environment secret is readable by an actual workflow. The successful Mac smoke test showed user-reported auth for the owner's local key.
+
+**After reviewed merge, manual workflow test:**
+
+1. Open [GitHub Actions](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/workflows/wow-v17-flint-engineering-worker.yml).
+2. Select **Run workflow** on `main`.
+3. Set `target_incident=1688` and `lease_group=P0_AUTONOMY_RESTORE`. This issue was independently checked as OPEN on October 26, 2026. If it later closes, choose another **currently OPEN** issue from the canonical manifest—do not use the closed #1841.
+4. Affirm `consent_external_title=true` only after approving a single external transfer of the **issue number, title and lease group**, with no issue body, code or credentials. The model prompt also carries fixed public safety guidance.
+5. Confirm the run held the existing engineering single-writer concurrency group and passed the unresolved remote-writer guard. A legitimate unresolved writer reservation means HOLD, not bypass.
+6. Inspect the `wow-flint-diagnostic-<run>-<attempt>` artifact. `worker-receipt.json` must contain `status=TRIAGE_CANDIDATE_ONLY`, `can_execute=false`, `writer_lease_granted=false`, `production_routing_changed=false` and `terminal_authority=V17_TERMINAL_REDUCER`. `diagnostic-candidate.json` contains untrusted research notes only; evaluate their correctness before any repair task.
+
+**Boundaries:** exactly one external hosted-model attempt (45s timeout, 700 output tokens; no automatic retry), no shell/tool execution by Flint, no source or test edits, no GitHub writer credential in the model step, no PR authoring, no betting, no live runtime changes, no independent certification. The model's diagnosis is a hypothesis based on **issue title only**, so it cannot be presented as an actual root cause or verified repair. All source/credential data stays out of its prompt.
+
+**Stage 3, requiring separate evidence:** only after one real manual worker run with a validated diagnostic, propose a constrained repair worker and attach trusted source/test fixtures under explicit data-transmission consent. Benchmark against Claude/Gemini and require tests, independent SIRT/QA verification and deployment SHA before any claim of production restoration. No duplicate dispatcher or auto-enable toggle.
