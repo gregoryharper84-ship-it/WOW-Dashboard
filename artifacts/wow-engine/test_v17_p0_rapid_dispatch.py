@@ -13,6 +13,12 @@ def test_p0_parallel_rapid_dispatch_contract() -> None:
     assert "p0_parallel_dispatch.py" in text
     assert "max_parallel_writers: 3" in text
     assert "implementation_lease_scope: domain-scoped" in text
+    assert "for status in queued in_progress waiting requested pending" in text
+    assert '--status "$status"' in text
+    assert "--limit 1000" in text
+    assert "ACTIVE_WRITER_INVENTORY_TRUNCATED" in text
+    assert '--active-runs "$RUNNER_TEMP/wow-active-writer-runs.json"' in text
+    assert '--run-number "$GITHUB_RUN_NUMBER"' in text
     assert "stream_A: Scout/Data Plane (#1237 -> #1250)" in text
     assert "stream_B: State/Scoring (#1189 -> #960)" in text
     assert "stream_C: Runtime/Ingest (#502 -> #1127)" in text

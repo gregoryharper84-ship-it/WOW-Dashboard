@@ -181,6 +181,45 @@
         "AGENT_INSTRUCTION_TRUST_ROOT",
         "RELEASE_SECURITY"
       ]
+    },
+    {
+      "issue_number": 1950,
+      "severity": "P0",
+      "priority_rank": 8,
+      "execution_lane": "RAPID",
+      "rapid_stream": "A",
+      "lease_group": "P0_NBA_RESTORE",
+      "conflict_keys": [
+        "NBA_PREGAME_FEATURES",
+        "NBA_GAME_WIN",
+        "NBA_MODEL_CALIBRATION"
+      ]
+    },
+    {
+      "issue_number": 1952,
+      "severity": "P0",
+      "priority_rank": 8,
+      "execution_lane": "RAPID",
+      "rapid_stream": "B",
+      "lease_group": "P0_NHL_RESTORE",
+      "conflict_keys": [
+        "NHL_CANDIDATE",
+        "NHL_PREGAME_FEATURES",
+        "NHL_GAME_WIN"
+      ]
+    },
+    {
+      "issue_number": 1951,
+      "severity": "P0",
+      "priority_rank": 8,
+      "execution_lane": "RAPID",
+      "rapid_stream": "C",
+      "lease_group": "P0_NCAAF_RESTORE",
+      "conflict_keys": [
+        "NCAAF_TEAM_STATE",
+        "NCAAF_GAME_WIN",
+        "NCAAF_MODEL_CALIBRATION"
+      ]
     }
   ],
   "acceleration": []
