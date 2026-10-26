@@ -1,8 +1,7 @@
 # AMRT — Five Specialist Source Agents (not deployed)
 
-**Status:** SOURCE IMPLEMENTED / NOT ACTIVATED. This branch is stacked on source
-candidate PR #1843, not on an independently verified production runtime.
-**Change class:** A, additive engineering decision handlers and tests.
+**Status:** SOURCE IMPLEMENTED / EXISTING SEVEN-ROLE ADAPTER WIRED / NOT PRODUCTION ACTIVATED. This integration branch starts from October 26 protected `main` and ports the exact five specialist implementations from source PR #1861, without old #1843 branch drift.
+**Change class:** B (agent-role/trust-boundary adoption requires independent review); code is pure and does not change scorer behavior.
 **Authority:** Existing WOW Ecosystem Conductor, Engineering authenticated
 writer/lease, independent QA, Security and Release. No parallel scheduler.
 
@@ -17,8 +16,10 @@ writer/lease, independent QA, Security and Release. No parallel scheduler.
 | Recovery Escalation & Deadlock Breaker | `RecoveryEscalationDeadlockBreaker.run(incident, now=...)` | `CODE_CI_ENGINEER` | Same-PR rework or owned-lease bounded fallback |
 
 Each emits a frozen `SpecialistDecision`. The `to_existing_role_receipt`
-adapter creates an existing seven-role `RoleReceipt` and can feed the
-**existing** `amrt_receipt_bridge` after authenticated Engineering adoption.
+adapter creates an existing seven-role `RoleReceipt`. The callable
+`v17.amrt_operational_lanes.evaluate_amrt_specialist()` now exposes the five
+specialists through the **existing** seven-role interface and can feed the
+**existing** `amrt_receipt_bridge` only after authenticated Engineering adoption.
 Neither role mapping nor a local test result is independent approval.
 
 ## Explicitly disabled
@@ -39,7 +40,7 @@ OPEN with one accountable owner while that dependency is resolved.
 Run from `artifacts/wow-engine`:
 
 ```sh
-python -m pytest -q test_v17_amrt_specialist_agents.py
+python -m pytest -q test_v17_amrt_specialist_agents.py test_v17_amrt_specialist_integration.py test_v17_amrt_operational_lanes.py test_v17_amrt_closure_gate.py test_v17_amrt_receipt_bridge.py
 ```
 
 Test gates: all five callables; exact canonical role mapping; missing event
@@ -47,17 +48,13 @@ identity; absent/failed stages; Class C refusal; no duplicate active PR;
 pre/post fix replay and adjacent paths; exact-head source tests vs independent
 QA; same-lease fallback, expired leases and attempt cap; immutable V17 safety.
 
-### Planned adoption (requires a separate authorized change)
+### Planned activation (requires governed approval and live evidence)
 
-1. Authenticated Engineering App pins this stack to current reviewed #1843
-   head, preserving existing Conductor incident uniqueness, owner, atomic writer
-   lease and dispatch-conflict keys.
+1. Independently review this exact-head main-based integration, including the new `.agents/` trust-root definitions. An authenticated Engineering App can adopt only with a fresh valid canonical incident writer lease, retaining Conductor incident uniqueness and dispatch-conflict keys.
 2. The worker passes attributed external evidence to these pure functions,
    records a canonical Conductor handoff receipt, and advances through existing
    QA/Release roles. No independently fabricated PASS.
-3. Protected CI, Security, Model (if Class C), independent QA, Release and
-   exact-SHA production readback authorize subsequent activation. This PR
-   **does not request activation, merge or deployment**.
+3. Protected CI, Security, Model (if Class C), independent QA and Release must approve the exact source SHA before any authorized merge. Release and live Action/Supabase readback must then prove the deployed SHA and handoff. This source PR requests review, **not independent approval, immediate deployment or live execution**.
 
 ### First acceptance cases
 
