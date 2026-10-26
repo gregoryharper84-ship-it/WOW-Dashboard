@@ -77,6 +77,16 @@ def test_certifier_consumes_only_authenticated_qa_review_run_artifacts():
     assert "ref: main" in workflow
 
 
+def test_certifier_serializes_exact_heads_without_cancelling_existing_runs():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    concurrency = workflow.split("concurrency:\n", 1)[1].split("\njobs:\n", 1)[0]
+
+    assert "github.event.check_run.head_sha" in concurrency
+    assert "github.event.pull_request.head.sha" in concurrency
+    assert "github.event.workflow_run.pull_requests[0].head.sha" in concurrency
+    assert "cancel-in-progress: false" in concurrency
+
+
 def test_source_review_artifact_name_regex_captures_pr_and_head_under_bash_nounset():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     regex_line = next(
@@ -271,6 +281,12 @@ def run_route_step(tmp_path):
 gh() {
   if [ "$*" = "api /repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100" ]; then
     printf '%s\\n' "$TEST_ARTIFACTS_JSON"
+  elif [ "$*" = "api /repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}" ]; then
+    printf '%s\\n' "$TEST_RELEASE_CHECK_RUN_JSON"
+  elif [ "$*" = "api /repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PR_NUMBER}" ]; then
+    printf '%s\\n' "$TEST_RELEASE_PR_JSON"
+  elif [[ "$*" == "api /repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100&page="* ]]; then
+    printf '%s\\n' "$TEST_RELEASE_PRS_JSON"
   else
     echo "UNEXPECTED_GH_INVOCATION:$*" >&2
     return 1
@@ -289,6 +305,17 @@ gh() {
             "SOURCE_RUN_ID": "40062800000",
             "SOURCE_CONCLUSION": "success",
             "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": []}),
+            "CHECK_RUN_ID": "601",
+            "CHECK_RUN_NAME": "WOW Release Authority exact-head",
+            "CHECK_RUN_APP_ID": "5245853",
+            "CHECK_RUN_STATUS": "completed",
+            "CHECK_RUN_CONCLUSION": "success",
+            "CHECK_RUN_HEAD_SHA": HEAD,
+            "CHECK_RUN_PRS": "[]",
+            "RELEASE_PR_NUMBER": "1822",
+            "TEST_RELEASE_CHECK_RUN_JSON": "{}",
+            "TEST_RELEASE_PR_JSON": "{}",
+            "TEST_RELEASE_PRS_JSON": "[]",
         } | overrides
         result = subprocess.run(
             ["bash", "-e", "-o", "pipefail", "-c", stub + script],
@@ -341,6 +368,122 @@ def test_targeted_successful_qa_run_is_applicable(run_route_step):
     assert outputs == {"applicable": "true"}
 
 
+def release_check_run(prs=None, *, app_id=5245853, head_sha=HEAD, status="completed", conclusion="success"):
+    return {
+        "id": 601,
+        "name": "WOW Release Authority exact-head",
+        "app": {"id": app_id},
+        "head_sha": head_sha,
+        "status": status,
+        "conclusion": conclusion,
+        "pull_requests": prs if prs is not None else [{"number": 1822, "head": {"sha": HEAD}}],
+    }
+
+
+def release_pr(*, number=1822, sha=HEAD, state="open", draft=False, head_repo=REPOSITORY,
+               base_ref="main", base_repo=REPOSITORY):
+    return {
+        "number": number,
+        "state": state,
+        "draft": draft,
+        "head": {
+            "sha": sha,
+            "ref": "fix/issue-1806",
+            "repo": {"full_name": head_repo},
+        },
+        "base": {
+            "ref": base_ref,
+            "repo": {"full_name": base_repo},
+        },
+    }
+
+
+def run_release_check(run_route_step, *, event_prs=None, api_prs=None, api_check=None, pr=None, inventory=None,
+                      **overrides):
+    event_prs = event_prs if event_prs is not None else [{"number": 1822, "head": {"sha": HEAD}}]
+    api_prs = api_prs if api_prs is not None else event_prs
+    api_check = api_check if api_check is not None else release_check_run(api_prs)
+    pr = pr if pr is not None else release_pr()
+    inventory = inventory if inventory is not None else [pr]
+    return run_route_step(
+        EVENT_NAME="check_run",
+        REVIEW_ACTIVE="",
+        CHECK_RUN_PRS=json.dumps(event_prs),
+        TEST_RELEASE_CHECK_RUN_JSON=json.dumps(api_check),
+        TEST_RELEASE_PR_JSON=json.dumps(pr),
+        TEST_RELEASE_PRS_JSON=json.dumps(inventory),
+        **overrides,
+    )
+
+
+def test_genuine_late_release_success_wakes_certifier_for_unique_current_pr(run_route_step):
+    result, outputs = run_release_check(run_route_step)
+
+    assert result.returncode == 0, result.stderr
+    assert outputs == {
+        "pr_number": "1822",
+        "head_sha": HEAD,
+        "head_ref": "fix/issue-1806",
+        "applicable": "true",
+    }
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"CHECK_RUN_APP_ID": "1"}, "RELEASE_CHECK_EVENT_NOT_AUTHENTIC_SUCCESS"),
+        ({"CHECK_RUN_NAME": "spoofed"}, "RELEASE_CHECK_EVENT_NOT_AUTHENTIC_SUCCESS"),
+        ({"CHECK_RUN_STATUS": "in_progress"}, "RELEASE_CHECK_EVENT_NOT_AUTHENTIC_SUCCESS"),
+        ({"CHECK_RUN_CONCLUSION": "failure"}, "RELEASE_CHECK_EVENT_NOT_AUTHENTIC_SUCCESS"),
+    ],
+)
+def test_release_wakeup_rejects_spoofed_or_non_success_event(overrides, reason, run_route_step):
+    result, outputs = run_release_check(run_route_step, **overrides)
+
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"applicable": "false", "reason": reason}
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"api_check": release_check_run(app_id=1)}, "RELEASE_CHECK_API_IDENTITY_OR_PR_ASSOCIATION_INVALID"),
+        ({"api_check": {**release_check_run(), "id": 602}},
+         "RELEASE_CHECK_API_IDENTITY_OR_PR_ASSOCIATION_INVALID"),
+        ({"api_check": release_check_run(head_sha="b" * 40)},
+         "RELEASE_CHECK_API_IDENTITY_OR_PR_ASSOCIATION_INVALID"),
+        ({"event_prs": []}, "RELEASE_CHECK_PR_ASSOCIATION_MISSING_OR_AMBIGUOUS"),
+        (
+            {"event_prs": [{"number": 1822, "head": {"sha": HEAD}},
+                           {"number": 1823, "head": {"sha": HEAD}}]},
+            "RELEASE_CHECK_PR_ASSOCIATION_MISSING_OR_AMBIGUOUS",
+        ),
+        ({"api_prs": []}, "RELEASE_CHECK_PR_ASSOCIATION_MISSING_OR_AMBIGUOUS"),
+        ({"pr": release_pr(sha="b" * 40)}, "RELEASE_CHECK_PR_MOVED_OR_NOT_CANONICAL"),
+        ({"pr": release_pr(head_repo="fork/WOW-Dashboard")}, "RELEASE_CHECK_PR_MOVED_OR_NOT_CANONICAL"),
+        ({"pr": release_pr(base_ref="other")}, "RELEASE_CHECK_PR_MOVED_OR_NOT_CANONICAL"),
+        ({"inventory": [release_pr(), release_pr(number=1823)]}, "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE"),
+    ],
+)
+def test_release_wakeup_rejects_unbound_or_moving_pr(kwargs, reason, run_route_step):
+    result, outputs = run_release_check(run_route_step, **kwargs)
+
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"applicable": "false", "reason": reason}
+
+
+def test_release_wakeup_fails_closed_when_current_pr_inventory_is_truncated(run_route_step):
+    inventory = [release_pr()] + [
+        release_pr(number=2000 + index, sha="b" * 40) for index in range(99)
+    ]
+
+    result, outputs = run_release_check(run_route_step, inventory=inventory)
+
+    assert result.returncode == 1
+    assert "RELEASE_CHECK_PR_INVENTORY_LIMIT_EXCEEDED" in result.stderr
+    assert "applicable" not in outputs
+
+
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
@@ -366,8 +509,6 @@ def test_every_certification_step_is_gated_on_the_route():
     assert steps
     for step in steps:
         assert "        if: steps.route.outputs.applicable == 'true'" in step, step.splitlines()[0]
-    # Duplicate deliveries of one QA run share a concurrency group and cancel each other.
-    assert "group: wow-v17-existing-pr-governance-${{ github.event.workflow_run.id" in workflow
 
 
 def evidence(*, author=None, review_state="APPROVED", review_sha=HEAD):
@@ -1019,6 +1160,279 @@ def test_missing_required_workflow_and_failed_latest_run_hold():
         build(data)
 
 
+def zero_job_shadow(*, verified=True, repository=REPOSITORY, head_repository=REPOSITORY, event="pull_request"):
+    shadow = {
+        "id": 999,
+        "name": "wow-verify",
+        "path": verifier.REQUIRED_WORKFLOWS["wow-verify"],
+        "head_sha": HEAD,
+        "status": "completed",
+        "conclusion": "action_required",
+        "event": event,
+        "repository": {"full_name": repository},
+        "head_repository": {"full_name": head_repository},
+        "created_at": "2026-10-17T23:30:00Z",
+    }
+    if verified:
+        shadow["pre_job_zero_jobs_verified"] = True
+    return shadow
+
+
+def test_verified_zero_job_action_required_shadow_does_not_hide_executed_success():
+    data = evidence()
+    data["workflow_runs"].append(zero_job_shadow())
+
+    receipt = build(data)
+
+    assert receipt["required_workflows"][0]["run_id"] == 100
+
+
+@pytest.mark.parametrize(
+    ("shadow", "reason"),
+    [
+        (zero_job_shadow(verified=False), "ZERO_JOB_SHADOW_UNVERIFIED"),
+        (zero_job_shadow(repository="foreign/WOW-Dashboard"), "ZERO_JOB_REPOSITORY_MISMATCH"),
+        (zero_job_shadow(head_repository="foreign/WOW-Dashboard"), "ZERO_JOB_REPOSITORY_MISMATCH"),
+        (zero_job_shadow(event="workflow_dispatch"), "ZERO_JOB_SHADOW_UNVERIFIED"),
+        ({**zero_job_shadow(), "status": "in_progress"}, "ZERO_JOB_SHADOW_UNVERIFIED"),
+    ],
+)
+def test_unverified_action_required_shadow_fails_closed(shadow, reason):
+    data = evidence()
+    data["workflow_runs"].append(shadow)
+
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match=reason):
+        build(data)
+
+
+def test_zero_job_shadow_without_preceding_success_and_newer_executed_red_hold():
+    data = evidence()
+    data["workflow_runs"] = [
+        run for run in data["workflow_runs"] if run["name"] != "wow-verify"
+    ] + [zero_job_shadow()]
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="WORKFLOW_MISSING"):
+        build(data)
+
+    data = evidence()
+    data["workflow_runs"].append(zero_job_shadow())
+    data["workflow_runs"].append({
+        **data["workflow_runs"][0],
+        "id": 1000,
+        "created_at": "2026-10-17T23:40:00Z",
+        "conclusion": "failure",
+    })
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="WORKFLOW_NOT_GREEN"):
+        build(data)
+
+
+def run_exact_head_ci_step(tmp_path, runs, *, detail=None, jobs=None):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    step = workflow.split("      - name: Verify exact-head deterministic CI\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    stub = """
+gh() {
+  case "$*" in
+    "api /repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}&per_page=100&page=1")
+      printf '%s\\n' "$TEST_WORKFLOW_RUNS"
+      ;;
+    "api /repos/${GITHUB_REPOSITORY}/actions/runs/999")
+      printf '%s\\n' "$TEST_ZERO_JOB_RUN"
+      ;;
+    "api /repos/${GITHUB_REPOSITORY}/actions/runs/999/jobs?per_page=100&page=1")
+      printf '%s\\n' "$TEST_ZERO_JOB_INVENTORY"
+      ;;
+    *)
+      echo "UNEXPECTED_GH_INVOCATION:$*" >&2
+      return 1
+      ;;
+  esac
+}
+seq() { echo 1; }
+sleep() { :; }
+"""
+    output_path = tmp_path / "outputs"
+    output_path.write_text("", encoding="utf-8")
+    evidence_dir = tmp_path / ".governance-review-evidence"
+    evidence_dir.mkdir(exist_ok=True)
+    env = os.environ | {
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "GITHUB_OUTPUT": str(output_path),
+        "HEAD_SHA": HEAD,
+        "TEST_WORKFLOW_RUNS": json.dumps({"workflow_runs": runs}),
+        "TEST_ZERO_JOB_RUN": json.dumps(detail or {}),
+        "TEST_ZERO_JOB_INVENTORY": json.dumps(jobs or {"total_count": 0, "jobs": []}),
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", stub + script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = evidence_dir / "workflow-runs.json"
+    return result, json.loads(output.read_text(encoding="utf-8")) if output.exists() else None
+
+
+def zero_job_run_detail(**overrides):
+    return {
+        "id": 999,
+        "name": "wow-verify",
+        "path": verifier.REQUIRED_WORKFLOWS["wow-verify"],
+        "head_sha": HEAD,
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "action_required",
+        "repository": {"full_name": REPOSITORY},
+        "head_repository": {"full_name": REPOSITORY},
+    } | overrides
+
+
+def test_workflow_authenticates_and_marks_only_zero_job_shadow(tmp_path):
+    runs = evidence()["workflow_runs"] + [{
+        **zero_job_run_detail(),
+        "created_at": "2026-10-17T23:30:00Z",
+    }]
+
+    result, verified_runs = run_exact_head_ci_step(
+        tmp_path,
+        runs,
+        detail=zero_job_run_detail(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    shadow = next(item for item in verified_runs if item["id"] == 999)
+    assert shadow["pre_job_zero_jobs_verified"] is True
+
+
+@pytest.mark.parametrize(
+    ("detail", "jobs", "reason"),
+    [
+        (zero_job_run_detail(repository={"full_name": "foreign/WOW-Dashboard"}), None,
+         "EXISTING_PR_ZERO_JOB_RUN_IDENTITY_INVALID"),
+        (zero_job_run_detail(path=".github/workflows/foreign.yml"), None,
+         "EXISTING_PR_ZERO_JOB_RUN_IDENTITY_INVALID"),
+        (zero_job_run_detail(head_sha="b" * 40), None,
+         "EXISTING_PR_ZERO_JOB_RUN_IDENTITY_INVALID"),
+        (zero_job_run_detail(), {"total_count": 1, "jobs": [{"id": 1}]},
+         "EXISTING_PR_ACTION_REQUIRED_HAS_JOBS"),
+        (zero_job_run_detail(), {"total_count": 0, "jobs": [{"id": 1}]},
+         "EXISTING_PR_ACTION_REQUIRED_HAS_JOBS"),
+        (zero_job_run_detail(), {"total_count": 0}, "EXISTING_PR_ACTION_REQUIRED_HAS_JOBS"),
+    ],
+)
+def test_workflow_rejects_unverifiable_or_nonzero_action_required_jobs(tmp_path, detail, jobs, reason):
+    runs = evidence()["workflow_runs"] + [{
+        **zero_job_run_detail(),
+        "created_at": "2026-10-17T23:30:00Z",
+    }]
+
+    result, _ = run_exact_head_ci_step(tmp_path, runs, detail=detail, jobs=jobs)
+
+    assert result.returncode == 1
+    assert reason in result.stderr
+
+
+def test_workflow_fails_on_newer_real_red_or_shadow_without_older_success(tmp_path):
+    good = evidence()["workflow_runs"]
+    shadow = {**zero_job_run_detail(), "created_at": "2026-10-17T23:30:00Z"}
+    red = {
+        **good[0],
+        "id": 1000,
+        "created_at": "2026-10-17T23:40:00Z",
+        "conclusion": "failure",
+    }
+    result, _ = run_exact_head_ci_step(tmp_path, good + [shadow, red], detail=zero_job_run_detail())
+    assert result.returncode == 1
+    assert "EXISTING_PR_REQUIRED_CI_FAILED:wow-verify" in result.stderr
+
+    no_success = [run for run in good if run["name"] != "wow-verify"] + [shadow]
+    result, _ = run_exact_head_ci_step(tmp_path, no_success, detail=zero_job_run_detail())
+    assert result.returncode == 1
+    assert "EXISTING_PR_REQUIRED_CI_HAS_NO_EXECUTED_SUCCESS:wow-verify" in result.stderr
+
+
+def test_pending_newer_workflow_still_holds_after_bounded_wait(tmp_path):
+    runs = evidence()["workflow_runs"]
+    runs.append({
+        **runs[0],
+        "id": 1000,
+        "created_at": "2026-10-17T23:40:00Z",
+        "status": "in_progress",
+        "conclusion": None,
+    })
+
+    result, _ = run_exact_head_ci_step(tmp_path, runs)
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_REQUIRED_CI_INCOMPLETE_AFTER_BOUNDED_WAIT" in result.stderr
+
+
+def run_receipt_artifact_step(tmp_path, artifacts):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    step = workflow.split("      - name: Check for an existing exact-head receipt\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    stub = """
+gh() {
+  case "$*" in
+    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page="*)
+      printf '%s\\n' "$TEST_ARTIFACTS_JSON"
+      ;;
+    *)
+      echo "UNEXPECTED_GH_INVOCATION:$*" >&2
+      return 1
+      ;;
+  esac
+}
+"""
+    output_path = tmp_path / "outputs"
+    output_path.write_text("", encoding="utf-8")
+    env = os.environ | {
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "GITHUB_OUTPUT": str(output_path),
+        "HEAD_SHA": HEAD,
+        "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": artifacts}),
+    }
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", stub + script],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = dict(
+        line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines()
+    )
+    return result, output
+
+
+def test_existing_governance_receipt_suppresses_duplicate_upload(tmp_path):
+    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    result, output = run_receipt_artifact_step(tmp_path, [existing])
+
+    assert result.returncode == 0, result.stderr
+    assert output == {"exists": "true"}
+
+
+def test_duplicate_governance_receipts_fail_closed(tmp_path):
+    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    result, _ = run_receipt_artifact_step(tmp_path, [existing, existing])
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE" in result.stderr
+
+
+def test_receipt_artifact_inventory_must_finish_within_bound(tmp_path):
+    result, _ = run_receipt_artifact_step(
+        tmp_path,
+        [{"name": f"unrelated-{index}", "expired": False} for index in range(100)],
+    )
+
+    assert result.returncode == 1
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" in result.stderr
+
+
 @pytest.mark.parametrize("path", [".github/workflows/unsafe.yml", ".agents/skills/unsafe.md", "render.yaml"])
 def test_trust_root_changes_cannot_be_certified(path):
     data = evidence()
@@ -1432,6 +1846,14 @@ def test_trusted_gate_revalidates_authenticated_automated_review_source():
     assert "verify_unique_artifact_inventory" in workflow
     assert "--source-review-run-json" in workflow
     assert ".workflow_run.id == $run_id" in workflow
+
+
+def test_trusted_gate_accepts_only_authenticated_release_check_run_certifications():
+    workflow = TRUSTED_GATE.read_text(encoding="utf-8")
+
+    assert "github.event.workflow_run.event == 'check_run'" in workflow
+    assert '(.event == "workflow_run" or .event == "check_run")' in workflow
+    assert "Release check-run certification must run from protected main" in workflow
 
 
 def test_release_and_continuation_consumers_resolve_authenticated_source_review_metadata():

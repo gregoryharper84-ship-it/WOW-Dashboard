@@ -21,7 +21,7 @@ concurrency:
 jobs:
   trusted-governance:
     name: Trusted exact-head engineering governance
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name != 'workflow_run' || (github.event.workflow_run.event == 'workflow_run' && github.event.workflow_run.conclusion == 'success'))
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name != 'workflow_run' || ((github.event.workflow_run.event == 'workflow_run' || github.event.workflow_run.event == 'check_run') && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -53,7 +53,7 @@ jobs:
             jq -e --arg repo "$GITHUB_REPOSITORY" \
               '.name == "wow-v17-existing-pr-governance-review" and
                .path == ".github/workflows/wow-v17-existing-pr-governance-review.yml" and
-               .event == "workflow_run" and .head_branch == "main" and
+               (.event == "workflow_run" or .event == "check_run") and .head_branch == "main" and
                .head_repository.full_name == $repo and .repository.full_name == $repo and
                .status == "completed" and .conclusion == "success"' "$source_run" >/dev/null || {
                 echo "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" >&2; exit 1;
@@ -189,6 +189,12 @@ jobs:
                   workflow_dispatch)
                     [ "$head_branch" = "main" ] || {
                       echo "GOVERNANCE_WORKFLOW_REF_MISMATCH: manual existing-PR certification must run from protected main, got $head_branch" >&2
+                      exit 1
+                    }
+                    ;;
+                  check_run)
+                    [ "$head_branch" = "main" ] || {
+                      echo "GOVERNANCE_WORKFLOW_REF_MISMATCH: Release check-run certification must run from protected main, got $head_branch" >&2
                       exit 1
                     }
                     ;;
