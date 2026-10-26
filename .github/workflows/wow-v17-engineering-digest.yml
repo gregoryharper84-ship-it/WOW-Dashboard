@@ -8,8 +8,6 @@ name: wow-v17-engineering-digest
 # uses the wow-engineering App token. can_execute=false; never merges or deploys.
 
 on:
-  schedule:
-    - cron: "0 13 * * *"
   workflow_dispatch:
 
 permissions:

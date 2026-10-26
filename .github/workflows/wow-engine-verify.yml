@@ -222,7 +222,8 @@ jobs:
           assert isinstance(render, dict)
           services = render.get("services", [])
           by_name = {item["name"]: item for item in services}
-          assert set(by_name) == {"wow-jobs", "wow-governed-probability-engine", "wow-agent-worker"}
+          assert len(services) == 4
+          assert set(by_name) == {"wow-jobs", "wow-governed-probability-engine", "wow-agent-worker", "wow-sirt-external-sentinel"}
 
           queue = by_name["wow-jobs"]
           assert queue["type"] == "keyvalue"
@@ -259,6 +260,28 @@ jobs:
           assert worker_env_by_key["WOLFRAM_ALPHA_APP_ID"]["sync"] is False
           assert worker_env_by_key["WOW_WOLFRAM_ARITHMETIC_AUDIT_ENABLED"]["value"] == "1"
           assert worker_env_by_key["WOW_WOLFRAM_TIMEOUT_SECONDS"]["value"] == "5"
+
+          # New off-GitHub SIRT cron is read-only and manually promoted.
+          sentinel = by_name["wow-sirt-external-sentinel"]
+          assert sentinel["type"] == "cron"
+          assert sentinel["runtime"] == "python"
+          assert sentinel["plan"] == "starter"
+          assert sentinel["rootDir"] == "artifacts/wow-engine"
+          assert sentinel["schedule"] == "*/15 * * * *"
+          assert sentinel["buildCommand"] == "pip install -r requirements.txt"
+          assert sentinel["startCommand"] == "python -m v17.sirt_external_sentinel"
+          assert sentinel["autoDeployTrigger"] == "off"
+          sentinel_env = {item["key"]: item for item in sentinel["envVars"]}
+          assert set(sentinel_env) == {
+              "PYTHON_VERSION", "SUPABASE_URL", "SUPABASE_SERVICE_KEY",
+              "WOW_CAN_EXECUTE", "WOW_DRY_RUN_ONLY", "WOW_ENVIRONMENT",
+          }
+          assert sentinel_env["PYTHON_VERSION"]["value"] == "3.11.11"
+          assert sentinel_env["SUPABASE_URL"]["sync"] is False
+          assert sentinel_env["SUPABASE_SERVICE_KEY"]["sync"] is False
+          assert sentinel_env["WOW_CAN_EXECUTE"]["value"] == "false"
+          assert sentinel_env["WOW_DRY_RUN_ONLY"]["value"] == "true"
+          assert sentinel_env["WOW_ENVIRONMENT"]["value"] == "production"
 
           event_schema = Path("event_schema.sql").read_text()
           assert "create table if not exists wow_event_predictions" in event_schema.lower()

@@ -188,6 +188,7 @@ jobs:
               case "$event" in
                 pull_request_target) protected_main_source=true ;;
                 workflow_dispatch) [ "$head_branch" = "main" ] && protected_main_source=true ;;
+                workflow_run) [ "$head_branch" = "main" ] && protected_main_source=true ;;
                 *) exit 1 ;;
               esac
               ;;

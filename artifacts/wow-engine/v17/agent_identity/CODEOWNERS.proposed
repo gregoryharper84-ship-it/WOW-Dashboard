@@ -1,9 +1,10 @@
 # PROPOSED — owner installs at .github/CODEOWNERS (#1550 phase D). Not active until merged by the owner.
 # Generated from agent_identity_policy.trust_root_paths() + governance_trust_roots(); a test fails on drift.
 # The sole human owner must approve any change to these paths, including this file.
-# /.github/ and /.agents/ cover NEW workflows, actions, scripts and agent skills.
+# /.github/, /.agents/ and /.claude/ cover NEW workflows, actions, scripts and native Claude instructions.
 /.github/ @gregoryharper84-ship-it
 /.agents/ @gregoryharper84-ship-it
+/.claude/ @gregoryharper84-ship-it
 # Files executed or read by governance workflows (changing them changes how the gates decide):
 /artifacts/flask-scoring-api/requirements.txt @gregoryharper84-ship-it
 /artifacts/wow-engine/requirements.txt @gregoryharper84-ship-it
@@ -14,6 +15,14 @@
 /artifacts/wow-engine/v17/engineering_incident_identity.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_effectiveness.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_provider_failover.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_gemini_headless.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_authorized_adoption.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_hold_target.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_recovery_planner.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_remote_fallback.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/cursor_cloud_handoff.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/governance_dispatcher.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/governance_dispatcher_github.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/independent_release_checks.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/persistent_worker_safety.py @gregoryharper84-ship-it
 # Protected list mirrored from .github/workflows/wow-v17-existing-pr-governance-review.yml:

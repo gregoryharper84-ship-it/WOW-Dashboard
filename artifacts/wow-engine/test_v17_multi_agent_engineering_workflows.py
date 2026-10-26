@@ -195,7 +195,7 @@ def test_non_peer_primary_openai_agent_workflows_remain_openai_only() -> None:
     assert worker.count("uses: ./.github/actions/wow-claude-agent") == 3
 
     action = CHATGPT_ACTION.read_text()
-    assert "openai/codex-action@v1" in action
+    assert "openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675" in action
     assert "permission_profile" in action
     assert "safety-strategy: unprivileged-user" in action
     assert 'allow-bots: "true"' in action

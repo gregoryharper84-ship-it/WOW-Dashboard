@@ -51,15 +51,115 @@ jobs:
             --output "$RUNNER_TEMP/wow-dispatch-queue.json" \
             > /dev/null
 
+          active_run_files=()
+          for workflow in \
+            wow-v17-engineering-provider-dispatcher.yml \
+            wow-v17-chatgpt-engineering-worker.yml \
+            wow-v17-claude-engineering-worker.yml \
+            wow-v17-gemini-engineering-worker.yml
+          do
+            for status in queued in_progress waiting requested pending
+            do
+              run_file="$RUNNER_TEMP/${workflow}-${status}.json"
+              gh run list \
+                --repo "$GITHUB_REPOSITORY" \
+                --workflow "$workflow" \
+                --status "$status" \
+                --limit 1000 \
+                --json status,displayTitle \
+                > "$run_file"
+              run_count=$(jq 'length' "$run_file")
+              if [ "$run_count" -ge 1000 ]; then
+                echo "ACTIVE_WRITER_INVENTORY_TRUNCATED:${workflow}:${status}" >&2
+                exit 1
+              fi
+              active_run_files+=("$run_file")
+            done
+          done
+          jq -s 'add' "${active_run_files[@]}" > "$RUNNER_TEMP/wow-active-writer-runs.json"
+
           python artifacts/wow-engine/v17/p0_parallel_dispatch.py \
             --queue "$RUNNER_TEMP/wow-dispatch-queue.json" \
+            --manifest artifacts/wow-engine/v17/engineering_dispatch_manifest.json \
+            --active-runs "$RUNNER_TEMP/wow-active-writer-runs.json" \
+            --run-number "$GITHUB_RUN_NUMBER" \
             --output "$RUNNER_TEMP/wow-p0-parallel.json" \
             > /dev/null
 
           selected_count=$(jq -r '.selected_count' "$RUNNER_TEMP/wow-p0-parallel.json")
           echo "selected_count=$selected_count" >> "$GITHUB_OUTPUT"
 
+      - name: Preflight P0 engineering provider availability
+        id: provider_state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INDEPENDENT_ENABLED: ${{ vars.WOW_COPILOT_FALLBACK_ENABLED }}
+          INDEPENDENT_BUDGET_APPROVED: ${{ vars.WOW_COPILOT_FALLBACK_BUDGET_APPROVED }}
+          INDEPENDENT_REPOSITORY: ${{ vars.WOW_COPILOT_FALLBACK_REPOSITORY }}
+          INDEPENDENT_MAX_ASSIGNMENTS: ${{ vars.WOW_COPILOT_FALLBACK_MAX_ASSIGNMENTS }}
+        run: |
+          set -euo pipefail
+          # This controls *engineering invocation*, not sporting-probability
+          # authority. No provider keys enter the rapid dispatcher.
+          admit=true
+          reason=PROVIDER_ADMISSION_CLEAR
+          if ! primary=$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow wow-v17-chatgpt-engineering-worker.yml \
+              --status completed --limit 1 \
+              --json databaseId,conclusion 2>/dev/null); then
+            admit=false
+            reason=PRIMARY_WORKER_INVENTORY_UNVERIFIED
+          else
+            primary_id=$(jq -r '.[0].databaseId // empty' <<<"$primary")
+            primary_status=$(jq -r '.[0].conclusion // empty' <<<"$primary")
+            if [ -n "$primary_id" ] && [ "$primary_status" = failure ]; then
+              logfile="$RUNNER_TEMP/p0-primary-failed.log"
+              if ! gh run view "$primary_id" --repo "$GITHUB_REPOSITORY" \
+                  --log-failed > "$logfile" 2>/dev/null; then
+                admit=false
+                reason=PRIMARY_FAILURE_EVIDENCE_UNAVAILABLE
+              else
+                classification=$(python artifacts/wow-engine/v17/engineering_provider_failover.py classify \
+                  --provider openai --log-file "$logfile")
+                code=$(jq -r '.code // empty' <<<"$classification")
+                case "$code" in
+                  OPENAI_API_QUOTA_EXCEEDED|OPENAI_API_KEY_MISSING|OPENAI_API_AUTH_FAILED)
+                    if ! secondary=$(gh run list \
+                        --repo "$GITHUB_REPOSITORY" \
+                        --workflow wow-v17-claude-engineering-worker.yml \
+                        --status completed --limit 1 \
+                        --json databaseId,conclusion 2>/dev/null); then
+                      admit=false
+                      reason=SECONDARY_WORKER_INVENTORY_UNVERIFIED
+                    else
+                      secondary_status=$(jq -r '.[0].conclusion // empty' <<<"$secondary")
+                      if [ "$secondary_status" = failure ] || [ "$secondary_status" = cancelled ]; then
+                        admit=false
+                        reason=PRIMARY_ACCOUNT_BLOCKED_SECONDARY_DELIVERY_FAILED
+                        # Preserve exact manifest intake for independent admission,
+                        # never re-enable exhausted OpenAI/Claude invocations here.
+                        if [ "${INDEPENDENT_ENABLED:-}" = true ] && \
+                           [ "${INDEPENDENT_BUDGET_APPROVED:-}" = true ] && \
+                           [ "${INDEPENDENT_REPOSITORY:-}" = "$GITHUB_REPOSITORY" ] && \
+                           [ "${INDEPENDENT_MAX_ASSIGNMENTS:-}" = 1 ]; then
+                          admit=true
+                          reason=PRIMARY_ACCOUNT_BLOCKED_INDEPENDENT_ADMISSION_ONLY
+                        fi
+                      fi
+                    fi
+                    ;;
+                esac
+              fi
+            fi
+          fi
+          echo "admit=$admit" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "P0_PROVIDER_ADMISSION: $reason; dispatch_allowed=$admit" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Dispatch idle domain-scoped writers
+        if: steps.provider_state.outputs.admit == 'true'
         id: dispatch_streams
         shell: bash
         env:
@@ -75,7 +175,8 @@ jobs:
             for workflow in \
               wow-v17-engineering-provider-dispatcher.yml \
               wow-v17-chatgpt-engineering-worker.yml \
-              wow-v17-claude-engineering-worker.yml
+              wow-v17-claude-engineering-worker.yml \
+              wow-v17-gemini-engineering-worker.yml
             do
               count=$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
@@ -116,6 +217,8 @@ jobs:
             echo "- busy_streams: ${{ steps.dispatch_streams.outputs.busy_count || '0' }}"
             echo "- max_parallel_writers: 3"
             echo "- implementation_lease_scope: domain-scoped"
+            echo "- provider_admission: ${{ steps.provider_state.outputs.reason || 'NOT_CHECKED' }}"
+            echo "- provider_dispatch_allowed: ${{ steps.provider_state.outputs.admit || 'false' }}"
             echo "- stream_A: Scout/Data Plane (#1237 -> #1250)"
             echo "- stream_B: State/Scoring (#1189 -> #960)"
             echo "- stream_C: Runtime/Ingest (#502 -> #1127)"
