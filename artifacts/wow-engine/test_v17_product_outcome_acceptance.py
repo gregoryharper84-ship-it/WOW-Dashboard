@@ -223,7 +223,8 @@ def test_historical_27_market_partial_replay_never_claims_full_board():
     # Exact scope known independently: eight returned holds/rows cannot close 27.
     rows = [scored(candidate_id=f"source-row-{i}") for i in range(8)]
     result = product_outcome_scorecard(
-        [req(expected_canonical_count=27, scope_evidence_ref="source:27-market-transcription")],
+        [req(expected_canonical_count=27, scope_evidence_ref="source:27-market-transcription",
+             expected_candidate_ids=[f"source-row-{i}" for i in range(27)])],
         rows,
     )
     assert result["rows_missing_from_declared_scope"] == 19
@@ -286,3 +287,50 @@ def test_true_production_model_restoration_requires_reconciled_scope(changes):
     r = model_restoration_acceptance(valid_closure(), product)
     assert r["status"] == "BLOCKED_WITH_EXACT_REASON"
     assert "PRODUCT_EXACT_SCOPE_RECEIPTS_UNPROVEN" in r["blockers"]
+
+
+def test_all_27_declared_market_labels_can_be_reconciled_exactly():
+    ids = [f"source-row-{i}" for i in range(27)]
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=27, expected_candidate_ids=ids)],
+        [scored(candidate_id=cid) for cid in ids],
+    )
+    assert result["audit_complete"]
+    assert result["rows_missing_from_declared_scope"] == 0
+    assert result["candidate_conservation_rate"] == 1
+    assert result["completed_requests"] == 1
+
+
+def test_false_green_equal_count_cannot_substitute_market_labels():
+    # A complete count of 27 is not a complete reconciliation of original IDs.
+    declared = [f"source-row-{i}" for i in range(27)]
+    rows = [scored(candidate_id=f"substitute-{i}") for i in range(27)]
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=27, expected_candidate_ids=declared)], rows,
+    )
+    assert result["completed_requests"] == 0
+    assert result["rows_missing_from_declared_scope"] == 27
+    assert result["candidate_conservation_rate"] is None
+    assert not result["audit_complete"]
+    assert any("IDENTITY_MISMATCH" in issue for issue in result["findings"])
+
+
+def test_multimarket_count_without_ids_does_not_pass():
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=2)],
+        [scored(candidate_id="a"), scored(candidate_id="b")],
+    )
+    assert result["completed_requests"] == 0
+    assert result["candidate_conservation_rate"] is None
+    assert any("CANONICAL_IDENTITY_SCOPE_UNATTESTED" in issue
+               for issue in result["findings"])
+
+
+@pytest.mark.parametrize("ids", [["a", "a"], ["a", ""], ["a"], [1, 2], "a,b"])
+def test_unverifiable_identity_inventory_never_certifies_full_board(ids):
+    result = product_outcome_scorecard(
+        [req(expected_canonical_count=2, expected_candidate_ids=ids)],
+        [scored(candidate_id="a"), scored(candidate_id="b")],
+    )
+    assert result["completed_requests"] == 0
+    assert not result["audit_complete"]
