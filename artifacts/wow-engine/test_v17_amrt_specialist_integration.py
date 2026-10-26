@@ -122,6 +122,25 @@ def test_expired_writer_cannot_be_stolen_by_deadlock_agent():
     assert result.next_owner == "ECOSYSTEM_CONDUCTOR"
 
 
+def test_deadlock_cannot_recommend_a_second_lease_writer():
+    result = evaluate_amrt_specialist(
+        incident(lease_owner="competing-writer"),
+        specialist="RECOVERY_ESCALATION_DEADLOCK_BREAKER", now=NOW,
+    )
+    assert result.state == "HELD"
+    assert result.next_owner == "ECOSYSTEM_CONDUCTOR"
+    assert "LEASE_OWNER_IDENTITY_UNVERIFIED" in result.reasons
+
+
+def test_deadlock_requires_positive_lease_owner_identity():
+    result = evaluate_amrt_specialist(
+        incident(lease_owner=None),
+        specialist="RECOVERY_ESCALATION_DEADLOCK_BREAKER", now=NOW,
+    )
+    assert result.state == "HELD"
+    assert "LEASE_OWNER_IDENTITY_UNVERIFIED" in result.reasons
+
+
 def test_unknown_specialist_cannot_claim_approval():
     result = evaluate_amrt_specialist(
         incident(), specialist="INDEPENDENT_QA", now=NOW,
