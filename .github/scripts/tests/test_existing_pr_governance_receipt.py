@@ -733,6 +733,7 @@ def automated_review_data(data=None, *, now=NOW):
             "id": 54321,
             "run_attempt": 1,
             "name": source_review.WORKFLOW_NAME,
+        "workflow_id": source_review.WORKFLOW_ID,
             "path": source_review.WORKFLOW_PATH,
             "event": "workflow_dispatch",
             "head_branch": "main",

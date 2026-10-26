@@ -360,6 +360,7 @@ def test_trusted_gate_consumes_authenticated_automatic_qa_review_run(tmp_path):
         "id": 456,
         "run_attempt": 2,
         "name": source_review.WORKFLOW_NAME,
+        "workflow_id": source_review.WORKFLOW_ID,
         "path": source_review.WORKFLOW_PATH,
         "event": "workflow_run",
         "head_branch": "main",
