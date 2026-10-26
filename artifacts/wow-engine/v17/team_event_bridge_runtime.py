@@ -37,6 +37,11 @@ from v17.team_event_capability_manifest import (
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
+from v17.cross_sport_evidence_integrity import (
+    CRITICAL_STATUS_CONTRACT,
+    TEAM_ROSTER_SPORTS,
+    evaluate_scored_cross_sport_evidence,
+)
 from v17.team_event_model_registry_audit import (
     certification_state,
     probe_sport,
@@ -50,6 +55,7 @@ NO_VERIFIED_THREE_TEAM_PARLAY = (
 )
 
 BridgeScorer = Callable[..., dict[str, Any]]
+EvidenceAttestationVerifier = Callable[[Mapping[str, Any], Mapping[str, Any]], bool]
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,11 @@ class TeamEventBridgeRegistration:
     feature_schema_version: str | None = None
     feature_roles: Mapping[str, str] | None = None
     critical_features: tuple[str, ...] = ()
+    # Set only after a sport-specific backend producer has been certified to
+    # emit an authenticated/frozen cross-sport evidence envelope. False does
+    # not claim the preflight passed; bridge health exposes non-enforcement.
+    evidence_integrity_required: bool = False
+    evidence_attestation_verifier: EvidenceAttestationVerifier | None = None
     # Season regimes this fitted artifact is contracted to score. Defaults to
     # regular season only: a regular-season model has no calibration evidence
     # for preseason, playoff, spring-training or summer-league play and must not
@@ -94,6 +105,8 @@ def register_team_event_bridge(
     feature_schema_version: str | None = None,
     feature_roles: Mapping[str, str] | None = None,
     critical_features: tuple[str, ...] | None = None,
+    evidence_integrity_required: bool = False,
+    evidence_attestation_verifier: EvidenceAttestationVerifier | None = None,
     supported_regimes: tuple[str, ...] | None = None,
 ) -> TeamEventBridgeRegistration:
     """Register one exact bridge; callers must already own certification proof.
@@ -104,6 +117,10 @@ def register_team_event_bridge(
     probability, calibration, ranking or terminal authority.
     """
     normalized = normalize_team_event_sport(sport)
+    # An opt-in MUST provide a trusted backend verifier. A scorer payload's
+    # "VERIFIED" string is not proof and cannot enable publication.
+    if evidence_integrity_required and not callable(evidence_attestation_verifier):
+        raise ValueError("certified cross-sport evidence verifier required for enforcement")
     registration = TeamEventBridgeRegistration(
         sport=normalized,
         adapter_name=adapter_name,
@@ -116,6 +133,8 @@ def register_team_event_bridge(
         ),
         feature_roles=dict(feature_roles) if feature_roles is not None else None,
         critical_features=tuple(critical_features or ()),
+        evidence_integrity_required=evidence_integrity_required is True,
+        evidence_attestation_verifier=evidence_attestation_verifier,
         supported_regimes=tuple(supported_regimes or (REGULAR_SEASON,)),
         can_execute=False,
     )
@@ -249,6 +268,57 @@ def _attach_feature_consumption_receipt(
     )
     out["feature_consumption_receipt_id"] = receipt["feature_consumption_receipt_id"]
     out["feature_consumption_receipt"] = receipt
+    # The controlling scorer may provide a server-produced evidence envelope.
+    # Never construct proof from research prose or caller-supplied snapshots.
+    # The official publication guard enforces it when this registered sport
+    # is certified for the cross-sport evidence contract.
+    # Quarantine any returned producer claim until the verifier binds it to
+    # the *actual* scorer receipt produced here. A verifier alone is not
+    # sufficient when critical numerical features are unproven or stale.
+    envelope = out.get("cross_sport_evidence")
+    out["cross_sport_evidence_required"] = registration.evidence_integrity_required
+    out["cross_sport_evidence_attested"] = False
+    out["cross_sport_evidence_producer_status"] = (
+        "UNVERIFIED" if registration.evidence_integrity_required else "NOT_ENROLLED"
+    )
+    if registration.evidence_integrity_required and isinstance(envelope, Mapping):
+        frozen_envelope = dict(envelope)
+        frozen_envelope["feature_consumption_receipt_id"] = receipt["feature_consumption_receipt_id"]
+        frozen_envelope["feature_consumption_verification_status"] = receipt["consumption_verification_status"]
+        frozen_envelope["critical_feature_consumption_complete"] = receipt["critical_consumption_complete"]
+        out["cross_sport_evidence"] = frozen_envelope
+        if (
+            receipt.get("receipt_complete") is True
+            and receipt.get("consumption_verification_status") == "VERIFIED"
+            and receipt.get("critical_consumption_complete") is True
+            and registration.evidence_attestation_verifier is not None
+        ):
+            try:
+                attested = registration.evidence_attestation_verifier(frozen_envelope, out) is True
+            except Exception:
+                attested = False
+            if attested:
+                out["cross_sport_evidence_attested"] = True
+                out["cross_sport_evidence_producer_status"] = "VERIFIED"
+    audit = evaluate_scored_cross_sport_evidence(out)
+    out["cross_sport_evidence_audit"] = audit
+    out["evidence_integrity_status"] = audit["evidence_status"]
+    if registration.evidence_integrity_required and audit["evidence_status"] != "PASS":
+        # Publication is withheld at the scorer return itself, even if a
+        # downstream consumer forgets to call the separate official guard.
+        # The fitted probability, bounds and the actual controlling reducer
+        # disposition remain unchanged for immutable diagnostic receipts.
+        out["prepublication_claim"] = {
+            "probability_publishable": out.get("probability_publishable"),
+            "rank_eligible": out.get("rank_eligible"),
+        }
+        out["probability_publishable"] = False
+        out["rank_eligible"] = False
+        existing = out.get("publication_blockers")
+        prior = list(existing) if isinstance(existing, list) else []
+        out["publication_blockers"] = list(dict.fromkeys([
+            *prior, "TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED", *audit.get("blockers", [])
+        ]))
     out["can_execute"] = False
     return out
 
@@ -368,6 +438,29 @@ def team_event_bridge_health() -> dict[str, dict[str, Any]]:
                 else TEAM_EVENT_INPUT_CONTRACTS.get(sport, ())
             ),
             "feature_consumption_receipt_enabled": registered,
+            "cross_sport_evidence_enforced": bool(
+                registration.evidence_integrity_required if registered else False
+            ),
+            "cross_sport_evidence_verifier_registered": bool(
+                registered and callable(registration.evidence_attestation_verifier)
+            ),
+            "cross_sport_evidence_readiness": {
+                "status": (
+                    "ENFORCEMENT_CONFIGURED"
+                    if registered and registration.evidence_integrity_required
+                    and callable(registration.evidence_attestation_verifier)
+                    else "PRODUCER_NOT_ENROLLED"
+                    if registered else "MODEL_BRIDGE_NOT_REGISTERED"
+                ),
+                "critical_status_contract": CRITICAL_STATUS_CONTRACT.get(sport),
+                "requires_personnel_reconciliation": sport in TEAM_ROSTER_SPORTS,
+                "numerical_feature_consumption_required": True,
+                "fresh_pregame_refresh_required": True,
+                "trusted_producer_verifier_present": bool(
+                    registered and callable(registration.evidence_attestation_verifier)
+                ),
+                "can_execute": False,
+            },
             "feature_schema_version": (
                 registration.feature_schema_version if registered else None
             ),

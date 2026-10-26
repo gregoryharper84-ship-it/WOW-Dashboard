@@ -16,6 +16,8 @@ from __future__ import annotations
 from math import isfinite
 from typing import Any
 
+from v17.cross_sport_evidence_integrity import evaluate_scored_cross_sport_evidence
+
 V17_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 FINAL_APPROVED = "FINAL_APPROVED"
 PASS_PROBABILITY_AUDIT = "PASS_PROBABILITY_AUDIT"
@@ -249,9 +251,16 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
             if governance.get(field) != expected:
                 blockers.append(f"TEAM_EVENT_LLP_GOVERNANCE_NOT_PROVEN:{field}")
 
+    evidence_audit = evaluate_scored_cross_sport_evidence(payload)
+    if payload.get("cross_sport_evidence_required") is True and (
+        evidence_audit["evidence_status"] != "PASS"
+    ):
+        blockers.append("TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED")
+
     blockers = list(dict.fromkeys(blockers))
     allowed = not blockers
     return {
+        "evidence_integrity_audit": evidence_audit,
         "status": "PASS" if allowed else "HELD",
         "official_publication_allowed": allowed,
         "rank_eligible": allowed,
