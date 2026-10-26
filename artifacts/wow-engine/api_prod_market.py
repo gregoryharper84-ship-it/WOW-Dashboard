@@ -843,6 +843,37 @@ def score_prop(
         detail["can_execute"] = False
         raise HTTPException(status_code=422, detail=detail)
 
+    # P0 #2131: the Daily runner and direct scoreWowProp Action may load an
+    # already-frozen evidence snapshot, bypassing /score-pick-request hydration.
+    # Protect the *fitted-model entry point* too. ESPN roster membership and
+    # caller-provided ACTIVE/AVAILABLE do not prove game participation. Until a
+    # trusted, event-specific availability attestor is certified here, NFL
+    # player props are held before fitted scoring and prediction persistence.
+    if str(req.sport or "").strip().upper() == "NFL":
+        role = evidence.get("role_status")
+        role = role if isinstance(role, dict) else {}
+        designation = str(
+            role.get("game_availability_status")
+            or role.get("availability_status")
+            or ""
+        ).strip().upper().replace(" ", "_").replace("-", "_")
+        unavailable = designation in {
+            "OUT", "IR", "INJURED_RESERVE", "INACTIVE", "SUSPENDED",
+            "PUP", "NFI", "DOUBTFUL",
+        }
+        code = "PLAYER_UNAVAILABLE" if unavailable else "PLAYER_AVAILABILITY_UNVERIFIED"
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": code,
+                "failure_class": "EVENT_INVALIDATED" if unavailable else "ACQUISITION_BLOCKED",
+                "model_evaluated": False,
+                "specialist_invoked": False,
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+
     scored_at = datetime.now(timezone.utc).isoformat()
     inference_request = _server_owned_inference_request(req, evidence, scored_at)
     effective_snapshot_id = str(evidence.get("source_snapshot_id") or req.source_snapshot_id)
