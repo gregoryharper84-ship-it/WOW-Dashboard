@@ -45,7 +45,11 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
                          "GEMINI_SPEND_CAP_UNCONFIRMED")
         self.assertEqual(gemini.admit("true", "true", "", "auto")["code"],
                          "GEMINI_AUTO_ROUTING_DISABLED")
+        self.assertEqual(gemini.admit("true", "true", "false", "auto")["code"],
+                         "GEMINI_AUTO_ROUTING_DISABLED")
         self.assertEqual(gemini.admit("true", "true", "", "manual")["status"], "ADMITTED")
+        self.assertEqual(gemini.admit("true", "true", "false", "manual")["status"],
+                         "ADMITTED")
         self.assertEqual(gemini.admit("true", "true", "true", "auto")["status"], "ADMITTED")
         self.assertEqual(gemini.admit("true", "true", "true", "other")["code"],
                          "GEMINI_ADMISSION_MODE_INVALID")
@@ -147,8 +151,21 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
                 self.assertFalse(got["retry_allowed"])
 
     def test_valid_result_requires_actual_response_and_no_error(self):
-        ok = gemini.classify_cli(0, "", response={"response": "patch candidate", "stats": {}})
+        source_sha = "a" * 40
+        ok = gemini.classify_cli(
+            0, "", response={"response": "patch candidate", "stats": {}},
+            source_sha=source_sha,
+        )
         self.assertEqual(ok["status"], "COMPLETED")
+        self.assertEqual(ok["source_head_sha"], source_sha)
+        failed = gemini.classify_cli(42, "bad input", source_sha=source_sha)
+        self.assertEqual(failed["exit_code"], 42)
+        self.assertEqual(failed["source_head_sha"], source_sha)
+        self.assertEqual(failed["code"], "GEMINI_CLI_INPUT_INVALID")
+        self.assertEqual(
+            gemini.classify_cli(0, "", response={"response": "ok"}, source_sha="bad")["code"],
+            "GEMINI_SOURCE_HEAD_INVALID",
+        )
         for result in (None, {"response": ""}, {"response": "test", "error": {"code": 429}}):
             self.assertEqual(gemini.classify_cli(0, "", response=result)["status"], "HELD")
 
@@ -197,11 +214,199 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         start = dispatcher.index("gemini_canary_healthy()")
         end = dispatcher.index("if [ \"$EVENT_NAME\" =", start)
         healthy = dispatcher[start:end]
+        self.assertLess(
+            healthy.index('"${GEMINI_AUTO_ROUTING_ENABLED:-}" = "true"'),
+            healthy.index('if [ "$conclusion" = "failure" ]'),
+        )
+        self.assertEqual(
+            gemini.admit("true", "true", "false", "auto")["status"], "HELD",
+        )
         self.assertIn("updatedAt", healthy)
         self.assertIn('conclusion" = "success"', healthy)
         self.assertIn('"$age_minutes" -ge 1440', healthy)
         self.assertIn('minutes >= 0 else -1', healthy)
         self.assertIn('elif [ "$force" = "gemini" ]', dispatcher)
+
+    def test_manual_dispatch_routes_without_auto_opt_in_and_receipts_exact_head(self):
+        dispatcher = (
+            ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
+        ).read_text()
+        start = dispatcher.index('elif [ "$force" = "gemini" ]; then')
+        end = dispatcher.index('elif [ "$force" = "anthropic" ]; then', start)
+        manual_route = dispatcher[start:end]
+        self.assertIn('GEMINI_ENGINEERING_ENABLED:-', manual_route)
+        self.assertIn('GEMINI_SPEND_CAP_CONFIRMED:-', manual_route)
+        self.assertNotIn("GEMINI_AUTO_ROUTING_ENABLED", manual_route)
+        self.assertIn("action=DISPATCH", manual_route)
+        self.assertIn("provider=gemini", manual_route)
+        self.assertIn(
+            "INVOCATION_MODE: ${{ inputs.force_provider == 'gemini' && 'manual' || 'auto' }}",
+            dispatcher,
+        )
+        dispatch_start = dispatcher.index("- name: Dispatch opt-in Gemini headless worker")
+        dispatch_end = dispatcher.index("- name: Deterministic survival checks", dispatch_start)
+        dispatch = dispatcher[dispatch_start:dispatch_end]
+        self.assertIn("--ref main", dispatch)
+        self.assertIn("remote_fence.outcome == 'success'", dispatch)
+        worker = (
+            ROOT / ".github/workflows/wow-v17-gemini-engineering-worker.yml"
+        ).read_text()
+        self.assertIn("ref: main", worker)
+        self.assertIn('source_head_sha=$(git rev-parse HEAD)', worker)
+        self.assertIn('--source-sha "$source_head_sha"', worker)
+        self.assertIn('--exit-code "$rc"', worker)
+        self.assertIn('timeout 900s gemini', worker)
+        self.assertIn('"maxSessionTurns": 12', worker)
+
+    def test_one_shot_recovery_requires_a_new_reviewed_runtime_revision(self):
+        previous_sha, current_sha = "a" * 40, "b" * 40
+        failed_run = {
+            "headSha": previous_sha, "status": "completed", "conclusion": "failure",
+        }
+        comparison = {
+            "status": "ahead",
+            "base_commit": {"sha": previous_sha},
+            "merge_base_commit": {"sha": previous_sha},
+            "total_commits": 2,
+            "files": [{
+                "filename": "artifacts/wow-engine/v17/engineering_gemini_headless.py",
+                "status": "modified",
+            }],
+        }
+
+        admitted = gemini.admit_one_shot_recovery([failed_run], comparison, current_sha)
+        self.assertEqual(admitted["status"], "RECOVERY_ADMITTED")
+        self.assertEqual(admitted["code"], "GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+        self.assertEqual(admitted["previous_head_sha"], previous_sha)
+        self.assertEqual(admitted["current_head_sha"], current_sha)
+        self.assertFalse(admitted["can_execute"])
+        self.assertEqual(admitted["terminal_authority"], "V17_TERMINAL_REDUCER")
+
+        already_attempted = gemini.admit_one_shot_recovery(
+            [failed_run], comparison, previous_sha)
+        self.assertEqual(already_attempted["code"], "GEMINI_RECOVERY_ALREADY_ATTEMPTED_SHA")
+        unrelated = dict(comparison, files=[{
+            "filename": "docs/README.md", "status": "modified",
+        }])
+        self.assertEqual(
+            gemini.admit_one_shot_recovery([failed_run], unrelated, current_sha)["code"],
+            "GEMINI_RECOVERY_NO_REVIEWED_RUNTIME_CHANGE",
+        )
+
+    def test_one_shot_recovery_fails_closed_on_unverified_run_or_compare(self):
+        previous_sha, current_sha = "1" * 40, "2" * 40
+        failed_run = {
+            "headSha": previous_sha, "status": "completed", "conclusion": "failure",
+        }
+        comparison = {
+            "status": "ahead",
+            "base_commit": {"sha": previous_sha},
+            "merge_base_commit": {"sha": previous_sha},
+            "total_commits": 1,
+            "files": [{
+                "filename": ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+                "status": "modified",
+            }],
+        }
+
+        def code(runs, compare=comparison, sha=current_sha):
+            return gemini.admit_one_shot_recovery(runs, compare, sha)["code"]
+
+        self.assertEqual(code([]), "GEMINI_RECOVERY_LATEST_RUN_UNVERIFIED")
+        self.assertEqual(code([failed_run, failed_run]),
+                         "GEMINI_RECOVERY_LATEST_RUN_UNVERIFIED")
+        self.assertEqual(code([dict(failed_run, status="queued", conclusion=None)]),
+                         "GEMINI_RECOVERY_PREVIOUS_RUN_NOT_FAILED")
+        self.assertEqual(code([dict(failed_run, status="in_progress", conclusion=None)]),
+                         "GEMINI_RECOVERY_PREVIOUS_RUN_NOT_FAILED")
+        self.assertEqual(code([dict(failed_run, conclusion="success")]),
+                         "GEMINI_RECOVERY_PREVIOUS_RUN_NOT_FAILED")
+        self.assertEqual(code([dict(failed_run, headSha="invalid")]),
+                         "GEMINI_RECOVERY_PREVIOUS_SHA_INVALID")
+        self.assertEqual(code([failed_run], sha="invalid"),
+                         "GEMINI_RECOVERY_CURRENT_SHA_INVALID")
+        self.assertEqual(code([failed_run], compare=None),
+                         "GEMINI_RECOVERY_COMPARE_UNAVAILABLE")
+        self.assertEqual(code([failed_run], dict(comparison, status="diverged")),
+                         "GEMINI_RECOVERY_SHA_LINEAGE_INVALID")
+        self.assertEqual(code([failed_run], dict(comparison, merge_base_commit={"sha": "f" * 40})),
+                         "GEMINI_RECOVERY_SHA_LINEAGE_INVALID")
+        self.assertEqual(code([failed_run], dict(comparison, files=[{
+            "filename": "artifacts/wow-engine/tests/test_gemini.py", "status": "modified",
+        }])), "GEMINI_RECOVERY_NO_REVIEWED_RUNTIME_CHANGE")
+        self.assertEqual(code([failed_run], dict(comparison, files=[{
+            "filename": ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+            "status": "removed",
+        }])), "GEMINI_RECOVERY_NO_REVIEWED_RUNTIME_CHANGE")
+        self.assertEqual(code([failed_run], dict(comparison, total_commits=250)),
+                         "GEMINI_RECOVERY_DIFF_TRUNCATED_OR_INVALID")
+        self.assertEqual(code([failed_run], dict(comparison, total_commits=True)),
+                         "GEMINI_RECOVERY_DIFF_TRUNCATED_OR_INVALID")
+        self.assertEqual(code([failed_run], dict(comparison, files=[comparison["files"][0]] * 300)),
+                         "GEMINI_RECOVERY_DIFF_TRUNCATED_OR_INVALID")
+
+    def test_recovery_cli_emits_typed_admission_without_side_effects(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            previous_sha, current_sha = "a" * 40, "b" * 40
+            runs_file, comparison_file = root / "runs.json", root / "comparison.json"
+            runs_file.write_text(json.dumps([{
+                "headSha": previous_sha, "status": "completed", "conclusion": "failure",
+            }]))
+            comparison_file.write_text(json.dumps({
+                "status": "ahead",
+                "base_commit": {"sha": previous_sha},
+                "merge_base_commit": {"sha": previous_sha},
+                "total_commits": 1,
+                "files": [{
+                    "filename": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+                    "status": "modified",
+                }],
+            }))
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = gemini.main([
+                    "recovery-admit", "--runs-file", str(runs_file),
+                    "--comparison-file", str(comparison_file),
+                    "--current-sha", current_sha,
+                ])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output.getvalue())["status"], "RECOVERY_ADMITTED")
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = gemini.main([
+                    "recovery-admit", "--runs-file", str(runs_file),
+                    "--comparison-file", str(comparison_file),
+                    "--current-sha", previous_sha,
+                ])
+            self.assertEqual(code, 2)
+            self.assertEqual(json.loads(output.getvalue())["status"], "HELD")
+
+    def test_recovery_keeps_shared_dispatcher_safety_and_fallback_paths(self):
+        dispatcher = (
+            ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
+        ).read_text()
+        self.assertIn(
+            "github.event.workflow_run.name != 'wow-v17-nightly-engineering-scan'",
+            dispatcher,
+        )
+        self.assertIn("github.event_name == 'schedule'", dispatcher)
+        self.assertIn(
+            "github.event.workflow_run.name == 'wow-v17-nightly-engineering-scan'",
+            dispatcher,
+        )
+        self.assertIn("inputs.force_provider == 'auto'", dispatcher)
+        self.assertIn("inputs.force_provider == 'gemini'", dispatcher)
+        for marker in (
+            "GEMINI_ENGINEERING_ENABLED", "GEMINI_SPEND_CAP_CONFIRMED",
+            "GEMINI_AUTO_ROUTING_ENABLED", "wow-v17-engineering-implementation-single-writer",
+            "PROVIDER_SURVIVAL_RECEIPT_INVALID", "ROUTER_HEALTHY_PROVIDER_BLOCKED",
+            "independent_fallback_allowed", "cursor_dispatch", "remote_fence",
+            "GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX",
+        ):
+            self.assertIn(marker, dispatcher)
 
     def test_candidate_requires_changed_real_regression_test(self):
         with tempfile.TemporaryDirectory() as root:
@@ -306,10 +511,11 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
 
             rc, out = call_cli(
                 "classify", "--exit-code", "0", "--stderr-file", str(stderr_file),
-                "--response-file", str(response_file),
+                "--response-file", str(response_file), "--source-sha", "a" * 40,
             )
             self.assertEqual(rc, 0)
             self.assertEqual(out["status"], "COMPLETED")
+            self.assertEqual(out["source_head_sha"], "a" * 40)
 
             bad_resp = base / "bad.json"
             bad_resp.write_text("{not-json", encoding="utf-8")

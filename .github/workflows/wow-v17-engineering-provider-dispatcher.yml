@@ -62,7 +62,20 @@ permissions:
   issues: read
 
 concurrency:
-  group: wow-v17-engineering-provider-dispatcher-${{ inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' || inputs.lease_group || 'GLOBAL' }}
+  group: >-
+    wow-v17-engineering-provider-dispatcher-${{
+    github.event_name == 'workflow_run' &&
+    github.event.workflow_run.name != 'wow-v17-nightly-engineering-scan' &&
+    'GLOBAL' ||
+    (github.event_name == 'schedule' ||
+    github.event_name == 'workflow_dispatch' &&
+    (inputs.force_provider == 'auto' ||
+    inputs.force_provider == 'gemini') ||
+    github.event_name == 'workflow_run' &&
+    github.event.workflow_run.name == 'wow-v17-nightly-engineering-scan') &&
+    'AUTO' ||
+    inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' ||
+    inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
@@ -179,18 +192,47 @@ jobs:
             [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
             [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ] &&
             [ "${GEMINI_AUTO_ROUTING_ENABLED:-}" = "true" ] || return 1
-            # Do not autonomously route Gemini until at least one real manual
-            # canary succeeded; a failed latest run opens a persistent breaker.
-            local recent conclusion
+            # Use durable worker history to allow one attempt after a reviewed
+            # runtime change, without retrying the same failed source revision.
+            local recent status conclusion previous_sha current_sha
+            local comparison recovery recovery_status
+            local recent_file comparison_file compare_path
+            gemini_route_reason=GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY
             if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
                  --workflow wow-v17-gemini-engineering-worker.yml \
-                 --status completed --limit 1 --json databaseId,conclusion,updatedAt 2>/dev/null); then
+                 --limit 1 \
+                 --json headSha,status,conclusion,updatedAt 2>/dev/null); then
               return 1
             fi
-            conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
+            status=$(jq -r '.[0].status // empty' <<<"$recent") || return 1
+            conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") \
+              || return 1
+            [ "$status" = "completed" ] || return 1
+            if [ "$conclusion" = "failure" ]; then
+              previous_sha=$(jq -r '.[0].headSha // empty' <<<"$recent") \
+                 || return 1
+              [[ "$previous_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+              current_sha=$(git rev-parse HEAD) || return 1
+              compare_path="repos/$GITHUB_REPOSITORY/compare/"
+              compare_path+="${previous_sha}...${current_sha}"
+              comparison=$(gh api "$compare_path" 2>/dev/null) || return 1
+              recent_file="$RUNNER_TEMP/wow-gemini-latest-run.json"
+              comparison_file="$RUNNER_TEMP/wow-gemini-source-compare.json"
+              printf '%s' "$recent" > "$recent_file"
+              printf '%s' "$comparison" > "$comparison_file"
+              recovery=$(python \
+                 artifacts/wow-engine/v17/engineering_gemini_headless.py \
+                 recovery-admit \
+                 --runs-file "$recent_file" \
+                 --comparison-file "$comparison_file" \
+                 --current-sha "$current_sha") || return 1
+              recovery_status=$(jq -r '.status' <<<"$recovery") || return 1
+              [ "$recovery_status" = "RECOVERY_ADMITTED" ] || return 1
+              gemini_route_reason=GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX
+              return 0
+            fi
             [ "$conclusion" = "success" ] || return 1
-            # Cost circuit: no repeated automatic paid work more than once/day.
-            # Manual explicit canaries remain available for recovery and diagnostics.
+            # Keep the existing 24-hour cost circuit after successful work.
             local age_minutes
             age_minutes=$(python - "$recent" <<'PY'
           import datetime as dt, json, sys
@@ -273,7 +315,7 @@ jobs:
             elif gemini_canary_healthy; then
               action=DISPATCH
               provider=gemini
-              reason=GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY
+              reason="$gemini_route_reason"
             else
               latest=$(gh run list \
                 --repo "$GITHUB_REPOSITORY" \
