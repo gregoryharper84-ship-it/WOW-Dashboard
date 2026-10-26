@@ -1,6 +1,6 @@
 # WOW V17 — OpenRouter Recursive Flint: opt-in synthetic canary
 
-Status: source-only experiment; **not merged, not enabled, no live API call verified**.
+Status: source-only adapter/diagnostic worker + inert workflow proposal; **not merged or production-enabled**. Owner-reported Mac smoke receipt: `SMOKE_PASSED` (117 tokens); real GitHub worker run is unverified.
 
 ## Purpose
 
@@ -14,7 +14,7 @@ This pilot tests the OpenRouter-hosted `recursive/flint-v1.0:free` API without d
 
    ```zsh
    cd ~/WOW-Dashboard
-   read -s 'OPENROUTER_API_KEY?Paste OpenRouter key (hidden): '
+   read -s OPENROUTER_API_KEY
    echo
    export OPENROUTER_API_KEY
    export WOW_FLINT_PROBE_ENABLED=true
@@ -58,11 +58,11 @@ OpenRouter Free currently advertises 50 free-model requests/day and 20/minute; l
 
 ## Stage 2 — Manual AMRT engineering diagnostic (source-only candidate)
 
-A second source-only worker now exists at `artifacts/wow-engine/v17/engineering_openrouter_flint_worker.py`, with the **manual-only** workflow `.github/workflows/wow-v17-flint-engineering-worker.yml`. This is not activated until the reviewed workflow exists on protected `main`.
+The **source-only** worker is `artifacts/wow-engine/v17/engineering_openrouter_flint_worker.py`. The proposed manual workflow is STAGED at `artifacts/wow-engine/v17/proposals/wow-v17-flint-engineering-worker.candidate.yml` as inert configuration. **This PR deliberately DOES NOT change `.github/` or install the workflow.** Activation requires a separate, genuinely independently authored trust-root PR plus authenticated exact-head owner approval and the normal CI/QA/Release gates; the staged YAML must be independently reviewed before adoption.
 
 **Owner setup already reported:** An `OPENROUTER_API_KEY` was added to the `wow-engineering` GitHub Environment, but the connector cannot reveal its value or independently prove that the environment secret is readable by an actual workflow. The successful Mac smoke test showed user-reported auth for the owner's local key.
 
-**After reviewed merge, manual workflow test:**
+**ONLY after the independently authored workflow has been reviewed, authorized, and merged to protected `main`, run the manual canary:**
 
 1. Open [GitHub Actions](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/workflows/wow-v17-flint-engineering-worker.yml).
 2. Select **Run workflow** on `main`.
