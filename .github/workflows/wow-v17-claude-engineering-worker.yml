@@ -620,7 +620,7 @@ jobs:
       # worktree can be detached at an untrusted PR head at this point.
       - name: Checkout protected AMRT integration source
         if: steps.mutation_gate.outputs.allowed == 'true' && github.ref == 'refs/heads/main'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           path: .wow-v17-protected-amrt
