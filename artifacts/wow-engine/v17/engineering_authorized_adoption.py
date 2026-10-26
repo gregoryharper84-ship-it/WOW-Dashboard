@@ -164,6 +164,59 @@ def _rotating_owner_window(pulls: list[dict], *, slot: int) -> tuple[list[dict],
     return owners[start:start + MAX_SCAN], windows
 
 
+
+def _adoption_candidate_window(pulls: list[dict], *, slot: int) -> tuple[list[dict], int]:
+    """Prioritize urgent *scheduling*, never bypass source/CI/review proof.
+
+    Two of three scans reserve up to ten slots for P0/P1 source PRs; each
+    third scan retains the original complete rotating 50-PR window. This
+    guarantees older routine sources still receive a full fair scan and
+    prevents a flood of P0s from creating new permanent starvation.
+    Labels/titles are untrusted scheduling hints, not security evidence.
+    """
+    fair, windows = _rotating_owner_window(pulls, slot=slot)
+    if slot % 3 == 0:
+        return fair, windows
+    owner_candidates = [
+        p for p in pulls
+        if isinstance(p, dict) and p.get("user", {}).get("login") == OWNER_LOGIN
+        and p.get("state") == "open" and p.get("draft") is False
+        and p.get("head", {}).get("repo", {}).get("full_name") == REPO
+        and type(p.get("number")) is int
+    ]
+    def priority(p: dict) -> int:
+        labels = p.get("labels")
+        names = {
+            item.get("name", "").strip().upper()
+            for item in (labels if isinstance(labels, list) else [])
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        title = str(p.get("title") or "").upper()
+        if "P0" in names or title.startswith(("FIX(P0", "[P0]", "P0:")):
+            return 0
+        if "P1" in names or title.startswith(("FIX(P1", "[P1]", "P1:")):
+            return 1
+        return 2
+    urgent = sorted(
+        (p for p in owner_candidates if priority(p) < 2),
+        key=lambda p: (priority(p), p["number"]),
+    )
+    urgent_cap = min(10, MAX_SCAN)
+    groups = max(1, (len(urgent) + urgent_cap - 1) // urgent_cap)
+    start = ((slot // 3) % groups) * urgent_cap
+    fast = urgent[start:start + urgent_cap]
+    seen: set[int] = set()
+    selected: list[dict] = []
+    for row in [*fast, *fair]:
+        if row["number"] in seen:
+            continue
+        seen.add(row["number"])
+        selected.append(row)
+        if len(selected) >= MAX_SCAN:
+            break
+    return selected, windows
+
+
 def discover(*, slot: int | None = None) -> dict:
     """Choose at most one green owner source, from any protected path in repo.
 
@@ -220,7 +273,7 @@ def discover(*, slot: int | None = None) -> dict:
         slot = int(datetime.now(timezone.utc).timestamp() // 3600)
     if type(slot) is not int or slot < 0:
         raise AdoptionHold("SCAN_SLOT_INVALID_HOLD")
-    owner_window, windows = _rotating_owner_window(all_pulls, slot=slot)
+    owner_window, windows = _adoption_candidate_window(all_pulls, slot=slot)
     for item in owner_window:
         pr_number = item.get("number")
         sha = (item.get("head") or {}).get("sha")
