@@ -37,12 +37,12 @@ permissions:
 concurrency:
   # Isolate PRs: other PR events cannot cancel a queued exact-head decision.
   # Repeat events for one PR remain serialized. A workflow_run with no
-  # associated pull request shares this role's AUTO queue. AUTO is not a
-  # pull request number. A no-target upstream QA run is classified before
-  # policy resolution and publishes no check. A genuine QA target with a
-  # missing or forged policy still fails closed. Queue bounded by GitHub
-  # Actions maximum of 100 pending runs per group.
-  group: wow-v17-release-authority-check-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 'AUTO' }}
+  # associated pull request with an upstream SKIPPED conclusion has a
+  # unique run_id group: this release job is already excluded by its job if.
+  # Successful or failed upstream QA with no PR metadata keeps the shared
+  # AUTO queue until its authenticated QA policy artifact resolves the target.
+  # Genuine QA targets with missing/forged policy remain fail-closed.
+  group: wow-v17-release-authority-check-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || (github.event.workflow_run.conclusion == 'skipped' && github.run_id) || 'AUTO' }}
   cancel-in-progress: false
   queue: max
 
