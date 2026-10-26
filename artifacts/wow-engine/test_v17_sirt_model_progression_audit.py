@@ -208,3 +208,17 @@ def test_held_cohort_never_reports_quality_metrics():
     result = audit_challenger_replay(obs)["comparisons"][0]
     assert result["champion_quality"] is None
     assert result["temporal_quality_shift"] is None
+
+
+def test_reused_event_market_role_across_cohorts_blocks_both():
+    original = full_sample()
+    second = full_sample()
+    for index, row in enumerate(second):
+        row["cohort_id"] = "NOV_TEST"
+        row["event_id"] = f"nov-game-{index // 2}"
+        row["prediction_receipt_ref"] = f"other-receipt:{index}"
+    second[0]["event_id"] = original[0]["event_id"]
+    result = audit_challenger_replay(original + second)
+    assert result["status"] == "EVIDENCE_HOLD"
+    assert any("CROSS_COHORT_EVENT_REUSED" in x for x in result["findings"])
+    assert all("INVALID_SOURCE_ROW" in item["blockers"] for item in result["comparisons"])
