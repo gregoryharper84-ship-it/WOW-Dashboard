@@ -25,6 +25,23 @@ TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
 TEAM_ROSTER_SPORTS = frozenset(
     {"MLB", "NFL", "NBA", "WNBA", "NCAAF", "NCAAB", "NHL", "SOCCER", "CRICKET"}
 )
+# Each sport must supply its *own* verified critical-status producer. These
+# names are evidence-policy identifiers, not a universal sports probability model.
+CRITICAL_STATUS_CONTRACT = {
+    "MLB": "STARTERS_LINEUPS",
+    "NFL": "QB_MATERIAL_AVAILABILITY",
+    "NBA": "ROTATION_INJURY",
+    "WNBA": "ROTATION_INJURY",
+    "NCAAF": "QB_MATERIAL_AVAILABILITY",
+    "NCAAB": "STARTERS_INJURY",
+    "NHL": "GOALIE_SCRATCHES",
+    "SOCCER": "STARTING_XI_AVAILABILITY",
+    "TENNIS": "HEALTH_RETIREMENT",
+    "PGA": "FIELD_WITHDRAWAL",
+    "MMA": "WEIGH_IN_BOUT",
+    "BOXING": "WEIGH_IN_BOUT",
+    "CRICKET": "PLAYING_XI_AVAILABILITY",
+}
 HASH_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
 
 
@@ -112,6 +129,16 @@ def audit_cross_sport_evidence_integrity(envelope: Mapping[str, Any]) -> dict[st
             blockers.append(f"PARTICIPANT_{index}_VERIFICATION_INCOMPLETE")
         if not _text(participant.get("source_id")):
             blockers.append(f"PARTICIPANT_{index}_SOURCE_MISSING")
+        if _text(participant.get("critical_status_contract")) != CRITICAL_STATUS_CONTRACT.get(sport):
+            blockers.append(f"PARTICIPANT_{index}_CRITICAL_STATUS_CONTRACT_MISMATCH")
+        status = _text(participant.get("critical_status")).upper()
+        if status == "MODELED_UNCERTAINTY_CERTIFIED":
+            if not _text(participant.get("scenario_model_receipt_id")):
+                blockers.append(f"PARTICIPANT_{index}_SCENARIO_MODEL_PROOF_MISSING")
+        elif status != "PASS":
+            blockers.append(f"PARTICIPANT_{index}_CRITICAL_STATUS_UNVERIFIED")
+        if not _text(participant.get("critical_status_snapshot_id")):
+            blockers.append(f"PARTICIPANT_{index}_CRITICAL_STATUS_SNAPSHOT_MISSING")
         if sport in TEAM_ROSTER_SPORTS:
             if _text(participant.get("roster_reconciliation_status")).upper() != "PASS":
                 blockers.append(f"PARTICIPANT_{index}_ROSTER_NOT_RECONCILED")
@@ -168,4 +195,4 @@ def audit_cross_sport_evidence_integrity(envelope: Mapping[str, Any]) -> dict[st
     return core
 
 
-__all__ = ["CAN_EXECUTE", "POLICY_VERSION", "TEAM_ROSTER_SPORTS", "audit_cross_sport_evidence_integrity"]
+__all__ = ["CAN_EXECUTE", "CRITICAL_STATUS_CONTRACT", "POLICY_VERSION", "TEAM_ROSTER_SPORTS", "audit_cross_sport_evidence_integrity"]
