@@ -57,6 +57,36 @@ def _idle_wait_seconds(poll_seconds: int, failure_streak: int, max_backoff_secon
     return float(min(max_backoff_seconds, poll_seconds * (2 ** exponent)))
 
 
+def _claim_failure_code(exc: Exception) -> str:
+    """Classify queue-RPC failures without logging an upstream HTML body or secret.
+
+    The provider can respond with non-JSON HTML and a numeric 521 code.
+    Never parse arbitrary exception prose or retry an uncertain claim inline:
+    the atomic database lease and existing bounded worker backoff own recovery.
+    """
+    response = getattr(exc, "response", None)
+    for raw_status in (
+        getattr(exc, "code", None),
+        getattr(exc, "status_code", None),
+        getattr(response, "status_code", None),
+    ):
+        if isinstance(raw_status, bool):
+            continue
+        if not isinstance(raw_status, (str, int)):
+            continue
+        token = str(raw_status).strip()
+        if not token.isascii() or not token.isdecimal() or len(token) != 3:
+            continue
+        status = int(token)
+        if status in (521, 522, 523, 524):
+            return f"NFL_PICKEM_DB_ORIGIN_HTTP_{status}"
+        if 500 <= status <= 599:
+            return "NFL_PICKEM_DB_UPSTREAM_HTTP_5XX"
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return "NFL_PICKEM_DB_TRANSPORT_UNAVAILABLE"
+    return "NFL_PICKEM_DB_CLAIM_RPC_ERROR"
+
+
 def _request_payload(req: AsyncNFLPickemSubmitRequest) -> dict[str, Any]:
     return req.model_dump(mode="json", exclude={"idempotency_key"})
 
@@ -221,6 +251,11 @@ async def _worker_loop(
         claim: dict[str, Any] | None = None
         try:
             claim = await asyncio.to_thread(_claim_from_factory, db_client_fn, lease_seconds)
+            if failure_streak:
+                LOGGER.warning(
+                    "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_RECOVERED prior_failures=%s can_execute=false",
+                    failure_streak,
+                )
             failure_streak = 0
         except asyncio.CancelledError:
             raise
@@ -228,8 +263,8 @@ async def _worker_loop(
             failure_streak += 1
             wait_seconds = _idle_wait_seconds(poll_seconds, failure_streak, max_backoff_seconds)
             LOGGER.warning(
-                "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED error=%s failure_streak=%s backoff_seconds=%s can_execute=false",
-                type(exc).__name__,
+                "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED failure_code=%s failure_streak=%s backoff_seconds=%s can_execute=false",
+                _claim_failure_code(exc),
                 failure_streak,
                 int(wait_seconds),
             )
