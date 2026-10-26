@@ -190,3 +190,37 @@ def test_non_bot_unrelated_qa_finding_remains_ignored():
     )
     assert result["action"] == "IGNORE"
     assert result["can_execute"] is False
+
+
+
+def test_owner_authored_review_routed_without_owner_or_fake_approval():
+    for is_bot in (True, False):
+        result = rp.plan_recovery(
+            pr_number=2127,
+            findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+            attempts=2,
+            is_wow_engineering_pr=is_bot,
+        )
+        assert result["action"] == "WAITING_ON_OWNER"  # legacy worker contract
+        assert result["progression_state"] == "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF"
+        assert result["reentry_trigger"] == "EXISTING_HOURLY_ADOPTION_AND_QA_HOLD_WORKER"
+        assert result["required_actor"] == "INDEPENDENT_ENGINEERING_AUTHOR"
+        assert result["owner_intervention_required"] is False
+        assert result["unrelated_work_may_progress"] is True
+        assert result["release_admission"] == "DENIED_UNTIL_INDEPENDENT_EVIDENCE"
+        assert result["attempts"] == 2 and result["can_execute"] is False
+
+
+def test_codeowner_approval_is_external_but_unrelated_work_is_not_stopped():
+    result = rp.plan_recovery(
+        pr_number=2127,
+        findings=["QA_TRUST_ROOT_OWNER_APPROVAL_MISSING"],
+        attempts=1,
+        is_wow_engineering_pr=True,
+    )
+    assert result["progression_state"] == "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED"
+    assert result["reentry_trigger"] == "AUTHENTIC_GITHUB_CODEOWNER_REVIEW_AT_EXACT_SHA"
+    assert result["owner_intervention_required"] is True
+    assert result["unrelated_work_may_progress"] is True
+    assert result["release_admission"] == "DENIED_UNTIL_INDEPENDENT_EVIDENCE"
+    assert result["attempts"] == 1 and result["can_execute"] is False
