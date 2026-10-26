@@ -143,6 +143,8 @@ def test_missing_and_stale_inputs_are_reported_without_imputation():
     assert details["away_win_pct"]["value_status"] == "MISSING"
     assert details["home_win_pct"]["value_status"] == "STALE"
     assert details["away_win_pct"]["consumption_status"] == "NOT_VERIFIED"
+    assert receipt["receipt_complete"] is False
+    assert "home_win_pct" in receipt["model_context_not_current_feature_ids"]
 
 
 def test_rejected_and_unexpected_consumed_feature_ids_are_auditable():
@@ -180,3 +182,26 @@ def test_undeclared_feature_role_keeps_receipt_incomplete():
     assert receipt["receipt_complete"] is False
     details = {row["feature_id"]: row for row in receipt["feature_details"]}
     assert details["away_win_pct"]["role"] == "UNDECLARED"
+
+
+def test_even_explicit_consumption_cannot_complete_conflicted_features():
+    receipt = _receipt(
+        _request(),
+        _result(
+            consumed_feature_ids=["home_win_pct", "away_win_pct"],
+            feature_observations={"home_win_pct": {"value_status": "CONFLICTED"}},
+        ),
+    )
+    assert receipt["consumption_verification_status"] == "VERIFIED"
+    assert receipt["critical_consumption_complete"] is True
+    assert receipt["model_context_not_current_feature_ids"] == ["home_win_pct"]
+    assert receipt["receipt_complete"] is False
+
+
+def test_fresh_verified_model_features_still_complete():
+    receipt = _receipt(
+        _request(),
+        _result(consumed_feature_ids=["home_win_pct", "away_win_pct"]),
+    )
+    assert receipt["model_context_not_current_feature_ids"] == []
+    assert receipt["receipt_complete"] is True
