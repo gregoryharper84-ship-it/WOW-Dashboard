@@ -186,7 +186,7 @@ def test_malformed_track_inventory_fails_closed_with_typed_error(bad_tracks):
 
 def test_closed_nfl_precedent_cannot_be_listed_as_active_dispatch_issue():
     scope = config()["tracks"][0]["scope"]
-    assert "NFL #1841" not in scope
+    assert "#1841" not in scope
     assert "NFL #1562" in scope
     assert "NBA props #1988" in scope
 
