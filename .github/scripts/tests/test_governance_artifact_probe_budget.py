@@ -4,7 +4,6 @@ The gate remains fail closed on no valid exact-head receipt. This file checks
 bounded source behavior; it does not grant or fake independent authorization.
 """
 from pathlib import Path
-import re
 
 ROOT = Path(__file__).resolve().parents[3]
 GATE = ROOT / ".github" / "workflows" / "wow-v17-trusted-governance-gate.yml"
