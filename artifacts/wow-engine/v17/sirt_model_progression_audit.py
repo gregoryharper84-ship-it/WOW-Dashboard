@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
-from math import isfinite
+from math import isfinite, log
 from typing import Any, Mapping, Sequence
 
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -66,6 +66,52 @@ def _valid_observation(row: Mapping[str, Any]) -> bool:
     return all((prediction, start, settled)) and prediction < start <= settled
 
 
+
+def _quality_metrics(verified: Sequence[tuple[float, int]]) -> dict[str, float]:
+    """Observed proper scoring/calibration metrics, never a sporting forecast."""
+    n = len(verified)
+    brier = sum((p - y) ** 2 for p, y in verified) / n
+    log_loss = -sum(y * log(p) + (1 - y) * log(1 - p) for p, y in verified) / n
+    bias = sum(p - y for p, y in verified) / n
+    bins: dict[int, list[tuple[float, int]]] = defaultdict(list)
+    for p, y in verified:
+        bins[min(9, int(10 * p))].append((p, y))
+    expected_calibration_error = sum(
+        len(group) / n * abs(sum(p - y for p, y in group) / len(group))
+        for group in bins.values()
+    )
+    return {
+        "brier": brier, "log_loss": log_loss,
+        "signed_calibration_bias": bias,
+        "expected_calibration_error_10_bins": expected_calibration_error,
+        "sample_count": n,
+    }
+
+def _temporal_quality_shift(
+    matched: Sequence[tuple[datetime, float, float, int]],
+) -> dict[str, Any]:
+    """Earlier-vs-later descriptive shift on the SAME matched holdout events."""
+    records = sorted(matched, key=lambda r: r[0])
+    midpoint = len(records) // 2
+    if (midpoint < 15 or len(records) - midpoint < 15
+            or records[midpoint - 1][0] >= records[midpoint][0]):
+        return {"status": "TEMPORAL_COMPARISON_UNAVAILABLE",
+                "reason": "INSUFFICIENT_DISTINCT_CHRONOLOGICAL_WINDOWS"}
+    older, newer = records[:midpoint], records[midpoint:]
+    summary: dict[str, Any] = {
+        "status": "DESCRIPTIVE_ONLY_NO_DRIFT_CERTIFICATION",
+        "earlier_pairs": len(older), "recent_pairs": len(newer),
+    }
+    for name, index in (("champion", 1), ("challenger", 2)):
+        past = _quality_metrics([(r[index], r[3]) for r in older])
+        recent = _quality_metrics([(r[index], r[3]) for r in newer])
+        summary[name + "_recent_minus_earlier_brier"] = recent["brier"] - past["brier"]
+        summary[name + "_recent_minus_earlier_ece"] = (
+            recent["expected_calibration_error_10_bins"]
+            - past["expected_calibration_error_10_bins"]
+        )
+    return summary
+
 def audit_challenger_replay(
     observations: Sequence[Mapping[str, Any]], *, minimum_pairs: int = 30,
 ) -> dict[str, Any]:
@@ -83,6 +129,7 @@ def audit_challenger_replay(
     )
     findings: list[str] = []
     invalid_cohorts: set[tuple[str, str, str]] = set()
+    seen_receipts: dict[str, tuple[str, str, str]] = {}
     for index, row in enumerate(observations):
         if not isinstance(row, Mapping) or not _valid_observation(row):
             findings.append(f"ROW_{index}_EVIDENCE_UNVERIFIED")
@@ -94,6 +141,13 @@ def audit_challenger_replay(
         cohort = (row["sport"], row["market_family"], row["cohort_id"])
         key = (row["event_id"], row["market_id"])
         role = row["role"]
+        receipt_id = row["prediction_receipt_ref"]
+        prior_cohort = seen_receipts.get(receipt_id)
+        if prior_cohort is not None:
+            invalid_cohorts.update((cohort, prior_cohort))
+            findings.append(f"ROW_{index}_PREDICTION_RECEIPT_REUSED")
+        else:
+            seen_receipts[receipt_id] = cohort
         pair = cohorts[cohort].setdefault(key, {})
         if role in pair:
             invalid_cohorts.add(cohort)
@@ -106,6 +160,7 @@ def audit_challenger_replay(
         pairs = cohorts.get(cohort, {})
         mismatches = []
         champion_sq, challenger_sq = [], []
+        matched_rows: list[tuple[datetime, float, float, int]] = []
         for event_key, pair in sorted(pairs.items()):
             if set(pair) != {"CHAMPION", "CHALLENGER"}:
                 mismatches.append("UNMATCHED_EVENT_MARKET")
@@ -122,8 +177,13 @@ def audit_challenger_replay(
                 continue
             champion_sq.append((first["calibrated_probability"] - first["outcome"]) ** 2)
             challenger_sq.append((second["calibrated_probability"] - second["outcome"]) ** 2)
+            matched_rows.append((_time(first["event_start_at"]),
+                                 first["calibrated_probability"],
+                                 second["calibrated_probability"], first["outcome"]))
         if any(len(s) != 1 for s in artifact_ids.get(cohort, {}).values()):
             mismatches.append("MULTIPLE_ARTIFACTS_IN_COHORT")
+        if (artifact_ids[cohort]["CHAMPION"] & artifact_ids[cohort]["CHALLENGER"]):
+            mismatches.append("CHAMPION_CHALLENGER_NOT_DISTINCT")
         if cohort in invalid_cohorts:
             mismatches.append("INVALID_SOURCE_ROW")
         if len(champion_sq) < minimum_pairs:
@@ -132,6 +192,9 @@ def audit_challenger_replay(
         if problems:
             findings.append("COHORT_" + "/".join(cohort) + "_" + ",".join(problems))
         eligible = not problems
+        champion_quality = _quality_metrics([(a, outcome) for _, a, _, outcome in matched_rows]) if eligible else None
+        challenger_quality = _quality_metrics([(b, outcome) for _, _, b, outcome in matched_rows]) if eligible else None
+        temporal = _temporal_quality_shift(matched_rows) if eligible else None
         comparisons.append({
             "sport": cohort[0], "market_family": cohort[1], "cohort_id": cohort[2],
             "matched_pairs": len(champion_sq), "observed_market_pairs": len(pairs),
@@ -140,6 +203,10 @@ def audit_challenger_replay(
             "challenger_minus_champion_brier": (
                 (sum(challenger_sq) - sum(champion_sq)) / len(champion_sq) if eligible else None
             ),
+            "champion_quality": champion_quality,
+            "challenger_quality": challenger_quality,
+            "temporal_quality_shift": temporal,
+            "metrics_are_descriptive_not_statistical_certification": True,
             "assessment": "RESEARCH_ONLY_NO_PROMOTION" if eligible else "EVIDENCE_HOLD",
             "blockers": problems,
         })
