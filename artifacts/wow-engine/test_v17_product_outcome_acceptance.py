@@ -423,3 +423,15 @@ def test_unsupported_request_row_cannot_inflate_conservation():
     assert result["rank_eligible_candidates"] is None
     assert result["completed_requests"] == 0
     assert "ROW_REQUEST_NOT_SUPPORTED:req-1" in result["findings"]
+
+
+def test_unattributed_extra_row_suppresses_apparent_full_conservation():
+    result = product_outcome_scorecard(
+        [req()], [scored(), scored(candidate_id="")],
+    )
+    assert result["completed_requests"] == 1  # known request itself is terminal
+    assert not result["audit_complete"]  # extra unknown row is not reconciled
+    assert result["candidate_conservation_rate"] is None
+    assert result["reliable_decision_availability"] is None
+    assert result["rank_eligible_candidates"] is None
+    assert "ROW_1_IDENTITY_MISSING" in result["findings"]
