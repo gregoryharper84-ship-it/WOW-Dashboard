@@ -37,6 +37,7 @@ from v17.team_event_capability_manifest import (
 )
 from v17.rundown_sport_registry import REGULAR_SEASON
 from v17.team_event_feature_consumption import build_feature_consumption_receipt
+from v17.team_event_producer_adoption import inspect_team_event_producer_adoption
 from v17.cross_sport_evidence_integrity import (
     CRITICAL_STATUS_CONTRACT,
     TEAM_ROSTER_SPORTS,
@@ -303,6 +304,9 @@ def _attach_feature_consumption_receipt(
     audit = evaluate_scored_cross_sport_evidence(out)
     out["cross_sport_evidence_audit"] = audit
     out["evidence_integrity_status"] = audit["evidence_status"]
+    out["cross_sport_producer_adoption"] = inspect_team_event_producer_adoption(
+        sport=registration.sport, result=out, consumption_receipt=receipt,
+    )
     if registration.evidence_integrity_required and audit["evidence_status"] != "PASS":
         # Publication is withheld at the scorer return itself, even if a
         # downstream consumer forgets to call the separate official guard.
