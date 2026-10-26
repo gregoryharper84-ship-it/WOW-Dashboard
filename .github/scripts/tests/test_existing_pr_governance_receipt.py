@@ -1368,15 +1368,17 @@ def test_pending_newer_workflow_still_holds_after_bounded_wait(tmp_path):
     assert "EXISTING_PR_REQUIRED_CI_INCOMPLETE_AFTER_BOUNDED_WAIT" in result.stderr
 
 
-def run_receipt_artifact_step(tmp_path, artifacts):
+def run_receipt_artifact_step(tmp_path, artifacts, *, total=None):
+    # Emulate GitHub's exact-name server-filtered artifact inventory, rather
+    # than the old unbounded repository-wide artifact scan.
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    step = workflow.split("      - name: Check for an existing exact-head receipt\n", 1)[1]
-    script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    step = workflow.split("      - name: Check for an existing exact-head receipt\\n", 1)[1]
+    script = textwrap.dedent(step.split("        run: |\\n", 1)[1].split("\\n      - name:", 1)[0])
     stub = """
 gh() {
   case "$*" in
-    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page="*)
-      printf '%s\\n' "$TEST_ARTIFACTS_JSON"
+    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-engineering-governance-${HEAD_SHA}&per_page=100&page=1")
+      printf '%s\\\\n' "$TEST_ARTIFACTS_JSON"
       ;;
     *)
       echo "UNEXPECTED_GH_INVOCATION:$*" >&2
@@ -1391,7 +1393,10 @@ gh() {
         "GITHUB_REPOSITORY": REPOSITORY,
         "GITHUB_OUTPUT": str(output_path),
         "HEAD_SHA": HEAD,
-        "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": artifacts}),
+        "TEST_ARTIFACTS_JSON": json.dumps({
+            "total_count": len(artifacts) if total is None else total,
+            "artifacts": artifacts,
+        }),
     }
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", stub + script],
@@ -1408,7 +1413,7 @@ gh() {
 
 
 def test_existing_governance_receipt_suppresses_duplicate_upload(tmp_path):
-    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    existing = {"id": 13, "name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
     result, output = run_receipt_artifact_step(tmp_path, [existing])
 
     assert result.returncode == 0, result.stderr
@@ -1416,7 +1421,7 @@ def test_existing_governance_receipt_suppresses_duplicate_upload(tmp_path):
 
 
 def test_duplicate_governance_receipts_fail_closed(tmp_path):
-    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    existing = {"id": 13, "name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
     result, _ = run_receipt_artifact_step(tmp_path, [existing, existing])
 
     assert result.returncode == 1
@@ -1424,10 +1429,9 @@ def test_duplicate_governance_receipts_fail_closed(tmp_path):
 
 
 def test_receipt_artifact_inventory_must_finish_within_bound(tmp_path):
-    result, _ = run_receipt_artifact_step(
-        tmp_path,
-        [{"name": f"unrelated-{index}", "expired": False} for index in range(100)],
-    )
+    # More than one bounded page for the exact-name inventory fails closed;
+    # a large set of unrelated repository artifacts no longer blocks progress.
+    result, _ = run_receipt_artifact_step(tmp_path, [], total=101)
 
     assert result.returncode == 1
     assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" in result.stderr
