@@ -101,6 +101,22 @@ def audit_cross_sport_evidence_integrity(envelope: Mapping[str, Any]) -> dict[st
         blockers.append("OFFICIAL_EVENT_FRESHNESS_UNVERIFIED")
     elif model_at is not None and event_update_at > model_at:
         blockers.append("OFFICIAL_EVENT_CHANGED_AFTER_MODEL")
+    if _text(envelope.get("final_refresh_status")).upper() != "PASS":
+        blockers.append("FINAL_REFRESH_NOT_PROVEN")
+    if _text(envelope.get("current_event_status")).upper() not in {"PREGAME", "SCHEDULED"}:
+        blockers.append("CURRENT_EVENT_NOT_PREGAME")
+    refresh_at = _timestamp(envelope.get("final_refresh_at"))
+    newest_material_at = _timestamp(envelope.get("current_material_update_at"))
+    if refresh_at is None or model_at is None or refresh_at < model_at:
+        blockers.append("FINAL_REFRESH_TIME_INVALID")
+    if refresh_at is not None and started_at is not None and refresh_at >= started_at:
+        blockers.append("FINAL_REFRESH_EVENT_ALREADY_STARTED")
+    if newest_material_at is None:
+        blockers.append("CURRENT_MATERIAL_UPDATE_WATERMARK_MISSING")
+    elif model_at is not None and newest_material_at > model_at:
+        blockers.append("FRESH_MATERIAL_UPDATE_REQUIRES_RESCORING")
+    if refresh_at is not None and newest_material_at is not None and newest_material_at > refresh_at:
+        blockers.append("FINAL_REFRESH_BEFORE_LATEST_UPDATE")
 
     official_participants = _id_list(envelope.get("official_participant_ids"))
     if official_participants is None or len(official_participants) < 2:
