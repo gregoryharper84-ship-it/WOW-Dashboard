@@ -279,6 +279,8 @@ def _attach_feature_consumption_receipt(
     if registration.evidence_integrity_required and isinstance(envelope, Mapping):
         frozen_envelope = dict(envelope)
         frozen_envelope["feature_consumption_receipt_id"] = receipt["feature_consumption_receipt_id"]
+        frozen_envelope["feature_consumption_verification_status"] = receipt["consumption_verification_status"]
+        frozen_envelope["critical_feature_consumption_complete"] = receipt["critical_consumption_complete"]
         out["cross_sport_evidence"] = frozen_envelope
         if (
             receipt.get("receipt_complete") is True
