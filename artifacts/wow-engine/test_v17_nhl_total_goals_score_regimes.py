@@ -28,14 +28,16 @@ def sample(kind="REG"):
         scoring.append(period(4, "OT", [goal(True)]))
     else:
         scoring.append(period(4, "OT", []))
-        scoring.append(period(5, "SO", []))
+        scoring.append(period(5, "SO", [goal(True)]))
     return {
         "id": 2024020022, "season": 20242025, "gameType": 2,
         "gameState": "OFF", "periodDescriptor": {"number": 3 if kind=="REG" else 4 if kind=="OT" else 5,
                                               "periodType": kind},
         "homeTeam": {"abbrev": "BOS", "score": 2},
         "awayTeam": {"abbrev": "NYR", "score": 1},
-        "summary": {"scoring": scoring},
+        "summary": {"scoring": scoring, "shootout": {"events": [
+            {"gameWinner": True, "teamAbbrev": {"default": "BOS"}, "result": "goal"}
+        ]} if kind == "SO" else {}},
     }
 
 
@@ -72,6 +74,7 @@ def test_shootout_credited_only_as_one_game_total_goal_not_skater_goal():
     lambda x: x["summary"].__setitem__("scoring", None),
     lambda x: x.__setitem__("gameState", "LIVE"),
     lambda x: x.__setitem__("gameType", 3),
+    lambda x: x["summary"]["scoring"].pop(1),
 ])
 def test_bad_final_score_or_scoring_identity_is_held(change):
     p = sample("REG")
@@ -97,3 +100,70 @@ def test_unexpected_shootout_scoring_goal_rejected():
 
 def test_no_probabilities_or_execution_bypass():
     assert not CAN_EXECUTE and not PROBABILITY_PUBLISHABLE
+
+
+
+def test_official_nested_abbreviation_format():
+    p = sample("SO")
+    p["summary"]["scoring"][0]["goals"][0]["teamAbbrev"] = {"default": "BOS"}
+    p["summary"]["scoring"][-1]["goals"][0]["teamAbbrev"] = {"default": "BOS"}
+    event = reconcile_official_gamecenter_landing(p)
+    assert event.shootout_awarded_goal == 1
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda p: p["summary"]["shootout"]["events"].clear(),
+    lambda p: p["summary"]["shootout"]["events"].append({"gameWinner": True, "teamAbbrev": {"default": "BOS"}, "result": "goal"}),
+    lambda p: p["summary"]["shootout"]["events"][0].__setitem__("result", "save"),
+    lambda p: p["summary"]["shootout"]["events"][0].__setitem__("teamAbbrev", {"default": "NYR"}),
+    lambda p: p["summary"]["scoring"][-1]["goals"][0].__setitem__("teamAbbrev", {"default": "NYR"}),
+    lambda p: p["summary"]["scoring"][-1]["goals"].clear(),
+    lambda p: p["summary"]["scoring"].pop(3),
+])
+def test_shootout_does_not_silently_guess_winning_goal(mutate):
+    p = sample("SO")
+    mutate(p)
+    with pytest.raises(NHLScoringRegimeError) as err:
+        reconcile_official_gamecenter_landing(p)
+    assert err.value.code == "NHL_TOTALS_FINAL_SCORE_REGIME_MISMATCH"
+
+
+
+def test_authentic_nhl_gamecenter_reg_ot_so_fixtures_are_reconciled():
+    """Verified 2024-25 official public NHL landing projections, not model outputs."""
+    import json
+    from pathlib import Path
+    location = Path(__file__).parent / "tests" / "fixtures" / "nhl_official_scoring_regimes_2024.json"
+    records = json.loads(location.read_text())["records"]
+    expected = {
+        2024020001: ("REG", 5, 0, 0),
+        2024020009: ("OT", 11, 1, 0),
+        2024020022: ("SO", 5, 0, 1),
+    }
+    assert len(records) == 3
+    for row in records:
+        raw = row["scoring"]
+        id_ = raw["id"]
+        assert row["source_url"].endswith(f"/{id_}/landing")
+        assert row["retrospective"] is True
+        model = reconcile_official_gamecenter_landing(raw)
+        period, count, ot, award = expected[id_]
+        assert model.final_period_type == period
+        assert model.official_final_total == count
+        assert model.reconciled_total == count
+        assert model.actual_overtime_goals == ot
+        assert model.shootout_awarded_goal == award
+        assert model.probability_publishable is False
+        assert model.can_execute is False
+
+
+def test_authentic_shootout_summary_rejects_winner_tampering():
+    import json
+    from pathlib import Path
+    file = Path(__file__).parent / "tests" / "fixtures" / "nhl_official_scoring_regimes_2024.json"
+    records = json.loads(file.read_text())["records"]
+    payload = deepcopy(next(x["scoring"] for x in records if x["scoring"]["periodDescriptor"]["periodType"]=="SO"))
+    payload["summary"]["shootout"]["events"][-1]["teamAbbrev"] = {"default": "VAN"}
+    with pytest.raises(NHLScoringRegimeError) as e:
+        reconcile_official_gamecenter_landing(payload)
+    assert e.value.code == "NHL_TOTALS_FINAL_SCORE_REGIME_MISMATCH"
