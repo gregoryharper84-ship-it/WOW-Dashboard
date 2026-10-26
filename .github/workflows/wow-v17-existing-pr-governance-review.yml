@@ -120,8 +120,8 @@ jobs:
               echo "RELEASE_CHECK_PR_RECHECK_FAILED" >&2; exit 1;
             }
             jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$CHECK_RUN_HEAD_SHA" \
-              --argjson pr "$live_pr" \
-              '.number == $pr and .state == "open" and .draft == false and
+              --arg pr "$live_pr" \
+              '.number == ($pr | tonumber) and .state == "open" and .draft == false and
                .head.sha == $sha and .head.repo.full_name == $repo and
                .base.ref == "main" and .base.repo.full_name == $repo' \
               <<<"$pr_json" >/dev/null || neutral "RELEASE_CHECK_PR_MOVED_OR_NOT_CANONICAL"
