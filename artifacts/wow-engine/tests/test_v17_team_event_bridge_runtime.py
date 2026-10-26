@@ -441,6 +441,9 @@ def test_full_enrolled_backend_verified_wnba_evidence_preserves_governed_probabi
     assert result["feature_consumption_receipt"]["numerical_consumption_proven"] is True
     assert result["cross_sport_evidence_attested"] is True
     assert result["evidence_integrity_status"] == "PASS"
+    assert result["cross_sport_producer_adoption"]["status"] == "PRODUCER_ADMISSION_PASS"
+    assert result["cross_sport_producer_adoption"]["blockers"] == []
+    assert result["cross_sport_producer_adoption"]["publication_authority"] is False
     assert result["probability_publishable"] is True
     assert result["rank_eligible"] is True
     assert result["calibrated_probability"] == 0.72
