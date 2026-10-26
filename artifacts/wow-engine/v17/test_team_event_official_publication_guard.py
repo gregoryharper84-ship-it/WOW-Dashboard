@@ -142,3 +142,94 @@ def test_upset_lane_requires_verified_underdog_status():
     decision = evaluate_team_event_official_publication(row)
     assert decision["official_publication_allowed"] is False
     assert "TEAM_EVENT_UPSET_UNDERDOG_STATUS_NOT_VERIFIED" in decision["blockers"]
+
+def _certified_sample_evidence(sport: str = "NBA") -> dict:
+    from datetime import datetime, timedelta, timezone
+    from v17.cross_sport_evidence_integrity import TEAM_ROSTER_SPORTS
+
+    start = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
+
+    def participant(index):
+        return {
+            "participant_id": f"team-{index}",
+            "snapshot_id": f"snapshot-{index}",
+            "source_id": f"source-{index}",
+            "verification_status": "VERIFIED",
+            "source_timestamp": (start - timedelta(hours=3)).isoformat(),
+            "effective_at": (start - timedelta(days=1)).isoformat(),
+            "latest_material_update_at": (start - timedelta(hours=3)).isoformat(),
+            **({
+                "roster_reconciliation_status": "PASS",
+                "personnel_snapshot_id": f"roster-{index}",
+            } if sport in TEAM_ROSTER_SPORTS else {}),
+        }
+
+    return {
+        "sport": sport,
+        "official_event_id": "event-test",
+        "event_start_utc": start.isoformat(),
+        "model_timestamp": (start - timedelta(hours=1)).isoformat(),
+        "participants": [participant(1), participant(2)],
+        "feature_snapshot_hash": "a" * 64,
+        "model_consumed_feature_hash": "a" * 64,
+        "feature_consumption_verification_status": "VERIFIED",
+        "critical_feature_consumption_complete": True,
+        "model_artifact_version": "fitted-test-v1",
+        "model_invoked": True,
+        "required_modules": ["hydrate", "fitted_scorer", "calibrate"],
+        "completed_modules": ["hydrate", "fitted_scorer", "calibrate"],
+        "stage_errors": [],
+    }
+
+
+def test_opted_in_scoring_without_evidence_cannot_publish():
+    row = governed_result()
+    row["sport"] = "NBA"
+    row["cross_sport_evidence_required"] = True
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["status"] == "HELD"
+    assert "TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED" in decision["blockers"]
+    assert decision["evidence_integrity_audit"]["evidence_status"] == "HELD"
+    assert row["calibrated_probability"] == 0.62  # sporting probability survives
+
+
+def test_opted_in_scoring_with_current_verified_evidence_can_pass():
+    row = governed_result()
+    row["sport"] = "NBA"
+    row["official_event_id"] = "event-test"
+    row["cross_sport_evidence_required"] = True
+    row["cross_sport_evidence"] = _certified_sample_evidence()
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["status"] == "PASS"
+    assert decision["evidence_integrity_audit"]["evidence_status"] == "PASS"
+    assert decision["can_execute"] is False
+
+
+def test_stale_or_mismatched_producer_evidence_blocks_publication():
+    row = governed_result()
+    row["sport"] = "NBA"
+    row["official_event_id"] = "event-test"
+    row["cross_sport_evidence_required"] = True
+    row["cross_sport_evidence"] = _certified_sample_evidence()
+    row["cross_sport_evidence"]["model_consumed_feature_hash"] = "b" * 64
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["status"] == "HELD"
+    assert "MODEL_FEATURE_SNAPSHOT_MISMATCH" in decision["evidence_integrity_audit"]["blockers"]
+    assert "TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED" in decision["blockers"]
+    assert decision["selected_calibrated_probability"] == 0.62
+
+
+def test_cross_sport_evidence_event_identity_conflict_holds():
+    row = governed_result()
+    row["sport"] = "NFL"
+    row["official_event_id"] = "event-test"
+    row["cross_sport_evidence_required"] = True
+    row["cross_sport_evidence"] = _certified_sample_evidence("NBA")
+    decision = evaluate_team_event_official_publication(row)
+    assert decision["status"] == "HELD"
+    assert "SCORED_EVENT_EVIDENCE_IDENTITY_MISMATCH" in decision["evidence_integrity_audit"]["blockers"]
+
+
+def test_legacy_results_never_claim_unearned_evidence_proof():
+    decision = evaluate_team_event_official_publication(governed_result())
+    assert decision["evidence_integrity_audit"]["evidence_status"] == "NOT_ENFORCED"
