@@ -12,6 +12,8 @@ from v17.persistent_worker_safety import Lease
 NOW = datetime(2026, 10, 26, 21, 0, tzinfo=timezone.utc)
 WORKER = "github-actions:987654321:1"
 SHA = "c" * 40
+OWNER = "wow-engineering[bot]"
+ISSUE_REF = "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1841"
 AGENTS = tuple(AGENT_TO_EXISTING_ROLE)
 
 
@@ -21,7 +23,8 @@ def incident(**overrides):
         "issue_ref": "github:issue/1841",
         "amrt_owned": True,
         "can_execute": False,
-        "owner_id": WORKER,
+        "owner_id": OWNER,
+        "canonical_owner_source_ref": ISSUE_REF,
         "lease_owner": WORKER,
         "lease_authority": "EXISTING_AUTHENTICATED_ENGINEERING_WORKER",
         "severity": "P0",
@@ -52,6 +55,8 @@ def args(**overrides):
         "lease": Lease("1841", WORKER, 5, (NOW + timedelta(hours=1)).isoformat()),
         "verified_latest_epoch": 5,
         "verified_worker_id": WORKER,
+        "verified_accountable_owner_id": OWNER,
+        "verified_owner_evidence_ref": ISSUE_REF,
         "observed_at": NOW,
         "head_sha": SHA,
         "supabase_url": "https://example.invalid",
@@ -91,6 +96,7 @@ def test_all_five_existing_specialists_reach_canonical_append_only_writer(
     row = receipt_writer[0]
     assert row["role"] == "conductor"
     assert row["worker_run_id"] == WORKER
+    assert OWNER != WORKER
     assert row["head_sha"] == SHA
     assert row["lease_epoch"] == 5
     assert row["disposition"] in {"IN_PROGRESS", "BLOCKED_WITH_EXACT_REASON"}
@@ -123,10 +129,10 @@ def test_untrusted_or_expired_worker_never_writes(mutated, error, receipt_writer
 @pytest.mark.parametrize("changed,error", [
     ({"amrt_owned": False}, "AMRT_INCIDENT_NOT_ADMITTED"),
     ({"can_execute": True}, "AMRT_EXECUTION_INVARIANT_INVALID"),
-    ({"owner_id": "someone-else"}, "AMRT_CANONICAL_OWNER_OR_WRITER_MISMATCH"),
+    ({"owner_id": "someone-else"}, "AMRT_ACCOUNTABLE_ISSUE_OWNER_UNVERIFIED"),
     ({"lease_owner": None}, "AMRT_CANONICAL_OWNER_OR_WRITER_MISMATCH"),
     ({"lease_authority": "OWNER_ASSERTED"}, "AMRT_CANONICAL_OWNER_OR_WRITER_MISMATCH"),
-    ({"incident_id": "1950"}, "AMRT_CANONICAL_OWNER_OR_WRITER_MISMATCH"),
+    ({"incident_id": "1950"}, "AMRT_ACCOUNTABLE_ISSUE_OWNER_UNVERIFIED"),
 ])
 def test_foreign_incident_or_owner_never_writes(changed, error, receipt_writer):
     with pytest.raises(ValueError, match=error):
@@ -171,3 +177,34 @@ def test_missing_producer_stages_cannot_create_specialist_attributed_receipt(rec
             producer_stages=None,
         ))
     assert receipt_writer == []
+
+
+@pytest.mark.parametrize("mutated", [
+    {"verified_accountable_owner_id": "spoofed-github-owner"},
+    {"verified_owner_evidence_ref": "https://github.com/other/repo/issues/1841"},
+    {"verified_accountable_owner_id": ""},
+])
+def test_accountable_owner_source_cannot_be_replaced_by_lease_holder(
+    mutated, receipt_writer
+):
+    with pytest.raises(ValueError, match="AMRT_ACCOUNTABLE_ISSUE_OWNER_UNVERIFIED"):
+        persist_authenticated_specialist_handoff(**args(**mutated))
+    assert not receipt_writer
+
+
+def test_accountable_owner_source_mismatch_fails_closed(receipt_writer):
+    with pytest.raises(ValueError, match="AMRT_ACCOUNTABLE_ISSUE_OWNER_UNVERIFIED"):
+        persist_authenticated_specialist_handoff(**args(
+            incident=incident(canonical_owner_source_ref="github:unverified"),
+        ))
+    assert receipt_writer == []
+
+
+def test_commander_accepts_distinct_verified_owner_and_writer_without_self_approval(
+    receipt_writer,
+):
+    row = persist_authenticated_specialist_handoff(**args())
+    assert row["tests"][0]["amrt_role"] == "BLOCKER_SENTINEL"
+    assert row["disposition"] == "IN_PROGRESS"
+    assert row["tests"][0]["can_execute"] is False
+    assert row.get("qa_decision") is None
