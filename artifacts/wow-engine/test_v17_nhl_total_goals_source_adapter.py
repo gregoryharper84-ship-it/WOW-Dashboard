@@ -68,3 +68,31 @@ def test_invalid_persisted_source_fails(override):
     with pytest.raises(NHLTotalsResearchError) as err:
         adapt_persisted_nhl_games([record])
     assert err.value.code == "NHL_TOTALS_PERSISTED_ROW_INVALID"
+
+
+def test_authentic_d1_source_versions_are_kept_without_double_counting():
+    """Verified read-only export from WOW validation NHL official results."""
+    import json
+    from pathlib import Path
+    sample_file = Path(__file__).parent / "tests" / "fixtures" / "nhl_totals_d1_source_samples.json"
+    lines = sample_file.read_text(encoding="utf-8").splitlines()
+    payload = json.loads("\n".join(lines[1:]))
+    assert payload["research_only"] is True
+    rows = payload["rows"]
+    assert len(rows) == 10
+    assert len({(x["season"], x["official_event_id"]) for x in rows}) == 8
+    with pytest.raises(NHLTotalsResearchError, match="2023021048"):
+        adapt_persisted_nhl_games(rows)
+    games, audit = adapt_persisted_nhl_games(
+        rows, allow_matching_source_versions=True
+    )
+    assert audit["canonical_games"] == 8
+    assert audit["version_drift_events"] == 2
+    assert audit["source_instances"] == 10
+    assert len(audit["version_drift_ledger"]) == 2
+    assert audit["probability_publishable"] is False
+    assert all(len(g["source_payload_sha256"]) == 64 for g in games)
+    _, snapshot = build_total_rows(games)
+    assert snapshot["source_rows"] == 8
+    assert snapshot["historical_reconstruction"] is True
+    assert snapshot["archive_pregame_snapshot_claimed"] is False
