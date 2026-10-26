@@ -375,3 +375,23 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
 Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.
+
+## OpenRouter Flint synthetic engineering pilot statuses (October 26, 2026)
+
+**Scope:** `artifacts/wow-engine/v17/engineering_openrouter_flint_probe.py` only. These are **local pilot diagnostics**, not production model/scorer/worker statuses, not an autonomous failover taxonomy, and not execution or release authority. No status is allowed to become `MODEL_UNAVAILABLE` or terminal approval.
+
+| Probe `status` | Owner | Exact condition / meaning |
+| --- | --- | --- |
+| `DISABLED` | Flint pilot opt-in | `WOW_FLINT_PROBE_ENABLED` is not exactly `true`; no request sent |
+| `KEY_MISSING` | Flint pilot credential preflight | Enabled but `OPENROUTER_API_KEY` empty; no request sent |
+| `READY_FOR_ONE_SYNTHETIC_REQUEST` | Flint pilot preflight | Opt-in and key present only; **does not prove authentication**, no request sent |
+| `SMOKE_PASSED` | Flint pilot one-shot response | One HTTPS request returned a nonempty text completion; does not certify code or agent readiness |
+| `AUTH_FAILED` | Flint pilot provider response | HTTP 401/403 |
+| `PAYMENT_REQUIRED` | Flint pilot provider response | HTTP 402; no paid-model fallback |
+| `RATE_LIMITED` | Flint pilot provider response | HTTP 429; no automatic retries |
+| `UPSTREAM_FAILURE` | Flint pilot provider response | HTTP 5xx |
+| `HTTP_FAILURE` | Flint pilot provider response | Other HTTP failure |
+| `TRANSPORT_FAILURE` | Flint pilot transport | Timeout, network or transport exception without valid response |
+| `OUTPUT_INVALID` | Flint pilot completion schema | Malformed, oversized or missing nonempty response message |
+
+All receipts force `agent_activation=false`, `production_routing_changed=false`, `can_execute=false`, and `terminal_authority=V17_TERMINAL_REDUCER`. Actual credentials, source data, response text and upstream errors are not logged by the probe.
