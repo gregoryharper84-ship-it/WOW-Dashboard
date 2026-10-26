@@ -148,3 +148,28 @@ def test_protected_workflow_performs_attributed_support_handoff():
     assert "engineering_phase12_delegation.py validate-support-packet" in workflow
     assert workflow.index("Validate bounded specialist handoff") < workflow.index("Specialist support subagent")
     assert "terminal_authority:\"V17_TERMINAL_REDUCER\"" in workflow
+
+
+def test_phase12_pr_lifecycle_declaration_remains_explicit_and_fail_closed():
+    from v17.engineering_agent_team import validate_lifecycle_pr_body
+    flags = (
+        "changes_model_registration", "changes_routing_or_hydration",
+        "changes_reconciliation_behavior", "changes_prediction_persistence_contract",
+        "changes_sporting_probability_math", "changes_fitted_artifacts_or_coefficients",
+        "changes_calibration_or_lower_bounds", "changes_qualification_thresholds",
+        "changes_failure_path_weighting",
+    )
+    paths = ("artifacts/wow-engine/v17/engineering_agent_team.py",)
+    body = "\\n".join((
+        "Incident: `1021`",
+        "Lifecycle-Control-Plane: true",
+        "Change-Class: B",
+        *(f"- {flag}: false" for flag in flags),
+    ))
+    assert validate_lifecycle_pr_body(body, changed_paths=paths) == []
+    assert any("scope flags" in error for error in
+               validate_lifecycle_pr_body("Change-Class: B", changed_paths=paths))
+    unsafe = body.replace("- changes_calibration_or_lower_bounds: false",
+                          "- changes_calibration_or_lower_bounds: true")
+    assert any("CLASSIFICATION_ESCALATION_REQUIRED" in error for error in
+               validate_lifecycle_pr_body(unsafe, changed_paths=paths))
