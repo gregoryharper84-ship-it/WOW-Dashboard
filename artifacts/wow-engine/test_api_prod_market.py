@@ -568,3 +568,91 @@ def test_nfl_direct_score_prop_holds_unverified_game_eligibility_before_fitted_m
     assert body["probability_publishable"] is False
     assert body["can_execute"] is False
     assert calls == {"score": 0, "persist": 0}
+
+
+
+@pytest.mark.parametrize(
+    "provider_code,expected",
+    [
+        ("PLAYER_UNAVAILABLE", "PLAYER_UNAVAILABLE"),
+        ("PLAYER_AVAILABILITY_UNVERIFIED", "PLAYER_AVAILABILITY_UNVERIFIED"),
+        ("PLAYER_AVAILABLE", "PLAYER_AVAILABILITY_UNVERIFIED"),
+    ],
+)
+def test_direct_nfl_score_revalidates_server_roster_negative_without_scoring(
+    monkeypatch, provider_code, expected
+):
+    # The Oct 26 Hurts production path uses the frozen Daily snapshot.
+    # No caller data or nominal provider "AVAILABLE" may authorize a fitted model.
+    calls = {"score": 0, "persist": 0, "roster": 0}
+
+    def forbidden_score(**_kwargs):
+        calls["score"] += 1
+        raise AssertionError("NFL fitted scorer must not run before official inactives proof")
+
+    _install_common(monkeypatch, forbidden_score)
+    monkeypatch.setattr(
+        api_prod_market.prod.base_api, "_persist_fn",
+        lambda _row: calls.__setitem__("persist", calls["persist"] + 1),
+    )
+    frozen = _ready_evidence()
+    frozen["player"] = "Jalen Hurts"
+    frozen["role_status"] = {
+        "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+        "player": "Jalen Hurts",
+        "espn_athlete_id": "4040715",
+        "team": "PHI",
+        "event_id": "401873009",
+        "verified_canonical_event_id": "2026_07_DAL_PHI",
+    }
+    monkeypatch.setattr(api_prod_market, "repair_prop_evidence", lambda *_a, **_k: frozen)
+
+    def read_roster(**kwargs):
+        calls["roster"] += 1
+        assert kwargs == {"team": "PHI", "espn_athlete_id": "4040715"}
+        return {
+            "code": provider_code,
+            "source": "ESPN_NFL_TEAM_ROSTER_NEGATIVE_ONLY",
+            "source_timestamp": "2026-10-26T21:00:00+00:00",
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(api_prod_market, "read_espn_nfl_roster_negative", read_roster)
+    req = _request_payload()
+    req.update({
+        "sport": "NFL", "player": "Jalen Hurts",
+        "event_id": "2026_07_DAL_PHI",
+        "stat_type": "ANYTIME_TD", "line": 0.5, "direction": "LESS",
+    })
+    response = client.post("/score-prop", json=req, headers=AUTH)
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == expected
+    assert detail["availability_source"]["source"] == "ESPN_NFL_TEAM_ROSTER_NEGATIVE_ONLY"
+    assert detail["specialist_invoked"] is False
+    assert detail["probability_publishable"] is False
+    assert detail["can_execute"] is False
+    assert calls == {"score": 0, "persist": 0, "roster": 1}
+
+
+def test_nfl_roster_source_not_queried_if_player_event_identity_mismatches(monkeypatch):
+    _install_common(monkeypatch, lambda **_kw: (_ for _ in ()).throw(AssertionError("scored")))
+    frozen = _ready_evidence()
+    frozen["role_status"] = {
+        "player": "Another Player",
+        "espn_athlete_id": "4040715",
+        "team": "PHI",
+        "verified_canonical_event_id": "2026_07_DAL_PHI",
+        "status": "ACTIVE_CURRENT_ESPN_ROSTER",
+    }
+    monkeypatch.setattr(api_prod_market, "repair_prop_evidence", lambda *_a, **_k: frozen)
+    monkeypatch.setattr(api_prod_market, "read_espn_nfl_roster_negative",
+                        lambda **_k: (_ for _ in ()).throw(AssertionError("mismatched player fetched")))
+    req = _request_payload()
+    req.update({"sport": "NFL", "player": "Jalen Hurts",
+                "event_id": "2026_07_DAL_PHI", "stat_type": "ANYTIME_TD",
+                "line": 0.5, "direction": "LESS"})
+    response = client.post("/score-prop", json=req, headers=AUTH)
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "PLAYER_AVAILABILITY_UNVERIFIED"
+    assert response.json()["detail"]["availability_source"] is None
