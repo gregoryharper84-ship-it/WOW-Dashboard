@@ -65,6 +65,11 @@ jobs:
             echo "::error::FLINT_EXTERNAL_TITLE_CONSENT_REQUIRED"
             exit 1
           fi
+          # A moving main must not silently change the source being evaluated.
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo "::error::FLINT_SOURCE_SHA_CHANGED_AFTER_DISPATCH"
+            exit 1
+          }
           mkdir -p "$RUNNER_TEMP/wow-flint"
 
       - name: Fence unresolved remote writers
