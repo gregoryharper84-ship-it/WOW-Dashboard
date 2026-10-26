@@ -79,6 +79,7 @@ def product_outcome_scorecard(
     eligible_count = 0
     rank_eligible_count = 0
     unknown_eligibility = False
+    unattributed_row_present = False
 
     for i, row in enumerate(rows):
         request_id = row.get("request_id")
@@ -86,6 +87,7 @@ def product_outcome_scorecard(
         state = row.get("disposition")
         if not _nonempty(request_id) or not _nonempty(candidate_id):
             issues.append(f"ROW_{i}_IDENTITY_MISSING")
+            unattributed_row_present = True
             continue
         key = (request_id, candidate_id)
         if key in seen:
@@ -136,7 +138,8 @@ def product_outcome_scorecard(
     completed_count = 0
     first_pass_count = 0
     missing_rows = 0
-    unknown_scope = False
+    unknown_scope = unattributed_row_present
+    unknown_eligibility = unknown_eligibility or unattributed_row_present
     for i, req in enumerate(requests):
         rid = req.get("request_id")
         if not _nonempty(rid) or rid in unique_requests:
