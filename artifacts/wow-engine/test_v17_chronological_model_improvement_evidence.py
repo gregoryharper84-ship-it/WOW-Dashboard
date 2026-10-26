@@ -53,6 +53,26 @@ def test_champion_challenger_paired_forward_receipts():
     assert result["can_execute"] is False
 
 
+
+def test_many_predictions_one_event_do_not_claim_independent_forward_sample():
+    # A burst of 25 different market candidates in one game is not 25
+    # independent game outcomes for model-selection confidence.
+    rows = [sample(i, role, event_id="shared-forward-game")
+            for i in range(25)
+            for role in ("CHAMPION", "CHALLENGER")]
+    result = evaluate_chronological_evidence(rows)
+    assert result["audit_complete"]
+    assert result["rows_verified"] == 50
+    assert result["paired_count"] == 25
+    assert result["paired_distinct_events"] == 1
+    assert not result["paired_comparison_ready"]
+    assert result["paired_metrics"] is None
+    assert all(cohort["distinct_forward_events"] == 1
+               and not cohort["evidence_sufficient"]
+               and cohort["metrics"] is None
+               for cohort in result["cohorts"])
+
+
 def test_unpaired_models_never_claim_challenger_improvement():
     result = evaluate_chronological_evidence([sample(i) for i in range(25)])
     assert result["audit_complete"]
