@@ -53,3 +53,13 @@ def test_model_secret_is_single_step_and_no_write_actions():
     assert "gh workflow run" not in source
     assert "OpenRouter Flint research inference" in source
     assert SCRIPT.is_file()
+
+def test_exact_canonical_incident_is_verified_independently_of_list_limit():
+    source = WORKFLOW.read_text()
+    assert 'gh issue view "$INCIDENT"' in source
+    assert '--json number,title,state,updatedAt' in source
+    assert 'FLINT_EXACT_ISSUE_NOT_OPEN' in source
+    assert 'FLINT_INCIDENT_ID_INVALID' in source
+    assert 'rows.append(exact)' in source
+    # No issue body or credentials need to be read for this diagnostic.
+    assert '--json number,title,body' not in source
