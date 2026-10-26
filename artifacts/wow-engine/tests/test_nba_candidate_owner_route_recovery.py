@@ -66,3 +66,22 @@ def test_historical_eight_are_accounted_for_without_probabilities():
     assert all(r["acceptance_state"] == "BACKEND_HELD_MODEL_UNAVAILABLE" for r in retried)
     assert sum(r["acceptance_state"] == "NOT_SUBMITTED" for r in rows) == 19
     assert all(r["prediction_id"] is None for r in rows)
+
+
+def test_backend_receipt_lines_are_not_treated_as_authorized_at_least_translations():
+    rows = json.loads(FIXTURE.read_text())["rows"]
+    observed = [row for row in rows if row["observed_backend_request"] is not None]
+    assert len(observed) == 8
+    at_least = [row for row in observed if row["offer_kind"] == "AT_LEAST"]
+    assert len(at_least) == 6
+    for row in at_least:
+        threshold = int(row["original_offer"].split("+", 1)[0])
+        assert row["observed_backend_request"]["submitted_line"] == threshold - 0.5
+        assert row["threshold_semantics_certified"] == "NOT_CERTIFIED_HALF_LINE_CONVERSION"
+    exact_over = [row for row in observed if row["offer_kind"] == "OVER"]
+    assert len(exact_over) == 2
+    assert all(row["threshold_semantics_certified"] == "EXACT_OVER_LINE_RECORDED" for row in exact_over)
+    assert all(row["observed_backend_request"]["model_evaluated"] is False for row in observed)
+    assert all(row["observed_backend_request"]["terminal_code"] == "MODEL_UNAVAILABLE" for row in observed)
+    assert all(row["observed_backend_request"]["acquisition_mode"] == "NOT_ATTEMPTED_ROUTE_BLOCKED" for row in observed)
+    assert all(row["observed_backend_request"] is None for row in rows if row["acceptance_state"] == "NOT_SUBMITTED")
