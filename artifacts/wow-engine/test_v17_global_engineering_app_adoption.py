@@ -469,3 +469,21 @@ def test_overlarge_check_run_inventory_is_typed_hold(monkeypatch):
     )
     with pytest.raises(adoption.AdoptionHold, match="SOURCE_CHECK_INVENTORY_PAGE_CAP_HOLD"):
         adoption._exact_head_checks(SHA)
+
+
+def test_ci_completion_wakes_existing_single_writer_adoption():
+    wf = yaml.safe_load((ROOT / ".github/workflows/wow-v17-engineering-auto-repair.yml").read_text())
+    triggers = wf.get("on", wf.get(True))
+    assert {"wow-verify", "wow-engine-verify"} <= set(triggers["workflow_run"]["workflows"])
+    hold = wf["jobs"]["discover"]["if"]
+    assert "wow-v17-independent-qa-check" in hold
+    assert "wow-v17-release-authority-check" in hold
+    assert "wow-verify" not in hold
+    adopter = wf["jobs"]["adopt-reviewed-owner-source"]
+    expr = adopter["if"]
+    assert "github.event.workflow_run.conclusion == 'success'" in expr
+    assert "github.event.workflow_run.event == 'pull_request'" in expr
+    assert "github.event.workflow_run.head_repository.full_name == github.repository" in expr
+    assert "github.event.workflow_run.name == 'wow-verify'" in expr
+    assert "github.event.workflow_run.name == 'wow-engine-verify'" in expr
+    assert "wow-v17-engineering-implementation-single-writer" in str(adopter["concurrency"])
