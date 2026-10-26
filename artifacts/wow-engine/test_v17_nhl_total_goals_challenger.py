@@ -59,6 +59,12 @@ def test_research_challenger_fit_is_not_governed_probability():
     )
     assert receipt["validation"]["n"] == receipt["constant_baseline_validation"]["n"]
     assert artifact.train_dataset_hash != artifact.validation_dataset_hash
+    assert receipt["parity_research_comparison"]["holdout_used_during_model_selection"] is True
+    assert receipt["parity_research_comparison"]["status"] == "EXPLORATORY_DEVELOPMENT_COMPARISON_ONLY"
+    assert receipt["parity_research_comparison"]["probability_publishable"] is False
+    assert receipt["parity_research_comparison"]["calibrated_lower_bound"] is None
+    assert 0 <= receipt["parity_research_comparison"]["observed_exact_six_frequency"] <= 1
+    assert receipt["parity_research_comparison"]["paired_under55_brier_standard_error"] >= 0
     assert receipt["calibrated_lower_bound"] is None
     assert receipt["probability_publishable"] is False
     assert artifact.probability_publishable is False
