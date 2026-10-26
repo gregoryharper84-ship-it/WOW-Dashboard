@@ -130,6 +130,7 @@ def audit_challenger_replay(
     findings: list[str] = []
     invalid_cohorts: set[tuple[str, str, str]] = set()
     seen_receipts: dict[str, tuple[str, str, str]] = {}
+    seen_event_roles: dict[tuple[str, str, str, str, str], tuple[str, str, str]] = {}
     for index, row in enumerate(observations):
         if not isinstance(row, Mapping) or not _valid_observation(row):
             findings.append(f"ROW_{index}_EVIDENCE_UNVERIFIED")
@@ -141,6 +142,13 @@ def audit_challenger_replay(
         cohort = (row["sport"], row["market_family"], row["cohort_id"])
         key = (row["event_id"], row["market_id"])
         role = row["role"]
+        market_identity = (row["sport"], row["market_family"], row["event_id"], row["market_id"], role)
+        prior_market_cohort = seen_event_roles.get(market_identity)
+        if prior_market_cohort is not None and prior_market_cohort != cohort:
+            invalid_cohorts.update((cohort, prior_market_cohort))
+            findings.append(f"ROW_{index}_CROSS_COHORT_EVENT_REUSED")
+        else:
+            seen_event_roles[market_identity] = cohort
         receipt_id = row["prediction_receipt_ref"]
         prior_cohort = seen_receipts.get(receipt_id)
         if prior_cohort is not None:
