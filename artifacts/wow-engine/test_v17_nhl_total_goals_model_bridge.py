@@ -1,6 +1,6 @@
 """Nonpublishing NHL total-goals exact-source model-input integration tests."""
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import pytest
