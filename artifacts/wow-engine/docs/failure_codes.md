@@ -178,7 +178,9 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD` | independent QA canary | Dispatch requested a canary but its PR number and head SHA do not exactly match the owner-configured single-PR/SHA admission. | N/A |
 | `QA_REVIEW_CANARY_REQUIRES_DISPATCH` | independent QA canary | Canary policy was requested from an event other than an explicit protected workflow dispatch. | N/A |
 | `QA_TARGETS_UNRESOLVED` | independent QA | QA could not resolve any valid (PR, exact head) target; details in the annotation. | N/A |
-| `QA_TARGET_COUNT_INVALID` | independent QA | A protected QA invocation resolved anything other than one exact (PR, head) target; no source review or check is published. | N/A |
+| `QA_TARGET_COUNT_INVALID` | independent QA | A protected QA invocation resolved zero unproven targets or more than one current open exact-head main PR. A proven-inapplicable inventory is `QA_TARGET_NOT_APPLICABLE`, not this code. No source review or check is published. | N/A |
+| `QA_TARGET_NOT_APPLICABLE` | independent QA | Every attached workflow_run PR was proven not to be a current open exact-head PR against main (non-main base, or closed/merged). Neutral: route exits successfully, the `qa` job is skipped, and no QA check or policy artifact is published. | N/A |
+| `QA_TARGET_APPLICABLE` | independent QA | Route resolved exactly one current open exact-head PR against main. The `qa` job may run. This token is not a check result and does not authorize merge, deploy, or execution. | N/A |
 | `QA_REVIEW_POLICY_INVALID` | independent QA / release | Independent-review activation is not one of the accepted empty, `false`, or `true` states; no decision/check is published. | N/A |
 | `QA_REVIEW_POLICY_MODE_INVALID` | independent QA | The authenticated producing QA run has no supported immutable review mode. | N/A |
 | `QA_REVIEW_POLICY_MODE_CONFLICT` | independent QA | The evidence mode and review requirement disagree. | N/A |
@@ -222,11 +224,17 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `RELEASE_UPSTREAM_QA_APPLICABLE` | release authority | The authenticated upstream QA run completed and its `qa` job concluded `success` or `failure`. Policy resolution still runs; this is not a Release pass. | N/A |
 | `RELEASE_UPSTREAM_QA_DISPOSITION_INVALID` | release authority | Upstream classification returned a disposition other than `neutral` or `applicable`. No Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_JOB_INCOMPLETE` | release authority | The upstream `qa` job is not a completed success, failure, or skip. No Release check is published. | N/A |
-| `RELEASE_UPSTREAM_QA_NO_TARGET` | release authority | The upstream QA workflow completed but its `qa` job was skipped, so there is no exact-head target. Neutral: no policy lookup and no Release check. | N/A |
+| `RELEASE_UPSTREAM_QA_NO_TARGET` | release authority | The upstream QA workflow succeeded but its `qa` job was skipped after route proved the event was not a current open exact-head main PR. Neutral: no policy lookup and no Release check. | N/A |
+| `RELEASE_UPSTREAM_QA_TARGET_UNRESOLVED` | release authority | The upstream QA workflow failed and its `qa` job was skipped, so target routing failed closed before an applicable review. Not neutral and not a missing policy artifact. No Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_SKIPPED` | release authority | The upstream QA workflow conclusion is `skipped`. Neutral: no policy lookup and no Release check. | N/A |
 | `RELEASE_UPSTREAM_QA_UNREADABLE` | release authority | The upstream QA run or its job list could not be read as a complete inventory. No Release check is published. | N/A |
 | `RELEASE_UPSTREAM_QA_UNTRUSTED` | release authority | The upstream run is not the protected-main QA workflow at the claimed attempt, or its repository, event, or job identity does not match. Cancelled runs are untrusted. No Release check is published. | N/A |
 | `TARGET_HEAD_INVALID` | check targeting | A workflow_run pull request entry has no valid 40-hex head SHA; suffixed `:<pr>`. | N/A |
+| `TARGET_BASE_NOT_MAIN` | check targeting | An attached workflow_run PR's live base ref is not `main`, and the event agrees. Inapplicable; not a QA target. | N/A |
+| `TARGET_NOT_OPEN` | check targeting | An attached main PR is closed or merged, so it is not a current exact-head review. Inapplicable even if the event SHA no longer matches. | N/A |
+| `TARGET_EVENT_IDENTITY_INVALID` | check targeting | An attached workflow_run PR entry has no positive integer number or no base ref. The inventory fails closed. | N/A |
+| `TARGET_INVENTORY_TRUNCATED` | check targeting | The workflow_run pull_requests array exceeds the bounded target inventory. No partial review is published. | N/A |
+| `TARGET_PR_STATE_UNREADABLE` | check targeting | A main PR's live state was neither `open` nor `closed` after the head SHA matched. No target is published. | N/A |
 | `TARGET_PR_INVALID` | check targeting | Dispatched PR number is not numeric. | N/A |
 | `TARGET_PR_UNREADABLE` | check targeting | Dispatched PR could not be read or has no head SHA; suffixed with HTTP status. | N/A |
 | `TARGET_PR_IDENTITY_MISMATCH` | check targeting | The fresh canonical PR does not match the workflow_run PR number/head, canonical head repository, or main base repository/ref. | N/A |

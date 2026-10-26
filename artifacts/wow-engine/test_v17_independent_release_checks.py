@@ -593,13 +593,27 @@ class Fake:
         return self.routes.get(path, (404, {"message": "Not Found"}))
 
 
-def test_workflow_run_targets_use_each_prs_own_head_not_the_base():
-    live = {
-        "number": 7,
-        "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
+def _open_main_pr(number, sha, ref="fix/issue-1830"):
+    return {
+        "number": number,
+        "state": "open",
+        "head": {"sha": sha, "ref": ref, "repo": {"full_name": REPO}},
         "base": {"ref": "main", "repo": {"full_name": REPO}},
     }
-    routes = {f"repos/{REPO}/pulls/7": (200, live)}
+
+
+def test_workflow_run_targets_use_each_prs_own_head_not_the_base():
+    live = _open_main_pr(7, HEAD)
+    nested = {
+        "number": 8,
+        "state": "closed",
+        "head": {"sha": OLD, "ref": "nested", "repo": {"full_name": REPO}},
+        "base": {"ref": "release", "repo": {"full_name": REPO}},
+    }
+    routes = {
+        f"repos/{REPO}/pulls/7": (200, live),
+        f"repos/{REPO}/pulls/8": (200, nested),
+    }
     prs = [
         {"number": 7, "head": {"sha": HEAD, "repo": {"id": 1, "name": "WOW-Dashboard",
              "url": "https://api.github.com/repos/" + REPO}},
@@ -611,22 +625,142 @@ def test_workflow_run_targets_use_each_prs_own_head_not_the_base():
     out = m.targets(REPO, workflow_run_prs=prs, fetch=Fake(routes))
     assert out["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "fix/issue-1830"}]
     assert out["errors"] == ["TARGET_HEAD_INVALID:9"]
+    assert out["disposition"] == "invalid"
+    assert out["inapplicable"] == [{"pr": 8, "reason": "TARGET_BASE_NOT_MAIN"}]
 
 
 def test_workflow_run_target_holds_when_live_pr_is_stale_or_foreign():
     event_pr = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
-    stale = {"number": 7, "head": {"sha": OLD, "repo": {"full_name": REPO}},
+    stale = {"number": 7, "state": "open", "head": {"sha": OLD, "repo": {"full_name": REPO}},
              "base": {"ref": "main", "repo": {"full_name": REPO}}}
-    assert m.targets(
+    stale_out = m.targets(
         REPO, workflow_run_prs=event_pr,
         fetch=Fake({f"repos/{REPO}/pulls/7": (200, stale)}),
-    )["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
-    foreign = {"number": 7, "head": {"sha": HEAD, "repo": {"full_name": "fork/WOW-Dashboard"}},
+    )
+    assert stale_out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert stale_out["disposition"] == "invalid"
+    assert stale_out["targets"] == []
+    foreign = {"number": 7, "state": "open", "head": {"sha": HEAD, "repo": {"full_name": "fork/WOW-Dashboard"}},
                "base": {"ref": "main", "repo": {"full_name": REPO}}}
-    assert m.targets(
+    foreign_out = m.targets(
         REPO, workflow_run_prs=event_pr,
         fetch=Fake({f"repos/{REPO}/pulls/7": (200, foreign)}),
-    )["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    )
+    assert foreign_out["errors"] == ["TARGET_PR_IDENTITY_MISMATCH:7"]
+    assert foreign_out["disposition"] == "invalid"
+
+
+# Attached PR copied from wow-v17-independent-qa-check run 40253927556.
+# Base is not main, so the old resolver returned zero targets and zero errors.
+RUN_40253927556_PRS = [{
+    "number": 2086,
+    "head": {
+        "ref": "copilot/wip-fix-governance-preserve-same-sha-ci",
+        "sha": "e6a4d141f45a8abbc4411ba9c0efdf5c07eb6454",
+    },
+    "base": {"ref": "copilot/fix-governance-preserve-same-sha-ci"},
+}]
+
+
+def _closed_pr(number, sha, base_ref, head_ref="topic"):
+    return {
+        "number": number,
+        "state": "closed",
+        "merged_at": "2026-10-26T04:59:11Z" if base_ref == "main" else None,
+        "head": {"sha": sha, "ref": head_ref, "repo": {"full_name": REPO}},
+        "base": {"ref": base_ref, "repo": {"full_name": REPO}},
+    }
+
+
+def test_non_main_attached_pr_is_neutral_not_an_empty_target_list():
+    """Pre-fix behavior was targets=[] and errors=[], which the workflow maps to QA_TARGET_COUNT_INVALID."""
+    sha = "e6a4d141f45a8abbc4411ba9c0efdf5c07eb6454"
+    for state in ("closed", "open"):
+        live = _closed_pr(
+            2086, sha, "copilot/fix-governance-preserve-same-sha-ci",
+            "copilot/wip-fix-governance-preserve-same-sha-ci",
+        )
+        live["state"] = state
+        if state == "open":
+            live["merged_at"] = None
+        out = m.targets(
+            REPO, workflow_run_prs=RUN_40253927556_PRS,
+            fetch=Fake({f"repos/{REPO}/pulls/2086": (200, live)}),
+        )
+        assert out["targets"] == []
+        assert out["errors"] == []
+        assert out["disposition"] == "neutral"
+        assert out["reason"] == "QA_TARGET_NOT_APPLICABLE"
+        assert out["inapplicable"] == [{"pr": 2086, "reason": "TARGET_BASE_NOT_MAIN"}]
+
+
+def test_merged_and_closed_main_prs_are_neutral_even_when_head_moved():
+    event = [{"number": 2083, "head": {"sha": OLD}, "base": {"ref": "main"}}]
+    for sha in (OLD, HEAD):
+        live = _closed_pr(2083, sha, "main")
+        out = m.targets(
+            REPO, workflow_run_prs=event,
+            fetch=Fake({f"repos/{REPO}/pulls/2083": (200, live)}),
+        )
+        assert out["disposition"] == "neutral"
+        assert out["errors"] == []
+        assert out["targets"] == []
+        assert out["inapplicable"] == [{"pr": 2083, "reason": "TARGET_NOT_OPEN"}]
+
+
+def test_open_exact_head_pr_stays_applicable_beside_an_inapplicable_pr():
+    event = [
+        {"number": 2086, "head": {"sha": OLD}, "base": {"ref": "release"}},
+        {"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}},
+    ]
+    routes = {
+        f"repos/{REPO}/pulls/2086": (200, _closed_pr(2086, OLD, "release")),
+        f"repos/{REPO}/pulls/7": (200, _open_main_pr(7, HEAD)),
+    }
+    out = m.targets(REPO, workflow_run_prs=event, fetch=Fake(routes))
+    assert out["disposition"] == "applicable"
+    assert out["reason"] == "QA_TARGET_APPLICABLE"
+    assert out["targets"] == [{"pr": 7, "head": HEAD, "head_ref": "fix/issue-1830"}]
+    assert out["errors"] == []
+
+
+def test_two_open_main_targets_and_unreadable_or_foreign_prs_fail_closed():
+    event = [
+        {"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}},
+        {"number": 8, "head": {"sha": OLD}, "base": {"ref": "main"}},
+    ]
+    routes = {
+        f"repos/{REPO}/pulls/7": (200, _open_main_pr(7, HEAD)),
+        f"repos/{REPO}/pulls/8": (200, _open_main_pr(8, OLD, ref="other")),
+    }
+    out = m.targets(REPO, workflow_run_prs=event, fetch=Fake(routes))
+    assert out["disposition"] == "invalid"
+    assert out["reason"] == "QA_TARGET_COUNT_INVALID"
+    assert out["errors"] == []
+    assert len(out["targets"]) == 2
+    missing = m.targets(
+        REPO, workflow_run_prs=[{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}],
+        fetch=Fake({}),
+    )
+    assert missing["disposition"] == "invalid"
+    assert missing["errors"] == ["TARGET_PR_UNREADABLE:7:404"]
+    malformed = m.targets(REPO, workflow_run_prs=[{"number": True, "base": {"ref": "main"}}], fetch=Fake({}))
+    assert malformed["errors"] == ["TARGET_EVENT_IDENTITY_INVALID"]
+    assert malformed["disposition"] == "invalid"
+    truncated = m.targets(
+        REPO,
+        workflow_run_prs=[{"number": n, "head": {"sha": HEAD}, "base": {"ref": "main"}} for n in range(1, 22)],
+        fetch=Fake({}),
+    )
+    assert truncated["errors"] == ["TARGET_INVENTORY_TRUNCATED"]
+    assert truncated["targets"] == []
+
+
+def test_empty_workflow_run_inventory_is_not_neutral():
+    out = m.targets(REPO, workflow_run_prs=[], fetch=Fake({}))
+    assert out["disposition"] == "invalid"
+    assert out["targets"] == []
+    assert out["reason"] == "QA_TARGET_COUNT_INVALID"
 
 
 def test_dispatch_target_is_validated_and_resolved():
@@ -763,7 +897,7 @@ def test_workflow_keeps_event_and_manual_reentry_without_polling(wf, upstream):
     assert triggers["workflow_dispatch"]["inputs"]["pr_number"]["required"] == "true"
     if wf == QA_WF:
         workflow = yaml.load(wf.read_text(), Loader=yaml.BaseLoader)
-        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in workflow["jobs"]["qa"]["if"]
+        assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in workflow["jobs"]["route"]["if"]
     if wf == REL_WF:
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_id"]["required"] == "true"
         assert triggers["workflow_dispatch"]["inputs"]["qa_run_attempt"]["required"] == "true"
@@ -775,11 +909,16 @@ def _workflow_on(path):
 
 
 def test_prless_workflow_run_skips_qa_before_target_resolution():
-    job_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
+    workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
+    job_if = workflow["jobs"]["route"]["if"]
     assert "github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]" in job_if
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in job_if
+    qa_if = workflow["jobs"]["qa"]["if"]
+    assert qa_if == "needs.route.result == 'success' && needs.route.outputs.applicable == 'true'"
     script = _step_script(QA_WF, "Resolve one exact-head QA target")
     assert "QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing" in script
+    assert '[ "$disposition" = "neutral" ]' in script
+    assert "QA_TARGET_NOT_APPLICABLE" in script
 
 
 def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
@@ -809,10 +948,10 @@ def test_source_qa_release_certifier_dag_has_no_cycle():
     assert "wow-v17-existing-pr-governance-review" not in qa
     assert certifier["workflow_run"]["workflows"] == ["wow-v17-independent-qa-check"]
     assert gate["workflow_run"]["workflows"] == ["wow-v17-existing-pr-governance-review"]
-    qa_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["qa"]["if"]
-    assert "wow-v17-trusted-governance-gate" in qa_if
-    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in qa_if
-    assert "github.event.workflow_run.pull_requests[0]" in qa_if
+    route_if = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)["jobs"]["route"]["if"]
+    assert "wow-v17-trusted-governance-gate" in route_if
+    assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true'" in route_if
+    assert "github.event.workflow_run.pull_requests[0]" in route_if
 
 
 # Copied from GET /repos/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/40107281706.
@@ -929,6 +1068,7 @@ def test_prless_or_skipped_upstream_qa_is_neutral(run_over, jobs, reason):
     ({"run_attempt": 2}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"event": "schedule"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"conclusion": "cancelled"}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
+    ({"conclusion": "failure"}, _qa_jobs("skipped"), 200, "RELEASE_UPSTREAM_QA_TARGET_UNRESOLVED"),
     ({"id": 1}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({}, _qa_jobs("success", extra=({"name": "qa", "status": "completed", "conclusion": "success"},)), 200,
      "RELEASE_UPSTREAM_QA_UNTRUSTED"),
@@ -995,6 +1135,22 @@ def test_real_failed_qa_run_is_not_rejected_for_its_dynamic_name():
         fetch=_classify_fetch(dict(REAL_QA_RUN_40107281706), _qa_jobs("failure")),
     )
     assert classified == {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
+
+
+def test_successful_route_and_skipped_qa_job_stays_neutral():
+    jobs = {
+        "total_count": 2,
+        "jobs": [
+            {"name": "route", "status": "completed", "conclusion": "success"},
+            {"name": "qa", "status": "completed", "conclusion": "skipped"},
+        ],
+    }
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(_qa_run(conclusion="success"), jobs),
+    )
+    assert classified == {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
+    assert "can_execute" not in classified
 
 
 def test_real_qa_run_with_skipped_job_stays_neutral():
@@ -1225,8 +1381,8 @@ def _qa_target_output_enables_publish(pr_number):
     """
     workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
     steps = {step["name"]: step for step in workflow["jobs"]["qa"]["steps"]}
-    assert steps["Mint checks-only App token"]["if"] == "steps.target.outputs.pr_number != ''"
-    assert steps["Publish exact-head check"]["if"] == "always() && steps.target.outputs.pr_number != ''"
+    assert steps["Mint checks-only App token"]["if"] == "needs.route.outputs.pr_number != ''"
+    assert steps["Publish exact-head check"]["if"] == "always() && needs.route.outputs.pr_number != ''"
     return pr_number != ""
 
 
@@ -1260,9 +1416,11 @@ def test_dispatch_matching_head_resolves_that_pr_and_posts_no_check(fake_gh):
     proc, outputs = _run_qa_target(fake_gh, input_head=HEAD, wr_prs=other_pr)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert outputs.splitlines() == [
+        "applicable=true",
         "pr_number=7",
         f"head_sha={HEAD}",
         "head_ref=fix/issue-1830",
+        "reason=QA_TARGET_APPLICABLE",
     ]
     assert _qa_target_output_enables_publish("7") is True
     assert not (fake_gh / "gh.log").exists()
@@ -1346,6 +1504,94 @@ def test_empty_workflow_run_pr_array_still_fails_closed_inside_the_resolver(fake
     assert not (fake_gh / "gh.log").exists()
 
 
+def _run_workflow_run_target(fake_gh, prs, routes):
+    (fake_gh / "routes.json").write_text(json.dumps(routes))
+    out = fake_gh / "resolved-run.txt"
+    env = dict(
+        os.environ,
+        PATH=f"{fake_gh / 'bin'}:{os.environ['PATH']}",
+        FAKE_GH_ROUTES=str(fake_gh / "routes.json"),
+        FAKE_GH_LOG=str(fake_gh / "gh.log"),
+        GITHUB_REPOSITORY=REPO,
+        GITHUB_OUTPUT=str(out),
+        GH_TOKEN="read-only",
+        EVENT="workflow_run",
+        INPUT_PR="",
+        INPUT_HEAD_SHA="",
+        WR_PRS=json.dumps(prs),
+    )
+    proc = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Resolve one exact-head QA target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    return proc, out.read_text() if out.exists() else ""
+
+
+def test_resolver_neutralizes_authenticated_non_main_reproducer(fake_gh):
+    sha = "e6a4d141f45a8abbc4411ba9c0efdf5c07eb6454"
+    live = _closed_pr(2086, sha, "copilot/fix-governance-preserve-same-sha-ci",
+                      "copilot/wip-fix-governance-preserve-same-sha-ci")
+    proc, outputs = _run_workflow_run_target(
+        fake_gh, RUN_40253927556_PRS, {f"repos/{REPO}/pulls/2086": [200, live]},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert outputs.splitlines() == ["applicable=false", "reason=QA_TARGET_NOT_APPLICABLE"]
+    assert "QA_TARGET_COUNT_INVALID" not in proc.stdout
+    assert "no check published" in proc.stdout
+    assert _qa_target_output_enables_publish("") is False
+
+
+def test_resolver_neutralizes_merged_main_pr_without_publishing(fake_gh):
+    event = [{"number": 7, "head": {"sha": OLD}, "base": {"ref": "main"}}]
+    live = _closed_pr(7, HEAD, "main")
+    proc, outputs = _run_workflow_run_target(
+        fake_gh, event, {f"repos/{REPO}/pulls/7": [200, live]},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "applicable=false" in outputs
+    assert "pr_number=" not in outputs
+    assert "QA_TARGET_COUNT_INVALID" not in proc.stdout
+
+
+def test_resolver_fails_closed_on_two_open_main_prs(fake_gh):
+    event = [
+        {"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}},
+        {"number": 8, "head": {"sha": OLD}, "base": {"ref": "main"}},
+    ]
+    routes = {
+        f"repos/{REPO}/pulls/7": [200, _open_main_pr(7, HEAD)],
+        f"repos/{REPO}/pulls/8": [200, _open_main_pr(8, OLD, ref="other")],
+    }
+    proc, outputs = _run_workflow_run_target(fake_gh, event, routes)
+    assert proc.returncode != 0
+    assert "QA_TARGET_COUNT_INVALID" in proc.stdout
+    assert "applicable=false" not in outputs
+    assert "pr_number=" not in outputs
+
+
+def test_resolver_accepts_one_current_open_exact_head(fake_gh):
+    event = [{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}]
+    proc, outputs = _run_workflow_run_target(
+        fake_gh, event, {f"repos/{REPO}/pulls/7": [200, _open_main_pr(7, HEAD)]},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "applicable=true" in outputs.splitlines()
+    assert "pr_number=7" in outputs.splitlines()
+    assert f"head_sha={HEAD}" in outputs.splitlines()
+
+
+def test_qa_queue_stays_serialized_per_pr_without_cancelling_review():
+    workflow = yaml.load(QA_WF.read_text(), Loader=yaml.BaseLoader)
+    assert workflow["concurrency"]["cancel-in-progress"] == "false"
+    assert workflow["concurrency"]["queue"] == "max"
+    assert workflow["concurrency"]["group"] == (
+        "wow-v17-independent-qa-check-${{ inputs.pr_number || "
+        "github.event.workflow_run.pull_requests[0].number || 'AUTO' }}"
+    )
+    assert workflow["jobs"]["qa"]["needs"] == "route"
+    assert _workflow_on(QA_WF)["workflow_run"]["types"] == ["completed"]
+
+
 def _run_classify(fake_gh, routes, run_id="40107281706"):
     (fake_gh / "routes.json").write_text(json.dumps(routes))
     runner = fake_gh / "runner"
@@ -1369,6 +1615,27 @@ def _run_classify(fake_gh, routes, run_id="40107281706"):
         cwd=ROOT, env=env, capture_output=True, text=True,
     )
     return proc, out.read_text() if out.exists() else ""
+
+
+def test_release_classify_step_holds_failed_routing_without_policy_lookup(fake_gh):
+    run_id = "40107281706"
+    jobs = {
+        "total_count": 2,
+        "jobs": [
+            {"name": "route", "status": "completed", "conclusion": "failure"},
+            {"name": "qa", "status": "completed", "conclusion": "skipped"},
+        ],
+    }
+    routes = {
+        f"repos/{REPO}/actions/runs/{run_id}": [200, _qa_run(id=int(run_id), conclusion="failure")],
+        f"repos/{REPO}/actions/runs/{run_id}/attempts/1/jobs": [200, jobs],
+    }
+    proc, outputs = _run_classify(fake_gh, routes, run_id)
+    assert proc.returncode != 0
+    assert "RELEASE_UPSTREAM_QA_TARGET_UNRESOLVED" in proc.stdout
+    assert "applicable=true" not in outputs
+    assert "QA_POLICY_ARTIFACT_DUPLICATE_OR_MISSING" not in proc.stdout + proc.stderr
+    assert not (fake_gh / "gh.log").exists()
 
 
 def test_release_classify_step_treats_skipped_qa_job_as_neutral(fake_gh):
@@ -1484,6 +1751,7 @@ def test_qa_workflow_resolves_minimal_workflow_run_repositories_against_live_pr(
     }
     live_pr = {
         "number": 7,
+        "state": "open",
         "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
         "base": {"ref": "main", "repo": {"full_name": REPO}},
     }
