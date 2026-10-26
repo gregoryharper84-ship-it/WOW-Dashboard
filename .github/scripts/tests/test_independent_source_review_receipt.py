@@ -48,6 +48,7 @@ PRODUCER_RUN = {
     "id": 12345,
     "run_attempt": 1,
     "name": review.WORKFLOW_NAME,
+    "workflow_id": review.WORKFLOW_ID,
     "path": review.WORKFLOW_PATH,
     "event": "workflow_dispatch",
     "head_branch": "main",
@@ -1055,3 +1056,61 @@ def test_source_run_resolution_holds_on_foreign_or_duplicate_artifact(monkeypatc
             token="scoped-read-only",
             now=NOW,
         )
+
+
+@pytest.mark.parametrize("display_name", [
+    review.WORKFLOW_NAME,
+    f"{review.WORKFLOW_NAME} event=workflow_run pr=AUTO head=AUTO",
+    "human-facing title changed but authenticated ID stays pinned",
+])
+def test_qa_producer_identity_is_independent_of_mutable_display_name(display_name):
+    producer = {**PRODUCER_RUN, "name": display_name}
+    policy = review.build_qa_review_policy(
+        repository=review.CANONICAL_REPOSITORY, pr_number=1822,
+        head_sha=HEAD, head_ref="copilot/fix", mode="independent",
+        run=producer, now=NOW,
+    )
+    assert policy["source"]["workflow_name"] == review.WORKFLOW_NAME
+    artifact = review.build_artifact(
+        repository=review.CANONICAL_REPOSITORY, pr=pr(), files=DIFF,
+        commit=COMMIT_METADATA, review_result=RESULT,
+        run=producer, now=NOW,
+    )
+    review.verify_artifact(
+        artifact, run=producer, producer_context=True,
+        expected_repository=review.CANONICAL_REPOSITORY,
+        expected_pr_number=1822, expected_head_sha=HEAD,
+        expected_head_ref="copilot/fix", now=NOW,
+    )
+
+
+@pytest.mark.parametrize("field,value", [
+    ("workflow_id", review.WORKFLOW_ID + 1),
+    ("workflow_id", None),
+    ("workflow_id", True),
+    ("path", ".github/workflows/untrusted.yml"),
+])
+def test_qa_producer_fails_closed_on_wrong_workflow_identity(field, value):
+    producer = {**PRODUCER_RUN, field: value}
+    with pytest.raises(review.SourceReviewError, match="QA_POLICY_RUN_IDENTITY_INVALID"):
+        review.build_qa_review_policy(
+            repository=review.CANONICAL_REPOSITORY, pr_number=1822,
+            head_sha=HEAD, head_ref="copilot/fix", mode="independent",
+            run=producer, now=NOW,
+        )
+    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_WORKFLOW_IDENTITY_MISMATCH"):
+        review.build_artifact(
+            repository=review.CANONICAL_REPOSITORY, pr=pr(), files=DIFF,
+            commit=COMMIT_METADATA, review_result=RESULT,
+            run=producer, now=NOW,
+        )
+
+
+def test_both_qa_producer_payloads_use_pinned_workflow_id():
+    source = (ROOT / ".github/workflows/wow-v17-independent-qa-check.yml").read_text()
+    assert source.count("--argjson workflow_id 380562324") == 2
+    assert source.count("workflow_id:$workflow_id") == 2
+    script = (ROOT / ".github/scripts/independent_source_review_receipt.py").read_text()
+    assert 'run.get("name") == WORKFLOW_NAME' not in script
+    assert 'and workflow_id == WORKFLOW_ID' in script
+    assert 'run.get("path") == WORKFLOW_PATH' in script

@@ -195,11 +195,11 @@ jobs:
           set -euo pipefail
           jq -nce \
             --arg id "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg name "$GITHUB_WORKFLOW" \
+            --arg name "$GITHUB_WORKFLOW" --argjson workflow_id 380562324 \
             --arg path ".github/workflows/wow-v17-independent-qa-check.yml" \
             --arg event "$GITHUB_EVENT_NAME" --arg branch "$GITHUB_REF_NAME" \
             --arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA" \
-            '{id:$id|tonumber,run_attempt:$attempt,name:$name,path:$path,event:$event,
+            '{id:$id|tonumber,run_attempt:$attempt,name:$name,workflow_id:$workflow_id,path:$path,event:$event,
               head_branch:$branch,repository:$repository,head_sha:$head_sha}' \
             > "$RUNNER_TEMP/qa-review-policy-run.json"
           python .github/scripts/independent_source_review_receipt.py \
@@ -250,11 +250,11 @@ jobs:
           cp "$RUNNER_TEMP/source-review-input.json" .wow-independent-source-review-input.json
           jq -nce \
             --arg id "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg name "$GITHUB_WORKFLOW" \
+            --arg name "$GITHUB_WORKFLOW" --argjson workflow_id 380562324 \
             --arg path ".github/workflows/wow-v17-independent-qa-check.yml" \
             --arg event "$GITHUB_EVENT_NAME" --arg branch "$GITHUB_REF_NAME" \
             --arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA" \
-            '{id:$id|tonumber,run_attempt:$attempt,name:$name,path:$path,event:$event,
+            '{id:$id|tonumber,run_attempt:$attempt,name:$name,workflow_id:$workflow_id,path:$path,event:$event,
               head_branch:$branch,repository:$repository,head_sha:$head_sha}' \
             > "$RUNNER_TEMP/source-review-run.json"
           echo "diff_sha=$(jq -r .diff_sha256 "$RUNNER_TEMP/source-review-input.json")" >> "$GITHUB_OUTPUT"

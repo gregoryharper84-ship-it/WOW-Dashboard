@@ -150,3 +150,22 @@ def test_cli_plan_outputs_json(capsys):
 
     payload = json.loads(out)
     assert payload["action"] == "DISPATCH_REPAIR"
+
+
+def test_owner_authored_trust_root_reports_independent_source_reentry():
+    result = rp.plan_recovery(pr_number=2125,
+                              findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+                              attempts=2, is_wow_engineering_pr=True)
+    assert result["action"] == "WAITING_ON_OWNER"
+    assert result["required_actor"] == "INDEPENDENT_ENGINEERING_AUTHOR"
+    assert result["next_action"] == "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE"
+    assert result["attempts"] == 2 and result["can_execute"] is False
+
+
+def test_missing_owner_approval_does_not_spawn_fake_independent_implementation():
+    result = rp.plan_recovery(pr_number=2125,
+                              findings=["QA_TRUST_ROOT_OWNER_APPROVAL_MISSING"],
+                              attempts=0, is_wow_engineering_pr=True)
+    assert result["required_actor"] == "ACTUAL_CODEOWNER"
+    assert result["next_action"] == "FRESH_EXACT_HEAD_OWNER_APPROVAL"
+    assert result["can_execute"] is False
