@@ -1,8 +1,8 @@
-"""Workflow contract for the one-shot opt-in Flint engineering research worker."""
+"""Proposed workflow contract; staged YAML is NOT installed under .github/workflows."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-WORKFLOW = ROOT / ".github/workflows/wow-v17-flint-engineering-worker.yml"
+WORKFLOW = ROOT / "artifacts/wow-engine/v17/proposals/wow-v17-flint-engineering-worker.candidate.yml"
 SCRIPT = ROOT / "artifacts/wow-engine/v17/engineering_openrouter_flint_worker.py"
 
 
