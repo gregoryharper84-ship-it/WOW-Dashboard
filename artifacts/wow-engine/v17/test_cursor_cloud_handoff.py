@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
+from urllib import error
 from unittest.mock import patch
 
 import yaml
@@ -336,55 +337,74 @@ class HandoffTests(unittest.TestCase):
         self.assertLess(script.index("incident_json="), script.index('if [ "$EVENT_NAME"'))
         self.assertIn('-f target_incident="$incident"', script)
 
-    def test_spending_gates_fail_before_python_dispatch(self):
+    def test_cursor_enablement_without_redundant_billing_attestation(self):
+        # The owner confirmed the provider-level $30 cap. GitHub requires only
+        # the explicit handoff enable switch; provider API retains cost refusal.
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
         )
         steps = workflow["jobs"]["independent-provider"]["steps"]
         step = next(item for item in steps if item.get("name") == "Dispatch scoped Cursor Cloud Agent")
         self.assertIn("cursor_dispatch", step["if"])
-        provider_control = workflow["jobs"]["provider-control"]
-        self.assertIn("steps.remote_fence.outcome == 'success'", provider_control["outputs"]["cursor_dispatch"])
+        self.assertIn("CURSOR_HANDOFF_ENABLED", step["env"])
+        self.assertNotIn("CURSOR_SPEND_CAP_CONFIRMED", step["env"])
+        self.assertNotIn("CURSOR_SPEND_CAP_UNCONFIRMED", step["run"])
+        control = workflow["jobs"]["provider-control"]
+        self.assertIn("steps.remote_fence.outcome == 'success'", control["outputs"]["cursor_dispatch"])
         self.assertEqual(
             workflow["jobs"]["independent-provider"]["concurrency"]["group"],
             "wow-v17-engineering-implementation-single-writer",
         )
-
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
+            bindir = root / "bin"
+            bindir.mkdir()
             marker = root / "python-called"
-            fake_python = bin_dir / "python"
-            fake_python.write_text("#!/bin/sh\n: > \"$CURSOR_PYTHON_CALL_MARKER\"\n")
-            fake_python.chmod(0o755)
-            for enabled, cap, expected in (
-                ("", "true", "CURSOR_HANDOFF_DISABLED"),
-                ("true", "", "CURSOR_SPEND_CAP_UNCONFIRMED"),
-            ):
-                runner_temp = root / expected
-                runner_temp.mkdir()
-                env = os.environ | {
-                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                    "RUNNER_TEMP": str(runner_temp),
-                    "GITHUB_REPOSITORY": REPO,
-                    "CURSOR_HANDOFF_ENABLED": enabled,
-                    "CURSOR_SPEND_CAP_CONFIRMED": cap,
-                    "CURSOR_PR_NUMBER": "1948",
-                    "CURSOR_INCIDENT": str(INCIDENT),
-                    "CURSOR_EXPECTED_HEAD": SHA,
-                    "CURSOR_TASK": "Fix existing tests",
-                    "CURSOR_ACTOR": ACTOR,
-                    "CURSOR_PYTHON_CALL_MARKER": str(marker),
-                }
-                proc = subprocess.run(
-                    ["bash", "-c", step["run"]],
-                    env=env, capture_output=True, text=True, check=False,
-                )
-                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-                receipt = json.loads((runner_temp / "cursor-handoff.json").read_text())
-                self.assertEqual(receipt["code"], expected)
-                self.assertFalse(marker.exists())
+            stub = bindir / "python"
+            stub.write_text('#!/bin/sh\n: > "$CURSOR_PYTHON_CALL_MARKER"\n')
+            stub.chmod(0o755)
+            runner = root / "runner"
+            runner.mkdir()
+            env = os.environ | {
+                "PATH": f"{bindir}:{os.environ['PATH']}",
+                "RUNNER_TEMP": str(runner),
+                "GITHUB_REPOSITORY": REPO,
+                "CURSOR_HANDOFF_ENABLED": "",
+                "CURSOR_PR_NUMBER": "1948",
+                "CURSOR_INCIDENT": str(INCIDENT),
+                "CURSOR_EXPECTED_HEAD": SHA,
+                "CURSOR_TASK": "Fix existing tests",
+                "CURSOR_ACTOR": ACTOR,
+                "CURSOR_PYTHON_CALL_MARKER": str(marker),
+            }
+            env.pop("CURSOR_SPEND_CAP_CONFIRMED", None)
+            disabled = subprocess.run(
+                ["bash", "-c", step["run"]], env=env,
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(disabled.returncode, 0)
+            receipt = json.loads((runner / "cursor-handoff.json").read_text())
+            self.assertEqual(receipt["code"], "CURSOR_HANDOFF_DISABLED")
+            self.assertFalse(receipt["can_execute"])
+            self.assertFalse(marker.exists())
+            env["CURSOR_HANDOFF_ENABLED"] = "true"
+            enabled = subprocess.run(
+                ["bash", "-c", step["run"]], env=env,
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(enabled.returncode, 0, enabled.stderr)
+            self.assertTrue(marker.exists())
+
+    def test_cursor_provider_billing_and_rate_limits_still_fail_closed(self):
+        for status in (402, 429):
+            with self.subTest(status=status):
+                exc = error.HTTPError("https://api.cursor.com/v1/agents", status, "blocked", {}, None)
+                with patch.object(mod.request, "urlopen", side_effect=exc):
+                    with self.assertRaises(mod.HandoffBlocked) as cm:
+                        mod.api_json("https://api.cursor.com/v1/agents",
+                                     token="fake", basic=True, method="POST",
+                                     body={"agentId": "test"})
+                self.assertEqual(cm.exception.code, "CURSOR_BILLING_OR_RATE_LIMIT_BLOCKED")
 
     def test_cursor_dispatch_requires_remote_writer_fence(self):
         workflow = yaml.safe_load(
