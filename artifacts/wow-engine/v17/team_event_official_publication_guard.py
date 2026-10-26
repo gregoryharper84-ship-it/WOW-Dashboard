@@ -14,7 +14,9 @@ not recompute or replace that probability.
 from __future__ import annotations
 
 from math import isfinite
-from typing import Any
+from typing import Any, Mapping
+
+from v17.cross_sport_evidence_integrity import audit_cross_sport_evidence_integrity
 
 V17_TERMINAL_REDUCER = "V17_TERMINAL_REDUCER"
 FINAL_APPROVED = "FINAL_APPROVED"
@@ -249,9 +251,48 @@ def evaluate_team_event_official_publication(payload: dict[str, Any]) -> dict[st
             if governance.get(field) != expected:
                 blockers.append(f"TEAM_EVENT_LLP_GOVERNANCE_NOT_PROVEN:{field}")
 
+    # Cross-sport preflight is enforced when an authenticated backend producer
+    # explicitly opts this result into the V17 evidence-proof contract, or
+    # supplies an evidence envelope. Older scorers without a certified producer
+    # stay visibly NOT_ENFORCED rather than being called evidence-verified.
+    # A later rollout must set cross_sport_evidence_required at the trusted
+    # producer; untrusted callers must not be able to turn the gate off.
+    evidence_required = payload.get("cross_sport_evidence_required") is True
+    evidence_envelope = payload.get("cross_sport_evidence")
+    evidence_audit: dict[str, Any] = {
+        "evidence_status": "NOT_ENFORCED",
+        "blockers": [],
+        "can_execute": False,
+    }
+    if evidence_required or evidence_envelope is not None:
+        if isinstance(evidence_envelope, Mapping):
+            evidence_audit = audit_cross_sport_evidence_integrity(evidence_envelope)
+            if (
+                payload.get("sport")
+                and str(payload["sport"]).strip().upper() != evidence_audit["sport"]
+            ) or (
+                payload.get("official_event_id")
+                and str(payload["official_event_id"]).strip() != evidence_audit["official_event_id"]
+            ):
+                evidence_audit = dict(evidence_audit)
+                evidence_audit["evidence_status"] = "HELD"
+                evidence_audit["blockers"] = [
+                    *evidence_audit["blockers"],
+                    "SCORED_EVENT_EVIDENCE_IDENTITY_MISMATCH",
+                ]
+        else:
+            evidence_audit = {
+                "evidence_status": "HELD",
+                "blockers": ["REQUIRED_CROSS_SPORT_EVIDENCE_ENVELOPE_MISSING"],
+                "can_execute": False,
+            }
+        if evidence_audit["evidence_status"] != "PASS":
+            blockers.append("TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED")
+
     blockers = list(dict.fromkeys(blockers))
     allowed = not blockers
     return {
+        "evidence_integrity_audit": evidence_audit,
         "status": "PASS" if allowed else "HELD",
         "official_publication_allowed": allowed,
         "rank_eligible": allowed,
