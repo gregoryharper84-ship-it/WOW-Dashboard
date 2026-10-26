@@ -111,14 +111,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          target="$RUNNER_TEMP/wow-gemini/candidate"
+          runner_temp="$(realpath -e "$RUNNER_TEMP")"
+          target="$runner_temp/wow-gemini/candidate"
           git worktree add --detach "$target" HEAD
-          # Never inherit repository-provided Gemini CLI tool settings or MCPs.
-          [ ! -e "$target/.gemini/settings.json" ] || {
-            echo "::error::GEMINI_REPOSITORY_SETTINGS_NOT_TRUSTED"
+          python artifacts/wow-engine/v17/engineering_gemini_headless.py validate-workspace \
+            --worktree "$target" --runner-temp "$runner_temp" \
+            --main-sha "$(git rev-parse HEAD)" > "$RUNNER_TEMP/wow-gemini/workspace.json" || {
+            echo "::error::GEMINI_WORKSPACE_NOT_TRUSTED"
             exit 1
           }
-          [ "$(git -C "$target" rev-parse HEAD)" = "$(git rev-parse HEAD)" ] || exit 1
           python - "$RUNNER_TEMP/wow-gemini/selection.json" "$RUNNER_TEMP/wow-gemini/prompt.txt" <<'PY'
           import json, pathlib, sys
           selected = json.loads(pathlib.Path(sys.argv[1]).read_text())
@@ -178,7 +179,7 @@ jobs:
           set +e
           (
             cd "$RUNNER_TEMP/wow-gemini/candidate"
-            timeout 900s gemini -e none --model flash --approval-mode auto_edit \
+            timeout 900s env GEMINI_CLI_TRUST_WORKSPACE=true gemini -e none --model flash --approval-mode auto_edit \
               --output-format json --prompt "$(cat "$RUNNER_TEMP/wow-gemini/prompt.txt")"
           ) > "$RUNNER_TEMP/wow-gemini/cli-output.json" 2> "$RUNNER_TEMP/wow-gemini/cli-stderr.txt"
           rc=$?
@@ -256,6 +257,7 @@ jobs:
           path: |
             ${{ runner.temp }}/wow-gemini/admission.json
             ${{ runner.temp }}/wow-gemini/selection.json
+            ${{ runner.temp }}/wow-gemini/workspace.json
             ${{ runner.temp }}/wow-gemini/model-receipt.json
             ${{ runner.temp }}/wow-gemini/patch-inspection.json
             ${{ runner.temp }}/wow-gemini/regression-receipt.json
