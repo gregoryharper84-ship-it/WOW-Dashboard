@@ -97,3 +97,12 @@ Scout discovery would receive research candidates with exact player-event/stat/p
 **Decision economics:** pursue a feed only if it adds (a) true historical pretip line histories WOW lacks, (b) historical injury/usage snapshots with timestamp proof, or (c) independently useful licensed player history filling a measured data gap. Otherwise prefer independent licensed/official NBA feeds and use PropsMadness as manual discovery.
 
 Status: OFFLINE_FIXTURE_BUILT / ACCESS_UNVERIFIED / TRAINING_RIGHTS_UNKNOWN / NBA_MODEL_UNCHANGED / NO_EXECUTION.
+
+
+## October 26 exact-head acceptance and integration gate
+
+The unrelated cross-sport NHL synthetic-identity test defect was repaired in existing PR #1744, merged to main as `e9f70b5792d7666cd6e8631a2222b7b691ff0262`. The repair changes a single test fixture, not the production NHL resolver.
+
+The PropsMadness PR requires **new** pull-request CI after this merge; 97 focused fixture passes on the prior head alone do not prove its full run green against updated main. Preserve all four-sport/16-market row coverage, no silent source deletions, identity holds, negative source-rights cases, and fail-closed `can_execute=false`.
+
+The expected output remains a human-reviewable **research-only** contract. This PR must not enable any scheduled or recurring vendor collection, allow unverified aliases to become official events/players, store an unauthorized historical corpus, or register fitted model/probability routes. Neither matching publicly displayed lines nor a successful robots request grants training or republication rights. A separately authorized real-source canary and exact official identity reconciliation are independent acceptance gates, followed by chronology-correct shadow evaluation and route-specific fitted certification before any production probability usage.
