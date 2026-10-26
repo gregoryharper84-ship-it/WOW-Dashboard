@@ -104,13 +104,23 @@ def _package(value: Any, offer: Mapping[str, str], start: datetime,
         raise ExperimentInputError(name + "_MODEL_PACKAGE_MISSING")
     for key in ("prediction_id", "model_artifact_id", "calibrator_id", "specialist_id"):
         _str(value.get(key), name + "_" + key.upper() + "_REQUIRED")
-    if value.get("offer_id") != offer["offer_id"] or value.get("route") != offer["route"]:
+    # An offer_id alone does not prove the persisted model belongs to the
+    # same athlete, event, team, opponent, stat, period, direction or line.
+    # Reconcile all exact-market fields before treating a receipt as a forecast.
+    exact_fields = (
+        "offer_id", "route", "sport", "event_id", "entity_id", "team_id",
+        "opponent_id", "stat", "period", "threshold_label", "direction",
+        "offer_type",
+    )
+    if any(value.get(field) != offer[field] for field in exact_fields):
         raise ExperimentInputError(name + "_EXACT_OFFER_MISMATCH")
     if value.get("origin") != "FITTED_SPECIALIST":
         raise ExperimentInputError(name + "_NOT_FITTED_SPECIALIST")
+    _str(value.get("source_snapshot_id"), name + "_SOURCE_SNAPSHOT_REQUIRED")
     created = _time(value.get("created_at_utc"), name + "_SNAPSHOT_TIMESTAMP_INVALID")
     features = _time(value.get("feature_asof_utc"), name + "_FEATURE_TIMESTAMP_INVALID")
-    if not features <= created < start:
+    locked = _time(value.get("locked_at_utc"), name + "_PREGAME_LOCK_REQUIRED")
+    if not features <= created <= locked < start:
         raise ExperimentInputError(name + "_PREGAME_LEAKAGE")
     probability = _p(value.get("calibrated_probability"), name + "_CALIBRATED_PROBABILITY_INVALID")
     lower = _p(value.get("calibrated_lower_bound"), name + "_LOWER_BOUND_INVALID")
