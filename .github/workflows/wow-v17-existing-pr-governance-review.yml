@@ -18,6 +18,8 @@ on:
     workflows: [wow-v17-independent-qa-check]
     types: [completed]
     branches: [main]
+  check_run:
+    types: [completed]
 
 permissions:
   actions: read
@@ -27,8 +29,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-existing-pr-governance-${{ github.event.workflow_run.id || github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: true
+  group: wow-v17-existing-pr-governance-${{ github.event.check_run.head_sha || github.event.pull_request.head.sha || github.event.workflow_run.pull_requests[0].head.sha || inputs.pr_number || github.event.workflow_run.id }}
+  cancel-in-progress: false
 
 jobs:
   certify-existing-pr:
@@ -46,6 +48,13 @@ jobs:
           REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE || '' }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          CHECK_RUN_ID: ${{ github.event.check_run.id || '' }}
+          CHECK_RUN_NAME: ${{ github.event.check_run.name || '' }}
+          CHECK_RUN_APP_ID: ${{ github.event.check_run.app.id || '' }}
+          CHECK_RUN_STATUS: ${{ github.event.check_run.status || '' }}
+          CHECK_RUN_CONCLUSION: ${{ github.event.check_run.conclusion || '' }}
+          CHECK_RUN_HEAD_SHA: ${{ github.event.check_run.head_sha || '' }}
+          CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests || fromJson('[]')) }}
         run: |
           set -euo pipefail
           # A workflow_run event carries no PR identity of its own. Only a successful
@@ -69,6 +78,85 @@ jobs:
               echo "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
             }
             [ "$targeted" -gt 0 ] || neutral "SOURCE_QA_RUN_HAD_NO_EXACT_HEAD_TARGET"
+          elif [ "$EVENT_NAME" = "check_run" ]; then
+            [ "$CHECK_RUN_APP_ID" = "5245853" ] &&
+              [ "$CHECK_RUN_NAME" = "WOW Release Authority exact-head" ] &&
+              [ "$CHECK_RUN_STATUS" = "completed" ] &&
+              [ "$CHECK_RUN_CONCLUSION" = "success" ] &&
+              [[ "$CHECK_RUN_ID" =~ ^[1-9][0-9]*$ ]] &&
+              [[ "$CHECK_RUN_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || neutral "RELEASE_CHECK_EVENT_NOT_AUTHENTIC_SUCCESS"
+
+            live_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}") || {
+              echo "RELEASE_CHECK_API_RECHECK_FAILED" >&2; exit 1;
+            }
+            jq -e --argjson id "$CHECK_RUN_ID" --arg sha "$CHECK_RUN_HEAD_SHA" \
+              --argjson event_app "$CHECK_RUN_APP_ID" --arg name "$CHECK_RUN_NAME" \
+              --arg status "$CHECK_RUN_STATUS" --arg conclusion "$CHECK_RUN_CONCLUSION" \
+              '.id == $id and .app.id == $event_app and .app.id == 5245853 and
+               .name == $name and .name == "WOW Release Authority exact-head" and
+               .head_sha == $sha and .status == $status and .status == "completed" and
+               .conclusion == $conclusion and .conclusion == "success" and
+               (.pull_requests | type == "array")' \
+              <<<"$live_check" >/dev/null || neutral "RELEASE_CHECK_API_IDENTITY_OR_PR_ASSOCIATION_INVALID"
+
+            event_prs=$(jq -ce 'if type == "array" then . else error("invalid") end' <<<"$CHECK_RUN_PRS") ||
+              neutral "RELEASE_CHECK_EVENT_PR_ASSOCIATION_INVALID"
+            live_prs=$(jq -ce '.pull_requests' <<<"$live_check") ||
+              neutral "RELEASE_CHECK_API_PR_ASSOCIATION_INVALID"
+            [ "$(jq 'length' <<<"$event_prs")" -eq 1 ] &&
+              [ "$(jq 'length' <<<"$live_prs")" -eq 1 ] || neutral "RELEASE_CHECK_PR_ASSOCIATION_MISSING_OR_AMBIGUOUS"
+            event_pr=$(jq -er '.[0].number | select(type == "number" and . > 0)' <<<"$event_prs") ||
+              neutral "RELEASE_CHECK_EVENT_PR_ASSOCIATION_INVALID"
+            live_pr=$(jq -er '.[0].number | select(type == "number" and . > 0)' <<<"$live_prs") ||
+              neutral "RELEASE_CHECK_API_PR_ASSOCIATION_INVALID"
+            event_sha=$(jq -er '.[0].head.sha | select(type == "string")' <<<"$event_prs") ||
+              neutral "RELEASE_CHECK_EVENT_PR_ASSOCIATION_INVALID"
+            live_sha=$(jq -er '.[0].head.sha | select(type == "string")' <<<"$live_prs") ||
+              neutral "RELEASE_CHECK_API_PR_ASSOCIATION_INVALID"
+            [ "$event_pr" = "$live_pr" ] && [ "$event_sha" = "$CHECK_RUN_HEAD_SHA" ] &&
+              [ "$live_sha" = "$CHECK_RUN_HEAD_SHA" ] || neutral "RELEASE_CHECK_PR_ASSOCIATION_MISMATCH"
+
+            pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${live_pr}") || {
+              echo "RELEASE_CHECK_PR_RECHECK_FAILED" >&2; exit 1;
+            }
+            jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$CHECK_RUN_HEAD_SHA" \
+              --argjson pr "$live_pr" \
+              '.number == $pr and .state == "open" and .draft == false and
+               .head.sha == $sha and .head.repo.full_name == $repo and
+               .base.ref == "main" and .base.repo.full_name == $repo' \
+              <<<"$pr_json" >/dev/null || neutral "RELEASE_CHECK_PR_MOVED_OR_NOT_CANONICAL"
+
+            matching_pr_count=0
+            matching_pr_number=''
+            for page in $(seq 1 20); do
+              response=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100&page=${page}") || {
+                echo "RELEASE_CHECK_PR_INVENTORY_UNAVAILABLE" >&2; exit 1;
+              }
+              items=$(jq -ce 'if type == "array" then . else error("invalid") end' <<<"$response") || {
+                echo "RELEASE_CHECK_PR_INVENTORY_INVALID" >&2; exit 1;
+              }
+              count=$(jq 'length' <<<"$items")
+              page_matches=$(jq -ce --arg repo "$GITHUB_REPOSITORY" --arg sha "$CHECK_RUN_HEAD_SHA" \
+                '[.[] | select(.state == "open" and .draft == false and .head.sha == $sha and
+                  .head.repo.full_name == $repo and .base.ref == "main" and .base.repo.full_name == $repo)]' \
+                <<<"$items") || {
+                  echo "RELEASE_CHECK_PR_INVENTORY_INVALID" >&2; exit 1;
+                }
+              page_match_count=$(jq 'length' <<<"$page_matches")
+              if [ "$page_match_count" -gt 0 ] && [ "$matching_pr_count" -eq 0 ]; then
+                matching_pr_number=$(jq -r '.[0].number' <<<"$page_matches")
+              fi
+              matching_pr_count=$((matching_pr_count + page_match_count))
+              [ "$count" -lt 100 ] && break
+              [ "$page" -lt 20 ] || {
+                echo "RELEASE_CHECK_PR_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1;
+              }
+            done
+            [ "$matching_pr_count" -eq 1 ] && [ "$matching_pr_number" = "$live_pr" ] ||
+              neutral "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE"
+            echo "pr_number=$live_pr" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$CHECK_RUN_HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "head_ref=$(jq -r '.head.ref' <<<"$pr_json")" >> "$GITHUB_OUTPUT"
           fi
           echo "applicable=true" >> "$GITHUB_OUTPUT"
 
@@ -196,12 +284,13 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_PR: ${{ github.event.pull_request.number || '' }}
+          EVENT_PR: ${{ steps.route.outputs.pr_number || github.event.pull_request.number || '' }}
           INPUT_PR: ${{ inputs.pr_number || '' }}
           INPUT_INCIDENT: ${{ inputs.incident_id || '' }}
           SOURCE_PR: ${{ steps.source_review.outputs.pr_number || '' }}
           SOURCE_HEAD_SHA: ${{ steps.source_review.outputs.head_sha || '' }}
           SOURCE_HEAD_REF: ${{ steps.source_review.outputs.head_ref || '' }}
+          EVENT_HEAD_SHA: ${{ steps.route.outputs.head_sha || '' }}
         run: |
           set -euo pipefail
           pr_number="${EVENT_PR:-${INPUT_PR:-${SOURCE_PR:-}}}"
@@ -234,6 +323,11 @@ jobs:
               echo "SOURCE_REVIEW_PR_HEAD_MOVED_OR_REF_MISMATCH" >&2; exit 1;
             }
           fi
+          if [ -n "${EVENT_HEAD_SHA:-}" ]; then
+            [ "$head_sha" = "$EVENT_HEAD_SHA" ] || {
+              echo "RELEASE_CHECK_PR_HEAD_MOVED_DURING_RESOLUTION" >&2; exit 1;
+            }
+          fi
 
           incident="${INPUT_INCIDENT:-}"
           if [ -z "$incident" ]; then
@@ -264,8 +358,48 @@ jobs:
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
           echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
 
-      - name: Verify exact-head deterministic CI
+      - name: Check for an existing exact-head receipt
         if: steps.route.outputs.applicable == 'true'
+        id: receipt_artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          artifact_match_count=0
+          for page in $(seq 1 20); do
+            response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}") || {
+              echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_UNAVAILABLE" >&2; exit 1;
+            }
+            items=$(jq -ce 'if (.artifacts | type) == "array" then .artifacts else error("invalid") end' \
+              <<<"$response") || {
+                echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
+              }
+            count=$(jq 'length' <<<"$items")
+            page_matches=$(jq -ce --arg name "wow-v17-engineering-governance-${HEAD_SHA}" \
+              '[.[] | select(.name == $name and .expired == false)] | length' <<<"$items") || {
+                echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
+              }
+            artifact_match_count=$((artifact_match_count + page_matches))
+            [ "$count" -lt 100 ] && break
+            [ "$page" -lt 20 ] || {
+              echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1;
+            }
+          done
+          artifact_name="wow-v17-engineering-governance-${HEAD_SHA}"
+          if [ "$artifact_match_count" -eq 1 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::EXISTING_PR_RECEIPT_ARTIFACT_ALREADY_PRESENT:$HEAD_SHA"
+          elif [ "$artifact_match_count" -gt 1 ]; then
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE:$HEAD_SHA" >&2
+            exit 1
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify exact-head deterministic CI
+        if: steps.route.outputs.applicable == 'true' && steps.receipt_artifact.outputs.exists != 'true'
         id: regression
         shell: bash
         env:
@@ -301,17 +435,71 @@ jobs:
           )
           ready=false
           runs='[]'
+          verified_zero_job_ids='[]'
           for _ in $(seq 1 120); do
             runs=$(api_array "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${HEAD_SHA}" '.workflow_runs')
             ready=true
             for required_spec in "${required[@]}"; do
               required_name="${required_spec%%|*}"
               required_path="${required_spec#*|}"
+              shadow_ids=$(jq -r --arg name "$required_name" --arg path "$required_path" --arg sha "$HEAD_SHA" \
+                '.[] | select(.name == $name and .path == $path and .head_sha == $sha and
+                  .status == "completed" and .conclusion == "action_required") | .id' <<<"$runs")
+              while IFS= read -r shadow_id; do
+                [ -n "$shadow_id" ] || continue
+                jq -e --argjson id "$shadow_id" 'any(.[]; . == $id)' \
+                  <<<"$verified_zero_job_ids" >/dev/null && continue
+                [[ "$shadow_id" =~ ^[1-9][0-9]*$ ]] || {
+                  echo "EXISTING_PR_ZERO_JOB_RUN_ID_INVALID:$required_name" >&2; exit 1;
+                }
+                detail=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${shadow_id}") || {
+                  echo "EXISTING_PR_ZERO_JOB_RUN_RECHECK_FAILED:$required_name" >&2; exit 1;
+                }
+                jq -e --argjson id "$shadow_id" --arg name "$required_name" --arg path "$required_path" \
+                  --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
+                  '.id == $id and .name == $name and .path == $path and .head_sha == $sha and
+                   .event == "pull_request" and .status == "completed" and
+                   .conclusion == "action_required" and
+                   .repository.full_name == $repo and .head_repository.full_name == $repo' \
+                  <<<"$detail" >/dev/null || {
+                    echo "EXISTING_PR_ZERO_JOB_RUN_IDENTITY_INVALID:$required_name" >&2; exit 1;
+                  }
+                jobs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${shadow_id}/jobs?per_page=100&page=1") || {
+                  echo "EXISTING_PR_ZERO_JOB_INVENTORY_UNAVAILABLE:$required_name" >&2; exit 1;
+                }
+                jq -e '.total_count == 0 and (.jobs | type == "array" and length == 0)' \
+                  <<<"$jobs" >/dev/null || {
+                    echo "EXISTING_PR_ACTION_REQUIRED_HAS_JOBS:$required_name" >&2; exit 1;
+                  }
+                runs=$(jq -ce --argjson id "$shadow_id" \
+                  --arg name "$required_name" --arg path "$required_path" --arg sha "$HEAD_SHA" \
+                  'map(if .id == $id and .name == $name and .path == $path and .head_sha == $sha
+                       then . + {pre_job_zero_jobs_verified:true} else . end)' \
+                  <<<"$runs") || {
+                    echo "EXISTING_PR_ZERO_JOB_RUN_MARK_FAILED:$required_name" >&2; exit 1;
+                  }
+                verified_zero_job_ids=$(jq -cn --argjson ids "$verified_zero_job_ids" \
+                  --argjson id "$shadow_id" '$ids + [$id]')
+              done <<<"$shadow_ids"
               match=$(jq -r --arg name "$required_name" --arg path "$required_path" \
-                '[.[] | select(.name == $name and .path == $path)] | sort_by(.created_at, .id) | last | "\(.status)|\(.conclusion // "")"' \
+                '[.[] | select(.name == $name and .path == $path and
+                  (.conclusion != "action_required" or .pre_job_zero_jobs_verified != true))]
+                 | sort_by(.created_at, .id) | last
+                 | if . == null then "none" else "\(.status)|\(.conclusion // "")" end' \
                 <<<"$runs")
+              if [ "$match" = "none" ]; then
+                shadow_count=$(jq -r --arg name "$required_name" --arg path "$required_path" --arg sha "$HEAD_SHA" \
+                  '[.[] | select(.name == $name and .path == $path and .head_sha == $sha and
+                    .status == "completed" and .conclusion == "action_required" and
+                    .pre_job_zero_jobs_verified == true)] | length' <<<"$runs")
+                if [ "$shadow_count" -gt 0 ]; then
+                  echo "EXISTING_PR_REQUIRED_CI_HAS_NO_EXECUTED_SUCCESS:$required_name" >&2
+                  exit 1
+                fi
+              fi
               if [ "$match" = "completed|failure" ] || [ "$match" = "completed|cancelled" ] || \
-                 [ "$match" = "completed|timed_out" ] || [ "$match" = "completed|action_required" ]; then
+                 [ "$match" = "completed|timed_out" ] || [ "$match" = "completed|action_required" ] || \
+                 [ "$match" = "completed|startup_failure" ]; then
                 echo "EXISTING_PR_REQUIRED_CI_FAILED:$required_name" >&2
                 exit 1
               fi
@@ -330,7 +518,7 @@ jobs:
           echo "status=0" >> "$GITHUB_OUTPUT"
 
       - name: Collect complete exact-head GitHub evidence
-        if: steps.route.outputs.applicable == 'true'
+        if: steps.route.outputs.applicable == 'true' && steps.receipt_artifact.outputs.exists != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -389,7 +577,7 @@ jobs:
             > ".governance-review-evidence/evidence.json"
 
       - name: Build and verify review-evidence receipt
-        if: steps.route.outputs.applicable == 'true'
+        if: steps.route.outputs.applicable == 'true' && steps.receipt_artifact.outputs.exists != 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -529,7 +717,7 @@ jobs:
           sha256sum "$receipt" | awk '{print $1}' > "$RUNNER_TEMP/wow-engineering-governance-receipt.sha256"
 
       - name: Upload exact-head review-evidence receipt
-        if: steps.route.outputs.applicable == 'true' && (success())
+        if: steps.route.outputs.applicable == 'true' && steps.receipt_artifact.outputs.exists != 'true' && (success())
         uses: actions/upload-artifact@v4
         with:
           name: wow-v17-engineering-governance-${{ steps.target.outputs.head_sha }}

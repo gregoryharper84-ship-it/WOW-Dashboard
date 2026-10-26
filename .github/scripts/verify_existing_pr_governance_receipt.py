@@ -149,6 +149,36 @@ def _latest(records: Sequence[Mapping[str, Any]], *, name: str, expected_sha: st
     return max(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
 
 
+def _latest_required_workflow(
+    records: Sequence[Mapping[str, Any]], *, name: str, path: str, expected_sha: str,
+    expected_repository: str,
+) -> Mapping[str, Any] | None:
+    matches = []
+    for record in records:
+        if record.get("head_sha") != expected_sha or record.get("name") != name or record.get("path") != path:
+            continue
+        if record.get("conclusion") == "action_required":
+            _require(
+                record.get("status") == "completed"
+                and record.get("event") == "pull_request"
+                and record.get("pre_job_zero_jobs_verified") is True,
+                "REQUIRED_WORKFLOW_ZERO_JOB_SHADOW_UNVERIFIED",
+            )
+            _require(
+                isinstance(record.get("repository"), Mapping)
+                and record["repository"].get("full_name") == expected_repository
+                and isinstance(record.get("head_repository"), Mapping)
+                and record["head_repository"].get("full_name") == expected_repository,
+                "REQUIRED_WORKFLOW_ZERO_JOB_REPOSITORY_MISMATCH",
+            )
+            _positive_int(record.get("id"), "WORKFLOW_RUN_ID")
+            continue
+        started = _timestamp(record.get("created_at"), "WORKFLOW_CREATED_AT")
+        run_id = _positive_int(record.get("id"), "WORKFLOW_RUN_ID")
+        matches.append((started, run_id, record))
+    return max(matches, key=lambda item: (item[0], item[1]))[2] if matches else None
+
+
 def _independent_approval(
     reviews: Sequence[Mapping[str, Any]],
     *,
@@ -426,8 +456,12 @@ def build_receipt(
 
     verified_workflows = []
     for name, path in REQUIRED_WORKFLOWS.items():
-        run = _latest(
-            workflow_runs, name=name, expected_sha=expected_head_sha, path=path, time_field="created_at"
+        run = _latest_required_workflow(
+            workflow_runs,
+            name=name,
+            path=path,
+            expected_sha=expected_head_sha,
+            expected_repository=expected_repository,
         )
         _require(run is not None, f"REQUIRED_WORKFLOW_MISSING:{name}")
         _require(run.get("status") == "completed" and run.get("conclusion") == "success",
