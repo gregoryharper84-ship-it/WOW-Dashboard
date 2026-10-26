@@ -253,7 +253,13 @@ def test_existing_pr_certifier_waits_for_source_pinned_exact_head_ci():
     assert "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" in text
     assert "pull_request:" not in text.replace("pull_request_target:", "")
     assert ".github/scripts/verify_existing_pr_governance_receipt.py" in text
-    assert 'select(.name == $name and .path == $path)' in text
+    assert 'select(.name == $name and .path == $path and .head_sha == $sha' in text
+    assert '.id == $id and .name == $name and .path == $path and .head_sha == $sha' in text
+    assert '.event == "pull_request" and .status == "completed"' in text
+    assert '.conclusion == "action_required"' in text
+    assert 'actions/runs/${shadow_id}/jobs?per_page=100&page=1' in text
+    assert '.total_count == 0 and (.jobs | type == "array" and length == 0)' in text
+    assert '{pre_job_zero_jobs_verified:true}' in text
     assert '\\(.conclusion // "")' in text
     assert '\\(.conclusion // \\"\\")' not in text
 

@@ -498,7 +498,38 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
     if abs(raw_home + raw_away - 1.0) > 1e-9 or abs(calibrated_home + calibrated_away - 1.0) > 1e-9:
         raise NFLModelOutputInvalid("NFL_PROBABILITY_PAIR_NOT_NORMALIZED")
 
+    # This receipt is emitted only by the fitted Platt operation that just ran.
+    # Binding to the event/run and immutable prediction is performed by its caller.
+    model_timestamp = datetime.now(timezone.utc).isoformat()
+    calibration_operation_receipt = {
+        "schema_version": "NFL_CALIBRATION_OPERATION_V1",
+        "producer": "nfl_event_model_v17.score_feature_row",
+        "status": "COMPLETED",
+        "model_artifact_id": model.artifact_id,
+        "artifact_checksum": model.artifact_checksum,
+        "model_version": model.model_artifact_version,
+        "calibration_method": CALIBRATION_METHOD,
+        "calibration_version": model.calibration_version,
+        "calibration_training_n": model.calibration_training_n,
+        "uncertainty_method": model.bounds_method_version,
+        "feature_row_hash": str(feature_row.get("row_inputs_hash") or ""),
+        "model_timestamp": model_timestamp,
+        "platt_input_logit": logit,
+        "platt_a": model.platt_a,
+        "platt_b": model.platt_b,
+        "uncertainty_margin": margin,
+        "raw_home_probability": raw_home,
+        "calibrated_home_probability": calibrated_home,
+        "calibrated_away_probability": calibrated_away,
+        "calibrated_home_lower_bound": home_lower,
+        "calibrated_home_upper_bound": home_upper,
+        "calibrated_away_lower_bound": away_lower,
+        "calibrated_away_upper_bound": away_upper,
+        "can_execute": False,
+    }
+
     return {
+        "calibration_operation_receipt": calibration_operation_receipt,
         "raw_home_probability": raw_home,
         "raw_away_probability": raw_away,
         "independent_home_probability": raw_home,
@@ -519,7 +550,7 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
         "model_version": model.model_artifact_version,
         "model_label": PROVIDER_IDENTITY,
         "model_artifact_id": model.artifact_id,
-        "model_timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_timestamp": model_timestamp,
         "feature_schema_version": model.feature_schema_version,
         "feature_order_hash": model.feature_order_hash,
         "training_dataset_hash": model.training_dataset_hash,

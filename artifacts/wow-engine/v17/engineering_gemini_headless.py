@@ -19,6 +19,11 @@ _BLOCKED_PATHS = (
     "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt",
     "artifacts/wow-engine/v17/engineering_gemini_headless.py",
 )
+_RECOVERY_RUNTIME_PATHS = frozenset({
+    "artifacts/wow-engine/v17/engineering_gemini_headless.py",
+    ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+    ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+})
 _EXPLICIT_CODES = (
     ("GEMINI_API_QUOTA_EXHAUSTED", ("resource_exhausted", "quota exceeded", "insufficient quota", "resource exhausted")),
     ("GEMINI_API_RATE_LIMITED", ("rate limit", "429", "too many requests")),
@@ -91,7 +96,7 @@ def select_incident(
 
 
 def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
-                 response: Any = None) -> dict[str, Any]:
+                 response: Any = None, source_sha: str = "") -> dict[str, Any]:
     """Classify one bounded attempt without persisting log contents or secrets."""
     # The CLI may put its *only* actionable API error in the JSON response,
     # not in stderr. Inspect it in memory, but persist only a fixed typed code.
@@ -117,6 +122,8 @@ def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
         code = "GEMINI_CLI_SANDBOX_FAILED"
     elif exit_code == 53:
         code = "GEMINI_CLI_TURN_LIMIT"
+    elif exit_code == 55:
+        code = "GEMINI_CLI_UNTRUSTED_WORKSPACE"
     elif exit_code == 42:
         code = "GEMINI_CLI_INPUT_INVALID"
     # Specific unsupported-model/billing refusals must precede broad
@@ -136,11 +143,103 @@ def classify_cli(exit_code: int, stderr: str, *, timed_out: bool = False,
         code = "GEMINI_CLI_RESPONSE_MALFORMED"
     else:
         code = "GEMINI_CLI_FAILED"
-    return {"status": "COMPLETED" if code == "GEMINI_CLI_COMPLETE" else "HELD",
-            "code": code, "exit_code": exit_code,
-            "stderr_present": bool(stderr), "response_error_present": bool(error),
-            "retry_allowed": False, "can_execute": False,
-            "terminal_authority": MODEL_AUTHORITY}
+    result = {"status": "COMPLETED" if code == "GEMINI_CLI_COMPLETE" else "HELD",
+              "code": code, "exit_code": exit_code,
+              "stderr_present": bool(stderr), "response_error_present": bool(error),
+              "retry_allowed": False, "can_execute": False,
+              "terminal_authority": MODEL_AUTHORITY}
+    if source_sha:
+        if not _SHA.fullmatch(source_sha):
+            result.update(status="HELD", code="GEMINI_SOURCE_HEAD_INVALID")
+        else:
+            result["source_head_sha"] = source_sha
+    return result
+
+
+def validate_workspace(worktree: str | Path, runner_temp: str | Path,
+                       main_sha: str) -> dict[str, Any]:
+    """Trust only the exact isolated candidate worktree at the verified main HEAD."""
+    if not isinstance(main_sha, str) or not _SHA.fullmatch(main_sha):
+        return {"status": "HELD", "code": "GEMINI_WORKSPACE_MAIN_HEAD_INVALID",
+                "can_execute": False}
+    try:
+        temp_root = Path(runner_temp).resolve(strict=True)
+        candidate = Path(worktree).resolve(strict=True)
+        expected = temp_root / "wow-gemini" / "candidate"
+        if candidate != expected or not candidate.is_dir():
+            return {"status": "HELD", "code": "GEMINI_WORKSPACE_PATH_INVALID",
+                    "can_execute": False}
+        head = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError):
+        return {"status": "HELD", "code": "GEMINI_WORKSPACE_HEAD_UNVERIFIED",
+                "can_execute": False}
+    if head != main_sha:
+        return {"status": "HELD", "code": "GEMINI_WORKSPACE_HEAD_MISMATCH",
+                "can_execute": False}
+    repository_gemini = candidate / ".gemini"
+    if repository_gemini.exists() or repository_gemini.is_symlink():
+        return {"status": "HELD", "code": "GEMINI_REPOSITORY_SETTINGS_NOT_TRUSTED",
+                "can_execute": False}
+    return {"status": "TRUSTED", "code": "GEMINI_WORKSPACE_TRUSTED",
+            "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
+
+
+def admit_one_shot_recovery(runs: Any, comparison: Any, current_sha: str) -> dict[str, Any]:
+    """Admit one retry only when the failed worker predates a reviewed runtime fix."""
+    def held(code: str) -> dict[str, Any]:
+        return {"status": "HELD", "code": code, "can_execute": False,
+                "terminal_authority": MODEL_AUTHORITY}
+
+    if not isinstance(current_sha, str) or not _SHA.fullmatch(current_sha):
+        return held("GEMINI_RECOVERY_CURRENT_SHA_INVALID")
+    if not isinstance(runs, list) or len(runs) != 1 or not isinstance(runs[0], dict):
+        return held("GEMINI_RECOVERY_LATEST_RUN_UNVERIFIED")
+
+    last = runs[0]
+    previous_sha = last.get("headSha")
+    if not isinstance(previous_sha, str) or not _SHA.fullmatch(previous_sha):
+        return held("GEMINI_RECOVERY_PREVIOUS_SHA_INVALID")
+    if last.get("status") != "completed" or last.get("conclusion") != "failure":
+        return held("GEMINI_RECOVERY_PREVIOUS_RUN_NOT_FAILED")
+    if previous_sha == current_sha:
+        return held("GEMINI_RECOVERY_ALREADY_ATTEMPTED_SHA")
+    if not isinstance(comparison, dict):
+        return held("GEMINI_RECOVERY_COMPARE_UNAVAILABLE")
+
+    base = comparison.get("base_commit")
+    merge_base = comparison.get("merge_base_commit")
+    if (comparison.get("status") != "ahead"
+            or not isinstance(base, dict) or base.get("sha") != previous_sha
+            or not isinstance(merge_base, dict) or merge_base.get("sha") != previous_sha):
+        return held("GEMINI_RECOVERY_SHA_LINEAGE_INVALID")
+
+    files = comparison.get("files")
+    commits = comparison.get("total_commits")
+    if (not isinstance(files, list) or not files or len(files) >= 300
+            or not isinstance(commits, int) or isinstance(commits, bool)
+            or commits < 1 or commits >= 250):
+        return held("GEMINI_RECOVERY_DIFF_TRUNCATED_OR_INVALID")
+
+    changed_runtime = sorted({
+        item["filename"] for item in files
+        if isinstance(item, dict)
+        and item.get("filename") in _RECOVERY_RUNTIME_PATHS
+        and item.get("status") == "modified"
+    })
+    if not changed_runtime:
+        return held("GEMINI_RECOVERY_NO_REVIEWED_RUNTIME_CHANGE")
+    return {
+        "status": "RECOVERY_ADMITTED",
+        "code": "GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX",
+        "previous_head_sha": previous_sha,
+        "current_head_sha": current_sha,
+        "changed_runtime_files": changed_runtime,
+        "can_execute": False,
+        "terminal_authority": MODEL_AUTHORITY,
+    }
 
 
 def inspect_changed_paths(paths: list[str]) -> dict[str, Any]:
@@ -227,12 +326,21 @@ def main(argv: list[str] | None = None) -> int:
     classify.add_argument("--exit-code", type=int, required=True)
     classify.add_argument("--stderr-file", required=True)
     classify.add_argument("--response-file", required=True)
+    classify.add_argument("--source-sha", default="")
     classify.add_argument("--timed-out", action="store_true")
+    recovery = sub.add_parser("recovery-admit")
+    recovery.add_argument("--runs-file", required=True)
+    recovery.add_argument("--comparison-file", required=True)
+    recovery.add_argument("--current-sha", required=True)
     changed = sub.add_parser("inspect-patch")
     changed.add_argument("--files-json", required=True)
     verify = sub.add_parser("verify-candidate")
     verify.add_argument("--files-json", required=True)
     verify.add_argument("--worktree", required=True)
+    workspace = sub.add_parser("validate-workspace")
+    workspace.add_argument("--worktree", required=True)
+    workspace.add_argument("--runner-temp", required=True)
+    workspace.add_argument("--main-sha", required=True)
     args = parser.parse_args(argv)
     try:
         if args.action == "admit":
@@ -249,9 +357,18 @@ def main(argv: list[str] | None = None) -> int:
             except (OSError, json.JSONDecodeError):
                 response = None
             result = classify_cli(args.exit_code, Path(args.stderr_file).read_text(encoding="utf-8"),
-                                  timed_out=args.timed_out, response=response)
+                                  timed_out=args.timed_out, response=response,
+                                  source_sha=args.source_sha)
+        elif args.action == "recovery-admit":
+            result = admit_one_shot_recovery(
+                json.loads(Path(args.runs_file).read_text(encoding="utf-8")),
+                json.loads(Path(args.comparison_file).read_text(encoding="utf-8")),
+                args.current_sha,
+            )
         elif args.action == "inspect-patch":
             result = inspect_changed_paths(json.loads(Path(args.files_json).read_text(encoding="utf-8")))
+        elif args.action == "validate-workspace":
+            result = validate_workspace(args.worktree, args.runner_temp, args.main_sha)
         else:
             result = verify_candidate(Path(args.worktree),
                 json.loads(Path(args.files_json).read_text(encoding="utf-8")))
@@ -261,7 +378,10 @@ def main(argv: list[str] | None = None) -> int:
                   "error_type": type(exc).__name__, "can_execute": False,
                   "terminal_authority": MODEL_AUTHORITY}
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["status"] in {"SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TESTED_CANDIDATE"} else 2
+    return 0 if result["status"] in {
+        "SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TRUSTED",
+        "TESTED_CANDIDATE", "RECOVERY_ADMITTED",
+    } else 2
 
 
 if __name__ == "__main__":
