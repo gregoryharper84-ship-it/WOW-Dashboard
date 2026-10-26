@@ -1,0 +1,43 @@
+name: wow-v17-cursor-terminal-status-receipt
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-engineering-implementation-single-writer
+  cancel-in-progress: false
+
+jobs:
+  terminal-status:
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/copilot/fix-285088163-1240256887-ca74cde5-155c-4ec6-a05f-1d9dce20b221'
+    runs-on: ubuntu-latest
+    environment: wow-engineering
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact dispatched source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Collect read-only Cursor run and source receipt
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python artifacts/wow-engine/v17/cursor_terminal_status_receipt.py \
+            --receipt "$RUNNER_TEMP/cursor-terminal-status-receipt.json"
+
+      - name: Upload sanitized status receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-cursor-terminal-status-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cursor-terminal-status-receipt.json
+          if-no-files-found: error
