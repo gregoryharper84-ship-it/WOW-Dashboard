@@ -302,3 +302,17 @@ def test_baseline_cross_cohort_reuse_blocks_both_artifacts():
     assert result["status"] == "EVIDENCE_HOLD"
     assert len(result["baselines"]) == 2
     assert all(x["quality"] is None for x in result["baselines"])
+
+
+def test_baseline_overlapping_event_across_cohorts_blocks_both_even_with_fresh_receipts():
+    from v17.sirt_model_progression_audit import audit_champion_baseline
+    rows = [dict(x) for x in full_sample() if x["role"] == "CHAMPION"]
+    others = [dict(x) for x in rows]
+    for row in others:
+        row["cohort_id"] = "NEXT_COHORT"
+        row["event_id"] = "later-" + row["event_id"]
+        row["prediction_receipt_ref"] = "later-" + row["prediction_receipt_ref"]
+    others[0]["event_id"] = rows[0]["event_id"]
+    result = audit_champion_baseline(rows + others)
+    assert result["status"] == "EVIDENCE_HOLD"
+    assert all(x["quality"] is None for x in result["baselines"])
