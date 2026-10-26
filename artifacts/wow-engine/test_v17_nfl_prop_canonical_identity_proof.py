@@ -148,3 +148,50 @@ def test_nfl_terminal_reducer_keeps_event_and_unknown_availability_distinct() ->
     )
     assert not unavailable.pick_rejected  # Existing reducer NO_PLAY semantics.
     assert not unknown.pick_rejected
+
+
+
+def test_auto_hydrated_nfl_role_proves_identity_but_not_game_participation(monkeypatch) -> None:
+    # The original IR leak was a falsely ACTIVE role label produced even when
+    # only ESPN athlete/team/scoreboard identity and prior nflverse logs existed.
+    monkeypatch.setattr(
+        nfl, "_resolve_espn_athlete",
+        lambda _name, *, http_get: ("4040715", "Jalen Hurts"),
+    )
+    monkeypatch.setattr(nfl, "_athlete_team", lambda *_a, **_k: "PHI")
+    monkeypatch.setattr(
+        nfl, "_target_event",
+        lambda **_kw: {
+            "event_id": "401873009",
+            "opponent": "DAL",
+            "provider_season": 2026,
+            "provider_week": 7,
+            "provider_home_team": "PHI",
+            "provider_away_team": "DAL",
+            "canonical_home_team": "PHI",
+            "canonical_away_team": "DAL",
+            "verified_canonical_event_id": "2026_07_DAL_PHI",
+        },
+    )
+    monkeypatch.setattr(
+        nfl, "_history",
+        lambda **_kw: (
+            [0.0] * 10,
+            [{"opportunity": 1.0}] * 10,
+            {"2026": "testdigest"},
+            "NFLVERSE_NAME:jalen_hurts",
+        ),
+    )
+    now = datetime.now(timezone.utc)
+    evidence = nfl.hydrate_nfl_prop_evidence(
+        player="Jalen Hurts",
+        stat_type="ANYTIME_TD",
+        event_start_time=(now + timedelta(days=1)).isoformat(),
+        now=now,
+    )
+    role = evidence["role_status"]
+    assert role["espn_athlete_id"] == "4040715"
+    assert role["verified_canonical_event_id"] == "2026_07_DAL_PHI"
+    assert role["status"] == "ROSTER_IDENTITY_VERIFIED_AVAILABILITY_UNVERIFIED"
+    assert "game_availability_status" not in role
+    assert evidence["opportunity_ledger"]["status"] == "PASS"
