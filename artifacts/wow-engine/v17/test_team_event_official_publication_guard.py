@@ -167,6 +167,11 @@ def _certified_sample_evidence(sport: str = "NBA") -> dict:
     return {
         "sport": sport,
         "official_event_id": "event-test",
+        "official_event_snapshot_id": "official-schedule-test",
+        "official_participant_ids": ["team-1", "team-2"],
+        "official_event_updated_at": (start-timedelta(hours=3)).isoformat(),
+        "prediction_id": "prediction-test",
+        "scorer_official_event_id": "event-test",
         "event_start_utc": start.isoformat(),
         "model_timestamp": (start - timedelta(hours=1)).isoformat(),
         "participants": [participant(1), participant(2)],
