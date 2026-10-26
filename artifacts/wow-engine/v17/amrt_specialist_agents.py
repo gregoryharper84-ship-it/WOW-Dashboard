@@ -118,8 +118,15 @@ class ModelRecoveryCommander:
         if not _valid_ref(incident.get("owner_id")):
             return _dec(self.NAME, "HELD", incident, "ECOSYSTEM_CONDUCTOR",
                         ("ACCOUNTABLE_OWNER_MISSING",), (str(incident["issue_ref"]),))
+        # Accountable GitHub issue ownership is not necessarily the same as
+        # an ephemeral GitHub Actions implementation writer. The authenticated
+        # worker boundary separately verifies both principals against their
+        # authoritative sources; this advisory stage is never authorization.
         if (incident.get("lease_owner") is not None
-                and incident["lease_owner"] != incident["owner_id"]):
+                and incident["lease_owner"] != incident["owner_id"]
+                and not (incident.get("lease_authority") ==
+                         "EXISTING_AUTHENTICATED_ENGINEERING_WORKER"
+                         and _valid_ref(incident.get("canonical_owner_source_ref")))):
             return _dec(self.NAME, "HELD", incident, "ECOSYSTEM_CONDUCTOR",
                         ("OWNER_LEASE_CONFLICT",), (str(incident["issue_ref"]),))
         if incident.get("closed") is True and not _valid_ref(incident.get("independent_closure_ref")):
