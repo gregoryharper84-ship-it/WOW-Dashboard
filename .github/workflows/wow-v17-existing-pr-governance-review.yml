@@ -4,6 +4,10 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
+  check_run:
+    # Release App completion is the exact-head wakeup after QA/Release races.
+    # The workflow verifies the App check from GitHub before acting.
+    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -27,8 +31,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-existing-pr-governance-${{ github.event.workflow_run.id || github.event.pull_request.number || inputs.pr_number }}
-  cancel-in-progress: true
+  group: wow-v17-existing-pr-governance-${{ github.event.check_run.head_sha || github.event.workflow_run.id || github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
 
 jobs:
   certify-existing-pr:
@@ -46,6 +50,8 @@ jobs:
           REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE || '' }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          CHECK_RUN_ID: ${{ github.event.check_run.id || '' }}
+          CHECK_RUN_HEAD: ${{ github.event.check_run.head_sha || '' }}
         run: |
           set -euo pipefail
           # A workflow_run event carries no PR identity of its own. Only a successful
@@ -58,6 +64,63 @@ jobs:
             echo "::notice::GOVERNANCE_EVENT_NOT_APPLICABLE:$1 (no receipt produced)"
             exit 0
           }
+          if [ "$EVENT_NAME" = "check_run" ]; then
+            # This event is emitted by the independently authenticated Release
+            # GitHub App, not by the certifier. No PR-supplied code is executed.
+            [[ "${CHECK_RUN_ID:-}" =~ ^[1-9][0-9]*$ ]] &&
+              [[ "${CHECK_RUN_HEAD:-}" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "RELEASE_CHECK_EVENT_IDENTITY_INVALID" >&2; exit 1;
+            }
+            release_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}") || {
+              echo "RELEASE_CHECK_READBACK_UNAVAILABLE" >&2; exit 1;
+            }
+            jq -e --argjson id "$CHECK_RUN_ID" --arg head "$CHECK_RUN_HEAD" \
+              '.id == $id and .head_sha == $head and
+               .name == "WOW Release Authority exact-head" and
+               .app.id == 5245853 and .status == "completed" and
+               .conclusion == "success"' <<<"$release_check" >/dev/null ||
+              neutral "NOT_AUTHENTIC_SUCCESSFUL_RELEASE_APP_CHECK"
+
+            # Resolve the *current* PR identity from the verified commit's
+            # authenticated GitHub association. Do not trust a webhook PR ID.
+            associated=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${CHECK_RUN_HEAD}/pulls?per_page=100") || {
+              echo "RELEASE_CHECK_PR_ASSOCIATION_UNAVAILABLE" >&2; exit 1;
+            }
+            pr_number=$(jq -er --arg sha "$CHECK_RUN_HEAD" --arg repo "$GITHUB_REPOSITORY" \
+              '[.[] | select(.state == "open" and .draft == false and
+               .head.sha == $sha and .head.repo.full_name == $repo and
+               .base.ref == "main" and .base.repo.full_name == $repo)] |
+               if length == 1 then .[0].number else empty end' <<<"$associated") ||
+              neutral "RELEASE_CHECK_PR_ASSOCIATION_NOT_UNIQUE"
+            [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || {
+              echo "RELEASE_CHECK_PR_NUMBER_INVALID" >&2; exit 1;
+            }
+            pr_json=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}") || {
+              echo "RELEASE_CHECK_PR_READBACK_UNAVAILABLE" >&2; exit 1;
+            }
+            jq -e --arg sha "$CHECK_RUN_HEAD" --arg repo "$GITHUB_REPOSITORY" \
+              '.state == "open" and .draft == false and
+               .head.sha == $sha and .head.repo.full_name == $repo and
+               .base.ref == "main" and .base.repo.full_name == $repo' <<<"$pr_json" >/dev/null || {
+              echo "RELEASE_CHECK_PR_HEAD_MOVED" >&2; exit 1;
+            }
+
+            # A repeated success on this immutable head does not produce a
+            # second artifact of the same name (which downstream would reject).
+            artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-engineering-governance-${CHECK_RUN_HEAD}&per_page=100") || {
+              echo "RELEASE_CHECK_PRIOR_RECEIPT_READBACK_UNAVAILABLE" >&2; exit 1;
+            }
+            count=$(jq -er --arg name "wow-v17-engineering-governance-${CHECK_RUN_HEAD}" \
+              'if (.total_count | type) == "number" and
+                  (.artifacts | type) == "array" and
+                  (.total_count == (.artifacts | length))
+               then [.artifacts[] | select(.expired == false and .name == $name)] | length
+               else error("RELEASE_CHECK_RECEIPT_INVENTORY_INVALID") end' <<<"$artifacts") || {
+              echo "RELEASE_CHECK_RECEIPT_INVENTORY_INVALID" >&2; exit 1;
+            }
+            [ "$count" = "0" ] || neutral "EXACT_HEAD_RECEIPT_ALREADY_PRESENT"
+            echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          fi
           if [ "$EVENT_NAME" = "workflow_run" ]; then
             [ "$REVIEW_ACTIVE" = "true" ] || neutral "INDEPENDENT_SOURCE_REVIEW_INACTIVE"
             [ "$SOURCE_CONCLUSION" = "success" ] || neutral "SOURCE_QA_RUN_NOT_SUCCESSFUL:${SOURCE_CONCLUSION:-none}"
@@ -197,6 +260,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_PR: ${{ github.event.pull_request.number || '' }}
+          CHECK_RUN_PR: ${{ steps.route.outputs.pr_number || '' }}
           INPUT_PR: ${{ inputs.pr_number || '' }}
           INPUT_INCIDENT: ${{ inputs.incident_id || '' }}
           SOURCE_PR: ${{ steps.source_review.outputs.pr_number || '' }}
@@ -204,7 +268,7 @@ jobs:
           SOURCE_HEAD_REF: ${{ steps.source_review.outputs.head_ref || '' }}
         run: |
           set -euo pipefail
-          pr_number="${EVENT_PR:-${INPUT_PR:-${SOURCE_PR:-}}}"
+          pr_number="${EVENT_PR:-${CHECK_RUN_PR:-${INPUT_PR:-${SOURCE_PR:-}}}}"
           [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] || { echo "EXISTING_PR_NUMBER_INVALID" >&2; exit 1; }
 
           mkdir -p .governance-review-evidence
