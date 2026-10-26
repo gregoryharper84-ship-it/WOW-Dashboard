@@ -198,7 +198,8 @@ def product_outcome_scorecard(
         missing_rows += missing_for_request
         empty_verified = expected == 0 and req.get("no_current_candidates_verified") is True
         complete = (
-            req.get("output_delivered_verified") is True
+            not unattributed_row_present
+            and req.get("output_delivered_verified") is True
             and rid not in integrity_failed_requests
             and len(dispositions) == expected
             and (empty_verified or (expected > 0 and all(s in TERMINAL_DISPOSITIONS for s in dispositions)))
