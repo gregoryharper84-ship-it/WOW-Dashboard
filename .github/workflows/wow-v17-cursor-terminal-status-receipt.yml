@@ -8,7 +8,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-engineering-implementation-single-writer
+  group: wow-v17-cursor-terminal-status-probe-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
