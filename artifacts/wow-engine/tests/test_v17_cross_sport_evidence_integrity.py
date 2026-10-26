@@ -30,6 +30,11 @@ def envelope(sport: str) -> dict:
     return {
         "sport": sport,
         "official_event_id": "event-123",
+        "official_event_snapshot_id": "official-schedule-123",
+        "official_participant_ids": ["p-1", "p-2"],
+        "official_event_updated_at": (t-timedelta(hours=2)).isoformat(),
+        "prediction_id": "prediction-123",
+        "scorer_official_event_id": "event-123",
         "event_start_utc": t.isoformat(),
         "model_timestamp": (t-timedelta(hours=1)).isoformat(),
         "participants": [participant(1), participant(2)],
@@ -106,3 +111,19 @@ def test_golf_field_may_have_more_than_two_participants():
     third.update(participant_id="p-3", snapshot_id="snap-3")
     item["participants"].append(third)
     assert audit_cross_sport_evidence_integrity(item)["evidence_status"] == "PASS"
+
+
+def test_canonical_event_identity_must_match_both_sides():
+    item = envelope("NBA")
+    item["official_participant_ids"] = ["p-1", "other-team"]
+    decision = audit_cross_sport_evidence_integrity(item)
+    assert "OFFICIAL_PARTICIPANT_SET_MISMATCH" in decision["blockers"]
+
+
+def test_mismatched_prediction_event_and_late_schedule_update_hold():
+    item = envelope("NHL")
+    item["scorer_official_event_id"] = "another-event"
+    item["official_event_updated_at"] = "2026-10-26T18:30:00+00:00"
+    blockers = audit_cross_sport_evidence_integrity(item)["blockers"]
+    assert "SCORER_EVENT_BINDING_UNPROVEN" in blockers
+    assert "OFFICIAL_EVENT_CHANGED_AFTER_MODEL" in blockers
