@@ -31,7 +31,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-existing-pr-governance-${{ github.event.check_run.head_sha || github.event.workflow_run.id || github.event.pull_request.number || inputs.pr_number }}
+  group: wow-v17-existing-pr-governance-${{ github.event.check_run.head_sha || github.event.pull_request.head.sha || github.event.workflow_run.id || inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:
