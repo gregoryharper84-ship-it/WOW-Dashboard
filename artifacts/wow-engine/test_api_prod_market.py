@@ -656,3 +656,56 @@ def test_nfl_roster_source_not_queried_if_player_event_identity_mismatches(monke
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "PLAYER_AVAILABILITY_UNVERIFIED"
     assert response.json()["detail"]["availability_source"] is None
+
+
+@pytest.mark.parametrize(
+    "shadow_code,expected_code",
+    [
+        ("GAME_INACTIVES_COMPLETE_CANDIDATE_ONLY", "PLAYER_AVAILABILITY_UNVERIFIED"),
+        ("PLAYER_UNAVAILABLE", "PLAYER_UNAVAILABLE"),
+        ("PLAYER_AVAILABILITY_UNVERIFIED", "PLAYER_AVAILABILITY_UNVERIFIED"),
+    ],
+)
+def test_direct_nfl_inactive_shadow_cannot_unlock_scorer(
+    monkeypatch, shadow_code, expected_code
+):
+    calls = {"model": 0, "shadow": 0}
+    def forbidden_model(**kwargs):
+        calls["model"] += 1
+        raise AssertionError("read-only vendor candidate must never enable NFL scoring")
+    _install_common(monkeypatch, forbidden_model)
+    frozen = _ready_evidence()
+    frozen["role_status"] = {
+        "status": "ROSTER_IDENTITY_VERIFIED_AVAILABILITY_UNVERIFIED",
+        "player": "Jalen Hurts",
+        "espn_athlete_id": "4040715",
+        "team": "PHI",
+        "verified_canonical_event_id": "2026_07_DAL_PHI",
+        "provider_season": 2026,
+        "provider_week": 7,
+        "provider_home_team": "PHI",
+        "provider_away_team": "DAL",
+    }
+    monkeypatch.setattr(api_prod_market, "repair_prop_evidence", lambda *_a, **_kw: frozen)
+    monkeypatch.setattr(
+        api_prod_market, "read_espn_nfl_roster_negative",
+        lambda **_kw: {"code": "PLAYER_AVAILABILITY_UNVERIFIED", "can_execute": False},
+    )
+    def mock_shadow(**_kw):
+        calls["shadow"] += 1
+        return {"code": shadow_code, "can_execute": False, "probability_publishable": False}
+    monkeypatch.setattr(api_prod_market, "read_nflmeta_inactives_shadow", mock_shadow)
+    request = _request_payload()
+    request.update(
+        {"sport": "NFL", "player": "Jalen Hurts", "event_id": "2026_07_DAL_PHI",
+         "stat_type": "ANYTIME_TD", "line": 0.5, "direction": "LESS"}
+    )
+    response = client.post("/score-prop", json=request, headers=AUTH)
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == expected_code
+    assert detail["inactive_list_shadow"]["code"] == shadow_code
+    assert detail["specialist_invoked"] is False
+    assert detail["probability_publishable"] is False
+    assert detail["can_execute"] is False
+    assert calls == {"model": 0, "shadow": 1}
