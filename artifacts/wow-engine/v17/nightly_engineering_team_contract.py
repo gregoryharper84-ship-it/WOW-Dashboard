@@ -12,6 +12,20 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+try:
+    from .incident_regression_evidence import validate_regression_fields
+except ImportError:  # direct script/spec loader compatibility
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+    _evidence_spec = _importlib_util.spec_from_file_location(
+        "incident_regression_evidence", _Path(__file__).with_name("incident_regression_evidence.py")
+    )
+    if _evidence_spec is None or _evidence_spec.loader is None:
+        raise ImportError("incident_regression_evidence module specification unavailable")
+    _evidence_module = _importlib_util.module_from_spec(_evidence_spec)
+    _evidence_spec.loader.exec_module(_evidence_module)
+    validate_regression_fields = _evidence_module.validate_regression_fields
+
 TEAM_CONTRACT_VERSION = "1.0"
 
 ROLES = {
@@ -255,6 +269,45 @@ def validate_handoff_history(record: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_learning_receipt(record: dict[str, Any]) -> list[str]:
+    """Closure-only learning proof for newly created P0/P1 incidents.
+
+    Existing incidents are intentionally grandfathered; this check does not run
+    at triage, PR review, QA or Release and cannot become a merge gate.
+    """
+    if record.get("learning_contract_version") != "1" or record.get("severity") not in {"P0", "P1"}:
+        return []
+    receipt = record.get("learning")
+    if not isinstance(receipt, dict):
+        return ["VERIFIED_CLOSED requires structured P0/P1 learning receipt"]
+    errors: list[str] = []
+    required = (
+        "failure_category", "why_existing_tests_missed_it",
+        "regression_test_added", "regression_test_evidence_ref",
+        "architecture_lesson", "preventive_control",
+        "recurrence_monitor_owner",
+    )
+    for field in required:
+        value = receipt.get(field)
+        if not isinstance(value, str) or not value.strip() or len(value) > 2048:
+            errors.append(f"learning receipt missing/invalid {field}")
+    code = receipt.get("root_cause_code")
+    if (not isinstance(code, str) or not 3 <= len(code) <= 80
+            or not code[0].isalpha() or not code.isascii()
+            or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for c in code)):
+        errors.append("learning receipt invalid root_cause_code")
+    paths = receipt.get("similar_code_paths_reviewed")
+    if (not isinstance(paths, list) or not paths
+            or any(not isinstance(p, str) or not p.strip() or len(p) > 512 for p in paths)):
+        errors.append("learning receipt requires reviewed adjacent code paths")
+    errors.extend(validate_regression_fields(receipt))
+    recurrence = receipt.get("recurrence_of")
+    if (not isinstance(recurrence, list)
+            or any(not isinstance(p, str) or not p.strip() or len(p) > 128 for p in recurrence)):
+        errors.append("learning receipt recurrence_of must be an explicit list")
+    return errors
+
+
 def validate_team_record(record: dict[str, Any], *, enforce_closure: bool = True) -> list[str]:
     """Validate a team-governed record and return all errors."""
 
@@ -280,6 +333,8 @@ def validate_team_record(record: dict[str, Any], *, enforce_closure: bool = True
         errors.append(f"invalid reproduction_status: {record.get('reproduction_status')!r}")
     if not isinstance(record.get("acceptance_criteria"), list):
         errors.append("acceptance_criteria must be a list")
+    if record.get("learning_contract_version") == "1" and record.get("severity") not in {"P0", "P1", "P2", "P3"}:
+        errors.append("invalid new-incident severity for learning contract")
 
     errors.extend(validate_handoff_history(record))
 
@@ -313,6 +368,7 @@ def validate_team_record(record: dict[str, Any], *, enforce_closure: bool = True
             errors.append("PRODUCTION_VERIFIED requires production_verified=true")
         if (record.get("reporter_closure") or {}).get("status") != "FIXED_VERIFIED":
             errors.append("VERIFIED_CLOSED requires reporter FIXED_VERIFIED closure")
+        errors.extend(validate_learning_receipt(record))
 
     return errors
 
