@@ -138,7 +138,7 @@ def chronological_partition(rows: Sequence[Row], train_end: str, validation_end:
 
 
 def metric_packet(probabilities: Sequence[float], outcomes: Sequence[int], bins: int = 10) -> dict[str, float | int]:
-    if len(probabilities) != len(outcomes) or not probabilities or bins < 2:
+    if len(probabilities) != len(outcomes) or len(probabilities) == 0 or bins < 2:
         raise ResearchInputError("INVALID_METRIC_COHORT")
     ps = [_prob(p) for p in probabilities]
     if any(y not in (0, 1) or isinstance(y, bool) for y in outcomes):
