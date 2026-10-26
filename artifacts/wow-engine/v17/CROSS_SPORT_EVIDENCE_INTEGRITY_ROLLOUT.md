@@ -11,7 +11,7 @@ a spread-scoring model exists.
 ## What this change implements
 
 - One V17 shared cross-sport evidence-integrity preflight, not an NBA-only path.
-- Event identity and both-team/participant/field completeness. Team sports
+- Authoritative event snapshot, exact official participant set, immutable prediction/scorer event binding, and both-team/participant/field completeness. Team sports
   additionally require two separate reconciled personnel snapshots.
 - UTC event-time/source-time/material-change validation against actual model time;
   a post-model lineup/roster update invalidates the *current* evidence pass.
@@ -40,7 +40,7 @@ deterministic audit identity; it is not a cryptographic source signature.
 
 ## Required producer work, per certified sport
 
-1. Source official effective-time personnel/participant evidence for **both sides**
+1. Source an official event participant inventory and effective-time personnel/participant evidence for **both sides**
    or an exact field. Reconcile transactions, absences, lineup/rotation/goalie/QB/XI
    as relevant to the sport. Preserve forecast vs confirmed status.
 2. Freeze authoritative input snapshots server-side, including IDs, provenance
