@@ -147,3 +147,16 @@ def test_receipt_missing_from_manifest_reported_not_promoted():
         {"sport": "NFL", "lane": "TEAM_EVENT_WINNER", "stat_type": None}
     ]
     assert _row(result, "NFL")["readiness_status"] == "INVENTORY_NOT_ESTABLISHED"
+
+
+def test_new_sport_in_runtime_inventory_is_not_silently_dropped():
+    result = build(team_rows=[_team(sport="LACROSSE")], prop_rows=[])
+    assert result["sports_reconciled"] == len(EXPECTED_TEAM_EVENT_SPORTS) + 1
+    assert _row(result, "LACROSSE")["readiness_status"] == "ACTION_NOT_TESTED"
+
+
+def test_explicit_execution_authority_never_enters_matrix():
+    with pytest.raises(ValueError, match="execution authority"):
+        build(team_rows=[_team(can_execute=True)], prop_rows=[])
+    with pytest.raises(ValueError, match="execution authority"):
+        build(team_rows=[_team()], prop_rows=[], receipt_rows=[_receipt(can_execute=True)])
