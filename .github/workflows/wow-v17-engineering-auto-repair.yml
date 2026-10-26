@@ -1,0 +1,505 @@
+name: wow-v17-engineering-auto-repair
+
+# Auto-repair on HOLD (#1550/#1663 item 3). Triggers when WOW Independent QA exact-head
+# or WOW Release Authority exact-head publishes a failing ("HOLD") check on a
+# wow-engineering[bot] PR. Routes the typed findings through the recovery planner
+# (artifacts/wow-engine/v17/engineering_recovery_planner.py):
+# - Non-repairable findings (QA_TRUST_ROOT_*, *_OWNER_APPROVAL_MISSING) are never
+#   retried; they wait on the owner and surface in the daily digest.
+# - Repairable findings dispatch the worker to push a fix to the same branch, up to
+#   3 attempts per PR, tracked via a hidden marker comment on the PR itself.
+# - Past the cap: label `needs-owner` and stop.
+#
+# Reads with the ambient read-only GITHUB_TOKEN; only the comment/label/dispatch
+# mutations use the wow-engineering App token. can_execute=false; never merges.
+
+on:
+  workflow_run:
+    workflows: ["wow-v17-independent-qa-check", "wow-v17-release-authority-check"]
+    types: [completed]
+  schedule:
+    - cron: "23 * * * *"  # Recover dropped workflow_run events without duplicate repair.
+  workflow_dispatch:  # Authorized manual reconciliation; still bound to independent App checks.
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-engineering-auto-repair-${{ github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    # Workflow-run HEAD is protected main. Resolve failed independent-App checks
+    # against open wow-engineering[bot] PR heads, bounded by upstream run time.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
+      has_targets: ${{ steps.targets.outputs.has_targets }}
+    steps:
+      - name: Checkout protected main resolver
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Discover exact-head HOLD targets with source-pinned independent App IDs
+        id: targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
+          RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_hold_target.py \
+            --event-file "$GITHUB_EVENT_PATH" --event-name "$GITHUB_EVENT_NAME" \
+            --repository "$GITHUB_REPOSITORY" \
+            --qa-app-id "$QA_APP_ID" --release-app-id "$RELEASE_APP_ID" \
+            > "$RUNNER_TEMP/hold-targets.json"
+          jq -e '.can_execute == false and (.targets | type == "array")' \
+            "$RUNNER_TEMP/hold-targets.json" >/dev/null
+          echo "targets=$(jq -c .targets "$RUNNER_TEMP/hold-targets.json")" >> "$GITHUB_OUTPUT"
+          count=$(jq -r '.targets | length' "$RUNNER_TEMP/hold-targets.json")
+          echo "has_targets=$([ "$count" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "HOLD target count: $count" >> "$GITHUB_STEP_SUMMARY"
+          jq -c '{targets: [.targets[] | {pr_number, head_sha, source_role}], deferred, can_execute}' \
+            "$RUNNER_TEMP/hold-targets.json" >> "$GITHUB_STEP_SUMMARY"
+
+  route-hold-findings:
+    needs: discover
+    if: needs.discover.outputs.has_targets == 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.targets) }}
+    # A second QA/Release run can never race the same PR marker/lease writer.
+    concurrency:
+      group: wow-v17-hold-repair-pr-${{ matrix.pr_number }}
+      cancel-in-progress: false
+    environment: wow-engineering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Resolve exact-head PR and published HOLD checks
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          HEAD_SHA: ${{ matrix.head_sha }}
+          CHECK_ID: ${{ matrix.source_check_id }}
+          APP_ID: ${{ matrix.source_app_id }}
+          SOURCE_ROLE: ${{ matrix.source_role }}
+          QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
+          RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
+        run: |
+          set -euo pipefail
+          # The upstream workflow's HEAD is main; only independent checks on
+          # a validated PR head bind a HOLD to an Engineering App repair target.
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::HOLD_TARGET_IDENTITY_INVALID"; exit 1;
+          }
+          case "$SOURCE_ROLE:$APP_ID" in
+            "qa:$QA_APP_ID") check_name="WOW Independent QA exact-head" ;;
+            "release:$RELEASE_APP_ID") check_name="WOW Release Authority exact-head" ;;
+            *) echo "::error::HOLD_APP_IDENTITY_MISMATCH"; exit 1 ;;
+          esac
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          jq -e --arg sha "$HEAD_SHA" --arg repo "$GITHUB_REPOSITORY" \
+            '.head.sha == $sha and .state == "open" and .draft == false and
+             .base.ref == "main" and .head.repo.full_name == $repo and
+             .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || {
+            echo "::error::HOLD_PR_HEAD_STALE_OR_UNTRUSTED"; exit 1;
+          }
+          checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+            -H 'Accept: application/vnd.github+json' | jq -s '[.[].check_runs[]]')
+          latest=$(jq -c --arg name "$check_name" --arg sha "$HEAD_SHA" --argjson app "$APP_ID" \
+            '[.[] | select(.name == $name and .head_sha == $sha and .app.id == $app)]
+             | sort_by(.id) | last // null' <<<"$checks")
+          jq -e --argjson id "$CHECK_ID" \
+            '.id == $id and .status == "completed" and .conclusion == "failure"' \
+            <<<"$latest" >/dev/null || { echo "::error::HOLD_SUPERSEDED_OR_UNTRUSTED"; exit 1; }
+          summary=$(jq -er '.output.summary | select(type == "string")' <<<"$latest")
+          grep -Fq 'Typed findings:' <<<"$summary" && grep -Fq 'can_execute=false' <<<"$summary" || {
+            echo "::error::HOLD_SUMMARY_INVALID"; exit 1;
+          }
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "source_check_id=$CHECK_ID" >> "$GITHUB_OUTPUT"
+          # Check summaries are external text. Never allow multiline output injection.
+          echo "summary_b64=$(printf %s "$summary" | base64 -w0)" >> "$GITHUB_OUTPUT"
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+
+      - name: Read and increment the PR's recovery-attempt marker
+        id: attempts
+        if: steps.resolve.outputs.eligible == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          marker='<!-- WOW_RECOVERY_ATTEMPTS -->'
+          comments=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | jq -s 'add')
+          # Only the authenticated Engineering App may own recovery budget state.
+          # An owner/user/bot lookalike marker must never consume or reset retries.
+          marker_comment=$(jq -c --arg marker "$marker" \
+            '[.[] | select(.user.login == "wow-engineering[bot]" and (.body | contains($marker)))] | sort_by(.updated_at // .created_at, .id) | last // null' <<<"$comments")
+          comment_id=$(jq -r '.id // empty' <<<"$marker_comment")
+          if [ -n "$comment_id" ]; then
+            attempts=$(jq -er '.body | capture("(?m)^- attempts: (?<n>[0-9]+)$").n' <<<"$marker_comment") || {
+              echo "::error::RECOVERY_ATTEMPT_MARKER_INVALID"; exit 1;
+            }
+          else
+            attempts=0
+          fi
+          # A check that was already dispatched for this PR *head* cannot
+          # consume another attempt. A later new head can consume the next slot.
+          already_dispatched=false
+          if [ -n "$comment_id" ]; then
+            recorded_head=$(jq -er '.body | capture("(?m)^- head_sha: (?<sha>[0-9a-f]{40})$").sha' \
+              <<<"$marker_comment") || {
+              echo "::error::RECOVERY_MARKER_HEAD_INVALID_OR_LEGACY"; exit 1;
+            }
+            if [ "$recorded_head" = "$HEAD_SHA" ]; then
+              already_dispatched=true
+            fi
+          fi
+          echo "comment_id=${comment_id:-}" >> "$GITHUB_OUTPUT"
+          echo "attempts=$attempts" >> "$GITHUB_OUTPUT"
+          echo "already_dispatched=$already_dispatched" >> "$GITHUB_OUTPUT"
+
+      - name: Plan recovery
+        id: plan
+        if: steps.resolve.outputs.eligible == 'true' && steps.attempts.outputs.already_dispatched != 'true'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HOLD_SUMMARY_B64: ${{ steps.resolve.outputs.summary_b64 }}
+          ATTEMPTS: ${{ steps.attempts.outputs.attempts }}
+        run: |
+          set -euo pipefail
+          summary=$(printf %s "$HOLD_SUMMARY_B64" | base64 --decode)
+          python artifacts/wow-engine/v17/engineering_recovery_planner.py \
+            --pr-number "$PR_NUMBER" \
+            --summary "$summary" \
+            --attempts "$ATTEMPTS" \
+            --is-wow-engineering-pr \
+            | tee "$RUNNER_TEMP/recovery-plan.json"
+          echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+          echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Reserve exact-head recovery before dispatch (fail closed on ambiguous outcome)
+        id: reservation
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
+          NEW_ATTEMPTS: ${{ steps.plan.outputs.new_attempts }}
+          COMMENT_ID: ${{ steps.attempts.outputs.comment_id }}
+        run: |
+          set -euo pipefail
+          # Reserve before the non-idempotent workflow_dispatch POST. An HTTP
+          # timeout after dispatch but before receiving its response must not
+          # cause another dispatch of the same head on the next cycle.
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ "$NEW_ATTEMPTS" =~ ^[1-3]$ ]] || {
+            echo "::error::RECOVERY_RESERVATION_INVALID"; exit 1;
+          }
+          body="<!-- WOW_RECOVERY_ATTEMPTS -->
+          ### WOW V17 auto-repair
+          - attempts: ${NEW_ATTEMPTS}
+          - head_sha: ${HEAD_SHA}
+          - source_check_id: ${SOURCE_CHECK_ID}
+          - accepted: false
+          - state: DISPATCH_RESERVED
+          - can_execute: false"
+          if [ -n "${COMMENT_ID:-}" ]; then
+            response=$(gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -f body="$body")
+          else
+            response=$(gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body")
+          fi
+          new_id=$(jq -er '.id | select(type == "number" and . > 0)' <<<"$response") || {
+            echo "::error::RECOVERY_RESERVATION_ACK_UNREADABLE"; exit 1;
+          }
+          echo "comment_id=$new_id" >> "$GITHUB_OUTPUT"
+          echo "claimed=true" >> "$GITHUB_OUTPUT"
+          echo "Recovery reserved PR #$PR_NUMBER SHA $HEAD_SHA; ambiguous dispatch MUST be reconciled, not repeated." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch exact-head repair to Engineering App worker
+        id: targeted_dispatch
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'DISPATCH_REPAIR' && steps.reservation.outputs.claimed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
+          SOURCE_APP_ID: ${{ matrix.source_app_id }}
+          SOURCE_ROLE: ${{ matrix.source_role }}
+          ANTHROPIC_AVAILABLE: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")
+          jq -e --arg sha "$HEAD_SHA" '.head.sha == $sha and .state == "open" and .user.login == "wow-engineering[bot]"' <<<"$pr" >/dev/null || { echo "::error::REPAIR_HEAD_STALE"; exit 1; }
+          body=$(jq -r '.body // ""' <<<"$pr")
+          # Same strict incident parser in both OpenAI and Claude recovery paths.
+          # Accept #1688 / `1688` / 1688, never missing or conflicting fields.
+          incident=$(printf '%s\n' "$body" | python artifacts/wow-engine/v17/engineering_incident_identity.py) || {
+            echo "::error::REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS"; exit 1;
+          }
+          issue=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${incident}")
+          jq -e '.state == "open"' <<<"$issue" >/dev/null || { echo "::error::REPAIR_INCIDENT_NOT_OPEN"; exit 1; }
+          # Route only an existing manifest-authorized incident. GitHub is the
+          # source of open/closed state, while the manifest owns lease identity.
+          record=$(jq -c --argjson issue "$incident" \
+            '[.restoration[], .acceleration[]] | map(select(.issue_number == $issue)) | first // empty' \
+            artifacts/wow-engine/v17/engineering_dispatch_manifest.json)
+          [ -n "$record" ] || { echo "::error::REPAIR_INCIDENT_NOT_IN_APPROVED_MANIFEST"; exit 1; }
+          severity=$(jq -r '.severity' <<<"$record")
+          lane=$(jq -r '.execution_lane // "STANDARD"' <<<"$record")
+          lease_group=$(jq -r '.lease_group // "GLOBAL"' <<<"$record")
+          label=$(jq -r --arg severity "$severity" '[.labels[].name] | index($severity) != null' <<<"$issue")
+          [ "$label" = "true" ] || { echo "::error::REPAIR_INCIDENT_SEVERITY_MISMATCH"; exit 1; }
+          if [ "$severity" = P0 ] && [ "$lane" = RAPID ]; then
+            [[ "$lease_group" =~ ^P0_[A-Z0-9_]+$ ]] || { echo "::error::REPAIR_P0_DOMAIN_LEASE_MISSING"; exit 1; }
+          elif [ "$severity" = P1 ] && [ "$lane" = STANDARD ]; then
+            [ "$lease_group" = GLOBAL ] || { echo "::error::REPAIR_P1_LEASE_MISMATCH"; exit 1; }
+          else
+            echo "::error::REPAIR_TARGET_UNSUPPORTED_CLASS" && exit 1
+          fi
+          # QA/Release may have replaced a failing check with PASS while we
+          # planned the attempt. Re-read right before dispatch; never route a
+          # superseded HOLD even though its SHA and incident remain unchanged.
+          [[ "$SOURCE_CHECK_ID" =~ ^[1-9][0-9]*$ ]] && [[ "$SOURCE_APP_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::DISPATCH_CHECK_ID_INVALID"; exit 1;
+          }
+          case "$SOURCE_ROLE" in
+            qa) source_check_name="WOW Independent QA exact-head" ;;
+            release) source_check_name="WOW Release Authority exact-head" ;;
+            *) echo "::error::DISPATCH_ROLE_INVALID"; exit 1 ;;
+          esac
+          recent_checks=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+            -H 'Accept: application/vnd.github+json' | jq -s '[.[].check_runs[]]')
+          latest_authored=$(jq -c --arg sha "$HEAD_SHA" --arg name "$source_check_name" --argjson app "$SOURCE_APP_ID" \
+            '[.[] | select(.head_sha == $sha and .name == $name and .app.id == $app)]
+             | sort_by(.id) | last // null' <<<"$recent_checks")
+          jq -e --argjson id "$SOURCE_CHECK_ID" \
+            '.id == $id and .status == "completed" and .conclusion == "failure"' \
+            <<<"$latest_authored" >/dev/null || {
+            echo "::error::DISPATCH_HOLD_SUPERSEDED_REQUIRES_RECONCILIATION"; exit 1;
+          }
+          # Reuse the existing governed provider classifier, not an arbitrary
+          # narrative failure. Only a typed failover-eligible OpenAI failure
+          # permits Claude to assume this *same* incident/PR/head/lease identity.
+          provider=openai
+          latest=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow wow-v17-chatgpt-engineering-worker.yml \
+            --status completed --limit 1 --json databaseId,conclusion)
+          recent_id=$(jq -r '.[0].databaseId // empty' <<<"$latest")
+          recent_conclusion=$(jq -r '.[0].conclusion // ""' <<<"$latest")
+          if [ "${ANTHROPIC_AVAILABLE:-false}" = "true" ] &&
+             [[ "$recent_id" =~ ^[1-9][0-9]*$ ]] && [ "$recent_conclusion" = "failure" ]; then
+            gh run view "$recent_id" --repo "$GITHUB_REPOSITORY" --log-failed \
+              > "$RUNNER_TEMP/openai-failure.log" 2>&1 || true
+            classification=$(python artifacts/wow-engine/v17/engineering_provider_failover.py classify \
+              --provider openai --log-file "$RUNNER_TEMP/openai-failure.log")
+            if [ "$(jq -r '.failover_eligible' <<<"$classification")" = "true" ]; then
+              provider=anthropic
+            fi
+          fi
+          if [ "$provider" = "anthropic" ]; then
+            gh workflow run wow-v17-claude-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
+              -f fallback_reason=OPENAI_PROVEN_PROVIDER_FAILURE \
+              -f parent_run_id="${recent_id}" \
+              -f target_incident="$incident" -f lease_group="$lease_group" \
+              -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
+          else
+            gh workflow run wow-v17-chatgpt-engineering-worker.yml --repo "$GITHUB_REPOSITORY" --ref main \
+              -f target_incident="$incident" -f lease_group="$lease_group" \
+              -f repair_pr="$PR_NUMBER" -f repair_head_sha="$HEAD_SHA"
+          fi
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
+          echo "accepted=true" >> "$GITHUB_OUTPUT"
+          echo "Targeted dispatch accepted: PR #$PR_NUMBER incident #$incident expected SHA $HEAD_SHA ($severity/$lease_group)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record recovery attempt after accepted dispatch
+        if: steps.targeted_dispatch.outputs.accepted == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          COMMENT_ID: ${{ steps.reservation.outputs.comment_id }}
+          NEW_ATTEMPTS: ${{ steps.plan.outputs.new_attempts }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          SOURCE_CHECK_ID: ${{ steps.resolve.outputs.source_check_id }}
+        run: |
+          set -euo pipefail
+          body="<!-- WOW_RECOVERY_ATTEMPTS -->
+          ### WOW V17 auto-repair
+          - attempts: ${NEW_ATTEMPTS}
+          - head_sha: ${HEAD_SHA}
+          - source_check_id: ${SOURCE_CHECK_ID}
+          - accepted: true
+          - state: DISPATCH_ACCEPTED
+          - can_execute: false"
+          if [ -n "${COMMENT_ID:-}" ]; then
+            gh api --method PATCH "/repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -f body="$body" >/dev/null
+          else
+            gh api --method POST "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$body" >/dev/null
+          fi
+
+      - name: Label needs-owner past the retry cap
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'NEEDS_OWNER_RETRY_CAP'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label needs-owner
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
+            --body "NEEDS_OWNER_RETRY_CAP: 3 automatic repair attempts exhausted. Stopping; this PR now requires a human. can_execute=false."
+          echo "PR #${PR_NUMBER}: retry cap exhausted, labelled needs-owner." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record waiting on CI evidence (non-repairable yet)
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_EVIDENCE'
+        shell: bash
+        run: |
+          echo "PR #${{ matrix.pr_number }}: incomplete CI/QA evidence; no repair dispatched or retry consumed. Await fresh independent verdict." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record waiting-on-owner (non-repairable finding)
+        if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_OWNER'
+        shell: bash
+        run: |
+          echo "PR #${{ steps.resolve.outputs.pr_number }}: non-repairable trust-root/owner-approval finding; waiting on owner (see daily digest), not retried." >> "$GITHUB_STEP_SUMMARY"
+
+  adopt-reviewed-owner-source:
+    # Reuse this existing hourly/QA HOLD controller. This is NOT another queue,
+    # scheduler or certification authority. Discover one exact-head source only.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+    environment: wow-engineering
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout protected main, never PR code as authority
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Mint authenticated Engineering App token
+        id: engineering_app
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Verify independent App identity available
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.engineering_app.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          [ "$KEY_PRESENT" = "true" ] || {
+            echo "::error::ENGINEERING_APP_IDENTITY_UNAVAILABLE"
+            exit 1
+          }
+
+      - name: Select one independently re-proposable source
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_authorized_adoption.py discover \
+            --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/wow-source-adoption.json"
+          jq -e '.can_execute == false and (.status == "SOURCE_READY" or .status == "NO_ELIGIBLE_SOURCE")' \
+            "$RUNNER_TEMP/wow-source-adoption.json" >/dev/null
+          jq -c '{status, pr_number, source_sha, can_execute}' \
+            "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$(jq -r .status "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(jq -r '.pr_number // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(jq -r '.source_sha // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Re-propose immutable source through authenticated Engineering App
+        if: steps.source.outputs.status == 'SOURCE_READY'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.engineering_app.outputs.token }}
+          SOURCE_PR: ${{ steps.source.outputs.pr_number }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          WOW_CAN_EXECUTE: "false"
+          WOW_DRY_RUN_ONLY: "true"
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_authorized_adoption.py integrate \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA" \
+            | tee "$RUNNER_TEMP/wow-app-adoption-result.json"
+          jq -e '.status == "PR_CREATED_PENDING_INDEPENDENT_REVIEW" and
+            .bootstrap_status == "OWNER_EXACT_HEAD_APPROVAL_REQUIRED" and
+            .source_review_status == "REQUIRED_PENDING" and
+            .source_review_workflow == "wow-v17-independent-qa-check" and
+            .source_review_head_sha == .sha and
+            .independent_source_review_complete == false and
+            .required_owner_approval_head == .sha and .can_execute == false' \
+            "$RUNNER_TEMP/wow-app-adoption-result.json" >/dev/null
+          jq -c '{status, bootstrap_status, source_review_status, source_review_head_sha,
+            independent_source_review_complete, required_owner_approval_head, pr, sha,
+            source_sha, can_execute}' \
+            "$RUNNER_TEMP/wow-app-adoption-result.json" >> "$GITHUB_STEP_SUMMARY"

@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import json
+
 import pytest
 
 from v17.sirt_assurance import assess_sentinel, assess_class_a_closure, failure_families, CLOSURE_EVIDENCE
@@ -144,8 +146,10 @@ def test_independent_watchdog_is_separate_from_resident_auditor():
 
     workflow = (Path(__file__).resolve().parents[2]
                 / ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
-    assert "schedule:" in workflow
-    assert 'cron: "7,22,37,52 * * * *"' in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "  schedule:" not in workflow
+    assert "  push:" not in workflow
+    assert "  workflow_run:" not in workflow
     assert "sirt_assurance.py sentinel" in workflow
     assert "secrets.SUPABASE_SERVICE_ROLE_KEY" in workflow
     assert "if: always()" in workflow
@@ -265,23 +269,20 @@ def test_independent_sirt_schedule_can_enforce_resident_dispatcher_after_activat
 
 
 
-def test_sirt_watchdog_has_independent_event_trigger_for_existing_hourly_loop():
-    """A missing cron run must not silently prevent the first watchdog canary.
-
-    Event redundancy is same-domain only; it does NOT certify 24/7 resilience.
-    """
+def test_sirt_manual_diagnostic_is_read_only_and_not_a_second_scheduler():
+    """Render is the sole independent scheduler; GitHub is manual diagnostics only."""
     from pathlib import Path
     wf = (Path(__file__).resolve().parents[2] /
           ".github/workflows/wow-sirt-independent-reliability-sentinel.yml").read_text()
-    assert 'cron: "7,22,37,52 * * * *"' in wf
-    assert "  workflow_run:\n    workflows:\n      - wow-v17-24h-engineering-closure-loop\n    types: [completed]" in wf
-    assert '  push:\n    branches: [main]\n    paths:\n      - ".github/workflows/wow-sirt-independent-reliability-sentinel.yml"' in wf
+    assert "workflow_dispatch:" in wf
+    assert "  schedule:" not in wf
+    assert "  push:" not in wf
+    assert "  workflow_run:" not in wf
     assert "  contents: read" in wf and "  actions: read" in wf
     for forbidden in ("  contents: write", "  actions: write", "  pull-requests: write",
                       "  issues: write", "  deployments: write", "  id-token: write"):
         assert forbidden not in wf
-    assert "workflow_dispatch:" in wf
-    assert 'vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT' in wf
+    assert "vars.WOW_SIRT_REQUIRE_ENGINEERING_RESIDENT_HEARTBEAT" in wf
 
 
 def test_sirt_incident_history_step_receives_same_supabase_source_as_heartbeat():
@@ -304,3 +305,52 @@ def test_sirt_incident_history_step_receives_same_supabase_source_as_heartbeat()
     assert "sirt_assurance.py failures" in history["run"]
     assert "actions: read" in wf_path.read_text()
     assert "actions: write" not in wf_path.read_text()
+
+
+def _sentinel_workflow():
+    from pathlib import Path
+    import yaml
+
+    path = (Path(__file__).resolve().parents[2]
+            / ".github/workflows/wow-sirt-independent-reliability-sentinel.yml")
+    return path.read_text(), yaml.safe_load(path.read_text())
+
+
+@pytest.mark.parametrize("exit_code", [1, 2])
+def test_blocked_sentinel_prints_evidence_under_runner_bash_e(tmp_path, exit_code):
+    """Regression for run 40063008845: bash -e aborted before the evidence was printed."""
+    import os
+    import subprocess
+
+    _, wf = _sentinel_workflow()
+    step = next(s for s in wf["jobs"]["watchdog"]["steps"]
+                if s.get("name") == "Evaluate independent heartbeat and governance")
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    verdict = {"status": "BLOCKED", "can_execute": False, "signals": [
+        {"type": "AUDITOR_HEALTH", "identity": "WOW_ENGINEERING_AUDITOR",
+         "severity": "P1", "reason": "AUDITOR_NOT_RUNNING"}]}
+    (bindir / "python").write_text(
+        f"#!/bin/sh\nprintf '%s\\n' '{json.dumps(verdict)}'\nexit {exit_code}\n")
+    (bindir / "python").chmod(0o755)
+    summary = tmp_path / "summary"
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+        env=dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
+                 RUNNER_TEMP=str(tmp_path), GITHUB_STEP_SUMMARY=str(summary)),
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == exit_code
+    assert "AUDITOR_NOT_RUNNING" in proc.stdout
+    text = summary.read_text()
+    assert "SIRT watchdog blocked" in text
+    assert "- P1 AUDITOR_HEALTH WOW_ENGINEERING_AUDITOR: AUDITOR_NOT_RUNNING" in text
+    assert "OBSERVED_HEALTHY" not in text
+
+
+def test_manual_sirt_diagnostic_runs_are_serial_and_cannot_forge_liveness():
+    text, wf = _sentinel_workflow()
+    assert wf["concurrency"]["group"] == "wow-sirt-independent-reliability-sentinel-manual"
+    assert wf["concurrency"]["cancel-in-progress"] is False
+    assert "workflow_dispatch:" in text
+    assert "  schedule:" not in text

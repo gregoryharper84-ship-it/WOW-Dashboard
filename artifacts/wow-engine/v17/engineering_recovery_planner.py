@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Route typed QA/Release HOLD findings to repair or to the owner (#1550/#1663 item 3).
+
+Pure decision logic: no network I/O. The caller supplies the typed findings from
+`independent_release_checks.decision()` for a wow-engineering[bot] PR, plus how many
+repair attempts have already been dispatched for that PR, and this module decides
+whether to dispatch another repair, declare the PR waiting on the owner, or do nothing.
+
+Non-repairable findings (trust-root ownership/approval findings) are never retried,
+regardless of attempt count: they require the owner, not another repair attempt.
+can_execute=false throughout; this module never merges, dispatches a deploy, or grants
+bypass. It only classifies.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from typing import Any
+
+_FINDING_CODE_RE = re.compile(r"`([A-Z][A-Z0-9_]*(?::[^`\r\n]{1,160})?)`")
+
+MAX_REPAIR_ATTEMPTS = 3
+NEEDS_OWNER_LABEL = "needs-owner"
+
+# Matches the typed findings produced by independent_release_checks.py / existing-PR
+# governance review: QA_TRUST_ROOT_OWNER_AUTHORED, QA_TRUST_ROOT_OWNER_APPROVAL_MISSING,
+# RELEASE_TRUST_ROOT_OWNER_APPROVAL_MISSING, EXISTING_PR_R3_CERTIFICATION_DENIED-style
+# owner-approval gaps, etc. These are ownership/approval facts, not repairable code defects.
+NON_REPAIRABLE_PREFIXES = ("QA_TRUST_ROOT_",)
+NON_REPAIRABLE_SUFFIXES = ("_OWNER_APPROVAL_MISSING",)
+# A missing upstream check is not a code defect. Wait for that check to finish,
+# then independent QA/Release will publish a fresh exact-head verdict.
+EVIDENCE_PENDING_PREFIXES = (
+    "QA_EVIDENCE_MISSING:", "QA_EVIDENCE_INCOMPLETE:",
+    "RELEASE_QA_EVIDENCE_MISSING:", "RELEASE_QA_EVIDENCE_INCOMPLETE:",
+)
+EVIDENCE_PENDING_CODES = frozenset({"RELEASE_QA_MISSING", "RELEASE_QA_FAILED"})
+
+
+def parse_findings_from_summary(summary: str) -> list[str]:
+    """Extract typed finding codes from a published check-run summary.
+
+    `independent_release_checks.decision()` renders failures as
+    "Typed findings:\\n- `CODE_ONE`\\n- `CODE_TWO`" — every backtick-quoted
+    SHOUTING_CASE token in the summary is a finding code.
+    """
+    return _FINDING_CODE_RE.findall(summary)
+
+
+def is_repairable_finding(code: str) -> bool:
+    if any(code.startswith(prefix) for prefix in NON_REPAIRABLE_PREFIXES):
+        return False
+    if any(code.endswith(suffix) for suffix in NON_REPAIRABLE_SUFFIXES):
+        return False
+    return True
+
+
+def plan_recovery(
+    *,
+    pr_number: int,
+    findings: list[str],
+    attempts: int,
+    is_wow_engineering_pr: bool,
+) -> dict[str, Any]:
+    """Decide the next action for one PR's HOLD outcome.
+
+    `attempts` is how many repairs have already been dispatched for this exact PR
+    before this call (0 on the first HOLD). The returned `attempts` is what the caller
+    should persist going forward.
+    """
+    if not is_wow_engineering_pr:
+        return {
+            "pr_number": pr_number,
+            "action": "IGNORE",
+            "reason": "not a wow-engineering[bot] PR; never auto-repaired here",
+            "can_execute": False,
+        }
+    if not findings:
+        return {
+            "pr_number": pr_number,
+            "action": "NONE",
+            "reason": "no HOLD findings to repair",
+            "attempts": attempts,
+            "can_execute": False,
+        }
+
+    non_repairable = [f for f in findings if not is_repairable_finding(f)]
+    if non_repairable:
+        return {
+            "pr_number": pr_number,
+            "action": "WAITING_ON_OWNER",
+            "findings": list(findings),
+            "non_repairable_findings": non_repairable,
+            "attempts": attempts,
+            "can_execute": False,
+        }
+
+    # Do not burn the recovery budget because QA evaluated before CI finished,
+    # or because Release observed a not-yet-passing QA check.
+    pending = [f for f in findings if f in EVIDENCE_PENDING_CODES or
+               any(f.startswith(prefix) for prefix in EVIDENCE_PENDING_PREFIXES)]
+    if pending:
+        return {
+            "pr_number": pr_number,
+            "action": "WAITING_ON_EVIDENCE",
+            "findings": list(findings),
+            "pending_findings": pending,
+            "attempts": attempts,
+            "can_execute": False,
+        }
+
+    if attempts >= MAX_REPAIR_ATTEMPTS:
+        return {
+            "pr_number": pr_number,
+            "action": "NEEDS_OWNER_RETRY_CAP",
+            "label": NEEDS_OWNER_LABEL,
+            "findings": list(findings),
+            "attempts": attempts,
+            "can_execute": False,
+        }
+
+    return {
+        "pr_number": pr_number,
+        "action": "DISPATCH_REPAIR",
+        "findings": list(findings),
+        "attempts": attempts + 1,
+        "can_execute": False,
+    }
+
+
+def _cmd_plan(args: argparse.Namespace) -> int:
+    if args.summary is not None:
+        findings = parse_findings_from_summary(args.summary)
+    else:
+        findings = json.loads(args.findings_json)
+    result = plan_recovery(
+        pr_number=args.pr_number,
+        findings=findings,
+        attempts=args.attempts,
+        is_wow_engineering_pr=args.is_wow_engineering_pr,
+    )
+    print(json.dumps(result))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pr-number", required=True, type=int)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--findings-json", help="JSON array of typed finding codes")
+    group.add_argument("--summary", help="Published check-run summary text to parse findings from")
+    parser.add_argument("--attempts", required=True, type=int)
+    parser.add_argument("--is-wow-engineering-pr", action="store_true")
+    parser.set_defaults(func=_cmd_plan)
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

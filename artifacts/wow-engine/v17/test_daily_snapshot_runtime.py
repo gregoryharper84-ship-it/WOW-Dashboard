@@ -30,8 +30,14 @@ class Query:
 
 
 class DB:
-    def __init__(self): self.acquisition_rows = []
+    def __init__(self):
+        self.acquisition_rows = []
+        # Real row-detail readback must see rows written by a prior Query.
+        # This test fake intentionally preserves the upsert across table() calls.
+        self.row_detail_rows = []
     def table(self, name):
+        if name == "wow_v17_daily_run_row_detail":
+            return Query(self.row_detail_rows)
         if name == "wow_prop_evidence_snapshots":
             return Query([{"source_snapshot_id":"snap-prop","event_id":"p1","event_start_time":FUTURE,"sport":"MLB","player":"P","stat_type":"strikeouts","line":4.5,"hydration_status":"PASS","blockers":[]}])
         if name == "wow_v17_daily_run_acquisition_detail":
@@ -77,6 +83,9 @@ def governed_team_result():
 
 
 def test_daily_snapshot_returns_one_terminal_receipt_per_selected_row(monkeypatch):
+    # The fixture is a canonical two-row test: an independently scheduled
+    # cross-sport provider scan is not a third synthetic candidate.
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
     monkeypatch.setattr("v17.daily_snapshot_runtime.score_team_event_request", lambda *_args, **_kwargs: governed_team_result())
     # Keep this row/terminal contract test independent of the process-global
     # production installer that can force a fresh provider acquisition when the
@@ -166,7 +175,10 @@ def test_daily_uses_server_owned_canonical_hydration_for_moneyline(monkeypatch):
     assert result["rows"][0]["row_status"]=="COMPLETED"
 
 
-def test_zero_row_query_failures_are_typed_as_data_unobtainable():
+def test_zero_row_query_failures_are_typed_as_data_unobtainable(monkeypatch):
+    # A broken canonical database must be tested without separately acquired
+    # cross-sport rows masking the MONEYLINE zero-row classification.
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
     class BrokenQuery(Query):
         def execute(self): raise ConnectionError("boom")
     class BrokenDB:
@@ -325,6 +337,29 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     )
     monkeypatch.setattr(feed, "odds_proxy_feed", lambda **kwargs: slate)
     monkeypatch.setattr(feed, "rundown_board_feed", lambda **kwargs: slate)
+    # The full-suite runner can otherwise inherit a short provider time budget;
+    # this deterministic in-memory feed must walk every configured target.
+    monkeypatch.setattr(discovery, "discovery_budget_seconds", lambda: 600.0)
+
+    # Any earlier test that imports an API module boots the app and installs the
+    # production discovery overlays, which canonicalize NHL aliases against the
+    # live first-party NHL schedule. That schedule is an upstream source too, so
+    # stub it deterministically; otherwise this test depends on suite order.
+    from v17 import nhl_event_identity
+
+    def _nhl_schedule_match(*, event_start_time, home_team, away_team, **_kwargs):
+        return {
+            "event_id": "nhl-1",
+            "event_start_time": event_start_time,
+            "home_team": home_team,
+            "away_team": away_team,
+            "identity_provider": "NHL_PUBLIC_WEB_API",
+            "identity_verified_at": FUTURE,
+            "market_features_used": False,
+        }
+
+    monkeypatch.setattr(nhl_event_identity, "resolve_nhl_current_event_identity", _nhl_schedule_match)
+
 
     # No non-MLB bridge is registered, so every discovered non-MLB row must be
     # retained as MODEL_UNAVAILABLE rather than disappear from the board.
@@ -351,7 +386,10 @@ def test_moneyline_lane_retains_unsupported_sports_instead_of_shrinking_to_mlb(m
     reconciliation = audit["reconciliation"]
     assert reconciliation["row_reconciliation"] == "PASS"
     assert reconciliation["events_accounted"] == reconciliation["events_discovered"]
-    assert reconciliation["retained_unsupported_rows"] >= 3
+    assert reconciliation["retained_unsupported_rows"] >= 3, (
+        "Missing-model candidates were silently altered: "
+        + repr([(r["identity"].get("sport"), r["result"].get("bucket"), r["result"].get("model_status")) for r in moneyline_rows])
+    )
     # Every supported sport was *queried*, not just the ones with a model.
     assert audit["discovery"]["sports_queried"] == list(discovery.SUPPORTED_DISCOVERY_SPORTS)
     assert audit["discovery"]["discovery_independent_of_model_registry"] is True

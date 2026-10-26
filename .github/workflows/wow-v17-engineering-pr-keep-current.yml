@@ -1,0 +1,102 @@
+name: wow-v17-engineering-pr-keep-current
+
+# Keeps open, non-draft wow-engineering[bot] PRs up to date with protected main so the
+# required "up to date" branch-protection check keeps passing without a human rebasing
+# anything. (#1550/#1663 item 2.)
+#
+# Scope:
+# - Only PRs authored by wow-engineering[bot], open, non-draft, and reported
+#   `mergeable_state == "behind"` are touched. artifacts/wow-engine/v17/engineering_pr_keep_current.py
+#   is the single source of truth for that selection; see its tests.
+# - A real conflict (`mergeable_state == "dirty"`, or the update-branch call itself
+#   returning 409/422) is never retried: the PR is preserved and a typed
+#   PR_UPDATE_CONFLICT comment is posted instead.
+# - Never merges, never enables bypass, never touches a PR from any other author.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: wow-v17-engineering-pr-keep-current
+  cancel-in-progress: false
+
+jobs:
+  keep-current:
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && vars.WOW_ENGINEERING_APP_ID != ''
+    environment: wow-engineering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Mint wow-engineering App token
+        id: eng_token
+        uses: ./.github/actions/wow-engineering-token
+        with:
+          app-id: ${{ vars.WOW_ENGINEERING_APP_ID }}
+          app-private-key: ${{ secrets.WOW_ENGINEERING_APP_PRIVATE_KEY }}
+
+      - name: Require Engineering App identity
+        shell: bash
+        env:
+          KEY_PRESENT: ${{ steps.eng_token.outputs.key-present }}
+        run: |
+          set -euo pipefail
+          if [ "${KEY_PRESENT:-false}" != "true" ]; then
+            echo "::error::ENGINEERING_APP_CREDENTIAL_MISSING: WOW_ENGINEERING_APP_ID / WOW_ENGINEERING_APP_PRIVATE_KEY not configured."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Update every behind-main wow-engineering PR; comment on real conflicts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          # The list endpoint never reports mergeable_state; only cheaply filter here
+          # (author + draft), then resolve the real candidates one at a time below.
+          candidates=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq '[.[] | select((.user.login // "") == "wow-engineering[bot]") | select(.draft == false) | .number]')
+          echo "Same-identity open PR candidates: $candidates" >> "$GITHUB_STEP_SUMMARY"
+
+          for pr_number in $(jq -r '.[]' <<<"$candidates"); do
+            detail=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")
+            plan=$(python artifacts/wow-engine/v17/engineering_pr_keep_current.py plan \
+              --prs-json <(jq -c '[.]' <<<"$detail"))
+            target=$(jq -r '.[0].number // empty' <<<"$plan")
+            head_sha=$(jq -r '.[0].expected_head_sha // empty' <<<"$plan")
+            if [ -z "$target" ]; then
+              echo "PR #$pr_number: not behind main; no update needed." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            set +e
+            out=$(gh api --method PUT "/repos/${GITHUB_REPOSITORY}/pulls/${target}/update-branch" \
+              -f expected_head_sha="$head_sha" 2>&1)
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              echo "Updated PR #$target to track main (expected_head_sha=$head_sha)." >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            comment=$(python artifacts/wow-engine/v17/engineering_pr_keep_current.py conflict-comment --pr-number "$target")
+            body=$(jq -r '.body' <<<"$comment")
+            gh pr comment "$target" --repo "$GITHUB_REPOSITORY" --body "$body"
+            echo "PR #$target: PR_UPDATE_CONFLICT (preserved, not retried): $out" >> "$GITHUB_STEP_SUMMARY"
+          done

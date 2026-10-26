@@ -1,0 +1,183 @@
+# Isolated PostgreSQL proof only; never connects to production Supabase or Render.
+# Review-required Class B change. No write scopes, no secrets, no release mutation.
+name: wow-v17-release-fence-postgres-proof
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/wow-v17-release-fence-postgres-proof.yml'
+      - 'artifacts/wow-engine/v17/render_release_service_fence_candidate.py'
+      - 'artifacts/wow-engine/migrations/20261018_release_service_state_fence_REVIEW_ONLY.sql'
+      - 'artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py'
+      - 'artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py'
+      - 'artifacts/wow-engine/migrations/20261018_release_rpc_boundary_REVIEW_ONLY.sql'
+      - 'artifacts/wow-engine/tests/test_render_release_rpc_postgres.py'
+      - 'artifacts/wow-engine/migrations/20261018_release_observer_RECOVERY_REVIEW_ONLY.sql'
+      - 'artifacts/wow-engine/tests/test_render_release_recovery_postgres.py'
+      - '.github/workflows/wow-v17-render-production-deploy.yml'
+      - 'artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py'
+      - 'artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py'
+      - 'artifacts/wow-engine/v17/render_deployment_pointer.py'
+      - 'artifacts/wow-engine/v17/test_render_deployment_pointer.py'
+permissions:
+  contents: read
+  id-token: write # OIDC only for signed *test-evidence* provenance
+  attestations: write # restricted to GitHub artifact attestations; no source/deploy write
+  artifact-metadata: write
+concurrency:
+  group: wow-v17-pg-proof-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+jobs:
+  isolated-postgres-race-proof:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_DB: wow_release_fence_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-ci-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d wow_release_fence_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGDATABASE: wow_release_fence_test
+      PGUSER: postgres
+      PGPASSWORD: local-ci-test-only
+      WOW_RELEASE_ISOLATED_TEST_DSN: postgresql://postgres:local-ci-test-only@127.0.0.1:5432/wow_release_fence_test
+      WOW_RELEASE_ISOLATED_TEST_ATTESTATION: NONPRODUCTION_EPHEMERAL_ONLY
+    steps:
+      - name: Checkout exact same-repo pull-request head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Establish exact-head chain of custody
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          mkdir -p release-evidence
+          printf 'repository=%s\nsource_sha=%s\nrun_id=%s\nrun_attempt=%s\nevent=%s\n' \
+            "${{ github.repository }}" \
+            "${{ github.event.pull_request.head.sha }}" \
+            "${{ github.run_id }}" \
+            "${{ github.run_attempt }}" \
+            "${{ github.event_name }}" > release-evidence/source-identity.txt
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - name: Install pinned test dependencies
+        run: python -m pip install 'psycopg[binary]==3.2.10' 'pytest==8.4.2'
+      - name: Prepare ephemeral local PostgreSQL roles
+        shell: bash
+        run: |
+          set -euo pipefail
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE anon NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE authenticated NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_fence_owner NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_controller NOLOGIN;"
+          # Isolated CI only: exercise a *real authenticated PostgreSQL login*
+          # with narrow EXECUTE rights; never reuse this password or grant in production.
+          psql -X -v ON_ERROR_STOP=1 -c "ALTER ROLE wow_release_controller LOGIN PASSWORD 'CI_FENCE_EPHEMERAL_ONLY';"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_observer NOLOGIN;"
+          psql -X -v ON_ERROR_STOP=1 -c "CREATE ROLE wow_release_verifier NOLOGIN;"
+      - name: Apply review schema ONLY to isolated local PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$PGDATABASE" = wow_release_fence_test
+          test "$PGHOST" = localhost
+          psql -X -v ON_ERROR_STOP=1 \
+            -f artifacts/wow-engine/migrations/20261018_release_service_state_fence_REVIEW_ONLY.sql
+          psql -X -v ON_ERROR_STOP=1 -c "GRANT USAGE, CREATE ON SCHEMA wow_release_control TO wow_release_fence_owner;"
+          psql -X -v ON_ERROR_STOP=1 -c "GRANT SELECT, INSERT, UPDATE ON wow_release_control.service_fence, wow_release_control.release_intent TO wow_release_fence_owner;"
+          psql -X -v ON_ERROR_STOP=1 \
+            -f artifacts/wow-engine/migrations/20261018_release_rpc_boundary_REVIEW_ONLY.sql
+          psql -X -v ON_ERROR_STOP=1 \
+            -f artifacts/wow-engine/migrations/20261018_release_observer_RECOVERY_REVIEW_ONLY.sql
+      - name: Run offline and actual two-connection PostgreSQL tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Scope collection to the release-fence proof suite. The unrelated
+          # engine-wide conftest imports Celery and is exercised by normal CI,
+          # not by this standalone PostgreSQL protocol/fault test.
+          python -m pytest -q --confcutdir=artifacts/wow-engine/tests \
+            artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py \
+            artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py \
+            artifacts/wow-engine/tests/test_render_release_rpc_postgres.py \
+            artifacts/wow-engine/tests/test_render_release_recovery_postgres.py \
+            artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py \
+            artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py \
+            --junitxml=release-evidence/junit.xml \
+            2>&1 | tee release-evidence/pytest.log
+      - name: Persist hashed non-secret evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p release-evidence
+          sha256sum \
+            .github/workflows/wow-v17-release-fence-postgres-proof.yml \
+            artifacts/wow-engine/v17/render_release_service_fence_candidate.py \
+            artifacts/wow-engine/migrations/20261018_release_service_state_fence_REVIEW_ONLY.sql \
+            artifacts/wow-engine/migrations/20261018_release_rpc_boundary_REVIEW_ONLY.sql \
+            artifacts/wow-engine/tests/test_render_release_rpc_postgres.py \
+            artifacts/wow-engine/migrations/20261018_release_observer_RECOVERY_REVIEW_ONLY.sql \
+            artifacts/wow-engine/tests/test_render_release_recovery_postgres.py \
+            artifacts/wow-engine/tests/test_render_release_service_fence_candidate.py \
+            artifacts/wow-engine/tests/test_render_release_service_fence_postgres_integration.py \
+            .github/workflows/wow-v17-render-production-deploy.yml \
+            artifacts/wow-engine/tests/test_v17_render_production_deploy_workflow.py \
+            artifacts/wow-engine/tests/test_v17_render_release_provenance_gate.py \
+            artifacts/wow-engine/v17/render_deployment_pointer.py \
+            artifacts/wow-engine/v17/test_render_deployment_pointer.py \
+            > release-evidence/source-hashes.txt
+          (cd release-evidence && sha256sum source-identity.txt source-hashes.txt junit.xml pytest.log 2>/dev/null || true) \
+            > release-evidence/evidence-hashes.txt
+      - name: Package exact-head test evidence as attestation subject
+        # No signatures for a failed or skipped test.
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha }}"
+          test -s release-evidence/junit.xml
+          test -s release-evidence/source-hashes.txt
+          test -s release-evidence/evidence-hashes.txt
+          tar -czf wow-v17-release-fence-evidence.tar.gz -C release-evidence .
+          sha256sum wow-v17-release-fence-evidence.tar.gz > release-evidence/bundle-sha256.txt
+      - name: Sign test evidence with GitHub OIDC-backed provenance
+        if: success()
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: wow-v17-release-fence-evidence.tar.gz
+      - name: Verify the signed artifact independently against GitHub identity
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify wow-v17-release-fence-evidence.tar.gz \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/wow-v17-release-fence-postgres-proof.yml" \
+            --deny-self-hosted-runners
+      - name: Upload test evidence (not production authorization)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-release-postgres-proof-${{ github.event.pull_request.head.sha }}-${{ github.run_id }}
+          path: |
+            release-evidence/
+            wow-v17-release-fence-evidence.tar.gz
+          if-no-files-found: warn
+          retention-days: 30

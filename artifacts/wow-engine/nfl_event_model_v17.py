@@ -480,6 +480,24 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
     if not np.all(np.isfinite(x)):
         raise NFLModelInputsInsufficient("NFL_FEATURE_VECTOR_NONFINITE")
 
+    # Compare the canonical frozen input vector with the EXACT numeric array
+    # handed to the fitted logistic scorer. This proves scorer vector equivalence,
+    # not independent authentication of source data or current QB/roster facts.
+    vector_context = {
+        "feature_schema_version": model.feature_schema_version,
+        "feature_order": list(model.feature_order),
+    }
+    frozen_vector_sha256 = _sha256_json({
+        **vector_context,
+        "numeric_feature_vector": [float(v) for v in vector],
+    })
+    consumed_vector_sha256 = _sha256_json({
+        **vector_context,
+        "numeric_feature_vector": x.tolist(),
+    })
+    if frozen_vector_sha256 != consumed_vector_sha256:
+        raise NFLModelOutputInvalid("NFL_MODEL_CONSUMED_VECTOR_MISMATCH")
+
     standardized = (x - model.scaler_mean) / model.scaler_scale
     logit = float(np.dot(model.coefficients, standardized) + model.intercept)
     raw_home = float(_sigmoid(logit))
@@ -498,7 +516,38 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
     if abs(raw_home + raw_away - 1.0) > 1e-9 or abs(calibrated_home + calibrated_away - 1.0) > 1e-9:
         raise NFLModelOutputInvalid("NFL_PROBABILITY_PAIR_NOT_NORMALIZED")
 
+    # This receipt is emitted only by the fitted Platt operation that just ran.
+    # Binding to the event/run and immutable prediction is performed by its caller.
+    model_timestamp = datetime.now(timezone.utc).isoformat()
+    calibration_operation_receipt = {
+        "schema_version": "NFL_CALIBRATION_OPERATION_V1",
+        "producer": "nfl_event_model_v17.score_feature_row",
+        "status": "COMPLETED",
+        "model_artifact_id": model.artifact_id,
+        "artifact_checksum": model.artifact_checksum,
+        "model_version": model.model_artifact_version,
+        "calibration_method": CALIBRATION_METHOD,
+        "calibration_version": model.calibration_version,
+        "calibration_training_n": model.calibration_training_n,
+        "uncertainty_method": model.bounds_method_version,
+        "feature_row_hash": str(feature_row.get("row_inputs_hash") or ""),
+        "model_timestamp": model_timestamp,
+        "platt_input_logit": logit,
+        "platt_a": model.platt_a,
+        "platt_b": model.platt_b,
+        "uncertainty_margin": margin,
+        "raw_home_probability": raw_home,
+        "calibrated_home_probability": calibrated_home,
+        "calibrated_away_probability": calibrated_away,
+        "calibrated_home_lower_bound": home_lower,
+        "calibrated_home_upper_bound": home_upper,
+        "calibrated_away_lower_bound": away_lower,
+        "calibrated_away_upper_bound": away_upper,
+        "can_execute": False,
+    }
+
     return {
+        "calibration_operation_receipt": calibration_operation_receipt,
         "raw_home_probability": raw_home,
         "raw_away_probability": raw_away,
         "independent_home_probability": raw_home,
@@ -519,7 +568,10 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
         "model_version": model.model_artifact_version,
         "model_label": PROVIDER_IDENTITY,
         "model_artifact_id": model.artifact_id,
-        "model_timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_timestamp": model_timestamp,
+        "feature_snapshot_hash": frozen_vector_sha256,
+        "model_consumed_feature_hash": consumed_vector_sha256,
+        "feature_vector_hash_policy": "NFL_CANONICAL_NUMERIC_VECTOR_SCHEMA_ORDER_V1",
         "feature_schema_version": model.feature_schema_version,
         "feature_order_hash": model.feature_order_hash,
         "training_dataset_hash": model.training_dataset_hash,

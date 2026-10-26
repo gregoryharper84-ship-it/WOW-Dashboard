@@ -23,7 +23,7 @@ def test_vercel_challenger_rewrites_exactly_the_canonical_llp_action_paths():
         for path in rewrites
     }
 
-    assert len(canonical) == 15
+    assert len(canonical) == 16
     assert normalized == canonical
 
 
