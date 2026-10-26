@@ -137,3 +137,22 @@ def test_no_settled_rows_is_unknown_not_a_green_report():
     assert result["rows_received"] == 0
     assert result["cohorts"] == []
     assert result["paired_metrics"] is None
+
+
+def test_same_event_different_source_cutoffs_is_not_a_valid_pair():
+    rows = [sample(1), sample(
+        1, "CHALLENGER", source_snapshot_at="2026-10-25T14:30:00Z",
+    )]
+    result = evaluate_chronological_evidence(rows, min_samples=1)
+    assert result["rows_held"] == 0  # both real-looking rows; pair itself is false
+    assert not result["paired_comparison_ready"]
+    assert any(x["code"] == "PAIRED_SETTLEMENT_MISMATCH" for x in result["findings"])
+
+
+def test_same_candidate_string_from_other_sport_cannot_cross_pair():
+    rows = [sample(1), sample(
+        1, "CHALLENGER", sport="NBA", market_family="PLAYER_POINTS",
+    )]
+    result = evaluate_chronological_evidence(rows, min_samples=1)
+    assert result["paired_count"] == 0
+    assert not result["paired_comparison_ready"]
