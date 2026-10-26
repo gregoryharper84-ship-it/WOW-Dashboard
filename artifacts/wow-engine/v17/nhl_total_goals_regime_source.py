@@ -167,3 +167,86 @@ def reconcile_official_regime_games(
         "archived_pregame_snapshot": False, "probability_publishable": False,
         "can_execute": False,
     }
+
+
+
+def reconcile_regime_labels_with_d1_events(
+    d1_event_rows: Sequence[Mapping[str, Any]],
+    regime_results: Sequence[NHLOfficialRegimeResult],
+) -> dict[str, Any]:
+    """Strict retrospective source join; NEVER a pregame prediction or fit.
+
+    The D1 caller must supply a de-duplicated, source-version-reconciled set.
+    Reject missing games, event/time/team/score mismatches, or duplicate IDs,
+    even if one season's public schedule contains a corrected score.
+    """
+    if not d1_event_rows or not regime_results:
+        raise NHLTotalsRegimeSourceError("NHL_TOTALS_REGIME_D1_COHORT_EMPTY", "both cohorts required")
+    mapped: dict[tuple[str, str], NHLOfficialRegimeResult] = {}
+    for result in regime_results:
+        if not isinstance(result, NHLOfficialRegimeResult):
+            raise NHLTotalsRegimeSourceError("NHL_TOTALS_REGIME_D1_TYPE_INVALID", "regime input invalid")
+        key = (str(result.season_id), result.official_event_id)
+        if key in mapped:
+            raise NHLTotalsRegimeSourceError("NHL_TOTALS_REGIME_D1_DUPLICATE", str(key))
+        mapped[key] = result
+    seen: set[tuple[str, str]] = set()
+    joined: list[dict[str, Any]] = []
+    for row in d1_event_rows:
+        try:
+            if (row.get("source_provider") != SOURCE_ID
+                or row.get("historical_reconstruction") is not True
+                or row.get("can_execute") is not False):
+                raise ValueError("source lineage or dry-run status")
+            key = (str(row["season"]), str(row["official_event_id"]))
+            if key in seen:
+                raise NHLTotalsRegimeSourceError("NHL_TOTALS_REGIME_D1_DUPLICATE", str(key))
+            seen.add(key)
+            source_sha = str(row["source_payload_sha256"]).lower()
+            if len(source_sha) != 64 or any(c not in "0123456789abcdef" for c in source_sha):
+                raise ValueError("D1 source digest absent")
+            reg = mapped.get(key)
+            if reg is None:
+                raise NHLTotalsRegimeSourceError("NHL_TOTALS_REGIME_D1_COHORT_MISSING", str(key))
+            start = datetime.fromisoformat(str(row["event_start_time"]).replace("Z", "+00:00"))
+            if start.utcoffset() is None:
+                raise ValueError("D1 event timezone absent")
+            outcome = row["outcome_json"]
+            hs, aas = outcome["home_score"], outcome["away_score"]
+            if type(hs) is not int or type(aas) is not int:
+                raise ValueError("D1 official scores invalid")
+            if (start.astimezone(timezone.utc).isoformat() != reg.event_start_utc
+                or str(row["home_participant"]).strip().upper() != reg.home_team
+                or str(row["away_participant"]).strip().upper() != reg.away_team
+                or hs != reg.final_home_goals or aas != reg.final_away_goals):
+                raise NHLTotalsRegimeSourceError("NHL_TOTALS_REGIME_D1_IDENTITY_CONFLICT", str(key))
+            joined.append({
+                "official_event_id": reg.official_event_id,
+                "season_id": reg.season_id, "event_start_utc": reg.event_start_utc,
+                "final_total_goals": reg.full_game_total,
+                "final_period_type": reg.final_period_type,
+                "d1_source_payload_sha256": source_sha,
+                "official_schedule_game_sha256": reg.source_game_sha256,
+                "historical_reconstruction": True,
+                "archived_pregame_snapshot": False,
+                "probability_publishable": False, "can_execute": False,
+            })
+        except NHLTotalsRegimeSourceError:
+            raise
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise NHLTotalsRegimeSourceError("NHL_TOTALS_REGIME_D1_ROW_INVALID", str(exc)) from exc
+    if seen != set(mapped):
+        raise NHLTotalsRegimeSourceError(
+            "NHL_TOTALS_REGIME_D1_COHORT_MISSING",
+            f"regime_only={len(set(mapped) - seen)}",
+        )
+    return {
+        "status": "NHL_TOTALS_RETROSPECTIVE_SOURCE_LABELS_RECONCILED",
+        "count": len(joined), "labels": sorted(joined, key=lambda r: (
+            r["event_start_utc"], r["official_event_id"]
+        )),
+        "historical_reconstruction": True,
+        "archived_pregame_snapshot": False,
+        "model_probability": None, "calibrated_lower_bound": None,
+        "probability_publishable": False, "can_execute": False,
+    }
