@@ -68,6 +68,7 @@ def product_outcome_scorecard(
     issues: list[str] = []
     seen: set[tuple[str, str]] = set()
     per_request: dict[str, list[str]] = defaultdict(list)
+    per_request_ids: dict[str, set[str]] = defaultdict(set)
     integrity_failed_requests: set[str] = set()
     counts: Counter[str] = Counter()
     by_lane: dict[str, Counter[str]] = defaultdict(Counter)
@@ -104,6 +105,7 @@ def product_outcome_scorecard(
             integrity_failed_requests.add(request_id)
             state = "UNRESOLVED"
         per_request[request_id].append(state)
+        per_request_ids[request_id].add(candidate_id)
         counts[state] += 1
         lane = str(row.get("sport") or "UNSPECIFIED") + "/" + str(row.get("market_family") or "UNSPECIFIED")
         by_lane[lane][state] += 1
@@ -142,10 +144,39 @@ def product_outcome_scorecard(
             integrity_failed_requests.add(rid)
             unknown_scope = True
             continue
+        missing_for_request = max(0, expected - len(dispositions))
         if len(dispositions) != expected:
             issues.append(f"REQUEST_{i}_SCOPE_COUNT_MISMATCH:{len(dispositions)}/{expected}")
             integrity_failed_requests.add(rid)
-            missing_rows += max(0, expected - len(dispositions))
+        # A matching row count does not prove the same original market labels
+        # survived. Multi-candidate boards must supply the exact source IDs.
+        expected_ids = req.get("expected_candidate_ids")
+        if expected > 1 or expected_ids is not None:
+            ids_valid = (
+                isinstance(expected_ids, (list, tuple))
+                and len(expected_ids) == expected
+                and all(_nonempty(value) for value in expected_ids)
+                and len(set(expected_ids)) == expected
+            )
+            if not ids_valid:
+                issues.append(f"REQUEST_{i}_CANONICAL_IDENTITY_SCOPE_UNATTESTED")
+                integrity_failed_requests.add(rid)
+                unknown_scope = True
+            else:
+                declared = set(expected_ids)
+                missing_ids = declared - per_request_ids[rid]
+                extra_ids = per_request_ids[rid] - declared
+                missing_for_request = max(missing_for_request, len(missing_ids))
+                if missing_ids or extra_ids:
+                    issues.append(
+                        f"REQUEST_{i}_IDENTITY_MISMATCH:"
+                        f"{len(missing_ids)}_MISSING_{len(extra_ids)}_EXTRA"
+                    )
+                    integrity_failed_requests.add(rid)
+                    if extra_ids:
+                        # Unknown submitted IDs cannot inflate scored coverage.
+                        unknown_scope = True
+        missing_rows += missing_for_request
         empty_verified = expected == 0 and req.get("no_current_candidates_verified") is True
         complete = (
             req.get("output_delivered_verified") is True
