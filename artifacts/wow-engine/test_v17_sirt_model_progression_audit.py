@@ -126,3 +126,28 @@ def test_root_cause_without_evidence_is_not_confirmed_recurrence():
     result = audit_confirmed_recurrence(rows)
     assert result["families"][0]["occurrences"] == 1
     assert result["families"][0]["recurring"] is False
+
+
+def test_snapshot_requires_both_collections_and_never_claims_production():
+    from v17.sirt_model_progression_audit import audit_evidence_snapshot
+    assert audit_evidence_snapshot({"observations": []})["status"] == "EVIDENCE_HOLD"
+    result = audit_evidence_snapshot({"observations": full_sample(), "incidents": []})
+    assert result["status"] == "RESEARCH_EVALUATION_ONLY"
+    assert result["production_source_verified"] is False
+    assert result["model_promotion_authorized"] is False
+
+
+def test_offline_cli_cannot_turn_invalid_input_into_pass(tmp_path):
+    import subprocess
+    import sys
+    import json
+    from pathlib import Path
+    target = Path(__file__).resolve().parent / "v17" / "sirt_model_progression_audit.py"
+    inp = tmp_path / "bad.json"
+    inp.write_text(json.dumps({"observations": [], "incidents": []}))
+    result = subprocess.run([sys.executable, str(target), "--evidence-json", str(inp)],
+                            capture_output=True, text=True)
+    assert result.returncode == 2
+    body = json.loads(result.stdout)
+    assert body["status"] == "EVIDENCE_HOLD"
+    assert body["can_execute"] is False
