@@ -53,6 +53,10 @@ def test_research_challenger_fit_is_not_governed_probability():
     assert artifact.calibration_mean_multiplier > 0
     assert receipt["validation"]["poisson_negative_log_likelihood"] > 0
     assert receipt["validation"]["under_5_5_brier"] >= 0
+    assert 0 <= receipt["validation"]["under_6_0_observed_push_frequency"] <= 1
+    assert receipt["validation"]["under_6_0_push_calibration_bias"] == pytest.approx(
+        receipt["validation"]["under_6_0_mean_push_probability"] - receipt["validation"]["under_6_0_observed_push_frequency"]
+    )
     assert receipt["validation"]["n"] == receipt["constant_baseline_validation"]["n"]
     assert artifact.train_dataset_hash != artifact.validation_dataset_hash
     assert receipt["calibrated_lower_bound"] is None
