@@ -33,6 +33,8 @@ New pure functions in `v17.sirt_model_progression_audit`:
 
 - `audit_challenger_replay`: compare champion and challenger Brier scores only for *paired* immutable out-of-sample pregame records from the identical `sport/market_family/cohort_id/event_id/market_id`. Require source snapshots, immutable prediction receipts, calibration references, independently verified settlement, prediction before start, settlement after start, and single artifact version per cohort.
 - Refuse a comparison for missing pairs, duplicates, incompatible holdout splits, mismatched settled outcomes, unverified rows, live-model substitutions or inadequate denominators. Default 30 matched pairs is a reporting floor, **not certification sufficiency**.
+- The same paired replay emits Brier score, log loss, signed calibration bias, and ten-bin expected calibration error (ECE) for each model. When genuine earlier/later event windows exist it also reports their descriptive metric differences. No automatic drift finding, statistical significance, model promotion, or publication results from these descriptive measurements.
+- Reused prediction receipts across rows or cohorts and identical champion/challenger model artifacts block the comparison rather than inflate evidence.
 - `audit_confirmed_recurrence`: identify recurring independently confirmed root causes and incidents missing prevention regression receipts. Unconfirmed symptom similarity cannot establish common cause.
 - The offline CLI takes explicit JSON arrays of `observations` and `incidents` and fails closed on missing or unverified evidence. It does not declare a JSON file to be certified production truth.
 - Outputs are always `RESEARCH_ONLY_NO_PROMOTION` or evidence holds; the auditor never changes fitted probability, promotes a challenger, certifies an in-play model, opens orders or authorizes release.
@@ -47,7 +49,7 @@ python -m pytest -q test_v17_sirt_model_progression_audit.py
 python v17/sirt_model_progression_audit.py --evidence-json /path/to/immutable-evidence.json
 ```
 
-Isolated fixture run: **23 passed locally on October 26, 2026**. The exact GitHub PR head still requires its own CI and protected reviews. This is not live production evidence.
+Isolated fixture run: **28 passed locally on October 26, 2026**. The exact GitHub PR head still requires its own CI and protected reviews. This is not live production evidence.
 
 ### Integration after source review
 
