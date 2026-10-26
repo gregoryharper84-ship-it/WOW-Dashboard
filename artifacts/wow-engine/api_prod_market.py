@@ -31,6 +31,7 @@ from nfl_player_game_eligibility import (
     player_game_availability_blocker,
 )
 from nfl_roster_negative_availability import read_espn_nfl_roster_negative
+from nfl_inactives_source_shadow import read_nflmeta_inactives_shadow
 from prop_market_audit import audit_candidate_market
 from prop_settlement import (
     LINEUP_PAYOUT_CONTEXT_REQUIRED,
@@ -882,6 +883,34 @@ def score_prop(
                 )
             if availability_source.get("code") == PLAYER_UNAVAILABLE:
                 code = PLAYER_UNAVAILABLE
+        # Shadow-only second-source official inactive-list proof. The vendor
+        # game ID is resolved from full matchup/week/kickoff, never trusted from
+        # a caller's evidence. This cannot grant positive game availability.
+        inactive_shadow = None
+        if (
+            code != PLAYER_UNAVAILABLE
+            and str(role.get("verified_canonical_event_id") or "") == str(req.event_id)
+            and str(role.get("player") or "").strip().casefold() == str(req.player).strip().casefold()
+            and str(role.get("espn_athlete_id") or "").isdigit()
+            and isinstance(role.get("provider_season"), int)
+            and isinstance(role.get("provider_week"), int)
+        ):
+            with _score_stage_timer(
+                "nfl_inactives_source_shadow",
+                sport=req.sport, stat_type=req.stat_type, direction=req.direction,
+            ):
+                inactive_shadow = read_nflmeta_inactives_shadow(
+                    season=role["provider_season"],
+                    week=role["provider_week"],
+                    home_team=str(role.get("provider_home_team") or ""),
+                    away_team=str(role.get("provider_away_team") or ""),
+                    player_team=str(role.get("team") or ""),
+                    player_name=req.player,
+                    event_start=_aware_event_start(req.event_start_time),
+                )
+            if inactive_shadow.get("code") == PLAYER_UNAVAILABLE:
+                code = PLAYER_UNAVAILABLE
+
         unavailable = code == PLAYER_UNAVAILABLE
         raise HTTPException(
             status_code=422,
@@ -889,6 +918,7 @@ def score_prop(
                 "code": code,
                 "failure_class": "EVENT_INVALIDATED" if unavailable else "ACQUISITION_BLOCKED",
                 "availability_source": availability_source,
+                "inactive_list_shadow": inactive_shadow,
                 "model_evaluated": False,
                 "specialist_invoked": False,
                 "probability_publishable": False,
