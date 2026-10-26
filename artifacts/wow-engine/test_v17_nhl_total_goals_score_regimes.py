@@ -76,8 +76,9 @@ def test_shootout_credited_only_as_one_game_total_goal_not_skater_goal():
 def test_bad_final_score_or_scoring_identity_is_held(change):
     p = sample("REG")
     change(p)
-    with pytest.raises(NHLScoringRegimeError, match="NHL_TOTALS_FINAL_SCORE_REGIME_MISMATCH"):
+    with pytest.raises(NHLScoringRegimeError) as exc:
         reconcile_official_gamecenter_landing(p)
+    assert exc.value.code == "NHL_TOTALS_FINAL_SCORE_REGIME_MISMATCH"
 
 
 def test_broken_shootout_award_is_held():
