@@ -375,3 +375,27 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
 Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.
+
+
+## Autonomous Engineering Governance Routing (V17 advisory)
+
+Source: `v17/autonomy_governance_profile.py`; owning lane: Engineering/AMRT governed admission. These typed results classify **evidence and risk only**. They are never terminal approvals, legitimate writer-lease mutations, model probabilities, deployed revisions or permission to wager. The module is source-only until independently integrated through the existing protected workflow.
+
+| Typed result | Owning gate | Exact meaning |
+|---|---|---|
+| `AUTONOMY_EVIDENCE_UNVERIFIED` | exact-head source/diff/role preflight | A required commit, diff, or authenticated principal has not been independently verified |
+| `AUTONOMY_SCOPE_MISSING` | source impact preflight | The changed-path inventory or attested effect inventory is empty |
+| `AUTONOMY_SCOPE_INVALID` | source impact preflight | Path/effect inventory has duplicates, path traversal, malformed paths, or other invalid scope |
+| `AUTONOMY_EFFECT_AMBIGUOUS` | effect classifier | Unknown effect or a contradictory claimed no-effect annotation; fail closed |
+| `AUTONOMY_TRUST_ROOT_SCOPE` | governance trust-root classifier | Verified changed paths/effects include existing protected authorization, workflow, identity or credential scope; existing protected approval rules remain authoritative |
+| `AUTONOMY_MODEL_SCOPE` | V17 model-governance classifier | Verified scope includes fitted math, calibration, lower bound, qualification threshold, model promotion, or scorer registration; Class C certification still required |
+| `AUTONOMY_ENGINEERING_SCOPE` | Engineering/AMRT impact classifier | Verified identity, hydration, routing, persistence, deployment or writer-lifecycle effects require proportional existing engineering check |
+| `AUTONOMY_NARROW_ROUTINE_SCOPE` | low-risk source classifier | Verified scoped documentation-only change is eligible for ordinary protected QA/Release checks, **not** automatically approved |
+| `AUTONOMY_SCOPE_REVIEW_REQUIRED` | conservative catch-all | Scope does not fit the narrow routine allowlist and needs independently attested effects before promotion |
+| `CURSOR_TERMINAL_OR_RESERVATION_UNVERIFIED` | remote-provider termination evidence | Original provider session terminal status or original GitHub writer reservation is unverified |
+| `WRITER_FENCE_UNVERIFIED` | writer owner/epoch fence | Current original lease owner/epoch or no-newer-active-writer proof is missing |
+| `WRITER_CAS_FINALIZER_UNAVAILABLE` | original writer-lease finalizer | No genuinely atomic compare-and-swap release mechanism for the original reservation exists; a GitHub comment PATCH alone is insufficient |
+| `WRITER_RELEASE_READBACK_MISSING` | durable writer release readback | CAS prerequisite is claimed but independently fresh `hold=false` / owner/epoch readback is absent |
+| `WRITER_RELEASE_PROOF_COMPLETE` | read-only lease proof classifier | All supplied proof gates affirm a proper release receipt; **does not** perform the release, approve the code PR or prove production recovery |
+
+Invariants: `V17_TERMINAL_REDUCER` remains the sole terminal authority and `can_execute=false` at every decision. Original reservation issue #1138, incident #2054 and their authenticated authority remain unchanged.
