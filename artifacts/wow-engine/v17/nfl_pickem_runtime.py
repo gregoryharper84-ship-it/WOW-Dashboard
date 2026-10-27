@@ -55,6 +55,10 @@ class NFLPickemBoardRequest(BaseModel):
     requested_timezone: str = "America/Chicago"
     expected_game_count: int = 16
     strategy_mode: str = DECISION_OBJECTIVE
+    # For whole-week cards, resolve every official game by season/week rather
+    # than trusting callers to enumerate Thursday, Sunday and Monday dates.
+    requested_season: int | None = Field(default=None, ge=2000, le=2100, strict=True)
+    requested_week: int | None = Field(default=None, ge=1, le=18, strict=True)
 
 
 def _scorer_concurrency_limit() -> int:
@@ -73,7 +77,13 @@ def _scorer_concurrency_limit() -> int:
 
 def _validate_request(req: NFLPickemBoardRequest) -> tuple[tuple[str, ...], str]:
     dates = tuple(dict.fromkeys(str(value or "").strip() for value in req.requested_slate_dates))
-    if not dates or len(dates) > 7 or any(not value for value in dates):
+    week_selector = req.requested_season is not None or req.requested_week is not None
+    if week_selector:
+        if req.requested_season is None or req.requested_week is None:
+            raise ValueError("PICKEM_SEASON_WEEK_SELECTOR_INCOMPLETE")
+        if dates:
+            raise ValueError("PICKEM_SEASON_WEEK_DATES_AMBIGUOUS")
+    elif not dates or len(dates) > 7 or any(not value for value in dates):
         raise ValueError("PICKEM_REQUESTED_SLATE_DATES_INVALID")
     for value in dates:
         try:
@@ -108,6 +118,8 @@ def _canonical_inventory(
     db: Any,
     *,
     requested_dates: tuple[str, ...],
+    requested_season: int | None = None,
+    requested_week: int | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Read canonical NFL schedule truth and return requested regular-season rows."""
     snapshot, schedule_rows = _load_latest_schedule_snapshot(db)
@@ -118,7 +130,17 @@ def _canonical_inventory(
 
     for raw in schedule_rows:
         gameday = str(raw.get("gameday") or "")[:10]
-        if gameday not in requested:
+        if requested_season is not None:
+            # Use the canonical NFL week, which may cross calendar months or
+            # calendar years. Missing week identity never becomes a pick.
+            try:
+                row_season = int(raw.get("season"))
+                row_week = int(raw.get("week"))
+            except (TypeError, ValueError):
+                continue
+            if row_season != requested_season or row_week != requested_week:
+                continue
+        elif gameday not in requested:
             continue
         game_type = str(raw.get("game_type") or "REG").strip().upper()
         if game_type not in {"REG", "REGULAR", "REGULAR_SEASON"}:
@@ -387,6 +409,8 @@ def run_nfl_pickem_board(
         snapshot, events, discovery_blockers = _canonical_inventory(
             db,
             requested_dates=requested_dates,
+            requested_season=req.requested_season,
+            requested_week=req.requested_week,
         )
     except Exception as exc:  # noqa: BLE001 - acquisition failure is explicit
         return {
@@ -483,6 +507,8 @@ def run_nfl_pickem_board(
         "submission_ready": board["submission_ready"],
         "full_sheet_submission_ready": bool(board["submission_ready"] and tiebreaker_ready),
         "requested_slate_dates": list(requested_dates),
+        "requested_season": req.requested_season,
+        "requested_week": req.requested_week,
         "requested_timezone": timezone_name,
         "expected_game_count": int(req.expected_game_count),
         "canonical_schedule_snapshot_id": snapshot.get("snapshot_id"),
