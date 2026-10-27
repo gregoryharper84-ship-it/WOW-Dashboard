@@ -268,7 +268,7 @@ def test_app_adoption_preserves_explicit_canonical_incident(body, expected):
     "References #2136 only",
 ])
 def test_app_adoption_rejects_missing_or_ambiguous_incident(body):
-    with pytest.raises(adoption.AdoptionHold, match="SOURCE_INCIDENT_ID_MISSING_OR_AMBIGUOUS_HOLD"):
+    with pytest.raises(adoption.AdoptionHold, match="EXISTING_PR_INCIDENT_ID_MISSING"):
         adoption.canonical_incident_id(body)
 
 
