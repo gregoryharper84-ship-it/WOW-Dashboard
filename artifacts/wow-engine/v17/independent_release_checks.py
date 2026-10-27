@@ -241,6 +241,7 @@ def gather(
         pr = {}
     ev["pr"] = {
         "number": pr.get("number"),
+        "body": pr.get("body"),
         "state": pr.get("state"), "draft": pr.get("draft"), "merged": pr.get("merged"),
         "head_sha": (pr.get("head") or {}).get("sha"),
         "head_ref": (pr.get("head") or {}).get("ref"),
@@ -573,6 +574,22 @@ def pending_required_regressions(ev: dict) -> list[str]:
     return list(dict.fromkeys(pending))
 
 
+def _canonical_incident_present(body: object) -> bool:
+    """Preflight the existing certifier's single canonical Incident field.
+
+    Do not treat an incidental '#number' mention as a source of incident
+    authority. A missing or conflicting label must fail required QA/Release
+    before an owner can merge a PR with no certifier receipt.
+    """
+    if not isinstance(body, str):
+        return False
+    matches = re.findall(
+        r"(?m)^[ \\t]*Incident:[ \\t]*#?([1-9][0-9]*)[ \\t]*$",
+        body,
+    )
+    return len(matches) == 1
+
+
 def _owner_approved_at_head(ev: dict, head: str) -> bool:
     owner = ev.get("owner_login")
     mine = [r for r in ev.get("reviews") or [] if r.get("user") == owner and r.get("state") in
@@ -602,6 +619,11 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         findings.append("QA_PR_BASE_NOT_MAIN")
     if pr.get("head_repo") != ev.get("repository"):
         findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
+    # Required native QA and distinct Release both reject metadata missing
+    # from the existing trusted-governance certifier's canonical PR contract.
+    # Release already recomputes qa_findings() independently.
+    if not _canonical_incident_present(pr.get("body")):
+        findings.append("QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS")
     review_active = ev.get("independent_review_active", True)
     if not isinstance(review_active, bool):
         findings.append("QA_REVIEW_POLICY_INVALID")
