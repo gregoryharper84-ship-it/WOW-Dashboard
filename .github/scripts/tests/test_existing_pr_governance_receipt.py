@@ -1375,7 +1375,7 @@ def run_receipt_artifact_step(tmp_path, artifacts):
     stub = """
 gh() {
   case "$*" in
-    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page="*)
+    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-engineering-governance-${HEAD_SHA}&per_page=100&page=1")
       printf '%s\\n' "$TEST_ARTIFACTS_JSON"
       ;;
     *)
@@ -1391,7 +1391,7 @@ gh() {
         "GITHUB_REPOSITORY": REPOSITORY,
         "GITHUB_OUTPUT": str(output_path),
         "HEAD_SHA": HEAD,
-        "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": artifacts}),
+        "TEST_ARTIFACTS_JSON": json.dumps({"total_count": len(artifacts), "artifacts": artifacts}),
     }
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", stub + script],
@@ -1424,13 +1424,20 @@ def test_duplicate_governance_receipts_fail_closed(tmp_path):
 
 
 def test_receipt_artifact_inventory_must_finish_within_bound(tmp_path):
-    result, _ = run_receipt_artifact_step(
-        tmp_path,
-        [{"name": f"unrelated-{index}", "expired": False} for index in range(100)],
-    )
-
+    # Even a malicious backend returning more than 100 exact-name matches
+    # cannot make the first page look uniquely authorized.
+    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    result, _ = run_receipt_artifact_step(tmp_path, [existing] * 101)
     assert result.returncode == 1
-    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" in result.stderr
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE" in result.stderr
+
+
+def test_receipt_artifact_api_must_return_only_requested_name(tmp_path):
+    result, _ = run_receipt_artifact_step(
+        tmp_path, [{"name": "unrelated", "expired": False}],
+    )
+    assert result.returncode == 1
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" in result.stderr
 
 
 @pytest.mark.parametrize("path", [".github/workflows/unsafe.yml", ".agents/skills/unsafe.md", "render.yaml"])
