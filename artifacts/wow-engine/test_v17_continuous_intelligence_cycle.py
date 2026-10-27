@@ -322,6 +322,8 @@ def test_independent_event_calibration_deduplicates_snapshots_and_rejects_bad_in
     assert result["independent_events"] == 2
     assert result["duplicate_snapshot_rows_excluded"] == 1
     assert result["conflicting_events_excluded"] == 1
+    assert result["conflicting_snapshot_rows_excluded"] == 2
+    assert result["row_reconciliation_pass"] is True
     assert result["exclusion_counts"]["NOT_PREGAME_FROZEN"] == 1
     assert result["exclusion_counts"]["OTHER_MODEL_VERSION"] == 1
     # Latest game-1 forecast (0.80, WIN), plus game-2 (0.60, LOSS).
