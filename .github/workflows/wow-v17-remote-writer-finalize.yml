@@ -5,6 +5,11 @@ name: wow-v17-remote-writer-finalize
 # implementation workers, not the independent read-only status probe.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/wow-v17-remote-writer-finalize.yml
 
 permissions:
   contents: read
