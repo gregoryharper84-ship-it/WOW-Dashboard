@@ -436,6 +436,8 @@ def test_learning_workflow_does_not_require_duplicating_production_api_secret():
     workflow = (Path(__file__).resolve().parents[2] /
                 ".github/workflows/wow-v17-continuous-intelligence.yml").read_text()
     assert "id-token: write" in workflow
+    assert workflow.count("python - <<'PY'") == 1
+    assert '          PY\n      - name: Upload aggregate research receipt' in workflow
     assert "ACTIONS_ID_TOKEN_REQUEST_URL" in workflow
     assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in workflow
     assert "/internal/v17/continuous-intelligence" in workflow
