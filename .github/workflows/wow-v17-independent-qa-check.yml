@@ -1,10 +1,8 @@
 name: wow-v17-independent-qa-check
-# Dynamic run-name stays until a later merge sets this one line to exactly
-# `run-name: wow-v17-independent-qa-check`. Release accepts that static name
-# only with workflow id 380562324 and this file's path. That merge must keep
-# the job `if` below (skip when pull_requests[0] is absent, and keep the
-# trusted-governance-gate exclusion) and the AUTO concurrency group.
-run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }} head=${{ inputs.head_sha || 'AUTO' }}
+# Pinned exact run-name is required by the independent source-review
+# provenance contract (workflow id 380562324 and exact file path also bound).
+# Preserve the job admission guard and AUTO concurrency queue unchanged.
+run-name: wow-v17-independent-qa-check
 
 # Phase C of #1550. Runs from protected main only and never checks out or executes
 # PR code. Evidence is read with the read-only GITHUB_TOKEN; the check is published
@@ -197,11 +195,11 @@ jobs:
           set -euo pipefail
           jq -nce \
             --arg id "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg name "$GITHUB_WORKFLOW" \
+            --arg name "$GITHUB_WORKFLOW" --argjson workflow_id 380562324 \
             --arg path ".github/workflows/wow-v17-independent-qa-check.yml" \
             --arg event "$GITHUB_EVENT_NAME" --arg branch "$GITHUB_REF_NAME" \
             --arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA" \
-            '{id:$id|tonumber,run_attempt:$attempt,name:$name,path:$path,event:$event,
+            '{id:$id|tonumber,run_attempt:$attempt,name:$name,workflow_id:$workflow_id,path:$path,event:$event,
               head_branch:$branch,repository:$repository,head_sha:$head_sha}' \
             > "$RUNNER_TEMP/qa-review-policy-run.json"
           python .github/scripts/independent_source_review_receipt.py \
@@ -252,11 +250,11 @@ jobs:
           cp "$RUNNER_TEMP/source-review-input.json" .wow-independent-source-review-input.json
           jq -nce \
             --arg id "$GITHUB_RUN_ID" --argjson attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg name "$GITHUB_WORKFLOW" \
+            --arg name "$GITHUB_WORKFLOW" --argjson workflow_id 380562324 \
             --arg path ".github/workflows/wow-v17-independent-qa-check.yml" \
             --arg event "$GITHUB_EVENT_NAME" --arg branch "$GITHUB_REF_NAME" \
             --arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA" \
-            '{id:$id|tonumber,run_attempt:$attempt,name:$name,path:$path,event:$event,
+            '{id:$id|tonumber,run_attempt:$attempt,name:$name,workflow_id:$workflow_id,path:$path,event:$event,
               head_branch:$branch,repository:$repository,head_sha:$head_sha}' \
             > "$RUNNER_TEMP/source-review-run.json"
           echo "diff_sha=$(jq -r .diff_sha256 "$RUNNER_TEMP/source-review-input.json")" >> "$GITHUB_OUTPUT"

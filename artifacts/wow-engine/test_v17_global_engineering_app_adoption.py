@@ -258,6 +258,10 @@ def test_controller_reuses_existing_schedule_and_app_not_owner_token():
     assert "schedule" in triggers
     assert "workflow_run" in triggers
     assert "workflow_dispatch" in triggers
+    observer = wf["jobs"]["adoption-readonly-preflight"]
+    assert "concurrency" not in observer
+    assert "environment" not in observer
+    assert "engineering_authorized_adoption.py discover" in str(observer["steps"])
     steps = wf["jobs"]["adopt-reviewed-owner-source"]["steps"]
     tokens = [step for step in steps if "Mint authenticated Engineering App token" == step.get("name")]
     assert len(tokens) == 1
@@ -294,3 +298,214 @@ def test_protected_adoption_program_enforces_two_actual_principals():
     assert "41898282+github-actions[bot]@users.noreply.github.com" in text
     assert "wow-engineering[bot]@users.noreply.github.com" not in text
     assert "auto-merge" in text.lower()
+
+
+def test_hourly_rotation_reaches_old_and_new_owner_prs_without_extra_writers(monkeypatch):
+    """Regression: newest-first constant MAX_SCAN previously starved older PRs."""
+    sources = [source_pr(n=n, sha=f"{n:040x}") for n in range(1, 61)]
+    selected = []
+    def fetch(path):
+        if path == "pulls?state=open&base=main&per_page=100":
+            return sources
+        if path == "pulls?state=open&base=main&per_page=100&page=1":
+            return sources
+        if path.startswith("pulls?state=all&head="):
+            # Mark every candidate except the two fixtures already replayed.
+            n = int(path.split("exact-replay-")[1].split("-")[0])
+            return [] if n in {1, 60} else [{"number": 999}]
+        if path in {"pulls/1/files?per_page=100", "pulls/60/files?per_page=100"}:
+            return source_files()
+        if path == "pulls/1":
+            return sources[0]
+        if path == "pulls/60":
+            return sources[-1]
+        if path == f"commits/{sources[0]['head']['sha']}/check-runs?per_page=100":
+            return source_checks(sha=sources[0]["head"]["sha"])
+        if path == f"commits/{sources[-1]['head']['sha']}/check-runs?per_page=100":
+            return source_checks(sha=sources[-1]["head"]["sha"])
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    older = adoption.discover(slot=0)
+    newer = adoption.discover(slot=1)
+    assert (older["status"], older["pr_number"]) == ("SOURCE_READY", 1)
+    assert (newer["status"], newer["pr_number"]) == ("SOURCE_READY", 60)
+    assert older["can_execute"] is False and newer["can_execute"] is False
+
+
+
+def test_priority_adoption_scans_p0_without_starving_routine_sources():
+    sources = [source_pr(n=i, sha=f"{i:040x}") for i in range(1, 61)]
+    sources[-1]["labels"] = [{"name": "P0"}]
+    first, _ = adoption._adoption_candidate_window(sources, slot=0)
+    urgent, _ = adoption._adoption_candidate_window(sources, slot=1)
+    fair_next, _ = adoption._adoption_candidate_window(sources, slot=3)
+    assert first[0]["number"] == 1
+    assert urgent[0]["number"] == 60
+    assert len(urgent) <= adoption.MAX_SCAN
+    assert len({x["number"] for x in urgent}) == len(urgent)
+    assert {x["number"] for x in fair_next} == set(range(51, 61))
+
+
+def test_fair_rotation_covers_window_count_divisible_by_three():
+    sources = [source_pr(n=i, sha=f"{i:040x}") for i in range(1, 151)]
+    for row in sources[-10:]:
+        row["labels"] = [{"name": "P0"}]
+    fair = {
+        adoption._adoption_candidate_window(sources, slot=slot)[0][0]["number"]
+        for slot in (0, 3, 6)
+    }
+    assert fair == {1, 51, 101}
+
+
+def test_urgent_metadata_cannot_grant_untrusted_authorship():
+    sources = [source_pr(n=1)]
+    sources[0]["labels"] = [{"name": "P0"}]
+    sources[0]["user"]["login"] = "another-user"
+    window, _ = adoption._adoption_candidate_window(sources, slot=1)
+    assert window == []
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_PR_OR_HEAD_PROVENANCE_HOLD"):
+        adoption.validate_evidence(sources[0], source_files(), source_checks(),
+                                   requested_pr=1, requested_sha=SHA)
+
+def test_review_wip_cap_accounts_for_pending_app_prs_beyond_first_page(monkeypatch):
+    owner = source_pr(n=3)
+    app = lambda n: {
+        "number": n, "state": "open", "draft": False,
+        "user": {"login": adoption.APP_AUTHOR},
+        "head": {"ref": f"wow-engineering/exact-replay-{n}-aaaaaaaaaaaa",
+                 "repo": {"full_name": REPO}},
+    }
+    first = [owner, app(10), app(11)] + [
+        {"number": n, "state": "open", "draft": False,
+         "user": {"login": "another-user"}, "head": {"repo": {"full_name": REPO}}}
+        for n in range(97)
+    ]
+    assert len(first) == 100
+    def fetch(path):
+        if path in ("pulls?state=open&base=main&per_page=100",
+                    "pulls?state=open&base=main&per_page=100&page=1"):
+            return first
+        if path == "pulls?state=open&base=main&per_page=100&page=2":
+            return [app(12)]
+        raise AssertionError("review WIP must fail closed before a source read: " + path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover(slot=0)
+    assert result["detail"] == "APP_REVIEW_WIP_CAP"
+    assert result["can_execute"] is False
+
+
+def test_inventory_page_limit_does_not_silently_ignore_older_prs(monkeypatch):
+    full = [source_pr(n=n, sha=f"{n:040x}") for n in range(1, 101)]
+    def fetch(path):
+        if path.startswith("pulls?state=open&base=main&per_page=100"):
+            return full
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    result = adoption.discover(slot=0)
+    assert result["detail"] == "SOURCE_PR_INVENTORY_PAGE_CAP"
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("slot", [-1, "not-an-hour", False])
+def test_invalid_scan_slot_is_held(slot, monkeypatch):
+    monkeypatch.setattr(adoption, "api", lambda path: [])
+    with pytest.raises(adoption.AdoptionHold, match="SCAN_SLOT_INVALID_HOLD"):
+        adoption.discover(slot=slot)
+
+
+def test_more_than_100_real_check_runs_are_admitted_without_evidence_loss(monkeypatch):
+    """Exact-head pagination does not permanently starve busy reviewed PRs."""
+    rows = [
+        {"id": i + 1, "name": "irrelevant check", "app": {"id": adoption.ACTIONS_APP_ID},
+         "status": "completed", "conclusion": "success", "head_sha": SHA}
+        for i in range(147)
+    ] + [
+        {"id": 148 + i, "name": name, "app": {"id": adoption.ACTIONS_APP_ID},
+         "status": "completed", "conclusion": "success", "head_sha": SHA}
+        for i, name in enumerate(REQUIRED)
+    ]
+    assert len(rows) == 150
+    seen = []
+    def fetch(path):
+        seen.append(path)
+        if path == f"commits/{SHA}/check-runs?per_page=100":
+            return {"total_count": 150, "check_runs": rows[:100]}
+        if path == f"commits/{SHA}/check-runs?per_page=100&page=2":
+            return {"total_count": 150, "check_runs": rows[100:]}
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    checks = adoption._exact_head_checks(SHA)
+    assert checks["total_count"] == 150
+    assert len(checks["check_runs"]) == 150
+    assert len(seen) == 2
+    base, paths = adoption.validate_evidence(
+        source_pr(), source_files(), checks,
+        requested_pr=1, requested_sha=SHA,
+    )
+    assert base == BASE and len(paths) == 2
+
+
+@pytest.mark.parametrize("bad_second,reason", [
+    ({"total_count": 151, "check_runs": [{"id": 200}]},
+     "SOURCE_CHECK_INVENTORY_INCOMPLETE_HOLD"),
+    ({"total_count": 150, "check_runs": []},
+     "SOURCE_CHECK_INVENTORY_INCOMPLETE_HOLD"),
+    ({"total_count": 150, "check_runs": [{"id": i + 1} for i in range(50)]},
+     "SOURCE_CHECK_INVENTORY_DUPLICATE_OR_INVALID_HOLD"),
+])
+def test_check_run_page_mutation_or_duplication_fails_closed(monkeypatch, bad_second, reason):
+    first = {"total_count": 150, "check_runs": [{"id": i + 1} for i in range(100)]}
+    def fetch(path):
+        if path.endswith("per_page=100"):
+            return first
+        if path.endswith("page=2"):
+            return bad_second
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    with pytest.raises(adoption.AdoptionHold, match=reason):
+        adoption._exact_head_checks(SHA)
+
+
+def test_overlarge_check_run_inventory_is_typed_hold(monkeypatch):
+    monkeypatch.setattr(
+        adoption, "api",
+        lambda path: {"total_count": adoption.MAX_CHECK_PAGES * 100 + 1, "check_runs": []},
+    )
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_CHECK_INVENTORY_PAGE_CAP_HOLD"):
+        adoption._exact_head_checks(SHA)
+
+
+def test_ci_completion_wakes_existing_single_writer_adoption():
+    wf = yaml.safe_load((ROOT / ".github/workflows/wow-v17-engineering-auto-repair.yml").read_text())
+    triggers = wf.get("on", wf.get(True))
+    assert {"wow-verify", "wow-engine-verify"} <= set(triggers["workflow_run"]["workflows"])
+    hold = wf["jobs"]["discover"]["if"]
+    assert "wow-v17-independent-qa-check" in hold
+    assert "wow-v17-release-authority-check" in hold
+    assert "wow-verify" not in hold
+    observer = wf["jobs"]["adoption-readonly-preflight"]
+    expr = observer["if"]
+    adopter = wf["jobs"]["adopt-reviewed-owner-source"]
+    assert adopter["needs"] == "adoption-readonly-preflight"
+    assert adopter["if"] == "needs.adoption-readonly-preflight.outputs.status == 'SOURCE_READY'"
+    assert "concurrency" not in observer
+    assert "github.event.workflow_run.conclusion == 'success'" in expr
+    assert "github.event.workflow_run.event == 'pull_request'" in expr
+    assert "github.event.workflow_run.head_repository.full_name == github.repository" in expr
+    assert "github.event.workflow_run.name == 'wow-verify'" in expr
+    assert "github.event.workflow_run.name == 'wow-engine-verify'" in expr
+    assert "wow-v17-engineering-implementation-single-writer" in str(adopter["concurrency"])
+    # Assert parsed workflow semantics, not Python's repr of YAML dicts:
+    # str(steps) quotes keys/values and can false-fail correctly wired env.
+    sources = [
+        step for step in adopter["steps"]
+        if step.get("name") == "Re-propose immutable source through authenticated Engineering App"
+    ]
+    assert len(sources) == 1
+    source = sources[0]
+    assert source["env"]["SOURCE_PR"] == "${{ needs.adoption-readonly-preflight.outputs.pr_number }}"
+    assert source["env"]["SOURCE_SHA"] == "${{ needs.adoption-readonly-preflight.outputs.source_sha }}"
+    assert source["env"]["WOW_CAN_EXECUTE"] == "false"
+    assert source["env"]["WOW_DRY_RUN_ONLY"] == "true"
+    assert '--source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA"' in source["run"]
+    assert source["env"]["APP_TOKEN"] == "${{ steps.engineering_app.outputs.token }}"
