@@ -372,3 +372,70 @@ def test_learning_failure_exposes_only_whitelisted_db_boundary_not_exception_mes
     assert failed["error_boundary"] == "wow_outcomes.select_core_intelligence_candidates"
     assert "private:credential" not in str(result)
     assert result["can_execute"] is False
+
+
+def test_internal_learning_route_requires_exact_runner_oidc_not_static_action_key(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import github_actions_oidc as oidc
+    from v17.core_intelligence_compounding_routes import install_compounding_intelligence_routes_read_only
+
+    app = FastAPI()
+    app_key_calls = []
+    def existing_action_auth(authorization=None):
+        app_key_calls.append(authorization)
+    install_compounding_intelligence_routes_read_only(
+        app, get_client_fn=lambda: object(),
+        auth_dependency=existing_action_auth,
+    )
+    client = TestClient(app)
+    assert client.post("/internal/v17/continuous-intelligence").status_code == 401
+
+    claims = {
+        "repository": oidc.REPOSITORY,
+        "repository_id": oidc.REPOSITORY_ID,
+        "repository_owner_id": oidc.REPOSITORY_OWNER_ID,
+        "ref": oidc.REF,
+        "runner_environment": "github-hosted",
+        "workflow_ref": oidc.CONTINUOUS_INTELLIGENCE_WORKFLOW_REF,
+        "event_name": "workflow_dispatch",
+    }
+    seen = []
+    def verified(token, *, validator):
+        seen.append(token)
+        return validator(claims)
+
+    monkeypatch.setattr(oidc, "verify_github_actions_oidc", verified)
+    with patch("v17.core_intelligence_compounding_routes.run_continuous_intelligence_cycle",
+               return_value=payload(schema_version="WOW17_CONTINUOUS_INTELLIGENCE_V1",
+                                    completed_stages=4, total_stages=4,
+                                    automatic_promotion_allowed=False, model_parameters_changed=False,
+                                    terminal_authority="V17_TERMINAL_REDUCER", stages=[])):
+        good = client.post("/internal/v17/continuous-intelligence",
+                           headers={"Authorization": "Bearer signed-runner"})
+    assert good.status_code == 200
+    assert good.json()["automation_auth"] == "GITHUB_ACTIONS_OIDC"
+    assert good.json()["can_execute"] is False
+    assert seen == ["signed-runner"]
+    assert app_key_calls == []  # No downgrade to Action-key dependency.
+
+    claims["event_name"] = "pull_request"
+    denied = client.post("/internal/v17/continuous-intelligence",
+                         headers={"Authorization": "Bearer signed-runner"})
+    assert denied.status_code == 401
+    assert denied.json()["detail"]["code"] == "LEARNING_AUTOMATION_AUTH_INVALID"
+
+
+def test_learning_workflow_does_not_require_duplicating_production_api_secret():
+    from pathlib import Path
+    workflow = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/wow-v17-continuous-intelligence.yml").read_text()
+    assert "id-token: write" in workflow
+    assert "ACTIONS_ID_TOKEN_REQUEST_URL" in workflow
+    assert "ACTIONS_ID_TOKEN_REQUEST_TOKEN" in workflow
+    assert "/internal/v17/continuous-intelligence" in workflow
+    assert '"automation_auth") == "GITHUB_ACTIONS_OIDC"' in workflow
+    assert "secrets.WOW_ACTION_API_KEY" not in workflow
+    assert "WOW_ACTION_API_KEY:" not in workflow
+    assert 'WOW_CAN_EXECUTE: "false"' in workflow
+    assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
