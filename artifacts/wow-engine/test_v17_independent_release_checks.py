@@ -737,12 +737,21 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
             assert "${{" not in step.split("run: |", 1)[1], "no expression interpolation inside run scripts"
         if "steps.app_token.outputs.token" in step:
             assert step.startswith("Publish exact-head check"), "App token only reaches the publish step"
-    # Protect the *new* exact-PR queue rather than require the obsolete global queue.
-    concurrency = yaml.load(text, Loader=yaml.BaseLoader)["concurrency"]
-    assert concurrency["group"] == (
-        wf.stem + "-${{ inputs.pr_number || "
-        "github.event.workflow_run.pull_requests[0].number || 'AUTO' }}"
-    )
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
+    if wf == QA_WF:
+        concurrency = workflow["concurrency"]
+        assert concurrency["group"] == (
+            wf.stem + "-${{ inputs.pr_number || "
+            "github.event.workflow_run.pull_requests[0].number || 'AUTO' }}"
+        )
+    else:
+        assert "concurrency" not in workflow, "no global Release AUTO queue"
+        assert "concurrency" not in workflow["jobs"]["admit-release"]
+        concurrency = workflow["jobs"]["release"]["concurrency"]
+        assert concurrency["group"] == (
+            "wow-v17-release-authority-check-pr-"
+            "${{ needs.admit-release.outputs.pr_number }}"
+        )
     assert concurrency["cancel-in-progress"] == "false"
     assert concurrency["queue"] == "max"
 
@@ -785,8 +794,25 @@ def test_prless_workflow_run_skips_qa_before_target_resolution():
 
 def test_release_skips_policy_resolution_until_upstream_qa_is_applicable():
     workflow = yaml.load(REL_WF.read_text(), Loader=yaml.BaseLoader)
+    admission = workflow["jobs"]["admit-release"]
     job = workflow["jobs"]["release"]
+    assert job["needs"] == "admit-release"
     assert "github.event.workflow_run.conclusion != 'skipped'" in job["if"]
+    assert "needs.admit-release.outputs.applicable == 'true'" in job["if"]
+    assert "github.event.workflow_run.conclusion != 'skipped'" in admission["if"]
+    assert admission["outputs"]["pr_number"] == "${{ steps.target.outputs.pr_number }}"
+    assert admission["outputs"]["head_sha"] == "${{ steps.target.outputs.head_sha }}"
+    assert admission["outputs"]["applicable"] == "${{ steps.target.outputs.applicable }}"
+    read_only = {step["name"]: step for step in admission["steps"]}
+    assert all("APP_TOKEN" not in str(step) for step in read_only.values())
+    script = read_only["Resolve authenticated exact-PR release lane"]["run"]
+    assert "classify-upstream-qa" in script
+    assert "resolve-qa-policy" in script
+    assert script.index("classify-upstream-qa") < script.index("resolve-qa-policy")
+    assert "RELEASE_NEUTRAL_BEFORE_PR_LOCK" in script
+    assert "RELEASE_POLICY_TARGET_STALE" in script
+    assert "applicable=true" in script
+    assert "permission-checks: write" not in str(admission)
     steps = {step["name"]: step for step in job["steps"]}
     assert steps["Classify upstream QA applicability"]["if"] == "success() && github.event_name == 'workflow_run'"
     assert steps["Decide at exact head (read-only)"]["if"] == (
