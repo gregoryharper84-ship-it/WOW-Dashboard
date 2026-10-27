@@ -153,3 +153,13 @@ def test_candidate_cannot_use_data_unavailable_to_incumbent_in_paired_holdout():
     rows[0]["feature_snapshot_captured_at_utc"] = (datetime(2024, 1, 1, tzinfo=timezone.utc) - timedelta(minutes=30)).isoformat()
     with pytest.raises(ResearchInputError, match="CANDIDATE_EVIDENCE_LATER_THAN_INCUMBENT"):
         parse_rows(rows)
+
+
+def test_integer_source_feature_hash_keeps_json_number_type():
+    rows = fixture()
+    for i, item in enumerate(rows):
+        item["features"] = {"prior_count": i+1}
+        item["feature_snapshot_sha256"] = hashlib.sha256(
+            json.dumps(item["features"], sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    assert len(parse_rows(rows)) == 12
