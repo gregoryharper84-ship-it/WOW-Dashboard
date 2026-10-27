@@ -38,6 +38,9 @@ class Intent:
     branch: str
     sha: str
     payload: str
+    source_pr: int | None = None
+    source_sha: str = ""
+    draft: bool = True
 
     @property
     def digest(self) -> str:
@@ -57,9 +60,18 @@ class Intent:
                 or not isinstance(self.payload, str)):
             raise FencingHold("MUTATION_PROVENANCE_INVALID")
         prefix = f"wow-engineering/fenced-{self.incident_id}-{self.epoch}-"
-        if (not self.branch.startswith(prefix)
-                or not re.fullmatch(r"[a-z0-9-]{8,64}", self.branch[len(prefix):])
-                or len(self.branch) > 150):
+        if self.source_pr is not None:
+            if (type(self.source_pr) is not int or self.source_pr <= 0
+                    or not SHA.fullmatch(self.source_sha)
+                    or self.branch !=
+                       f"wow-engineering/exact-replay-{self.source_pr}-{self.source_sha[:12]}"
+                    or self.operation not in {"PUSH_REF", "CREATE_PR"}
+                    or self.draft is not False):
+                raise FencingHold("MUTATION_REPLAY_PROVENANCE_INVALID")
+        elif (self.source_sha or self.draft is not True
+              or not self.branch.startswith(prefix)
+              or not re.fullmatch(r"[a-z0-9-]{8,64}", self.branch[len(prefix):])
+              or len(self.branch) > 150):
             raise FencingHold("MUTATION_BRANCH_UNBOUND")
         if self.operation in {"CREATE_BRANCH", "PUSH_REF"} and self.payload:
             raise FencingHold("CREATE_BRANCH_PAYLOAD_FORBIDDEN")
@@ -165,7 +177,8 @@ class SupabaseRpcStore:
             "p_owner_id": intent.owner_id, "p_epoch": intent.epoch,
             "p_lease_group": intent.lease_group, "p_operation": intent.operation,
             "p_branch": intent.branch, "p_sha": intent.sha,
-            "p_digest": intent.digest,
+            "p_digest": intent.digest, "p_source_pr": intent.source_pr,
+            "p_source_sha": intent.source_sha, "p_draft": intent.draft,
         })
         if not isinstance(value, dict) or value.get("status") not in {
                 "STARTED", "PENDING", "CONFIRMED", "DENIED"}:
@@ -240,9 +253,11 @@ class GitHubAppWriter:
 
     def create_pr(self, intent: Intent) -> None:
         result = self._call("POST", f"/repos/{REPO}/pulls", {
-            "title": f"Fenced engineering source for incident #{intent.incident_id}",
+            "title": (f"Engineering App: exact source #{intent.source_pr} integration"
+                      if intent.source_pr is not None else
+                      f"Fenced engineering source for incident #{intent.incident_id}"),
             "head": intent.branch, "base": "main",
-            "draft": True, "body": intent.payload,
+            "draft": intent.draft, "body": intent.payload,
         })
         if (not isinstance(result, dict) or not isinstance(result.get("number"), int)
                 or result["number"] < 1 or result.get("head", {}).get("sha") != intent.sha):
@@ -268,7 +283,7 @@ class GitHubAppWriter:
                     pr.get("head", {}).get("ref") == intent.branch and
                     pr.get("head", {}).get("repo", {}).get("full_name") == REPO and
                     pr.get("base", {}).get("ref") == "main" and
-                    pr.get("draft") is True and
+                    pr.get("draft") is intent.draft and
                     pr.get("user", {}).get("login") == "wow-engineering[bot]")
         except FencingHold:
             return False
