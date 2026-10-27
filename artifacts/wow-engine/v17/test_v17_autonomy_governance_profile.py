@@ -38,6 +38,14 @@ def test_new_workflow_and_agent_skills_remain_trust_roots():
 def test_protected_model_and_governance_mixed_is_trust_root():
     r=route(['.github/workflows/protect.yml', 'model.py'], ['model_promotion'])
     assert r.track is Track.TRUST_ROOT
+    assert r.requires_model_certification  # Mixed scope cannot drop the scientific gate.
+    assert r.requires_existing_protected_authorization
+
+
+def test_routing_policy_self_edit_is_protected_when_integrated():
+    r=route(['artifacts/wow-engine/v17/autonomy_governance_profile.py'], ['none'])
+    assert r.track is Track.TRUST_ROOT
+    assert r.owner_approval_by_default
 
 
 def test_untrusted_effect_declaration_fails_closed():
