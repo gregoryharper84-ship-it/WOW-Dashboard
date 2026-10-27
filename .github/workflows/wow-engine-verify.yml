@@ -252,7 +252,9 @@ jobs:
           assert worker["type"] == "worker"
           assert worker["runtime"] == "python"
           assert worker["rootDir"] == "artifacts/wow-engine"
-          assert worker["autoDeployTrigger"] == "off"
+          # Worker remains non-executing and follows protected-main CI admission.
+          assert worker["autoDeployTrigger"] == "checksPass"
+          assert worker["autoDeployTrigger"] == service["autoDeployTrigger"]
           assert "agent_runtime.celery_app:celery_app" in worker["startCommand"]
           worker_env_by_key = {item["key"]: item for item in worker["envVars"]}
           assert worker_env_by_key["WOW_CAN_EXECUTE"]["value"] == "false"
