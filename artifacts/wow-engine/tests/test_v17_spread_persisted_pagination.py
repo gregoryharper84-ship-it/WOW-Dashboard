@@ -244,4 +244,5 @@ def test_ncaaf_forward_fingerprint_index_matches_exact_latest_row_sort():
     assert "drop table" not in normalized
     assert "update public.wow_d1_training_rows" not in normalized
     # Preserve previous official_event_id-ordered pagination index.
-    assert "wow_d1_training_rows_ncaaf_spread_lookup_idx" in ddl
+    previous = (engine_dir / "migrations" / "20260927_ncaaf_spread_forward_lookup_index.sql").read_text()
+    assert "wow_d1_training_rows_ncaaf_spread_lookup_idx" in previous
