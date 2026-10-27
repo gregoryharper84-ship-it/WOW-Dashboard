@@ -164,19 +164,19 @@ TRUST_ROOT_FILES = (".github/workflows/wow-v17-claude-engineering-worker.yml",)
 def test_canonical_incident_required_by_native_qa_and_release():
     ev = evidence()
     assert m.qa_findings(ev) == []
-    ev["pr"]["body"] = "Parent: #1688\\nReference #2136"
+    ev["pr"]["body"] = "Parent: #1688\nReference #2136"
     assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(ev)
-    ev["pr"]["body"] = "Incident: #2136\\nIncident: #2162"
+    ev["pr"]["body"] = "Incident: #2136\nIncident: #2162"
     assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(ev)
     ev["pr"]["body"] = "Incident: #2136"
     assert m.qa_findings(ev) == []
 
 
 def test_canonical_incident_exact_field_parser():
-    assert m._canonical_incident_present("Incident: #2136\\nParent: #1688")
+    assert m._canonical_incident_present("Incident: #2136\nParent: #1688")
     assert m._canonical_incident_present("  Incident: 2136  ")
     for body in (None, "", "See #2136", "Parent: #2136",
-                 "Incident: #0", "Incident: #2136\\nIncident: #2136",
+                 "Incident: #0", "Incident: #2136\nIncident: #2136",
                  "prefix Incident: #2136"):
         assert not m._canonical_incident_present(body)
 
