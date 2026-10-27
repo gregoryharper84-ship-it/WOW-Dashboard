@@ -234,6 +234,31 @@ def test_created_pr_inventory_must_be_unambiguous(inventory):
             integrated_sha=SHA, main_sha=BASE)
 
 
+@pytest.mark.parametrize("body,expected", [
+    ("Incident: #1688\\nRelated incident: #2136", "1688"),
+    ("**Incident:** #2136 (exact-head governance)", "2136"),
+])
+def test_app_adoption_preserves_explicit_canonical_incident(body, expected):
+    assert adoption.canonical_incident_id(body) == expected
+
+
+@pytest.mark.parametrize("body", [
+    None, "", "Related incident: #2136", "Incident: #0",
+    "Incident: #2136x", "Incident: #2136\\nIncident: #1688",
+    "References #2136 only",
+])
+def test_app_adoption_rejects_missing_or_ambiguous_incident(body):
+    with pytest.raises(adoption.AdoptionHold, match="SOURCE_INCIDENT_ID_MISSING_OR_AMBIGUOUS_HOLD"):
+        adoption.canonical_incident_id(body)
+
+
+def test_app_integration_template_binds_source_incident_before_push():
+    body = (ROOT / "artifacts/wow-engine/v17/engineering_authorized_adoption.py").read_text()
+    assert 'incident_id = canonical_incident_id(current_source.get("body"))' in body
+    assert 'f"Incident: #{incident_id}\\n\\n"' in body
+    assert body.index('incident_id = canonical_incident_id(') < body.index('call("git", "push"')
+
+
 def test_bootstrap_receipt_names_indispensable_exact_head_owner_action():
     receipt = adoption.review_boundary_receipt(777, SHA)
     assert receipt == {
