@@ -8,6 +8,7 @@ from v17.prediction_receipt_lookup_runtime import (
     PredictionReceiptLookupBatch,
     install_prediction_receipt_lookup_route,
     lookup_prediction_receipts,
+    _SELECT_FIELDS,
 )
 
 
@@ -233,3 +234,48 @@ def test_lookup_route_is_read_only_and_installs_once():
     body = response.json()
     assert body["rows_matched"] == 1
     assert body["can_execute"] is False
+
+def test_read_only_projection_includes_schema_verified_fitted_lineage():
+    expected = {
+        "model_provider_identity", "model_family", "model_artifact_version",
+        "model_artifact_checksum", "model_bundle_fingerprint",
+        "model_artifact_lifecycle_state", "feature_schema_version",
+        "feature_transform_version", "feature_snapshot_hash",
+        "training_dataset_hash", "training_code_sha", "specialist_version",
+        "certification_id", "controlling_specialist",
+        "scoring_profile_id", "scoring_profile_sha256", "evidence_source_kind",
+    }
+    selected = set(_SELECT_FIELDS.split(","))
+    assert expected <= selected
+    # The underlying ledger does not have these independent exact bindings;
+    # adding them to SQL would turn every lookup into a 400/error.
+    assert "period" not in selected
+    assert "entity_id" not in selected
+
+
+def test_exact_receipt_round_trips_artifact_metadata_without_certifying_identity():
+    expected = {
+        "model_artifact_version": "MLB_SO_FITTED_V17_A",
+        "model_artifact_checksum": "a" * 64,
+        "model_bundle_fingerprint": "b" * 64,
+        "model_artifact_lifecycle_state": "PROMOTED",
+        "specialist_version": "MLB_SO_V17",
+        "certification_id": "cert-001",
+        "controlling_specialist": "MLB_PITCHER_STRIKEOUTS",
+        "feature_snapshot_hash": "c" * 64,
+        "training_dataset_hash": "d" * 64,
+        "training_code_sha": "e" * 40,
+        "calibration_version": "CAL_V17",
+    }
+    batch = PredictionReceiptLookupBatch.model_validate(
+        {"rows": [{"row_key": "tolle-k", **_exact_identity(), "sport": "MLB"}]}
+    )
+    result = lookup_prediction_receipts(_Db([_prediction(**expected)]), batch)
+    match = result["rows"][0]["matches"][0]
+    assert match["is_immutable_pregame"] is True
+    for key, value in expected.items():
+        assert match["prediction"][key] == value
+    assert match["calibrated_probability"] == 0.68
+    assert match["calibrated_lower_bound"] == 0.62
+    assert match["can_execute"] is False
+    assert result["can_execute"] is False
