@@ -158,7 +158,7 @@ services:
     rootDir: artifacts/wow-engine
     buildCommand: pip install -r requirements.txt
     startCommand: celery -A agent_runtime.celery_app:celery_app worker --loglevel=INFO --concurrency=2
-    autoDeployTrigger: "off"
+    autoDeployTrigger: "checksPass"
     maxShutdownDelaySeconds: 120
     envVars:
       - key: PYTHON_VERSION
