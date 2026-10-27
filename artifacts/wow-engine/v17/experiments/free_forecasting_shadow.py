@@ -110,7 +110,7 @@ def parse_rows(raw: Sequence[Mapping[str, Any]]) -> list[Row]:
             feature_names = set(features)
         if set(features) != feature_names:
             raise ResearchInputError("INCONSISTENT_FEATURE_SCHEMA")
-        expected_hash = sha256(json.dumps(features, sort_keys=True, separators=(",", ":"),
+        expected_hash = sha256(json.dumps(raw_features, sort_keys=True, separators=(",", ":"),
                                          allow_nan=False).encode("utf-8")).hexdigest()
         if value.get("feature_snapshot_sha256") != expected_hash:
             raise ResearchInputError("FEATURE_SNAPSHOT_HASH_MISMATCH")
