@@ -41,8 +41,14 @@ class Store:
             if any(i.incident_id == intent.incident_id and state == "PENDING"
                    for i, state in self.intents.values()):
                 return "DENIED"
-            if any(inc != intent.incident_id and group == intent.lease_group
+            if any(inc != intent.incident_id and
+                   (group == "GLOBAL" or intent.lease_group == "GLOBAL" or group == intent.lease_group)
                    for inc, (_, _, group) in self.owners.items()):
+                return "DENIED"
+            if any(i.incident_id != intent.incident_id and state == "PENDING"
+                   and (i.lease_group == "GLOBAL" or intent.lease_group == "GLOBAL"
+                        or i.lease_group == intent.lease_group)
+                   for i, state in self.intents.values()):
                 return "DENIED"
             self.intents[intent.mutation_id] = (intent, "PENDING")
             return "STARTED"
@@ -160,11 +166,13 @@ def test_invalid_identity_or_stale_lease_cannot_mutate(mutator):
 
 def test_different_incidents_in_global_conflict_but_disjoint_domains_can_pass():
     s, g = Store(), GitHub()
+    s.owners[1739] = ("github-actions:worker:123", 1, "P0_NFL")
+    candidate = replace(make(), lease_group="P0_NFL")
     s.owners[1777] = ("github-actions:worker:123", 1, "GLOBAL")
     with pytest.raises(FencingHold, match="LEASE_STALE_OR_CONFLICTING"):
-        Gateway(s, g).deliver(make())
+        Gateway(s, g).deliver(candidate)
     s.owners[1777] = ("github-actions:worker:123", 1, "P0_NBA")
-    assert Gateway(s, g).deliver(make()) == "EXACT_GITHUB_WRITE_CONFIRMED"
+    assert Gateway(s, g).deliver(candidate) == "EXACT_GITHUB_WRITE_CONFIRMED"
 
 
 def test_create_pr_uses_same_fence():
@@ -181,3 +189,23 @@ def test_missing_store_ack_and_drift_cannot_be_called_verified():
     with pytest.raises(FencingHold, match="GITHUB_MUTATION_RECONCILIATION_REQUIRED"):
         Gateway(s, g).deliver(i)
     assert g.writes == []
+
+def test_expired_pending_writer_blocks_another_global_incident():
+    s, g = Store(), GitHub()
+    s.begin(make())
+    # Old lease is no longer live, but its external POST is still ambiguous.
+    s.owners = {1777: ("github-actions:worker:123", 1, "GLOBAL")}
+    with pytest.raises(FencingHold, match="LEASE_STALE_OR_CONFLICTING"):
+        Gateway(s, g).deliver(make(incident_id=1777, mutation_id=ID2))
+    assert not g.writes
+
+
+def test_sql_contract_guards_expired_pending_and_no_advisory_deadlock():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / "migrations" /
+            "20261027_writer_mutation_fence_REVIEW_ONLY.sql").read_text()
+    assert "pg_try_advisory_xact_lock(901734,1739)" in text
+    assert "WRITER_LEASE_TRANSITION_RETRY" in text
+    assert "m.state='PENDING'" in text
+    assert "y.state='PENDING'" in text
+    assert "WRITER_MUTATION_IN_FLIGHT" in text
