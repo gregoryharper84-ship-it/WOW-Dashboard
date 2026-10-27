@@ -129,9 +129,10 @@ def evidence(files=("artifacts/wow-engine/v17/x.py",), author="wow-engineering[b
     ev = {
         "repository": REPO, "pr_number": 7, "expected_head_sha": HEAD, "evidence_errors": [],
         "owner_login": OWNER,
-        "pr": {"number": 7, "state": "open", "draft": False, "merged": False, "head_sha": HEAD, "head_repo": REPO,
+        "pr": {"number": 7, "body": "Incident: #2136", "state": "open", "draft": False, "merged": False, "head_sha": HEAD, "head_repo": REPO,
                "head_ref": "fix/issue-1830", "base_ref": "main", "author": author,
-               "author_id": 285088163 if author == OWNER else 9001, "changed_files": len(files)},
+               "author_id": 285088163 if author == OWNER else 9001, "changed_files": len(files),
+               "body": "Incident: #2136\nParent: #1688"},
         "files": list(files),
         "source_review_paths": list(files),
         "source_review": source_review_evidence(files, author=author),
@@ -158,6 +159,26 @@ TRUST_ROOT_FILES = (".github/workflows/wow-v17-claude-engineering-worker.yml",)
 
 
 # --- QA decisions --------------------------------------------------------------------
+
+
+def test_canonical_incident_required_by_native_qa_and_release():
+    ev = evidence()
+    assert m.qa_findings(ev) == []
+    ev["pr"]["body"] = "Parent: #1688\nReference #2136"
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(ev)
+    ev["pr"]["body"] = "Incident: #2136\nIncident: #2162"
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(ev)
+    ev["pr"]["body"] = "Incident: #2136"
+    assert m.qa_findings(ev) == []
+
+
+def test_canonical_incident_exact_field_parser():
+    assert m._canonical_incident_present("Incident: #2136\nParent: #1688")
+    assert m._canonical_incident_present("Incident: 2136  ")
+    for body in (None, "", "See #2136", "Parent: #2136",
+                 "Incident: #0", "Incident: #2136\nIncident: #2136",
+                 "prefix Incident: #2136", "  Incident: 2136  "):
+        assert not m._canonical_incident_present(body)
 
 
 def test_ordinary_pr_with_complete_exact_head_evidence_passes():
@@ -653,7 +674,7 @@ def _gather_routes(files=None, runs=None, changed=None):
                                           "conclusion": "success", "app": {"id": GHA}}]
     return {
         f"repos/{REPO}": (200, {"owner": {"login": OWNER}}),
-        f"repos/{REPO}/pulls/7": (200, {"number": 7, "state": "open", "draft": False, "merged": False, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
+        f"repos/{REPO}/pulls/7": (200, {"number": 7, "body": "Incident: #2136", "state": "open", "draft": False, "merged": False, "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
                                         "base": {"ref": "main", "repo": {"full_name": REPO}}, "user": {"id": 9001, "login": "bot"},
                                         "changed_files": changed if changed is not None else len(files)}),
         f"repos/{REPO}/pulls/7/files?per_page=100&page=1": (200, files),
@@ -1986,3 +2007,43 @@ def test_malformed_file_record_fails_closed():
     ev = m.gather(REPO, 7, HEAD, fetch=Fake(_gather_routes(files=[{"status": "modified"}])))
     assert "FILES_PATH_INVALID" in ev["evidence_errors"]
     assert "QA_EVIDENCE_INCOMPLETE:FILES_PATH_INVALID" in m.qa_findings(ev)
+
+
+@pytest.mark.parametrize("body", [
+    "Incident: #2136", "Incident: 2136",
+    "Parent: #1688\nIncident: #2136",
+    "Incident: `2136`", "Incident:\t#2136\t",
+])
+def test_required_qa_canonical_incident_accepts_single_exact_identity(body):
+    assert m._canonical_incident_present(body) is True
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" not in m.qa_findings(
+        evidence(body=body)
+    )
+
+
+@pytest.mark.parametrize("body", [
+    None, "", "Parent: #2136",
+    "Fixes #2136", "Discussion of Incident: #2136",
+    "Incident: #0", "Incident: #abc",
+    "Incident: #2136\nIncident: #2136",
+    "Incident: #2136\nIncident: #2076",
+    "Incident: #2136 extra",
+    "  Incident: #2136", "\tIncident:\t#2136\t",
+    {"body": "Incident: #2136"},
+])
+def test_missing_or_ambiguous_incident_blocks_required_qa_and_release(body):
+    ev = evidence(body=body)
+    assert m._canonical_incident_present(body) is False
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(ev)
+    # Release is an independent principal and recomputes QA predicates.
+    findings = m.release_findings(ev, qa_app_id=QA_APP, release_app_id=REL_APP)
+    assert "RELEASE_QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in findings
+
+
+def test_real_gather_includes_pr_body_for_required_incident_gate():
+    routes = _gather_routes()
+    ev = m.gather(REPO, 7, HEAD, fetch=Fake(routes), source_review_resolver=_source_review_resolver)
+    assert ev["pr"]["body"] == "Incident: #2136"
+    routes[f"repos/{REPO}/pulls/7"][1]["body"] = "Parent: #1688"
+    bad = m.gather(REPO, 7, HEAD, fetch=Fake(routes), source_review_resolver=_source_review_resolver)
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(bad)
