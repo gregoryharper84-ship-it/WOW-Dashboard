@@ -201,7 +201,10 @@ def validate_github_actions_claims(claims: dict[str, Any]) -> dict[str, Any]:
     return dict(claims)
 
 
-def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = None) -> dict[str, Any]:
+def verify_github_actions_oidc(
+    token: str, *, jwk_client: PyJWKClient | None = None,
+    validator: Any = None,
+) -> dict[str, Any]:
     if not isinstance(token, str) or not token.strip():
         raise GitHubOIDCValidationError("GITHUB_OIDC_TOKEN_MISSING")
     try:
@@ -217,7 +220,48 @@ def verify_github_actions_oidc(token: str, *, jwk_client: PyJWKClient | None = N
         )
     except Exception as exc:
         raise GitHubOIDCValidationError("GITHUB_OIDC_SIGNATURE_OR_STANDARD_CLAIMS_INVALID") from exc
-    return validate_github_actions_claims(claims)
+    return (validator or validate_github_actions_claims)(claims)
+
+
+# Dedicated capability: the Continuous Intelligence OIDC token is intentionally
+# NOT admitted to the general Multi-Scout automation workflow allowlist.
+CONTINUOUS_INTELLIGENCE_WORKFLOW_REF = (
+    f"{REPOSITORY}/.github/workflows/wow-v17-continuous-intelligence.yml@{REF}"
+)
+
+
+def validate_continuous_intelligence_oidc_claims(claims: dict[str, Any]) -> dict[str, Any]:
+    """Only the scheduled/manual, github-hosted, exact protected-main research job."""
+    required = {
+        "repository": REPOSITORY,
+        "repository_id": REPOSITORY_ID,
+        "repository_owner_id": REPOSITORY_OWNER_ID,
+        "ref": REF,
+        "runner_environment": "github-hosted",
+        "workflow_ref": CONTINUOUS_INTELLIGENCE_WORKFLOW_REF,
+    }
+    for field, expected in required.items():
+        if str(claims.get(field) or "") != expected:
+            raise GitHubOIDCValidationError(f"LEARNING_OIDC_{field.upper()}_MISMATCH")
+    if claims.get("event_name") not in {"schedule", "workflow_dispatch"}:
+        raise GitHubOIDCValidationError("LEARNING_OIDC_EVENT_NOT_ALLOWED")
+    # A reusable/called workflow cannot silently inherit this direct-job grant.
+    if claims.get("job_workflow_ref"):
+        raise GitHubOIDCValidationError("LEARNING_OIDC_REUSABLE_JOB_NOT_ALLOWED")
+    return dict(claims)
+
+
+def authorize_continuous_intelligence_oidc(authorization: str | None) -> str:
+    """Internal-only bearer check. Never accepts or exposes WOW_ACTION_API_KEY."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise GitHubOIDCValidationError("LEARNING_OIDC_AUTH_REQUIRED")
+    supplied = authorization[len("Bearer "):].strip()
+    if not supplied:
+        raise GitHubOIDCValidationError("LEARNING_OIDC_TOKEN_MISSING")
+    verify_github_actions_oidc(
+        supplied, validator=validate_continuous_intelligence_oidc_claims
+    )
+    return "GITHUB_ACTIONS_OIDC"
 
 
 def authorize_action_key_or_multiscout_oidc(authorization: str | None) -> str:
@@ -311,6 +355,9 @@ __all__ = [
     "WNBA_PROP_CANDIDATE_WORKFLOW_REF",
     "WNBA_PROP_FORWARD_EVIDENCE_WORKFLOW_REF",
     "WORKFLOW_REF",
+    "CONTINUOUS_INTELLIGENCE_WORKFLOW_REF",
+    "authorize_continuous_intelligence_oidc",
+    "validate_continuous_intelligence_oidc_claims",
     "authorize_action_key_or_multiscout_oidc",
     "scout_route_auth_dependency",
     "validate_github_actions_claims",
