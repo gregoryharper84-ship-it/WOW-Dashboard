@@ -154,3 +154,14 @@ def test_boolean_or_duplicate_lease_receipts_rejected(tmp_path):
         {"incident_id":1739,"owner_id":"github-actions:401111:2:a","epoch":7}]))
     with pytest.raises(FencingHold,match="WRITER_LEASE_RECEIPT_UNVERIFIED"):
         receipt_identity(path,context())
+
+def test_fenced_writer_and_sql_are_explicitly_codeowned():
+    root = Path(__file__).resolve().parents[3]
+    text = (root / ".github/CODEOWNERS").read_text()
+    owner = "@gregoryharper84-ship-it"
+    for path in (
+        "/artifacts/wow-engine/v17/engineering_fenced_writer.py",
+        "/artifacts/wow-engine/v17/engineering_fenced_mutation_cli.py",
+        "/artifacts/wow-engine/migrations/20261027_writer_mutation_fence_REVIEW_ONLY.sql",
+    ):
+        assert f"{path} {owner}" in text
