@@ -766,8 +766,11 @@ jobs:
     # Only actual remote admission competes for the writer lock. The routing
     # job must never hold it while queueing an OpenAI/Claude worker.
     concurrency:
+      # Same global writer mutex. queue: max is GitHub's native pending cap
+      # (100), not a second controller or a per-sport writer lane.
       group: wow-v17-engineering-implementation-single-writer
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Checkout protected main
         uses: actions/checkout@v6
