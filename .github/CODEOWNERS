@@ -21,6 +21,8 @@
 /artifacts/wow-engine/v17/engineering_hold_target.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_recovery_planner.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_remote_fallback.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_remote_writer_release.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/cursor_terminal_status_receipt.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/cursor_cloud_handoff.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/governance_dispatcher.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/governance_dispatcher_github.py @gregoryharper84-ship-it
