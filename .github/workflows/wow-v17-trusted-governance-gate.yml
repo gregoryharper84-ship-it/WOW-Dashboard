@@ -1,9 +1,8 @@
 name: wow-v17-trusted-governance-gate
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main]
+  # Trust only the completed exact producer run. PR events are handled by
+  # the certifier; no early polling, duplicate workers, or stale receipts.
   workflow_run:
     workflows: [wow-v17-existing-pr-governance-review]
     types: [completed]
@@ -15,13 +14,13 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-trusted-governance-${{ github.event.workflow_run.id || format('{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+  group: wow-v17-trusted-governance-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
   trusted-governance:
     name: Trusted exact-head engineering governance
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name != 'workflow_run' || ((github.event.workflow_run.event == 'workflow_run' || github.event.workflow_run.event == 'check_run') && github.event.workflow_run.conclusion == 'success'))
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && contains(fromJSON('["pull_request_target","workflow_dispatch","check_run","workflow_run"]'), github.event.workflow_run.event))
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -38,9 +37,6 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
-          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
         run: |
           set -euo pipefail
@@ -53,7 +49,7 @@ jobs:
             jq -e --arg repo "$GITHUB_REPOSITORY" \
               '.name == "wow-v17-existing-pr-governance-review" and
                .path == ".github/workflows/wow-v17-existing-pr-governance-review.yml" and
-               (.event == "workflow_run" or .event == "check_run") and .head_branch == "main" and
+               (.event == "workflow_run" or .event == "check_run" or\n                .event == "pull_request_target" or .event == "workflow_dispatch") and\n               .head_branch == "main" and
                .head_repository.full_name == $repo and .repository.full_name == $repo and
                .status == "completed" and .conclusion == "success"' "$source_run" >/dev/null || {
                 echo "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" >&2; exit 1;
@@ -103,31 +99,6 @@ jobs:
                 echo "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH" >&2; exit 1;
               }
             run_id="$SOURCE_RUN_ID"
-          else
-          pr_number="$EVENT_PR_NUMBER"
-          head_sha="$EVENT_HEAD_SHA"
-          head_ref="$EVENT_HEAD_REF"
-          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] && [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
-            echo "GOVERNANCE_PR_EVENT_IDENTITY_INVALID" >&2; exit 1;
-          }
-          artifact_name="wow-v17-engineering-governance-${head_sha}"
-          artifact_matches='[]'
-
-          for _ in $(seq 1 180); do
-            artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
-            artifact_matches=$(jq -c --arg name "$artifact_name" \
-              '[.artifacts[] | select(.expired == false and .name == $name)]' <<<"$artifacts")
-            if [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ]; then
-              break
-            fi
-            sleep 10
-          done
-          [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ] || {
-            echo "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE: no unique exact-head artifact for ${head_sha}." >&2
-            exit 1
-          }
-          artifact_id=$(jq -r '.[0].id' <<<"$artifact_matches")
-          run_id=$(jq -r '.[0].workflow_run.id // ""' <<<"$artifact_matches")
           fi
 
           if [ -z "$artifact_id" ] || [ -z "$run_id" ]; then
