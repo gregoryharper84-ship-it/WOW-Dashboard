@@ -11,7 +11,7 @@ ROLES = (
     'wow-v17-independent-qa-check',
     'wow-v17-release-authority-check',
 )
-QA_EXPRESSION = "${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 'AUTO' }}"
+QA_EXPRESSION = "${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || github.run_id }}"
 RELEASE_EXPRESSION = "${{ needs.admit-release.outputs.pr_number }}"
 
 
@@ -41,13 +41,16 @@ def test_queue_never_silently_drops_a_pending_target(role):
 
 
 def _group(role, *, manual=None, upstream=None, run_id=None):
-    # A release without verified PR identity never acquires a writer.
-    # The read-only admission resolves a genuine QA policy before concurrency.
-    del run_id
+    # Release may not acquire a writer without authenticated PR identity.
+    # QA run_id is a safe neutral fallback for PRless observer events,
+    # while genuine QA targets still serialize under their exact PR number.
     pr = manual or upstream
     if role == ROLES[1]:
         return f'{role}-pr-{pr}' if pr else None
-    return f'{role}-{pr or "AUTO"}'
+    if pr is None:
+        assert isinstance(run_id, int) and run_id > 0
+        pr = run_id
+    return f'{role}-{pr}'
 
 
 @pytest.mark.parametrize('role', ROLES)
@@ -72,9 +75,10 @@ def test_unidentified_runs_do_not_displace_unrelated_prs(role):
         assert config(role)['jobs']['admit-release']['outputs']['applicable'] == (
             '${{ steps.target.outputs.applicable }}')
     else:
-        assert _group(role, run_id=40107281706) == _group(role, run_id=40107306470) == f'{role}-AUTO'
+        assert _group(role, run_id=40107281706) != _group(role, run_id=40107306470)
         group = config(role)['concurrency']['group']
-        assert group.endswith("|| 'AUTO' }}")
+        assert group.endswith("|| github.run_id }}")
+        assert '(github.event_name != \'workflow_run\' || github.event.workflow_run.pull_requests[0])' in str(config(role)['jobs']['qa']['if'])
     assert _group(role, run_id=40107281706) != _group(role, manual='2012', run_id=40107281706)
     assert _group(role, run_id=40107281706) != _group(role, upstream=1977, run_id=40104744926)
     assert "github.run_id" not in group
