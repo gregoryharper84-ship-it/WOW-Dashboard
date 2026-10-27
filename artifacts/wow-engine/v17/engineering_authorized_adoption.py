@@ -162,6 +162,12 @@ def discover() -> dict:
             # Pull-list summaries omit changed_files; resolve the exact PR
             # resource before checking the inventory and immutable head.
             detail = api(f"pulls/{pr_number}")
+            try:
+                canonical_incident_id(detail.get("body"))
+            except AdoptionHold:
+                # Keep scanning eligible work; do not starve other source PRs
+                # by reselecting a PR whose App integration cannot be routed.
+                continue
             checks = api(f"commits/{sha}/check-runs?per_page=100")
             try:
                 validate_evidence(detail, files, checks, requested_pr=pr_number,
