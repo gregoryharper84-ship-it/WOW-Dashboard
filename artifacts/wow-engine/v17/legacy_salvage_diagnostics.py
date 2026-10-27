@@ -35,7 +35,7 @@ def _utc(value: Any) -> datetime | None:
 def _required_fields(mode: str) -> tuple[str, ...]:
     common = (
         "row_key", "official_event_id", "event_status",
-        "participant", "market", "source_timestamp",
+        "participant", "market", "source_timestamp", "scheduled_start_utc",
     )
     if mode == "PROP":
         return common + ("stat_type", "period", "exact_line", "direction")
@@ -71,11 +71,16 @@ def audit_candidate(
     ]
     status = str(record.get("event_status") or "").upper()
     source_ts = _utc(record.get("source_timestamp"))
+    start_ts = _utc(record.get("scheduled_start_utc"))
     model_ts = _utc(record.get("model_timestamp"))
     latest_update = _utc(record.get("latest_material_update_at"))
     now = now_utc.astimezone(timezone.utc)
 
     issues: list[str] = []
+    if record.get("scheduled_start_utc") and start_ts is None:
+        issues.append("invalid_or_naive_start_timestamp")
+    elif start_ts and start_ts <= now:
+        issues.append("scheduled_event_has_started")
     if status in PREGAME_EXCLUDED:
         issues.append("pregame_event_ineligible")
     elif status and status not in PREGAME_ALLOWED:
@@ -87,12 +92,18 @@ def audit_candidate(
             issues.append("source_timestamp_in_future")
         elif (now - source_ts).total_seconds() > source_max_age_seconds:
             issues.append("source_evidence_stale")
-    if latest_update and model_ts and latest_update > model_ts:
+    if latest_update and not model_ts:
+        issues.append("material_update_without_model_timestamp")
+    elif latest_update and model_ts and latest_update > model_ts:
         issues.append("material_update_after_model")
     elif record.get("latest_material_update_at") and latest_update is None:
         issues.append("invalid_material_update_timestamp")
     if record.get("model_timestamp") and model_ts is None:
         issues.append("invalid_or_naive_model_timestamp")
+
+    critical_status = str(record.get("critical_participant_status") or "").strip().upper()
+    if critical_status in {"OUT", "INACTIVE", "SCRATCHED", "IR", "SEASON_OUT"}:
+        issues.append("critical_participant_unavailable")
 
     evidence_type = record.get("market_evidence_type") or "NO_MARKET"
     if evidence_type not in MARKET_EVIDENCE_TYPES:
@@ -119,8 +130,9 @@ def audit_candidate(
             and source_ts <= now
             and (now - source_ts).total_seconds() <= source_max_age_seconds
         ),
-        "pregame_eligible_by_status": status in PREGAME_ALLOWED
-        if status else None,
+        "pregame_eligible_by_status": status in PREGAME_ALLOWED and (
+            start_ts is not None and start_ts > now
+        ) if status else None,
         "diagnostic_only": True,
         "controlling_specialist_invoked": False,
         "model_probability": None,
@@ -149,10 +161,12 @@ def audit_rows(
     seen: set[Any] = set()
     for item in result:
         row_key = item["row_key"]
-        if row_key is not None and row_key in seen:
+        if not isinstance(row_key, str) or not row_key.strip():
+            item["sporting_evidence_issues"].append("invalid_row_key")
+            continue
+        if row_key in seen:
             item["sporting_evidence_issues"].append("repeated_row_key_check_identity")
-        if row_key is not None:
-            seen.add(row_key)
+        seen.add(row_key)
     assert len(result) == len(rows)
     return {
         "rows_received": len(rows),
