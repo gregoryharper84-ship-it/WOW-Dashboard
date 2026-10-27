@@ -67,8 +67,14 @@ def deliver(args, env: dict | None = None, *, store=None, github=None) -> str:
             raise FencingHold("PR_BODY_UNAVAILABLE") from None
     elif args.payload_file:
         raise FencingHold("NON_PR_BODY_FORBIDDEN")
+    source_pr = getattr(args, "source_pr", 0) or None
+    source_sha = getattr(args, "source_sha", "")
+    if (source_pr is None) != (not bool(source_sha)):
+        raise FencingHold("SOURCE_REPLAY_IDENTITY_INCOMPLETE")
     intent = Intent(args.mutation_id, incident, owner, epoch, group,
-                    args.operation, args.branch, args.sha, payload)
+                    args.operation, args.branch, args.sha, payload,
+                    source_pr=source_pr, source_sha=source_sha,
+                    draft=(source_pr is None))
     intent.validate()
     if args.operation == "PUSH_REF" and github is None:
         # A deterministic local checkout failure must never create a durable
@@ -99,6 +105,8 @@ def main() -> None:
     p.add_argument("--branch", required=True)
     p.add_argument("--sha", required=True)
     p.add_argument("--payload-file", default="")
+    p.add_argument("--source-pr", type=int, default=0)
+    p.add_argument("--source-sha", default="")
     args = p.parse_args()
     try:
         status = deliver(args)
