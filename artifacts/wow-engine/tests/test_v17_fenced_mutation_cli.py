@@ -165,3 +165,38 @@ def test_fenced_writer_and_sql_are_explicitly_codeowned():
         "/artifacts/wow-engine/migrations/20261027_writer_mutation_fence_REVIEW_ONLY.sql",
     ):
         assert f"{path} {owner}" in text
+
+
+def test_exact_source_replay_uses_old_app_branch_with_false_draft(tmp_path):
+    p=receipt(tmp_path)
+    sha="b"*40
+    q=args(p, "CREATE_PR", payload_file="")
+    body=tmp_path/"app-body.md"
+    body.write_text("Independent review and CODEOWNER still required.")
+    q.payload_file=str(body)
+    q.source_pr=2158
+    q.source_sha=sha
+    q.branch="wow-engineering/exact-replay-2158-"+sha[:12]
+    store=Mock()
+    store.begin.return_value="STARTED"
+    store.confirm.return_value=True
+    github=Mock()
+    github.exact_readback.return_value=True
+    assert deliver(q,context(),store=store,github=github)=="EXACT_GITHUB_WRITE_CONFIRMED"
+    i=store.begin.call_args.args[0]
+    assert i.source_pr==2158 and i.source_sha==sha
+    assert i.draft is False and i.branch==q.branch
+
+
+@pytest.mark.parametrize("source_pr,source_sha",[
+    (2158, ""), (0,"b"*40), (2158, "bad"), (True,"b"*40)
+])
+def test_replay_requires_complete_trusted_source_identity(tmp_path,source_pr,source_sha):
+    p=receipt(tmp_path)
+    q=args(p)
+    q.source_pr=source_pr
+    q.source_sha=source_sha
+    store=Mock()
+    with pytest.raises(FencingHold,match="SOURCE_REPLAY_IDENTITY_INCOMPLETE|MUTATION_REPLAY_PROVENANCE_INVALID"):
+        deliver(q,context(),store=store,github=Mock())
+    store.begin.assert_not_called()
