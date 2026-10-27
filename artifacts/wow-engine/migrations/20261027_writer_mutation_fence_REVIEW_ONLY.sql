@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS public.wow_engineering_writer_mutation_intents (
   owner_id text NOT NULL,
   epoch bigint NOT NULL CHECK (epoch > 0),
   lease_group text NOT NULL,
-  operation text NOT NULL CHECK (operation IN ('CREATE_BRANCH','CREATE_PR')),
+  operation text NOT NULL CHECK (operation IN ('CREATE_BRANCH','PUSH_REF','CREATE_PR')),
   branch text NOT NULL,
   sha text NOT NULL CHECK (sha ~ '^[0-9a-f]{40}$'),
   payload_digest text NOT NULL CHECK (payload_digest ~ '^[0-9a-f]{64}$'),
@@ -82,7 +82,7 @@ DECLARE l public.wow_engineering_incident_writer_leases%rowtype;
 BEGIN
  IF p_mutation_id IS NULL OR p_incident_id IS NULL OR p_incident_id<=0 OR
     p_epoch IS NULL OR p_epoch<=0 OR p_owner_id IS NULL OR p_lease_group IS NULL OR
-    p_operation NOT IN ('CREATE_BRANCH','CREATE_PR') OR
+    p_operation NOT IN ('CREATE_BRANCH','PUSH_REF','CREATE_PR') OR
     p_branch !~ '^wow-engineering/fenced-[0-9]+-[0-9]+-[a-z0-9-]+$' OR
     p_sha !~ '^[0-9a-f]{40}$' OR p_digest !~ '^[0-9a-f]{64}$' THEN
    RETURN jsonb_build_object('status','DENIED');
