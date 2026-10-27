@@ -58,3 +58,14 @@ gh() {
                          }, cwd=tmp_path, capture_output=True, text=True, check=False)
     assert (res.returncode == 0) == (expected_return == 0), (res.stderr, res.stdout)
     assert expected_status in (output.read_text() if expected_return == 0 else res.stderr)
+
+
+def test_reconciled_source_preserves_main_artifact_fix_and_release_event_filter():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "actions/artifacts?name=${artifact_name}&per_page=100&page=1" in workflow
+    assert "actions/artifacts?per_page=100&page=" not in workflow
+    section = workflow.split("  certify-existing-pr:\n", 1)[1].split("    runs-on: ubuntu-latest", 1)[0]
+    assert "github.event_name != 'check_run'" in section
+    assert "github.event.check_run.app.id == 5245853" in section
+    assert "github.event.check_run.name == 'WOW Release Authority exact-head'" in section
+    assert "github.event.check_run.conclusion == 'success'" in section
