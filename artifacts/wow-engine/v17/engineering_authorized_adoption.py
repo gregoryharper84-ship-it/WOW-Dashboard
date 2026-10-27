@@ -271,6 +271,23 @@ def validate_created_pr(
     return pr
 
 
+def canonical_incident_id(body: object) -> str:
+    """Require a single explicit source-PR incident before App integration.
+
+    The source PR may use plain or bold Markdown. Related references never
+    grant incident identity. Extract only decimal digits, never untrusted prose.
+    """
+    if not isinstance(body, str):
+        raise AdoptionHold("SOURCE_INCIDENT_ID_MISSING_OR_AMBIGUOUS_HOLD")
+    ids = re.findall(
+        r"(?im)^[ \\t]*(?:\\*\\*)?Incident:(?:\\*\\*)?[ \\t]*#([1-9][0-9]*)(?=[ \\t(]|$)[^\\n]*$",
+        body,
+    )
+    if len(ids) != 1:
+        raise AdoptionHold("SOURCE_INCIDENT_ID_MISSING_OR_AMBIGUOUS_HOLD")
+    return ids[0]
+
+
 def review_boundary_receipt(pr_number: int, integrated_sha: str) -> dict:
     return {
         "status": "PR_CREATED_PENDING_INDEPENDENT_REVIEW",
@@ -328,6 +345,7 @@ def integrate(pr_number: int, source_sha: str) -> None:
     if (current_source.get("state") != "open" or
             current_source.get("head", {}).get("sha") != source_sha):
         raise AdoptionHold("SOURCE_MOVED_BEFORE_PUSH_HOLD")
+    incident_id = canonical_incident_id(current_source.get("body"))
     with tempfile.TemporaryDirectory(prefix="wow-exact-adoption-") as temp:
         askpass = Path(temp) / "askpass"
         askpass.write_text(
@@ -341,6 +359,7 @@ def integrate(pr_number: int, source_sha: str) -> None:
     with tempfile.TemporaryDirectory(prefix="wow-adoption-body-") as temp:
         body = Path(temp) / "body.md"
         body.write_text(
+            f"Incident: #{incident_id}\n\n"
             f"## Mechanical Engineering App integration\n\n"
             f"Original author/source: PR #{pr_number}, head `{source_sha}`.\n"
             f"Source parent: `{base}`; main at adoption: `{main_sha}`.\n"
