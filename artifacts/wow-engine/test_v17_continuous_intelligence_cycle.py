@@ -93,3 +93,34 @@ def test_invalid_bounds_rejected_before_data_access(kwargs):
         with pytest.raises(ValueError, match="INVALID_"):
             run_continuous_intelligence_cycle(object(), **kwargs)
     source.assert_not_called()
+
+
+def test_new_http_route_uses_existing_action_auth_and_does_not_replace_legacy():
+    from fastapi import FastAPI, Header, HTTPException
+    from fastapi.testclient import TestClient
+    from v17.core_intelligence_compounding_routes import install_compounding_intelligence_routes_read_only
+
+    app = FastAPI()
+    db = object()
+
+    def require_key(authorization: str | None = Header(default=None)):
+        if authorization != "Bearer contract-test":
+            raise HTTPException(status_code=401)
+
+    with patch(
+        "v17.core_intelligence_compounding_routes.run_continuous_intelligence_cycle",
+        return_value={"status": "PASS", "can_execute": False},
+    ) as runner:
+        assert install_compounding_intelligence_routes_read_only(
+            app, get_client_fn=lambda: db, auth_dependency=require_key
+        )
+        client = TestClient(app)
+        assert client.post("/v17/intelligence/continuous-cycle").status_code == 401
+        assert client.post(
+            "/v17/intelligence/continuous-cycle",
+            headers={"Authorization": "Bearer contract-test"},
+        ).status_code == 200
+        assert runner.call_count == 1
+        assert runner.call_args.args[0] is db
+        assert runner.call_args.kwargs["min_samples"] == 30
+        assert any(route.path == "/v17/intelligence/full-cycle" for route in app.routes)
