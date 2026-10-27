@@ -83,7 +83,79 @@ BEGIN
  IF p_mutation_id IS NULL OR p_incident_id IS NULL OR p_incident_id<=0 OR
     p_epoch IS NULL OR p_epoch<=0 OR p_owner_id IS NULL OR p_lease_group IS NULL OR
     p_operation NOT IN ('CREATE_BRANCH','PUSH_REF','CREATE_PR') OR
-    p_branch !~ '^wow-engineering/fenced-[0-9]+-[0-9]+-[a-z0-9-]+$' OR
+    p_branch !~ ('^wow-engineering/fenced-' || p_incident_id::text ||
+                  '-' || p_epoch::text || '-[a-z0-9-]{8,64}
+    p_sha !~ '^[0-9a-f]{40}$' OR p_digest !~ '^[0-9a-f]{64}$' THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ -- Serialize across different incident IDs before taking an incident row lock.
+ PERFORM pg_catalog.pg_advisory_xact_lock(901734,1739);
+ SELECT * INTO l FROM public.wow_engineering_incident_writer_leases
+ WHERE incident_id=p_incident_id FOR UPDATE;
+ -- Existing pending/confirmed intent is reconciliation-only, never re-POST.
+ SELECT * INTO m FROM public.wow_engineering_writer_mutation_intents
+ WHERE mutation_id=p_mutation_id FOR UPDATE;
+ IF FOUND THEN
+   IF m.incident_id<>p_incident_id OR m.owner_id<>p_owner_id OR
+      m.epoch<>p_epoch OR m.lease_group<>p_lease_group OR
+      m.operation<>p_operation OR m.branch<>p_branch OR m.sha<>p_sha OR
+      m.payload_digest<>p_digest THEN
+     RETURN jsonb_build_object('status','DENIED');
+   END IF;
+   RETURN jsonb_build_object('status',m.state);
+ END IF;
+ IF l.incident_id IS NULL OR l.owner_id<>p_owner_id OR l.epoch<>p_epoch
+    OR l.lease_group<>p_lease_group OR l.state<>'HELD'
+    OR l.expires_at<=clock_timestamp() THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ IF EXISTS (SELECT 1 FROM public.wow_engineering_incident_writer_leases other
+            WHERE other.incident_id<>p_incident_id AND other.state='HELD'
+              AND other.expires_at>clock_timestamp()
+              AND (l.lease_group='GLOBAL' OR other.lease_group='GLOBAL'
+                   OR other.lease_group=l.lease_group)) THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ IF EXISTS (SELECT 1 FROM public.wow_engineering_writer_mutation_intents y
+            WHERE y.incident_id<>p_incident_id AND y.state='PENDING'
+              AND (l.lease_group='GLOBAL' OR y.lease_group='GLOBAL'
+                   OR y.lease_group=l.lease_group)) THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ IF EXISTS (SELECT 1 FROM public.wow_engineering_writer_mutation_intents x
+            WHERE x.incident_id=p_incident_id AND x.state='PENDING') THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ INSERT INTO public.wow_engineering_writer_mutation_intents
+  (mutation_id,incident_id,owner_id,epoch,lease_group,operation,branch,sha,payload_digest,state)
+ VALUES (p_mutation_id,p_incident_id,p_owner_id,p_epoch,p_lease_group,p_operation,
+         p_branch,p_sha,p_digest,'PENDING');
+ RETURN jsonb_build_object('status','STARTED');
+END $$;
+
+-- Caller must independently read GitHub exact branch/head/body before
+-- completing; verified audit evidence is immutable.
+CREATE OR REPLACE FUNCTION public.wow_engineering_confirm_writer_mutation(
+ p_mutation_id uuid,p_incident_id bigint,p_owner_id text,p_epoch bigint,p_digest text
+) RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER
+ SET search_path=pg_catalog,public AS $$
+BEGIN
+ UPDATE public.wow_engineering_writer_mutation_intents
+ SET state='CONFIRMED',confirmed_at=clock_timestamp()
+ WHERE mutation_id=p_mutation_id AND incident_id=p_incident_id
+   AND owner_id=p_owner_id AND epoch=p_epoch
+   AND payload_digest=p_digest AND state='PENDING';
+ RETURN FOUND;
+END $$;
+
+REVOKE ALL ON FUNCTION public.wow_engineering_enforce_lease_fence() FROM PUBLIC,anon,authenticated;
+REVOKE ALL ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text) FROM PUBLIC,anon,authenticated;
+REVOKE ALL ON FUNCTION public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text) TO service_role;
+-- Review production lease identity, full privilege inventory, legacy CLAIM
+-- paths, live HELD rows, bounded 55P03 retries and rollback before activation.
+) OR
     p_sha !~ '^[0-9a-f]{40}$' OR p_digest !~ '^[0-9a-f]{64}$' THEN
    RETURN jsonb_build_object('status','DENIED');
  END IF;
