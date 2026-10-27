@@ -24,6 +24,9 @@ class GeminiSidecarInstallerContract(unittest.TestCase):
             self.assertIn("currently OPEN assigned canonical manifest incident", proposed["manifest"]["args"][3])
             self.assertIn("exact SHA", proposed["manifest"]["args"][3])
             self.assertNotIn("#1841", proposed["manifest"]["args"][3])
+            self.assertIn("wow-flint-coding-handoff/SKILL.md", proposed["manifest"]["args"][3])
+            self.assertIn("untrusted research", proposed["manifest"]["args"][3])
+            self.assertIn("Never call Flint, OpenRouter", proposed["manifest"]["args"][3])
 
     def test_install_preserves_other_settings_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as root:
