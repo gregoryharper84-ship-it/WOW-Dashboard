@@ -37,7 +37,7 @@ def _script() -> str:
     ([{"name": NAME + "-wrong", "id": 5, "expired": False}], 1, 1, "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID"),
     ([{"name": NAME, "id": 5}], 1, 1, "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID"),
     ([{"name": NAME, "id": 5, "expired": False}], 2, 1, "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID"),
-    ([], 101, 1, "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED"),
+    ([], 101, 1, "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE"),
 ])
 def test_exact_name_filter_replays_fail_closed_inventory(tmp_path, inventory, total, expected_return, expected_status):
     script = _script()
