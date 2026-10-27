@@ -174,10 +174,10 @@ def test_canonical_incident_required_by_native_qa_and_release():
 
 def test_canonical_incident_exact_field_parser():
     assert m._canonical_incident_present("Incident: #2136\nParent: #1688")
-    assert m._canonical_incident_present("  Incident: 2136  ")
+    assert m._canonical_incident_present("Incident: 2136  ")
     for body in (None, "", "See #2136", "Parent: #2136",
                  "Incident: #0", "Incident: #2136\nIncident: #2136",
-                 "prefix Incident: #2136"):
+                 "prefix Incident: #2136", "  Incident: 2136  "):
         assert not m._canonical_incident_present(body)
 
 
