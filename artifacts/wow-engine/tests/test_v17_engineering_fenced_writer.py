@@ -305,10 +305,42 @@ def test_database_branch_identity_matches_gateway_incident_and_epoch():
            "20261027_writer_mutation_fence_REVIEW_ONLY.sql").read_text()
     assert "p_incident_id::text" in sql
     assert "p_epoch::text" in sql
-    assert "p_branch !~ ('^wow-engineering/fenced-'" in sql
+    assert "p_branch ~ ('^wow-engineering/fenced-'" in sql
     assert "p_branch !~ '^wow-engineering/fenced-[0-9]+-[0-9]+" not in sql
     store, github = Store(), GitHub()
     wrong = replace(make(), branch=make(incident_id=1740).branch)
     with pytest.raises(FencingHold, match="MUTATION_BRANCH_UNBOUND"):
         Gateway(store, github).deliver(wrong)
     assert github.writes == []
+
+
+def test_exact_existing_engineering_app_replay_requires_source_provenance():
+    source = "b" * 40
+    replay = replace(make(operation="CREATE_PR"), source_pr=2158,
+                     source_sha=source, draft=False,
+                     branch="wow-engineering/exact-replay-2158-" + source[:12])
+    replay.validate()
+    for bad in (
+        replace(replay, source_pr=2159),
+        replace(replay, source_sha="bad"),
+        replace(replay, draft=True),
+        replace(replay, operation="CREATE_BRANCH"),
+        replace(replay, branch="wow-engineering/exact-replay-2158-" + "c"*12),
+    ):
+        with pytest.raises(FencingHold, match="MUTATION_REPLAY_PROVENANCE_INVALID"):
+            bad.validate()
+
+
+def test_database_source_protocol_has_one_canonical_rpc_and_matching_grants():
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[1] / "migrations" /
+           "20261027_writer_mutation_fence_REVIEW_ONLY.sql").read_text()
+    assert sql.count("CREATE TABLE IF NOT EXISTS public.wow_engineering_writer_mutation_intents") == 1
+    assert sql.count("CREATE OR REPLACE FUNCTION public.wow_engineering_begin_writer_mutation(") == 1
+    assert sql.count("CREATE OR REPLACE FUNCTION public.wow_engineering_confirm_writer_mutation(") == 1
+    sig = "public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text,bigint,text,boolean)"
+    assert sql.count("REVOKE ALL ON FUNCTION " + sig) == 1
+    assert sql.count("GRANT EXECUTE ON FUNCTION " + sig) == 1
+    assert "m.source_pr IS DISTINCT FROM p_source_pr" in sql
+    assert "m.draft IS DISTINCT FROM p_draft" in sql
+    assert "p_branch = ('wow-engineering/exact-replay-'" in sql
