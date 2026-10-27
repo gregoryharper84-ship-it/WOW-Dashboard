@@ -124,3 +124,55 @@ def test_new_http_route_uses_existing_action_auth_and_does_not_replace_legacy():
         assert runner.call_args.args[0] is db
         assert runner.call_args.kwargs["min_samples"] == 30
         assert any(route.path == "/v17/intelligence/full-cycle" for route in app.routes)
+
+
+def test_empty_prop_outcomes_keep_authority_and_do_not_block_learning():
+    from types import SimpleNamespace
+    from v17.core_intelligence_runtime import capture_settled_prop_observations
+
+    class EmptyOutcomes:
+        def table(self, name):
+            assert name == "wow_outcomes"
+            return self
+
+        def select(self, *args):
+            return self
+
+        def order(self, *args, **kwargs):
+            return self
+
+        def limit(self, n):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[])
+
+    capture = capture_settled_prop_observations(EmptyOutcomes())
+    assert capture == {
+        "status": "PASS", "candidate_n": 0, "observation_n": 0,
+        "authority": AUTHORITY, "can_execute": False,
+    }
+
+    with patch(BASE + "capture_settled_prop_observations", return_value=capture), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=0, cohort_n=0, hypothesis_n=0)), \
+         patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=0, challenger_proposal_n=0)):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["status"] == "PASS"
+    assert result["completed_stages"] == 4
+    assert result["stages"][0]["observation_n"] == 0
+    assert result["stages"][1]["observation_n"] == 0
+    assert result["can_execute"] is False
+
+
+def test_compounding_failure_preserves_summary_but_marks_cycle_partial():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=2, observation_n=2)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=2, observation_n=2)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=4, cohort_n=2, hypothesis_n=1)), \
+         patch(BASE + "run_compounding_memory_cycle", side_effect=ConnectionError("hidden database secret")):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["status"] == "PARTIAL_FAILURE"
+    assert result["completed_stages"] == 3
+    assert result["stages"][2]["status"] == "PASS"
+    assert result["stages"][3]["error_type"] == "ConnectionError"
+    assert "hidden database secret" not in str(result)
