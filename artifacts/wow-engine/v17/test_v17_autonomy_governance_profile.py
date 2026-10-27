@@ -42,6 +42,18 @@ def test_protected_model_and_governance_mixed_is_trust_root():
     assert r.requires_existing_protected_authorization
 
 
+def test_every_mixed_model_effect_preserves_dual_certification():
+    for effect in ('calibration', 'calibrated_lower_bound',
+                   'qualification_threshold', 'fitted_artifact',
+                   'scorer_registration', 'sporting_probability_math'):
+        r=route(['.github/workflows/wow-verify.yml',
+                 'artifacts/wow-engine/v17/probability.py'], [effect])
+        assert r.track is Track.TRUST_ROOT
+        assert r.requires_model_certification
+        assert r.requires_existing_protected_authorization
+        assert r.no_execution
+
+
 def test_routing_policy_self_edit_is_protected_when_integrated():
     r=route(['artifacts/wow-engine/v17/autonomy_governance_profile.py'], ['none'])
     assert r.track is Track.TRUST_ROOT
