@@ -2020,7 +2020,7 @@ def test_missing_or_ambiguous_incident_blocks_required_qa_and_release(body):
 
 def test_real_gather_includes_pr_body_for_required_incident_gate():
     routes = _gather_routes()
-    ev = m.gather(REPO, 7, HEAD, fetch=Fake(routes))
+    ev = m.gather(REPO, 7, HEAD, fetch=Fake(routes), source_review_resolver=_source_review_resolver)
     assert ev["pr"]["body"] == "Incident: #2136"
     routes[f"repos/{REPO}/pulls/7"][1]["body"] = "Parent: #1688"
     bad = m.gather(REPO, 7, HEAD, fetch=Fake(routes))
