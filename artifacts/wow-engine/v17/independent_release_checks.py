@@ -331,6 +331,102 @@ def gather(
 MAX_TARGETS = 20
 
 
+def _event_pr_number(item: Any) -> int | None:
+    if not isinstance(item, dict):
+        return None
+    number = item.get("number")
+    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+        return None
+    return number
+
+
+def _classify_attached_pr(repo: str, item: Any, fetch: Fetch, errors: list[str],
+                          targets_out: list[dict], inapplicable: list[dict]) -> None:
+    """Classify one workflow_run pull_requests entry.
+
+    A non-main base or a closed/merged main PR is inapplicable. An open main PR
+    whose live head is not the event SHA, a foreign repository, or unreadable
+    identity stays an error so the caller fails closed.
+    """
+    number = _event_pr_number(item)
+    if number is None:
+        errors.append("TARGET_EVENT_IDENTITY_INVALID")
+        return
+    base = item.get("base") if isinstance(item.get("base"), dict) else {}
+    head = item.get("head") if isinstance(item.get("head"), dict) else {}
+    event_base = base.get("ref")
+    event_sha = head.get("sha")
+    if not isinstance(event_base, str) or not event_base:
+        errors.append(f"TARGET_EVENT_IDENTITY_INVALID:{number}")
+        return
+    if event_base == "main" and SHA_RE.match(str(event_sha or "")) is None:
+        errors.append(f"TARGET_HEAD_INVALID:{number}")
+        return
+    status, live = fetch(f"repos/{repo}/pulls/{number}")
+    if status != 200 or not isinstance(live, dict):
+        errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
+        return
+    live_head = live.get("head") if isinstance(live.get("head"), dict) else {}
+    live_base = live.get("base") if isinstance(live.get("base"), dict) else {}
+    live_head_repo = live_head.get("repo") if isinstance(live_head.get("repo"), dict) else {}
+    live_base_repo = live_base.get("repo") if isinstance(live_base.get("repo"), dict) else {}
+    if (
+        live.get("number") != number
+        or live_head_repo.get("full_name") != repo
+        or live_base_repo.get("full_name") != repo
+    ):
+        errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
+        return
+    live_base_ref = live_base.get("ref")
+    if event_base != live_base_ref:
+        errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
+        return
+    if event_base != "main":
+        inapplicable.append({"pr": number, "reason": "TARGET_BASE_NOT_MAIN"})
+        return
+    state = live.get("state")
+    if state != "closed" and live_head.get("sha") != event_sha:
+        errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
+        return
+    if state == "closed":
+        inapplicable.append({"pr": number, "reason": "TARGET_NOT_OPEN"})
+        return
+    if state != "open":
+        errors.append(f"TARGET_PR_STATE_UNREADABLE:{number}")
+        return
+    targets_out.append({"pr": number, "head": event_sha, "head_ref": live_head.get("ref")})
+
+
+def _workflow_run_targets(repo: str, items: Any, fetch: Fetch) -> dict[str, Any]:
+    errors: list[str] = []
+    targets_out: list[dict] = []
+    inapplicable: list[dict] = []
+    if not isinstance(items, list):
+        errors.append("TARGET_EVENT_IDENTITY_INVALID")
+    elif len(items) > MAX_TARGETS:
+        errors.append("TARGET_INVENTORY_TRUNCATED")
+    else:
+        for item in items:
+            _classify_attached_pr(repo, item, fetch, errors, targets_out, inapplicable)
+    if errors:
+        disposition, reason = "invalid", errors[0]
+    elif len(targets_out) > 1:
+        disposition, reason = "invalid", "QA_TARGET_COUNT_INVALID"
+    elif len(targets_out) == 1:
+        disposition, reason = "applicable", "QA_TARGET_APPLICABLE"
+    elif isinstance(items, list) and items and len(inapplicable) == len(items):
+        disposition, reason = "neutral", "QA_TARGET_NOT_APPLICABLE"
+    else:
+        disposition, reason = "invalid", "QA_TARGET_COUNT_INVALID"
+    return {
+        "targets": targets_out,
+        "errors": errors,
+        "inapplicable": inapplicable,
+        "disposition": disposition,
+        "reason": reason,
+    }
+
+
 def targets(repo: str, *, pr: str | None = None,
             workflow_run_prs: list[dict] | None = None, fetch: Fetch = gh_fetch) -> dict[str, Any]:
     """Resolve (PR, exact head) pairs to evaluate. Bounded; never trusts untyped input."""
@@ -339,29 +435,9 @@ def targets(repo: str, *, pr: str | None = None,
     if workflow_run_prs is not None:
         # Each PR's own head SHA: for pull_request_target-triggered upstream runs,
         # workflow_run.head_sha is the BASE branch SHA, never the PR head.
-        for item in workflow_run_prs[:MAX_TARGETS]:
-            number, sha = item.get("number"), (item.get("head") or {}).get("sha")
-            if not isinstance(number, int) or (item.get("base") or {}).get("ref") != "main":
-                continue
-            if not SHA_RE.match(str(sha or "")):
-                errors.append(f"TARGET_HEAD_INVALID:{number}")
-                continue
-            status, live = fetch(f"repos/{repo}/pulls/{number}")
-            head = (live or {}).get("head") or {}
-            base = (live or {}).get("base") or {}
-            if status != 200 or not isinstance(live, dict):
-                errors.append(f"TARGET_PR_UNREADABLE:{number}:{status}")
-                continue
-            if (
-                live.get("number") != number
-                or head.get("sha") != sha
-                or (head.get("repo") or {}).get("full_name") != repo
-                or base.get("ref") != "main"
-                or (base.get("repo") or {}).get("full_name") != repo
-            ):
-                errors.append(f"TARGET_PR_IDENTITY_MISMATCH:{number}")
-                continue
-            out.append({"pr": number, "head": sha, "head_ref": head.get("ref")})
+        # Attached PRs that are not a current open exact-head PR against main are
+        # neutral. They must not be dropped into an empty target list.
+        return _workflow_run_targets(repo, workflow_run_prs, fetch)
     elif pr is not None:
         if not str(pr).isdigit():
             errors.append("TARGET_PR_INVALID")
@@ -421,9 +497,11 @@ def classify_upstream_qa(
 ) -> dict[str, str]:
     """Classify a completed QA workflow before Release reads its policy.
 
-    A skipped run, or a completed run whose ``qa`` job was skipped, is neutral:
-    no policy lookup and no Release check. A success or failure job is applicable,
-    and a missing or forged policy on that run still fails closed downstream.
+    A skipped run, or a successful run whose ``qa`` job was skipped, is neutral:
+    no policy lookup and no Release check. A success or failure ``qa`` job is
+    applicable, and a missing or forged policy on that run still fails closed
+    downstream. A failed run whose ``qa`` job was skipped means routing failed
+    closed before a target existed; that is not neutral and not a missing policy.
     Cancelled, foreign, truncated, or mismatched provenance is untrusted.
     """
     if not _positive_int(run_id) or not _positive_int(run_attempt):
@@ -478,6 +556,13 @@ def classify_upstream_qa(
         raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
     job_conclusion = named[0].get("conclusion")
     if job_conclusion == "skipped":
+        # A skipped qa job is neutral only when the workflow itself succeeded
+        # (or was already returned above as skipped). A failed sibling, such as
+        # target routing, must not be laundered into a missing-policy success.
+        if conclusion != "success" or any(
+            isinstance(job, dict) and job.get("conclusion") == "failure" for job in jobs
+        ):
+            raise UpstreamQaError("RELEASE_UPSTREAM_QA_TARGET_UNRESOLVED")
         return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
     if job_conclusion not in {"success", "failure"}:
         raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")

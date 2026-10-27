@@ -2,7 +2,7 @@ name: wow-v17-independent-qa-check
 # Dynamic run-name stays until a later merge sets this one line to exactly
 # `run-name: wow-v17-independent-qa-check`. Release accepts that static name
 # only with workflow id 380562324 and this file's path. That merge must keep
-# the job `if` below (skip when pull_requests[0] is absent, and keep the
+# the route job `if` below (skip when pull_requests[0] is absent, and keep the
 # trusted-governance-gate exclusion) and the AUTO concurrency group.
 run-name: wow-v17-independent-qa-check event=${{ github.event_name }} pr=${{ inputs.pr_number || 'AUTO' }} head=${{ inputs.head_sha || 'AUTO' }}
 
@@ -44,18 +44,97 @@ concurrency:
   # Isolate PRs: other PR events cannot cancel a queued exact-head decision.
   # Repeat events for one PR remain serialized. A workflow_run with no
   # associated pull request shares this role's AUTO queue. AUTO is not a
-  # pull request number; the job is skipped before target resolution.
-  # Malformed or foreign targets that do reach the resolver fail closed.
+  # pull request number; route is skipped before target resolution.
+  # An attached PR that is not a current open exact-head main target is
+  # neutral in route: qa is skipped, no check and no policy artifact.
+  # Malformed, foreign, stale-open, or multiple main targets fail closed.
   # Queue bounded by GitHub Actions maximum of 100 pending runs per group.
   group: wow-v17-independent-qa-check-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 'AUTO' }}
   cancel-in-progress: false
   queue: max
 
 jobs:
-  qa:
-    # Not activated until the owner binds this role's App ID: the job is skipped (neutral),
-    # not red. Once bound, a missing key fails closed in the identity step below.
+  route:
+    # Same activation guard as before: empty pull_requests skips the run (neutral)
+    # before any runner work. Proving a non-main or closed PR inapplicable still
+    # needs one read of the live PR, so that classification stays in this job.
+    # Not activated until the owner binds the QA App ID.
     if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && vars.WOW_QA_APP_ID != '' && (github.event_name != 'workflow_run' || github.event.workflow_run.pull_requests[0]) && (github.event_name != 'workflow_run' || github.event.workflow_run.name != 'wow-v17-trusted-governance-gate' || (vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE != 'true' && vars.WOW_QA_ZERO_CREDIT_MODE != 'true'))
+    outputs:
+      applicable: ${{ steps.target.outputs.applicable }}
+      reason: ${{ steps.target.outputs.reason }}
+      pr_number: ${{ steps.target.outputs.pr_number }}
+      head_sha: ${{ steps.target.outputs.head_sha }}
+      head_ref: ${{ steps.target.outputs.head_ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout protected main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Resolve one exact-head QA target
+        id: target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_PR: ${{ inputs.pr_number }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+          WR_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
+        run: |
+          set -euo pipefail
+          tool=artifacts/wow-engine/v17/independent_release_checks.py
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR")
+            if [ -n "${INPUT_HEAD_SHA:-}" ]; then
+              [[ "$INPUT_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::QA_INPUT_HEAD_SHA_INVALID"; exit 1; }
+              jq -e --arg sha "$INPUT_HEAD_SHA" '.targets | length == 1 and .[0].head == $sha' <<<"$resolved" >/dev/null || { echo "::error::QA_INPUT_HEAD_SHA_STALE"; exit 1; }
+            fi
+          elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
+            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS")
+          else
+            # The route if above skips a workflow_run whose pull_requests array is
+            # empty. Reaching this branch means the guard was bypassed; still
+            # refuse to guess a PR or publish a check.
+            echo "::error::QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing"
+            exit 1
+          fi
+          if [ "$(jq '.errors | length' <<<"$resolved")" != "0" ]; then
+            echo "::error::QA_TARGETS_UNRESOLVED: $(jq -c .errors <<<"$resolved")"
+            exit 1
+          fi
+          disposition=$(jq -r '.disposition // empty' <<<"$resolved")
+          if [ "$disposition" = "neutral" ]; then
+            reason=$(jq -r '.reason // "QA_TARGET_NOT_APPLICABLE"' <<<"$resolved")
+            echo "applicable=false" >> "$GITHUB_OUTPUT"
+            echo "reason=$reason" >> "$GITHUB_OUTPUT"
+            echo "::notice::${reason} (no check published)"
+            exit 0
+          fi
+          [ "$(jq '.targets | length' <<<"$resolved")" = "1" ] || {
+            echo "::error::QA_TARGET_COUNT_INVALID"; exit 1;
+          }
+          target=$(jq -c '.targets[0]' <<<"$resolved")
+          echo "applicable=true" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(jq -r .pr <<<"$target")" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(jq -r .head <<<"$target")" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(jq -r .head_ref <<<"$target")" >> "$GITHUB_OUTPUT"
+          echo "reason=QA_TARGET_APPLICABLE" >> "$GITHUB_OUTPUT"
+
+  qa:
+    needs: route
+    # Runs only after route proves exactly one current open exact-head main PR.
+    # A neutral route leaves this job skipped, so Release does not require a
+    # policy artifact. A missing App key still fails closed before any check.
+    if: needs.route.result == 'success' && needs.route.outputs.applicable == 'true'
     environment: wow-qa
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -83,48 +162,9 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve one exact-head QA target
-        id: target
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
-          INPUT_PR: ${{ inputs.pr_number }}
-          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
-          WR_PRS: ${{ toJson(github.event.workflow_run.pull_requests) }}
-        run: |
-          set -euo pipefail
-          tool=artifacts/wow-engine/v17/independent_release_checks.py
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR")
-            if [ -n "${INPUT_HEAD_SHA:-}" ]; then
-              [[ "$INPUT_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "::error::QA_INPUT_HEAD_SHA_INVALID"; exit 1; }
-              jq -e --arg sha "$INPUT_HEAD_SHA" '.targets | length == 1 and .[0].head == $sha' <<<"$resolved" >/dev/null || { echo "::error::QA_INPUT_HEAD_SHA_STALE"; exit 1; }
-            fi
-          elif [ "$EVENT" = "workflow_run" ] && [ "${WR_PRS:-[]}" != "[]" ] && [ "${WR_PRS:-null}" != "null" ]; then
-            resolved=$(python "$tool" targets --repo "$GITHUB_REPOSITORY" --workflow-run-prs "$WR_PRS")
-          else
-            # The job if above skips a workflow_run whose pull_requests array is
-            # empty. Reaching this branch means the guard was bypassed; still
-            # refuse to guess a PR or publish a check.
-            echo "::error::QA_TARGETS_UNRESOLVED: workflow_run PR identity is missing"
-            exit 1
-          fi
-          if [ "$(jq '.errors | length' <<<"$resolved")" != "0" ]; then
-            echo "::error::QA_TARGETS_UNRESOLVED: $(jq -c .errors <<<"$resolved")"
-            exit 1
-          fi
-          [ "$(jq '.targets | length' <<<"$resolved")" = "1" ] || {
-            echo "::error::QA_TARGET_COUNT_INVALID"; exit 1;
-          }
-          target=$(jq -c '.targets[0]' <<<"$resolved")
-          echo "pr_number=$(jq -r .pr <<<"$target")" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$(jq -r .head <<<"$target")" >> "$GITHUB_OUTPUT"
-          echo "head_ref=$(jq -r .head_ref <<<"$target")" >> "$GITHUB_OUTPUT"
-
       - name: Mint checks-only App token
         id: app_token
-        if: steps.target.outputs.pr_number != ''
+        if: needs.route.outputs.pr_number != ''
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ vars.WOW_QA_APP_ID }}
@@ -142,8 +182,8 @@ jobs:
           CANARY_PR: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_PR }}
           CANARY_SHA: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_CANARY_SHA }}
           EVENT: ${{ github.event_name }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.route.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.route.outputs.head_sha }}
         run: |
           set -euo pipefail
           case "${REVIEW_ACTIVATION:-}" in
@@ -190,9 +230,9 @@ jobs:
         shell: bash
         env:
           MODE: ${{ steps.policy.outputs.mode }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
-          HEAD_REF: ${{ steps.target.outputs.head_ref }}
+          PR_NUMBER: ${{ needs.route.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.route.outputs.head_sha }}
+          HEAD_REF: ${{ needs.route.outputs.head_ref }}
         run: |
           set -euo pipefail
           jq -nce \
@@ -240,8 +280,8 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.route.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.route.outputs.head_sha }}
         run: |
           set -euo pipefail
           python .github/scripts/independent_source_review_receipt.py \
@@ -277,7 +317,7 @@ jobs:
             substitution, identity, execution, concurrency, and rollback. Missing or
             incomplete evidence or a critical/high issue requires REJECT. PASS does not
             authorize merge, deployment, probability publication, or execution.
-            Exact head SHA: ${{ steps.target.outputs.head_sha }}
+            Exact head SHA: ${{ needs.route.outputs.head_sha }}
             Exact diff SHA-256: ${{ steps.capture.outputs.diff_sha }}
           output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"summary":{"type":"string","minLength":1},"reviewed_head_sha":{"type":"string"},"reviewed_diff_sha256":{"type":"string"},"reviewed_files":{"type":"array","items":{"type":"string"}},"assessment":{"type":"object","properties":{"source_review":{"type":"string","enum":["PASS","FAIL"]},"security_review":{"type":"string","enum":["PASS","FAIL"]},"probability_integrity_review":{"type":"string","enum":["PASS","FAIL"]}},"required":["source_review","security_review","probability_integrity_review"],"additionalProperties":false},"findings":{"type":"array","items":{"type":"object","properties":{"severity":{"type":"string","enum":["critical","high","medium","low"]},"file":{"type":"string"},"detail":{"type":"string","minLength":1},"evidence":{"type":"string","minLength":1}},"required":["severity","file","detail","evidence"],"additionalProperties":false}}},"required":["decision","summary","reviewed_head_sha","reviewed_diff_sha256","reviewed_files","assessment","findings"],"additionalProperties":false}'
 
@@ -287,8 +327,8 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          EXPECTED_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.route.outputs.pr_number }}
+          EXPECTED_HEAD_SHA: ${{ needs.route.outputs.head_sha }}
           EXPECTED_HEAD_REF: ${{ steps.capture.outputs.head_ref }}
         run: |
           set -euo pipefail
@@ -310,8 +350,8 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.route.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.route.outputs.head_sha }}
           HEAD_REF: ${{ steps.capture.outputs.head_ref }}
         run: |
           set -euo pipefail
@@ -333,7 +373,7 @@ jobs:
         if: steps.policy.outputs.review_active == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wow-v17-independent-source-review-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: wow-v17-independent-source-review-${{ needs.route.outputs.pr_number }}-${{ needs.route.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           retention-days: 1
           path: |
@@ -345,8 +385,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.route.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.route.outputs.head_sha }}
           REVIEW_ACTIVE: ${{ steps.policy.outputs.review_active }}
           REVIEW_MODE: ${{ steps.policy.outputs.mode }}
           GLOBAL_REVIEW_ACTIVE: ${{ steps.policy.outputs.global_review_active }}
@@ -379,11 +419,11 @@ jobs:
 
       - name: Preserve terminal QA decision for every resolved target
         id: terminal_decision
-        if: always() && steps.target.outputs.pr_number != ''
+        if: always() && needs.route.outputs.pr_number != ''
         shell: bash
         env:
-          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
-          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.route.outputs.pr_number }}
+          HEAD_SHA: ${{ needs.route.outputs.head_sha }}
           POLICY_OUTCOME: ${{ steps.policy.outcome }}
           POLICY_RECEIPT_OUTCOME: ${{ steps.policy_receipt.outcome }}
           POLICY_ARTIFACT_OUTCOME: ${{ steps.policy_artifact.outcome }}
@@ -434,10 +474,10 @@ jobs:
             | cut -d' ' -f1 > "$RUNNER_TEMP/wow-v17-qa-terminal-decision.json.sha256"
 
       - name: Upload terminal QA outcome
-        if: always() && steps.target.outputs.pr_number != ''
+        if: always() && needs.route.outputs.pr_number != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wow-v17-qa-outcome-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: wow-v17-qa-outcome-${{ needs.route.outputs.pr_number }}-${{ needs.route.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           retention-days: 1
           path: |
@@ -445,7 +485,7 @@ jobs:
             ${{ runner.temp }}/wow-v17-qa-terminal-decision.json.sha256
 
       - name: Publish exact-head check
-        if: always() && steps.target.outputs.pr_number != ''
+        if: always() && needs.route.outputs.pr_number != ''
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
