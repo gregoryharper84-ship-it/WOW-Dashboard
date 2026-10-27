@@ -213,7 +213,8 @@ def test_invalid_preconditions_never_append_or_release():
 def test_release_workflow_uses_existing_mutex_and_no_new_provider_writer():
     root = Path(__file__).resolve().parents[2]
     text = (root / release.WORKFLOW).read_text()
-    assert "group: wow-v17-engineering-implementation-single-writer" in text
+    assert "group: wow-v17-cursor-finalizer-single-flight" in text
+    assert "group: wow-v17-engineering-implementation-single-writer" not in text
     assert "cancel-in-progress: false" in text
     assert "refs/heads/main" in text
     assert "issues: write" in text
