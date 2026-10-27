@@ -73,6 +73,11 @@ class SalvageDiagnosticTests(unittest.TestCase):
                 self.assertFalse(result["pregame_eligible_by_status"])
                 self.assertEqual(result["row_key"], "p1")
 
+    def test_unverified_event_status_cannot_pass_pregame(self):
+        result = self.call(prop(event_status="UNKNOWN"))
+        self.assertFalse(result["pregame_eligible_by_status"])
+        self.assertIn("event_status_unverified", result["sporting_evidence_issues"])
+
     def test_stale_source_is_diagnostic_not_model_failure(self):
         result = self.call(prop(source_timestamp="2026-10-27T16:50:00Z"))
         self.assertIn("source_evidence_stale", result["sporting_evidence_issues"])
