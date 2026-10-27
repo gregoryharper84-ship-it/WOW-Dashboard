@@ -64,3 +64,16 @@ be reviewed and adopted using the existing #2136 / #2054 change owners.
 Existing GitHub security restrictions must not be weakened by an AI role.
 V17_TERMINAL_REDUCER is sole global terminal authority. can_execute=false.
 DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true.
+
+## Critical integration security invariant: policy self-protection
+
+The advisory policy classifies edits to its *own path* as `TRUST_ROOT` and a
+single diff mixing trust-root changes with sporting-model mathematics now
+preserves **both** the protected authorization and the independent model
+certification requirement. **Before privileged callers consume this policy**,
+the separately authorized integration must also add
+`/artifacts/wow-engine/v17/autonomy_governance_profile.py` to the enforced
+`.github/CODEOWNERS` and to `governance_trust_roots()` input discovery.
+A Python classifier's own result is not a substitute for actual GitHub ruleset
+enforcement. A missing protected path must fail admission rather than provide
+an unreviewed self-edit route.
