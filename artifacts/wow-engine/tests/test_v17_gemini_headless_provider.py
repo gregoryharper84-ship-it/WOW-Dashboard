@@ -158,7 +158,7 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
             self.assertEqual(rc, 2)
             self.assertEqual(
                 error_log.getvalue(),
-                "::error::WOW_GEMINI_CLASSIFIED_FAILURE:GEMINI_API_QUOTA_EXHAUSTED\\n",
+                "::error::WOW_GEMINI_CLASSIFIED_FAILURE:GEMINI_API_QUOTA_EXHAUSTED\n",
             )
             receipt = json.loads(stdout.getvalue())
             self.assertEqual(receipt["status"], "HELD")
