@@ -1118,6 +1118,7 @@ def release_evidence():
         "owner_login": verifier.OWNER_LOGIN,
         "evidence_errors": [],
         "pr": {
+            "body": "Incident: #2136",
             "state": "open",
             "draft": False,
             "merged": False,
