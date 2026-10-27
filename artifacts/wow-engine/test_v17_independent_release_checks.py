@@ -737,12 +737,18 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
             assert "${{" not in step.split("run: |", 1)[1], "no expression interpolation inside run scripts"
         if "steps.app_token.outputs.token" in step:
             assert step.startswith("Publish exact-head check"), "App token only reaches the publish step"
-    # Protect the *new* exact-PR queue rather than require the obsolete global queue.
+    # Preserve exact-PR serialization but isolate non-applicable workflow events.
+    # Only Release runs whose upstream QA was provably skipped get unique admission;
+    # non-skipped unknown Release decisions retain their bounded AUTO queue.
     concurrency = yaml.load(text, Loader=yaml.BaseLoader)["concurrency"]
-    assert concurrency["group"] == (
-        wf.stem + "-${{ inputs.pr_number || "
-        "github.event.workflow_run.pull_requests[0].number || 'AUTO' }}"
-    )
+    if wf == QA_WF:
+        expected = (wf.stem + "-${{ inputs.pr_number || "
+                    "github.event.workflow_run.pull_requests[0].number || github.run_id }}")
+    else:
+        expected = (wf.stem + "-${{ inputs.pr_number || "
+                    "github.event.workflow_run.pull_requests[0].number || "
+                    "(github.event.workflow_run.conclusion == 'skipped' && github.run_id) || 'AUTO' }}")
+    assert concurrency["group"] == expected
     assert concurrency["cancel-in-progress"] == "false"
     assert concurrency["queue"] == "max"
 
