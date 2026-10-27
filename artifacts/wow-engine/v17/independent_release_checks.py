@@ -584,7 +584,7 @@ def _canonical_incident_present(body: object) -> bool:
     if not isinstance(body, str):
         return False
     matches = re.findall(
-        r"(?m)^[ \\t]*Incident:[ \\t]*#?([1-9][0-9]*)[ \\t]*$",
+        r"(?m)^[ \t]*Incident:[ \t]*#?([1-9][0-9]*)[ \t]*$",
         body,
     )
     return len(matches) == 1
