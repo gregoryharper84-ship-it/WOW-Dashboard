@@ -53,6 +53,14 @@ BEGIN
        AND (NEW.lease_group='GLOBAL' OR l.lease_group='GLOBAL'
             OR NEW.lease_group=l.lease_group)
    ) INTO conflict;
+   IF NOT conflict THEN
+     SELECT EXISTS (
+       SELECT 1 FROM public.wow_engineering_writer_mutation_intents m
+       WHERE m.incident_id<>NEW.incident_id AND m.state='PENDING'
+         AND (NEW.lease_group='GLOBAL' OR m.lease_group='GLOBAL'
+              OR NEW.lease_group=m.lease_group)
+     ) INTO conflict;
+   END IF;
    IF conflict THEN
      RAISE EXCEPTION 'WRITER_LEASE_GROUP_CONFLICT' USING ERRCODE='55000';
    END IF;
@@ -105,6 +113,12 @@ BEGIN
               AND other.expires_at>clock_timestamp()
               AND (l.lease_group='GLOBAL' OR other.lease_group='GLOBAL'
                    OR other.lease_group=l.lease_group)) THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ IF EXISTS (SELECT 1 FROM public.wow_engineering_writer_mutation_intents y
+            WHERE y.incident_id<>p_incident_id AND y.state='PENDING'
+              AND (l.lease_group='GLOBAL' OR y.lease_group='GLOBAL'
+                   OR y.lease_group=l.lease_group)) THEN
    RETURN jsonb_build_object('status','DENIED');
  END IF;
  IF EXISTS (SELECT 1 FROM public.wow_engineering_writer_mutation_intents x
