@@ -154,7 +154,13 @@ def train_shadow_challenger(spec: Mapping[str, Any], *,
         p = _number(item.get("champion_probability"), "CHAMPION_PROBABILITY_INVALID")
         if not 0 <= p <= 1:
             raise ChallengerLabError("CHAMPION_PROBABILITY_INVALID")
-        for field in ("source_id", "settlement_source_id", "champion_prediction_id"):
+        if item.get("champion_origin") != "FITTED_SPECIALIST":
+            raise ChallengerLabError("MARKET_OR_NARRATIVE_NOT_FITTED_CHAMPION")
+        lb = _number(item.get("champion_lower_bound"), "CHAMPION_LOWER_BOUND_INVALID")
+        if not 0 <= lb <= p:
+            raise ChallengerLabError("CHAMPION_LOWER_BOUND_INVALID")
+        for field in ("source_id", "settlement_source_id", "champion_prediction_id",
+                      "champion_artifact_id", "champion_calibrator_id", "champion_specialist_id"):
             if not isinstance(item.get(field), str) or not item[field].strip():
                 raise ChallengerLabError("SOURCE_LINEAGE_INCOMPLETE")
         fingerprint = item.get("source_sha256")
@@ -168,6 +174,9 @@ def train_shadow_challenger(spec: Mapping[str, Any], *,
         row["_start"] = start
         prepared.append(row)
         by_split[split].append(row)
+    for field in ("champion_artifact_id", "champion_calibrator_id", "champion_specialist_id"):
+        if len({r[field] for r in prepared}) != 1:
+            raise ChallengerLabError("MIXED_CHAMPION_MODEL_LINEAGE")
     if len(by_split["TRAIN"]) < MIN_TRAIN or len(by_split["CALIBRATION"]) < MIN_CALIBRATION:
         raise ChallengerLabError("INSUFFICIENT_TRAIN_OR_CALIBRATION")
     if len({r["event_id"] for r in by_split["HOLDOUT"]}) < MIN_HOLDOUT_EVENTS:
@@ -214,6 +223,8 @@ def train_shadow_challenger(spec: Mapping[str, Any], *,
         "event_id": r["event_id"], "market_id": r["market_id"],
         "split": r["split"], "source_sha256": r["source_sha256"],
         "champion_prediction_id": r["champion_prediction_id"],
+        "champion_artifact_id": r["champion_artifact_id"],
+        "champion_calibrator_id": r["champion_calibrator_id"],
     } for r in prepared]
     dataset_sha = hashlib.sha256(json.dumps(frozen, sort_keys=True,
         separators=(",", ":")).encode()).hexdigest()
