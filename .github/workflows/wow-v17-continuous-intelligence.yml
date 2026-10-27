@@ -149,6 +149,7 @@ jobs:
           if not valid:
               raise SystemExit("LEARNING_STAGE_RECEIPT_FAILED")
           print("LEARNING_CYCLE_VERIFIED")
+          PY
       - name: Upload aggregate research receipt
         if: always()
         uses: actions/upload-artifact@v4
