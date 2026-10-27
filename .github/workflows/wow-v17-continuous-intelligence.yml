@@ -20,6 +20,7 @@ on:
       - "artifacts/wow-engine/v17/core_intelligence.py"
       - "artifacts/wow-engine/v17/core_intelligence_runtime.py"
       - "artifacts/wow-engine/v17/core_intelligence_event_runtime.py"
+      - "artifacts/wow-engine/v17/independent_event_accuracy.py"
       - "artifacts/wow-engine/v17/core_intelligence_compounding_routes.py"
       - "artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py"
 permissions:
