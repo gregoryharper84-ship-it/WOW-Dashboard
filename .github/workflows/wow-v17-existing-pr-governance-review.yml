@@ -367,27 +367,28 @@ jobs:
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
         run: |
           set -euo pipefail
-          artifact_match_count=0
-          for page in $(seq 1 20); do
-            response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}") || {
-              echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_UNAVAILABLE" >&2; exit 1;
-            }
-            items=$(jq -ce 'if (.artifacts | type) == "array" then .artifacts else error("invalid") end' \
-              <<<"$response") || {
-                echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
-              }
-            count=$(jq 'length' <<<"$items")
-            page_matches=$(jq -ce --arg name "wow-v17-engineering-governance-${HEAD_SHA}" \
-              '[.[] | select(.name == $name and .expired == false)] | length' <<<"$items") || {
-                echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
-              }
-            artifact_match_count=$((artifact_match_count + page_matches))
-            [ "$count" -lt 100 ] && break
-            [ "$page" -lt 20 ] || {
-              echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1;
-            }
-          done
+          # Name-filtered GitHub REST artifact search: global repository
+          # inventories routinely exceed 2,000 artifacts, but a single
+          # immutable exact-head receipt must not be blocked by unrelated
+          # uploads. Keep the verified exact-name and duplicate checks.
           artifact_name="wow-v17-engineering-governance-${HEAD_SHA}"
+          response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100&page=1") || {
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_UNAVAILABLE" >&2; exit 1;
+          }
+          jq -e --arg name "$artifact_name" \
+            '(.total_count | type == "number" and . >= 0) and
+             (.artifacts | type == "array") and
+             all(.artifacts[]; .name == $name)' <<<"$response" >/dev/null || {
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
+          }
+          # More than one page of artifacts for this *exact* commit name is
+          # already non-unique; never accept the first page as authorization.
+          total_count=$(jq -r '.total_count' <<<"$response")
+          [ "$total_count" -le 100 ] || {
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE:$HEAD_SHA" >&2; exit 1;
+          }
+          artifact_match_count=$(jq -r --arg name "$artifact_name" \
+            '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"$response")
           if [ "$artifact_match_count" -eq 1 ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "::notice::EXISTING_PR_RECEIPT_ARTIFACT_ALREADY_PRESENT:$HEAD_SHA"
