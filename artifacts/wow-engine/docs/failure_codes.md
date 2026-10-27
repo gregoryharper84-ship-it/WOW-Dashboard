@@ -6,6 +6,7 @@ This file is the repository source of truth for governed typed failure/status co
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `DISCOVERY_MAIN_SHA_INVALID_HOLD` | Engineering App source discovery | The caller supplied a malformed purported current protected-main SHA; reject before any GitHub source inventory or writer admission. | No |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |

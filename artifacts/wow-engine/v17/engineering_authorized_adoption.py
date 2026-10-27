@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -65,6 +66,23 @@ def source_paths(files: list[dict]) -> list[str]:
     return sorted(paths)
 
 
+def canonical_source_incident(pr: dict) -> str:
+    """Require one user-authored canonical issue before App admission.
+
+    The existing certifier requires Incident: #N; do not guess an issue or
+    require a later owner-authored repair of a mechanical App PR body.
+    """
+    body = pr.get("body")
+    if not isinstance(body, str):
+        raise AdoptionHold("SOURCE_CANONICAL_INCIDENT_MISSING_HOLD")
+    matches = re.findall(
+        r"(?im)^[ \t]*Incident:[ \t]*#?([1-9][0-9]*)[ \t]*$", body
+    )
+    if len(matches) != 1:
+        raise AdoptionHold("SOURCE_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS_HOLD")
+    return matches[0]
+
+
 def validate_evidence(
     pr: dict, files: list[dict], checks: dict, *,
     requested_pr: int, requested_sha: str, repository: str = REPO,
@@ -82,6 +100,9 @@ def validate_evidence(
     base = pr.get("base", {}).get("sha")
     if not isinstance(base, str) or not SHA.fullmatch(base):
         raise AdoptionHold("SOURCE_BASE_SHA_INVALID_HOLD")
+    # Catch metadata that the final protected certifier requires, before
+    # allocating an App writer for a doomed exact-source replay.
+    canonical_source_incident(pr)
     if pr.get("changed_files") != len(files):
         raise AdoptionHold("SOURCE_FILE_INVENTORY_INCOMPLETE_HOLD")
     paths = source_paths(files)
@@ -221,7 +242,41 @@ def _adoption_candidate_window(pulls: list[dict], *, slot: int) -> tuple[list[di
     return selected, windows
 
 
-def discover(*, slot: int | None = None) -> dict:
+
+def _source_paths_unchanged_on_main(*, source_sha: str, main_sha: str,
+                                    paths: list[str]) -> None:
+    """Read-only main-drift audit, matching verify_git_source's merge-base rule.
+
+    The compare endpoint's file list represents diff(merge_base, main_sha),
+    even when GitHub says the PR is textually mergeable. GitHub caps this list
+    at 300; a saturated/unknown list cannot certify a clean source.
+    """
+    if not SHA.fullmatch(source_sha) or not SHA.fullmatch(main_sha):
+        raise AdoptionHold("SOURCE_MAIN_COMPARE_SHA_INVALID_HOLD")
+    evidence = api(f"compare/{source_sha}...{main_sha}?per_page=100")
+    if (not isinstance(evidence, dict) or
+            (evidence.get("base_commit") or {}).get("sha") != source_sha or
+            not SHA.fullmatch(str((evidence.get("merge_base_commit") or {}).get("sha") or "")) or
+            evidence.get("status") not in ("ahead", "behind", "diverged", "identical")):
+        raise AdoptionHold("SOURCE_MAIN_COMPARE_UNVERIFIED_HOLD")
+    files = evidence.get("files")
+    if not isinstance(files, list) or len(files) >= 300:
+        raise AdoptionHold("SOURCE_MAIN_COMPARE_FILE_CAP_HOLD")
+    changed: set[str] = set()
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
+            raise AdoptionHold("SOURCE_MAIN_COMPARE_FILE_INVALID_HOLD")
+        changed.add(item["filename"])
+        previous = item.get("previous_filename")
+        if previous is not None:
+            if not isinstance(previous, str):
+                raise AdoptionHold("SOURCE_MAIN_COMPARE_FILE_INVALID_HOLD")
+            changed.add(previous)
+    if changed.intersection(paths):
+        raise AdoptionHold("SOURCE_PATH_DRIFT_DEFERRED")
+
+
+def discover(*, slot: int | None = None, protected_main_sha: str | None = None) -> dict:
     """Choose at most one green owner source, from any protected path in repo.
 
     The hourly controller is already scheduled. This function never writes,
@@ -232,6 +287,11 @@ def discover(*, slot: int | None = None) -> dict:
     except ImportError:  # Protected-main CLI from within v17/
         from agent_identity_policy import governance_trust_roots, is_trust_root
     roots = frozenset(governance_trust_roots(Path(__file__).resolve().parents[3]))
+    # Production CLI supplies the actual checked-out protected-main head.
+    # GitHub PR base.sha is a historical PR snapshot and may remain stale
+    # after main advances; it MUST NOT replace live main in source-drift checks.
+    if protected_main_sha is not None and not SHA.fullmatch(protected_main_sha):
+        raise AdoptionHold("DISCOVERY_MAIN_SHA_INVALID_HOLD")
     # Global backpressure: don't produce more protected PRs than the existing
     # review queue can independently certify. No indefinite approval loops.
     live = api("pulls?state=open&base=main&per_page=100")
@@ -301,11 +361,40 @@ def discover(*, slot: int | None = None) -> dict:
         if not any(is_trust_root(path, roots) for path in paths):
             continue
         detail = api(f"pulls/{pr_number}")
+        # A definitive GitHub merge conflict cannot be repaired by copying
+        # the stale source bytes over protected main. Move to the next owner
+        # source in this bounded window instead of repeating a doomed job.
+        # A null/unknown mergeability result is not proof of acceptance;
+        # strict exact-head and path checks remain in the integration preflight.
+        if detail.get("mergeable") is not True:
+            # null is a pending GitHub mergeability calculation, not safe proof.
+            continue
         checks = _exact_head_checks(sha)
         try:
-            validate_evidence(detail, files, checks,
-                              requested_pr=pr_number, requested_sha=sha)
-        except AdoptionHold:
+            source_base_sha, _ = validate_evidence(
+                detail, files, checks,
+                requested_pr=pr_number, requested_sha=sha)
+            # The checkout's current protected-main SHA governs the actual
+            # source-to-main drift and immutable Git verification. Retain
+            # base.sha only as historical provenance for the PR.
+            current_main_sha = protected_main_sha or source_base_sha
+            _source_paths_unchanged_on_main(
+                source_sha=sha, main_sha=current_main_sha, paths=paths)
+            # GitHub mergeable=true/required CI may still accompany a PR with
+            # invalid patch whitespace. Verify exact git diff read-only now,
+            # so a bad candidate cannot consume the implementation writer.
+            verify_git_source(source_base_sha, current_main_sha, sha, paths)
+        except (AdoptionHold, subprocess.CalledProcessError) as exc:
+            # The exact same source path drift remains a hard HOLD at
+            # integration. Emit a typed read-only diagnosis while scanning
+            # the remaining candidates; no implementation writer is acquired.
+            if str(exc) in ("SOURCE_PATH_DRIFT_DEFERRED",
+                            "SOURCE_MAIN_COMPARE_FILE_CAP_HOLD",
+                            "SOURCE_MAIN_COMPARE_UNVERIFIED_HOLD",
+                            "SOURCE_PATCH_WHITESPACE_OR_GIT_CHECK_HOLD") or isinstance(
+                                exc, subprocess.CalledProcessError):
+                print(f"{exc}: source_pr={pr_number} source_sha={sha}",
+                      file=sys.stderr)
             continue
         return {"status": "SOURCE_READY", "pr_number": pr_number,
                 "source_sha": sha, "paths": paths,
@@ -320,6 +409,26 @@ def branch_for(requested_pr: int, sha: str) -> str:
     if requested_pr <= 0 or not SHA.fullmatch(sha):
         raise AdoptionHold("SOURCE_REQUEST_INVALID_HOLD")
     return f"wow-engineering/exact-replay-{requested_pr}-{sha[:12]}"
+
+
+def check_source_patch_whitespace(main_sha: str, source_sha: str,
+                                  paths: list[str]) -> None:
+    """Fail before writer admission if an exact-source replay fails git --check.
+
+    The exact paths must be unchanged from their merge base on protected main.
+    Check main..source on those paths, which is the staged diff produced by
+    replay onto main. Exit status 2 indicates whitespace errors. Preserve the
+    later staged git check as an independent last line of defense.
+    """
+    if (not SHA.fullmatch(main_sha) or not SHA.fullmatch(source_sha)
+            or not paths or any(not isinstance(p, str) or not p for p in paths)):
+        raise AdoptionHold("SOURCE_PATCH_CHECK_ARGUMENTS_INVALID_HOLD")
+    result = subprocess.run(
+        ["git", "diff", "--check", main_sha, source_sha, "--", *paths],
+        check=False, capture_output=True, text=True,
+    )
+    if result.returncode:
+        raise AdoptionHold("SOURCE_PATCH_WHITESPACE_OR_GIT_CHECK_HOLD")
 
 
 def verify_git_source(base: str, main_sha: str, source_sha: str, paths: list[str]) -> str:
@@ -363,6 +472,9 @@ def verify_git_source(base: str, main_sha: str, source_sha: str, paths: list[str
                               check=False, capture_output=True)
         if diff.returncode != 0:
             raise AdoptionHold("MAIN_CHANGED_SOURCE_PATH_HOLD")
+    # Preserve exactly the same whitespace policy enforced again on the
+    # eventual staged PR inside the authenticated App writer.
+    check_source_patch_whitespace(main_sha, source_sha, paths)
     return source_base
 
 
@@ -435,6 +547,10 @@ def integrate(pr_number: int, source_sha: str) -> None:
     if os.environ.get("WOW_CAN_EXECUTE") != "false" or os.environ.get("WOW_DRY_RUN_ONLY") != "true":
         raise AdoptionHold("DRY_RUN_INVARIANTS_HOLD")
     main_sha, paths, base = preflight(pr_number, source_sha)
+    source_before = api(f"pulls/{pr_number}")
+    incident = canonical_source_incident(source_before)
+    if source_before.get("head", {}).get("sha") != source_sha:
+        raise AdoptionHold("SOURCE_MOVED_BEFORE_WRITER_HOLD")
     branch = branch_for(pr_number, source_sha)
     # Resolve branch existence with a read-only authenticated askpass, not
     # a credential-less git ls-remote (private repos would fail every time).
@@ -468,6 +584,8 @@ def integrate(pr_number: int, source_sha: str) -> None:
     if (current_source.get("state") != "open" or
             current_source.get("head", {}).get("sha") != source_sha):
         raise AdoptionHold("SOURCE_MOVED_BEFORE_PUSH_HOLD")
+    if canonical_source_incident(current_source) != incident:
+        raise AdoptionHold("SOURCE_INCIDENT_MOVED_BEFORE_PUSH_HOLD")
     with tempfile.TemporaryDirectory(prefix="wow-exact-adoption-") as temp:
         askpass = Path(temp) / "askpass"
         askpass.write_text(
@@ -481,6 +599,7 @@ def integrate(pr_number: int, source_sha: str) -> None:
     with tempfile.TemporaryDirectory(prefix="wow-adoption-body-") as temp:
         body = Path(temp) / "body.md"
         body.write_text(
+            f"Incident: #{incident}\n\n"
             f"## Mechanical Engineering App integration\n\n"
             f"Original author/source: PR #{pr_number}, head `{source_sha}`.\n"
             f"Source parent: `{base}`; main at adoption: `{main_sha}`.\n"
@@ -521,7 +640,10 @@ def main() -> None:
     if args.operation != "discover" and (args.source_pr <= 0 or not SHA.fullmatch(args.source_sha)):
         raise AdoptionHold("SOURCE_REQUEST_INVALID_HOLD")
     if args.operation == "discover":
-        print(json.dumps(discover(), sort_keys=True))
+        # One authenticated protected-main checkout supplies a consistent
+        # exact SHA for every candidate in this one discovery cycle.
+        protected_main_sha = call("git", "rev-parse", "refs/remotes/origin/main")
+        print(json.dumps(discover(protected_main_sha=protected_main_sha), sort_keys=True))
     elif args.operation == "preflight":
         main_sha, paths, base = preflight(args.source_pr, args.source_sha)
         print(json.dumps({"status": "ADOPTABLE", "base": base, "main": main_sha,
