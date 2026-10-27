@@ -181,14 +181,15 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert '--arg workflow_name "wow-v17-chatgpt-engineering-worker"' in worker
     assert '--arg workflow_name "wow-v17-claude-engineering-worker"' in claude_worker
 
-    assert "pull_request_target:" in gate
+    assert "pull_request_target:" not in gate
+    assert "workflow_run:" in gate
     assert "ref: main" in gate
     artifact_step = gate.split("- name: Resolve trusted exact-head governance artifact", 1)[1].split(
         "- name: Verify trusted workflow identity and completion", 1
     )[0]
-    assert 'artifact_name="wow-v17-engineering-governance-${head_sha}"' in artifact_step
-    assert '.name == $name' in artifact_step
-    assert '[ "$(jq \'length\' <<<"$artifact_matches")" -eq 1 ]' in artifact_step
+    assert 'artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")' in artifact_step
+    assert ".expired == false" in artifact_step
+    assert "GOVERNANCE_CERTIFIER_RECEIPT_MISSING_OR_DUPLICATE" in artifact_step
     assert '.name | test("^wow-v17-engineering-governance-[a-f0-9]{40}$")' in artifact_step
     assert '.event == "workflow_run"' in artifact_step
     assert '.head_branch == "main"' in artifact_step
@@ -197,8 +198,10 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert '.target.head_sha == $sha and .repository == $repo' in artifact_step
     assert '.workflow_run_id == ($run_id | tostring)' in artifact_step
     assert "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH" in artifact_step
-    assert 'artifact_name="wow-v17-engineering-governance-${head_sha}"' in gate
-    assert 'head_sha="$EVENT_HEAD_SHA"' in artifact_step
+    assert "seq 1 180" not in gate
+    assert "actions/artifacts?name=${artifact_name}" not in gate
+    assert "github.event_name == 'workflow_run'" in gate
+    assert '.event == "pull_request_target" or .event == "workflow_dispatch"' in artifact_step
     assert '.state == "open" and .head.sha == $sha and .head.repo.full_name == $repo' in gate
     assert '.base.ref == "main" and .base.repo.full_name == $repo' in gate
     assert '--head-sha "$PR_HEAD_SHA"' in gate
@@ -606,38 +609,25 @@ def test_workflow_run_certifier_rejects_forged_or_stale_source(
     assert reason in proc.stderr
 
 
-@pytest.mark.parametrize(
-    ("artifact_name", "duplicate", "expected_success"),
-    [
-        ("wow-v17-engineering-governance-" + "a" * 40, False, True),
-        ("wow-v17-engineering-governance-" + "b" * 40, False, False),
-        ("wow-v17-engineering-governance-" + "a" * 40, True, False),
-    ],
-)
-def test_pull_request_target_fallback_selects_only_exact_head_artifact(
-    tmp_path, artifact_name, duplicate, expected_success
-):
-    artifacts = [{
-        "id": 55,
-        "name": artifact_name,
-        "expired": False,
-        "workflow_run": {"id": 123},
-    }]
-    if duplicate:
-        artifacts.append({**artifacts[0], "id": 56})
+@pytest.mark.parametrize("producer_event", ["pull_request_target", "workflow_dispatch", "check_run", "workflow_run"])
+def test_only_authenticated_completed_producer_run_is_accepted(tmp_path, producer_event):
+    run, receipt, artifact = _certifier_fixture(run_overrides={"event": producer_event})
     proc, output = _run_gate_artifact_resolution(
-        tmp_path,
-        event="pull_request_target",
-        artifacts=artifacts,
-        event_head="a" * 40,
+        tmp_path, event="workflow_run", artifacts=[artifact], run=run, receipt=receipt,
     )
+    assert proc.returncode == 0, proc.stderr
+    assert "head_sha=" + "a" * 40 in output
+    assert "artifact_id=55" in output
 
-    assert (proc.returncode == 0) is expected_success
-    if expected_success:
-        assert "head_sha=" + "a" * 40 in output
-        assert "artifact_id=55" in output
-    else:
-        assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in proc.stderr
+
+def test_preemptive_pr_trigger_and_polling_have_been_removed():
+    gate = GATE.read_text(encoding="utf-8")
+    workflow = yaml.load(gate, Loader=yaml.BaseLoader)
+    assert "pull_request_target" not in workflow["on"]
+    assert "workflow_run" in workflow["on"]
+    assert "seq 1 180" not in gate
+    assert "actions/artifacts?name=" not in gate
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow["jobs"]["trusted-governance"]["if"]
 
 
 def test_release_verification_requires_trusted_exact_head_governance_and_exact_merge_sha():
