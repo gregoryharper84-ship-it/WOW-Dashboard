@@ -101,7 +101,8 @@ class GitHubTransport:
                 break
         else:
             raise ValueError("REMOTE_RESERVATION_INVALID")
-        assert_no_remote_writer(comments)
+        assert_no_remote_writer(
+            comments, get_run=lambda run_id: self.get(f"actions/runs/{run_id}"))
         now = datetime.now(timezone.utc)
         for comment in comments:
             body = comment.get("body") or ""
