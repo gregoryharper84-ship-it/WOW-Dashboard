@@ -106,7 +106,10 @@ def reservations(comments):
 
 def assert_no_remote_writer(comments, get_run=None):
     """Treat a held legacy comment as released ONLY after verified run success."""
-    from v17.engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    try:
+        from .engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    except ImportError:  # Direct file/script invocation by legacy worker Actions
+        from engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
     attempts = reservations(comments)
     try:
         released = verified_released_ids(comments, attempts, get_run=get_run)
@@ -231,7 +234,10 @@ def _source_pr(api, issue, main_sha):
 
 def reconcile(api, comments, incident=""):
     """Observe prior work without rewriting the original remote lease comment."""
-    from v17.engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    try:
+        from .engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    except ImportError:  # Direct file/script invocation by legacy worker Actions
+        from engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
     attempts = reservations(comments)
     try:
         released = verified_released_ids(
@@ -394,7 +400,10 @@ def main():
                 f"/repos/{REPOSITORY}/actions/runs/{run_id}"))
         return
     if args.command == "finalize-cursor":
-        from v17.engineering_remote_writer_release import append_terminal_release
+        try:
+            from .engineering_remote_writer_release import append_terminal_release
+        except ImportError:  # Standalone script and package entrypoints
+            from engineering_remote_writer_release import append_terminal_release
         output = append_terminal_release(
             api, cursor_token=env.get("CURSOR_API_KEY", ""),
             run_id=int(env["GITHUB_RUN_ID"]),
