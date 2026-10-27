@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import re
+import os
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
@@ -16,7 +20,7 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 OWNER = re.compile(r"[A-Za-z0-9:._/-]{8,256}\Z")
 GROUP = re.compile(r"(?:GLOBAL|P0_[A-Z0-9_]+)\Z")
-OPERATIONS = frozenset({"CREATE_BRANCH", "CREATE_PR"})
+OPERATIONS = frozenset({"CREATE_BRANCH", "PUSH_REF", "CREATE_PR"})
 
 
 class FencingHold(RuntimeError):
@@ -57,7 +61,7 @@ class Intent:
                 or not re.fullmatch(r"[a-z0-9-]{8,64}", self.branch[len(prefix):])
                 or len(self.branch) > 150):
             raise FencingHold("MUTATION_BRANCH_UNBOUND")
-        if self.operation == "CREATE_BRANCH" and self.payload:
+        if self.operation in {"CREATE_BRANCH", "PUSH_REF"} and self.payload:
             raise FencingHold("CREATE_BRANCH_PAYLOAD_FORBIDDEN")
         if self.operation == "CREATE_PR" and not self.payload.strip():
             raise FencingHold("CREATE_PR_BODY_REQUIRED")
@@ -78,6 +82,7 @@ class LeaseStore(Protocol):
 
 class GitHubWriter(Protocol):
     def create_branch(self, intent: Intent) -> None: ...
+    def push_ref(self, intent: Intent) -> None: ...
     def create_pr(self, intent: Intent) -> None: ...
     def exact_readback(self, intent: Intent) -> bool:
         """Trust GitHub API exact immutable SHA, branch, PR body and identity."""
@@ -104,6 +109,8 @@ class Gateway:
             try:
                 if intent.operation == "CREATE_BRANCH":
                     self.github.create_branch(intent)
+                elif intent.operation == "PUSH_REF":
+                    self.github.push_ref(intent)
                 else:
                     self.github.create_pr(intent)
             except Exception as exc:
@@ -121,11 +128,12 @@ class Gateway:
 class SupabaseRpcStore:
     """Trusted-worker-only RPC adapter. The provider never receives this key."""
 
-    def __init__(self, base_url: str, service_role_key: str):
+    def __init__(self, base_url: str, service_role_key: str, expected_project_id: str):
         from urllib.parse import urlsplit
         parsed = urlsplit(base_url)
-        if (parsed.scheme != "https" or not parsed.hostname
-                or not parsed.hostname.endswith(".supabase.co")
+        if (not re.fullmatch(r"[a-z]{20}", expected_project_id or "")
+                or parsed.scheme != "https" or
+                parsed.hostname != expected_project_id + ".supabase.co"
                 or parsed.username or parsed.password or parsed.port or parsed.query
                 or parsed.fragment or parsed.path not in ("", "/")
                 or not service_role_key):
@@ -135,15 +143,18 @@ class SupabaseRpcStore:
 
     def _rpc(self, name: str, payload: dict):
         import json
-        from urllib.request import Request, urlopen
+        from urllib.request import Request, build_opener, HTTPRedirectHandler
         from urllib.error import URLError
+        class NoRedirect(HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                return None
         path = f"{self.base_url}/rest/v1/rpc/{name}"
         req = Request(path, data=json.dumps(payload).encode("utf-8"),
                       headers={"apikey": self.key, "Authorization": "Bearer " + self.key,
                                "Content-Type": "application/json", "Accept": "application/json"},
                       method="POST")
         try:
-            with urlopen(req, timeout=15) as response:
+            with build_opener(NoRedirect).open(req, timeout=15) as response:
                 return json.load(response)
         except (OSError, ValueError, URLError) as exc:
             raise FencingHold("LEASE_STORE_UNAVAILABLE") from exc
@@ -207,6 +218,26 @@ class GitHubAppWriter:
                 or result.get("object", {}).get("sha") != intent.sha):
             raise FencingHold("GITHUB_CREATE_BRANCH_ACK_INVALID")
 
+    def push_ref(self, intent: Intent) -> None:
+        # A newly created App-adoption commit does not yet exist on GitHub.
+        # Only an exact, non-force push to the epoch-scoped source branch is permitted.
+        if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != intent.sha:
+            raise FencingHold("PUSH_REF_LOCAL_SHA_MISMATCH")
+        origin = subprocess.check_output(["git", "remote", "get-url", "origin"], text=True).strip()
+        if origin not in {f"https://github.com/{REPO}", f"https://github.com/{REPO}.git"}:
+            raise FencingHold("PUSH_REF_REMOTE_UNTRUSTED")
+        with tempfile.TemporaryDirectory(prefix="wow-fenced-push-") as temp:
+            askpass = Path(temp) / "askpass"
+            askpass.write_text('#!/bin/sh\ncase "$1" in *Username*) printf "x-access-token\\n";; *) printf "%s\\n" "$GIT_FENCED_TOKEN";; esac\n')
+            askpass.chmod(0o700)
+            env = {k:v for k,v in os.environ.items()
+                   if not k.startswith(("GIT_CONFIG_", "GIT_ASKPASS", "GIT_SSH", "SSH_ASKPASS"))}
+            env.update(GIT_ASKPASS=str(askpass), GIT_FENCED_TOKEN=self.token,
+                       GIT_TERMINAL_PROMPT="0")
+            subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "push",
+                            "--porcelain", "origin", f"HEAD:refs/heads/{intent.branch}"],
+                           check=True, capture_output=True, text=True, env=env, timeout=45)
+
     def create_pr(self, intent: Intent) -> None:
         result = self._call("POST", f"/repos/{REPO}/pulls", {
             "title": f"Fenced engineering source for incident #{intent.incident_id}",
@@ -224,7 +255,7 @@ class GitHubAppWriter:
                     or ref.get("ref") != "refs/heads/" + intent.branch
                     or ref.get("object", {}).get("sha") != intent.sha):
                 return False
-            if intent.operation == "CREATE_BRANCH":
+            if intent.operation in {"CREATE_BRANCH", "PUSH_REF"}:
                 return True
             from urllib.parse import quote
             head = quote(f"{REPO.split('/')[0]}:{intent.branch}", safe=":")
@@ -236,6 +267,8 @@ class GitHubAppWriter:
                     pr.get("head", {}).get("sha") == intent.sha and
                     pr.get("head", {}).get("ref") == intent.branch and
                     pr.get("head", {}).get("repo", {}).get("full_name") == REPO and
-                    pr.get("base", {}).get("ref") == "main")
+                    pr.get("base", {}).get("ref") == "main" and
+                    pr.get("draft") is True and
+                    pr.get("user", {}).get("login") == "wow-engineering[bot]")
         except FencingHold:
             return False
