@@ -131,7 +131,8 @@ def evidence(files=("artifacts/wow-engine/v17/x.py",), author="wow-engineering[b
         "owner_login": OWNER,
         "pr": {"number": 7, "body": "Incident: #2136", "state": "open", "draft": False, "merged": False, "head_sha": HEAD, "head_repo": REPO,
                "head_ref": "fix/issue-1830", "base_ref": "main", "author": author,
-               "author_id": 285088163 if author == OWNER else 9001, "changed_files": len(files)},
+               "author_id": 285088163 if author == OWNER else 9001, "changed_files": len(files),
+               "body": "Incident: #2136\nParent: #1688"},
         "files": list(files),
         "source_review_paths": list(files),
         "source_review": source_review_evidence(files, author=author),
@@ -158,6 +159,26 @@ TRUST_ROOT_FILES = (".github/workflows/wow-v17-claude-engineering-worker.yml",)
 
 
 # --- QA decisions --------------------------------------------------------------------
+
+
+def test_canonical_incident_required_by_native_qa_and_release():
+    ev = evidence()
+    assert m.qa_findings(ev) == []
+    ev["pr"]["body"] = "Parent: #1688\\nReference #2136"
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(ev)
+    ev["pr"]["body"] = "Incident: #2136\\nIncident: #2162"
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in m.qa_findings(ev)
+    ev["pr"]["body"] = "Incident: #2136"
+    assert m.qa_findings(ev) == []
+
+
+def test_canonical_incident_exact_field_parser():
+    assert m._canonical_incident_present("Incident: #2136\\nParent: #1688")
+    assert m._canonical_incident_present("  Incident: 2136  ")
+    for body in (None, "", "See #2136", "Parent: #2136",
+                 "Incident: #0", "Incident: #2136\\nIncident: #2136",
+                 "prefix Incident: #2136"):
+        assert not m._canonical_incident_present(body)
 
 
 def test_ordinary_pr_with_complete_exact_head_evidence_passes():
