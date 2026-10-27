@@ -21,6 +21,8 @@ def compile_handoff(receipt: Any, diagnostic: Any, *, source_sha: str,
         "status": "FLINT_HANDOFF_REJECTED", "can_execute": False,
         "terminal_authority": AUTHORITY, "writer_lease_granted": False,
         "independent_review_satisfied": False, "production_verified": False,
+        "provider_receipt_provenance_verified": False,
+        "remote_transfer_consent_verified": False,
     }
     if (not isinstance(source_sha, str) or not SHA_RE.fullmatch(source_sha)
             or not isinstance(incident_id, str) or not ISSUE_RE.fullmatch(incident_id)
