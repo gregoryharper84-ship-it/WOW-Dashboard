@@ -3,6 +3,11 @@ from __future__ import annotations
 
 import copy
 import json
+import shlex
+import subprocess
+from pathlib import Path
+
+import pytest
 
 from v17.engineering_agent_team import (
     NONFINAL_OWNED_HOLDS, TERMINAL_ISSUE_STATES, closure_wip,
@@ -173,3 +178,65 @@ def test_phase12_pr_lifecycle_declaration_remains_explicit_and_fail_closed():
                           "- changes_calibration_or_lower_bounds: true")
     assert any("CLASSIFICATION_ESCALATION_REQUIRED" in error for error in
                validate_lifecycle_pr_body(unsafe, changed_paths=paths))
+
+
+# Exercise the actual workflow gate instead of duplicating incident parsing.
+_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _real_specialist_incident_gate(body: str, requested: str = ""):
+    workflow = (
+        _ROOT / ".github/workflows/wow-v17-engineering-specialist-support.yml"
+    ).read_text()
+    start = workflow.index("            # Reuse strict incident identity across the repo;")
+    end = workflow.index("\n\n            checks=$(gh api", start)
+    script = (
+        "set -euo pipefail\n"
+        + "pr=" + shlex.quote(json.dumps({"body": body})) + "\n"
+        + "incident=" + shlex.quote(requested) + "\n"
+        + workflow[start:end] + "\n"
+        + 'printf "IDENTITY:%s\\n" "$incident"\n'
+    )
+    return subprocess.run(["bash", "-c", script], cwd=_ROOT,
+                          capture_output=True, text=True, check=False, timeout=10)
+
+
+@pytest.mark.parametrize("body,requested", [
+    ("Incident: #2136", ""),
+    ("Incident: #2136", "2136"),
+    ("Incident: 2136", "2136"),
+    ("Incident: `2136`", "2136"),
+    ("Incident: #2136\nParent: #1688", ""),
+])
+def test_actual_specialist_workflow_accepts_canonical_incident(body, requested):
+    result = _real_specialist_incident_gate(body, requested)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.endswith("IDENTITY:2136\n")
+
+
+@pytest.mark.parametrize("body,requested,error", [
+    ("Incident: #2136", "1688", "SUPPORT_PARENT_INCIDENT_MISMATCH"),
+    ("", "2136", "SUPPORT_PARENT_INCIDENT_UNPROVEN"),
+    ("Related: #2136", "", "SUPPORT_PARENT_INCIDENT_UNPROVEN"),
+    ("Incident: #2136\nIncident: #1688", "", "SUPPORT_PARENT_INCIDENT_UNPROVEN"),
+    ("Incident: #0", "", "SUPPORT_PARENT_INCIDENT_UNPROVEN"),
+    ("Incident: #2136 extra", "", "SUPPORT_PARENT_INCIDENT_UNPROVEN"),
+    ("Incident: #2136\nIncident: `2136`", "2136", "SUPPORT_PARENT_INCIDENT_UNPROVEN"),
+    ("Incident: #2136; rm -rf /", "", "SUPPORT_PARENT_INCIDENT_UNPROVEN"),
+    ("Incident: #2136", "PR-2189", "SUPPORT_PARENT_INCIDENT_MISMATCH"),
+])
+def test_actual_specialist_workflow_rejects_unproved_incident(body, requested, error):
+    result = _real_specialist_incident_gate(body, requested)
+    assert result.returncode != 0
+    assert error in result.stderr
+    assert "IDENTITY:" not in result.stdout
+
+
+def test_incident_gate_reuses_shared_parser_and_rejects_legacy_fallback():
+    workflow = (
+        _ROOT / ".github/workflows/wow-v17-engineering-specialist-support.yml"
+    ).read_text()
+    assert "engineering_incident_identity.py" in workflow
+    assert 'incident="PR-' not in workflow
+    assert "Validate bounded specialist handoff" in workflow
+    assert 'terminal_authority:"V17_TERMINAL_REDUCER"' in workflow
