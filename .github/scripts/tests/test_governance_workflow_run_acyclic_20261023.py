@@ -55,7 +55,8 @@ def test_certifier_and_trusted_gate_preserve_exact_lineage():
     assert completed_run_sources("wow-v17-trusted-governance-gate") == {"wow-v17-existing-pr-governance-review"}
     assert completed_run_sources("wow-v17-release-authority-check") == {"wow-v17-independent-qa-check"}
     assert "pull_request_target:" in read("wow-v17-existing-pr-governance-review")
-    assert "pull_request_target:" in read("wow-v17-trusted-governance-gate")
+    assert "pull_request_target:" not in read("wow-v17-trusted-governance-gate")
+    assert "workflow_run:" in read("wow-v17-trusted-governance-gate")
     for name in WORKFLOWS:
         body = read(name)
         assert "permissions:" in body
