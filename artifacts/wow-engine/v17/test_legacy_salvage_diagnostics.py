@@ -20,6 +20,7 @@ def prop(**kwargs):
         "row_key": "p1",
         "official_event_id": "game-verified-001",
         "event_status": "SCHEDULED",
+        "scheduled_start_utc": "2026-10-27T18:00:00Z",
         "participant": "Fixture Player",
         "market": "PLAYER_PROP",
         "stat_type": "ASSISTS",
@@ -100,6 +101,7 @@ class SalvageDiagnosticTests(unittest.TestCase):
     def test_team_event_exact_outcome_and_settlement(self):
         row = {
             "row_key": "w1", "official_event_id": "game-a", "event_status": "SCHEDULED",
+            "scheduled_start_utc": "2026-10-27T18:00:00Z",
             "participant": "Team A", "market": "SOCCER_1X2",
             "exact_selection": "HOME", "outcome_space": "HOME/DRAW/AWAY",
             "settlement_rule": "FULL_TIME_90_MINUTES",
@@ -132,6 +134,36 @@ class SalvageDiagnosticTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             audit.audit_candidate(prop(), mode="PROP", now_utc=NOW,
                                   source_max_age_seconds=True)
+
+    def test_future_schedule_required_to_call_event_pregame(self):
+        result = self.call(prop(scheduled_start_utc="2026-10-27T16:00:00Z"))
+        self.assertFalse(result["pregame_eligible_by_status"])
+        self.assertIn("scheduled_event_has_started", result["sporting_evidence_issues"])
+
+    def test_invalid_schedule_fails_closed(self):
+        result = self.call(prop(scheduled_start_utc="2026-10-27T18:00:00"))
+        self.assertFalse(result["pregame_eligible_by_status"])
+        self.assertIn("invalid_or_naive_start_timestamp", result["sporting_evidence_issues"])
+
+    def test_out_and_ir_participant_diagnostic(self):
+        for status in ("OUT", "SCRATCHED", "IR", "INACTIVE"):
+            with self.subTest(status=status):
+                result = self.call(prop(critical_participant_status=status))
+                self.assertIn("critical_participant_unavailable", result["sporting_evidence_issues"])
+                self.assertIsNone(result["terminal_label"])
+
+    def test_model_timestamp_missing_is_distinct_from_model_rerun(self):
+        result = self.call(prop(latest_material_update_at="2026-10-27T16:50:00Z"))
+        self.assertIn("material_update_without_model_timestamp", result["sporting_evidence_issues"])
+        self.assertFalse(result["model_rerun_recommended"])
+
+    def test_malformed_row_key_does_not_crash_or_omit_row(self):
+        result = audit.audit_rows(
+            [prop(row_key=["wrong-type"]), prop(row_key="good")],
+            mode="PROP", now_utc=NOW, source_max_age_seconds=300,
+        )
+        self.assertEqual(result["rows_reported"], 2)
+        self.assertIn("invalid_row_key", result["rows"][0]["sporting_evidence_issues"])
 
     def test_no_scoring_or_terminal_authority_anywhere(self):
         row = self.call()
