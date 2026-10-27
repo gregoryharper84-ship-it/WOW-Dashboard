@@ -57,3 +57,19 @@ python -m pytest -q artifacts/wow-engine/v17/experiments/test_free_forecasting_s
 5. Add a **separate** PyMC candidate for discrete stat distributions only when a supported fitted sport/stat specialist and settled dataset exist. Class C certification and `V17_TERMINAL_REDUCER` control all future promotion.
 
 **No live wagering, trading, automatic certification, or deployment.**
+
+## Evidence requirements added in the provenance hardening
+
+The shadow trainer now **rejects** any row without these fields:
+
+- `feature_evidence_kind="ARCHIVED_PREGAME_CAPTURE"`
+- `historical_reconstruction=false`
+- `feature_snapshot_captured_at_utc` (must occur at or after feature observation and before kickoff)
+- `feature_evidence_receipt_id` identifying a separately maintained trusted immutable archive
+- `feature_snapshot_sha256` of the canonical numeric feature map (must match)
+- For a paired comparison, candidate capture time cannot be later than the incumbent model timestamp.
+
+These validation fields are not independent cryptographic proof of *who* made the capture or *when* a historical source was truly available. The upstream archive's actual creation metadata, source provenance, and the model's exact consumed inputs must be independently reconciled before certification.
+
+The `forward_feature_capture.py` helper produces a **write-once local research envelope** that explicitly requires separate source-verification; it does not by itself certify a feature vector and is not yet wired to the production scorer. Read `PREGAME_PROVENANCE_AUDIT.md` for the observed database chronology and next safe integration requirements.
+
