@@ -729,6 +729,34 @@ jobs:
           PY
           echo "allowed=true" >> "$GITHUB_OUTPUT"
 
+      # Use a separate authenticated protected-main checkout: Claude's repair
+      # worktree can be detached at an untrusted PR head at this point.
+      - name: Checkout protected AMRT integration source
+        if: steps.mutation_gate.outputs.allowed == 'true' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wow-v17-protected-amrt
+          persist-credentials: false
+
+      - name: Record lease-fenced AMRT specialist decisions
+        if: steps.mutation_gate.outputs.allowed == 'true' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
+          AMRT_SELECTED_INCIDENT: ${{ steps.dispatch.outputs.restoration }}
+          AMRT_LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
+          AMRT_WORKER_ID: ${{ steps.safety.outputs.worker_id }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          WOW_CAN_EXECUTE: "false"
+          WOW_DRY_RUN_ONLY: "true"
+        run: |
+          set -euo pipefail
+          test "$(git -C .wow-v17-protected-amrt rev-parse HEAD)" = "$GITHUB_SHA"
+          PYTHONPATH=".wow-v17-protected-amrt/artifacts/wow-engine" \
+            python .wow-v17-protected-amrt/artifacts/wow-engine/v17/amrt_protected_worker_adoption.py
+
       - name: Implementation agent
         id: implementation_agent
         if: >-
