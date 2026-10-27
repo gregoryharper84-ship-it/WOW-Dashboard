@@ -86,12 +86,12 @@ def build_validation_queue(
         issues = list(row.get("sporting_evidence_issues") or ())
         market = row.get("market_evidence_type") or "NO_MARKET"
         debts: dict[str, bool | None] = {field: None for field in DEBT_FIELDS}
-        debts["source_provenance_debt"] = bool(missing or (_SOURCE_ISSUES & set(issues))
-                                                  or "invalid_row_key" in issues)
-        debts["status_debt"] = bool(set(issues) & _STATUS_ISSUES or
+        debts["source_provenance_debt"] = True if (missing or (_SOURCE_ISSUES & set(issues))
+                                                  or "invalid_row_key" in issues) else None
+        debts["status_debt"] = True if (set(issues) & _STATUS_ISSUES or
                                     any(f in {"event_status", "scheduled_start_utc"}
-                                        for f in missing))
-        debts["market_debt"] = market != "EXACT_LINE" if market_analysis_requested else None
+                                        for f in missing)) else None
+        debts["market_debt"] = True if (market_analysis_requested and market != "EXACT_LINE") else None
         actions = _action_list(missing, issues, market if market_analysis_requested else "EXACT_LINE")
         output.append({
             "row_key": row.get("row_key"),
