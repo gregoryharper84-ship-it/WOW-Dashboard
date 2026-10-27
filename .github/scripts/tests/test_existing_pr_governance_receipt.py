@@ -1858,9 +1858,13 @@ def test_trusted_gate_revalidates_authenticated_automated_review_source():
 def test_trusted_gate_accepts_only_authenticated_release_check_run_certifications():
     workflow = TRUSTED_GATE.read_text(encoding="utf-8")
 
-    assert "github.event.workflow_run.event == 'check_run'" in workflow
-    assert '(.event == "workflow_run" or .event == "check_run")' in workflow
+    # The protected completion event, not an untrusted PR trigger, is authority.
+    # Independently re-read the producer's recorded trigger and exact identity.
+    assert "github.event_name == 'workflow_run'" in workflow
+    assert '"check_run"' in workflow
+    assert '.event == "check_run" or' in workflow
     assert "Release check-run certification must run from protected main" in workflow
+    assert "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" in workflow
 
 
 def test_release_and_continuation_consumers_resolve_authenticated_source_review_metadata():
