@@ -154,3 +154,76 @@ def test_read_retry_preserves_non_timeout_failures(monkeypatch):
 def test_persisted_ncaaf_loaders_use_smaller_page_budget_than_shared_replay_default():
     assert replay.NCAAF_PERSISTED_PAGE_SIZE < replay.PAGE_SIZE
     assert replay.NCAAF_PERSISTED_PAGE_SIZE <= 200
+
+
+def test_postgrest_statement_timeout_retried_on_read_only_query(monkeypatch):
+    # SQLSTATE 57014 is delivered as PostgREST APIError/HTTP 500, not
+    # httpx.ReadTimeout; this exact mismatch caused Oct 27 #1059.
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS", 0.0)
+
+    class APIError(Exception):
+        def __init__(self, code):
+            self.code = code
+            super().__init__("database service URL and credential must remain private")
+
+    calls = {"count": 0}
+
+    class Query:
+        def execute(self):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise APIError("57014")
+            return SimpleNamespace(data=[{"official_event_id": "401871071"}])
+
+    result = replay._execute_read_with_retry(lambda: Query(), retries=2)
+    assert result.data == [{"official_event_id": "401871071"}]
+    assert calls["count"] == 2
+
+
+def test_postgrest_statement_timeout_retry_is_bounded_and_preserves_failure(monkeypatch):
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS", 0.0)
+
+    class APIError(Exception):
+        def __init__(self, code):
+            self.code = code
+            super().__init__("do not expose transport payload")
+
+    calls = {"count": 0}
+    persistent = APIError("57014")
+
+    class Query:
+        def execute(self):
+            calls["count"] += 1
+            raise persistent
+
+    try:
+        replay._execute_read_with_retry(lambda: Query(), retries=2)
+    except APIError as exc:
+        assert exc is persistent
+    else:
+        raise AssertionError("persistent 57014 must propagate after bounded retries")
+    assert calls["count"] == 3
+
+
+def test_postgrest_non_timeout_api_error_never_retried(monkeypatch):
+    monkeypatch.setattr(replay, "NCAAF_PERSISTED_READ_TIMEOUT_BACKOFF_SECONDS", 0.0)
+
+    class APIError(Exception):
+        def __init__(self, code):
+            self.code = code
+            super().__init__("permissions failure")
+
+    calls = {"count": 0}
+
+    class Query:
+        def execute(self):
+            calls["count"] += 1
+            raise APIError("42501")
+
+    try:
+        replay._execute_read_with_retry(lambda: Query(), retries=2)
+    except APIError as exc:
+        assert exc.code == "42501"
+    else:
+        raise AssertionError("non-timeout API errors must fail closed")
+    assert calls["count"] == 1
