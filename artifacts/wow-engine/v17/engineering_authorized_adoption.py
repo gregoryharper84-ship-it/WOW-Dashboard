@@ -284,13 +284,13 @@ def canonical_incident_id(body: object) -> str:
     grant incident identity. Extract only decimal digits, never untrusted prose.
     """
     if not isinstance(body, str):
-        raise AdoptionHold("SOURCE_INCIDENT_ID_MISSING_OR_AMBIGUOUS_HOLD")
+        raise AdoptionHold("EXISTING_PR_INCIDENT_ID_MISSING")
     ids = re.findall(
         r"(?im)^[ \t]*(?:\*\*)?Incident:(?:\*\*)?[ \t]*#([1-9][0-9]*)(?=[ \t(]|$)[^\n]*$",
         body,
     )
     if len(ids) != 1:
-        raise AdoptionHold("SOURCE_INCIDENT_ID_MISSING_OR_AMBIGUOUS_HOLD")
+        raise AdoptionHold("EXISTING_PR_INCIDENT_ID_MISSING")
     return ids[0]
 
 
