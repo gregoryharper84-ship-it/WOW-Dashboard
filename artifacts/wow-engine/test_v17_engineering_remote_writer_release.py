@@ -107,7 +107,7 @@ def test_changed_or_spoofed_release_fails_closed(field, value):
 
 
 @pytest.mark.parametrize("invalid", [
-    {"path": "different.yml"}, {"event": "push"},
+    {"path": "different.yml"}, {"event": "workflow_run"},
     {"status": "in_progress"}, {"conclusion": "failure"},
     {"head_branch": "feature"}, {"head_sha": "b" * 40},
     {"run_attempt": 2}, {"repository": {"full_name": "another/repo"}},
