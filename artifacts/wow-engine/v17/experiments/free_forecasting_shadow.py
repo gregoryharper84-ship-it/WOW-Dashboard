@@ -81,6 +81,15 @@ def parse_rows(raw: Sequence[Mapping[str, Any]]) -> list[Row]:
         available = _dt(value.get("outcome_available_utc"))
         if not (asof < start < available):
             raise ResearchInputError("PREGAME_OR_SETTLEMENT_TIME_INVALID")
+        if (value.get("feature_evidence_kind") != "ARCHIVED_PREGAME_CAPTURE" or
+            value.get("historical_reconstruction") is not False):
+            raise ResearchInputError("FEATURE_PROVENANCE_UNCERTIFIED")
+        captured = _dt(value.get("feature_snapshot_captured_at_utc"))
+        if not (asof <= captured < start):
+            raise ResearchInputError("FEATURE_SNAPSHOT_CAPTURE_TIMING_INVALID")
+        receipt = value.get("feature_evidence_receipt_id")
+        if not isinstance(receipt, str) or not receipt.strip():
+            raise ResearchInputError("FEATURE_EVIDENCE_RECEIPT_MISSING")
         if value.get("outcome") not in (0, 1) or isinstance(value.get("outcome"), bool):
             raise ResearchInputError("INVALID_BINARY_OUTCOME")
         raw_features = value.get("features")
@@ -101,6 +110,10 @@ def parse_rows(raw: Sequence[Mapping[str, Any]]) -> list[Row]:
             feature_names = set(features)
         if set(features) != feature_names:
             raise ResearchInputError("INCONSISTENT_FEATURE_SCHEMA")
+        expected_hash = sha256(json.dumps(features, sort_keys=True, separators=(",", ":"),
+                                         allow_nan=False).encode("utf-8")).hexdigest()
+        if value.get("feature_snapshot_sha256") != expected_hash:
+            raise ResearchInputError("FEATURE_SNAPSHOT_HASH_MISMATCH")
         event_key = f'{value["sport"]}:{value["official_event_id"]}'
         if event_key in event_times:
             if event_times[event_key] != start:
@@ -110,8 +123,11 @@ def parse_rows(raw: Sequence[Mapping[str, Any]]) -> list[Row]:
         incumbent = None
         if "incumbent_probability" in value:
             incumbent = _prob(value["incumbent_probability"])
-            if _dt(value.get("incumbent_model_timestamp_utc")) >= start:
+            incumbent_time = _dt(value.get("incumbent_model_timestamp_utc"))
+            if incumbent_time >= start:
                 raise ResearchInputError("INCUMBENT_NOT_PREGAME")
+            if captured > incumbent_time:
+                raise ResearchInputError("CANDIDATE_EVIDENCE_LATER_THAN_INCUMBENT")
         rows.append(Row(pid, value["official_event_id"], value["sport"], value["market"],
                         start, asof, available, value["outcome"], features, incumbent))
     if len({(r.sport, r.market) for r in rows}) != 1:
