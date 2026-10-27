@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import v17.spread_margin_replay as replay
@@ -227,3 +228,20 @@ def test_postgrest_non_timeout_api_error_never_retried(monkeypatch):
     else:
         raise AssertionError("non-timeout API errors must fail closed")
     assert calls["count"] == 1
+
+
+def test_ncaaf_forward_fingerprint_index_matches_exact_latest_row_sort():
+    # 2026-10-27 production validation: 16,533 qualifying rows were scanned
+    # to return 1 newest event because official_event_id-only index could not
+    # satisfy event_start_time DESC + official_event_id DESC ordering.
+    engine_dir = Path(__file__).resolve().parents[1]
+    ddl = (engine_dir / "migrations" / "20261027_ncaaf_spread_forward_freshness_order_index.sql").read_text()
+    normalized = " ".join(ddl.lower().split())
+    assert "create index if not exists wow_d1_training_rows_ncaaf_spread_freshness_order_idx" in normalized
+    assert "on public.wow_d1_training_rows using btree" in normalized
+    assert "sport, model_family, feature_schema_version, event_start_time desc, official_event_id desc" in normalized
+    assert "drop index" not in normalized
+    assert "drop table" not in normalized
+    assert "update public.wow_d1_training_rows" not in normalized
+    # Preserve previous official_event_id-ordered pagination index.
+    assert "wow_d1_training_rows_ncaaf_spread_lookup_idx" in ddl
