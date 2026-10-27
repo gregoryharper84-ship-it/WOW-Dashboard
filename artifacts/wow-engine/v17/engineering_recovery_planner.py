@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Route typed QA/Release HOLD findings to repair or to the owner (#1550/#1663 item 3).
+"""Route typed QA/Release HOLD findings to bounded repair and Triple D reentry.
 
 Pure decision logic: no network I/O. The caller supplies the typed findings from
 `independent_release_checks.decision()` for a wow-engineering[bot] PR, plus how many
 repair attempts have already been dispatched for that PR, and this module decides
-whether to dispatch another repair, declare the PR waiting on the owner, or do nothing.
+whether to dispatch another repair, re-enter root-cause triage, or wait for authority.
 
 Non-repairable findings (trust-root ownership/approval findings) are never retried,
 regardless of attempt count: they require the owner, not another repair attempt.
@@ -21,7 +21,9 @@ from typing import Any
 _FINDING_CODE_RE = re.compile(r"`([A-Z][A-Z0-9_]*(?::[^`\r\n]{1,160})?)`")
 
 MAX_REPAIR_ATTEMPTS = 3
-NEEDS_OWNER_LABEL = "needs-owner"
+# Bounded same-PR retries never become an automatic demand on the owner.
+# The existing P0/P1 incident queue retains ownership and performs new diagnosis.
+BLOCKER_TEAM_OWNER = "ROOT_CAUSE_INVESTIGATOR"
 
 # Matches the typed findings produced by independent_release_checks.py / existing-PR
 # governance review: QA_TRUST_ROOT_OWNER_AUTHORED, QA_TRUST_ROOT_OWNER_APPROVAL_MISSING,
@@ -113,8 +115,10 @@ def plan_recovery(
     if attempts >= MAX_REPAIR_ATTEMPTS:
         return {
             "pr_number": pr_number,
-            "action": "NEEDS_OWNER_RETRY_CAP",
-            "label": NEEDS_OWNER_LABEL,
+            "action": "BLOCKER_TEAM_REENTRY",
+            "reason": "REPAIR_RETRY_CAP_EXHAUSTED",
+            "next_owner": BLOCKER_TEAM_OWNER,
+            "revisit_trigger": "FRESH_ROOT_CAUSE_OR_CHANGED_HEAD_EVIDENCE",
             "findings": list(findings),
             "attempts": attempts,
             "can_execute": False,
