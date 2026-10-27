@@ -14,6 +14,10 @@ Paste:
 
 Goal mode keeps working through the bounded task; it does not change permissions or release authority.
 
+## Optional Recursive Flint research handoff (no remote call)
+
+When an existing authorized Flint one-shot run has already produced a local **typed receipt** and **diagnostic JSON**, the Antigravity recovery agent may use `.agents/skills/wow-flint-coding-handoff/SKILL.md` and the offline `artifacts/wow-engine/v17/engineering_coding_handoff.py` adapter from source-only PR #2138. Match the independently verified current commit SHA, OPEN incident ID and canonical lease group. Only `UNTRUSTED_RESEARCH_HANDOFF_ONLY` is admissible as a **hypothesis**; it is never tested code, a writer authorization, independent approval or sporting probability. Do not send code, PR diffs, issue bodies, secrets or private files to Flint. No Flint/OpenRouter network call is triggered by this Sidecar, and a PR's unmerged files are not installed in a main checkout.
+
 ## Persistent autonomous daily session (Antigravity Sidecar)
 
 The official Antigravity `/schedule` command is conversation-scoped. For work that continues after a conversation ends, the native `sidecar.json` schedule plus `agentapi new-conversation` is the supported solution.
