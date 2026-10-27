@@ -8,7 +8,7 @@ import sys
 import unittest
 import tempfile
 import subprocess
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 from pathlib import Path
 
@@ -134,6 +134,57 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
             "GEMINI_MODEL_UNAVAILABLE")
         self.assertEqual(gemini.classify_cli(
             1, "unknown internal CLI exception")["code"], "GEMINI_CLI_FAILED")
+
+    def test_cli_classifier_logs_fixed_failure_code_without_provider_secrets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stderr_file = root / "gemini-stderr.txt"
+            response_file = root / "gemini-response.json"
+            secret = "SENSITIVE_CREDENTIAL_NEVER_LOG_THIS"
+            stderr_file.write_text(f"quota exceeded {secret}", encoding="utf-8")
+            response_file.write_text(json.dumps({
+                "error": {"status": "RESOURCE_EXHAUSTED",
+                          "message": f"provider data {secret}"},
+                "response": secret,
+            }), encoding="utf-8")
+            stdout, error_log = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(error_log):
+                rc = gemini.main([
+                    "classify", "--exit-code", "1",
+                    "--stderr-file", str(stderr_file),
+                    "--response-file", str(response_file),
+                    "--source-sha", "a" * 40,
+                ])
+            self.assertEqual(rc, 2)
+            self.assertEqual(
+                error_log.getvalue(),
+                "::error::WOW_GEMINI_CLASSIFIED_FAILURE:GEMINI_API_QUOTA_EXHAUSTED\\n",
+            )
+            receipt = json.loads(stdout.getvalue())
+            self.assertEqual(receipt["status"], "HELD")
+            self.assertEqual(receipt["code"], "GEMINI_API_QUOTA_EXHAUSTED")
+            self.assertFalse(receipt["can_execute"])
+            self.assertEqual(receipt["terminal_authority"], "V17_TERMINAL_REDUCER")
+            self.assertNotIn(secret, stdout.getvalue() + error_log.getvalue())
+
+    def test_cli_classifier_success_does_not_emit_error_annotation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stderr_file, response_file = root / "stderr.txt", root / "response.json"
+            stderr_file.write_text("", encoding="utf-8")
+            response_file.write_text(json.dumps({"response": "candidate generated"}),
+                                     encoding="utf-8")
+            stdout, error_log = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(error_log):
+                rc = gemini.main([
+                    "classify", "--exit-code", "0",
+                    "--stderr-file", str(stderr_file),
+                    "--response-file", str(response_file),
+                ])
+            self.assertEqual(rc, 0)
+            self.assertEqual(error_log.getvalue(), "")
+            self.assertEqual(json.loads(stdout.getvalue())["code"],
+                             "GEMINI_CLI_COMPLETE")
 
     def test_cli_exit_codes_without_api_text(self):
         for exit_code, expected in (
