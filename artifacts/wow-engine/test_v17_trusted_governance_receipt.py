@@ -201,7 +201,9 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert "seq 1 180" not in gate
     assert "actions/artifacts?name=${artifact_name}" not in gate
     assert "github.event_name == 'workflow_run'" in gate
-    assert '.event == "pull_request_target" or .event == "workflow_dispatch"' in artifact_step
+    assert '.event == "pull_request_target" and' in artifact_step
+    assert 'GOVERNANCE_CERTIFIER_PR_HEAD_MISMATCH' in artifact_step
+    assert '.event == "workflow_dispatch") and .head_branch == "main"' in artifact_step
     assert '.state == "open" and .head.sha == $sha and .head.repo.full_name == $repo' in gate
     assert '.base.ref == "main" and .base.repo.full_name == $repo' in gate
     assert '--head-sha "$PR_HEAD_SHA"' in gate
@@ -611,13 +613,28 @@ def test_workflow_run_certifier_rejects_forged_or_stale_source(
 
 @pytest.mark.parametrize("producer_event", ["pull_request_target", "workflow_dispatch", "check_run", "workflow_run"])
 def test_only_authenticated_completed_producer_run_is_accepted(tmp_path, producer_event):
-    run, receipt, artifact = _certifier_fixture(run_overrides={"event": producer_event})
+    metadata = {"event": producer_event}
+    if producer_event == "pull_request_target":
+        metadata.update(head_branch="fix/exact-head", head_sha="a" * 40)
+    run, receipt, artifact = _certifier_fixture(run_overrides=metadata)
     proc, output = _run_gate_artifact_resolution(
         tmp_path, event="workflow_run", artifacts=[artifact], run=run, receipt=receipt,
     )
     assert proc.returncode == 0, proc.stderr
     assert "head_sha=" + "a" * 40 in output
     assert "artifact_id=55" in output
+
+
+def test_mismatched_pull_request_target_source_sha_fails_closed(tmp_path):
+    run, receipt, artifact = _certifier_fixture(
+        run_overrides={"event": "pull_request_target", "head_branch": "fix/exact-head",
+                       "head_sha": "b" * 40}
+    )
+    proc, _ = _run_gate_artifact_resolution(
+        tmp_path, event="workflow_run", artifacts=[artifact], run=run, receipt=receipt,
+    )
+    assert proc.returncode != 0
+    assert "GOVERNANCE_CERTIFIER_PR_HEAD_MISMATCH" in proc.stderr
 
 
 def test_preemptive_pr_trigger_and_polling_have_been_removed():
