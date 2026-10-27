@@ -99,15 +99,20 @@ def evaluate_independent_events(
 
     selected = []
     conflict_events = 0
+    conflict_rows = 0
     for _event, options in candidates.items():
         if len({(row[5], row[6]) for row in options}) != 1:
             # Never quietly choose a winner when two settlement records disagree.
             conflict_events += 1
+            conflict_rows += len(options)
             continue
         selected.append(max(options, key=lambda r: (r[0], r[1])))
 
     n = len(selected)
     duplicate_rows = sum(max(0, len(options) - 1) for options in candidates.values() if len({(r[5], r[6]) for r in options}) == 1)
+    accounted_rows = n + duplicate_rows + conflict_rows + sum(reasons.values())
+    if accounted_rows != input_n:
+        raise ValueError("INDEPENDENT_EVENT_ROW_RECONCILIATION_FAILED")
     if n:
         brier = sum((p - y) ** 2 for _, _, p, _, y, _, _ in selected) / n
         ll = -sum(y * log(p) + (1 - y) * log(1 - p) for _, _, p, _, y, _, _ in selected) / n
@@ -126,6 +131,8 @@ def evaluate_independent_events(
         "independent_events": n,
         "duplicate_snapshot_rows_excluded": duplicate_rows,
         "conflicting_events_excluded": conflict_events,
+        "conflicting_snapshot_rows_excluded": conflict_rows,
+        "row_reconciliation_pass": accounted_rows == input_n,
         "exclusion_counts": dict(sorted(reasons.items())),
         "brier": brier,
         "log_loss": ll,
