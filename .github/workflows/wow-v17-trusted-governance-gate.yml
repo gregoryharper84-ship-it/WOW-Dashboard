@@ -10,6 +10,7 @@ on:
 
 permissions:
   actions: read
+  checks: write  # publish the verified decision at the exact PR head
   contents: read
   pull-requests: read
 
@@ -224,6 +225,7 @@ jobs:
           exit 1
 
       - name: Download and verify exact-head receipt
+        id: verify_receipt
         if: steps.artifact.outputs.applicable == 'true'
         shell: bash
         env:
@@ -412,3 +414,50 @@ jobs:
             "${extra_args[@]}"
 
           echo "Trusted exact-head governance receipt verified. can_execute=false." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish exact-head verified decision
+        # workflow_run executes on main; GitHub's native job check otherwise
+        # never updates the PR head. Create the PR-head check only from the
+        # authenticated, receipt-verified protected-main execution.
+        if: always() && steps.artifact.outputs.applicable == 'true'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.artifact.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ steps.artifact.outputs.head_sha }}
+          PRODUCER_RUN_ID: ${{ steps.artifact.outputs.run_id }}
+          SOURCE_VERIFY_OUTCOME: ${{ steps.workflow.outcome }}
+          RECEIPT_VERIFY_OUTCOME: ${{ steps.verify_receipt.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && [[ "$PR_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "GOVERNANCE_PR_HEAD_FOR_CHECK_INVALID" >&2; exit 1;
+          }
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}") || {
+            echo "GOVERNANCE_PR_RECHECK_UNAVAILABLE" >&2; exit 1;
+          }
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$PR_HEAD_SHA" \
+            '.state == "open" and .head.sha == $sha and .head.repo.full_name == $repo and
+             .base.ref == "main" and .base.repo.full_name == $repo' <<<"$pr" >/dev/null || {
+              echo "GOVERNANCE_PR_HEAD_MOVED_OR_NOT_AUTHENTIC" >&2; exit 1;
+            }
+          conclusion=failure
+          title="HOLD: exact-head governance not verified"
+          if [ "$SOURCE_VERIFY_OUTCOME" = "success" ] && [ "$RECEIPT_VERIFY_OUTCOME" = "success" ]; then
+            conclusion=success
+            title="PASS: authenticated exact-head governance receipt"
+          fi
+          summary="Receipt check ${conclusion}; PR #${PR_NUMBER}; exact head ${PR_HEAD_SHA}; producer run ${PRODUCER_RUN_ID}. No wagering; can_execute=false. This is not a substitute for independent source review."
+          check=$(gh api --method POST "/repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name="Trusted exact-head engineering governance" \
+            -f head_sha="$PR_HEAD_SHA" \
+            -f status="completed" -f conclusion="$conclusion" \
+            -f "output[title]=$title" -f "output[summary]=$summary") || {
+              echo "GOVERNANCE_PR_HEAD_CHECK_PUBLICATION_FAILED" >&2; exit 1;
+            }
+          jq -e --arg sha "$PR_HEAD_SHA" --arg decision "$conclusion" \
+            '.id > 0 and .name == "Trusted exact-head engineering governance" and
+             .head_sha == $sha and .status == "completed" and .conclusion == $decision' \
+            <<<"$check" >/dev/null || {
+              echo "GOVERNANCE_PR_HEAD_CHECK_RECEIPT_INVALID" >&2; exit 1;
+            }
+          echo "Published exact-head protected-governance decision: ${conclusion}."
