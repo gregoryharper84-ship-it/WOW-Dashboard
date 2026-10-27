@@ -7,6 +7,7 @@ calibrators, terminal decisions, or wagering capability.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import re
 from typing import Any
 
 from v17.core_intelligence import AUTHORITY
@@ -47,13 +48,20 @@ def _stage(name: str, action: Callable[[], Mapping[str, Any]], *, require_pass: 
     except Exception as exc:
         # Intentionally avoid surfacing exception messages, which may contain
         # connection strings, sensitive source fields or credentials.
-        return {
+        failure = {
             "stage": name,
             "status": "FAILED",
             "error_type": type(exc).__name__,
             "authority": AUTHORITY,
             "can_execute": False,
         }
+        # Preserve a vetted static database boundary, not exception text or
+        # arbitrary path/URL. Operators can isolate the failed table without
+        # leaking credentials from nested provider exceptions.
+        boundary = getattr(exc, "boundary", None)
+        if isinstance(boundary, str) and re.fullmatch(r"wow_[a-z0-9_]+\.[a-z0-9_]+", boundary):
+            failure["error_boundary"] = boundary
+        return failure
     return {"stage": name, "status": "PASS", "data": dict(raw), "authority": AUTHORITY, "can_execute": False}
 
 
