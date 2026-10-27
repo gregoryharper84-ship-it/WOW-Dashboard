@@ -286,3 +286,58 @@ def test_prop_backfill_is_batched_and_idempotent_by_observation_id():
     assert [len(x) for x in db.writes] == [250, 1]
     assert len({x["observation_id"] for batch in db.writes for x in batch}) == 251
     assert all(x["can_execute"] is False for batch in db.writes for x in batch)
+
+
+def test_independent_event_calibration_deduplicates_snapshots_and_rejects_bad_inputs():
+    from v17.independent_event_accuracy import evaluate_independent_events
+
+    def record(id, event, p, *, model_time="2026-09-20T18:00:00Z", score=(3, 2)):
+        return {
+            "event_prediction_id": id, "official_event_id": event,
+            "sport": "MLB", "model_version": "MLB_V1",
+            "event_start_time": "2026-09-20T21:00:00Z",
+            "model_timestamp": model_time,
+            "calibrated_home_probability": p,
+            "calibrated_home_lower_bound": min(0.4, p),
+            "home_score": score[0], "away_score": score[1],
+            "void": False,
+        }
+
+    rows = [
+        record("p1", "game-1", 0.55, model_time="2026-09-20T16:00:00Z"),
+        record("p2", "game-1", 0.80, model_time="2026-09-20T20:00:00Z"),
+        record("p3", "game-2", 0.60, score=(2, 4)),
+        record("p4", "game-3", 0.75, score=(1, 0)),
+        record("p5", "game-3", 0.75, score=(0, 1)),  # contradictory settlement
+        record("p6", "game-4", 0.7, model_time="2026-09-20T22:00:00Z"),
+        {**record("p7", "game-5", 0.6), "model_version": "OTHER_MODEL"},
+    ]
+    result = evaluate_independent_events(
+        rows, model_version="MLB_V1",
+        holdout_start="2026-09-01T00:00:00Z",
+        holdout_end="2026-10-01T00:00:00Z",
+        min_independent_events=3,
+    )
+    assert result["input_rows"] == 7
+    assert result["independent_events"] == 2
+    assert result["duplicate_snapshot_rows_excluded"] == 1
+    assert result["conflicting_events_excluded"] == 1
+    assert result["exclusion_counts"]["NOT_PREGAME_FROZEN"] == 1
+    assert result["exclusion_counts"]["OTHER_MODEL_VERSION"] == 1
+    # Latest game-1 forecast (0.80, WIN), plus game-2 (0.60, LOSS).
+    assert result["brier"] == pytest.approx(((0.8-1)**2 + (0.6-0)**2) / 2)
+    assert result["evidence_status"] == "WATCH_ONLY_THIN_COHORT"
+    assert result["automatic_promotion_allowed"] is False
+    assert result["can_execute"] is False
+
+
+def test_independent_event_evaluator_requires_explicit_chronological_holdout():
+    from v17.independent_event_accuracy import evaluate_independent_events
+    with pytest.raises(ValueError, match="CHRONOLOGICAL_HOLDOUT_REQUIRED"):
+        evaluate_independent_events([], model_version="MLB_V1", holdout_start="bad",
+                                    holdout_end="2026-10-01T00:00:00Z")
+    with pytest.raises(ValueError, match="MIN_INDEPENDENT_EVENTS_INVALID"):
+        evaluate_independent_events([], model_version="MLB_V1",
+                                    holdout_start="2026-09-01T00:00:00Z",
+                                    holdout_end="2026-10-01T00:00:00Z",
+                                    min_independent_events=0)
