@@ -41,11 +41,13 @@ permissions:
 concurrency:
   # Isolate PRs: other PR events cannot cancel a queued exact-head decision.
   # Repeat events for one PR remain serialized. A workflow_run with no
-  # associated pull request shares this role's AUTO queue. AUTO is not a
-  # pull request number; the job is skipped before target resolution.
-  # Malformed or foreign targets that do reach the resolver fail closed.
+  # associated pull request gets its isolated workflow run_id group, as
+  # its QA job is skipped by protected pre-admission and must not queue
+  # behind unrelated targetless observer runs. Actual PR numbers retain
+  # exact-PR serialization and all source/identity checks.
+  # Malformed or foreign targets reaching the resolver fail closed.
   # Queue bounded by GitHub Actions maximum of 100 pending runs per group.
-  group: wow-v17-independent-qa-check-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 'AUTO' }}
+  group: wow-v17-independent-qa-check-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
   cancel-in-progress: false
   queue: max
 
