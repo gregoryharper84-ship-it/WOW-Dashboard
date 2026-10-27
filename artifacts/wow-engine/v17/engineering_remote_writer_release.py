@@ -111,10 +111,16 @@ def verified_released_ids(
 def append_terminal_release(api, *, cursor_token: str, run_id: int,
                             run_attempt: int, source_sha: str) -> dict:
     """Called only under the EXISTING implementation-single-writer mutex."""
-    from .cursor_terminal_status_receipt import collect_receipt
-    from .engineering_remote_fallback import (
-        ProviderUnavailable, assert_no_local_writer, reservations,
-    )
+    try:
+        from .cursor_terminal_status_receipt import collect_receipt
+        from .engineering_remote_fallback import (
+            ProviderUnavailable, assert_no_local_writer, reservations,
+        )
+    except ImportError:  # Legacy standalone CLI entrypoint
+        from cursor_terminal_status_receipt import collect_receipt
+        from engineering_remote_fallback import (
+            ProviderUnavailable, assert_no_local_writer, reservations,
+        )
 
     if (not cursor_token or type(run_id) is not int or run_id <= 0
             or type(run_attempt) is not int or run_attempt <= 0
