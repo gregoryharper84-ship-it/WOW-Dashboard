@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from engineering_incident_identity import exact_incident_id  # noqa: E402
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
@@ -241,6 +242,7 @@ def gather(
         pr = {}
     ev["pr"] = {
         "number": pr.get("number"),
+        "body": pr.get("body"),
         "state": pr.get("state"), "draft": pr.get("draft"), "merged": pr.get("merged"),
         "head_sha": (pr.get("head") or {}).get("sha"),
         "head_ref": (pr.get("head") or {}).get("ref"),
@@ -573,6 +575,18 @@ def pending_required_regressions(ev: dict) -> list[str]:
     return list(dict.fromkeys(pending))
 
 
+def _canonical_incident_present(body: object) -> bool:
+    """Match the existing certifier's canonical incident identity contract.
+
+    Both required QA and independent Release fail closed on the same parser
+    that the protected existing-PR governance certifier actually uses.
+    """
+    try:
+        exact_incident_id(body)
+    except ValueError:
+        return False
+    return True
+
 def _owner_approved_at_head(ev: dict, head: str) -> bool:
     owner = ev.get("owner_login")
     mine = [r for r in ev.get("reviews") or [] if r.get("user") == owner and r.get("state") in
@@ -602,6 +616,11 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         findings.append("QA_PR_BASE_NOT_MAIN")
     if pr.get("head_repo") != ev.get("repository"):
         findings.append("QA_PR_HEAD_REPOSITORY_MISMATCH")
+    # Required native QA and distinct Release both reject metadata missing
+    # from the existing trusted-governance certifier's canonical PR contract.
+    # Release already recomputes qa_findings() independently.
+    if not _canonical_incident_present(pr.get("body")):
+        findings.append("QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS")
     review_active = ev.get("independent_review_active", True)
     if not isinstance(review_active, bool):
         findings.append("QA_REVIEW_POLICY_INVALID")

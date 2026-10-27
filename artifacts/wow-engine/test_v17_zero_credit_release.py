@@ -21,7 +21,7 @@ def evidence(*, enabled=True, author="copilot-swe-agent[bot]", path="src/code.py
     return {
         "repository": REPO, "pr_number": 1974, "expected_head_sha": SHA,
         "evidence_errors": [], "owner_login": "gregoryharper84-ship-it",
-        "pr": {"head_sha": SHA, "head_ref": "fix/nfl", "head_repo": REPO, "base_ref": "main",
+        "pr": {"head_sha": SHA, "body": "Incident: #2136", "head_ref": "fix/nfl", "head_repo": REPO, "base_ref": "main",
                "state": "open", "merged": False, "draft": False, "author": author},
         "files": [path], "reviews": [], "source_review": None,
         "independent_review_active": False, "current_review_active": False,
