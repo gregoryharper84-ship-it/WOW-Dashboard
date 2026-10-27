@@ -1,7 +1,7 @@
 -- #1739 / #2136. REVIEW_ONLY. Never apply until protected exact-SHA review.
 -- Builds on existing public.wow_engineering_incident_writer_leases.
--- Credential isolation is required: providers MUST NOT retain GitHub write tokens.
--- This protects writes spanning a DB transaction and a nontransactional GitHub POST.
+-- Providers MUST NOT retain write tokens or service_role credentials.
+-- A DB lock does not extend across GitHub I/O: durable PENDING intent does.
 CREATE TABLE IF NOT EXISTS public.wow_engineering_writer_mutation_intents (
   mutation_id uuid PRIMARY KEY,
   incident_id bigint NOT NULL REFERENCES public.wow_engineering_incident_writer_leases(incident_id),
@@ -22,16 +22,19 @@ ALTER TABLE public.wow_engineering_writer_mutation_intents ENABLE ROW LEVEL SECU
 REVOKE ALL ON public.wow_engineering_writer_mutation_intents FROM PUBLIC,anon,authenticated;
 GRANT SELECT,INSERT,UPDATE ON public.wow_engineering_writer_mutation_intents TO service_role;
 
--- This trigger guards legacy lease RPCs too. A pending remote operation must
--- be reconciled rather than permitting a reclaim/release while it may be live.
--- The short DB advisory lock is NOT held across GitHub I/O: it serializes the
--- claim/transition decision across different incident IDs and lease groups.
+-- Protect legacy claim/reclaim/release RPCs and GLOBAL-vs-domain exclusivity.
+-- IMPORTANT: an UPDATE may already hold the row lock when its trigger fires.
+-- Never BLOCK waiting on a global advisory lock inside that trigger: begin()
+-- may already hold the global advisory lock and wait on this very row lock.
+-- Fail closed with typed 55P03 instead. Caller must use bounded retry/reentry.
 CREATE OR REPLACE FUNCTION public.wow_engineering_enforce_lease_fence()
  RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
  SET search_path=pg_catalog,public AS $$
 DECLARE conflict boolean;
 BEGIN
- PERFORM pg_catalog.pg_advisory_xact_lock(901734,1739);
+ IF NOT pg_catalog.pg_try_advisory_xact_lock(901734,1739) THEN
+   RAISE EXCEPTION 'WRITER_LEASE_TRANSITION_RETRY' USING ERRCODE='55P03';
+ END IF;
  IF TG_OP='UPDATE' THEN
    IF EXISTS (SELECT 1 FROM public.wow_engineering_writer_mutation_intents m
               WHERE m.incident_id=OLD.incident_id AND m.state='PENDING')
@@ -76,12 +79,11 @@ BEGIN
     p_sha !~ '^[0-9a-f]{40}$' OR p_digest !~ '^[0-9a-f]{64}$' THEN
    RETURN jsonb_build_object('status','DENIED');
  END IF;
- -- Serialize cross-incident snapshots with the lease transition trigger.
+ -- Serialize across different incident IDs before taking an incident row lock.
  PERFORM pg_catalog.pg_advisory_xact_lock(901734,1739);
  SELECT * INTO l FROM public.wow_engineering_incident_writer_leases
  WHERE incident_id=p_incident_id FOR UPDATE;
- -- A repeated confirmed request can only be acknowledged under its original
- -- identity; it grants no permission for a NEW mutation under an old epoch.
+ -- Existing pending/confirmed intent is reconciliation-only, never re-POST.
  SELECT * INTO m FROM public.wow_engineering_writer_mutation_intents
  WHERE mutation_id=p_mutation_id FOR UPDATE;
  IF FOUND THEN
@@ -116,8 +118,8 @@ BEGIN
  RETURN jsonb_build_object('status','STARTED');
 END $$;
 
--- Caller must independently read back GitHub exact branch/head/body before
--- completing. A confirmed reservation remains immutable audit evidence.
+-- Caller must independently read GitHub exact branch/head/body before
+-- completing; verified audit evidence is immutable.
 CREATE OR REPLACE FUNCTION public.wow_engineering_confirm_writer_mutation(
  p_mutation_id uuid,p_incident_id bigint,p_owner_id text,p_epoch bigint,p_digest text
 ) RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER
@@ -136,5 +138,5 @@ REVOKE ALL ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,
 REVOKE ALL ON FUNCTION public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text) TO service_role;
--- WARNING: deployment must validate role privileges, exact RPC signatures,
--- tenant identity, existing HELD rows and rollback plan before activation.
+-- Review production lease identity, full privilege inventory, legacy CLAIM
+-- paths, live HELD rows, bounded 55P03 retries and rollback before activation.
