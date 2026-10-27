@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[3]   # protected main checkout in the workflows
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from engineering_incident_identity import exact_incident_id  # noqa: E402
 from agent_identity_policy import (  # noqa: E402
     QA_CHECK, RELEASE_CHECK, REQUIRED_REGRESSION_CHECKS, gh_fetch, governance_trust_roots, is_trust_root,
 )
@@ -575,20 +576,16 @@ def pending_required_regressions(ev: dict) -> list[str]:
 
 
 def _canonical_incident_present(body: object) -> bool:
-    """Preflight the existing certifier's single canonical Incident field.
+    """Match the existing certifier's canonical incident identity contract.
 
-    Do not treat an incidental '#number' mention as a source of incident
-    authority. A missing or conflicting label must fail required QA/Release
-    before an owner can merge a PR with no certifier receipt.
+    Both required QA and independent Release fail closed on the same parser
+    that the protected existing-PR governance certifier actually uses.
     """
-    if not isinstance(body, str):
+    try:
+        exact_incident_id(body)
+    except ValueError:
         return False
-    matches = re.findall(
-        r"(?m)^[ \t]*Incident:[ \t]*#?([1-9][0-9]*)[ \t]*$",
-        body,
-    )
-    return len(matches) == 1
-
+    return True
 
 def _owner_approved_at_head(ev: dict, head: str) -> bool:
     owner = ev.get("owner_login")
