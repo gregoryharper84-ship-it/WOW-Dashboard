@@ -406,11 +406,14 @@ def run_nfl_pickem_board(
     db = db_client_fn()
 
     try:
+        # Keep the date-only contract identical for existing callers and
+        # test adapters; season/week is opt-in for complete weekly cards.
+        inventory_selector: dict[str, Any] = {"requested_dates": requested_dates}
+        if req.requested_season is not None:
+            inventory_selector["requested_season"] = req.requested_season
+            inventory_selector["requested_week"] = req.requested_week
         snapshot, events, discovery_blockers = _canonical_inventory(
-            db,
-            requested_dates=requested_dates,
-            requested_season=req.requested_season,
-            requested_week=req.requested_week,
+            db, **inventory_selector
         )
     except Exception as exc:  # noqa: BLE001 - acquisition failure is explicit
         return {
