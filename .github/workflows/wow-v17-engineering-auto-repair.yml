@@ -22,7 +22,16 @@ on:
     types: [completed]
   schedule:
     - cron: "23 * * * *"  # Recover dropped workflow_run events without duplicate repair.
-  workflow_dispatch:  # Authorized manual reconciliation; still bound to independent App checks.
+  workflow_dispatch:  # Existing controller; exact-source rescue shares the same App worker.
+    inputs:
+      source_pr:
+        description: "Optional exact owner-source PR number (must pair with source_sha)"
+        required: false
+        type: string
+      source_sha:
+        description: "Optional immutable 40-character lowercase source SHA"
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -469,6 +478,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: main
+          # Exact-source preflight uses git merge-base; shallow checkout is
+          # insufficient and must never become an optimistic allow decision.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -481,10 +493,45 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_SOURCE_PR: ${{ inputs.source_pr || '' }}
+          TARGET_SOURCE_SHA: ${{ inputs.source_sha || '' }}
         run: |
           set -euo pipefail
-          python artifacts/wow-engine/v17/engineering_authorized_adoption.py discover \
-            --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/wow-source-adoption.json"
+          if [ -n "$TARGET_SOURCE_PR" ] || [ -n "$TARGET_SOURCE_SHA" ]; then
+            # The existing owner-initiated manual rescue may select an exact
+            # immutable source. It does NOT bypass any existing App or review gate.
+            [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+            [ "$GITHUB_REF" = "refs/heads/main" ] &&
+            [ "$GITHUB_ACTOR" = "gregoryharper84-ship-it" ] || {
+              echo "::error::TARGET_ADOPTION_UNAUTHORIZED_DISPATCH"; exit 1;
+            }
+            [[ "$TARGET_SOURCE_PR" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "$TARGET_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::TARGET_ADOPTION_REQUEST_INVALID_HOLD"; exit 1;
+            }
+            PYTHONPATH=artifacts/wow-engine python \
+              artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py \
+              --repo "$GITHUB_REPOSITORY" \
+              --source-pr "$TARGET_SOURCE_PR" --source-sha "$TARGET_SOURCE_SHA" \
+              > "$RUNNER_TEMP/wow-target-admission.json"
+            jq -e '.status == "TARGET_ADMISSION_PASS" and .can_execute == false' \
+              "$RUNNER_TEMP/wow-target-admission.json" >/dev/null
+            # Source CI/PR provenance, main ancestry, file modes and SAME-PATH
+            # main drift are checked read-only before acquiring the writer.
+            python artifacts/wow-engine/v17/engineering_authorized_adoption.py preflight \
+              --repo "$GITHUB_REPOSITORY" \
+              --source-pr "$TARGET_SOURCE_PR" --source-sha "$TARGET_SOURCE_SHA" \
+              > "$RUNNER_TEMP/wow-target-preflight.json"
+            jq -e --arg sha "$TARGET_SOURCE_SHA" \
+              '.status == "ADOPTABLE" and .can_execute == false and .source_sha == $sha' \
+              "$RUNNER_TEMP/wow-target-preflight.json" >/dev/null
+            jq -n --argjson pr "$TARGET_SOURCE_PR" --arg sha "$TARGET_SOURCE_SHA" \
+              '{status:"SOURCE_READY",pr_number:$pr,source_sha:$sha,can_execute:false}' \
+              > "$RUNNER_TEMP/wow-source-adoption.json"
+          else
+            python artifacts/wow-engine/v17/engineering_authorized_adoption.py discover \
+              --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/wow-source-adoption.json"
+          fi
           jq -e '.can_execute == false and (.status == "SOURCE_READY" or .status == "NO_ELIGIBLE_SOURCE")' \
             "$RUNNER_TEMP/wow-source-adoption.json" >/dev/null
           jq -c '{status, pr_number, source_sha, can_execute}' \
@@ -547,6 +594,15 @@ jobs:
           WOW_DRY_RUN_ONLY: "true"
         run: |
           set -euo pipefail
+          # Recheck bounded WIP and existing replay INSIDE the original
+          # single-writer lock; read-only admission may now be stale.
+          PYTHONPATH=artifacts/wow-engine python \
+            artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA" \
+            > "$RUNNER_TEMP/wow-target-writer-recheck.json"
+          jq -e '.status == "TARGET_ADMISSION_PASS" and .can_execute == false' \
+            "$RUNNER_TEMP/wow-target-writer-recheck.json" >/dev/null
           python artifacts/wow-engine/v17/engineering_authorized_adoption.py integrate \
             --repo "$GITHUB_REPOSITORY" \
             --source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA" \
