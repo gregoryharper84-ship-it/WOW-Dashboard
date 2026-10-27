@@ -21,6 +21,9 @@ class GeminiSidecarInstallerContract(unittest.TestCase):
             self.assertEqual(proposed["manifest"]["builtin"], "schedule")
             self.assertEqual(proposed["manifest"]["args"][1:3], ["agentapi", "new-conversation"])
             self.assertIn("can_execute=false", proposed["manifest"]["args"][3])
+            self.assertIn("currently OPEN assigned canonical manifest incident", proposed["manifest"]["args"][3])
+            self.assertIn("exact SHA", proposed["manifest"]["args"][3])
+            self.assertNotIn("#1841", proposed["manifest"]["args"][3])
 
     def test_install_preserves_other_settings_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as root:
