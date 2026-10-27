@@ -24,6 +24,7 @@ on:
       - "artifacts/wow-engine/v17/core_intelligence_compounding_routes.py"
       - "artifacts/wow-engine/github_actions_oidc.py"
       - "artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py"
+      - "artifacts/wow-engine/test_v17_github_oidc.py"
 permissions:
   contents: read
 concurrency:
@@ -46,7 +47,11 @@ jobs:
       - name: Test learning contracts
         env:
           PYTHONPATH: artifacts/wow-engine
-        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py
+        run: >-
+          python -m pytest -q
+          artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py
+          artifacts/wow-engine/test_v17_github_oidc.py
+          artifacts/wow-engine/tests/test_v17_core_intelligence_compounding_routes.py
   learn:
     name: Refresh settled forecasts and advisory hypotheses
     needs: verify
