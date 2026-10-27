@@ -72,6 +72,7 @@ def test_unidentified_runs_do_not_displace_unrelated_prs(role):
         assert _group(role, run_id=40107306470) is None
         group = config(role)['jobs']['release']['concurrency']['group']
         assert group.endswith(RELEASE_EXPRESSION)
+        assert "github.run_id" not in group, "Release requires authenticated PR, never arbitrary run-ID"
         assert config(role)['jobs']['admit-release']['outputs']['applicable'] == (
             '${{ steps.target.outputs.applicable }}')
     else:
@@ -81,7 +82,6 @@ def test_unidentified_runs_do_not_displace_unrelated_prs(role):
         assert '(github.event_name != \'workflow_run\' || github.event.workflow_run.pull_requests[0])' in str(config(role)['jobs']['qa']['if'])
     assert _group(role, run_id=40107281706) != _group(role, manual='2012', run_id=40107281706)
     assert _group(role, run_id=40107281706) != _group(role, upstream=1977, run_id=40104744926)
-    assert "github.run_id" not in group
 
 
 @pytest.mark.parametrize('role', ROLES)
