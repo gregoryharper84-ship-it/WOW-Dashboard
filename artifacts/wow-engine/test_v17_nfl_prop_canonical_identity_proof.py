@@ -98,13 +98,13 @@ def test_synthetic_nfl_canonical_id_is_rejected_before_snapshot_persistence() ->
         runtime._validate_evidence(row, "RECEIVING_YARDS")
 
 
-def test_verified_nfl_canonical_id_passes_evidence_validation() -> None:
+def test_verified_nfl_identity_is_not_game_availability() -> None:
     row = _row("2026_02_NYG_LA", "2026_02_NYG_LA")
 
-    normalized = runtime._validate_evidence(row, "RECEIVING_YARDS")
-
-    assert normalized["event_id"] == "2026_02_NYG_LA"
-    assert normalized["sport"] == "NFL"
+    # Before P0 #2131 this exact ESPN roster-only fixture passed validation.
+    # Identity, L10 and provider timestamps are not proof of participation.
+    with pytest.raises(ValueError, match="PLAYER_AVAILABILITY_UNVERIFIED"):
+        runtime._validate_evidence(row, "RECEIVING_YARDS")
 
 
 def test_provider_backed_nfl_evidence_without_verified_canonical_id_fails_closed() -> None:
@@ -112,3 +112,86 @@ def test_provider_backed_nfl_evidence_without_verified_canonical_id_fails_closed
 
     with pytest.raises(ValueError, match="NFL_CANONICAL_EVENT_ID_UNVERIFIED"):
         runtime._validate_evidence(row, "RECEIVING_YARDS")
+
+
+@pytest.mark.parametrize("availability", ["OUT", "IR", "injured reserve", "inactive", "suspended"])
+def test_nfl_known_unavailable_is_rejected_before_scoring(availability: str) -> None:
+    row = _row("2026_02_NYG_LA", "2026_02_NYG_LA")
+    row.evidence.role_status["game_availability_status"] = availability
+    with pytest.raises(ValueError, match="PLAYER_UNAVAILABLE"):
+        runtime._validate_evidence(row, "RECEIVING_YARDS")
+
+
+@pytest.mark.parametrize("availability", ["ACTIVE", "AVAILABLE", "PROBABLE", "QUESTIONABLE", "DOUBTFUL"])
+def test_nfl_caller_claim_of_playability_cannot_bypass_trusted_source(availability: str) -> None:
+    row = _row("2026_02_NYG_LA", "2026_02_NYG_LA")
+    row.evidence.role_status["game_availability_status"] = availability
+    with pytest.raises(ValueError, match="PLAYER_AVAILABILITY_UNVERIFIED"):
+        runtime._validate_evidence(row, "RECEIVING_YARDS")
+
+
+def test_nfl_terminal_reducer_keeps_event_and_unknown_availability_distinct() -> None:
+    from prop_terminal_reducer_v2 import reduce_prop_terminal
+
+    unavailable = reduce_prop_terminal(
+        proposed_label="NO_PLAY", blockers=["PLAYER_UNAVAILABLE"], model_evaluated=False
+    )
+    unknown = reduce_prop_terminal(
+        proposed_label="MODEL_INPUTS_INSUFFICIENT",
+        blockers=["PLAYER_AVAILABILITY_UNVERIFIED"], model_evaluated=False
+    )
+    assert (unavailable.terminal_label, unavailable.verdict_class, unavailable.model_evaluated) == (
+        "NO_PLAY", "EVENT_INVALIDATED", False
+    )
+    assert (unknown.terminal_label, unknown.verdict_class, unknown.model_evaluated) == (
+        "MODEL_INPUTS_INSUFFICIENT", "ACQUISITION_BLOCKED", False
+    )
+    assert not unavailable.pick_rejected  # Existing reducer NO_PLAY semantics.
+    assert not unknown.pick_rejected
+
+
+
+def test_auto_hydrated_nfl_role_proves_identity_but_not_game_participation(monkeypatch) -> None:
+    # The original IR leak was a falsely ACTIVE role label produced even when
+    # only ESPN athlete/team/scoreboard identity and prior nflverse logs existed.
+    monkeypatch.setattr(
+        nfl, "_resolve_espn_athlete",
+        lambda _name, *, http_get: ("4040715", "Jalen Hurts"),
+    )
+    monkeypatch.setattr(nfl, "_athlete_team", lambda *_a, **_k: "PHI")
+    monkeypatch.setattr(
+        nfl, "_target_event",
+        lambda **_kw: {
+            "event_id": "401873009",
+            "opponent": "DAL",
+            "provider_season": 2026,
+            "provider_week": 7,
+            "provider_home_team": "PHI",
+            "provider_away_team": "DAL",
+            "canonical_home_team": "PHI",
+            "canonical_away_team": "DAL",
+            "verified_canonical_event_id": "2026_07_DAL_PHI",
+        },
+    )
+    monkeypatch.setattr(
+        nfl, "_history",
+        lambda **_kw: (
+            [0.0] * 10,
+            [{"opportunity": 1.0}] * 10,
+            {"2026": "testdigest"},
+            "NFLVERSE_NAME:jalen_hurts",
+        ),
+    )
+    now = datetime.now(timezone.utc)
+    evidence = nfl.hydrate_nfl_prop_evidence(
+        player="Jalen Hurts",
+        stat_type="ANYTIME_TD",
+        event_start_time=(now + timedelta(days=1)).isoformat(),
+        now=now,
+    )
+    role = evidence["role_status"]
+    assert role["espn_athlete_id"] == "4040715"
+    assert role["verified_canonical_event_id"] == "2026_07_DAL_PHI"
+    assert role["status"] == "ROSTER_IDENTITY_VERIFIED_AVAILABILITY_UNVERIFIED"
+    assert "game_availability_status" not in role
+    assert evidence["opportunity_ledger"]["status"] == "PASS"
