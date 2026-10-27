@@ -220,4 +220,7 @@ def test_release_workflow_uses_existing_mutex_and_no_new_provider_writer():
     assert "engineering_remote_fallback finalize-cursor" in text
     assert "CURSOR_API_KEY" in text
     assert "workflow_dispatch:" in text
+    assert "push:" in text and "branches:" in text and "main" in text
+    ledger.assert_no_remote_writer(
+        released_comments(), get_run=lambda _: run(event="push"))
     assert "dispatch.*Cursor" not in text
