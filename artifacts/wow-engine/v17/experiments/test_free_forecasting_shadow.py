@@ -121,7 +121,7 @@ def test_numpy_vector_from_catboost_optuna_scores_without_truth_ambiguity():
 
 def test_same_game_cannot_count_as_multiple_independent_training_outcomes():
     rows = fixture()
-    for field in ("official_event_id", "event_start_utc", "features_asof_utc", "outcome_available_utc", "outcome"):
+    for field in ("official_event_id", "event_start_utc", "features_asof_utc", "outcome_available_utc", "outcome", "feature_snapshot_captured_at_utc", "incumbent_model_timestamp_utc"):
         rows[1][field] = rows[0][field]
     with pytest.raises(ResearchInputError, match="DUPLICATE_EVENT_OUTCOME_RECORD"):
         parse_rows(rows)
