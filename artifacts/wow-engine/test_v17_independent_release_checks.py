@@ -749,7 +749,7 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
         concurrency = workflow["concurrency"]
         assert concurrency["group"] == (
             wf.stem + "-${{ inputs.pr_number || "
-            "github.event.workflow_run.pull_requests[0].number || 'AUTO' }}"
+            "github.event.workflow_run.pull_requests[0].number || github.run_id }}"
         )
     else:
         assert "concurrency" not in workflow, "no global Release AUTO queue"
