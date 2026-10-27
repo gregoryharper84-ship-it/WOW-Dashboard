@@ -13,6 +13,7 @@ from typing import Any, Mapping
 PREGAME_EXCLUDED = frozenset(
     {"STARTED", "LIVE", "FINAL", "POSTPONED", "CANCELED", "CANCELLED"}
 )
+PREGAME_ALLOWED = frozenset({"SCHEDULED", "PREGAME", "PRE", "NOT_STARTED"})
 MARKET_EVIDENCE_TYPES = frozenset(
     {"EXACT_LINE", "ADJACENT_LINE", "NO_MARKET"}
 )
@@ -77,6 +78,8 @@ def audit_candidate(
     issues: list[str] = []
     if status in PREGAME_EXCLUDED:
         issues.append("pregame_event_ineligible")
+    elif status and status not in PREGAME_ALLOWED:
+        issues.append("event_status_unverified")
     if record.get("source_timestamp") and source_ts is None:
         issues.append("invalid_or_naive_source_timestamp")
     if source_ts is not None:
@@ -116,7 +119,7 @@ def audit_candidate(
             and source_ts <= now
             and (now - source_ts).total_seconds() <= source_max_age_seconds
         ),
-        "pregame_eligible_by_status": status not in PREGAME_EXCLUDED
+        "pregame_eligible_by_status": status in PREGAME_ALLOWED
         if status else None,
         "diagnostic_only": True,
         "controlling_specialist_invoked": False,
