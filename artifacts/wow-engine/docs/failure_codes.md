@@ -375,3 +375,26 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
 Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.
+
+
+## NBA POINTS immutable pregame research-snapshot persistence — #1988 / PR #2108
+
+These detail codes belong only to the source-validated NBA POINTS research snapshot adapter. They neither promote a model nor override the V17 terminal reducer; every case remains non-rank-eligible and `can_execute=false`.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `NBA_POINTS_NOW_NAIVE` | NBA snapshot capture | Caller provided a timezone-naive current timestamp. | No |
+| `NBA_POINTS_VALIDATED_RECEIPT_REQUIRED` | NBA snapshot receipt intake | Receipt is not the existing canonical validated source bridge output or carries publication/execution/write claims. | No |
+| `NBA_POINTS_SNAPSHOT_MISSING` | NBA snapshot receipt intake | Validated receipt contains no snapshot mapping. | No |
+| `NBA_POINTS_SNAPSHOT_FIELDS_MISSING` | NBA snapshot schema | Required immutable pregame fields are absent. | No |
+| `NBA_POINTS_SNAPSHOT_ID_INVALID` | NBA snapshot identity | Deterministic source snapshot UUID is missing or malformed. | No |
+| `NBA_POINTS_SNAPSHOT_NOT_VALIDATED` | NBA snapshot validation | Sport, stat, event, player, identity or PASS/empty-blocker/write fence does not match validated NBA POINTS receipt. | No |
+| `NBA_POINTS_SOURCE_IDENTITY_MISMATCH` | NBA snapshot identity | Frozen canonical event/player/observed board source identity is missing or mismatched. | No |
+| `NBA_POINTS_EXACT_LINE_INVALID` | NBA snapshot exact line | Persisted exact board threshold is missing, nonfinite, or not positive. | No |
+| `NBA_POINTS_SNAPSHOT_NO_LONGER_PREGAME` | NBA snapshot timestamp gate | Event already began or role, roster, market, capture, and run timestamps fail a valid chronology. | No |
+| `NBA_POINTS_SOURCE_TIMESTAMP_INVALID` | NBA snapshot provenance | Required material source timestamp is malformed, absent, or later than the frozen capture. | No |
+| `NBA_POINTS_SNAPSHOT_READ_FAILED` | NBA snapshot DB read | Snapshot exact-ID lookup failed; no claim of successful persistence. | No |
+| `NBA_POINTS_SNAPSHOT_IDENTITY_AMBIGUOUS` | NBA snapshot DB read | Exact-ID lookup returned more than one row. | No |
+| `NBA_POINTS_IMMUTABLE_SNAPSHOT_CONFLICT` | NBA snapshot immutability | Reused UUID maps to materially divergent row; never overwrite historical evidence. | No |
+| `NBA_POINTS_SNAPSHOT_INSERT_FAILED` | NBA snapshot DB write | Immutable insert failed and subsequent exact-ID readback did not prove an identical winning concurrent writer. | No |
+| `NBA_POINTS_SNAPSHOT_READBACK_MISMATCH` | NBA snapshot DB readback | Insert returned but the exact persisted candidate cannot be read back identically. | No |
