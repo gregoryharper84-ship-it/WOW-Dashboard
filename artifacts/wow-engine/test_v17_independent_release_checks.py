@@ -732,12 +732,19 @@ def test_workflow_isolation_and_least_privilege(wf, mine, other):
     for use in re.findall(r"uses:\s*(\S+)", text):
         assert use.startswith("./") or re.search(r"@[0-9a-f]{40}$", use), f"unpinned action {use}"
     assert "permission-checks: write" in text
-    for step in text.split("      - name: ")[1:]:
-        if "run: |" in step:
-            assert "${{" not in step.split("run: |", 1)[1], "no expression interpolation inside run scripts"
-        if "steps.app_token.outputs.token" in step:
-            assert step.startswith("Publish exact-head check"), "App token only reaches the publish step"
+    # Parse individual YAML steps. String splitting at step headers can
+    # accidentally include the next job's concurrency expression, falsely
+    # treating safe job metadata as shell interpolation.
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            script = step.get("run")
+            if isinstance(script, str):
+                assert "${{" not in script, "no expression interpolation inside run scripts"
+            if "steps.app_token.outputs.token" in str(step):
+                assert step.get("name") == "Publish exact-head check", (
+                    "App token only reaches the publish step"
+                )
     if wf == QA_WF:
         concurrency = workflow["concurrency"]
         assert concurrency["group"] == (
