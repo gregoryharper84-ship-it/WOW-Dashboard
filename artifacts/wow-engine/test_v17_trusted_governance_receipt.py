@@ -460,7 +460,8 @@ def test_trusted_gate_consumes_authenticated_automatic_qa_review_run(tmp_path):
     routes_path.write_text(json.dumps({
         f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/runs/456": source_run,
         f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/artifacts/77": artifact_meta,
-        f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/artifacts?per_page=100&page=1": {
+        f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/artifacts?name={artifact_name}&per_page=100&page=1": {
+            "total_count": 1,
             "artifacts": [artifact_meta],
         },
         f"/repos/{source_review.CANONICAL_REPOSITORY}/actions/artifacts/77/zip": {
@@ -579,7 +580,10 @@ def test_trusted_gate_skips_failed_certifier_runs_and_gates_downstream_steps():
 
     assert "github.event.workflow_run.conclusion == 'success'" in job["if"]
     for step in job["steps"][2:]:
-        assert step["if"].startswith("steps.artifact.outputs.applicable == 'true'"), step["name"]
+        if step["name"] == "Publish exact-head verified decision":
+            assert step["if"] == "always() && steps.artifact.outputs.applicable == 'true'"
+        else:
+            assert step["if"].startswith("steps.artifact.outputs.applicable == 'true'"), step["name"]
 
 
 @pytest.mark.parametrize(
@@ -643,7 +647,8 @@ def test_preemptive_pr_trigger_and_polling_have_been_removed():
     assert "pull_request_target" not in workflow["on"]
     assert "workflow_run" in workflow["on"]
     assert "seq 1 180" not in gate
-    assert "actions/artifacts?name=" not in gate
+    assert "actions/artifacts?per_page=100&page=" not in gate
+    assert "actions/artifacts?name=${expected_source_artifact}&per_page=100&page=1" in gate
     assert "github.event.workflow_run.conclusion == 'success'" in workflow["jobs"]["trusted-governance"]["if"]
 
 
