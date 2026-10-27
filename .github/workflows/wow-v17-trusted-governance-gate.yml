@@ -49,9 +49,11 @@ jobs:
             jq -e --arg repo "$GITHUB_REPOSITORY" \
               '.name == "wow-v17-existing-pr-governance-review" and
                .path == ".github/workflows/wow-v17-existing-pr-governance-review.yml" and
-               (.event == "workflow_run" or .event == "check_run" or
-                .event == "pull_request_target" or .event == "workflow_dispatch") and
-               .head_branch == "main" and
+               ((.event == "pull_request_target" and
+                 (.head_sha | type == "string" and test("^[a-f0-9]{40}$")) and
+                 (.head_branch | type == "string" and length > 0)) or
+                ((.event == "workflow_run" or .event == "check_run" or
+                  .event == "workflow_dispatch") and .head_branch == "main")) and
                .head_repository.full_name == $repo and .repository.full_name == $repo and
                .status == "completed" and .conclusion == "success"' "$source_run" >/dev/null || {
                 echo "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" >&2; exit 1;
@@ -100,6 +102,14 @@ jobs:
                .workflow_run_id == ($run_id | tostring)' "$receipt" >/dev/null || {
                 echo "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH" >&2; exit 1;
               }
+            # Pull-request-target workflows execute trusted base-branch code,
+            # but GitHub reports the PR's head ref/SHA as run metadata.
+            # Bind that *exact* head to the immutable receipt; do not infer main.
+            if [ "$(jq -r '.event' "$source_run")" = "pull_request_target" ]; then
+              [ "$(jq -r '.head_sha' "$source_run")" = "$head_sha" ] || {
+                echo "GOVERNANCE_CERTIFIER_PR_HEAD_MISMATCH" >&2; exit 1;
+              }
+            fi
             run_id="$SOURCE_RUN_ID"
           fi
 
