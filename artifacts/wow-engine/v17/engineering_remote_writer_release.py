@@ -110,7 +110,7 @@ def verified_released_ids(
 
 def append_terminal_release(api, *, cursor_token: str, run_id: int,
                             run_attempt: int, source_sha: str) -> dict:
-    """Called only under the EXISTING implementation-single-writer mutex."""
+    """Run in a dedicated single-flight observer; the held lease fences writers."""
     try:
         from .cursor_terminal_status_receipt import collect_receipt
         from .engineering_remote_fallback import (
