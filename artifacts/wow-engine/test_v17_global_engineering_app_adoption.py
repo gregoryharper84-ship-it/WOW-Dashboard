@@ -21,6 +21,7 @@ REQUIRED = adoption.REQUIRED_CHECKS
 def source_pr(*, author=OWNER, sha=SHA, n=1, draft=False):
     return {
         "number": n, "state": "open", "draft": draft, "changed_files": 2,
+        "body": "Incident: #1688",
         "user": {"login": author},
         "head": {"sha": sha, "repo": {"full_name": REPO}},
         "base": {"sha": BASE, "ref": "main", "repo": {"full_name": REPO}},
@@ -119,6 +120,25 @@ def test_discovery_accepts_owner_source_and_ignores_incomplete_pr_list(monkeypat
     assert result["source_sha"] == SHA and result["pr_number"] == 1
     assert result["can_execute"] is False
     assert "pulls/1" in visited
+
+
+def test_discovery_skips_missing_incident_and_advances_without_retries(monkeypatch):
+    invalid = source_pr()
+    invalid["body"] = "Related incident: #2136"
+    def fetch(path):
+        if path.startswith("pulls?state=open&base=main"):
+            return [invalid]
+        if path.startswith("pulls?state=all&head="):
+            return []
+        if path == "pulls/1/files?per_page=100":
+            return source_files()
+        if path == "pulls/1":
+            return invalid
+        if path.startswith("commits/"):
+            raise AssertionError("ineligible source must not consume CI inventory")
+        raise AssertionError(path)
+    monkeypatch.setattr(adoption, "api", fetch)
+    assert adoption.discover()["status"] == "NO_ELIGIBLE_SOURCE"
 
 
 def test_durable_duplicate_pr_never_selected(monkeypatch):
