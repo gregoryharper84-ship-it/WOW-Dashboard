@@ -341,3 +341,16 @@ def test_independent_event_evaluator_requires_explicit_chronological_holdout():
                                     holdout_start="2026-09-01T00:00:00Z",
                                     holdout_end="2026-10-01T00:00:00Z",
                                     min_independent_events=0)
+
+
+def test_explicit_failed_summary_cannot_be_relabelled_pass_by_legacy_adapter():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=3, observation_n=3)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=4, observation_n=4)), \
+         patch(BASE + "intelligence_summary", return_value=payload(status="FAILED", observation_n=7)), \
+         patch(BASE + "run_compounding_memory_cycle") as compound:
+        result = run_continuous_intelligence_cycle(object())
+    assert result["status"] == "PARTIAL_FAILURE"
+    assert result["stages"][2]["status"] == "FAILED"
+    assert result["stages"][3]["status"] == "SKIPPED_UPSTREAM_FAILURE"
+    assert result["can_execute"] is False
+    compound.assert_not_called()
