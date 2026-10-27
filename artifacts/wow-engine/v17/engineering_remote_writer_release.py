@@ -96,7 +96,7 @@ def verified_released_ids(
             raise ReleaseBlocked("REMOTE_RELEASE_WORKFLOW_NOT_VERIFIED") from None
         if (not isinstance(run, dict)
                 or run.get("path") != WORKFLOW
-                or run.get("event") != "workflow_dispatch"
+                or run.get("event") not in {"workflow_dispatch", "push"}
                 or run.get("status") != "completed"
                 or run.get("conclusion") != "success"
                 or run.get("head_branch") != "main"
