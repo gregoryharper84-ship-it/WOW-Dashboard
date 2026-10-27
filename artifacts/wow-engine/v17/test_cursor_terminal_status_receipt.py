@@ -150,4 +150,6 @@ def test_terminal_probe_bootstrap_requires_protected_main_and_no_write_permissio
     assert "cancel-in-progress: false" in workflow
     # Read-only GET probes must not be blocked by a held global writer lease.
     assert "group: wow-v17-cursor-terminal-status-probe-${{ github.ref }}" in workflow
-    assert "wow-v17-engineering-implementation-single-writer" not in workflow
+    readonly_probe = workflow.split("  reconcile-terminal-writer:\n", 1)[0]
+    assert "wow-v17-engineering-implementation-single-writer" not in readonly_probe
+    assert "issues: write" not in readonly_probe
