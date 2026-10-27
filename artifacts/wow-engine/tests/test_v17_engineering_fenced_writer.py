@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from v17.engineering_fenced_writer import FencingHold, Gateway, Intent
+from v17.engineering_fenced_writer import FencingHold, Gateway, Intent, GitHubAppWriter, SupabaseRpcStore
 
 
 ID = "68e69cd5-7f55-4baa-a2a2-8ab5b4c35313"
@@ -18,7 +18,7 @@ def make(*, epoch=1, incident_id=1739, mutation_id=ID, operation="CREATE_BRANCH"
     branch = f"wow-engineering/fenced-{incident_id}-{epoch}-{mutation_id[:8]}"
     return Intent(mutation_id, incident_id, "github-actions:worker:123", epoch,
                   "GLOBAL", operation, branch, "a" * 40,
-                  "" if operation == "CREATE_BRANCH" else "Immutable source and governance receipt")
+                  "" if operation in {"CREATE_BRANCH", "PUSH_REF"} else "Immutable source and governance receipt")
 
 
 class Store:
@@ -83,6 +83,9 @@ class GitHub:
         self._write(intent)
 
     def create_pr(self, intent):
+        self._write(intent)
+
+    def push_ref(self, intent):
         self._write(intent)
 
     def _write(self, intent):
@@ -209,3 +212,87 @@ def test_sql_contract_guards_expired_pending_and_no_advisory_deadlock():
     assert "m.state='PENDING'" in text
     assert "y.state='PENDING'" in text
     assert "WRITER_MUTATION_IN_FLIGHT" in text
+
+def test_push_ref_epoch_fence_and_idempotence():
+    s, g = Store(), GitHub()
+    i = make(operation="PUSH_REF")
+    assert Gateway(s, g).deliver(i) == "EXACT_GITHUB_WRITE_CONFIRMED"
+    assert Gateway(s, g).deliver(i) == "ALREADY_CONFIRMED"
+    assert len(g.writes) == 1
+
+
+def test_push_ref_lost_ack_never_repeats_git_push():
+    s, g = Store(), GitHub()
+    i = make(operation="PUSH_REF")
+    g.raise_after_write = True
+    with pytest.raises(FencingHold, match="GITHUB_MUTATION_OUTCOME_UNKNOWN"):
+        Gateway(s, g).deliver(i)
+    g.raise_after_write = False
+    assert Gateway(s, g).deliver(i) == "EXACT_GITHUB_WRITE_CONFIRMED"
+    assert len(g.writes) == 1
+
+
+def test_push_ref_untrusted_remote_rejected_before_push(monkeypatch):
+    import subprocess
+    app = GitHubAppWriter("dummy-app-token")
+    i = make(operation="PUSH_REF")
+    calls = []
+    def output(args, **kwargs):
+        calls.append(args)
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            return "a" * 40 + "\n"
+        return "https://attacker.example.invalid/project.git\n"
+    monkeypatch.setattr(subprocess, "check_output", output)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("unexpected push"))
+    with pytest.raises(FencingHold, match="PUSH_REF_REMOTE_UNTRUSTED"):
+        app.push_ref(i)
+    assert len(calls) == 2
+
+
+def test_push_ref_wrong_local_sha_rejected_before_remote_probe(monkeypatch):
+    import subprocess
+    app = GitHubAppWriter("dummy-app-token")
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **kw: "b" * 40)
+    with pytest.raises(FencingHold, match="PUSH_REF_LOCAL_SHA_MISMATCH"):
+        app.push_ref(make(operation="PUSH_REF"))
+
+
+@pytest.mark.parametrize("hostname", [
+    "https://attacker.example.invalid", "http://iczfhsmjrrafhvcpmqhr.supabase.co",
+    "https://evil.supabase.co", "https://iczfhsmjrrafhvcpmqhr.supabase.co.evil.test",
+    "https://iczfhsmjrrafhvcpmqhr.supabase.co/anything",
+])
+def test_rpc_rejects_unattested_or_insecure_project(hostname):
+    with pytest.raises(FencingHold, match="LEASE_STORE_CONFIGURATION_INVALID"):
+        SupabaseRpcStore(hostname, "dummy-key", "iczfhsmjrrafhvcpmqhr")
+
+
+def test_rpc_attests_exact_project():
+    store = SupabaseRpcStore("https://iczfhsmjrrafhvcpmqhr.supabase.co", "dummy", "iczfhsmjrrafhvcpmqhr")
+    assert store.base_url == "https://iczfhsmjrrafhvcpmqhr.supabase.co"
+
+
+def test_exact_readback_rejects_foreign_pr_author_or_wrong_draft(monkeypatch):
+    app = GitHubAppWriter("dummy")
+    i = make(operation="CREATE_PR")
+    ref = {"ref": "refs/heads/" + i.branch, "object": {"sha": i.sha}}
+    pr = {"body": i.payload, "head": {"sha": i.sha, "ref": i.branch,
+          "repo": {"full_name": "gregoryharper84-ship-it/WOW-Dashboard"}},
+          "base": {"ref": "main"}, "draft": True,
+          "user": {"login": "wow-engineering[bot]"}}
+    def mock_api(method, path, payload=None):
+        return ref if "git/ref/heads/" in path else [pr]
+    monkeypatch.setattr(app, "_call", mock_api)
+    assert app.exact_readback(i)
+    pr["draft"] = False
+    assert not app.exact_readback(i)
+    pr["draft"] = True
+    pr["user"]["login"] = "external-user"
+    assert not app.exact_readback(i)
+
+
+def test_sql_allows_only_scoped_nonforce_push():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / "migrations" /
+            "20261027_writer_mutation_fence_REVIEW_ONLY.sql").read_text()
+    assert "('CREATE_BRANCH','PUSH_REF','CREATE_PR')" in text
