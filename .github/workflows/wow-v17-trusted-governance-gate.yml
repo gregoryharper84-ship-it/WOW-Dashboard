@@ -49,7 +49,9 @@ jobs:
             jq -e --arg repo "$GITHUB_REPOSITORY" \
               '.name == "wow-v17-existing-pr-governance-review" and
                .path == ".github/workflows/wow-v17-existing-pr-governance-review.yml" and
-               (.event == "workflow_run" or .event == "check_run" or\n                .event == "pull_request_target" or .event == "workflow_dispatch") and\n               .head_branch == "main" and
+               (.event == "workflow_run" or .event == "check_run" or
+                .event == "pull_request_target" or .event == "workflow_dispatch") and
+               .head_branch == "main" and
                .head_repository.full_name == $repo and .repository.full_name == $repo and
                .status == "completed" and .conclusion == "success"' "$source_run" >/dev/null || {
                 echo "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" >&2; exit 1;
