@@ -1991,7 +1991,7 @@ def test_malformed_file_record_fails_closed():
 @pytest.mark.parametrize("body", [
     "Incident: #2136", "Incident: 2136",
     "Parent: #1688\nIncident: #2136",
-    "  Incident: #2136  ", "\tIncident:\t#2136\t",
+    "Incident: `2136`", "Incident:\t#2136\t",
 ])
 def test_required_qa_canonical_incident_accepts_single_exact_identity(body):
     assert m._canonical_incident_present(body) is True
@@ -2007,6 +2007,7 @@ def test_required_qa_canonical_incident_accepts_single_exact_identity(body):
     "Incident: #2136\nIncident: #2136",
     "Incident: #2136\nIncident: #2076",
     "Incident: #2136 extra",
+    "  Incident: #2136", "\tIncident:\t#2136\t",
     {"body": "Incident: #2136"},
 ])
 def test_missing_or_ambiguous_incident_blocks_required_qa_and_release(body):
