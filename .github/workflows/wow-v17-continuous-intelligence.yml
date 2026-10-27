@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "41 10 * * *"
   workflow_dispatch:
+    inputs:
+      max_outcomes:
+        description: "Settled outcomes per lane: daily or bounded historical backfill"
+        type: choice
+        required: true
+        default: "1000"
+        options:
+          - "1000"
+          - "5000"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-continuous-intelligence.yml"
@@ -44,6 +53,7 @@ jobs:
       WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
+      WOW_LEARNING_MAX_OUTCOMES: ${{ github.event_name == 'workflow_dispatch' && inputs.max_outcomes || '1000' }}
     steps:
       - name: Run authenticated research cycle and inspect safe receipt
         shell: bash
@@ -58,15 +68,19 @@ jobs:
               raise SystemExit("LEARNING_CREDENTIAL_NOT_CONFIGURED")
           if os.environ["WOW_CAN_EXECUTE"] != "false" or os.environ["WOW_DRY_RUN_ONLY"] != "true":
               raise SystemExit("LEARNING_SAFETY_ENV_INVALID")
+          max_outcomes = os.environ["WOW_LEARNING_MAX_OUTCOMES"]
+          if max_outcomes not in ("1000", "5000"):
+              raise SystemExit("LEARNING_OUTCOME_BOUND_INVALID")
+          max_observations = "10000" if max_outcomes == "5000" else "5000"
           url = (os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
                  + "/v17/intelligence/continuous-cycle"
-                 + "?max_outcomes=1000&min_samples=30&max_observations=5000")
+                 + f"?max_outcomes={max_outcomes}&min_samples=30&max_observations={max_observations}")
           request = urllib.request.Request(
               url, data=b"", method="POST",
               headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
           )
           try:
-              with urllib.request.urlopen(request, timeout=90) as response:
+              with urllib.request.urlopen(request, timeout=180) as response:
                   result = json.load(response)
           except urllib.error.HTTPError as err:
               raise SystemExit(f"LEARNING_BACKEND_HTTP_{err.code}") from None
