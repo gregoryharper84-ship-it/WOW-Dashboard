@@ -42,7 +42,8 @@ TRUST_EFFECTS = frozenset({
 })
 KNOWN_EFFECTS = DANGEROUS_EFFECTS | ENGINEERING_EFFECTS | TRUST_EFFECTS | {"none"}
 TRUST_PREFIXES = (".github/", ".agents/", ".claude/")
-TRUST_EXACT = frozenset({"render.yaml", "artifacts/wow-engine/v17/agent_identity_policy.py",
+TRUST_EXACT = frozenset({"render.yaml", "artifacts/wow-engine/v17/autonomy_governance_profile.py",
+    "artifacts/wow-engine/v17/agent_identity_policy.py",
     "artifacts/wow-engine/v17/independent_release_checks.py",
     "artifacts/wow-engine/v17/engineering_authorized_adoption.py",
     "artifacts/wow-engine/v17/engineering_remote_fallback.py"})
@@ -62,8 +63,9 @@ class Assessment:
     terminal_authority: str = "V17_TERMINAL_REDUCER"
 
 
-def _assess(track: Track, code: str) -> Assessment:
-    return Assessment(track, code, track is Track.MODEL,
+def _assess(track: Track, code: str, *, model_effect: bool = False) -> Assessment:
+    # Mixed model+trust-root diffs must satisfy BOTH independent contracts.
+    return Assessment(track, code, track is Track.MODEL or model_effect,
                       track is Track.TRUST_ROOT,
                       track is Track.TRUST_ROOT)
 
@@ -91,7 +93,8 @@ def assess(*, paths: Iterable[str], effects: Iterable[str],
         return _assess(Track.HOLD, "AUTONOMY_EFFECT_AMBIGUOUS")
     if (any(p.startswith(TRUST_PREFIXES) or p in TRUST_EXACT for p in files) or
             any(e in TRUST_EFFECTS for e in changes)):
-        return _assess(Track.TRUST_ROOT, "AUTONOMY_TRUST_ROOT_SCOPE")
+        return _assess(Track.TRUST_ROOT, "AUTONOMY_TRUST_ROOT_SCOPE",
+                       model_effect=any(e in DANGEROUS_EFFECTS for e in changes))
     if any(e in DANGEROUS_EFFECTS for e in changes):
         return _assess(Track.MODEL, "AUTONOMY_MODEL_SCOPE")
     if any(e in ENGINEERING_EFFECTS for e in changes):
