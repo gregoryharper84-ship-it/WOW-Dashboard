@@ -104,8 +104,18 @@ def reservations(comments):
     return result
 
 
-def assert_no_remote_writer(comments):
-    if any(receipt["hold"] for _, receipt in reservations(comments)):
+def assert_no_remote_writer(comments, get_run=None):
+    """Treat a held legacy comment as released ONLY after verified run success."""
+    try:
+        from .engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    except ImportError:  # Direct file/script invocation by legacy worker Actions
+        from engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    attempts = reservations(comments)
+    try:
+        released = verified_released_ids(comments, attempts, get_run=get_run)
+    except ReleaseBlocked:
+        raise ProviderUnavailable("REMOTE_RELEASE_RECEIPT_UNVERIFIED") from None
+    if any(row["hold"] and cid not in released for cid, row in attempts):
         raise ProviderUnavailable("REMOTE_WRITER_RECONCILIATION_REQUIRED")
 
 
@@ -125,7 +135,9 @@ def assert_no_local_writer(comments):
 def reserve_cursor(api, comments, *, incident, main_sha, pr_number, pr_sha,
                    cursor_agent_id, worker_id):
     attempts = reservations(comments)
-    assert_no_remote_writer(comments)
+    assert_no_remote_writer(
+        comments, get_run=lambda run_id: api.request(
+            f"/repos/{REPOSITORY}/actions/runs/{run_id}"))
     assert_no_local_writer(comments)
     if any(row.get("provider") == "cursor"
            and str(row.get("pr_number")) == str(pr_number)
@@ -221,8 +233,19 @@ def _source_pr(api, issue, main_sha):
 
 
 def reconcile(api, comments, incident=""):
-    """Observe prior work even if credentials, quota, or launch authorization changed."""
+    """Observe prior work without rewriting the original remote lease comment."""
+    try:
+        from .engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    except ImportError:  # Direct file/script invocation by legacy worker Actions
+        from engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
     attempts = reservations(comments)
+    try:
+        released = verified_released_ids(
+            comments, attempts,
+            get_run=lambda run_id: api.request(
+                f"/repos/{REPOSITORY}/actions/runs/{run_id}"))
+    except ReleaseBlocked:
+        released = set()  # Unverified releases never unlock a writer.
     selected = [(cid, row) for cid, row in attempts
                 if not incident or row.get("incident_id") == incident]
     seen = set()
@@ -235,9 +258,13 @@ def reconcile(api, comments, incident=""):
         result = {**old, "action": "SURVIVAL"}
         if not old["hold"]:
             result["status"] = "REPLAY_REJECTED_RESERVATION_RELEASED"
+        elif cid in released:
+            result["hold"] = False
+            result["status"] = "REMOTE_TERMINAL_RELEASE_VERIFIED"
         elif old["provider"] == "cursor":
+            # A stale observation must never mutate the digest of the held
+            # record or invalidate a pending append-only release proof.
             result["status"] = "CURSOR_LEASE_REQUIRES_TERMINATION_AND_REVIEW"
-            api.request(f"/repos/{REPOSITORY}/issues/comments/{cid}", {"body": _body(result)}, "PATCH")
         else:
             pr = _source_pr(api, issue, old["main_sha"])
             result["status"] = ("SOURCE_PR_AWAITING_INDEPENDENT_REVIEW"
@@ -295,7 +322,9 @@ def fallback(env, api, assignment_api, manifest, main_sha):
             raise ProviderUnavailable("DUPLICATE_INCIDENT")
         if previous:
             return reconcile(api, comments, issue)[0]
-        assert_no_remote_writer(comments)
+        assert_no_remote_writer(
+            comments, get_run=lambda run_id: api.request(
+                f"/repos/{REPOSITORY}/actions/runs/{run_id}"))
         # Do not take over an existing local lease, even after its workflow ended.
         assert_no_local_writer(comments)
         if target.get("assignees"):
@@ -360,13 +389,28 @@ def fallback(env, api, assignment_api, manifest, main_sha):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["guard", "fallback"])
+    parser.add_argument("command", choices=["guard", "fallback", "finalize-cursor"])
     parser.add_argument("--output")
     args = parser.parse_args()
     env = os.environ
     api = GitHub(env.get("GH_TOKEN", ""))
     if args.command == "guard":
-        assert_no_remote_writer(api.pages(LEDGER))
+        assert_no_remote_writer(
+            api.pages(LEDGER), get_run=lambda run_id: api.request(
+                f"/repos/{REPOSITORY}/actions/runs/{run_id}"))
+        return
+    if args.command == "finalize-cursor":
+        try:
+            from .engineering_remote_writer_release import append_terminal_release
+        except ImportError:  # Standalone script and package entrypoints
+            from engineering_remote_writer_release import append_terminal_release
+        output = append_terminal_release(
+            api, cursor_token=env.get("CURSOR_API_KEY", ""),
+            run_id=int(env["GITHUB_RUN_ID"]),
+            run_attempt=int(env["GITHUB_RUN_ATTEMPT"]),
+            source_sha=env["GITHUB_SHA"],
+        )
+        print(json.dumps(output, sort_keys=True))
         return
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     manifest = json.loads(Path(__file__).with_name("engineering_dispatch_manifest.json").read_text())

@@ -1,0 +1,44 @@
+name: wow-v17-remote-writer-finalize
+
+# One-time recovery of the original #2054 Cursor writer, without a new agent
+# launch. This uses the SAME serialization group as existing Engineering
+# implementation workers, not the independent read-only status probe.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/wow-v17-remote-writer-finalize.yml
+
+permissions:
+  contents: read
+
+jobs:
+  finalize-original-cursor:
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Checkout protected source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Authenticate exact original terminal Cursor run and append release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+        run: |
+          set -euo pipefail
+          # Finalizer rereads the provider and source, rechecks the entire
+          # held ledger, and appends one receipt. It never patches the old
+          # reservation. Guards trust only a COMPLETED SUCCESSFUL run.
+          PYTHONPATH=artifacts/wow-engine python -m v17.engineering_remote_fallback finalize-cursor
