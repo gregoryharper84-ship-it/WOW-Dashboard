@@ -60,6 +60,12 @@ def _admit(row: Mapping[str, Any], cutoff: datetime):
         raise BaselineCohortError("STALE_MODEL_AFTER_MATERIAL_UPDATE")
     if row.get("rank_eligible") is not True or row.get("probability_publishable") is not True:
         raise BaselineCohortError("NOT_GOVERNED_RANK_ELIGIBLE")
+    if row.get("calibration_status") != "PASS":
+        raise BaselineCohortError("CALIBRATION_NOT_CERTIFIED_PASS")
+    if row.get("final_refresh_status") != "PASS":
+        raise BaselineCohortError("FINAL_REFRESH_NOT_PASS")
+    if row.get("terminal_label") != "FINAL_APPROVED":
+        raise BaselineCohortError("TERMINAL_GOVERNANCE_NOT_APPROVED")
     if row.get("void") is True:
         raise BaselineCohortError("VOID_OUTCOME")
     if not isinstance(row.get("settlement_source"), str) or not row["settlement_source"].strip():
