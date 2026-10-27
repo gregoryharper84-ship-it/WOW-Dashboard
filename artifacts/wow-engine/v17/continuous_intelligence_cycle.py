@@ -37,7 +37,12 @@ def _stage(name: str, action: Callable[[], Mapping[str, Any]], *, require_pass: 
             raise ValueError("STAGE_SAFETY_INVARIANT_FAILED")
         if raw.get("authority") != AUTHORITY:
             raise ValueError("STAGE_AUTHORITY_INVARIANT_FAILED")
-        if require_pass and raw.get("status") != "PASS":
+        if (require_pass and raw.get("status") != "PASS") or (
+            not require_pass and raw.get("status") not in (None, "PASS")
+        ):
+            # Cohort summaries are legacy status-less payloads. Preserve that
+            # documented case, but never convert an explicit FAILED or HOLD
+            # response into a successful four-stage receipt.
             raise ValueError("STAGE_STATUS_NOT_PASS")
     except Exception as exc:
         # Intentionally avoid surfacing exception messages, which may contain
