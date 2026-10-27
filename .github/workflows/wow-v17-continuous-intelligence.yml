@@ -1,0 +1,118 @@
+name: wow-v17-continuous-intelligence
+# Advisory research only. Runs from default branch after merge.
+on:
+  schedule:
+    - cron: "41 10 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-continuous-intelligence.yml"
+      - "artifacts/wow-engine/v17/continuous_intelligence_cycle.py"
+      - "artifacts/wow-engine/v17/core_intelligence_compounding_routes.py"
+      - "artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py"
+permissions:
+  contents: read
+concurrency:
+  group: wow-v17-continuous-intelligence-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'live' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  verify:
+    name: Verify advisory research cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install existing dependencies
+        run: python -m pip install -r artifacts/wow-engine/requirements.txt
+      - name: Test learning contracts
+        env:
+          PYTHONPATH: artifacts/wow-engine
+        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py
+  learn:
+    name: Refresh settled forecasts and advisory hypotheses
+    needs: verify
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Run authenticated research cycle and inspect safe receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+          from pathlib import Path
+
+          token = os.environ.get("WOW_ACTION_API_KEY", "")
+          if not token:
+              raise SystemExit("LEARNING_CREDENTIAL_NOT_CONFIGURED")
+          if os.environ["WOW_CAN_EXECUTE"] != "false" or os.environ["WOW_DRY_RUN_ONLY"] != "true":
+              raise SystemExit("LEARNING_SAFETY_ENV_INVALID")
+          url = (os.environ["WOW_ACTION_ORIGIN"].rstrip("/")
+                 + "/v17/intelligence/continuous-cycle"
+                 + "?max_outcomes=1000&min_samples=30&max_observations=5000")
+          request = urllib.request.Request(
+              url, data=b"", method="POST",
+              headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=90) as response:
+                  result = json.load(response)
+          except urllib.error.HTTPError as err:
+              raise SystemExit(f"LEARNING_BACKEND_HTTP_{err.code}") from None
+          except Exception as err:
+              raise SystemExit(f"LEARNING_BACKEND_{type(err).__name__}") from None
+
+          stages = result.get("stages") or []
+          stage_names = ["PROP_CAPTURE", "EVENT_CAPTURE", "COHORT_SUMMARY", "COMPOUNDING_MEMORY"]
+          valid = (
+              result.get("schema_version") == "WOW17_CONTINUOUS_INTELLIGENCE_V1"
+              and result.get("status") == "PASS"
+              and result.get("can_execute") is False
+              and result.get("automatic_promotion_allowed") is False
+              and result.get("model_parameters_changed") is False
+              and result.get("terminal_authority") == "V17_TERMINAL_REDUCER"
+              and result.get("authority") == "ADVISORY_ONLY"
+              and result.get("completed_stages") == result.get("total_stages") == 4
+              and [r.get("stage") for r in stages] == stage_names
+              and all(r.get("status") == "PASS" and r.get("can_execute") is False for r in stages)
+          )
+          safe = {
+              "status": result.get("status"),
+              "stages": [
+                  {key: stage.get(key) for key in (
+                      "stage", "status", "candidate_n", "observation_n",
+                      "cohort_n", "hypothesis_n", "challenger_proposal_n", "error_type"
+                  )} for stage in stages
+              ],
+              "can_execute": False,
+              "automatic_promotion_allowed": False,
+          }
+          (Path(os.environ["RUNNER_TEMP"]) / "wow-v17-learning-receipt.json").write_text(
+              json.dumps(safe, indent=2, sort_keys=True) + "\n"
+          )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write(f"## V17 Advisory Learning\n\nStatus: {safe['status']}\n\n")
+              out.write(f"Completed: {result.get('completed_stages')}/4\n\n")
+              out.write("No model-parameter changes, automatic promotion or wager execution.\n")
+          if not valid:
+              raise SystemExit("LEARNING_STAGE_RECEIPT_FAILED")
+          print("LEARNING_CYCLE_VERIFIED")
+      - name: Upload aggregate research receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-continuous-intelligence-receipt
+          path: ${{ runner.temp }}/wow-v17-learning-receipt.json
+          if-no-files-found: ignore
+          retention-days: 14
