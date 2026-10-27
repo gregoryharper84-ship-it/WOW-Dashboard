@@ -176,3 +176,113 @@ def test_compounding_failure_preserves_summary_but_marks_cycle_partial():
     assert result["stages"][2]["status"] == "PASS"
     assert result["stages"][3]["error_type"] == "ConnectionError"
     assert "hidden database secret" not in str(result)
+
+
+def test_void_family_excluded_even_if_upstream_hit_flag_is_inconsistent():
+    from v17.core_intelligence import build_learning_observation
+    prediction = {
+        "prediction_id": "00000000-0000-0000-0000-000000000009",
+        "calibrated_probability": 0.84,
+        "calibrated_probability_lower_bound": 0.76,
+        "sport": "MLB",
+    }
+    for result in (
+        "VOID_PLAYER_DNP", "VOID_NOT_STARTING_PITCHER",
+        "VOID_NOT_STARTING_BATTER", "VOID",
+    ):
+        observation = build_learning_observation(
+            prediction,
+            {"prediction_id": prediction["prediction_id"],
+             "official_result": result,
+             "hit": True,
+             "settlement_timestamp": "2026-10-27T01:00:00Z"},
+        )
+        assert observation.outcome_target is None
+        assert observation.brier_score is None
+        assert observation.log_loss is None
+        assert observation.can_execute is False
+
+
+def test_raw_only_forecast_is_not_calibration_gradeable():
+    from v17.core_intelligence import build_learning_observation, summarize_cohort
+    prediction = {
+        "prediction_id": "00000000-0000-0000-0000-000000000010",
+        "sport": "MLB",
+        "raw_model_probability": 0.92,
+        "model_probability": 0.94,
+    }
+    observation = build_learning_observation(
+        prediction, {"official_result": "LOSS", "settlement_timestamp": "2026-10-27T01:00:00Z"}
+    )
+    assert observation.probability is None
+    assert observation.probability_source is None
+    assert observation.calibration_bucket is None
+    assert observation.brier_score is None
+    assert observation.log_loss is None
+    assert summarize_cohort([observation], min_samples=1).scored_n == 0
+
+
+def test_exact_away_winner_without_scores_is_home_loss_not_unresolved():
+    from v17.core_intelligence_event_runtime import _home_result
+    source = {"home_team": "Houston Astros", "away_team": "Texas Rangers"}
+    assert _home_result(
+        source,
+        {"official_winner": "texas rangers", "home_score": None, "away_score": None, "void": False}
+    ) == "LOSS"
+    assert _home_result(
+        source,
+        {"official_winner": "Unknown Alias", "home_score": None, "away_score": None, "void": False}
+    ) is None
+    assert _home_result(
+        source,
+        {"official_winner": "texas rangers", "home_score": 7, "away_score": 6, "void": False}
+    ) == "WIN"  # Official score takes precedence over name-only fallback.
+
+
+def test_prop_backfill_is_batched_and_idempotent_by_observation_id():
+    from types import SimpleNamespace
+    from v17.core_intelligence_runtime import capture_settled_prop_observations
+
+    ids = [f"00000000-0000-0000-0000-{i:012d}" for i in range(251)]
+    outcomes = [
+        {"prediction_id": uid, "official_result": "HIT", "actual_stat": 6,
+         "hit": True, "push": False, "void": False, "settlement_source": "official",
+         "settlement_timestamp": "2026-10-26T20:00:00Z"}
+        for uid in ids
+    ]
+    predictions = [
+        {"prediction_id": uid, "sport": "MLB", "market_type": "PLAYER_PROP",
+         "stat_type": "PITCHER_STRIKEOUTS", "line": 4.5, "direction": "MORE",
+         "calibrated_probability": 0.60, "calibrated_probability_lower_bound": 0.55}
+        for uid in ids
+    ]
+    class _Query:
+        def __init__(self, db, name):
+            self.db, self.name, self.ids = db, name, None
+        def select(self, *_a): return self
+        def order(self, *_a, **_kw): return self
+        def limit(self, _v): return self
+        def in_(self, _field, values):
+            self.ids = set(values)
+            return self
+        def upsert(self, rows, *, on_conflict, ignore_duplicates):
+            assert self.name == "wow_intelligence_observations"
+            assert on_conflict == "observation_id" and ignore_duplicates is True
+            self.db.writes.append(list(rows))
+            return self
+        def execute(self):
+            if self.name == "wow_outcomes":
+                return SimpleNamespace(data=outcomes)
+            if self.name == "wow_predictions":
+                return SimpleNamespace(data=[x for x in predictions if x["prediction_id"] in self.ids])
+            return SimpleNamespace(data=[])
+    class _DB:
+        def __init__(self): self.writes = []
+        def table(self, name): return _Query(self, name)
+    db = _DB()
+    result = capture_settled_prop_observations(db, max_outcomes=251)
+    assert result["status"] == "PASS"
+    assert result["candidate_n"] == result["observation_n"] == 251
+    assert [len(x) for x in db.writes] == [250, 1]
+    assert len({x["observation_id"] for batch in db.writes for x in batch}) == 251
+    assert all(x["can_execute"] is False for batch in db.writes for x in batch)
