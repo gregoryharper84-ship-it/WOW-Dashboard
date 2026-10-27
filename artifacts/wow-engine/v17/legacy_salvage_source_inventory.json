@@ -1,0 +1,408 @@
+{
+  "schema": "v17-source-evidence-inventory-1.0",
+  "source_git_main_sha_observed": "51ec8775d47476c5410f2f47301890e1491e56a4",
+  "feature_branch": "feat/v17-legacy-salvage-backlog-20261027",
+  "source_section_count": 31,
+  "inventory_evidence": "SOURCE_PATH_REFERENCES_ONLY",
+  "runtime_verification": "NOT_PERFORMED",
+  "can_execute": false,
+  "entries": [
+    {
+      "id": "0",
+      "title": "Discovery -> validation -> approval separation",
+      "owner_workstream": "WS0",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt",
+        "artifacts/wow-engine/V17_DETAILED_EVIDENCE_COLLECTION_AND_PREDICTION_CONTRACT.md"
+      ],
+      "code_evidence_class": "V17_POLICY_ANCHOR",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "1",
+      "title": "Legacy ANCHOR/BET/QUALIFIED ladder",
+      "owner_workstream": "WS0",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md",
+        "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+      ],
+      "code_evidence_class": "LEGACY_RETIRED",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "2",
+      "title": "V16 absolute edge confidence tiers",
+      "owner_workstream": "WS4",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md",
+        "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+      ],
+      "code_evidence_class": "LEGACY_RESEARCH",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "3",
+      "title": "V16 _llp_decision edge-based BET logic",
+      "owner_workstream": "WS0",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md",
+        "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+      ],
+      "code_evidence_class": "LEGACY_RETIRED",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "4",
+      "title": "Legacy badge ceilings and CLV/Kelly requirements",
+      "owner_workstream": "WS0",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md",
+        "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+      ],
+      "code_evidence_class": "V17_CONFLICT",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "5",
+      "title": "MLB F5 target-market router",
+      "owner_workstream": "WS6",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "LEGACY_SNAPSHOT_ONLY",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "6",
+      "title": "Failure-path typed tags and advisory separation",
+      "owner_workstream": "WS3",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt",
+        "artifacts/wow-engine/V17_DETAILED_EVIDENCE_COLLECTION_AND_PREDICTION_CONTRACT.md"
+      ],
+      "code_evidence_class": "V17_POLICY_ANCHOR",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "7",
+      "title": "Legacy analyzed-record field schema",
+      "owner_workstream": "WS0",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/V17_DETAILED_EVIDENCE_COLLECTION_AND_PREDICTION_CONTRACT.md"
+      ],
+      "code_evidence_class": "V17_POLICY_ANCHOR",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "8",
+      "title": "Free/paid source map, TTL cache and sport keys",
+      "owner_workstream": "WS1",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/v17/fallback_provider_routes.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_V17_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "9",
+      "title": "Seven LLP persistence tables",
+      "owner_workstream": "WS5",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/event_schema.sql",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_V17_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "10",
+      "title": "Legacy 10-step roadmap",
+      "owner_workstream": "WS0",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "LEGACY_SNAPSHOT_ONLY",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "11",
+      "title": "Odds snapshot and CLV instrumentation",
+      "owner_workstream": "WS4",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/gate_engine/settlement_worker.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "game_winner",
+      "title": "Game-winner payout floors and inverted stake flags",
+      "owner_workstream": "WS4",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/v17/game_winner_cash_single_gate.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_V17_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "12",
+      "title": "Kalshi daily-high weather settlements/model",
+      "owner_workstream": "WS6",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/gate_engine/kalshi_wx_shadow_registry.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "13",
+      "title": "Proportional gap, hit bands, Winsorization and shadow logging",
+      "owner_workstream": "WS2",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/jobs/wow_daily_scan.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "14",
+      "title": "WNBA ESPN ingestion, audit and 25h freshness",
+      "owner_workstream": "WS1",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/gate_engine/wnba/opportunity_engine.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "15",
+      "title": "Market data contracts per stat and window",
+      "owner_workstream": "WS1",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/V17_DETAILED_EVIDENCE_COLLECTION_AND_PREDICTION_CONTRACT.md",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "V17_POLICY_ANCHOR",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "16",
+      "title": "Four-axis confidence envelope",
+      "owner_workstream": "WS3",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "LEGACY_SNAPSHOT_ONLY",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "patch_010_amendment",
+      "title": "Data contract amendment no CONDITIONAL and advisory codes",
+      "owner_workstream": "WS1",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "LEGACY_SNAPSHOT_ONLY",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "17",
+      "title": "Eleven role-state ledgers",
+      "owner_workstream": "WS2",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/gate_engine/wnba/opportunity_engine.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "18",
+      "title": "Append-only pick lifecycle state machine",
+      "owner_workstream": "WS5",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/v17/prediction_receipt_lookup_runtime.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_V17_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "19",
+      "title": "Weighted candidate triage score",
+      "owner_workstream": "WS3",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "LEGACY_SNAPSHOT_ONLY",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "20",
+      "title": "Unified legacy orchestrator and per-row stage counts",
+      "owner_workstream": "WS0",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/v17/pick_request_run_control.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_V17_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "21",
+      "title": "Imported-ledger provenance and contradiction escalation",
+      "owner_workstream": "WS1",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/V17_DETAILED_EVIDENCE_COLLECTION_AND_PREDICTION_CONTRACT.md",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "V17_POLICY_ANCHOR",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Policy-or-historical-only; independently establish whether exact feature has corresponding V17 code/registry before adoption"
+    },
+    {
+      "id": "22",
+      "title": "Validation queue, confidence debt and cache",
+      "owner_workstream": "WS3",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/v17/pick_request_run_control_hardening.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_V17_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "23",
+      "title": "Global 0.5 binary-event purge",
+      "owner_workstream": "WS2",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/jobs/wow_daily_scan.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "24",
+      "title": "Postscan 0.5 binary cap invariant",
+      "owner_workstream": "WS2",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/jobs/wow_daily_scan.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "32",
+      "title": "Median/average-only DATA_QUALITY_HOLD",
+      "owner_workstream": "WS1",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/jobs/wow_daily_scan.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "33",
+      "title": "Cross-market exact reject proof and degraded-run reporting",
+      "owner_workstream": "WS4",
+      "relevant_repo_paths": [
+        "artifacts/wow-engine/v17/full_board_runtime.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_V17_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "34",
+      "title": "Kalshi direct orderbook and final-lock market gate",
+      "owner_workstream": "WS6",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/kalshi_engine/sports_gate.py",
+        "artifacts/flask-scoring-api/LLP_GROUND_TRUTH.md"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    },
+    {
+      "id": "35",
+      "title": "Probability ledger: bounds, provenance, historical market weights",
+      "owner_workstream": "WS0",
+      "relevant_repo_paths": [
+        "artifacts/flask-scoring-api/gate_engine/prob_ledger.py",
+        "artifacts/wow-engine/WOW_V17_CUSTOM_GPT_INSTRUCTIONS.txt"
+      ],
+      "code_evidence_class": "RELATED_LEGACY_CODE",
+      "source_comparison_scope": "GitHub main branch code search/fetch; source existence is NOT evidence of live execution or certified model registration",
+      "runtime_activation_verified": false,
+      "next_verification": "Trace from V17 API registration through current scorer/reducer; compare Render deployed SHA and authenticated Action receipt"
+    }
+  ]
+}
