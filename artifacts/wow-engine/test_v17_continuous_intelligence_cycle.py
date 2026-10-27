@@ -390,6 +390,11 @@ def test_internal_learning_route_requires_exact_runner_oidc_not_static_action_ke
     )
     client = TestClient(app)
     assert client.post("/internal/v17/continuous-intelligence").status_code == 401
+    # The static Custom GPT Action key is not an internal automation token.
+    assert client.post(
+        "/internal/v17/continuous-intelligence",
+        headers={"Authorization": "Bearer static-action-api-key"},
+    ).status_code == 401
 
     claims = {
         "repository": oidc.REPOSITORY,
