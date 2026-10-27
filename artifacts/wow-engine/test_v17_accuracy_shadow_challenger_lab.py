@@ -21,6 +21,10 @@ def fixture(ntrain=30, ncal=20, nhold=30):
             "champion_locked_at_utc": (stamp-timedelta(hours=1)).isoformat(),
             "settled_at_utc": (stamp+timedelta(hours=3)).isoformat(),
             "outcome": i % 2, "champion_probability": 0.46 + (i%3)*0.035,
+            "champion_lower_bound": 0.39, "champion_origin": "FITTED_SPECIALIST",
+            "champion_artifact_id": "certified-model-1",
+            "champion_calibrator_id": "calibrator-1",
+            "champion_specialist_id": "NBA_ASSISTS_FITTED_V17",
             "champion_prediction_id": "prediction-%03d" % i,
             "source_id": "OFFLINE_FIXTURE", "settlement_source_id": "FIXTURE_OFFICIAL",
             "source_sha256": hashlib.sha256(("data-%d" % i).encode()).hexdigest(),
@@ -111,3 +115,23 @@ def test_missing_outcome_and_negative_probabilities_refused():
 def test_no_unrecognized_trainer_fallback_to_narrative_probability():
     with pytest.raises(ChallengerLabError, match="UNSUPPORTED_SHADOW_TRAINER"):
         train_shadow_challenger(fixture(),engine="LLM_REASONING")
+
+def test_market_implied_probability_cannot_be_champion():
+    p = fixture()
+    p["rows"][0]["champion_origin"] = "SPORTSBOOK_IMPLIED"
+    with pytest.raises(ChallengerLabError, match="MARKET_OR_NARRATIVE_NOT_FITTED_CHAMPION"):
+        train_shadow_challenger(p)
+
+
+def test_mixed_incumbent_artifact_rejected_from_paired_replay():
+    p = fixture()
+    p["rows"][0]["champion_artifact_id"] = "different-model"
+    with pytest.raises(ChallengerLabError, match="MIXED_CHAMPION_MODEL_LINEAGE"):
+        train_shadow_challenger(p)
+
+
+def test_invalid_champion_calibrated_lower_bound_rejected():
+    p = fixture()
+    p["rows"][0]["champion_lower_bound"] = 0.99
+    with pytest.raises(ChallengerLabError, match="CHAMPION_LOWER_BOUND_INVALID"):
+        train_shadow_challenger(p)
