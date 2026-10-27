@@ -7,7 +7,7 @@ publication, promotion, price inference, or execution is permitted.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from math import isfinite, log
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
@@ -94,7 +94,7 @@ def evaluate_independent_events(
             reasons["CALIBRATION_INVALID"] += 1
             continue
         candidates[(sport, event_id)].append(
-            (model_time, prediction_id, p, lower, int(home > away), event_time.isoformat(), f"{home}:{away}")
+            (model_time, prediction_id, p, lower, int(home > away), event_time.astimezone(timezone.utc).isoformat(), f"{home}:{away}")
         )
 
     selected = []
