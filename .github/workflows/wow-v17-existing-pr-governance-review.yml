@@ -35,6 +35,18 @@ concurrency:
 jobs:
   certify-existing-pr:
     name: Existing PR trusted governance certification
+    # GitHub emits check_run:completed for every App and CI job. Reject
+    # unrelated events before starting a runner; the route step still verifies
+    # live exact App/check/run/PR/SHA identity for applicable Release successes.
+    # Keep pull_request_target, workflow_dispatch and real QA workflow_run
+    # events available for normal and late independent governance.
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      (github.event_name != 'check_run' ||
+       (github.event.check_run.app.id == 5245853 &&
+        github.event.check_run.name == 'WOW Release Authority exact-head' &&
+        github.event.check_run.status == 'completed' &&
+        github.event.check_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -388,6 +400,15 @@ jobs:
           total_count=$(jq -r '.total_count' <<<"$response")
           [ "$total_count" -le 100 ] || {
             echo "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE:$HEAD_SHA" >&2; exit 1;
+          }
+          # The name-filtered API must return one complete, typed exact-name page.
+          jq -e --argjson total "$total_count" '
+            (.artifacts | length) == $total and
+            all(.artifacts[];
+              (.expired == true or .expired == false) and
+              (.id | type) == "number" and .id > 0)
+          ' <<<"$response" >/dev/null || {
+            echo "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
           }
           artifact_match_count=$(jq -r --arg name "$artifact_name" \
             '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"$response")

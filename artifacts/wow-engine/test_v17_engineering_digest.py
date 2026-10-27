@@ -25,7 +25,7 @@ def test_empty_sections_render_none():
     body = digest.render_digest(**base_kwargs())
     assert "## Merged in the last 24h\n- none" in body
     assert "## On HOLD\n- none" in body
-    assert "## Waiting on owner (trust root)\n- none" in body
+    assert "## Independent handoff or CODEOWNER decision (release scoped; other lanes continue)\n- none" in body
     assert "## Stale or conflicted\n- none" in body
 
 
@@ -51,7 +51,7 @@ def test_waiting_on_owner_includes_reason():
             ]
         )
     )
-    assert "## Waiting on owner (trust root)" in body
+    assert "## Independent handoff or CODEOWNER decision (release scoped; other lanes continue)" in body
     assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in body
 
 
