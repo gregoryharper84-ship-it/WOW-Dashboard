@@ -102,8 +102,10 @@ def parse_rows(raw: Sequence[Mapping[str, Any]]) -> list[Row]:
         if set(features) != feature_names:
             raise ResearchInputError("INCONSISTENT_FEATURE_SCHEMA")
         event_key = f'{value["sport"]}:{value["official_event_id"]}'
-        if event_key in event_times and event_times[event_key] != start:
-            raise ResearchInputError("EVENT_START_CONFLICT")
+        if event_key in event_times:
+            if event_times[event_key] != start:
+                raise ResearchInputError("EVENT_START_CONFLICT")
+            raise ResearchInputError("DUPLICATE_EVENT_OUTCOME_RECORD")
         event_times[event_key] = start
         incumbent = None
         if "incumbent_probability" in value:
