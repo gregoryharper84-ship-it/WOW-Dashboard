@@ -110,7 +110,7 @@ jobs:
               "stages": [
                   {key: stage.get(key) for key in (
                       "stage", "status", "candidate_n", "observation_n",
-                      "cohort_n", "hypothesis_n", "challenger_proposal_n", "error_type"
+                      "cohort_n", "hypothesis_n", "challenger_proposal_n", "error_type", "error_boundary"
                   )} for stage in stages
               ],
               "can_execute": False,
