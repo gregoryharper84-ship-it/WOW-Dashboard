@@ -309,19 +309,20 @@ jobs:
               <<<"$source_artifact_meta" >/dev/null || {
                 echo "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_UNTRUSTED" >&2; exit 1;
               }
-            source_inventory='[]'
-            for page in $(seq 1 20); do
-              source_response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}")
-              source_items=$(jq -ce '.artifacts' <<<"$source_response") || {
-                echo "GOVERNANCE_SOURCE_REVIEW_INVENTORY_INVALID" >&2; exit 1;
-              }
-              source_count=$(jq 'length' <<<"$source_items")
-              source_inventory=$(jq -cn --argjson old "$source_inventory" --argjson new "$source_items" '$old + $new')
-              [ "$source_count" -lt 100 ] && break
-              [ "$page" -lt 20 ] || {
-                echo "GOVERNANCE_SOURCE_REVIEW_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1;
-              }
-            done
+            # Query this certified source artifact directly, not the growing
+            # repository-wide inventory. No additional workflow or approver.
+            source_response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${expected_source_artifact}&per_page=100&page=1") || {
+              echo "GOVERNANCE_SOURCE_REVIEW_INVENTORY_UNAVAILABLE" >&2; exit 1;
+            }
+            jq -e --arg name "$expected_source_artifact" '
+              (.total_count | type == "number" and . >= 0 and . <= 100) and
+              (.artifacts | type == "array") and
+              (.total_count == (.artifacts | length)) and
+              all(.artifacts[]; .name == $name)
+            ' <<<"$source_response" >/dev/null || {
+              echo "GOVERNANCE_SOURCE_REVIEW_INVENTORY_INVALID_OR_DUPLICATE" >&2; exit 1;
+            }
+            source_inventory=$(jq -c '.artifacts' <<<"$source_response")
             printf '%s\n' "$source_inventory" > "$RUNNER_TEMP/source-review-artifact-inventory.json"
             python - "$RUNNER_TEMP/source-review-artifact-inventory.json" \
               "wow-v17-independent-source-review-${source_pr}-${source_sha}-" "$source_artifact_id" \
