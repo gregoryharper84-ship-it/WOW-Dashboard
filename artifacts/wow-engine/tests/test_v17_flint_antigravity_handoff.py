@@ -44,7 +44,9 @@ def test_admitted_handoff_has_no_authority():
     assert result["diagnostic_untrusted_data"] == DIAGNOSTIC
     assert result["flint_output_is_not_test_evidence"] is True
     for field in ("can_execute", "writer_lease_granted", "independent_review_satisfied",
-                  "production_verified", "code_modified", "tests_run", "network_attempted_by_bridge"):
+                  "production_verified", "provider_receipt_provenance_verified",
+                  "remote_transfer_consent_verified", "code_modified", "tests_run",
+                  "network_attempted_by_bridge"):
         assert result[field] is False
 
 
