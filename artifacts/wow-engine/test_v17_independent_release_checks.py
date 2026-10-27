@@ -66,6 +66,7 @@ def source_review_evidence(
         "id": 12345,
         "run_attempt": 1,
         "name": source_review.WORKFLOW_NAME,
+        "workflow_id": source_review.WORKFLOW_ID,
         "path": source_review.WORKFLOW_PATH,
         "event": "workflow_run",
         "head_branch": "main",
