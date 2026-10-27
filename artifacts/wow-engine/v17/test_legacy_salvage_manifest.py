@@ -10,6 +10,7 @@ import unittest
 
 PATH = pathlib.Path(__file__).with_name("legacy_salvage_manifest.json")
 DATA = json.loads(PATH.read_text(encoding="utf-8"))
+SOURCES = json.loads(PATH.with_name("legacy_salvage_source_inventory.json").read_text(encoding="utf-8"))
 
 EXPECTED = {str(i) for i in range(25)} | {
     "32", "33", "34", "35", "game_winner", "patch_010_amendment"
@@ -50,6 +51,21 @@ class LegacySalvageManifestTests(unittest.TestCase):
         self.assertEqual(lookup["24"], "CHALLENGER_ONLY")
         self.assertEqual(lookup["game_winner"], "CHALLENGER_ONLY")
         self.assertEqual(lookup["5"], "CHALLENGER_ONLY")
+
+    def test_repository_source_inventory_covers_every_section_without_runtime_claims(self):
+        self.assertEqual(SOURCES["source_section_count"], 31)
+        self.assertEqual(SOURCES["runtime_verification"], "NOT_PERFORMED")
+        self.assertFalse(SOURCES["can_execute"])
+        expected = {entry["id"] for entry in DATA["entries"]}
+        actual = [entry["id"] for entry in SOURCES["entries"]]
+        self.assertEqual(set(actual), expected)
+        self.assertEqual(len(actual), len(set(actual)))
+        for entry in SOURCES["entries"]:
+            self.assertFalse(entry["runtime_activation_verified"])
+            self.assertTrue(entry["relevant_repo_paths"])
+            self.assertTrue(entry["code_evidence_class"])
+            self.assertTrue(entry["next_verification"])
+            self.assertTrue(entry["owner_workstream"] in DATA["workstreams"])
 
     def test_no_legacy_section_25_to_31_fabricated(self):
         ids = {entry["id"] for entry in DATA["entries"]}
