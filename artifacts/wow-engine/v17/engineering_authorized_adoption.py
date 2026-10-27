@@ -221,7 +221,7 @@ def _adoption_candidate_window(pulls: list[dict], *, slot: int) -> tuple[list[di
     return selected, windows
 
 
-def discover(*, slot: int | None = None) -> dict:
+def discover(*, slot: int | None = None, check_main_drift: bool = False) -> dict:
     """Choose at most one green owner source, from any protected path in repo.
 
     The hourly controller is already scheduled. This function never writes,
@@ -307,6 +307,20 @@ def discover(*, slot: int | None = None) -> dict:
                               requested_pr=pr_number, requested_sha=sha)
         except AdoptionHold:
             continue
+        if check_main_drift:
+            # The scheduled controller already has a full protected-main
+            # checkout and read-only GH_TOKEN. A source can be CI-green but
+            # irreconcilably stale after main changes the SAME file paths.
+            # Detect this before the single-writer job and keep scanning.
+            main_sha = call("git", "rev-parse", "refs/remotes/origin/main")
+            try:
+                verify_git_source(detail["base"]["sha"], main_sha, sha, paths)
+            except AdoptionHold as exc:
+                if str(exc) == "MAIN_CHANGED_SOURCE_PATH_HOLD":
+                    continue
+                # Credentials, incomplete history, unexpected git failures,
+                # invalid file modes and source integrity are NOT optional.
+                raise
         return {"status": "SOURCE_READY", "pr_number": pr_number,
                 "source_sha": sha, "paths": paths,
                 "can_execute": False}
@@ -521,7 +535,7 @@ def main() -> None:
     if args.operation != "discover" and (args.source_pr <= 0 or not SHA.fullmatch(args.source_sha)):
         raise AdoptionHold("SOURCE_REQUEST_INVALID_HOLD")
     if args.operation == "discover":
-        print(json.dumps(discover(), sort_keys=True))
+        print(json.dumps(discover(check_main_drift=True), sort_keys=True))
     elif args.operation == "preflight":
         main_sha, paths, base = preflight(args.source_pr, args.source_sha)
         print(json.dumps({"status": "ADOPTABLE", "base": base, "main": main_sha,
