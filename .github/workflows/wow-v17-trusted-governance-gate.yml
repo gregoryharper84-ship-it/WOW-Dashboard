@@ -1,9 +1,8 @@
 name: wow-v17-trusted-governance-gate
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main]
+  # Trust only the completed exact producer run. PR events are handled by
+  # the certifier; no early polling, duplicate workers, or stale receipts.
   workflow_run:
     workflows: [wow-v17-existing-pr-governance-review]
     types: [completed]
@@ -11,17 +10,18 @@ on:
 
 permissions:
   actions: read
+  checks: write  # publish the verified decision at the exact PR head
   contents: read
   pull-requests: read
 
 concurrency:
-  group: wow-v17-trusted-governance-${{ github.event.workflow_run.id || format('{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+  group: wow-v17-trusted-governance-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
   trusted-governance:
     name: Trusted exact-head engineering governance
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name != 'workflow_run' || ((github.event.workflow_run.event == 'workflow_run' || github.event.workflow_run.event == 'check_run') && github.event.workflow_run.conclusion == 'success'))
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && contains(fromJSON('["pull_request_target","workflow_dispatch","check_run","workflow_run"]'), github.event.workflow_run.event))
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
@@ -38,9 +38,6 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
-          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
         run: |
           set -euo pipefail
@@ -53,7 +50,11 @@ jobs:
             jq -e --arg repo "$GITHUB_REPOSITORY" \
               '.name == "wow-v17-existing-pr-governance-review" and
                .path == ".github/workflows/wow-v17-existing-pr-governance-review.yml" and
-               (.event == "workflow_run" or .event == "check_run") and .head_branch == "main" and
+               ((.event == "pull_request_target" and
+                 (.head_sha | type == "string" and test("^[a-f0-9]{40}$")) and
+                 (.head_branch | type == "string" and length > 0)) or
+                ((.event == "workflow_run" or .event == "check_run" or
+                  .event == "workflow_dispatch") and .head_branch == "main")) and
                .head_repository.full_name == $repo and .repository.full_name == $repo and
                .status == "completed" and .conclusion == "success"' "$source_run" >/dev/null || {
                 echo "GOVERNANCE_CERTIFIER_RUN_UNTRUSTED_OR_NOT_SUCCESSFUL" >&2; exit 1;
@@ -102,32 +103,15 @@ jobs:
                .workflow_run_id == ($run_id | tostring)' "$receipt" >/dev/null || {
                 echo "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH" >&2; exit 1;
               }
-            run_id="$SOURCE_RUN_ID"
-          else
-          pr_number="$EVENT_PR_NUMBER"
-          head_sha="$EVENT_HEAD_SHA"
-          head_ref="$EVENT_HEAD_REF"
-          [[ "$pr_number" =~ ^[1-9][0-9]*$ ]] && [[ "$head_sha" =~ ^[a-f0-9]{40}$ ]] || {
-            echo "GOVERNANCE_PR_EVENT_IDENTITY_INVALID" >&2; exit 1;
-          }
-          artifact_name="wow-v17-engineering-governance-${head_sha}"
-          artifact_matches='[]'
-
-          for _ in $(seq 1 180); do
-            artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
-            artifact_matches=$(jq -c --arg name "$artifact_name" \
-              '[.artifacts[] | select(.expired == false and .name == $name)]' <<<"$artifacts")
-            if [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ]; then
-              break
+            # Pull-request-target workflows execute trusted base-branch code,
+            # but GitHub reports the PR's head ref/SHA as run metadata.
+            # Bind that *exact* head to the immutable receipt; do not infer main.
+            if [ "$(jq -r '.event' "$source_run")" = "pull_request_target" ]; then
+              [ "$(jq -r '.head_sha' "$source_run")" = "$head_sha" ] || {
+                echo "GOVERNANCE_CERTIFIER_PR_HEAD_MISMATCH" >&2; exit 1;
+              }
             fi
-            sleep 10
-          done
-          [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ] || {
-            echo "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE: no unique exact-head artifact for ${head_sha}." >&2
-            exit 1
-          }
-          artifact_id=$(jq -r '.[0].id' <<<"$artifact_matches")
-          run_id=$(jq -r '.[0].workflow_run.id // ""' <<<"$artifact_matches")
+            run_id="$SOURCE_RUN_ID"
           fi
 
           if [ -z "$artifact_id" ] || [ -z "$run_id" ]; then
@@ -241,6 +225,7 @@ jobs:
           exit 1
 
       - name: Download and verify exact-head receipt
+        id: verify_receipt
         if: steps.artifact.outputs.applicable == 'true'
         shell: bash
         env:
@@ -326,19 +311,20 @@ jobs:
               <<<"$source_artifact_meta" >/dev/null || {
                 echo "GOVERNANCE_SOURCE_REVIEW_ARTIFACT_UNTRUSTED" >&2; exit 1;
               }
-            source_inventory='[]'
-            for page in $(seq 1 20); do
-              source_response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page=${page}")
-              source_items=$(jq -ce '.artifacts' <<<"$source_response") || {
-                echo "GOVERNANCE_SOURCE_REVIEW_INVENTORY_INVALID" >&2; exit 1;
-              }
-              source_count=$(jq 'length' <<<"$source_items")
-              source_inventory=$(jq -cn --argjson old "$source_inventory" --argjson new "$source_items" '$old + $new')
-              [ "$source_count" -lt 100 ] && break
-              [ "$page" -lt 20 ] || {
-                echo "GOVERNANCE_SOURCE_REVIEW_INVENTORY_LIMIT_EXCEEDED" >&2; exit 1;
-              }
-            done
+            # Query this certified source artifact directly, not the growing
+            # repository-wide inventory. No additional workflow or approver.
+            source_response=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${expected_source_artifact}&per_page=100&page=1") || {
+              echo "GOVERNANCE_SOURCE_REVIEW_INVENTORY_UNAVAILABLE" >&2; exit 1;
+            }
+            jq -e --arg name "$expected_source_artifact" '
+              (.total_count | type == "number" and . >= 0 and . <= 100) and
+              (.artifacts | type == "array") and
+              (.total_count == (.artifacts | length)) and
+              all(.artifacts[]; .name == $name)
+            ' <<<"$source_response" >/dev/null || {
+              echo "GOVERNANCE_SOURCE_REVIEW_INVENTORY_INVALID_OR_DUPLICATE" >&2; exit 1;
+            }
+            source_inventory=$(jq -c '.artifacts' <<<"$source_response")
             printf '%s\n' "$source_inventory" > "$RUNNER_TEMP/source-review-artifact-inventory.json"
             python - "$RUNNER_TEMP/source-review-artifact-inventory.json" \
               "wow-v17-independent-source-review-${source_pr}-${source_sha}-" "$source_artifact_id" \
@@ -428,3 +414,50 @@ jobs:
             "${extra_args[@]}"
 
           echo "Trusted exact-head governance receipt verified. can_execute=false." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish exact-head verified decision
+        # workflow_run executes on main; GitHub's native job check otherwise
+        # never updates the PR head. Create the PR-head check only from the
+        # authenticated, receipt-verified protected-main execution.
+        if: always() && steps.artifact.outputs.applicable == 'true'
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.artifact.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ steps.artifact.outputs.head_sha }}
+          PRODUCER_RUN_ID: ${{ steps.artifact.outputs.run_id }}
+          SOURCE_VERIFY_OUTCOME: ${{ steps.workflow.outcome }}
+          RECEIPT_VERIFY_OUTCOME: ${{ steps.verify_receipt.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && [[ "$PR_HEAD_SHA" =~ ^[a-f0-9]{40}$ ]] || {
+            echo "GOVERNANCE_PR_HEAD_FOR_CHECK_INVALID" >&2; exit 1;
+          }
+          pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}") || {
+            echo "GOVERNANCE_PR_RECHECK_UNAVAILABLE" >&2; exit 1;
+          }
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$PR_HEAD_SHA" \
+            '.state == "open" and .head.sha == $sha and .head.repo.full_name == $repo and
+             .base.ref == "main" and .base.repo.full_name == $repo' <<<"$pr" >/dev/null || {
+              echo "GOVERNANCE_PR_HEAD_MOVED_OR_NOT_AUTHENTIC" >&2; exit 1;
+            }
+          conclusion=failure
+          title="HOLD: exact-head governance not verified"
+          if [ "$SOURCE_VERIFY_OUTCOME" = "success" ] && [ "$RECEIPT_VERIFY_OUTCOME" = "success" ]; then
+            conclusion=success
+            title="PASS: authenticated exact-head governance receipt"
+          fi
+          summary="Receipt check ${conclusion}; PR #${PR_NUMBER}; exact head ${PR_HEAD_SHA}; producer run ${PRODUCER_RUN_ID}. No wagering; can_execute=false. This is not a substitute for independent source review."
+          check=$(gh api --method POST "/repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name="Trusted exact-head engineering governance" \
+            -f head_sha="$PR_HEAD_SHA" \
+            -f status="completed" -f conclusion="$conclusion" \
+            -f "output[title]=$title" -f "output[summary]=$summary") || {
+              echo "GOVERNANCE_PR_HEAD_CHECK_PUBLICATION_FAILED" >&2; exit 1;
+            }
+          jq -e --arg sha "$PR_HEAD_SHA" --arg decision "$conclusion" \
+            '.id > 0 and .name == "Trusted exact-head engineering governance" and
+             .head_sha == $sha and .status == "completed" and .conclusion == $decision' \
+            <<<"$check" >/dev/null || {
+              echo "GOVERNANCE_PR_HEAD_CHECK_RECEIPT_INVALID" >&2; exit 1;
+            }
+          echo "Published exact-head protected-governance decision: ${conclusion}."
