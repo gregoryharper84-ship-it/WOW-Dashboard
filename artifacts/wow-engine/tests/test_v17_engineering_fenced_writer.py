@@ -296,3 +296,19 @@ def test_sql_allows_only_scoped_nonforce_push():
     text = (Path(__file__).resolve().parents[1] / "migrations" /
             "20261027_writer_mutation_fence_REVIEW_ONLY.sql").read_text()
     assert "('CREATE_BRANCH','PUSH_REF','CREATE_PR')" in text
+
+
+def test_database_branch_identity_matches_gateway_incident_and_epoch():
+    """Database must reject a valid-looking branch from a different lease."""
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[1] / "migrations" /
+           "20261027_writer_mutation_fence_REVIEW_ONLY.sql").read_text()
+    assert "p_incident_id::text" in sql
+    assert "p_epoch::text" in sql
+    assert "p_branch !~ ('^wow-engineering/fenced-'" in sql
+    assert "p_branch !~ '^wow-engineering/fenced-[0-9]+-[0-9]+" not in sql
+    store, github = Store(), GitHub()
+    wrong = replace(make(), branch=make(incident_id=1740).branch)
+    with pytest.raises(FencingHold, match="MUTATION_BRANCH_UNBOUND"):
+        Gateway(store, github).deliver(wrong)
+    assert github.writes == []
