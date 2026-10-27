@@ -354,3 +354,19 @@ def test_explicit_failed_summary_cannot_be_relabelled_pass_by_legacy_adapter():
     assert result["stages"][3]["status"] == "SKIPPED_UPSTREAM_FAILURE"
     assert result["can_execute"] is False
     compound.assert_not_called()
+
+
+def test_learning_failure_exposes_only_whitelisted_db_boundary_not_exception_message():
+    from v17.core_intelligence_runtime import CoreIntelligenceBoundaryError
+    error = CoreIntelligenceBoundaryError(
+        "wow_outcomes.select_core_intelligence_candidates",
+        RuntimeError("postgres://private:credential@host/path"),
+    )
+    with patch(BASE + "capture_settled_prop_observations", side_effect=error), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload()):
+        result = run_continuous_intelligence_cycle(object())
+    failed = result["stages"][0]
+    assert failed["error_type"] == "CoreIntelligenceBoundaryError"
+    assert failed["error_boundary"] == "wow_outcomes.select_core_intelligence_candidates"
+    assert "private:credential" not in str(result)
+    assert result["can_execute"] is False
