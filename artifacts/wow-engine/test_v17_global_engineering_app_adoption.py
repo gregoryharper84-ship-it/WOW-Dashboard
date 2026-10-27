@@ -235,7 +235,7 @@ def test_created_pr_inventory_must_be_unambiguous(inventory):
 
 
 @pytest.mark.parametrize("body,expected", [
-    ("Incident: #1688\\nRelated incident: #2136", "1688"),
+    ("Incident: #1688\nRelated incident: #2136", "1688"),
     ("**Incident:** #2136 (exact-head governance)", "2136"),
 ])
 def test_app_adoption_preserves_explicit_canonical_incident(body, expected):
@@ -244,7 +244,7 @@ def test_app_adoption_preserves_explicit_canonical_incident(body, expected):
 
 @pytest.mark.parametrize("body", [
     None, "", "Related incident: #2136", "Incident: #0",
-    "Incident: #2136x", "Incident: #2136\\nIncident: #1688",
+    "Incident: #2136x", "Incident: #2136\nIncident: #1688",
     "References #2136 only",
 ])
 def test_app_adoption_rejects_missing_or_ambiguous_incident(body):
