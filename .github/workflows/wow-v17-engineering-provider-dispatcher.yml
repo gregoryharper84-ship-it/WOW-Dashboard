@@ -68,13 +68,17 @@ concurrency:
     github.event.workflow_run.name != 'wow-v17-nightly-engineering-scan' &&
     'GLOBAL' ||
     (github.event_name == 'schedule' ||
-    github.event_name == 'workflow_dispatch' &&
-    (inputs.force_provider == 'auto' ||
-    inputs.force_provider == 'gemini') ||
     github.event_name == 'workflow_run' &&
     github.event.workflow_run.name == 'wow-v17-nightly-engineering-scan') &&
     'AUTO' ||
+    github.event_name == 'workflow_dispatch' &&
     inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' ||
+    github.event_name == 'workflow_dispatch' &&
+    inputs.lease_group != '' && inputs.lease_group != 'GLOBAL' &&
+    inputs.lease_group ||
+    github.event_name == 'workflow_dispatch' &&
+    (inputs.force_provider == 'auto' ||
+    inputs.force_provider == 'gemini') && 'AUTO' ||
     inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
