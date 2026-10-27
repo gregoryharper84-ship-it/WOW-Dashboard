@@ -131,7 +131,7 @@ class SupabaseRpcStore:
     def __init__(self, base_url: str, service_role_key: str, expected_project_id: str):
         from urllib.parse import urlsplit
         parsed = urlsplit(base_url)
-        if (not re.fullmatch(r"[a-z]{20}", expected_project_id or "")
+        if (not re.fullmatch(r"[a-z0-9]{20}", expected_project_id or "")
                 or parsed.scheme != "https" or
                 parsed.hostname != expected_project_id + ".supabase.co"
                 or parsed.username or parsed.password or parsed.port or parsed.query
@@ -234,7 +234,7 @@ class GitHubAppWriter:
                    if not k.startswith(("GIT_CONFIG_", "GIT_ASKPASS", "GIT_SSH", "SSH_ASKPASS"))}
             env.update(GIT_ASKPASS=str(askpass), GIT_FENCED_TOKEN=self.token,
                        GIT_TERMINAL_PROMPT="0")
-            subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "push",
+            subprocess.run(["git", "-c", "credential.helper=", "-c", "core.hooksPath=/dev/null", "push",
                             "--porcelain", "origin", f"HEAD:refs/heads/{intent.branch}"],
                            check=True, capture_output=True, text=True, env=env, timeout=45)
 
