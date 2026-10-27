@@ -10,7 +10,7 @@ Extend existing immutable postmortem helpers, sport-specific challengers, engine
 
 From artifacts/wow-engine:
 
-    python -m pytest -q test_v17_accuracy_improvement_controller.py test_v17_accuracy_receipt_readiness.py
+    python -m pytest -q test_v17_accuracy_improvement_controller.py test_v17_accuracy_receipt_readiness.py test_v17_accuracy_shadow_challenger_lab.py
     python -m v17.accuracy_improvement_controller --evidence-json /path/to/explicit-evidence.json
 
 No network, API key, database, model-artifact writes, deployment or wagers. The input must include original offers (with exact labels and threshold types) and optionally a dictionary of evidence keyed by offer_id. An absent evidence entry remains NOT_SCORED. A typed backend error with its receipt stays distinct from missing evidence and from other backend errors. The output always lists **every** original market with a stable fingerprint.
@@ -45,6 +45,23 @@ For matched settled HOLDOUT rows only (with per-sport/route segment diagnostics 
 **Read-only endpoint gap found in current main:** `prediction_receipt_lookup_runtime.py` selects player display name, event, team, opponent, stat, numeric line, direction, pregame timestamps and `source_snapshot_id`, but its `_SELECT_FIELDS` does not include canonical `entity_id`, `period`, `model_artifact_id`, `calibrator_id`, or `specialist_id`. Therefore the current response alone is **not enough** to fill the experiment controller's champion/challenger evidence contract. A supplied canonical-player name can be compared to the lookup, but does not prove a canonical-athlete mapping without an authoritative adapter. Literal `7+` and compound double-double markets also have no certified exact-line conversion authority in this bridge. These must remain typed holds.
 
 The pure bridge does **not** authenticate HTTP responses itself. Even a complete offline JSON envelope returns `source_authentication_proven=false`; only an independently verified caller of the authenticated Action/backend route may establish source authenticity. Do not route bridge results to live scoring or model promotion. Extend the backend read-only projection only after verifying the real column schema and preserving the existing prediction privacy/authorization boundary.
+
+
+## Chronological challenger lab (new)
+
+`v17.accuracy_shadow_challenger_lab.train_shadow_challenger` fits a **non-serving reference logistic** challenger, or an optional CatBoost binary challenger when the pinned CatBoost dependency is actually installed. It requires ≥30 TRAIN, ≥20 CALIBRATION and ≥30 distinct HOLDOUT events, canonical route separation, disjoint event cohorts, strictly increasing event times, pregame feature and champion-lock timestamps, post-event settled outcomes, explicit source identifiers and SHA-256 fingerprints, and numeric bounded features. It denies odds/implied-probability, closing-line, postgame and realized-outcome leakage features.
+
+It standardizes from TRAIN only, fits a Platt calibrator from CALIBRATION only, evaluates one frozen HOLDOUT against immutable champion probabilities, and reports Brier, log loss, 10-bin ECE, signed bias, and event-cluster Brier-delta bootstrap interval. It never outputs a deployable model or per-row pick recommendations. A positive metric is research evidence only, not a Class C promotion. Synthetic fixture tests are not evidence of NBA forecasting capability.
+
+**No new long-running agents or heavy frameworks are required for the reference implementation.** AutoGluon and PyMC should be evaluated as separately bounded challenger choices only after genuine sport data is frozen and a resource budget is approved.
+
+## Read-only connected validation audit (2026-10-26)
+
+`v17/accuracy_immutable_ledger_diagnostics.sql` is a tested SELECT-only audit of `wow_predictions` and `wow_outcomes`. It was executed against the connected **WOW validation** database without writes. The query excludes nonunique/missing settlement, invalid chronology, missing fitted artifact metadata, incomplete calibration, push/void, and conflicting official result direction.
+
+Examples from that snapshot: MLB PITCHER_STRIKEOUTS 3,627 reconciled historical grades out of 3,769 predictions (Brier 0.24054672); MLB PITCHING_OUTS 287/368 (Brier 0.24917334); NFL ANYTIME_TD 8/42 (Brier 0.18414644); NFL RECEIVING_YARDS 10/242 (Brier 0.24813734). These are ledger-level diagnostics and **not independently verified source truth, forward calibration, certified lower-bound reliability, or proof of a successful model challenger**. The limited NFL outcome coverage precludes reliable model-accuracy certification. No NBA rows were present in the queried `wow_predictions` sport groups.
+
+The SQL audit remains isolated from the scoring runtime; no dashboard publication or V17 probability mutation has occurred.
 
 ## Integration plan (not yet complete)
 
