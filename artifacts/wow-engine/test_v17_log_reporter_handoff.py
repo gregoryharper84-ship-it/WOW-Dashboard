@@ -101,3 +101,18 @@ def test_no_action_has_no_incident_and_never_dispatches():
     assert result["status"] == "NO_ACTION"
     assert result["decisions"] == []
     assert result["dispatch_authorized"] is False
+
+
+def test_authenticated_worker_fence_signal_is_reporter_candidate_not_lease_release():
+    from v17.log_incident_intake import WORKER_SERVICE
+    worker = classify([{"attributes": {
+        "service": WORKER_SERVICE, "status": "info",
+        "timestamp": NOW.isoformat(),
+        "message": "WOW_RESIDENT_SUPERVISOR outcome=REMOTE_WRITER_RECONCILIATION_REQUIRED"
+    }} for _ in range(4)], begin=NOW-timedelta(hours=1), end=NOW+timedelta(minutes=1))
+    result = plan(worker)
+    assert result["status"] == "REPORTER_PRECHECK"
+    assert result["decisions"][0]["state"] == "REPORTER_INTAKE_REQUIRED"
+    assert result["dispatch_authorized"] is False
+    worker["findings"][0]["service"] = SERVICE
+    assert plan(worker)["reason"] == "WORKER_SOURCE_ROUTE_MISMATCH"
