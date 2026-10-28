@@ -131,7 +131,7 @@ def health():
         "database_status": database_status,
         "database_diagnostic": database_diagnostic,
         "governed_probability_capability": capability_status,
-        "probability_publishable": capability_status == "AVAILABLE" and database_status == "AVAILABLE",
+        "probability_publishable": False,  # health/readiness is never publication authority
         "can_execute": False,
     }
 
