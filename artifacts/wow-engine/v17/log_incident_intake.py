@@ -27,6 +27,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 SERVICE = "wow-governed-probability-engine"
+WORKER_SERVICE = "wow-agent-worker"
+SERVICES = frozenset({SERVICE, WORKER_SERVICE})
 SITES = frozenset({"datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "datadoghq.eu", "ap1.datadoghq.com"})
 MAX_PAGES = 4
 PAGE_LIMIT = 250
@@ -34,6 +36,11 @@ MAX_EVENTS = MAX_PAGES * PAGE_LIMIT
 SAFE_SHA = re.compile(r"^[a-f0-9]{40}$")
 CODE_PATTERN = re.compile(r"\b(WOW_V17_[A-Z0-9_]{3,96}|WOW_PROP_[A-Z0-9_]{3,96}|MODEL_[A-Z0-9_]{3,96})\b")
 HTTP_PATTERN = re.compile(r'"(GET|POST|PUT|PATCH|DELETE)\s+([^\s"]+)\s+HTTP/[0-9.]+"\s+(\d{3})')
+WORKER_FAILURE_CODES = frozenset({"REMOTE_WRITER_RECONCILIATION_REQUIRED",
+                                  "DISPATCH_RECONCILIATION_REQUIRED",
+                                  "PROVIDER_STATUS_UNVERIFIED",
+                                  "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE"})
+WORKER_PATTERN = re.compile(r"\bWOW_RESIDENT_SUPERVISOR\s+outcome=([A-Z_]{5,80})\b")
 ALLOWED_TYPED_CODES = frozenset({
     "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED",
     "WOW_PROP_MODEL_SELF_ACCEPTANCE",
@@ -74,7 +81,7 @@ def _url_route(path: str) -> str:
 def _parse_event(item: Mapping[str, Any], begin: datetime, end: datetime) -> dict[str, str] | None:
     """Accept only structurally valid Datadog logs from the exact production service."""
     attrs = item.get("attributes", item)
-    if not isinstance(attrs, Mapping) or attrs.get("service") != SERVICE:
+    if not isinstance(attrs, Mapping) or attrs.get("service") not in SERVICES:
         return None
     message = attrs.get("message", "")
     if not isinstance(message, str) or len(message) > 16_384:
@@ -88,16 +95,21 @@ def _parse_event(item: Mapping[str, Any], begin: datetime, end: datetime) -> dic
     status = str(attrs.get("status", "")).lower()
     if status not in {"info", "warn", "warning", "error", "critical", "alert", "emergency"}:
         return None
-    code_match = CODE_PATTERN.search(message)
-    code = code_match.group(1) if code_match and code_match.group(1) in ALLOWED_TYPED_CODES else None
+    service = attrs["service"]
+    worker_match = WORKER_PATTERN.search(message) if service == WORKER_SERVICE else None
+    worker_code = worker_match.group(1) if worker_match and worker_match.group(1) in WORKER_FAILURE_CODES else None
+    code_match = CODE_PATTERN.search(message) if service == SERVICE else None
+    code = worker_code or (code_match.group(1) if code_match and code_match.group(1) in ALLOWED_TYPED_CODES else None)
     # Evidence is not an incident solely because a known token is present.
     # Reject INFO and require the explicit failed prop self-acceptance result.
-    if code and status == "info":
+    if code and status == "info" and not worker_code:
         return None
     if code == "WOW_PROP_MODEL_SELF_ACCEPTANCE" and not re.search(r"\bresult=FAIL\b", message):
         return None
     route = "OTHER_ROUTE"
-    if code:
+    if worker_code:
+        route = "ENGINEERING_RESIDENT_SUPERVISOR"
+    elif code:
         if code == "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED":
             route = "PICKEM_QUEUE_CLAIM"
         elif code == "WOW_PROP_MODEL_SELF_ACCEPTANCE":
@@ -127,7 +139,7 @@ def _parse_event(item: Mapping[str, Any], begin: datetime, end: datetime) -> dic
     sha = attrs.get("version", "")
     sha = sha if isinstance(sha, str) and SAFE_SHA.fullmatch(sha) else "UNKNOWN_SHA"
     return {"timestamp_utc": stamp.isoformat().replace("+00:00", "Z"),
-            "route": route, "typed_failure": code, "sha": sha}
+            "service": service, "route": route, "typed_failure": code, "sha": sha}
 
 
 def classify(events: Iterable[Mapping[str, Any]], *, begin: datetime, end: datetime,
@@ -137,7 +149,7 @@ def classify(events: Iterable[Mapping[str, Any]], *, begin: datetime, end: datet
         raise ValueError("INVALID_WINDOW")
     if not source_complete:
         raise SourceUnavailable("SOURCE_INCOMPLETE")
-    grouped: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[dict[str, str]]] = defaultdict(list)
     seen = 0
     for event in events:
         seen += 1
@@ -147,9 +159,9 @@ def classify(events: Iterable[Mapping[str, Any]], *, begin: datetime, end: datet
             continue
         row = _parse_event(event, begin, end)
         if row:
-            grouped[(row["route"], row["typed_failure"])].append(row)
+            grouped[(row["service"], row["route"], row["typed_failure"])].append(row)
     findings = []
-    for (route, code), matches in sorted(grouped.items()):
+    for (service, route, code), matches in sorted(grouped.items()):
         count = len(matches)
         # Repeated validation errors are actionable; a single 422 isn't.
         threshold = {"HTTP_422": 10, "HTTP_401": 5, "HTTP_5XX": 3,
@@ -160,16 +172,18 @@ def classify(events: Iterable[Mapping[str, Any]], *, begin: datetime, end: datet
                                          "WOW_V17_PRODUCTION_PERSISTENCE_FAILED"} else "P2"
         if route == "PICKEM_QUEUE_CLAIM" and count >= 3:
             severity = "P1"
+        if route == "ENGINEERING_RESIDENT_SUPERVISOR" and count >= 3:
+            severity = "P1"
         if code == "HTTP_401" and route == "SCOUT_HANDOFF":
             severity = "P1" if count >= 10 else "P2"
         # Identity excludes transient SHA/run/time, includes canonical service,
         # route and *typed* failure. Existing Reporter must dedupe durably.
-        basis = json.dumps([SERVICE, route, code], separators=(",", ":"))
+        basis = json.dumps([service, route, code], separators=(",", ":"))
         fingerprint = hashlib.sha256(basis.encode()).hexdigest()
         stamps = [r["timestamp_utc"] for r in matches]
         shas = sorted({r["sha"] for r in matches if r["sha"] != "UNKNOWN_SHA"})
         findings.append({
-            "source": "DATADOG", "subsystem": "BACKEND_RUNTIME", "service": SERVICE,
+            "source": "DATADOG", "subsystem": ("ENGINEERING_AUTONOMY" if service == WORKER_SERVICE else "BACKEND_RUNTIME"), "service": service,
             "failure_boundary": route, "typed_failure": code, "severity": severity,
             "fingerprint": fingerprint, "count": count, "first_seen_utc": min(stamps),
             "last_seen_utc": max(stamps), "release_shas": shas,
@@ -177,7 +191,7 @@ def classify(events: Iterable[Mapping[str, Any]], *, begin: datetime, end: datet
             "can_execute": False,
         })
     return {"status": "CANDIDATES" if findings else "NO_ACTION",
-            "source": "DATADOG", "service": SERVICE,
+            "source": "DATADOG", "services": sorted(SERVICES),
             "window_start_utc": begin.isoformat().replace("+00:00", "Z"),
             "window_end_utc": end.isoformat().replace("+00:00", "Z"),
             "events_inspected": seen, "findings": findings,
@@ -203,7 +217,7 @@ def fetch_datadog(*, begin: datetime, end: datetime, api_key: str, app_key: str,
     for page in range(MAX_PAGES):
         payload: dict[str, Any] = {
             "filter": {"from": begin.isoformat(), "to": end.isoformat(),
-                       "query": f"service:{SERVICE} status:(error OR warn OR critical)"},
+                       "query": f"service:({SERVICE} OR {WORKER_SERVICE})"},
             "page": {"limit": PAGE_LIMIT},
             "sort": "timestamp",
         }
