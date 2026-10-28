@@ -728,18 +728,25 @@ jobs:
             if [ "$classification" = "CLASS_A_DETERMINISTIC" ] && [ "${ZERO_CREDIT_MODE:-false}" = "true" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
               python .github/scripts/verify_existing_pr_governance_receipt.py \
                 "${common[@]}" --deterministic-class-a
-            elif [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then
-              python .github/scripts/verify_existing_pr_governance_receipt.py \
-                "${common[@]}" \
-                --trusted-reviewers-json "$TRUSTED_REVIEWERS_JSON"
-            elif [ -n "${SOURCE_REVIEW_ARTIFACT_ID:-}" ] && \
-                 [ -f "$RUNNER_TEMP/source-review/decision.json" ] && \
-                 [ -f "$RUNNER_TEMP/source-review-run.json" ]; then
+            # A configured human-review allowlist must not suppress independently
+            # authenticated exact-head automated source-review evidence.
+            # A selected automated artifact with missing payloads is a HOLD, not
+            # permission to fall back to another route or synthesize PASS.
+            elif [ -n "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
+              if [ ! -f "$RUNNER_TEMP/source-review/decision.json" ] || \
+                 [ ! -f "$RUNNER_TEMP/source-review-run.json" ]; then
+                echo "SOURCE_REVIEW_SELECTED_ARTIFACT_PAYLOAD_MISSING" >&2
+                exit 1
+              fi
               python .github/scripts/verify_existing_pr_governance_receipt.py \
                 "${common[@]}" \
                 --source-review-json "$RUNNER_TEMP/source-review/decision.json" \
                 --source-review-run-json "$RUNNER_TEMP/source-review-run.json" \
                 --source-review-artifact-id "$SOURCE_REVIEW_ARTIFACT_ID"
+            elif [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then
+              python .github/scripts/verify_existing_pr_governance_receipt.py \
+                "${common[@]}" \
+                --trusted-reviewers-json "$TRUSTED_REVIEWERS_JSON"
             else
               echo "INDEPENDENT_REVIEW_EVIDENCE_MISSING: no allowlisted human approval or authenticated exact-head automated review." >&2
               exit 1
