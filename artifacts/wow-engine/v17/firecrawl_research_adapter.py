@@ -71,11 +71,13 @@ def fetch_firecrawl_page(
 ) -> ResearchFetchResult:
     """Fetch one bounded page. Failure only blocks THIS optional research source."""
     now = _now_iso()
+    source_url: str | None = None
 
     def result(ok: bool, code: str, *, data=None, status=None) -> ResearchFetchResult:
         return ResearchFetchResult(
             ok, "FIRECRAWL", str(sport_key), str(capability), SOURCE_CLASS,
-            data=data, status=status, code=code, observed_at=now,
+            data=data if data is not None else ({"source_url": source_url, "evidence_only": True} if source_url else None),
+            status=status, code=code, observed_at=now,
             endpoint=FIRECRAWL_SCRAPE_ENDPOINT,
             prediction_authority=False, can_execute=False,
         )
@@ -128,7 +130,6 @@ def fetch_firecrawl_page(
             "content_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
             "content_truncated": len(markdown) > MAX_MARKDOWN_CHARS,
             "page_claimed_published_at": metadata.get("publishedTime"),
-            "retrieved_at": now,
             "evidence_only": True,
         }
         return result(True, "SOURCE_FETCH_OK", data=payload, status=response.status_code)
