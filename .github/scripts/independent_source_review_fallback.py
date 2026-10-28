@@ -78,7 +78,26 @@ ALLOWED_FALLBACKS = {
 
 
 class ReviewUnavailable(ValueError):
-    """Typed transport/format failure; never a semantic PASS or REJECT."""
+    """Typed provider failure. Only allowlisted availability errors can trigger fallback."""
+
+
+# An invalid reply, unknown HTTP error, authorization-policy denial (403),
+# or malformed source evidence is NOT permission to seek a different PASS.
+# These codes originate in this protected transport adapter, never model text.
+RETRYABLE_PROVIDER_CODES = frozenset({
+    "REVIEW_PROVIDER_HTTP_401",
+    "REVIEW_PROVIDER_HTTP_408",
+    "REVIEW_PROVIDER_HTTP_429",
+    "REVIEW_PROVIDER_HTTP_500",
+    "REVIEW_PROVIDER_HTTP_502",
+    "REVIEW_PROVIDER_HTTP_503",
+    "REVIEW_PROVIDER_HTTP_504",
+    "REVIEW_PROVIDER_TRANSPORT_FAILURE",
+})
+
+
+def is_retryable_provider_failure(exc: ReviewUnavailable) -> bool:
+    return type(exc) is ReviewUnavailable and str(exc) in RETRYABLE_PROVIDER_CODES
 
 
 def _read_input(path: Path) -> dict:
@@ -152,8 +171,10 @@ def _post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
     except HTTPError as exc:
         # NEVER log the provider response: it may contain user evidence or tokens.
         raise ReviewUnavailable(f"REVIEW_PROVIDER_HTTP_{exc.code}") from None
-    except (URLError, TimeoutError, OSError, UnicodeDecodeError, json.JSONDecodeError):
-        raise ReviewUnavailable("REVIEW_PROVIDER_TRANSPORT_OR_JSON_FAILURE") from None
+    except (URLError, TimeoutError, OSError):
+        raise ReviewUnavailable("REVIEW_PROVIDER_TRANSPORT_FAILURE") from None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ReviewUnavailable("REVIEW_PROVIDER_RESPONSE_INVALID") from None
 
 
 def _anthropic(prompt: str, key: str) -> str:
@@ -239,6 +260,10 @@ def review_fallback(
         try:
             verdict = _validate_reply(call(prompt, key), captured)
         except ReviewUnavailable as exc:
+            if not is_retryable_provider_failure(exc):
+                # Semantic failure, invalid evidence, or unknown provider status
+                # remains an actual HOLD, even when Gemini is configured.
+                raise
             failures.append(f"{identity}:{exc}")
             continue
         # REJECT is terminal, not a reason to fish for a more permissive PASS.
