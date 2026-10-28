@@ -15,7 +15,7 @@ import re
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import independent_source_review_receipt as receipts
 
@@ -25,6 +25,9 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 MAX_REPLY_BYTES = 2 * 1024 * 1024
 MAX_INPUT_BYTES = 640 * 1024
 REQUEST_TIMEOUT_SECONDS = 90
+ALLOWED_PROVIDER_ENDPOINTS = frozenset({
+    ANTHROPIC_URL, GEMINI_URL, "https://api.openai.com/v1/responses",
+})
 
 # Native Claude constrained JSON output reduces format retries. Canonical
 # exact-head/diff/file-coverage validation remains mandatory after inference.
@@ -153,6 +156,14 @@ def _prompt(captured: dict) -> str:
 
 
 def _post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
+    # No caller-controlled URLs; never forward QA credentials to redirects.
+    if url not in ALLOWED_PROVIDER_ENDPOINTS:
+        raise ReviewUnavailable("REVIEW_PROVIDER_ENDPOINT_UNTRUSTED")
+
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
     request = Request(
         url,
         data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
@@ -160,7 +171,7 @@ def _post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        with build_opener(NoRedirect()).open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             data = response.read(MAX_REPLY_BYTES + 1)
         if not data or len(data) > MAX_REPLY_BYTES:
             raise ReviewUnavailable("REVIEW_PROVIDER_RESPONSE_LIMIT")
