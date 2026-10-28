@@ -94,7 +94,7 @@ jobs:
             head_ref=$(jq -er '.target.head_ref | select(type == "string")' "$receipt")
             jq -e --arg sha "$sha_from_name" --argjson run_id "$SOURCE_RUN_ID" \
               --arg repo "$GITHUB_REPOSITORY" \
-              '.receipt_schema_version == 2 or .receipt_schema_version == 3' "$receipt" >/dev/null || {
+              '(.receipt_schema_version == 2 or .receipt_schema_version == 3 or .receipt_schema_version == 4)' "$receipt" >/dev/null || {
                 echo "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" >&2; exit 1;
               }
             jq -e --arg sha "$sha_from_name" --argjson run_id "$SOURCE_RUN_ID" \
@@ -305,7 +305,7 @@ jobs:
           cert_mode=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")' "$receipt")
           receipt_schema=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("receipt_schema_version") or "")' "$receipt")
           live_checks="$RUNNER_TEMP/wow-live-checks.json"
-          if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+          if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$receipt_schema" = "4" ]; then
             checks='[]'
             for page in $(seq 1 10); do
               response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?per_page=100&page=${page}")
@@ -416,7 +416,7 @@ jobs:
               --head-sha "$source_sha" \
               --head-ref "$source_ref" \
               --attempt "$source_attempt"
-          elif [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" != "2" ]; then
+          elif [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" != "2" ] && [ "$receipt_schema" != "4" ]; then
             echo "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" >&2
             exit 1
           fi
@@ -429,7 +429,7 @@ jobs:
           extra_args=()
           if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
             extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
-            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$receipt_schema" = "4" ]; then
               extra_args+=(--live-checks-json "$live_checks")
             elif [ "$receipt_schema" = "3" ]; then
               extra_args+=(--source-review-run-json "$source_review_run")
