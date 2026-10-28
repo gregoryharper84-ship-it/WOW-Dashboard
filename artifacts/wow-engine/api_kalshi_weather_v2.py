@@ -8,6 +8,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
+from kalshi_weather_v2.empirical_runtime import install_empirical_cohort_scheduler
+from kalshi_weather_v2.isolated_capture_wiring import install_isolated_capture_if_owned
 from kalshi_weather_v2.runtime import (
     DEFAULT_OPEN_METEO_MODELS,
     KalshiWeatherRuntimeError,
@@ -24,6 +26,31 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+
+# Attach the existing bounded cohort controller only when this isolated runtime
+# explicitly owns acquisition. Default is OFF, including when a global
+# empirical-cohort flag is accidentally inherited from the shared V17 service.
+# Deployment must separately verify that no other live collector is writing.
+ISOLATED_CAPTURE = install_isolated_capture_if_owned(
+    app,
+    db_client_fn=get_client,
+    installer=install_empirical_cohort_scheduler,
+)
+
+
+@app.get("/collector/readiness", operation_id="kalshiWeatherCollectorReadiness")
+def collector_readiness():
+    """Configuration status, not proof of fresh evidence or writer fencing."""
+    return {
+        **ISOLATED_CAPTURE,
+        "mode": "SHADOW",
+        "production_single_writer_evidence": "NOT_ATTESTED_BY_ENDPOINT",
+        "settlement_station_verified": False,
+        "independent_model_probability_available": False,
+        "probability_publishable": False,
+        "can_execute": False,
+    }
 
 
 class HourlyShadowRequest(BaseModel):
