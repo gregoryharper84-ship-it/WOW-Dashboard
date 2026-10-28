@@ -320,8 +320,7 @@ def test_soccer_active_lease_blocks_duplicate_and_invalid_identity():
     queue = build_queue(manifest, [{"number": 2178, "state": "OPEN"}])
     result = select_parallel(queue["records"], active_leases=active)
     assert result["selected"] == []
-    assert any(item["reason"] == "INCIDENT_ALREADY_ACTIVE" or
-               item["reason"] == "LEASE_GROUP_ALREADY_CLAIMED"
+    assert any(item["reason"] == "DUPLICATE_INCIDENT"
                for item in result["skipped"])
     with pytest.raises(ValueError, match="ACTIVE_P0_LEASE_METADATA_INVALID"):
         active_leases_from_runs([{
