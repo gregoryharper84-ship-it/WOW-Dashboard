@@ -2,11 +2,18 @@
 
 Intentional starter failures are not part of the normal production test suite.
 """
-import importlib
+import importlib.util
 import os
 import unittest
+from pathlib import Path
 
-impl = importlib.import_module(os.environ.get("WOW_CHALLENGE_IMPL", "reference"))
+name = os.environ.get("WOW_CHALLENGE_IMPL", "reference")
+if name not in ("starter", "reference"):
+    raise ValueError("invalid offline training implementation")
+spec = importlib.util.spec_from_file_location("wow_training_" + name, Path(__file__).parent / (name + ".py"))
+assert spec and spec.loader
+impl = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(impl)
 SHA = "a" * 40
 
 
