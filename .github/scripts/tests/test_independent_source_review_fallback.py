@@ -64,8 +64,8 @@ def test_first_provider_quota_failure_uses_genuine_gemini_verdict(monkeypatch):
     monkeypatch.setattr(fallback, "_gemini", gemini)
     result, proof = fallback.review_fallback(
         captured(),
-        anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
-        gemini_key="test", gemini_scope="GEMINI_API_KEY",
+        anthropic_key="test", anthropic_scope="WOW_QA_REVIEW_ANTHROPIC_API_KEY",
+        gemini_key="test", gemini_scope="WOW_QA_REVIEW_GEMINI_API_KEY",
     )
     assert seen == ["anthropic", "gemini"]
     assert result["decision"] == "PASS"
@@ -96,8 +96,8 @@ def test_false_head_cannot_trigger_retry_to_more_permissive_reviewer(monkeypatch
     )
     with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_REPLY_SCHEMA_OR_PROVENANCE_INVALID"):
         fallback.review_fallback(
-            captured(), anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
-            gemini_key="test", gemini_scope="GEMINI_API_KEY",
+            captured(), anthropic_key="test", anthropic_scope="WOW_QA_REVIEW_ANTHROPIC_API_KEY",
+            gemini_key="test", gemini_scope="WOW_QA_REVIEW_GEMINI_API_KEY",
         )
 
 
@@ -113,8 +113,8 @@ def test_no_provider_success_fails_closed(monkeypatch):
     monkeypatch.setattr(fallback, "_gemini", unavailable)
     with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_ALL_PROVIDERS_UNAVAILABLE"):
         fallback.review_fallback(
-            captured(), anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
-            gemini_key="test", gemini_scope="GEMINI_API_KEY",
+            captured(), anthropic_key="test", anthropic_scope="WOW_QA_REVIEW_ANTHROPIC_API_KEY",
+            gemini_key="test", gemini_scope="WOW_QA_REVIEW_GEMINI_API_KEY",
         )
 
 
@@ -147,8 +147,9 @@ def test_independent_qa_workflow_never_skips_provenance_or_security_on_fallback(
     selection = by_name["Select authentic reviewer verdict and credential provenance"]
     build = by_name["Build versioned exact-head review artifact"]
     assert primary["continue-on-error"] is True
-    assert "steps.review_credential.outputs.openai_present != 'true'" in secondary["if"]
+    assert "steps.primary_failure.outputs.fallback_eligible == 'true'" in secondary["if"]
     assert "steps.review.outcome != 'success'" not in secondary["if"]
+    assert "Verify typed primary availability before allowing fallback" in by_name
     # No typed Codex error is exposed by the composite action: arbitrary
     # failures are not valid proof of quota/transport outage.
     assert "independent_source_review_fallback.py" in secondary["run"]
@@ -212,8 +213,8 @@ def test_policy_denials_and_malformed_responses_cannot_failover(monkeypatch, cod
     )
     with pytest.raises(fallback.ReviewUnavailable, match=code):
         fallback.review_fallback(
-            captured(), anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
-            gemini_key="test", gemini_scope="GEMINI_API_KEY",
+            captured(), anthropic_key="test", anthropic_scope="WOW_QA_REVIEW_ANTHROPIC_API_KEY",
+            gemini_key="test", gemini_scope="WOW_QA_REVIEW_GEMINI_API_KEY",
         )
 
 
@@ -234,8 +235,8 @@ def test_only_typed_provider_unavailability_permits_secondary(monkeypatch, code)
     monkeypatch.setattr(fallback, "_anthropic", primary)
     monkeypatch.setattr(fallback, "_gemini", secondary)
     result, proof = fallback.review_fallback(
-        captured(), anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
-        gemini_key="test", gemini_scope="GEMINI_API_KEY",
+        captured(), anthropic_key="test", anthropic_scope="WOW_QA_REVIEW_ANTHROPIC_API_KEY",
+        gemini_key="test", gemini_scope="WOW_QA_REVIEW_GEMINI_API_KEY",
     )
     assert seen == ["anthropic", "gemini"]
     assert result["decision"] == "PASS"
@@ -254,3 +255,31 @@ def test_malformed_http_json_never_reclassified_as_transient(monkeypatch):
     monkeypatch.setattr(fallback, "urlopen", lambda *_, **__: FakeResponse())
     with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_PROVIDER_RESPONSE_INVALID"):
         fallback._post_json("https://example.invalid", {}, {"foo": "bar"})
+
+
+def test_ambient_provider_credentials_cannot_act_as_independent_qa(monkeypatch):
+    monkeypatch.setattr(
+        fallback, "_anthropic",
+        lambda *args: pytest.fail("Ambient Engineering credential cannot invoke QA"),
+    )
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_CREDENTIAL_SCOPE_UNTRUSTED"):
+        fallback.review_fallback(
+            captured(), anthropic_key="unused",
+            anthropic_scope="ANTHROPIC_API_KEY",
+        )
+
+
+def test_fallback_requires_verified_primary_error_and_qa_only_keys():
+    wf = yaml.safe_load(
+        (ROOT / ".github/workflows/wow-v17-independent-qa-check.yml").read_text()
+    )
+    steps = {s["name"]: s for s in wf["jobs"]["qa"]["steps"]}
+    primary = steps["Run isolated read-only adversarial review"]
+    classifier = steps["Verify typed primary availability before allowing fallback"]
+    secondary = steps["Run authenticated independent reviewer fallback"]
+    assert "independent_source_review_primary.py" in primary["run"]
+    assert primary["continue-on-error"] is True
+    assert "--verify-failure" in classifier["run"]
+    assert "steps.primary_failure.outputs.fallback_eligible == 'true'" in secondary["if"]
+    assert "secrets.ANTHROPIC_API_KEY" not in str(secondary)
+    assert "secrets.GEMINI_API_KEY" not in str(secondary)
