@@ -165,3 +165,24 @@ def test_captured_source_digest_must_match_complete_authenticated_patch(tmp_path
     path.write_text(json.dumps(source), encoding="utf-8")
     with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_INPUT_DIFF_MISMATCH"):
         fallback._read_input(path)
+
+
+
+def test_claude_native_json_schema_is_validated_after_real_transport(monkeypatch):
+    seen = []
+    def fake_post(url, headers, payload):
+        seen.append((url, headers, payload))
+        return {"content": [{"type": "text", "text": verdict()}],
+                "stop_reason": "end_turn"}
+    monkeypatch.setattr(fallback, "_post_json", fake_post)
+    response = fallback._anthropic(fallback._prompt(captured()), "test-credential")
+    assert json.loads(response)["decision"] == "PASS"
+    assert len(seen) == 1
+    _, headers, payload = seen[0]
+    assert headers["x-api-key"] == "test-credential"
+    assert payload["output_config"]["format"]["type"] == "json_schema"
+    schema = payload["output_config"]["format"]["schema"]
+    assert "reviewed_head_sha" in schema["required"]
+    assert "reviewed_diff_sha256" in schema["required"]
+    assert "findings" in schema["required"]
+    assert schema["additionalProperties"] is False
