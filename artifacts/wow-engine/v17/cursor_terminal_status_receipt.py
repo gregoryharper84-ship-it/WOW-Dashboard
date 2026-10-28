@@ -116,8 +116,10 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     )
     body = comment.get("body")
     if (comment.get("id") != comment_id
+            or comment.get("issue_url") != f"{GITHUB_API}/repos/{REPOSITORY}/issues/1138"
             or not isinstance(comment.get("user"), dict)
             or comment["user"].get("login") != "github-actions[bot]"
+            or comment["user"].get("id") != 41898282
             or not isinstance(body, str)
             or not body.startswith("<!-- WOW_REMOTE_REPAIR_ATTEMPT:")):
         raise ReceiptBlocked("CURSOR_RESERVATION_UNTRUSTED")
@@ -167,7 +169,9 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or origin.get("status") != "completed"
             or origin.get("conclusion") != "success"
             or not isinstance(origin.get("repository"), dict)
-            or origin["repository"].get("full_name") != REPOSITORY):
+            or origin["repository"].get("full_name") != REPOSITORY
+            or not isinstance(origin.get("head_repository"), dict)
+            or origin["head_repository"].get("full_name") != REPOSITORY):
         raise ReceiptBlocked("CURSOR_RESERVATION_WORKFLOW_UNVERIFIED")
     return {
         "reservation_comment_id": comment_id,
