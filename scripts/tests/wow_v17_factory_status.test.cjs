@@ -47,3 +47,11 @@ test('a stale successful check cannot override a fresh failure',()=>{
   const out=assess(pr(),[check('QA',{id:10,completed_at:'2026-10-28T12:00:00Z'}),check('QA',{id:11,conclusion:'failure',completed_at:'2026-10-28T13:00:00Z'}),check('RELEASE')]);
   assert.equal(out.exact_head_checks.qa.state,'FAIL');
 });
+
+test('a newer pending attempt takes precedence even when an old attempt completed later',()=>{
+  const old=check('QA',{id:100,started_at:'2026-10-28T10:00:00Z',completed_at:'2026-10-28T12:00:00Z'});
+  const pending=check('QA',{id:101,started_at:'2026-10-28T11:00:00Z',completed_at:null,status:'in_progress',conclusion:null});
+  const out=assess(pr(),[old,pending,check('RELEASE')]);
+  assert.equal(out.exact_head_checks.qa.state,'PENDING');
+  assert.equal(out.fixed_and_verified,false);
+});
