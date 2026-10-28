@@ -344,3 +344,25 @@ def test_database_source_protocol_has_one_canonical_rpc_and_matching_grants():
     assert "m.source_pr IS DISTINCT FROM p_source_pr" in sql
     assert "m.draft IS DISTINCT FROM p_draft" in sql
     assert "p_branch = ('wow-engineering/exact-replay-'" in sql
+
+
+def test_review_only_migration_creates_all_columns_referenced_by_cas():
+    """Prevent green Python tests while staged PostgreSQL DDL cannot compile."""
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[1] / "migrations" /
+           "20261027_writer_mutation_fence_REVIEW_ONLY.sql").read_text()
+    declaration = sql.split(
+        "CREATE TABLE IF NOT EXISTS public.wow_engineering_writer_mutation_intents (", 1
+    )[1].split("\n);", 1)[0]
+    assert "payload_digest text NOT NULL CHECK (payload_digest ~ '^[0-9a-f]{64}$')" in declaration
+    for column in ("source_pr", "source_sha", "draft"):
+        assert any(line.strip().startswith(column + " ")
+                   for line in declaration.splitlines()), column
+        assert "m." + column in sql, "CAS must bind immutable replay field"
+    assert "source_sha ~ '^[0-9a-f]{40}$'" in declaration
+    assert "source_pr IS NULL AND source_sha = '' AND draft IS TRUE" in declaration
+    assert "source_pr IS NOT NULL AND source_sha ~ '^[0-9a-f]{40}$'" in declaration
+    assert "source_pr,source_sha,draft,state" in sql.replace("\n", "")
+    assert "REVIEW_ONLY" in sql and "ENABLE ROW LEVEL SECURITY" in sql
+    assert "GRANT SELECT,INSERT,UPDATE" in sql
+    assert "TO service_role" in sql
