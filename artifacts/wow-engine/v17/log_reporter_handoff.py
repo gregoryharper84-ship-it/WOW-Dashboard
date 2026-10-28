@@ -10,8 +10,9 @@ import hashlib
 import json
 import re
 from typing import Any, Mapping
+from datetime import timedelta
 
-from v17.log_incident_intake import SERVICE, WORKER_SERVICE, SERVICES, ALLOWED_TYPED_CODES, WORKER_FAILURE_CODES
+from v17.log_incident_intake import SERVICE, WORKER_SERVICE, SERVICES, ALLOWED_TYPED_CODES, WORKER_FAILURE_CODES, utc_time
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 WORKFLOW = "wow-v17-log-incident-intake.yml"
@@ -23,6 +24,13 @@ ROUTES = frozenset({"ROOT_PROBE", "HEALTH_PROBE", "SCOUT_HANDOFF",
                     "PROP_SELF_ACCEPTANCE", "FITTED_MODEL", "PERSISTENCE",
                     "ENGINEERING_RESIDENT_SUPERVISOR"})
 FAILURES = ALLOWED_TYPED_CODES | WORKER_FAILURE_CODES | frozenset({"HTTP_5XX", "HTTP_401", "HTTP_422"})
+CANDIDATE_KEYS = frozenset({"source", "subsystem", "service", "failure_boundary",
+    "typed_failure", "severity", "fingerprint", "count", "first_seen_utc",
+    "last_seen_utc", "release_shas", "next_owner", "state", "can_execute"})
+REPORT_KEYS = frozenset({"status", "source", "services", "window_start_utc",
+    "window_end_utc", "events_inspected", "findings",
+    "needs_durable_reporter_dedupe", "terminal_authority", "can_execute",
+    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS"})
 
 
 def _hold(reason: str) -> dict[str, Any]:
@@ -68,13 +76,39 @@ def plan_reporter_handoff(
             or report["status"] == "CANDIDATES" and not findings):
         return _hold("REPORTER_PACKET_INVALID")
 
+    if set(report) != REPORT_KEYS:
+        return _hold("REPORTER_PACKET_FIELDS_INVALID")
+    try:
+        window_begin = utc_time(report["window_start_utc"])
+        window_end = utc_time(report["window_end_utc"])
+        if not window_begin < window_end or window_end - window_begin > timedelta(hours=24):
+            raise ValueError("window")
+    except (ValueError, TypeError):
+        return _hold("REPORTER_WINDOW_INVALID")
+
     decisions: list[dict[str, Any]] = []
     fingerprints: set[str] = set()
     for row in findings:
         if not isinstance(row, Mapping):
             return _hold("CANDIDATE_INVALID")
+        if set(row) != CANDIDATE_KEYS:
+            return _hold("CANDIDATE_FIELDS_INVALID")
+        try:
+            first_seen = utc_time(row["first_seen_utc"])
+            last_seen = utc_time(row["last_seen_utc"])
+        except (ValueError, TypeError):
+            return _hold("CANDIDATE_TIMESTAMP_INVALID")
+        if not window_begin <= first_seen <= last_seen < window_end:
+            return _hold("CANDIDATE_TIMESTAMP_OUT_OF_WINDOW")
+        shas = row.get("release_shas")
+        if (not isinstance(shas, list) or len(shas) > 50
+                or any(not isinstance(x, str) or not SHA.fullmatch(x) for x in shas)
+                or len(shas) != len(set(shas))):
+            return _hold("CANDIDATE_SHA_LIST_INVALID")
         route, code = row.get("failure_boundary"), row.get("typed_failure")
         service = row.get("service")
+        if (row.get("subsystem") != ("ENGINEERING_AUTONOMY" if service == WORKER_SERVICE else "BACKEND_RUNTIME")):
+            return _hold("CANDIDATE_SUBSYSTEM_INVALID")
         if (row.get("source") != "DATADOG" or service not in SERVICES
                 or route not in ROUTES or code not in FAILURES
                 or row.get("can_execute") is not False
