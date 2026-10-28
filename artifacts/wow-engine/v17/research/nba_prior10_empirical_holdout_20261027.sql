@@ -35,7 +35,7 @@ WITH cutoffs AS (
   SELECT public.wow_v17_csv_fields(t.line) AS a
   FROM public.wow_fantasy_score_source_cache c
   CROSS JOIN LATERAL
-    regexp_split_to_table(c.raw_body, E'\\n') WITH ORDINALITY t(line,n)
+    regexp_split_to_table(c.raw_body, E'\n') WITH ORDINALITY t(line,n)
   WHERE c.sport = 'NBA'
     AND c.source_id = 'SPORTSDATAVERSE_ESPN_NBA_PLAYER_BOX_2026_7A4868DA'
     AND c.raw_sha256 = '7a4868da67ae7f6ebfba23389e04220be2e3f69d2e56a3942c02aa56f1becc89'
@@ -48,7 +48,7 @@ WITH cutoffs AS (
   FROM parsed
   WHERE array_length(a,1) = 57 AND a[3] = '2'
     AND a[6] <> '' AND a[7] <> ''
-    AND a[12] ~ '^[0-9]+(\\.[0-9]+)?$'
+    AND a[12] ~ '^[0-9]+(\.[0-9]+)?$'
     AND a[12]::numeric > 0
     AND a[28] ~ '^[0-9]+$'
     AND a[21] ~ '^[0-9]+$'
