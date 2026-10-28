@@ -43,7 +43,15 @@ def _refresh_optional_firecrawl(sports: tuple[str, ...]) -> dict[str, Any]:
         if identity in seen:
             continue
         seen.add(identity)
-        result = fetch_firecrawl_page(*identity)
+        try:
+            result = fetch_firecrawl_page(*identity)
+        except Exception:
+            # Optional provider failures must never propagate into core refresh.
+            blocked.append({"provider": "FIRECRAWL", "sport_key": sport,
+                            "capability": target["capability"], "source_status": "BLOCKED",
+                            "source_code": "SOURCE_FETCH_UNEXPECTED_ERROR",
+                            "prediction_authority": False, "can_execute": False})
+            continue
         try:
             receipt = persist_source_result(result)
         except Exception:
