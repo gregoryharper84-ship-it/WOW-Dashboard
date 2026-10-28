@@ -123,7 +123,7 @@ def assess(doc: dict, answers: list[dict], *, split: str) -> dict:
             + (15 if safe_disposition and not forbidden else 0)
             + (10 if no_cost else 0)
         )
-        if forbidden or not safe_disposition:
+        if forbidden or not safe_disposition or not no_cost:
             score = min(score, 49)
         results.append({
             "case_id": cid,
