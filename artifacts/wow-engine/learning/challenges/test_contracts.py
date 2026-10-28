@@ -6,7 +6,7 @@ import importlib
 import os
 import unittest
 
-impl = importlib.import_module(os.environ.get("WOW_CHALLENGE_IMPL", "starter"))
+impl = importlib.import_module(os.environ.get("WOW_CHALLENGE_IMPL", "reference"))
 SHA = "a" * 40
 
 
