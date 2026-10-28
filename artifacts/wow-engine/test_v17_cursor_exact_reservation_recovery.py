@@ -222,13 +222,25 @@ def test_dynamic_finalizer_does_not_release_an_unverified_or_concurrent_cursor()
     assert api.puts == 0
 
 
-def test_dynamic_finalizer_appends_new_receipt_only_after_terminal_proof():
-    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments, run
-    fixture = Fixture()
-    proof = fixture.prove()
+def _fresh_cursor_reader(fixture):
+    """Provider responses may change *after* the original verified probe."""
+    def read(url, *, token, basic=False):
+        assert token == "fixture" and basic is True
+        if url == f"{probe.CURSOR_API}/agents/{AGENT}":
+            return copy.deepcopy(fixture.agent)
+        if url == f"{probe.CURSOR_API}/agents/{AGENT}/runs/{RUN}":
+            return copy.deepcopy(fixture.run)
+        raise AssertionError("unexpected Cursor final witness URL: " + url)
+    return read
+
+
+def _dynamic_release_api(fixture):
+    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments
 
     class DynamicAPI(_FakeAPI):
         def request(self, path, payload=None, method=None):
+            if path == f"/repos/{release.REPOSITORY}/pulls/{PR}":
+                return copy.deepcopy(fixture.pr)
             if path == release.LEDGER and method == "POST":
                 self.puts += 1
                 created = {
@@ -241,11 +253,78 @@ def test_dynamic_finalizer_appends_new_receipt_only_after_terminal_proof():
                 return copy.deepcopy(self.comments[-1])
             return super().request(path, payload, method)
 
-    api = DynamicAPI(released_comments() + [fixture.comment])
+    return DynamicAPI(released_comments() + [fixture.comment])
+
+
+@pytest.mark.parametrize("failure,code", [
+    ("pr_head_moved", "REMOTE_RELEASE_PR_MOVED_AFTER_PROBE"),
+    ("pr_closed", "REMOTE_RELEASE_PR_MOVED_AFTER_PROBE"),
+    ("pr_moved_to_fork", "REMOTE_RELEASE_PR_MOVED_AFTER_PROBE"),
+    ("cursor_resumed", "REMOTE_RELEASE_PROVIDER_REACTIVATED"),
+    ("latest_run_changed", "REMOTE_RELEASE_PROVIDER_REACTIVATED"),
+    ("run_not_terminal", "REMOTE_RELEASE_PROVIDER_REACTIVATED"),
+    ("run_agent_changed", "REMOTE_RELEASE_PROVIDER_REACTIVATED"),
+])
+def test_fresh_finalizer_witness_rejects_state_change_without_appending(failure, code):
+    fixture = Fixture()
+    original_proof = fixture.prove()
+    api = _dynamic_release_api(fixture)
+    if failure == "pr_head_moved":
+        fixture.pr["head"]["sha"] = "c" * 40
+    elif failure == "pr_closed":
+        fixture.pr["state"] = "closed"
+    elif failure == "pr_moved_to_fork":
+        fixture.pr["head"]["repo"]["full_name"] = "attacker/repo"
+    elif failure == "cursor_resumed":
+        fixture.agent["status"] = "ACTIVE"
+    elif failure == "latest_run_changed":
+        fixture.agent["latestRunId"] = "run-newer"
+    elif failure == "run_not_terminal":
+        fixture.run["status"] = "CREATING"
+    elif failure == "run_agent_changed":
+        fixture.run["agentId"] = "bc-attacker"
+    env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
+    with patch.dict("os.environ", env), patch(
+        "v17.cursor_terminal_status_receipt.collect_receipt", return_value=original_proof,
+    ), patch(
+        "v17.cursor_terminal_status_receipt.api_json", side_effect=_fresh_cursor_reader(fixture),
+    ), pytest.raises(release.ReleaseBlocked, match=code):
+        release.append_terminal_release(
+            api, cursor_token="fixture", run_id=99004, run_attempt=1,
+            source_sha="a" * 40, reservation_comment_id=CID,
+        )
+    assert api.puts == 0, "no release receipt after changed post-probe witness"
+
+
+def test_fresh_finalizer_provider_transport_failure_never_writes():
+    fixture = Fixture()
+    original_proof = fixture.prove()
+    api = _dynamic_release_api(fixture)
+    env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
+    with patch.dict("os.environ", env), patch(
+        "v17.cursor_terminal_status_receipt.collect_receipt", return_value=original_proof,
+    ), patch(
+        "v17.cursor_terminal_status_receipt.api_json", side_effect=probe.ReceiptBlocked("STATUS_API_HTTP_503"),
+    ), pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_PROVIDER_RECHECK_UNVERIFIED"):
+        release.append_terminal_release(
+            api, cursor_token="fixture", run_id=99004, run_attempt=1,
+            source_sha="a" * 40, reservation_comment_id=CID,
+        )
+    assert api.puts == 0
+
+
+def test_dynamic_finalizer_appends_new_receipt_only_after_terminal_proof():
+    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments, run
+    fixture = Fixture()
+    proof = fixture.prove()
+
+    api = _dynamic_release_api(fixture)
     before = copy.deepcopy(api.comments)
     env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
     with patch.dict("os.environ", env), patch(
         "v17.cursor_terminal_status_receipt.collect_receipt", return_value=proof,
+    ), patch(
+        "v17.cursor_terminal_status_receipt.api_json", side_effect=_fresh_cursor_reader(fixture),
     ):
         result = release.append_terminal_release(
             api, cursor_token="fixture", run_id=99004, run_attempt=1,
