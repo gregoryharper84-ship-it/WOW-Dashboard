@@ -219,7 +219,8 @@ def fetch_datadog(*, begin: datetime, end: datetime, api_key: str, app_key: str,
     for page in range(MAX_PAGES):
         payload: dict[str, Any] = {
             "filter": {"from": begin.isoformat(), "to": end.isoformat(),
-                       "query": f"service:({SERVICE} OR {WORKER_SERVICE})"},
+                       "query": (f"(service:{SERVICE} status:(error OR warn OR critical)) OR "
+                                 f"(service:{WORKER_SERVICE} WOW_RESIDENT_SUPERVISOR)")},
             "page": {"limit": PAGE_LIMIT},
             "sort": "timestamp",
         }
