@@ -259,6 +259,7 @@ def review_fallback(
     anthropic_scope: str = "",
     gemini_key: str = "",
     gemini_scope: str = "",
+    attempts: list[dict] | None = None,
 ) -> tuple[dict, dict]:
     prompt = _prompt(captured)
     failures: list[str] = []
@@ -266,20 +267,38 @@ def review_fallback(
         ("anthropic-claude-api", anthropic_key, anthropic_scope, _anthropic),
         ("gemini-generative-api", gemini_key, gemini_scope, _gemini),
     )
-    for identity, key, scope, call in candidates:
+    for index, (identity, key, scope, call) in enumerate(candidates):
         if not key:
             continue
+        row = {
+            "provider": identity, "role": "independent_security_review",
+            "head_sha": captured["pr"]["head"]["sha"],
+            "diff_sha256": captured["diff_sha256"], "retry_count": index + 1,
+            "can_execute": False, "review_approved": False,
+        }
         if scope not in ALLOWED_FALLBACKS[identity]:
+            if attempts is not None:
+                attempts.append({**row, "typed_result": "REVIEW_CREDENTIAL_SCOPE_UNTRUSTED",
+                                 "revisit_trigger": "PROTECTED_QA_CREDENTIAL_SCOPE_CORRECTED"})
             raise ReviewUnavailable("REVIEW_CREDENTIAL_SCOPE_UNTRUSTED")
         try:
             verdict = _validate_reply(call(prompt, key), captured)
         except ReviewUnavailable as exc:
-            if not is_retryable_provider_failure(exc):
+            eligible = is_retryable_provider_failure(exc)
+            if attempts is not None:
+                attempts.append({**row, "typed_result": str(exc),
+                                 "revisit_trigger": ("PROVIDER_AVAILABLE" if eligible
+                                                      else "INDEPENDENT_REVIEW_REPAIR_REQUIRED")})
+            if not eligible:
                 # Semantic failure, invalid evidence, or unknown provider status
                 # remains an actual HOLD, even when Gemini is configured.
                 raise
             failures.append(f"{identity}:{exc}")
             continue
+        if attempts is not None:
+            attempts.append({**row, "typed_result": verdict["decision"],
+                             "revisit_trigger": ("QA_EXACT_HEAD_CERTIFICATION" if verdict["decision"] == "PASS"
+                                                 else "SOURCE_FIX_AND_NEW_HEAD")})
         # REJECT is terminal, not a reason to fish for a more permissive PASS.
         return verdict, {"provider_identity": identity, "credential_scope": scope,
                          "can_execute": False}
@@ -293,7 +312,9 @@ def main() -> int:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--result", required=True, type=Path)
     parser.add_argument("--provenance", required=True, type=Path)
+    parser.add_argument("--attempts", type=Path)
     args = parser.parse_args()
+    audit_attempts: list[dict] = []
     try:
         captured = _read_input(args.input)
         verdict, provenance = review_fallback(
@@ -302,6 +323,7 @@ def main() -> int:
             anthropic_scope=os.environ.get("ANTHROPIC_REVIEW_SCOPE", ""),
             gemini_key=os.environ.get("GEMINI_REVIEW_KEY", ""),
             gemini_scope=os.environ.get("GEMINI_REVIEW_SCOPE", ""),
+            attempts=audit_attempts,
         )
         args.result.write_text(json.dumps(verdict, sort_keys=True) + "\n", encoding="utf-8")
         args.provenance.write_text(json.dumps(provenance, sort_keys=True) + "\n", encoding="utf-8")
@@ -314,6 +336,15 @@ def main() -> int:
         print(json.dumps({"status": "HOLD", "reason": str(exc), "can_execute": False}),
               file=sys.stderr)
         return 2
+    finally:
+        if args.attempts:
+            # Non-authorizing, source-digest-bound attempted-provider receipt.
+            # GitHub protected workflow uploads this file even on HOLD.
+            args.attempts.write_text(
+                json.dumps({"attempts": audit_attempts, "can_execute": False,
+                            "review_approved": False}, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
 
 if __name__ == "__main__":
