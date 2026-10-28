@@ -136,3 +136,19 @@ def test_main_persists_typed_hold_without_result(monkeypatch, tmp_path):
     assert not (tmp_path / "pass.json").exists()
     assert primary.main(["--input", str(f), "--failure", str(failure),
                          "--verify-failure"]) == 0
+
+
+def test_primary_attempt_receipt_is_sha_bound_and_never_claims_approval(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_RUN_ID", "40786179429")
+    path = tmp_path / "primary-attempt.json"
+    primary._write_attempt(path, captured(), "REVIEW_PROVIDER_HTTP_429")
+    receipt = json.loads(path.read_text())
+    assert receipt["source_run_id"] == "40786179429"
+    assert receipt["head_sha"] == HEAD
+    assert receipt["diff_sha256"] == DIGEST
+    assert receipt["provider"] == "openai-responses-api"
+    assert receipt["role"] == "independent_security_review"
+    assert receipt["retry_count"] == 0
+    assert receipt["typed_result"] == "REVIEW_PROVIDER_HTTP_429"
+    assert receipt["review_approved"] is False and receipt["can_execute"] is False
+    assert "credential" not in str(receipt)
