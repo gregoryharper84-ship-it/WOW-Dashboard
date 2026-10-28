@@ -225,3 +225,17 @@ def test_unexpected_optional_provider_exception_cannot_stop_core_refresh(monkeyp
     assert response["optional_firecrawl"]["blocked_snapshots"][0]["source_code"] == "SOURCE_FETCH_UNEXPECTED_ERROR"
     assert "do not leak" not in str(response)
     assert response["can_execute"] is False
+
+
+def test_scheduled_scout_runner_wires_opt_in_flag_and_secret_without_default_enable():
+    from pathlib import Path
+
+    workflow = (
+        Path(__file__).resolve().parents[2]
+        / ".github/workflows/wow-v17-scout-source-refresh.yml"
+    ).read_text()
+    assert "WOW_FIRECRAWL_ENABLED: ${{ vars.WOW_FIRECRAWL_ENABLED || 'false' }}" in workflow
+    assert "WOW_FIRECRAWL_API_KEY: ${{ secrets.WOW_FIRECRAWL_API_KEY }}" in workflow
+    assert "WOW_FIRECRAWL_ALLOWED_DOMAINS: ${{ vars.WOW_FIRECRAWL_ALLOWED_DOMAINS }}" in workflow
+    assert "WOW_FIRECRAWL_TARGETS_JSON: ${{ vars.WOW_FIRECRAWL_TARGETS_JSON || '[]' }}" in workflow
+    assert 'WOW_CAN_EXECUTE: "false"' in workflow
