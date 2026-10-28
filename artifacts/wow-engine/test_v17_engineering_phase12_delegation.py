@@ -55,6 +55,71 @@ def test_lifecycle_reentry_without_pr_is_support_only():
     assert validate_support_packet(packet) == []
 
 
+@pytest.mark.parametrize("incident", [
+    "1688", "PM-2026-09-14-001", "PM-2026-12-31-999",
+])
+def test_release_support_accepts_only_canonical_numeric_or_dated_ledger_ids(incident):
+    packet = _pr_packet()
+    packet.update(action="SUPPORT_RELEASE", incident_id=incident,
+                  pr_number="", head_sha="", source_kind="DURABLE_LEDGER_INCIDENT",
+                  check_state="NOT_APPLICABLE")
+    assert validate_support_packet(packet) == []
+    receipt = admission_receipt(packet)
+    assert receipt["admitted"] is True
+    assert receipt["may_merge"] is False
+    assert receipt["may_approve"] is False
+    assert receipt["may_deploy"] is False
+    assert receipt["can_execute"] is False
+
+
+@pytest.mark.parametrize("incident", [
+    "PM-2026-09-14-001", "PR-123", "PM-2026-09-14-001; rm -rf /",
+])
+def test_pr_support_rejects_non_numeric_incident_even_if_ledger_format(incident):
+    packet = _pr_packet()
+    packet["incident_id"] = incident
+    assert "SUPPORT_INCIDENT_ID_INVALID" in validate_support_packet(packet)
+
+
+@pytest.mark.parametrize("incident", [
+    "PM-2026-02-30-001", "PM-2026-13-14-001",
+    "PM-2026-09-14-1", "PM-2026-09-14-001-extra",
+    "PM-2026-09-14-001;echo hacked",
+    "pm-2026-09-14-001", "PM-2026-09-14-001\nTAMPER", "0",
+])
+def test_release_support_rejects_malformed_injected_or_noncalendar_ledger_id(incident):
+    packet = _pr_packet()
+    packet.update(action="SUPPORT_RELEASE", incident_id=incident,
+                  pr_number="", head_sha="", source_kind="DURABLE_LEDGER_INCIDENT",
+                  check_state="NOT_APPLICABLE")
+    assert "SUPPORT_INCIDENT_ID_INVALID" in validate_support_packet(packet)
+    assert admission_receipt(packet)["admitted"] is False
+
+
+def test_actual_paginated_support_checks_are_one_json_array_not_concatenated(monkeypatch):
+    import shutil
+    if shutil.which("jq") is None:
+        pytest.skip("jq not installed on local runner")
+    workflow = (Path(__file__).resolve().parents[2] /
+                ".github/workflows/wow-v17-engineering-specialist-support.yml").read_text()
+    assert "jq -s '[.[].check_runs[]]'" in workflow
+    # GitHub --paginate yields separate object documents, not a single array.
+    pages = "\n".join(json.dumps({"check_runs": [
+        {"name": "check", "status": "completed", "conclusion": "success"}
+        for _ in range(n)
+    ]}) for n in (100, 23))
+    flattened = subprocess.run(["jq", "-s", "[.[].check_runs[]]"], input=pages,
+                               capture_output=True, text=True, check=True)
+    checks = json.loads(flattened.stdout)
+    assert len(checks) == 123
+    packet = _pr_packet()
+    packet["check_state"] = json.dumps(checks)
+    assert validate_support_packet(packet) == []
+    # Limit must remain in effect; no loss/truncation of overflow data.
+    packet["check_state"] = json.dumps(checks * 5)
+    assert "SUPPORT_CHECK_STATE_INVALID" in validate_support_packet(packet)
+
+
 def test_negative_untrusted_handoffs():
     cases = [
         ("action", "MERGE", "SUPPORT_ACTION_INVALID"),
