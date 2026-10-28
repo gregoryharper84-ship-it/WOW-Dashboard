@@ -203,6 +203,54 @@ def test_service_role_has_no_erase_or_trigger_privileges():
         assert db.execute("SELECT has_table_privilege('service_role','public.wow_engineering_closed_writer_epochs','UPDATE')").fetchone()[0] is False
 
 
+def test_service_role_cannot_bypass_writer_rpc_with_direct_dml():
+    # BYPASSRLS does not authorize bypassing protected writer RPCs.
+    with connection() as db:
+        claim(db)
+        for table, privilege in (
+            ("wow_engineering_writer_mutation_intents", "INSERT"),
+            ("wow_engineering_writer_mutation_intents", "UPDATE"),
+            ("wow_engineering_closed_writer_epochs", "INSERT"),
+        ):
+            assert db.execute(
+                "SELECT has_table_privilege('service_role',%s,%s)",
+                ("public." + table, privilege),
+            ).fetchone()[0] is False
+        db.execute("SET ROLE service_role")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.execute("""INSERT INTO public.wow_engineering_closed_writer_epochs
+                (incident_id,epoch,owner_id,lease_group)
+                VALUES (1739,1,%s,'GLOBAL')""", (OWNER,))
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.execute("""UPDATE public.wow_engineering_writer_mutation_intents
+                SET state='CONFIRMED' WHERE incident_id=1739""")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.execute("""INSERT INTO public.wow_engineering_writer_mutation_intents
+                (mutation_id,incident_id,owner_id,epoch,lease_group,operation,branch,sha,
+                 payload_digest,state)
+                VALUES (%s,1739,%s,1,'GLOBAL','CREATE_BRANCH',%s,%s,%s,'PENDING')""",
+                (str(uuid4()), OWNER, 'wow-engineering/fenced-1739-1-12345678', 'a'*40, 'b'*64))
+        mutation = str(uuid4())
+        assert begin(db, mutation=mutation) == 'STARTED'
+        assert confirm(db, mutation) is True
+        assert close(db) == 'DRAINED'
+
+
+def test_writer_rpc_definers_are_attested_and_search_path_pinned():
+    with connection() as db:
+        rows = db.execute("""SELECT p.proname, p.prosecdef,
+                pg_catalog.pg_get_userbyid(p.proowner), p.proconfig
+            FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='public' AND p.proname IN
+              ('wow_engineering_begin_writer_mutation','wow_engineering_close_writer_epoch',
+               'wow_engineering_confirm_writer_mutation')""").fetchall()
+        assert len(rows) == 3
+        for name, is_definer, owner, settings in rows:
+            assert is_definer is True, name
+            assert owner == 'postgres', name
+            assert 'search_path=pg_catalog' in settings, name
+
+
 @pytest.mark.parametrize("role", ["anon", "authenticated"])
 def test_untrusted_roles_cannot_close_epoch(role):
     with connection() as db:

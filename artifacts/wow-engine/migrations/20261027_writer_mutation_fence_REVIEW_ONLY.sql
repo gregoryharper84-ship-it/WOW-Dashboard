@@ -27,7 +27,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS wow_engineering_one_pending_mutation_per_incid
  ON public.wow_engineering_writer_mutation_intents (incident_id) WHERE state='PENDING';
 ALTER TABLE public.wow_engineering_writer_mutation_intents ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.wow_engineering_writer_mutation_intents FROM PUBLIC,anon,authenticated;
-GRANT SELECT,INSERT,UPDATE ON public.wow_engineering_writer_mutation_intents TO service_role;
+-- Explicitly undo even Supabase default service_role DML grants.
+-- Writes are permitted only through narrow, reviewed definer RPCs.
+REVOKE ALL ON public.wow_engineering_writer_mutation_intents FROM service_role;
+GRANT SELECT ON public.wow_engineering_writer_mutation_intents TO service_role;
 -- Supabase default privileges may already have granted ALL to service_role.
 -- Providers must never receive this still-trusted gateway credential.
 REVOKE DELETE,TRUNCATE,TRIGGER,REFERENCES ON public.wow_engineering_writer_mutation_intents FROM service_role;
@@ -43,7 +46,9 @@ CREATE TABLE IF NOT EXISTS public.wow_engineering_closed_writer_epochs (
 );
 ALTER TABLE public.wow_engineering_closed_writer_epochs ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.wow_engineering_closed_writer_epochs FROM PUBLIC,anon,authenticated;
-GRANT SELECT,INSERT ON public.wow_engineering_closed_writer_epochs TO service_role;
+-- Direct tombstone insertion could bypass owner/epoch validation.
+REVOKE ALL ON public.wow_engineering_closed_writer_epochs FROM service_role;
+GRANT SELECT ON public.wow_engineering_closed_writer_epochs TO service_role;
 REVOKE UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES ON public.wow_engineering_closed_writer_epochs FROM service_role;
 CREATE OR REPLACE FUNCTION public.wow_engineering_preserve_closed_epoch()
  RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
@@ -148,8 +153,8 @@ CREATE OR REPLACE FUNCTION public.wow_engineering_begin_writer_mutation(
  p_mutation_id uuid, p_incident_id bigint, p_owner_id text, p_epoch bigint,
  p_lease_group text, p_operation text, p_branch text, p_sha text, p_digest text,
  p_source_pr bigint DEFAULT NULL, p_source_sha text DEFAULT '', p_draft boolean DEFAULT true
-) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER
- SET search_path=pg_catalog,public AS $$
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER
+ SET search_path=pg_catalog AS $$
 DECLARE l public.wow_engineering_incident_writer_leases%rowtype;
         m public.wow_engineering_writer_mutation_intents%rowtype;
 BEGIN
@@ -228,8 +233,8 @@ END $$;
 -- PENDING or denied. DRAINED never releases the lease by itself.
 CREATE OR REPLACE FUNCTION public.wow_engineering_close_writer_epoch(
  p_incident_id bigint,p_owner_id text,p_epoch bigint,p_lease_group text
-) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER
- SET search_path=pg_catalog,public AS $$
+) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER
+ SET search_path=pg_catalog AS $$
 DECLARE l public.wow_engineering_incident_writer_leases%rowtype;
 BEGIN
  IF (p_incident_id>0 AND p_epoch>0
@@ -264,8 +269,8 @@ END $$;
 -- completing; verified audit evidence is immutable.
 CREATE OR REPLACE FUNCTION public.wow_engineering_confirm_writer_mutation(
  p_mutation_id uuid,p_incident_id bigint,p_owner_id text,p_epoch bigint,p_digest text
-) RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER
- SET search_path=pg_catalog,public AS $$
+) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER
+ SET search_path=pg_catalog AS $$
 BEGIN
  UPDATE public.wow_engineering_writer_mutation_intents
  SET state='CONFIRMED',confirmed_at=clock_timestamp()
@@ -277,11 +282,28 @@ END $$;
 
 REVOKE ALL ON FUNCTION public.wow_engineering_enforce_lease_fence() FROM PUBLIC,anon,authenticated;
 REVOKE ALL ON FUNCTION public.wow_engineering_preserve_closed_epoch() FROM PUBLIC,anon,authenticated;
-REVOKE ALL ON FUNCTION public.wow_engineering_close_writer_epoch(bigint,text,bigint,text) FROM PUBLIC,anon,authenticated;
+REVOKE ALL ON FUNCTION public.wow_engineering_close_writer_epoch(bigint,text,bigint,text) FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION public.wow_engineering_close_writer_epoch(bigint,text,bigint,text) TO service_role;
-REVOKE ALL ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text,bigint,text,boolean) FROM PUBLIC,anon,authenticated;
-REVOKE ALL ON FUNCTION public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text) FROM PUBLIC,anon,authenticated;
+REVOKE ALL ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text,bigint,text,boolean) FROM PUBLIC,anon,authenticated,service_role;
+REVOKE ALL ON FUNCTION public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text) FROM PUBLIC,anon,authenticated,service_role;
 GRANT EXECUTE ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text,bigint,text,boolean) TO service_role;
 GRANT EXECUTE ON FUNCTION public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text) TO service_role;
 -- Review production lease identity, full privilege inventory, legacy CLAIM
 -- paths, live HELD rows, bounded 55P03 retries and rollback before activation.
+
+-- Fail closed if the definer principal differs from the audited migration role.
+-- This is a REVIEW_ONLY candidate; migration execution requires independent approval.
+DO $wow_owner_guard$
+DECLARE f regprocedure;
+BEGIN
+ FOREACH f IN ARRAY ARRAY[
+  'public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text,bigint,text,boolean)'::regprocedure,
+  'public.wow_engineering_close_writer_epoch(bigint,text,bigint,text)'::regprocedure,
+  'public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text)'::regprocedure
+ ] LOOP
+  IF (SELECT pg_catalog.pg_get_userbyid(proowner)
+      FROM pg_catalog.pg_proc WHERE oid=f::oid) IS DISTINCT FROM 'postgres' THEN
+    RAISE EXCEPTION 'WRITER_RPC_OWNER_UNTRUSTED: %', f USING ERRCODE='42501';
+  END IF;
+ END LOOP;
+END $wow_owner_guard$;
