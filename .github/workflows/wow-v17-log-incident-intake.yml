@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install pytest
-          python -m pytest -q artifacts/wow-engine/test_v17_log_incident_intake.py artifacts/wow-engine/test_v17_log_intake_workflow.py artifacts/wow-engine/test_v17_log_reporter_handoff.py
+          python -m pytest -q artifacts/wow-engine/test_v17_log_incident_intake.py artifacts/wow-engine/test_v17_log_intake_workflow.py artifacts/wow-engine/test_v17_log_reporter_handoff.py artifacts/wow-engine/test_v17_engineering_log_reporter.py artifacts/wow-engine/test_v17_log_reporter_integration.py
       - name: Query Datadog bounded error window
         shell: bash
         env:
