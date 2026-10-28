@@ -43,6 +43,19 @@ March 1 diagnostic: mean observed joint exceedances 26.592% P+R, 24.780% P+A, 23
 - Player role, opponent, roster availability, injuries, minutes, game pace and common game script can explain much of the joint exceedance. A richer fitted specialist must be compared on genuinely frozen future evidence.
 - The video's four-ticket AB/AC/BC/ABC structure remains an **independent** downstream portfolio/market question requiring exact offered multi-prop prices, settlement/push handling, and cross-ticket hinge risk.
 
+
+## Fixed-hyperparameter sensitivity (March 1 cutoff)
+
+An additional read-only post hoc comparison held the same March 1 data and player-level training set fixed, while varying the **independence shrinkage strength**. Because the 15-pseudocount value was chosen during the exploratory process, this is a sensitivity study and **not independent hyperparameter selection or validation**. No choice here can authorize production use.
+
+| Pair | Shrinkage 5 | Shrinkage 15 | Shrinkage 40 | Shrinkage 100 |
+|---|---:|---:|---:|---:|
+| Points + rebounds | +0.002341 | +0.002489 | +0.002211 | +0.001515 |
+| Points + assists | +0.001119 | +0.001261 | +0.001171 | +0.000825 |
+| Rebounds + assists | **−0.000118** | +0.000283 | +0.000533 | +0.000478 |
+
+Values are Brier improvement versus the same marginal-product benchmark at 5,464 player-game rows per stat pair. **The rebounds+assists challenger worsened when shrinkage=5**, and also worsened at the February 15 cutoff when shrinkage=15. This pair is not a reliable improvement in these tests. The apparent relative advantage of points+rebounds cannot be treated as a model-quality certification, and no parameter should be optimized on this already-inspected test set.
+
 ## Remaining gated work
 
 1. Under existing NBA exact-prop source work #1988 and immutable forward evidence #491, capture actual exact offer, player, game, stat, direction, model version, feature cutoff, model timestamp and the numeric **research candidate** distribution before game start; preserve typed `RESEARCH_UNCALIBRATED` status.
