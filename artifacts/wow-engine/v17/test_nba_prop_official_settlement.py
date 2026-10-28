@@ -246,3 +246,18 @@ def test_no_independent_proof_means_no_persistence(monkeypatch):
     assert response["held"] == 1
     assert saved == []
     assert response["can_execute"] is False
+
+
+def test_literal_offer_required_and_numeric_offer_must_match_prediction():
+    s = snapshot()
+    s["opportunity_ledger"].pop("literal_threshold")
+    assert run(s=s)["blocker"] == "NBA_LITERAL_EXACT_OFFER_REQUIRED"
+    s = snapshot()
+    s["opportunity_ledger"]["literal_threshold"] = "27.5"
+    assert run(s=s)["blocker"] == "NBA_LITERAL_EXACT_OFFER_LINE_MISMATCH"
+    s = snapshot()
+    s["opportunity_ledger"]["threshold_type"] = "AT_LEAST"
+    assert run(s=s)["blocker"] == "NBA_AT_LEAST_OFFER_ADAPTER_NOT_CERTIFIED"
+    s = snapshot()
+    s["opportunity_ledger"]["literal_threshold"] = "NaN"
+    assert run(s=s)["blocker"] == "NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED"
