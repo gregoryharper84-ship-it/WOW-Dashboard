@@ -135,6 +135,10 @@ def run_exact_route_settlement(
             result = runtime.settle_wnba_scalar(
                 prediction, snapshot, http_get=http_get, now=now
             )
+        elif key in runtime.NBA_SUPPORTED:
+            result = runtime.settle_nba_scalar(
+                prediction, snapshot, http_get=http_get, now=now
+            )
         else:
             result = {
                 "status": "EXACT_ROUTE_SETTLEMENT_ADAPTER_REQUIRED",

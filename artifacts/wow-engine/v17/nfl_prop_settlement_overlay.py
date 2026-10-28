@@ -364,6 +364,10 @@ def run_exact_route_settlement(
             result = settle_nfl_scalar(
                 prediction, snapshot, http_get=http_get, now=now
             )
+        elif key in settlement.NBA_SUPPORTED:
+            result = settlement.settle_nba_scalar(
+                prediction, snapshot, http_get=http_get, now=now
+            )
         else:
             result = {
                 "status": "EXACT_ROUTE_SETTLEMENT_ADAPTER_REQUIRED",
