@@ -116,7 +116,8 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     )
     body = comment.get("body")
     if (comment.get("id") != comment_id
-            or comment.get("user", {}).get("login") != "github-actions[bot]"
+            or not isinstance(comment.get("user"), dict)
+            or comment["user"].get("login") != "github-actions[bot]"
             or not isinstance(body, str)
             or not body.startswith("<!-- WOW_REMOTE_REPAIR_ATTEMPT:")):
         raise ReceiptBlocked("CURSOR_RESERVATION_UNTRUSTED")
@@ -165,7 +166,8 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or origin.get("head_branch") != "main"
             or origin.get("status") != "completed"
             or origin.get("conclusion") != "success"
-            or origin.get("repository", {}).get("full_name") != REPOSITORY):
+            or not isinstance(origin.get("repository"), dict)
+            or origin["repository"].get("full_name") != REPOSITORY):
         raise ReceiptBlocked("CURSOR_RESERVATION_WORKFLOW_UNVERIFIED")
     return {
         "reservation_comment_id": comment_id,
@@ -200,7 +202,8 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
         )
         if (comparison.get("status") != "ahead"
                 or comparison.get("behind_by") != 0
-                or comparison.get("merge_base_commit", {}).get("sha") != original):
+                or not isinstance(comparison.get("merge_base_commit"), dict)
+                or comparison["merge_base_commit"].get("sha") != original):
             raise ReceiptBlocked("CURSOR_PR_HEAD_NOT_DESCENDANT")
     url = f"{GITHUB_API}/repos/{REPOSITORY}/pulls/{target['pr_number']}"
     files = api(f"{url}/files?per_page=100&page=1", token=github_token)
@@ -217,9 +220,12 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
                             "CURSOR_SOURCE_PR_RECHECK_FAILED")
     if (again.get("number") != target["pr_number"]
             or again.get("state") != "open"
-            or again.get("head", {}).get("sha") != latest
-            or again.get("head", {}).get("repo", {}).get("full_name") != REPOSITORY
-            or again.get("base", {}).get("ref") != "main"):
+            or not isinstance(again.get("head"), dict)
+            or again["head"].get("sha") != latest
+            or not isinstance(again["head"].get("repo"), dict)
+            or again["head"]["repo"].get("full_name") != REPOSITORY
+            or not isinstance(again.get("base"), dict)
+            or again["base"].get("ref") != "main"):
         raise ReceiptBlocked("CURSOR_PR_MOVED_DURING_PROBE")
     return sorted(names)
 
@@ -239,7 +245,7 @@ def collect_receipt(
     run_id = target["run_id"] if target else RUN_ID
     pr_number = target["pr_number"] if target else PR_NUMBER
 
-    agent_url = f"{CURSOR_API}/agents/{parse.quote(agent_id, safe='')}
+    agent_url = f"{CURSOR_API}/agents/{parse.quote(agent_id, safe='')}"
     run_url = (
         f"{CURSOR_API}/agents/{parse.quote(agent_id, safe='')}/runs/"
         f"{parse.quote(run_id, safe='')}"
@@ -279,7 +285,7 @@ def collect_receipt(
         _verify_pr(pr)
 
     if not target:
-            files = api(
+        files = api(
             f"{pr_url}/files?per_page=100&page=1",
             token=github_token,
         )
