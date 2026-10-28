@@ -32,9 +32,21 @@ DETERMINISTIC_CHECKS = {
     "WOW Independent QA exact-head": 5245832,
     "WOW Release Authority exact-head": 5245853,
 }
-# Initial narrow rollout: source-only training package, not a general bypass of model code.
-CLASS_A_PREFIXES = ("artifacts/wow-engine/learning/",)
-CLASS_A_EXACT_PATHS = frozenset({"artifacts/wow-engine/test_v17_triple_d_learning_smoke.py"})
+# Exact initial canary inventory, not a recursive directory allowlist.
+# New paths require a separately reviewed policy update. This cannot approve
+# arbitrary source inserted underneath the training directory.
+CLASS_A_EXACT_PATHS = frozenset({
+    "artifacts/wow-engine/learning/AGENT_TRAINING.md",
+    "artifacts/wow-engine/learning/README.md",
+    "artifacts/wow-engine/learning/challenges/reference.py",
+    "artifacts/wow-engine/learning/challenges/run_challenge_tests.py",
+    "artifacts/wow-engine/learning/challenges/starter.py",
+    "artifacts/wow-engine/learning/challenges/test_contracts.py",
+    "artifacts/wow-engine/learning/data/cases.json",
+    "artifacts/wow-engine/learning/evaluate.py",
+    "artifacts/wow-engine/learning/tests/test_evaluate.py",
+    "artifacts/wow-engine/test_v17_triple_d_learning_smoke.py",
+})
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 OWNER_LOGIN = "gregoryharper84-ship-it"
 OWNER_ID = 285088163
@@ -324,7 +336,7 @@ def _validate_class_a_files(files: Sequence[Mapping[str, Any]], *, repo_root: Pa
                  "CLASS_A_CHANGE_TYPE_NOT_ALLOWED")
         _require(file.get("previous_filename") is None, "CLASS_A_RENAME_OR_COPY_NOT_ALLOWED")
         path = file["filename"]
-        _require(path in CLASS_A_EXACT_PATHS or any(path.startswith(p) for p in CLASS_A_PREFIXES),
+        _require(path in CLASS_A_EXACT_PATHS,
                  "CLASS_A_PATH_NOT_ALLOWLISTED")
 
 
