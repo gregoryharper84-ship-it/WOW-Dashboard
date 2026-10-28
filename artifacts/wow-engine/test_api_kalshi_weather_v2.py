@@ -151,3 +151,17 @@ def test_health_confirms_database_read_without_claiming_calibration(monkeypatch)
     assert body["governed_probability_capability"] == "UNAVAILABLE"
     assert body["probability_publishable"] is False
     assert body["can_execute"] is False
+
+
+def test_health_is_never_probability_publication_authority(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "fake")
+    class Healthy:
+        def load_runtime_capability(self):
+            return {"capability_status": "AVAILABLE"}
+    monkeypatch.setattr(api, "_persistence", lambda: Healthy())
+    body = TestClient(api.app).get("/health").json()
+    assert body["database_diagnostic"] == "DATABASE_READ_VERIFIED"
+    assert body["governed_probability_capability"] == "AVAILABLE"
+    assert body["probability_publishable"] is False
+    assert body["can_execute"] is False
