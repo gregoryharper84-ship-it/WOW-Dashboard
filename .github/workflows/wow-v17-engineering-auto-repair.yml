@@ -45,7 +45,9 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-engineering-auto-repair-${{ github.event.workflow_run.head_sha || github.run_id }}
+  # Unique wake-up identity prevents GitHub replacing pending runs for one main SHA.
+  # The existing adoption JOB mutex below remains the only writer admission lane.
+  group: wow-v17-engineering-auto-repair-${{ github.event.workflow_run.id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
