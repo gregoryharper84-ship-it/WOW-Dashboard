@@ -9,6 +9,7 @@ from v17.firecrawl_research_adapter import (
     MAX_MARKDOWN_CHARS, MAX_TARGETS_PER_REFRESH, fetch_firecrawl_page,
 )
 from v17.research_source_adapters import ResearchFetchResult
+from v17.research_source_snapshot_store import snapshot_id_for
 
 SPORT = "basketball_nba"
 CAPABILITY = "injuries"
@@ -181,3 +182,27 @@ def test_invalid_or_unbounded_config_is_not_executed(monkeypatch):
     assert response["status"] == "COMPLETE"
     assert response["optional_firecrawl"]["status"] == "CONFIG_INVALID"
     assert response["optional_firecrawl"]["can_execute"] is False
+
+
+def test_source_failure_snapshot_retains_exact_allowlisted_target(monkeypatch):
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "test")
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(429)
+    )) as client:
+        result = fetch_firecrawl_page(SPORT, CAPABILITY, URL, client=client, allowed_domains=("nba.com",))
+    assert result.code == "SOURCE_RATE_LIMITED"
+    assert result.data == {"source_url": URL, "evidence_only": True}
+    assert result.prediction_authority is False
+
+
+def test_snapshot_content_identity_is_stable_across_observations(monkeypatch):
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "test")
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={
+            "success": True, "data": {"markdown": "# Same source content", "metadata": {}},
+        })
+    )) as client:
+        result = fetch_firecrawl_page(SPORT, CAPABILITY, URL, client=client, allowed_domains=("nba.com",))
+    first_id = snapshot_id_for(result)
+    result.observed_at = "2026-12-01T00:00:00Z"
+    assert snapshot_id_for(result) == first_id
