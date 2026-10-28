@@ -121,3 +121,23 @@ def test_claude_ambient_token_cannot_mutate_source_or_pull_requests():
         block = worker.split("      - name: " + name, 1)[1].split("\n      - name:", 1)[0]
         assert "GH_TOKEN: ${{ steps.eng_token.outputs.token }}" in block
         assert "GH_TOKEN: ${{ github.token }}" not in block
+
+
+def test_provider_and_handoff_workflows_have_no_ambient_repository_write_authority():
+    """Prevents a bypass credential from returning on any provider route."""
+    workflows = (
+        CLAUDE,
+        ROOT / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml",
+        ROOT / ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+        ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+        ROOT / ".github/workflows/wow-v17-cursor-pr-handoff-bridge.yml",
+    )
+    for path in workflows:
+        source = path.read_text()
+        permissions = source.split("\npermissions:\n", 1)[1].split("\nconcurrency:", 1)[0]
+        assert "  contents: read\n" in permissions, path
+        assert "  pull-requests: read\n" in permissions, path
+        assert "  issues: read\n" in permissions, path
+        assert "  contents: write\n" not in permissions, path
+        assert "  pull-requests: write\n" not in permissions, path
+        assert "  issues: write\n" not in permissions, path
