@@ -66,7 +66,7 @@ class Fixture:
     def api(self, url, *, token, basic=False):
         assert token in ("fixture-github", "fixture-cursor")
         prefix = f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}"
-        if url == prefix + f"/issues/comments/{CID}":
+        if url.startswith(prefix + "/issues/comments/"):
             return copy.deepcopy(self.comment)
         if url == prefix + f"/actions/runs/{WORKER_RUN}":
             return copy.deepcopy(self.origin)
@@ -215,3 +215,54 @@ def test_dynamic_finalizer_does_not_release_an_unverified_or_concurrent_cursor()
             source_sha="a" * 40, reservation_comment_id=CID,
         )
     assert api.puts == 0
+
+
+def test_dynamic_finalizer_appends_new_receipt_only_after_terminal_proof():
+    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments, run
+    fixture = Fixture()
+    proof = fixture.prove()
+
+    class DynamicAPI(_FakeAPI):
+        def request(self, path, payload=None, method=None):
+            if path == release.LEDGER and method == "POST":
+                self.puts += 1
+                created = {
+                    "id": 9000000000, "body": payload["body"],
+                    "user": {"login": "github-actions[bot]"},
+                }
+                self.comments.append(created)
+                return copy.deepcopy(created)
+            if path.endswith("/issues/comments/9000000000"):
+                return copy.deepcopy(self.comments[-1])
+            return super().request(path, payload, method)
+
+    api = DynamicAPI(released_comments() + [fixture.comment])
+    before = copy.deepcopy(api.comments)
+    env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
+    with patch.dict("os.environ", env), patch(
+        "v17.cursor_terminal_status_receipt.collect_receipt", return_value=proof,
+    ):
+        result = release.append_terminal_release(
+            api, cursor_token="fixture", run_id=99004, run_attempt=1,
+            source_sha="a" * 40, reservation_comment_id=CID,
+        )
+    assert result["status"] == "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS"
+    assert result["original_comment_id"] == CID
+    assert result["release_comment_id"] == 9000000000
+    assert result["can_execute"] is False
+    assert result["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert api.comments[:len(before)] == before, "immutable old reservations and releases"
+    assert api.puts == 1
+    released = release.verified_released_ids(
+        api.comments, ledger.reservations(api.comments), get_run=lambda _: run(),
+    )
+    assert released == {release.EXPECTED_COMMENT_ID, CID}
+    ledger.assert_no_remote_writer(api.comments, get_run=lambda _: run())
+    with patch.dict("os.environ", env), patch(
+        "v17.cursor_terminal_status_receipt.collect_receipt", return_value=proof,
+    ), pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED"):
+        release.append_terminal_release(
+            api, cursor_token="fixture", run_id=99005, run_attempt=1,
+            source_sha="a" * 40, reservation_comment_id=CID,
+        )
+    assert api.puts == 1, "no duplicate release"
