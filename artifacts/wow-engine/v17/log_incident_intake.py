@@ -32,7 +32,7 @@ MAX_PAGES = 4
 PAGE_LIMIT = 250
 MAX_EVENTS = MAX_PAGES * PAGE_LIMIT
 SAFE_SHA = re.compile(r"^[a-f0-9]{40}$")
-CODE_PATTERN = re.compile(r"\b(WOW_V17_[A-Z0-9_]{3,96}|MODEL_[A-Z0-9_]{3,96})\b")
+CODE_PATTERN = re.compile(r"\b(WOW_V17_[A-Z0-9_]{3,96}|WOW_PROP_[A-Z0-9_]{3,96}|MODEL_[A-Z0-9_]{3,96})\b")
 HTTP_PATTERN = re.compile(r'"(GET|POST|PUT|PATCH|DELETE)\s+([^\s"]+)\s+HTTP/[0-9.]+"\s+(\d{3})')
 ALLOWED_TYPED_CODES = frozenset({
     "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED",
@@ -90,6 +90,12 @@ def _parse_event(item: Mapping[str, Any], begin: datetime, end: datetime) -> dic
         return None
     code_match = CODE_PATTERN.search(message)
     code = code_match.group(1) if code_match and code_match.group(1) in ALLOWED_TYPED_CODES else None
+    # Evidence is not an incident solely because a known token is present.
+    # Reject INFO and require the explicit failed prop self-acceptance result.
+    if code and status == "info":
+        return None
+    if code == "WOW_PROP_MODEL_SELF_ACCEPTANCE" and not re.search(r"\bresult=FAIL\b", message):
+        return None
     route = "OTHER_ROUTE"
     if code:
         if code == "WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED":
