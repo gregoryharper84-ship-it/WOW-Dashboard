@@ -80,11 +80,21 @@ def _validate(record: Mapping[str, Any], holdout_start: datetime) -> dict[str, A
     _text(record, "joint_model_artifact_id")
     _text(record, "joint_research_receipt_id")
     _text(record, "matchup_cohort")
+    _text(record, "official_settlement_source")
     start = _dt(record.get("event_start_utc"))
     prediction_at = _dt(record.get("prediction_timestamp_utc"))
     model_at = _dt(record.get("joint_model_timestamp_utc"))
+    fit_cutoff = _dt(record.get("joint_fit_data_cutoff_utc"))
+    matchup_asof = _dt(record.get("matchup_cohort_asof_utc"))
+    settled_at = _dt(record.get("official_settlement_timestamp_utc"))
     if prediction_at >= start or model_at >= start or model_at > prediction_at:
         raise ValueError("joint prediction must be produced and frozen before start")
+    if fit_cutoff >= model_at:
+        raise ValueError("joint fit data is not strictly prior to forecast")
+    if matchup_asof > prediction_at:
+        raise ValueError("matchup cohort was assigned using post-forecast information")
+    if settled_at <= start:
+        raise ValueError("official settlement timestamp must follow event start")
     if not isinstance(record.get("legs"), list) or len(record["legs"]) != 2:
         raise ValueError("exactly two legs required")
     a_key, a_p, a_result = _leg(record["legs"][0], start)
