@@ -24,6 +24,17 @@ WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
 WORKFLOW_ID = 380562324
 PROVIDER_IDENTITY = "openai-codex-action"
 CREDENTIAL_SCOPE = "WOW_QA_REVIEW_OPENAI_API_KEY"
+# Only reviews genuinely produced in this protected QA workflow can claim an
+# alternative identity. The pair is re-verified by every downstream consumer.
+ALLOWED_REVIEW_CREDENTIALS = {
+    "openai-codex-action": frozenset({"WOW_QA_REVIEW_OPENAI_API_KEY"}),
+    "anthropic-claude-api": frozenset({
+        "WOW_QA_REVIEW_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY",
+    }),
+    "gemini-generative-api": frozenset({
+        "WOW_QA_REVIEW_GEMINI_API_KEY", "GEMINI_API_KEY",
+    }),
+}
 MAX_REVIEW_AGE = timedelta(minutes=30)
 MAX_DIFF_FILES = 100
 MAX_DIFF_BYTES = 512 * 1024
@@ -582,8 +593,12 @@ def build_artifact(
     review_result: object,
     run: Mapping[str, Any],
     now: datetime | None = None,
+    provider_identity: str = PROVIDER_IDENTITY,
+    credential_scope: str = CREDENTIAL_SCOPE,
 ) -> dict[str, Any]:
     _require(repository == CANONICAL_REPOSITORY, "SOURCE_REVIEW_REPOSITORY_MISMATCH")
+    _require(credential_scope in ALLOWED_REVIEW_CREDENTIALS.get(provider_identity, frozenset()),
+             "SOURCE_REVIEW_PROVIDER_CREDENTIAL_UNTRUSTED")
     _require(pr.get("state") == "open" and pr.get("draft") is False and not pr.get("merged_at"),
              "SOURCE_REVIEW_PR_NOT_READY")
     _require(pr.get("number") == _positive_int(pr.get("number"), "SOURCE_REVIEW_PR_NUMBER"),
@@ -661,8 +676,8 @@ def build_artifact(
             "event": source_event,
             "head_branch": "main",
             "head_sha": source_head_sha,
-            "provider_identity": PROVIDER_IDENTITY,
-            "credential_scope": CREDENTIAL_SCOPE,
+            "provider_identity": provider_identity,
+            "credential_scope": credential_scope,
         },
         "created_at_utc": _utc(clock),
         "expires_at_utc": _utc(expires),
@@ -891,8 +906,8 @@ def verify_artifact(
         and source.get("event") in {"workflow_dispatch", "workflow_run"}
         and source.get("head_branch") == "main"
         and source.get("head_sha") == run.get("head_sha")
-        and source.get("provider_identity") == PROVIDER_IDENTITY
-        and source.get("credential_scope") == CREDENTIAL_SCOPE,
+        and source.get("credential_scope") in ALLOWED_REVIEW_CREDENTIALS.get(
+            source.get("provider_identity"), frozenset()),
         "SOURCE_REVIEW_PROVENANCE_MISMATCH",
     )
     if producer_context:
@@ -1276,6 +1291,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head-ref")
     parser.add_argument("--attempt", type=int)
     parser.add_argument("--policy-mode", choices=("legacy", "independent", "canary", "zero_credit"))
+    parser.add_argument("--provider-identity", default=PROVIDER_IDENTITY)
+    parser.add_argument("--credential-scope", default=CREDENTIAL_SCOPE)
     args = parser.parse_args(argv)
     try:
         if args.capture:
@@ -1304,6 +1321,8 @@ def main(argv: list[str] | None = None) -> int:
                 commit=captured.get("commit"),
                 review_result=json.loads(args.result.read_text(encoding="utf-8")),
                 run=run,
+                provider_identity=args.provider_identity,
+                credential_scope=args.credential_scope,
             )
             _require(artifact["target"]["pr_number"] == args.pr_number
                      and artifact["target"]["head_sha"] == args.head_sha
