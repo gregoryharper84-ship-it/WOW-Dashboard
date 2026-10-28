@@ -70,7 +70,7 @@ def test_first_provider_quota_failure_uses_genuine_gemini_verdict(monkeypatch):
     assert seen == ["anthropic", "gemini"]
     assert result["decision"] == "PASS"
     assert proof == {"provider_identity": "gemini-generative-api",
-                     "credential_scope": "GEMINI_API_KEY", "can_execute": False}
+                     "credential_scope": "WOW_QA_REVIEW_GEMINI_API_KEY", "can_execute": False}
 
 
 def test_real_reject_never_fails_over_to_more_permissive_reviewer(monkeypatch):

@@ -116,8 +116,18 @@ def test_no_primary_key_is_never_fake_success():
         primary.execute_primary(captured(), key="")
 
 
+def _coherent_reject():
+    # A REJECT must carry evidence; the shared validator refuses a REJECT with
+    # all-PASS assessments and no findings (MODEL_REVIEW_REJECTION_EVIDENCE_MISSING).
+    v = verdict("REJECT")
+    v["assessment"]["security_review"] = "FAIL"
+    v["findings"] = [{"severity": "high", "file": "src/fix.py",
+                      "detail": "Unsafe change.", "evidence": "line 1"}]
+    return v
+
+
 def test_review_reject_remains_terminal(monkeypatch):
-    monkeypatch.setattr(fallback, "_post_json", lambda *args: model_response(verdict("REJECT")))
+    monkeypatch.setattr(fallback, "_post_json", lambda *args: model_response(_coherent_reject()))
     output, _ = primary.execute_primary(captured(), key="stub")
     assert output["decision"] == "REJECT"
 
@@ -152,3 +162,13 @@ def test_primary_attempt_receipt_is_sha_bound_and_never_claims_approval(tmp_path
     assert receipt["typed_result"] == "REVIEW_PROVIDER_HTTP_429"
     assert receipt["review_approved"] is False and receipt["can_execute"] is False
     assert "credential" not in str(receipt)
+
+
+def test_incoherent_reject_is_typed_hold_never_pass_or_fallback(monkeypatch):
+    # REJECT with all-PASS assessments and no findings is unusable output.
+    # It must neither become a PASS nor be classified as fallback-eligible.
+    monkeypatch.setattr(fallback, "_post_json", lambda *args: model_response(verdict("REJECT")))
+    with pytest.raises(fallback.ReviewUnavailable,
+                       match="REVIEW_REPLY_SCHEMA_OR_PROVENANCE_INVALID") as exc:
+        primary.execute_primary(captured(), key="stub")
+    assert fallback.is_retryable_provider_failure(exc.value) is False
