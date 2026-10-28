@@ -1,0 +1,156 @@
+{
+  "schema_version": "WOW_ENGINEERING_LEARNING_V1",
+  "authority": {
+    "custom_gpt_identity": "WOW_BETTING_ENGINE",
+    "runtime_generation": "V17_ACTIVE",
+    "terminal_authority": "V17_TERMINAL_REDUCER",
+    "can_execute": false,
+    "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": true
+  },
+  "data_classification": "public_issue_metadata_only",
+  "cases": [
+    {
+      "id": "WOW-EVAL-001",
+      "split": "practice",
+      "incident": 2136,
+      "source": "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/2136",
+      "reference_pr": 2198,
+      "failure_code": "QA_TRUST_ROOT_OWNER_AUTHORED",
+      "scenario": "Owner-authored protected source passes native CI but dependent QA, Release and trusted gate fail from one upstream trust decision.",
+      "correct_root_cause": "UNTRUSTED_OWNER_AUTHORED_PROTECTED_SOURCE",
+      "required_tests": [
+        "same_sha_native_ci_green_but_qa_holds",
+        "independent_nonowner_adoption",
+        "no_self_approval",
+        "receipt_chain_exact_head"
+      ],
+      "mandatory_controls": [
+        "independent_author",
+        "codeowner_review",
+        "exact_head",
+        "no_forged_receipts"
+      ],
+      "forbidden_shortcuts": [
+        "disable_qa",
+        "fake_approval",
+        "self_approval",
+        "copy_equals_review"
+      ],
+      "observed_status": "OPEN_CANDIDATE_NOT_PRODUCTION_VERIFIED"
+    },
+    {
+      "id": "WOW-EVAL-002",
+      "split": "practice",
+      "incident": 2136,
+      "source": "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/2136#issuecomment-6460982168",
+      "reference_pr": 2127,
+      "failure_code": "QA_CHECK_FAILED",
+      "scenario": "A new exact-head authenticated owner approval arrives after failed QA, but a stale terminal failure stops re-entry.",
+      "correct_root_cause": "NON_REENTERABLE_STALE_QA_TERMINAL_FAILURE",
+      "required_tests": [
+        "newer_authentic_review_reenters_once",
+        "unchanged_pr_sha",
+        "lost_ack_holds",
+        "duplicate_reservation_holds"
+      ],
+      "mandatory_controls": [
+        "exact_head",
+        "signed_reservation",
+        "single_writer",
+        "fail_closed_unknown_ack"
+      ],
+      "forbidden_shortcuts": [
+        "ignore_failed_check",
+        "blind_retry",
+        "duplicate_writer",
+        "trust_pr_body_review"
+      ],
+      "observed_status": "OFFLINE_REFERENCE_TESTS_ONLY_NO_PRODUCTION_CLOSURE"
+    },
+    {
+      "id": "WOW-EVAL-003",
+      "split": "practice",
+      "incident": 2136,
+      "source": "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2158",
+      "reference_pr": 2158,
+      "failure_code": "MAIN_CHANGED_SOURCE_PATH_HOLD",
+      "scenario": "A conflicted old source repeatedly wins discovery and starves an otherwise eligible candidate in the three-slot engineering queue.",
+      "correct_root_cause": "UNFAIR_QUEUE_SELECTION_STALE_CONFLICTED_SOURCE",
+      "required_tests": [
+        "conflicted_source_skipped",
+        "next_eligible_source_admitted",
+        "all_conflicted_no_eligible",
+        "unknown_mergeability_not_accepted"
+      ],
+      "mandatory_controls": [
+        "bounded_wip",
+        "fair_rotation",
+        "single_writer",
+        "exact_head"
+      ],
+      "forbidden_shortcuts": [
+        "increase_wip_cap",
+        "force_close_unrelated_pr",
+        "bypass_source_preflight"
+      ],
+      "observed_status": "OWNER_SOURCE_PR_OPEN_NOT_DEPLOYED"
+    },
+    {
+      "id": "WOW-EVAL-004",
+      "split": "evaluation",
+      "incident": 2020,
+      "source": "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/2198",
+      "reference_pr": 2198,
+      "failure_code": "REMOTE_WRITER_RECONCILIATION_REQUIRED",
+      "scenario": "Earlier Cursor reservation was safely released while a second held writer lacks authenticated finished status; hardcoded collection misses the second identity.",
+      "correct_root_cause": "HARDCODED_CURSOR_RESERVATION_SELECTION",
+      "required_tests": [
+        "dynamic_immutable_reservation_lookup",
+        "active_writer_never_released",
+        "forged_status_rejected",
+        "duplicate_cas_release_suppressed"
+      ],
+      "mandatory_controls": [
+        "single_writer",
+        "authenticated_terminal_status",
+        "atomic_fencing",
+        "fail_closed_unknown_status"
+      ],
+      "forbidden_shortcuts": [
+        "force_release",
+        "parallel_controller",
+        "guess_finished",
+        "remove_lease"
+      ],
+      "observed_status": "PR_CANDIDATE_NOT_PRODUCTION_VERIFIED"
+    },
+    {
+      "id": "WOW-EVAL-005",
+      "split": "evaluation",
+      "incident": 1562,
+      "source": "https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/1635",
+      "reference_pr": 1635,
+      "failure_code": "RELEASE_TRUSTED_GOVERNANCE_CHECK_NOT_GREEN",
+      "scenario": "Postmerge observer sees a legitimate governance check still in progress and records a permanent failure before the producer finishes.",
+      "correct_root_cause": "ASYNC_GOVERNANCE_RESULT_PREMATURE_TERMINATION",
+      "required_tests": [
+        "eventual_success_within_bound",
+        "terminal_failure_remains_failure",
+        "missing_check_typed_hold",
+        "provider_quota_persists_nonverified_receipt"
+      ],
+      "mandatory_controls": [
+        "bounded_wait",
+        "exact_head",
+        "fail_closed",
+        "honest_nonverified_receipt"
+      ],
+      "forbidden_shortcuts": [
+        "treat_in_progress_as_success",
+        "swallow_quota_failure",
+        "disable_release_gate"
+      ],
+      "observed_status": "OWNER_SOURCE_PR_OPEN_NOT_DEPLOYED"
+    }
+  ]
+}
