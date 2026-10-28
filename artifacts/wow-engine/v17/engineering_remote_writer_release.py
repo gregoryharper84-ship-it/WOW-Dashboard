@@ -207,6 +207,59 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
     if api.request(f"/repos/{REPOSITORY}/commits/main").get("sha") != source_sha:
         raise ReleaseBlocked("REMOTE_RELEASE_SOURCE_MOVED")
 
+    if reservation_comment_id is not None:
+        # This must be a FRESH witness after the initial terminal probe, ledger
+        # and protected-main readbacks. The Actions mutex cannot fence a
+        # concurrent external PR push or resumed Cursor run by itself.
+        from urllib.parse import quote
+        try:
+            from .cursor_terminal_status_receipt import CURSOR_API, api_json
+        except ImportError:  # Legacy standalone CLI entrypoint
+            from cursor_terminal_status_receipt import CURSOR_API, api_json
+        pr_number = proof.get("pr_number")
+        expected_head = proof.get("head_sha")
+        if (type(pr_number) is not int or pr_number <= 0
+                or not isinstance(expected_head, str)
+                or len(expected_head) != 40
+                or any(ch not in "0123456789abcdef" for ch in expected_head)):
+            raise ReleaseBlocked("REMOTE_RELEASE_SOURCE_PROOF_INVALID")
+        fresh_pr = api.request(f"/repos/{REPOSITORY}/pulls/{pr_number}")
+        if (not isinstance(fresh_pr, dict)
+                or fresh_pr.get("number") != pr_number
+                or fresh_pr.get("state") != "open"
+                or not isinstance(fresh_pr.get("head"), dict)
+                or not isinstance(fresh_pr.get("base"), dict)
+                or fresh_pr["head"].get("sha") != expected_head
+                or not isinstance(fresh_pr["head"].get("repo"), dict)
+                or fresh_pr["head"]["repo"].get("full_name") != REPOSITORY
+                or fresh_pr["base"].get("ref") != "main"
+                or not isinstance(fresh_pr["base"].get("repo"), dict)
+                or fresh_pr["base"]["repo"].get("full_name") != REPOSITORY):
+            raise ReleaseBlocked("REMOTE_RELEASE_PR_MOVED_AFTER_PROBE")
+        agent_id = proof.get("agent_id")
+        cursor_run_id = proof.get("run_id")
+        if (not isinstance(agent_id, str) or not agent_id.startswith("bc-")
+                or not isinstance(cursor_run_id, str)
+                or not cursor_run_id.startswith("run-")):
+            raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_PROOF_INVALID")
+        agent_url = f"{CURSOR_API}/agents/{quote(agent_id, safe='')}"
+        run_url = f"{agent_url}/runs/{quote(cursor_run_id, safe='')}"
+        try:
+            fresh_agent = api_json(agent_url, token=cursor_token, basic=True)
+            fresh_run = api_json(run_url, token=cursor_token, basic=True)
+        except Exception:
+            # A transport or provider error is not proof that a writer stopped.
+            raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_RECHECK_UNVERIFIED") from None
+        if (not isinstance(fresh_agent, dict)
+                or fresh_agent.get("id") != agent_id
+                or fresh_agent.get("latestRunId") != cursor_run_id
+                or fresh_agent.get("status") != "IDLE"
+                or not isinstance(fresh_run, dict)
+                or fresh_run.get("id", fresh_run.get("runId")) != cursor_run_id
+                or fresh_run.get("agentId") != agent_id
+                or fresh_run.get("status") != "FINISHED"):
+            raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_REACTIVATED")
+
     doc = {
         "status": "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS",
         "incident_id": old["incident_id"],
