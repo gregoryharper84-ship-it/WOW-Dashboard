@@ -397,10 +397,12 @@ def run_forward_shadow(
     health = calibration_health(grades, min_forward=min_forward)
     persist_health(db, health)
     feature_refresh = _refresh_feature_table(db, settlement_refresh, feature_refresh_fn)
+    challenger = _evaluate_shrink_challenger(db, canonical, grades)
     return {
         "status": "COMPLETED",
         "settlement_refresh": settlement_refresh,
         "feature_table_refresh": feature_refresh,
+        "shadow_challenger": challenger,
         "prediction_rows_seen": len(prediction_rows),
         "canonical_events": len(canonical),
         "graded_events": len(grades),
@@ -434,6 +436,18 @@ def _refresh_feature_table(db: Any, settlement_refresh: Mapping[str, Any], fn: A
         return fn(db, seasons=[active])
     except Exception as exc:  # noqa: BLE001 - typed, isolated from grading
         return {"status": "FAILED", "reason_code": f"NFL_FEATURE_TABLE_REFRESH_{type(exc).__name__.upper()}", "can_execute": False}
+
+
+def _evaluate_shrink_challenger(db: Any, canonical: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any]:
+    """Advisory shadow evaluation of the pre-registered shrink challenger."""
+    from v17 import nfl_shrink_challenger as challenger
+
+    try:
+        evaluation = challenger.evaluate(canonical, grades)
+        evaluation["persisted"] = challenger.persist(db, evaluation)
+        return evaluation
+    except Exception as exc:  # noqa: BLE001 - research lane never affects grading
+        return {"status": "FAILED", "reason_code": f"NFL_SHADOW_CHALLENGER_{type(exc).__name__.upper()}", "can_execute": False}
 
 
 def _client() -> Any:
