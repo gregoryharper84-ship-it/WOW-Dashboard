@@ -1,14 +1,17 @@
 """Regression contract: CISA token pressure adds telemetry, not an approval gate."""
 import importlib.util
+import sys
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-MODULE_PATH = ROOT / "v17" / "engineering_ai_resource_resilience.py"
+MODULE_PATH = ROOT / "v17" / "engineering_provider_failover.py"
 WORKFLOW = ROOT.parents[1] / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
-spec = importlib.util.spec_from_file_location("engineering_ai_resource_resilience", MODULE_PATH)
+sys.path.insert(0, str(MODULE_PATH.parent))
+spec = importlib.util.spec_from_file_location("engineering_provider_failover", MODULE_PATH)
 module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 NOW = datetime(2026, 10, 28, 15, 0, tzinfo=timezone.utc)
@@ -111,7 +114,7 @@ def test_survival_and_no_action_never_claim_usage_or_execution():
 def test_workflow_produces_receipt_without_new_dispatch_gate():
     text = WORKFLOW.read_text(encoding="utf-8")
     assert "Record AI resource pressure" in text
-    assert "engineering_ai_resource_resilience.py" in text
+    assert "engineering_provider_failover.py resource-pressure" in text
     assert "${{ runner.temp }}/wow-ai-resource-pressure.json" in text
     section = text.split("- name: Record AI resource pressure", 1)[1].split("- name: Fence unresolved remote writers", 1)[0]
     assert "continue-on-error: true" in section
