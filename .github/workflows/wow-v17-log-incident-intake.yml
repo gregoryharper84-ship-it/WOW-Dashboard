@@ -4,6 +4,15 @@ name: wow-v17-log-incident-intake
 # single-writer supervisor. It is NOT an independent controller or repair bot.
 # Enable only when GitHub Datadog read credentials have been provisioned.
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-log-incident-intake.yml"
+      - "artifacts/wow-engine/v17/log_incident_intake.py"
+      - "artifacts/wow-engine/v17/log_reporter_handoff.py"
+      - "artifacts/wow-engine/v17/engineering_log_reporter.py"
+      - "artifacts/wow-engine/v17/engineering_resident_supervisor.py"
+      - "artifacts/wow-engine/test_v17_log*.py"
+      - "artifacts/wow-engine/test_v17_engineering_log_reporter.py"
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
@@ -16,8 +25,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-source:
+    name: Log Reporter read-only security and regression tests
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact PR head without credential persistence
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Run focused, negative, and integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install pytest
+          python -m pytest -q artifacts/wow-engine/test_v17_log_incident_intake.py artifacts/wow-engine/test_v17_log_intake_workflow.py artifacts/wow-engine/test_v17_log_reporter_handoff.py artifacts/wow-engine/test_v17_engineering_log_reporter.py artifacts/wow-engine/test_v17_log_reporter_integration.py
   intake:
-    if: vars.WOW_V17_LOG_INTAKE_ENABLED == 'true'
+    if: github.event_name != 'pull_request' && vars.WOW_V17_LOG_INTAKE_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
