@@ -250,13 +250,17 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         except Exception:
             # A transport or provider error is not proof that a writer stopped.
             raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_RECHECK_UNVERIFIED") from None
+        returned_run_ids = ([fresh_run[key] for key in ("id", "runId")
+                             if key in fresh_run]
+                            if isinstance(fresh_run, dict) else [])
         if (not isinstance(fresh_agent, dict)
                 or fresh_agent.get("id") != agent_id
                 or fresh_agent.get("latestRunId") != cursor_run_id
                 or fresh_agent.get("status") != "IDLE"
                 or not isinstance(fresh_run, dict)
-                or fresh_run.get("id", fresh_run.get("runId")) != cursor_run_id
-                or fresh_run.get("agentId") != agent_id
+                or not returned_run_ids
+                or any(value != cursor_run_id for value in returned_run_ids)
+                or fresh_run.get("agentId") not in (None, agent_id)
                 or fresh_run.get("status") != "FINISHED"):
             raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_REACTIVATED")
 
