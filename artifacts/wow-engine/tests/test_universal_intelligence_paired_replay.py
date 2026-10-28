@@ -16,11 +16,13 @@ def trial():
         "forecast_asof_utc": "2026-10-25T19:00:00Z",
         "latest_feature_available_utc": "2026-10-25T18:45:00Z",
         "immutable_prediction_id": "inc-1", "model_artifact_id": "incumbent-v1",
+        "artifact_checksum": "a" * 64,
+        "training_cutoff_utc": "2026-10-20T00:00:00Z",
         "partition": "HOLDOUT", "calibrated_probability": .6,
         "calibrated_lower_bound": .51,
     }
     challenger = {**incumbent, "immutable_prediction_id": "ch-1",
-                  "model_artifact_id": "challenger-v1",
+                  "model_artifact_id": "challenger-v1", "artifact_checksum": "b" * 64,
                   "calibrated_probability": .7, "calibrated_lower_bound": .56}
     settlement = {
         **KEY, "event_start_utc": "2026-10-25T20:00:00Z",
@@ -65,6 +67,15 @@ def test_valid_replay_unattested_and_metrics_correct():
     ("challenger", "model_artifact_id", "", "REPLAY_MODEL_PROVENANCE_MISSING"),
     ("challenger", "model_artifact_id", "incumbent-v1",
      "REPLAY_MODEL_ARTIFACT_NOT_DISTINCT"),
+    ("incumbent", "artifact_checksum", "", "REPLAY_FITTED_CHECKSUM_MISSING_OR_INVALID"),
+    ("incumbent", "artifact_checksum", "not-a-valid-checksum",
+     "REPLAY_FITTED_CHECKSUM_MISSING_OR_INVALID"),
+    ("challenger", "artifact_checksum", "a" * 64,
+     "REPLAY_FITTED_ARTIFACT_BYTES_NOT_DISTINCT"),
+    ("challenger", "training_cutoff_utc", "",
+     "REPLAY_TRAINING_CUTOFF_UNVERIFIED"),
+    ("challenger", "training_cutoff_utc", "2026-10-25T19:01:00Z",
+     "REPLAY_TRAINING_CUTOFF_UNVERIFIED"),
     ("challenger", "calibrated_probability", float("nan"),
      "REPLAY_PROBABILITY_PACKAGE_INVALID"),
     ("challenger", "calibrated_lower_bound", .9, "REPLAY_PROBABILITY_PACKAGE_INVALID"),
@@ -113,3 +124,15 @@ def test_empty_run_and_invalid_input():
         compare_paired_shadow_forecasts([], minimum_n=1)
     with pytest.raises(ValueError, match="PAIR_REPLAY_INPUT_INVALID"):
         compare_paired_shadow_forecasts({})
+
+def test_renamed_model_with_same_bytes_cannot_fake_challenger_improvement():
+    t = trial()
+    t["challenger"]["model_artifact_id"] = "new-uuid-new-version"
+    t["challenger"]["artifact_checksum"] = t["incumbent"]["artifact_checksum"]
+    t["challenger"]["calibrated_probability"] = .99
+    r = compare_paired_shadow_forecasts([t])
+    assert r["held"] == 1 and r["eligible_unattested"] == 0
+    assert r["rows"][0]["status"] == "REPLAY_FITTED_ARTIFACT_BYTES_NOT_DISTINCT"
+    assert r["brier_delta_challenger_minus_incumbent"] is None
+    assert r["probability_publishable"] is False
+    assert r["can_execute"] is False

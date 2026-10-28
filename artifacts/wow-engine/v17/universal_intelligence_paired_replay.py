@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from math import log, isfinite
+import re
 from typing import Any, Mapping, Sequence
 
 from v17.universal_sports_intelligence_research import SPORT_DOMAINS
@@ -14,6 +15,7 @@ from v17.universal_sports_intelligence_research import SPORT_DOMAINS
 SCHEMA = "WOW_V17_PAIRED_SHADOW_REPLAY_V1"
 ID_FIELDS = ("sport", "event_id", "market", "period", "selection", "line", "direction")
 MAX_ROWS = 10000
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _timestamp(x: Any) -> datetime | None:
@@ -106,6 +108,19 @@ def compare_paired_shadow_forecasts(
                     reason = "REPLAY_MODEL_PROVENANCE_MISSING"
                 elif champion["model_artifact_id"] == challenger["model_artifact_id"]:
                     reason = "REPLAY_MODEL_ARTIFACT_NOT_DISTINCT"
+                # A separate registry row, artifact label or training-set hash
+                # is NOT evidence of a distinct fitted model. Archived NFL
+                # versions have shared identical payload checksums.
+                elif any(not isinstance(z.get("artifact_checksum"), str)
+                         or not SHA256.fullmatch(z["artifact_checksum"])
+                         for z in (champion, challenger)):
+                    reason = "REPLAY_FITTED_CHECKSUM_MISSING_OR_INVALID"
+                elif champion["artifact_checksum"] == challenger["artifact_checksum"]:
+                    reason = "REPLAY_FITTED_ARTIFACT_BYTES_NOT_DISTINCT"
+                elif any(not _timestamp(z.get("training_cutoff_utc"))
+                         or _timestamp(z["training_cutoff_utc"]) > _timestamp(z["forecast_asof_utc"])
+                         for z in (champion, challenger)):
+                    reason = "REPLAY_TRAINING_CUTOFF_UNVERIFIED"
                 elif not all(_prob(z.get("calibrated_probability"))
                              and type(z.get("calibrated_lower_bound")) in (int, float)
                              and isfinite(z["calibrated_lower_bound"])
