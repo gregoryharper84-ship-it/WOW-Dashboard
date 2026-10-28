@@ -353,7 +353,11 @@ class RemoteFallbackTests(unittest.TestCase):
                 self.assertIn("steps.remote_fence.outcome == 'failure'", routing)
                 independent = text.split("  independent-provider:", 1)[1]
                 self.assertIn("issues: write", independent)
-                self.assertIn("Dispatch scoped Cursor Cloud Agent", independent)
+                # New Cloud Agent launches are quarantined; legacy writer
+                # reservations remain fenced across all alternative providers.
+                self.assertNotIn("Dispatch scoped Cursor Cloud Agent", independent)
+                self.assertNotIn("secrets.CURSOR_API_KEY", independent)
+                self.assertIn("engineering_remote_fallback.py fallback", independent)
                 self.assertIn("group: wow-v17-engineering-implementation-single-writer", independent)
         claude = (root / ".github/workflows/wow-v17-claude-engineering-worker.yml").read_text()
         self.assertLess(claude.index("engineering_remote_fallback.py guard"),
