@@ -109,7 +109,13 @@ class LearningTests(unittest.TestCase):
         self.answer["incremental_spend_usd"] = 5
         self.answer["proposed_external_services"] = ["paid-cloud"]
         res = evaluate.assess(self.doc, [self.answer], split="practice")["results"][0]
-        self.assertEqual(res["reasoning_conformance_score"], 90)
+        self.assertLessEqual(res["reasoning_conformance_score"], 49)
+        self.assertFalse(res["budget_policy_observed"])
+
+    def test_unapproved_external_service_capped_even_at_zero_declared_spend(self):
+        self.answer["proposed_external_services"] = ["unapproved-gpu"]
+        res = evaluate.assess(self.doc, [self.answer], split="practice")["results"][0]
+        self.assertLessEqual(res["reasoning_conformance_score"], 49)
         self.assertFalse(res["budget_policy_observed"])
 
     def test_negative_spend_denied(self):
