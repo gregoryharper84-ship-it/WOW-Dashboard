@@ -138,3 +138,21 @@ def test_cli_invalid_contract_exits_without_unsafe_output(tmp_path, capsys):
     with pytest.raises(SystemExit):
         lesson.main(["--ledger", str(path), "--subsystem", "WOW_HOST_ORCHESTRATION"])
     assert capsys.readouterr().out == ""
+
+
+def test_checked_in_verified_incident_is_retrievable_without_mutating_real_ledger():
+    import json
+    path = MODULE.with_name("incident-ledger.json")
+    original = path.read_bytes()
+    before = json.loads(original)
+    results = lesson.retrieve_verified_lessons(
+        before, failure_category="OBSERVABILITY_CORRELATION",
+        subsystem="WOW_HOST_ORCHESTRATION"
+    )
+    assert any(
+        record["incident_id"] == "PM-2026-09-25-001"
+        and record["advisory_only"] is True
+        and record["automatic_adoption_allowed"] is False
+        for record in results
+    )
+    assert path.read_bytes() == original
