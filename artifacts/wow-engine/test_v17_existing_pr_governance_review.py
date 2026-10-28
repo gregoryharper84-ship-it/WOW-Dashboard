@@ -392,3 +392,23 @@ def test_trusted_consumers_use_dedicated_existing_pr_verifier():
     for text in (gate, morning, release):
         assert "--live-checks-json" in text
         assert "TRUST_ROOT_BOOTSTRAP" in text
+
+
+
+def test_class_a_deterministic_receipt_regressions_execute_in_native_ci():
+    """Run the protected receipt's focused Class A cases on the actual PR SHA.
+
+    The certifier's own protected-main workflow executes its full suite only
+    after adoption; this focused smoke exercises new policy negatives in the
+    regular governed-backend PR CI before protected integration.
+    """
+    cmd = [
+        sys.executable, "-m", "pytest", "-q", "--tb=short",
+        ".github/scripts/tests/test_existing_pr_governance_receipt.py",
+        "-k", "class_a",
+    ]
+    result = subprocess.run(
+        cmd, cwd=ROOT, capture_output=True, text=True, check=False, timeout=120,
+    )
+    assert result.returncode == 0, (result.stdout + "\n" + result.stderr)[-4500:]
+    assert "passed" in result.stdout
