@@ -669,10 +669,12 @@ jobs:
               "WOW Release Authority exact-head|5245853"
             )
             ready=false
+            failed_check=""
             checks='[]'
             for _ in $(seq 1 60); do
               checks=$(api_array "${api}/commits/${HEAD_SHA}/check-runs" '.check_runs')
               ready=true
+              failed_check=""
               for required_spec in "${required_checks[@]}"; do
                 check_name="${required_spec%%|*}"
                 app_id="${required_spec#*|}"
@@ -682,10 +684,13 @@ jobs:
                 if [ "$match" = "completed|failure" ] || [ "$match" = "completed|cancelled" ] || \
                    [ "$match" = "completed|timed_out" ] || [ "$match" = "completed|action_required" ] || \
                    [ "$match" = "completed|skipped" ]; then
-                  echo "EXISTING_PR_BOOTSTRAP_CHECK_FAILED:$check_name" >&2
-                  exit 1
-                fi
-                if [ "$match" != "completed|success" ]; then
+                  if [ "$app_id" = "15368" ]; then
+                    echo "EXISTING_PR_BOOTSTRAP_CHECK_FAILED:$check_name" >&2
+                    exit 1
+                  fi
+                  [ -n "$failed_check" ] || failed_check="$check_name"
+                  ready=false
+                elif [ "$match" != "completed|success" ]; then
                   ready=false
                 fi
               done
@@ -693,6 +698,10 @@ jobs:
               sleep 10
             done
             [ "$ready" = "true" ] || {
+              if [ -n "$failed_check" ]; then
+                echo "EXISTING_PR_BOOTSTRAP_CHECK_FAILED:$failed_check" >&2
+                exit 1
+              fi
               echo "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" >&2
               exit 1
             }

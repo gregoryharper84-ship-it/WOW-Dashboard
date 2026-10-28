@@ -116,10 +116,11 @@ jobs:
           artifact_matches='[]'
 
           # A PR can advance while its earlier artifact is still queued.
-          # Never consume 30 minutes of runner time polling an obsolete SHA.
-          # No receipt means no accepted review; a subsequent certified
-          # workflow_run is the independent retry path.
-          for _ in $(seq 1 18); do
+          # Never consume 30 minutes of runner time polling an obsolete SHA:
+          # live head-SHA recheck + cancel-in-progress abort superseded heads
+          # within 10s, while allowing active heads up to 15m for wow-verify
+          # + QA + Release + certifier completion on pull_request_target.
+          for _ in $(seq 1 90); do
             live_pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}") || {
               echo "GOVERNANCE_LIVE_PR_LOOKUP_FAILED" >&2; exit 1;
             }
