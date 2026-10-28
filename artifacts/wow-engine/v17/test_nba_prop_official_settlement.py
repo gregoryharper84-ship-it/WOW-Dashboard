@@ -109,8 +109,9 @@ def test_components_one_official_player_event_and_all_directions():
         p["line"] = total + 0.5
         p["direction"] = "LESS"
         assert run(p)["outcome"]["official_result"] == "HIT"
-        p["line"] = total
+        p["line"] = total - 0.5
         assert run(p)["outcome"]["official_result"] == "MISS"
+        p["line"] = total
         p["direction"] = "MORE"
         assert run(p)["outcome"]["official_result"] == "PUSH"
 
