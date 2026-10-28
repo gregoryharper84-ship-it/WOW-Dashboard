@@ -129,3 +129,4 @@ def test_only_dispatcher_owns_automatic_primary_entrypoint():
     assert "wow-v17-nightly-engineering-scan" in dispatch_triggers
     assert "wow-v17-chatgpt-engineering-worker" in dispatch_triggers
     assert "wow-v17-claude-engineering-worker" in dispatch_triggers
+    assert "wow-v17-gemini-engineering-worker" in dispatch_triggers
