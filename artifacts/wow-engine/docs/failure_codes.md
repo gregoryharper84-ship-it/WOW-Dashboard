@@ -210,6 +210,12 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; it can never be independently approved (re-propose from the Engineering App). | N/A |
 | `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
 | `RELEASE_PR_NUMBER_INVALID` | release authority | Manual Release re-entry did not provide a valid PR number to bind to its QA receipt. | N/A |
+| `RELEASE_QA_RUN_IDENTITY_INVALID` | Release read-only admission | Producing QA run ID or attempt is missing or malformed before assigning a PR-scoped writer. | N/A |
+| `RELEASE_QA_APPLICABILITY_INVALID` | Release read-only admission | Authenticated upstream QA classifier returned neither neutral nor applicable; no writer allocated. | N/A |
+| `RELEASE_EVENT_NOT_SUPPORTED` | Release read-only admission | An event other than an authenticated QA completion or explicit authorized dispatch attempted Release admission. | N/A |
+| `RELEASE_TARGET_PR_INVALID` | Release manual read-only admission | Requested PR is not a positive integer; no Release writer starts. | N/A |
+| `RELEASE_POLICY_TARGET_INVALID` | Release read-only QA receipt | Authenticated QA policy resolved a missing, malformed or contradictory exact PR/SHA target. | N/A |
+| `RELEASE_POLICY_TARGET_STALE` | Release manual read-only QA receipt | Requested exact SHA differs from the producing QA policy's bound head. | N/A |
 | `RELEASE_QA_REVIEW_POLICY_MISSING` | release authority | Release has no authenticated policy receipt from the exact producing QA workflow run. | N/A |
 | `RELEASE_QA_REVIEW_POLICY_INVALID` | release authority | The producing QA receipt has an unsupported review mode. | N/A |
 | `RELEASE_DECISION_INVARIANT_VIOLATED` | release authority | A Release decision file claimed authority; nothing published. | N/A |
