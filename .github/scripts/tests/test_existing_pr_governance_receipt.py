@@ -2300,4 +2300,4 @@ def test_class_a_workflow_and_consumers_require_no_provider_or_human_approval():
         source = path.read_text(encoding="utf-8")
         assert "CLASS_A_DETERMINISTIC" in source or path == TRUSTED_GATE
         assert "--live-checks-json" in source
-    assert '"receipt_schema" = "4"' in TRUSTED_GATE.read_text(encoding="utf-8")
+    assert '[ "$receipt_schema" = "4" ]' in TRUSTED_GATE.read_text(encoding="utf-8")
