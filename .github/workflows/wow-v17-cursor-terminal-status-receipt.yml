@@ -9,9 +9,9 @@ on:
         type: string
 
 permissions:
-  actions: read
   contents: read
   pull-requests: read
+  actions: read
 
 concurrency:
   group: wow-v17-cursor-terminal-status-probe-${{ github.ref }}-${{ inputs.reservation_comment_id }}
