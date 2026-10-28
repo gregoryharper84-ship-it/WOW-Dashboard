@@ -232,8 +232,8 @@ jobs:
           GEMINI_PRESENT: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY != '' || secrets.GEMINI_API_KEY != '' }}
         run: |
           set -euo pipefail
-          if [ "$OPENAI_PRESENT" != true ] && [ "$CLAUDE_PRESENT" != true ] && [ "$GEMINI_PRESENT" != true ]; then
-            echo "::error::QA_REVIEW_ALL_PROVIDER_CREDENTIALS_MISSING"; exit 1
+          if [ "${OPENAI_PRESENT:-false}" != true ] && [ "${CLAUDE_PRESENT:-false}" != true ] && [ "${GEMINI_PRESENT:-false}" != true ]; then
+            echo "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING:all isolated review credentials absent"; exit 1
           fi
           echo "openai_present=$OPENAI_PRESENT" >> "$GITHUB_OUTPUT"
           # Never place credentials, provider responses or source diff into step outputs.
@@ -286,11 +286,14 @@ jobs:
             Exact diff SHA-256: ${{ steps.capture.outputs.diff_sha }}
           output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"summary":{"type":"string","minLength":1},"reviewed_head_sha":{"type":"string"},"reviewed_diff_sha256":{"type":"string"},"reviewed_files":{"type":"array","items":{"type":"string"}},"assessment":{"type":"object","properties":{"source_review":{"type":"string","enum":["PASS","FAIL"]},"security_review":{"type":"string","enum":["PASS","FAIL"]},"probability_integrity_review":{"type":"string","enum":["PASS","FAIL"]}},"required":["source_review","security_review","probability_integrity_review"],"additionalProperties":false},"findings":{"type":"array","items":{"type":"object","properties":{"severity":{"type":"string","enum":["critical","high","medium","low"]},"file":{"type":"string"},"detail":{"type":"string","minLength":1},"evidence":{"type":"string","minLength":1}},"required":["severity","file","detail","evidence"],"additionalProperties":false}}},"required":["decision","summary","reviewed_head_sha","reviewed_diff_sha256","reviewed_files","assessment","findings"],"additionalProperties":false}'
 
-      # Only transport/format failure of OpenAI activates these providers.
-      # A genuine REJECT is final; the fallback never shops for a PASS.
+      # Codex action does not provide an authenticated typed failure code.
+      # Until a provider adapter proves a genuine quota/transport failure,
+      # an arbitrary Codex step failure MUST NOT activate another reviewer.
+      # Missing primary credentials is an explicit, authenticated admission fact.
+      # A genuine REJECT is final; no provider shopping.
       - name: Run authenticated independent reviewer fallback
         id: fallback
-        if: steps.policy.outputs.review_active == 'true' && (steps.review.outcome != 'success' || steps.review.outputs.structured_output == '')
+        if: steps.policy.outputs.review_active == 'true' && steps.review_credential.outputs.openai_present != 'true'
         shell: bash
         env:
           ANTHROPIC_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY || secrets.ANTHROPIC_API_KEY }}
@@ -325,7 +328,7 @@ jobs:
             provider_identity=$(jq -er .provider_identity "$RUNNER_TEMP/source-review-fallback-provider.json")
             credential_scope=$(jq -er .credential_scope "$RUNNER_TEMP/source-review-fallback-provider.json")
           else
-            echo "::error::QA_INDEPENDENT_REVIEW_ALL_PROVIDERS_FAILED"
+            echo "::error::QA_REVIEW_EXECUTION_FAILED:ALL_PROVIDERS_FAILED"
             exit 1
           fi
           jq -e 'type == "object" and (.decision == "PASS" or .decision == "REJECT")' \
