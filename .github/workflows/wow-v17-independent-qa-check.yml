@@ -290,7 +290,7 @@ jobs:
       # A genuine REJECT is final; the fallback never shops for a PASS.
       - name: Run authenticated independent reviewer fallback
         id: fallback
-        if: steps.policy.outputs.review_active == 'true' && steps.review.outcome != 'success'
+        if: steps.policy.outputs.review_active == 'true' && (steps.review.outcome != 'success' || steps.review.outputs.structured_output == '')
         shell: bash
         env:
           ANTHROPIC_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY || secrets.ANTHROPIC_API_KEY }}
