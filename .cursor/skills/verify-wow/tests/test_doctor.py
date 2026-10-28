@@ -95,5 +95,38 @@ class DoctorTests(unittest.TestCase):
         self.assertIn('"user_journey_verified": False', source)
 
 
+    def test_redirect_is_not_successful_liveness(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        class Handler(BaseHTTPRequestHandler):
+            hits = []
+
+            def do_GET(self):
+                Handler.hits.append(self.path)
+                if self.path == "/health/live":
+                    self.send_response(302)
+                    self.send_header("Location", "/unrelated")
+                else:
+                    self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+
+            def log_message(self, *_):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = doctor.probe(f"http://127.0.0.1:{server.server_address[1]}")
+                self.assertEqual(result["status"], "LIVENESS_UNPROVEN")
+                self.assertEqual(result["http_status"], 302)
+                self.assertEqual(result["error_type"], "HTTPError")
+                self.assertEqual(Handler.hits, ["/health/live"])
+            finally:
+                server.shutdown()
+                thread.join(timeout=3)
+
 if __name__ == "__main__":
     unittest.main()
