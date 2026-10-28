@@ -150,3 +150,33 @@ def test_successful_self_acceptance_and_info_logs_not_false_incidents():
     assert report(event("MODEL_SCORER_FAILED", status="info"))["findings"] == []
     r = report(event("WOW_PROP_MODEL_SELF_ACCEPTANCE result=FAIL"))
     assert r["findings"][0]["failure_boundary"] == "PROP_SELF_ACCEPTANCE"
+
+
+def test_datadog_429_and_transport_exception_are_typed_without_upstream_text():
+    from urllib.error import HTTPError, URLError
+    def rate_limited(*args, **kwargs):
+        raise HTTPError("https://api.datadoghq.com/secret-path", 429, "secret-upstream", None, None)
+    def unreachable(*args, **kwargs):
+        raise URLError("secret-upstream-host")
+    for adapter, reason in ((rate_limited, "DATADOG_RATE_LIMITED"),
+                            (unreachable, "DATADOG_TRANSPORT_FAILED")):
+        with pytest.raises(SourceUnavailable, match=reason) as e:
+            fetch_datadog(begin=BEGIN, end=NOW, api_key="private", app_key="secret", opener=adapter)
+        assert "secret" not in str(e.value)
+
+
+def test_exhausted_log_pagination_is_not_false_complete():
+    calls = []
+    class Response:
+        def __init__(self, index): self.index = index
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, limit):
+            return json.dumps({"data":[], "meta":{"page":{"after":str(self.index)}}}).encode()
+    def opener(*args, **kwargs):
+        calls.append(1)
+        return Response(len(calls))
+    with pytest.raises(SourceUnavailable, match="DATADOG_RESULT_TRUNCATED"):
+        fetch_datadog(begin=BEGIN, end=NOW, api_key="private", app_key="secret",
+                      opener=opener)
+    assert len(calls) == MAX_PAGES
