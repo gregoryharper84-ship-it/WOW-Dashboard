@@ -16,9 +16,13 @@ league feeds, a new writer/controller, or a release gate.
 
 ## Configuration (off by default)
 
-Set the following only on the existing authorized Scout source-refresh worker
-(e.g. its GitHub Actions secrets/environment); do not modify the scoring API
-or the Custom GPT Action credentials:
+The existing `.github/workflows/wow-v17-scout-source-refresh.yml` now passes
+the following opt-in settings into the existing Scout runner. Configure
+`WOW_FIRECRAWL_API_KEY` as an encrypted **GitHub Actions secret**, and
+`WOW_FIRECRAWL_ENABLED`, `WOW_FIRECRAWL_ALLOWED_DOMAINS`, and
+`WOW_FIRECRAWL_TARGETS_JSON` as **GitHub Actions variables** (targets JSON
+must be syntactically valid). Do not modify the scoring API or the Custom
+GPT Action credentials. Do not put API keys in variables or checked-in files:
 
 ```shell
 WOW_FIRECRAWL_ENABLED=true
@@ -29,6 +33,10 @@ WOW_FIRECRAWL_TARGETS_JSON='[
   {"sport_key":"americanfootball_nfl","capability":"news","url":"https://www.nfl.com/news/"}
 ]'
 ```
+
+The existing structured-source runner still requires its established Scout
+database and SportsDataIO credentials before running; Firecrawl does not
+override that baseline admission rule.
 
 These are illustrative page targets, NOT verified real-time injury feeds.
 Only configure public authorized URLs whose content and access conditions have
