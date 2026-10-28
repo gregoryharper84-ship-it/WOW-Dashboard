@@ -851,7 +851,8 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "environment: wow-qa" in workflow
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" in workflow
     assert "QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
-    assert 'permission_profile: ":read-only"' in workflow
+    assert "independent_source_review_primary.py" in workflow
+    assert "Verify typed primary availability before allowing fallback" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
@@ -862,8 +863,9 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "independent_review_canary" in workflow
     assert "WOW_REVIEW_OPENAI_API_KEY" not in workflow
     assert "wow-review" not in workflow
-    assert review_step["with"]["openai_api_key"] == "${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}"
-    assert "WOW_QA_APP_PRIVATE_KEY" not in review_step["with"].values()
+    assert review_step["env"]["OPENAI_REVIEW_KEY"] == "${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}"
+    assert "independent_source_review_primary.py" in review_step["run"]
+    assert "WOW_QA_APP_PRIVATE_KEY" not in str(review_step)
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in str(publisher_step)
     assert "contents: write" not in workflow
     assert "pull-requests: write" not in workflow
