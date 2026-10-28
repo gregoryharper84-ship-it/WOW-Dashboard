@@ -48,13 +48,22 @@ def safe_release(reservation: dict, terminal: dict, active_reservations: list[di
     rid = reservation.get("comment_id")
     if type(rid) is not int or rid <= 0 or reservation.get("hold") is not True or reservation.get("released") is not False:
         return False
-    if not isinstance(reservation.get("source_sha"), str) or len(reservation["source_sha"]) != 40:
+    if not isinstance(reservation.get("source_sha"), str) or len(reservation["source_sha"]) != 40 or any(c not in "0123456789abcdef" for c in reservation["source_sha"]):
         return False
     if terminal.get("comment_id") != rid or terminal.get("agent_id") != reservation.get("agent_id") or terminal.get("run_id") != reservation.get("run_id"):
         return False
     if terminal.get("source_sha") != reservation["source_sha"] or terminal.get("original_digest") != reservation.get("digest"):
         return False
     if terminal.get("authenticated") is not True or terminal.get("status") != "FINISHED" or terminal.get("idle") is not True:
+        return False
+    # Any malformed ledger row can conceal a competing writer; fail closed.
+    if any(
+        not isinstance(entry, dict)
+        or type(entry.get("comment_id")) is not int
+        or entry["comment_id"] <= 0
+        or type(entry.get("hold")) is not bool
+        for entry in active_reservations
+    ):
         return False
     matched = [r for r in active_reservations if isinstance(r, dict) and r.get("comment_id") == rid and r.get("hold") is True]
     if len(matched) != 1 or matched[0] != reservation:
