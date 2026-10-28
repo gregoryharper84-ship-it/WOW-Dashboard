@@ -90,3 +90,33 @@ Acceptance before live opt-in:
 5. Confirm no terminal labels, model probabilities, CI review policy, or wagering permissions change.
 
 Roll back instantly by removing/setting `WOW_FIRECRAWL_ENABLED=false`. No migration needed.
+
+## Firecrawl Source Failure Code Registry
+
+Scope: `FIRECRAWL` / `PUBLIC_WEB_RESEARCH`, owned by the optional Scout
+source adapter and refresh integration. These codes are source-layer findings,
+**not** model, terminal, betting, or execution authority. A provider-specific
+receipt remains subordinate to the existing V17 failure taxonomy.
+
+| Code | Condition |
+|---|---|
+| `SOURCE_FETCH_OK` | Allowlisted page returned usable markdown and metadata |
+| `SOURCE_TARGET_INVALID` | Missing sport/capability/URL or invalid target row |
+| `SOURCE_TARGET_NOT_ALLOWLISTED` | URL is non-HTTPS, unsafe, or outside configured domains |
+| `SOURCE_TARGETS_CONFIG_INVALID` | Target JSON invalid, not a list, or exceeds the per-refresh cap |
+| `SOURCE_CREDENTIAL_UNCONFIGURED` | No Firecrawl API credential configured |
+| `SOURCE_AUTH_FAILED` | Firecrawl returned HTTP 401/403 |
+| `SOURCE_RATE_LIMITED` | Firecrawl returned HTTP 429 |
+| `SOURCE_UPSTREAM_UNAVAILABLE` | Firecrawl returned an HTTP 5xx |
+| `SOURCE_UPSTREAM_REJECTED` | HTTP 4xx other than 401/403/429 or unsuccessful provider response |
+| `SOURCE_INVALID_JSON` | Upstream result cannot be parsed as JSON |
+| `SOURCE_OUTPUT_INVALID` | Provider returned unexpected data object structure |
+| `SOURCE_EMPTY_CONTENT` | Missing or blank markdown / invalid metadata |
+| `SOURCE_REDIRECT_NOT_ALLOWLISTED` | Resolved page origin is outside authorized source domains |
+| `SOURCE_TIMEOUT` | HTTP client timed out |
+| `SOURCE_HTTP_ERROR` | Other HTTP-client-level transport failure |
+| `SOURCE_FETCH_UNEXPECTED_ERROR` | Unexpected optional adapter exception caught and isolated |
+| `SOURCE_SNAPSHOT_PERSIST_FAILED` | Optional evidence snapshot persistence failed; core refresh preserved |
+
+No new code may be added to this source adapter without updating this registry
+and the relevant regression tests in the same change.
