@@ -619,3 +619,40 @@ jobs:
             independent_source_review_complete, required_owner_approval_head, pr, sha,
             source_sha, can_execute}' \
             "$RUNNER_TEMP/wow-app-adoption-result.json" >> "$GITHUB_STEP_SUMMARY"
+
+
+  verify-adoption-progression:
+    # Passive evidence check, NOT a second writer, queue, release controller,
+    # independent reviewer, or merge authority. This job runs even if the
+    # adoption worker is skipped so green workflow != unobserved no-op.
+    if: ${{ always() && github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' }}
+    needs: [adoption-readonly-preflight, adopt-reviewed-owner-source]
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected main only for known code
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Classify exact source adoption transition
+        shell: bash
+        env:
+          PREFLIGHT_RESULT: ${{ needs.adoption-readonly-preflight.result }}
+          SELECTION_STATUS: ${{ needs.adoption-readonly-preflight.outputs.status }}
+          WRITER_RESULT: ${{ needs.adopt-reviewed-owner-source.result }}
+          SOURCE_PR: ${{ needs.adoption-readonly-preflight.outputs.pr_number }}
+          SOURCE_SHA: ${{ needs.adoption-readonly-preflight.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_adoption_progression.py \
+            | tee "$RUNNER_TEMP/wow-adoption-progression.json"
+          jq -e '.can_execute == false and
+            (.status == "INAPPLICABLE_EVENT" or
+             .status == "NO_ELIGIBLE_SOURCE" or
+             .status == "APP_PROPOSAL_REVIEW_PENDING")' \
+            "$RUNNER_TEMP/wow-adoption-progression.json" >/dev/null
+          jq -c . "$RUNNER_TEMP/wow-adoption-progression.json" >> "$GITHUB_STEP_SUMMARY"
