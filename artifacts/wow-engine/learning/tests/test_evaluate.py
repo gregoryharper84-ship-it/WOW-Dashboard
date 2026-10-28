@@ -194,6 +194,10 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["full_set_declaration_score"], 100.0)
         self.assertEqual(result["cases_scored"], result["cases_available"])
 
+    def test_invalid_split_cannot_false_green_empty_evaluation(self):
+        with self.assertRaisesRegex(ValueError, "unknown split"):
+            evaluate.assess(self.doc, [], split="nonexistent")
+
     def test_no_answers_never_claim_full_completion(self):
         result = evaluate.assess(self.doc, [], split="evaluation")
         self.assertFalse(result["evaluation_complete"])
