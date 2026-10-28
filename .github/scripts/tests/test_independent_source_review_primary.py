@@ -63,6 +63,10 @@ def test_primary_is_real_readonly_structured_review(monkeypatch):
     assert payload["store"] is False
     assert payload["tools"] == []
     assert payload["text"]["format"]["strict"] is True
+    schema = payload["text"]["format"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["assessment"]["additionalProperties"] is False
+    assert schema["properties"]["findings"]["items"]["additionalProperties"] is False
 
 
 @pytest.mark.parametrize("bad", [
