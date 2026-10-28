@@ -305,3 +305,38 @@ def test_fallback_requires_verified_primary_error_and_qa_only_keys():
     assert "steps.primary_failure.outputs.fallback_eligible == 'true'" in secondary["if"]
     assert "secrets.ANTHROPIC_API_KEY" not in str(secondary)
     assert "secrets.GEMINI_API_KEY" not in str(secondary)
+
+
+def test_attempt_receipts_capture_both_providers_without_claiming_qa_authority(monkeypatch):
+    attempts = []
+    def primary(*args):
+        raise fallback.ReviewUnavailable("REVIEW_PROVIDER_HTTP_429")
+    monkeypatch.setattr(fallback, "_anthropic", primary)
+    monkeypatch.setattr(fallback, "_gemini", lambda *args: verdict())
+    result, _ = fallback.review_fallback(
+        captured(), anthropic_key="stub", anthropic_scope="WOW_QA_REVIEW_ANTHROPIC_API_KEY",
+        gemini_key="stub", gemini_scope="WOW_QA_REVIEW_GEMINI_API_KEY",
+        attempts=attempts,
+    )
+    assert result["decision"] == "PASS"
+    assert len(attempts) == 2
+    assert [a["typed_result"] for a in attempts] == ["REVIEW_PROVIDER_HTTP_429", "PASS"]
+    assert [a["retry_count"] for a in attempts] == [1, 2]
+    assert all(a["role"] == "independent_security_review" for a in attempts)
+    assert all(a["head_sha"] == HEAD and a["diff_sha256"] == DIGEST for a in attempts)
+    assert all(a["review_approved"] is False and a["can_execute"] is False for a in attempts)
+
+
+def test_malformed_review_still_produces_terminal_attempt_receipt(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(fallback, "_anthropic", lambda *args: "not-json")
+    monkeypatch.setattr(fallback, "_gemini", lambda *args: pytest.fail("no review shopping"))
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_REPLY_SCHEMA_OR_PROVENANCE_INVALID"):
+        fallback.review_fallback(
+            captured(), anthropic_key="stub", anthropic_scope="WOW_QA_REVIEW_ANTHROPIC_API_KEY",
+            gemini_key="stub", gemini_scope="WOW_QA_REVIEW_GEMINI_API_KEY",
+            attempts=attempts,
+        )
+    assert len(attempts) == 1
+    assert attempts[0]["typed_result"] == "REVIEW_REPLY_SCHEMA_OR_PROVENANCE_INVALID"
+    assert attempts[0]["revisit_trigger"] == "INDEPENDENT_REVIEW_REPAIR_REQUIRED"
