@@ -32,8 +32,25 @@ PACKET_FIELDS = frozenset({
 })
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
-INCIDENT = re.compile(r"(?:[1-9][0-9]*|PR-[1-9][0-9]*)\Z")
+# GitHub PR incidents are numeric. A durable release ledger may additionally
+# carry its pre-existing PM-YYYY-MM-DD-NNN identity. Neither lane may borrow
+# the other's identity format or accept arbitrary user input.
 NUMERIC_PR = re.compile(r"[1-9][0-9]*\Z")
+POSTMORTEM_ID = re.compile(r"PM-([0-9]{4}-[0-9]{2}-[0-9]{2})-([0-9]{3})\Z")
+
+
+def _canonical_release_incident(value: str) -> bool:
+    if NUMERIC_PR.fullmatch(value):
+        return True
+    match = POSTMORTEM_ID.fullmatch(value)
+    if not match:
+        return False
+    from datetime import date
+    try:
+        date.fromisoformat(match.group(1))
+    except ValueError:
+        return False
+    return True
 TOKEN = re.compile(r"[A-Z][A-Z0-9_]{0,95}\Z")
 
 
@@ -53,7 +70,15 @@ def validate_support_packet(packet: Any) -> list[str]:
     if packet.get("action") not in ACTIONS:
         errors.append("SUPPORT_ACTION_INVALID")
     incident = packet.get("incident_id")
-    if not isinstance(incident, str) or not INCIDENT.fullmatch(incident):
+    action = packet.get("action")
+    valid_incident = (
+        isinstance(incident, str) and (
+            bool(NUMERIC_PR.fullmatch(incident)) if action == "SUPPORT_PR"
+            else _canonical_release_incident(incident) if action == "SUPPORT_RELEASE"
+            else False
+        )
+    )
+    if not valid_incident:
         errors.append("SUPPORT_INCIDENT_ID_INVALID")
     for key, required in (("can_execute", False), ("implementation_lease", False),
                           ("support_only", True)):
