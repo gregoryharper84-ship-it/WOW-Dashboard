@@ -109,7 +109,8 @@ def verified_released_ids(
 
 
 def append_terminal_release(api, *, cursor_token: str, run_id: int,
-                            run_attempt: int, source_sha: str) -> dict:
+                            run_attempt: int, source_sha: str,
+                            reservation_comment_id: int | None = None) -> dict:
     """Called only under the EXISTING implementation-single-writer mutex."""
     try:
         from .cursor_terminal_status_receipt import collect_receipt
@@ -128,13 +129,35 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             or os.environ.get("GITHUB_REF") != "refs/heads/main"
             or api.request(f"/repos/{REPOSITORY}/commits/main").get("sha") != source_sha):
         raise ReleaseBlocked("REMOTE_RELEASE_PROTECTED_MAIN_UNVERIFIED")
+    if reservation_comment_id is not None and (
+            type(reservation_comment_id) is not int or reservation_comment_id <= 0):
+        raise ReleaseBlocked("REMOTE_RELEASE_TARGET_INVALID")
     comments = api.pages(LEDGER)
-    held = [(cid, row) for cid, row in reservations(comments) if row["hold"]]
-    if (len(held) != 1
-            or held[0][0] != EXPECTED_COMMENT_ID
-            or held[0][1].get("incident_id") != EXPECTED_INCIDENT_ID
-            or held[0][1].get("worker_id") != EXPECTED_WORKER_ID
-            or _release_records(comments)):
+    all_reservations = reservations(comments)
+    # The original release remains an immutable valid receipt. Do not reject it
+    # when a distinct, later Cursor reservation is the only effective writer.
+    verified = verified_released_ids(
+        comments, all_reservations,
+        get_run=lambda rid: api.request(f"/repos/{REPOSITORY}/actions/runs/{rid}"),
+    )
+    held = [(cid, row) for cid, row in all_reservations
+            if row["hold"] and cid not in verified]
+    expected_id = (reservation_comment_id if reservation_comment_id is not None
+                   else EXPECTED_COMMENT_ID)
+    if (len(held) != 1 or held[0][0] != expected_id
+            or held[0][1].get("provider") != "cursor"):
+        raise ReleaseBlocked("REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED")
+    old = held[0][1]
+    if reservation_comment_id is None and (
+            old.get("incident_id") != EXPECTED_INCIDENT_ID
+            or old.get("worker_id") != EXPECTED_WORKER_ID):
+        raise ReleaseBlocked("REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED")
+    originals = [c for c in comments if c.get("id") == expected_id]
+    if (len(originals) != 1
+            or not isinstance(originals[0].get("user"), dict)
+            or originals[0]["user"].get("login") != BOT_LOGIN
+            or not isinstance(originals[0].get("body"), str)
+            or old.get("status") != "CURSOR_AGENT_ENQUEUED"):
         raise ReleaseBlocked("REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED")
     try:
         assert_no_local_writer(comments)
@@ -143,8 +166,20 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
 
     # GET the live provider run, agent and source PR again; the saved artifact
     # alone cannot authorize release and no Cursor write request is made.
-    proof = collect_receipt(cursor_token, api.token)
-    old = held[0][1]
+    proof = collect_receipt(
+        cursor_token, api.token,
+        **({"reservation_comment_id": expected_id}
+           if reservation_comment_id is not None else {}),
+    )
+    if reservation_comment_id is not None:
+        identity = proof.get("reservation")
+        if (not isinstance(identity, dict)
+                or identity.get("reservation_comment_id") != expected_id
+                or identity.get("reservation_sha256") != _original_digest(originals[0])
+                or identity.get("incident_id") != old["incident_id"]
+                or identity.get("worker_id") != old["worker_id"]
+                or identity.get("original_head_sha") != old["pr_sha"]):
+            raise ReleaseBlocked("REMOTE_RELEASE_PROBE_IDENTITY_MISMATCH")
     if (proof.get("status") != "CURSOR_TERMINAL_STATUS_VERIFIED"
             or proof.get("terminal_status") != "FINISHED"
             or proof.get("agent_status") != "IDLE"
@@ -157,21 +192,25 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
     # Recheck the entire active ledger immediately before writing. The
     # existing Actions mutex serializes cooperating implementation writers.
     current = api.pages(LEDGER)
-    now_held = [(cid, row) for cid, row in reservations(current) if row["hold"]]
-    original = [c for c in current if c.get("id") == EXPECTED_COMMENT_ID]
-    if (now_held != held or len(original) != 1
-            or _release_records(current)
-            or _original_digest(original[0]) != _original_digest(
-                next(c for c in comments if c.get("id") == EXPECTED_COMMENT_ID)
-            )):
+    current_reservations = reservations(current)
+    current_verified = verified_released_ids(
+        current, current_reservations,
+        get_run=lambda rid: api.request(f"/repos/{REPOSITORY}/actions/runs/{rid}"),
+    )
+    now_held = [(cid, row) for cid, row in current_reservations
+                if row["hold"] and cid not in current_verified]
+    original = [c for c in current if c.get("id") == expected_id]
+    if (now_held != held or current_verified != verified
+            or len(original) != 1
+            or _original_digest(original[0]) != _original_digest(originals[0])):
         raise ReleaseBlocked("REMOTE_RELEASE_FENCE_CHANGED")
     if api.request(f"/repos/{REPOSITORY}/commits/main").get("sha") != source_sha:
         raise ReleaseBlocked("REMOTE_RELEASE_SOURCE_MOVED")
 
     doc = {
         "status": "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS",
-        "incident_id": EXPECTED_INCIDENT_ID,
-        "original_comment_id": EXPECTED_COMMENT_ID,
+        "incident_id": old["incident_id"],
+        "original_comment_id": expected_id,
         "original_digest": _original_digest(original[0]),
         "provider": "cursor",
         "agent_id": proof["agent_id"],
@@ -186,15 +225,15 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
     }
-    body = f"{RELEASE_MARKER}{EXPECTED_INCIDENT_ID} -->\n" + json.dumps(doc, sort_keys=True)
+    body = f"{RELEASE_MARKER}{old['incident_id']} -->\n" + json.dumps(doc, sort_keys=True)
     created = api.request(LEDGER, {"body": body}, "POST")
     cid = created.get("id") if isinstance(created, dict) else None
     readback = api.request(f"/repos/{REPOSITORY}/issues/comments/{cid}") if cid else {}
-    if (type(cid) is not int or cid <= EXPECTED_COMMENT_ID
+    if (type(cid) is not int or cid <= expected_id
             or readback.get("id") != cid or readback.get("body") != body
             or readback.get("user", {}).get("login") != BOT_LOGIN):
         raise ReleaseBlocked("REMOTE_RELEASE_READBACK_UNVERIFIED")
     # The guard will clear ONLY after this workflow returns success.
     return {"status": "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS",
-            "release_comment_id": cid, "original_comment_id": EXPECTED_COMMENT_ID,
+            "release_comment_id": cid, "original_comment_id": expected_id,
             "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER"}
