@@ -5,10 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: wow-v17-engineering-auditor-code-health-${{ github.ref }}
@@ -48,14 +50,31 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/lifecycle-pr-body.md"
+          # Rerun jobs with live, authenticated metadata, not the frozen event body.
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "$RUNNER_TEMP/lifecycle-live-pr-before.json"
+          python artifacts/wow-engine/v17/engineering_lifecycle_live_pr.py \
+            --pr-json "$RUNNER_TEMP/lifecycle-live-pr-before.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --number "$PR_NUMBER" --head-sha "$PR_HEAD_SHA" \
+            --body-output "$RUNNER_TEMP/lifecycle-pr-body.md"
           git diff --name-only HEAD^1 HEAD^2 > "$RUNNER_TEMP/lifecycle-changed-paths.txt"
           python artifacts/wow-engine/v17/engineering_agent_team.py lifecycle-classify \
             --pr-body-file "$RUNNER_TEMP/lifecycle-pr-body.md" \
             --changed-paths-file "$RUNNER_TEMP/lifecycle-changed-paths.txt"
+          # A metadata edit or new source head mid-audit cannot inherit the result.
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "$RUNNER_TEMP/lifecycle-live-pr-after.json"
+          python artifacts/wow-engine/v17/engineering_lifecycle_live_pr.py \
+            --pr-json "$RUNNER_TEMP/lifecycle-live-pr-before.json" \
+            --recheck-json "$RUNNER_TEMP/lifecycle-live-pr-after.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --number "$PR_NUMBER" --head-sha "$PR_HEAD_SHA"
 
       - name: Run continuous-auditor focused tests
         run: >-
@@ -70,6 +89,13 @@ jobs:
           python -m pytest -q
           artifacts/wow-engine/test_v17_24h_completion_loop.py
           artifacts/wow-engine/test_v17_lifecycle_closure_cell.py
+          artifacts/wow-engine/test_v17_lifecycle_live_pr_metadata.py
+          artifacts/wow-engine/test_v17_rapid_manifest_integration.py
+          artifacts/wow-engine/test_v17_agent_identity_policy.py
+          artifacts/wow-engine/test_v17_targeted_app_adoption.py
+          artifacts/wow-engine/test_v17_global_engineering_app_adoption.py
+          artifacts/wow-engine/test_v17_engineering_inplace_readoption.py
+          artifacts/wow-engine/test_v17_engineering_adoption_progression.py
 
       - name: Preserve non-execution governance receipt
         if: always()

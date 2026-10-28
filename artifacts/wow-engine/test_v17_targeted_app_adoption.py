@@ -108,7 +108,7 @@ def test_targeted_dispatch_reuses_existing_authenticated_worker_and_lock():
     wf = yaml.safe_load(WF.read_text(encoding="utf-8"))
     triggers = wf.get("on", wf.get(True))
     dispatch_inputs = triggers["workflow_dispatch"]["inputs"]
-    assert set(dispatch_inputs) == {"source_pr", "source_sha"}
+    assert set(dispatch_inputs) == {"source_pr", "source_sha", "readopt_app_pr"}
     assert all(not spec["required"] for spec in dispatch_inputs.values())
     assert wf["on"] if "on" in wf else wf[True]
     jobs = wf["jobs"]
@@ -122,7 +122,7 @@ def test_targeted_dispatch_reuses_existing_authenticated_worker_and_lock():
     assert writer["environment"] == "wow-engineering"
     source = next(s for s in observer["steps"] if s.get("id") == "source")
     script = source["run"]
-    assert 'if [ -n "$TARGET_SOURCE_PR" ] || [ -n "$TARGET_SOURCE_SHA" ]; then' in script
+    assert 'if [ -n "$TARGET_SOURCE_PR" ] || [ -n "$TARGET_SOURCE_SHA" ] || [ -n "$TARGET_READOPT_APP_PR" ]; then' in script
     assert '"$GITHUB_ACTOR" = "gregoryharper84-ship-it"' in script
     assert '"$GITHUB_REF" = "refs/heads/main"' in script
     assert "TARGET_ADOPTION_UNAUTHORIZED_DISPATCH" in script
@@ -131,6 +131,8 @@ def test_targeted_dispatch_reuses_existing_authenticated_worker_and_lock():
     assert "engineering_authorized_adoption.py discover" in script
     assert "--source-pr" in script and "--source-sha" in script
     assert "TARGET_ADMISSION_PASS" in script
+    assert "READOPTION_ADMISSION_PASS" in script
+    assert "engineering_inplace_readoption.py preflight" in script
     assert "can_execute == false" in script
     assert subprocess.run(["bash", "-n"], input=script, text=True,
                           capture_output=True).returncode == 0
@@ -139,6 +141,8 @@ def test_targeted_dispatch_reuses_existing_authenticated_worker_and_lock():
     assert "engineering_targeted_adoption_guard.py" in write["run"]
     assert write["run"].index("engineering_targeted_adoption_guard.py") < write["run"].index(
         "engineering_authorized_adoption.py integrate")
+    assert "engineering_inplace_readoption.py readopt" in write["run"]
+    assert "PR_UPDATED_PENDING_INDEPENDENT_REVIEW" in write["run"]
     assert write["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert write["env"]["APP_TOKEN"] == "${{ steps.engineering_app.outputs.token }}"
     assert write["env"]["WOW_CAN_EXECUTE"] == "false"

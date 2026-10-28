@@ -413,3 +413,45 @@ These local codes belong to `v17/universal_intelligence_paired_replay.py`. They 
 | `DESCRIPTIVE_SHADOW_METRICS_NOT_ATTESTED` | Intelligence shadow replay | Brier/log loss can be described for supplied rows, not independently validated or promotable | No |
 
 Global invariants remain `V17_TERMINAL_REDUCER` sole publisher, `probability_publishable=false`, `can_execute=false`; no source grant, model artifact, or immutable prediction authenticity can be inferred from synthetic inputs.
+
+## Engineering App adoption progression (P0 #2136)
+
+These failure codes originate solely from `artifacts/wow-engine/v17/engineering_adoption_progression.py`
+when the existing `wow-v17-engineering-auto-repair` progression job validates the
+read-only discovery and single-writer adoption outcomes. They are not release
+or model capability codes and do not authorize source review, merges, wagers,
+or deployment.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `ADOPTION_INAPPLICABLE_EVENT_INCONSISTENT` | Engineering App progression assessor | Preflight was skipped by an inapplicable trigger, but a writer ran or any selected-source field was populated. | No |
+| `ADOPTION_PREFLIGHT_UNVERIFIED` | Engineering App progression assessor | Read-only source preflight was failed, cancelled or otherwise not a completed success or true inapplicable skip. | No |
+| `ADOPTION_EMPTY_QUEUE_WRITER_INCONSISTENT` | Engineering App progression assessor | Discovery declared `NO_ELIGIBLE_SOURCE`, but the writer was not skipped or selected-source metadata unexpectedly exists. | No |
+| `ADOPTION_ACTIONABLE_SOURCE_IDENTITY_INVALID` | Engineering App progression assessor | Discovery selected `SOURCE_READY` without a valid numeric PR identifier and exact lowercase 40-character immutable SHA. | No |
+| `ADOPTION_WRITER_SKIPPED_WITH_ACTIONABLE_BACKLOG` | Engineering App progression assessor | A valid `SOURCE_READY` was selected, but authenticated writer job ended skipped, failed or cancelled rather than success. | No |
+| `ADOPTION_SELECTION_STATUS_UNVERIFIED` | Engineering App progression assessor | A supposedly successful preflight did not return a recognized `SOURCE_READY` or `NO_ELIGIBLE_SOURCE` status. | No |
+
+Nonterminal *research/engineering* outcomes: `INAPPLICABLE_EVENT` means the
+event does not meet the existing source-discovery admission rule;
+`NO_ELIGIBLE_SOURCE` means the current bounded verified selection returned no
+candidate and must be reconsidered by the existing schedule/events;
+`APP_PROPOSAL_REVIEW_PENDING` means the App writer reported a successful proposal
+but independent source review, CODEOWNER, QA/Release, protected merge and production
+verification remain separate. All three preserve `can_execute=false`.
+
+## Lifecycle PR live-metadata audit (#2136)
+
+Read-only validation failures from `engineering_lifecycle_live_pr.py`. These are code-health evidence gate failures, **not** betting-model, scorer, approval or release authorities.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---|
+| `LIFECYCLE_LIVE_PR_PAYLOAD_INVALID` | Continuous code-health lifecycle audit | GitHub response is not an object; fail closed without certification | No |
+| `LIFECYCLE_EXPECTED_IDENTITY_INVALID` | Continuous code-health lifecycle audit | Expected repo/PR/head binding malformed; fail closed without certification | No |
+| `LIFECYCLE_LIVE_PR_IDENTITY_INVALID` | Continuous code-health lifecycle audit | Head/base object missing or invalid; fail closed without certification | No |
+| `LIFECYCLE_LIVE_PR_REPOSITORY_UNVERIFIED` | Continuous code-health lifecycle audit | Head/base repo object missing; fail closed without certification | No |
+| `LIFECYCLE_LIVE_PR_IDENTITY_MISMATCH` | Continuous code-health lifecycle audit | Exact PR number, SHA, head/base repository or main branch mismatch; fail closed without certification | No |
+| `LIFECYCLE_LIVE_PR_NOT_REVIEWABLE` | Continuous code-health lifecycle audit | PR not open, or draft/unknown draft state; fail closed without certification | No |
+| `LIFECYCLE_LIVE_PR_BODY_INVALID` | Continuous code-health lifecycle audit | Live description is neither string nor null; fail closed without certification | No |
+| `LIFECYCLE_LIVE_PR_CHANGED_DURING_AUDIT` | Continuous code-health lifecycle audit | Second authenticated read differs from first during classification; fail closed without certification | No |
+
+A GitHub Actions retry reads current authenticated PR metadata, validates the exact head, and rechecks for mid-audit edits. Frozen webhook body is not accepted as current evidence; `can_execute=false` and `V17_TERMINAL_REDUCER` remain unchanged.
