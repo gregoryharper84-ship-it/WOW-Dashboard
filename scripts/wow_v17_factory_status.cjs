@@ -15,8 +15,8 @@ const SHA = /^[a-f0-9]{40}$/;
 function selectedCheck(checkRuns, head, spec) {
   const names = checkRuns.filter(run => run && run.name === spec.name);
   const valid = names.filter(run => run.head_sha === head && Number(run.app && run.app.id) === spec.appId)
-    .sort((a,b) => (Date.parse(b.completed_at || b.started_at || b.created_at || 0) || 0) -
-      (Date.parse(a.completed_at || a.started_at || a.created_at || 0) || 0) || (b.id || 0) - (a.id || 0));
+    .sort((a,b) => (Date.parse(b.started_at || b.created_at || b.completed_at || 0) || 0) -
+      (Date.parse(a.started_at || a.created_at || a.completed_at || 0) || 0) || (b.id || 0) - (a.id || 0));
   if (!valid.length) return {
     state:'UNVERIFIED', reason:names.length ? 'WRONG_APP_OR_HEAD' : 'CHECK_MISSING',
     expected_app_id:spec.appId, check_name:spec.name
