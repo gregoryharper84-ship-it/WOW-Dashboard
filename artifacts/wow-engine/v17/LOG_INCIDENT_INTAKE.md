@@ -25,13 +25,17 @@ write incidents or dispatch workers.
 
 ## Typed candidate evidence and independent admission
 
-v17/log_incident_intake.py accepts only the named production service and a
+v17/log_incident_intake.py accepts only the two exact WOW services (scoring API and engineering worker) and a
 strict time window. It emits only known codes, route-template IDs, severity,
 windowed counts, sanitized versions, and stable SHA-256 dedupe fingerprints.
 No raw messages, URLs, query strings, request/response payloads, credentials,
 customer identifiers, untrusted LLM instructions or raw stack traces persist.
 Root-path 404 probes are noise; thresholded 422/401/5xx and known model/queue
-failures are candidates requiring reproduction.
+failures are candidates requiring reproduction. Worker warnings have an exact
+allowlist of non-success outcomes including REMOTE_WRITER_RECONCILIATION_REQUIRED.
+These are indexed by Datadog at info severity despite their application warning
+text. Repeated worker holds are P1 candidates; never auto-release a fenced
+writer or turn a candidate into a GitHub writer command.
 
 **Required next integration before autonomous repair:** the authorized
 Reporter/supervisor must consume the artifact under its existing authenticated
