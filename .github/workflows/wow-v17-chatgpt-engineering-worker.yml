@@ -32,8 +32,11 @@ permissions:
   issues: read
 
 concurrency:
+  # Same global writer mutex. queue: max is GitHub's native pending cap
+  # (100), not a second controller or a per-sport writer lane.
   group: wow-v17-engineering-implementation-single-writer
   cancel-in-progress: false
+  queue: max
 
 jobs:
   multi-agent-engineering:
