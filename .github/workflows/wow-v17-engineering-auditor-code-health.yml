@@ -95,6 +95,7 @@ jobs:
           artifacts/wow-engine/test_v17_targeted_app_adoption.py
           artifacts/wow-engine/test_v17_global_engineering_app_adoption.py
           artifacts/wow-engine/test_v17_engineering_inplace_readoption.py
+          artifacts/wow-engine/test_v17_engineering_adoption_progression.py
 
       - name: Preserve non-execution governance receipt
         if: always()
