@@ -155,3 +155,13 @@ def test_independent_qa_workflow_never_skips_provenance_or_security_on_fallback(
     assert "--credential-scope \"$CREDENTIAL_SCOPE\"" in build["run"]
     assert "independent_source_review_receipt.py" in build["run"]
     assert wf["jobs"]["qa"]["environment"] == "wow-qa"
+
+
+
+def test_captured_source_digest_must_match_complete_authenticated_patch(tmp_path):
+    source = captured()
+    source["diff_sha256"] = "f" * 64
+    path = tmp_path / "capture.json"
+    path.write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_INPUT_DIFF_MISMATCH"):
+        fallback._read_input(path)
