@@ -55,13 +55,18 @@ def _read_input(path: Path) -> dict:
         files = captured["files"]
         if not isinstance(files, list) or not isinstance(head, str):
             raise ReviewUnavailable("REVIEW_INPUT_INVALID")
-        paths = sorted(item["filename"] for item in files)
-        if len(set(paths)) != len(paths) or not paths or not re.fullmatch(r"[0-9a-f]{40}", head):
-            raise ReviewUnavailable("REVIEW_INPUT_INVALID")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ReviewUnavailable("REVIEW_INPUT_INVALID")
+        if not re.fullmatch(r"[0-9a-f]{40}", head):
+            raise ReviewUnavailable("REVIEW_INPUT_INVALID")
+        # Independently recompute the canonical full-patch digest. The model
+        # may not review an excerpt while the receipt claims a larger diff.
+        _, computed = receipts.canonical_diff(files, expected_count=len(files))
+        if computed != digest:
+            raise ReviewUnavailable("REVIEW_INPUT_DIFF_MISMATCH")
         return captured
-    except (OSError, KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (OSError, KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError,
+            receipts.SourceReviewError) as exc:
         raise ReviewUnavailable("REVIEW_INPUT_INVALID") from exc
 
 
