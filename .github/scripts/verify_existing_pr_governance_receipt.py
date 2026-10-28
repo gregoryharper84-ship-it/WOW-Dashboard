@@ -26,6 +26,15 @@ WORKFLOW_NAME = "wow-v17-existing-pr-governance-review"
 CERTIFICATION_MODE = "EXISTING_PR_REVIEW_EVIDENCE"
 BOOTSTRAP_MODE = "TRUST_ROOT_BOOTSTRAP"
 ORDINARY_MODE = "ORDINARY_ENGINEERING"
+DETERMINISTIC_MODE = "CLASS_A_DETERMINISTIC"
+DETERMINISTIC_ASSURANCE = "ZERO_CREDIT_DETERMINISTIC_ONLY_NO_SEMANTIC_REVIEW"
+DETERMINISTIC_CHECKS = {
+    "WOW Independent QA exact-head": 5245832,
+    "WOW Release Authority exact-head": 5245853,
+}
+# Initial narrow rollout: source-only training package, not a general bypass of model code.
+CLASS_A_PREFIXES = ("artifacts/wow-engine/learning/",)
+CLASS_A_EXACT_PATHS = frozenset({"artifacts/wow-engine/test_v17_triple_d_learning_smoke.py"})
 CANONICAL_REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 OWNER_LOGIN = "gregoryharper84-ship-it"
 OWNER_ID = 285088163
@@ -306,6 +315,29 @@ def _protected_paths(repo_root: Path) -> set[str]:
     return set(roots) | set(declared) | set(PROTECTED_PATHS)
 
 
+def _validate_class_a_files(files: Sequence[Mapping[str, Any]], *, repo_root: Path) -> None:
+    """Fail closed unless every changed and former path is preapproved, non-governance training source."""
+    _require(bool(files), "CLASS_A_DIFF_EMPTY")
+    _validate_protected_diff(files, repo_root=repo_root)
+    for file in files:
+        _require(file.get("status") in {"added", "modified", "changed"},
+                 "CLASS_A_CHANGE_TYPE_NOT_ALLOWED")
+        _require(file.get("previous_filename") is None, "CLASS_A_RENAME_OR_COPY_NOT_ALLOWED")
+        path = file["filename"]
+        _require(path in CLASS_A_EXACT_PATHS or any(path.startswith(p) for p in CLASS_A_PREFIXES),
+                 "CLASS_A_PATH_NOT_ALLOWLISTED")
+
+
+def _deterministic_check(record: Mapping[str, Any], *, name: str) -> None:
+    summary = (record.get("output") or {}).get("summary")
+    _require(isinstance(summary, str) and summary.startswith(
+        "ZERO-CREDIT DETERMINISTIC QA ONLY; no semantic/adversarial source review performed."
+    ), f"CLASS_A_ASSURANCE_LABEL_MISSING:{name}")
+    started = _timestamp(record.get("started_at"), "CLASS_A_CHECK_STARTED_AT")
+    completed = _timestamp(record.get("completed_at"), "CLASS_A_CHECK_COMPLETED_AT")
+    _require(completed >= started, f"CLASS_A_CHECK_TIME_INVALID:{name}")
+
+
 def _validate_automated_review(
     artifact: object,
     run: Mapping[str, Any] | None,
@@ -360,11 +392,12 @@ def build_receipt(
     automated_review: object | None = None,
     source_review_run: Mapping[str, Any] | None = None,
     source_review_artifact_id: int | None = None,
+    deterministic_class_a: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     clock = now or datetime.now(timezone.utc)
     _require(clock.tzinfo is not None, "CLOCK_NOT_TRUSTED")
-    if automated_review is None:
+    if automated_review is None and not deterministic_class_a:
         _require(
             clock.astimezone(timezone.utc) < _timestamp(FALLBACK_PROVIDER_SUNSET_UTC, "PROVIDER_SUNSET"),
             "TEMPORARY_FALLBACK_PROVIDER_SUNSET",
@@ -412,7 +445,14 @@ def build_receipt(
     _require(isinstance(reviews, list), "REVIEW_INVENTORY_INVALID")
     _require(isinstance(check_runs, list), "CHECK_INVENTORY_INVALID")
     _require(isinstance(workflow_runs, list), "WORKFLOW_INVENTORY_INVALID")
-    if automated_review is None:
+    if deterministic_class_a:
+        _require(automated_review is None and trusted_reviewers is None,
+                 "CLASS_A_CANNOT_IMPERSONATE_INDEPENDENT_REVIEW")
+        _validate_class_a_files(changed_files, repo_root=Path.cwd())
+        review = None
+        allowlist = []
+        receipt_schema_version = 4
+    elif automated_review is None:
         allowlist = _reviewer_allowlist(trusted_reviewers)
         review = _independent_approval(
             reviews,
@@ -469,12 +509,15 @@ def build_receipt(
         verified_workflows.append({"name": name, "path": path, "run_id": _positive_int(run.get("id"), "WORKFLOW_RUN_ID"),
                                    "head_sha": expected_head_sha, "status": "completed", "conclusion": "success"})
 
+    required_checks = {**REQUIRED_CHECKS, **DETERMINISTIC_CHECKS} if deterministic_class_a else REQUIRED_CHECKS
     verified_checks = {}
-    for name, app_id in REQUIRED_CHECKS.items():
+    for name, app_id in required_checks.items():
         check = _latest(check_runs, name=name, expected_sha=expected_head_sha, app_id=app_id)
         _require(check is not None, f"REQUIRED_CHECK_MISSING:{name}")
         _require(check.get("status") == "completed" and check.get("conclusion") == "success",
                  f"REQUIRED_CHECK_NOT_GREEN:{name}")
+        if name in DETERMINISTIC_CHECKS:
+            _deterministic_check(check, name=name)
         verified_checks[name] = {
             "id": _positive_int(check.get("id"), "CHECK_ID"),
             "app_id": app_id,
@@ -483,14 +526,14 @@ def build_receipt(
             "conclusion": "success",
         }
 
-    return {
+    receipt = {
         "receipt_schema_version": receipt_schema_version,
         "workflow_name": WORKFLOW_NAME,
         "repository": expected_repository,
         "workflow_run_id": str(expected_workflow_run_id),
         "workflow_run_attempt": expected_workflow_run_attempt,
         "created_at_utc": clock.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "certification_mode": CERTIFICATION_MODE,
+        "certification_mode": DETERMINISTIC_MODE if deterministic_class_a else CERTIFICATION_MODE,
         "fallback_expires_utc": (
             clock.astimezone(timezone.utc) + REVIEW_RECEIPT_MAX_AGE
         ).isoformat().replace("+00:00", "Z"),
@@ -508,10 +551,13 @@ def build_receipt(
         "independent_review": review,
         "required_workflows": verified_workflows,
         "required_checks": verified_checks,
-        "evidence_state": "REVIEW_EVIDENCE_VERIFIED",
+        "evidence_state": "CLASS_A_DETERMINISTIC_VERIFIED" if deterministic_class_a else "REVIEW_EVIDENCE_VERIFIED",
         "terminal_authority": TERMINAL_AUTHORITY,
         "can_execute": False,
     }
+    if deterministic_class_a:
+        receipt["assurance"] = DETERMINISTIC_ASSURANCE
+    return receipt
 
 
 def verify_receipt(
