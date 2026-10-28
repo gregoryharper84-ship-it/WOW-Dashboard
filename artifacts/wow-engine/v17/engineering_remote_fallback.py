@@ -390,6 +390,7 @@ def fallback(env, api, assignment_api, manifest, main_sha):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["guard", "fallback", "finalize-cursor"])
+    parser.add_argument("--reservation-comment-id", type=int)
     parser.add_argument("--output")
     args = parser.parse_args()
     env = os.environ
@@ -409,6 +410,7 @@ def main():
             run_id=int(env["GITHUB_RUN_ID"]),
             run_attempt=int(env["GITHUB_RUN_ATTEMPT"]),
             source_sha=env["GITHUB_SHA"],
+            reservation_comment_id=args.reservation_comment_id,
         )
         print(json.dumps(output, sort_keys=True))
         return
