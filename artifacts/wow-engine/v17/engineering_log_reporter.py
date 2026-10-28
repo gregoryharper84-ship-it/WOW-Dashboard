@@ -206,3 +206,55 @@ def persist_candidates(db: Any, report: Mapping[str, Any], *,
         created += 1
     return {"status": "REPORTER_DURABLE_CANDIDATES", "created": created,
             "known": known, "dispatch_authorized": False, "can_execute": False}
+
+
+REPORTER_HEARTBEAT_ID = "WOW_ENGINEERING_LOG_REPORTER"
+
+
+def _reporter_heartbeat(db: Any, *, state: str, outcome: str,
+                        instance_id: str) -> None:
+    """Own auditor-id, never overwrite independent QA or dispatcher heartbeat."""
+    if state not in {"RUNNING", "DEGRADED"} or not re.fullmatch(r"[A-Z0-9_]{1,120}", outcome):
+        raise ReporterHold("REPORTER_HEARTBEAT_INVALID")
+    now = datetime.now(timezone.utc).isoformat()
+    db.table("wow_engineering_auditor_runtime").upsert({
+        "auditor_id": REPORTER_HEARTBEAT_ID,
+        "instance_id": instance_id,
+        "status": state,
+        "last_heartbeat_at": now,
+        "last_error_code": outcome,
+        "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+        "updated_at": now,
+    }, on_conflict="auditor_id").execute()
+
+
+def resident_reporter_cycle(transport: Any, db: Any, *,
+                            instance_id: str) -> str:
+    """One bounded polling iteration inside the EXISTING resident worker.
+
+    Feature flag and credentials are admitted by its existing supervisor.
+    Missing source or stale SHA creates a durable DEGRADED heartbeat (not green).
+    The one-writer dispatch path is unchanged and NEVER called here.
+    """
+    try:
+        first = transport.get("commits/main").get("sha")
+        packet, provenance = read_latest_authenticated_report(transport, main_sha=first)
+        second = transport.get("commits/main").get("sha")
+        if first != second:
+            raise ReporterHold("REPORTER_MAIN_MOVED_DURING_READ")
+        result = persist_candidates(db, packet, provenance=provenance,
+                                    main_sha=second)
+        outcome = "REPORTER_CANDIDATES_RECORDED" if result["created"] else (
+            "REPORTER_RECURRENT_CANDIDATES" if result.get("known") else "REPORTER_NO_ACTION")
+        _reporter_heartbeat(db, state="RUNNING", outcome=outcome,
+                            instance_id=instance_id)
+        return outcome
+    except ReporterHold as exc:
+        # Only allowlisted in-module typed failures are surfaced. No raw source.
+        code = str(exc)
+        if not re.fullmatch(r"[A-Z0-9_]{1,120}", code):
+            code = "REPORTER_UNCLASSIFIED"
+        _reporter_heartbeat(db, state="DEGRADED", outcome=code,
+                            instance_id=instance_id)
+        return code
