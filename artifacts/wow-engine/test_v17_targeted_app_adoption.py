@@ -155,7 +155,7 @@ def test_manual_recovery_does_not_create_other_controller_or_approval():
     # Review capacity is a backpressure boundary, not a permanently stuck queue.
     # A genuine App replay PR closing wakes the already-existing protected-main
     # observer, and the 3-WIP cap is still checked again inside the writer.
-    assert "pull_request_target:\\n    types: [closed]" in workflow
+    assert "pull_request_target:\n    types: [closed]" in workflow
     assert "github.event_name != 'pull_request_target'" in workflow
     assert "github.event.pull_request.user.login == 'wow-engineering[bot]'" in workflow
     assert "github.event.pull_request.base.ref == 'main'" in workflow
