@@ -181,3 +181,73 @@ def test_readoption_contract_has_no_extra_controller_or_release_authority():
     assert "PR_UPDATED_PENDING_INDEPENDENT_REVIEW" in source
     assert "git push --force" not in source
     assert not re.search(r"\b(merge_pull_request|approve|trigger_deploy)\(", source)
+
+
+def test_valid_readoption_pushes_only_existing_app_branch_and_requires_new_reviews(monkeypatch):
+    """Simulate the actual readoption transition with zero live network or git."""
+    monkeypatch.setenv("APP_TOKEN", "separate-app-principal")
+    monkeypatch.setenv("GH_TOKEN", "separate-readonly-principal")
+    monkeypatch.setenv("WOW_CAN_EXECUTE", "false")
+    monkeypatch.setenv("WOW_DRY_RUN_ONLY", "true")
+    new_head = "e" * 40
+    pr = app_pr()
+    receipt = {
+        "status": "READOPTION_ADMISSION_PASS", "pr": APP_PR,
+        "existing_app_head": APP_HEAD, "main": MAIN,
+    }
+    monkeypatch.setattr(readopt, "preflight", lambda *args: receipt)
+    monkeypatch.setattr(readopt, "_prepare", lambda *args:
+                        (MAIN, PATHS, copy.deepcopy(pr), OLDER_SOURCE_SHA, BRANCH))
+    events = []
+    state = {"pushed": False, "body": pr["body"]}
+
+    def mocked_call(*cmd, env=None):
+        events.append(cmd)
+        if cmd[:3] == ("git", "diff", "--cached"):
+            return "\n".join(PATHS) if "--name-only" in cmd else ""
+        if cmd[:2] == ("git", "rev-parse"):
+            if cmd[2] == "HEAD":
+                return new_head
+            if cmd[2].startswith(":"):
+                return "5" * 40
+            if cmd[2].startswith(SOURCE_SHA + ":"):
+                return "5" * 40
+            raise AssertionError(cmd)
+        if cmd[:3] == ("git", "push", "origin"):
+            assert not any("force" in item for item in cmd)
+            assert env is not None and env["GIT_TERMINAL_PROMPT"] == "0"
+            state["pushed"] = True
+            return ""
+        if cmd[:3] == ("gh", "api", "--method"):
+            assert env["GH_TOKEN"] == "separate-app-principal"
+            assert cmd[3] == "PATCH"
+            state["body"] = next(x.split("=", 1)[1]
+                                 for x in cmd if x.startswith("body="))
+            return "{}"
+        return ""
+
+    def mocked_api(route):
+        if route == "git/ref/heads/main":
+            return {"object": {"sha": MAIN}}
+        if route == f"pulls/{SOURCE_PR}":
+            return {"head": {"sha": SOURCE_SHA}}
+        if route == f"pulls/{APP_PR}":
+            result = copy.deepcopy(pr)
+            if state["pushed"]:
+                result["head"]["sha"] = new_head
+            result["body"] = state["body"]
+            return result
+        raise AssertionError(route)
+
+    monkeypatch.setattr(adoption, "call", mocked_call)
+    monkeypatch.setattr(adoption, "api", mocked_api)
+    result = readopt.readopt(SOURCE_PR, SOURCE_SHA, APP_PR)
+    assert result["status"] == "PR_UPDATED_PENDING_INDEPENDENT_REVIEW"
+    assert result["pr"] == APP_PR
+    assert result["source_review_status"] == "REQUIRED_PENDING"
+    assert result["independent_source_review_complete"] is False
+    assert result["required_owner_approval_head"] == new_head
+    assert result["can_execute"] is False
+    assert sum(event[:3] == ("git", "push", "origin") for event in events) == 1
+    assert not any(event[:3] == ("gh", "pr", "create") for event in events)
+    assert "Original author/source: PR #2198" in state["body"]
