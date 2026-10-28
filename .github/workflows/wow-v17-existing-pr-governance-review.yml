@@ -606,6 +606,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}
+          ZERO_CREDIT_MODE: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           HEAD_REF: ${{ steps.target.outputs.head_ref }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
@@ -721,7 +722,13 @@ jobs:
           if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then
             python .github/scripts/verify_existing_pr_governance_receipt.py "${common[@]}" --bootstrap
           else
-            if [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then
+            # A narrowly preapproved ordinary training diff may consume only genuine
+            # exact-head deterministic QA and Release App evidence in zero-credit mode.
+            # The receipt explicitly denies any claim of semantic source review.
+            if [ "${ZERO_CREDIT_MODE:-false}" = "true" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
+              python .github/scripts/verify_existing_pr_governance_receipt.py \
+                "${common[@]}" --deterministic-class-a
+            elif [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then
               python .github/scripts/verify_existing_pr_governance_receipt.py \
                 "${common[@]}" \
                 --trusted-reviewers-json "$TRUSTED_REVIEWERS_JSON"
