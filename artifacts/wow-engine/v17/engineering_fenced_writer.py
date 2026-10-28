@@ -193,6 +193,27 @@ class SupabaseRpcStore:
         })
         return value is True
 
+    def close_epoch(self, incident_id: int, owner_id: str, epoch: int,
+                    lease_group: str) -> str:
+        """Stop admission durably; DRAINED is not a lease release receipt.
+
+        Existing pending intents remain readback-only. A missing/malformed RPC
+        response never authorizes release, and this method never advances epoch.
+        """
+        if (type(incident_id) is not int or incident_id <= 0
+                or type(epoch) is not int or epoch <= 0
+                or not isinstance(owner_id, str) or not OWNER.fullmatch(owner_id)
+                or not isinstance(lease_group, str) or not GROUP.fullmatch(lease_group)):
+            raise FencingHold("EPOCH_CLOSE_IDENTITY_INVALID")
+        value = self._rpc("wow_engineering_close_writer_epoch", {
+            "p_incident_id": incident_id, "p_owner_id": owner_id,
+            "p_epoch": epoch, "p_lease_group": lease_group,
+        })
+        if not isinstance(value, dict) or value.get("status") not in {
+                "DRAINING", "DRAINED", "DENIED"}:
+            raise FencingHold("LEASE_STORE_INVALID_RESPONSE")
+        return value["status"]
+
 
 class GitHubAppWriter:
     """Single-purpose GitHub API writer in the protected runner, never an LLM tool."""

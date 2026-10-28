@@ -366,3 +366,39 @@ def test_review_only_migration_creates_all_columns_referenced_by_cas():
     assert "REVIEW_ONLY" in sql and "ENABLE ROW LEVEL SECURITY" in sql
     assert "GRANT SELECT,INSERT,UPDATE" in sql
     assert "TO service_role" in sql
+
+
+@pytest.mark.parametrize("status", ["DRAINING", "DRAINED", "DENIED"])
+def test_close_epoch_binds_exact_identity_and_does_not_release(status, monkeypatch):
+    store = SupabaseRpcStore("https://iczfhsmjrrafhvcpmqhr.supabase.co", "dummy", "iczfhsmjrrafhvcpmqhr")
+    requests = []
+    def rpc(name, payload):
+        requests.append((name, payload))
+        return {"status": status}
+    monkeypatch.setattr(store, "_rpc", rpc)
+    assert store.close_epoch(1739, "github-actions:worker:123", 7, "GLOBAL") == status
+    assert requests == [("wow_engineering_close_writer_epoch", {
+        "p_incident_id": 1739, "p_owner_id": "github-actions:worker:123",
+        "p_epoch": 7, "p_lease_group": "GLOBAL",
+    })]
+
+
+@pytest.mark.parametrize("response", [None, True, [], {}, {"status": "STARTED"}, {"status": "RELEASED"}])
+def test_close_epoch_rejects_unknown_store_response(response, monkeypatch):
+    store = SupabaseRpcStore("https://iczfhsmjrrafhvcpmqhr.supabase.co", "dummy", "iczfhsmjrrafhvcpmqhr")
+    monkeypatch.setattr(store, "_rpc", lambda *args: response)
+    with pytest.raises(FencingHold, match="LEASE_STORE_INVALID_RESPONSE"):
+        store.close_epoch(1739, "github-actions:worker:123", 7, "GLOBAL")
+
+
+@pytest.mark.parametrize("identity", [
+    (True, "github-actions:worker:123", 7, "GLOBAL"),
+    (1739, "github-actions:worker:123", True, "GLOBAL"),
+    (1739, None, 7, "GLOBAL"), (1739, "github-actions:worker:123", 7, None),
+    (1739, "github-actions:worker:123", 0, "GLOBAL"),
+])
+def test_close_epoch_invalid_identity_never_contacts_store(identity, monkeypatch):
+    store = SupabaseRpcStore("https://iczfhsmjrrafhvcpmqhr.supabase.co", "dummy", "iczfhsmjrrafhvcpmqhr")
+    monkeypatch.setattr(store, "_rpc", lambda *args: pytest.fail("unexpected RPC"))
+    with pytest.raises(FencingHold, match="EPOCH_CLOSE_IDENTITY_INVALID"):
+        store.close_epoch(*identity)

@@ -200,3 +200,34 @@ def test_replay_requires_complete_trusted_source_identity(tmp_path,source_pr,sou
     with pytest.raises(FencingHold,match="SOURCE_REPLAY_IDENTITY_INCOMPLETE|MUTATION_REPLAY_PROVENANCE_INVALID"):
         deliver(q,context(),store=store,github=Mock())
     store.begin.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["DRAINED", "DRAINING"])
+def test_close_epoch_uses_receipt_without_mutating_github(tmp_path, status):
+    p = receipt(tmp_path)
+    q = args(p, "CLOSE_EPOCH")
+    q.branch = q.sha = q.mutation_id = ""
+    store, github = Mock(), Mock()
+    store.close_epoch.return_value = status
+    assert deliver(q, context(), store=store, github=github) == status
+    store.close_epoch.assert_called_once_with(1739,
+        "github-actions:401111:2:wow-v17-engineering-auto-repair", 7, "GLOBAL")
+    store.begin.assert_not_called()
+    assert not github.mock_calls
+
+
+def test_denied_close_does_not_become_a_release_success(tmp_path):
+    q = args(receipt(tmp_path), "CLOSE_EPOCH")
+    q.branch = q.sha = q.mutation_id = ""
+    store = Mock()
+    store.close_epoch.return_value = "DENIED"
+    with pytest.raises(FencingHold, match="WRITER_EPOCH_CLOSE_DENIED"):
+        deliver(q, context(), store=store, github=Mock())
+
+
+def test_close_rejects_mutation_arguments_before_store_request(tmp_path):
+    q = args(receipt(tmp_path), "CLOSE_EPOCH")
+    store = Mock()
+    with pytest.raises(FencingHold, match="EPOCH_CLOSE_MUTATION_ARGUMENTS_FORBIDDEN"):
+        deliver(q, context(), store=store, github=Mock())
+    assert not store.mock_calls

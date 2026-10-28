@@ -28,6 +28,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS wow_engineering_one_pending_mutation_per_incid
 ALTER TABLE public.wow_engineering_writer_mutation_intents ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.wow_engineering_writer_mutation_intents FROM PUBLIC,anon,authenticated;
 GRANT SELECT,INSERT,UPDATE ON public.wow_engineering_writer_mutation_intents TO service_role;
+-- Supabase default privileges may already have granted ALL to service_role.
+-- Providers must never receive this still-trusted gateway credential.
+REVOKE DELETE,TRUNCATE,TRIGGER,REFERENCES ON public.wow_engineering_writer_mutation_intents FROM service_role;
+REVOKE DELETE,TRUNCATE,TRIGGER,REFERENCES ON public.wow_engineering_incident_writer_leases FROM service_role;
+
+-- Irreversible admission tombstone. Expiry, renewal and provider restart must
+-- never reopen an epoch which the finalizer has begun draining.
+CREATE TABLE IF NOT EXISTS public.wow_engineering_closed_writer_epochs (
+ incident_id bigint NOT NULL REFERENCES public.wow_engineering_incident_writer_leases(incident_id),
+ epoch bigint NOT NULL CHECK (epoch>0), owner_id text NOT NULL,
+ lease_group text NOT NULL, closed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ PRIMARY KEY (incident_id,epoch)
+);
+ALTER TABLE public.wow_engineering_closed_writer_epochs ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.wow_engineering_closed_writer_epochs FROM PUBLIC,anon,authenticated;
+GRANT SELECT,INSERT ON public.wow_engineering_closed_writer_epochs TO service_role;
+REVOKE UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES ON public.wow_engineering_closed_writer_epochs FROM service_role;
+CREATE OR REPLACE FUNCTION public.wow_engineering_preserve_closed_epoch()
+ RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
+ SET search_path=pg_catalog,public AS $$
+BEGIN
+ RAISE EXCEPTION 'WRITER_EPOCH_CLOSURE_IMMUTABLE' USING ERRCODE='55000';
+END $$;
+DROP TRIGGER IF EXISTS wow_engineering_closed_epoch_immutable ON public.wow_engineering_closed_writer_epochs;
+CREATE TRIGGER wow_engineering_closed_epoch_immutable
+ BEFORE UPDATE OR DELETE ON public.wow_engineering_closed_writer_epochs
+ FOR EACH ROW EXECUTE FUNCTION public.wow_engineering_preserve_closed_epoch();
 
 -- Protect legacy claim/reclaim/release RPCs and GLOBAL-vs-domain exclusivity.
 -- IMPORTANT: an UPDATE may already hold the row lock when its trigger fires.
@@ -42,15 +69,45 @@ BEGIN
  IF NOT pg_catalog.pg_try_advisory_xact_lock(901734,1739) THEN
    RAISE EXCEPTION 'WRITER_LEASE_TRANSITION_RETRY' USING ERRCODE='55P03';
  END IF;
+ IF TG_OP='DELETE' THEN
+   RAISE EXCEPTION 'WRITER_LEASE_DELETE_FORBIDDEN' USING ERRCODE='55000';
+ END IF;
  IF TG_OP='UPDATE' THEN
+   IF NEW.incident_id IS DISTINCT FROM OLD.incident_id THEN
+     RAISE EXCEPTION 'WRITER_LEASE_IDENTITY_IMMUTABLE' USING ERRCODE='55000';
+   END IF;
    IF EXISTS (SELECT 1 FROM public.wow_engineering_writer_mutation_intents m
               WHERE m.incident_id=OLD.incident_id AND m.state='PENDING')
       AND (NEW.owner_id IS DISTINCT FROM OLD.owner_id
         OR NEW.epoch IS DISTINCT FROM OLD.epoch
         OR NEW.lease_group IS DISTINCT FROM OLD.lease_group
+        OR NEW.branch IS DISTINCT FROM OLD.branch
+        OR NEW.pr_number IS DISTINCT FROM OLD.pr_number
         OR NEW.state IS DISTINCT FROM OLD.state) THEN
      RAISE EXCEPTION 'WRITER_MUTATION_IN_FLIGHT' USING ERRCODE='55000';
    END IF;
+   IF (NEW.owner_id IS DISTINCT FROM OLD.owner_id
+       OR NEW.epoch IS DISTINCT FROM OLD.epoch
+       OR NEW.lease_group IS DISTINCT FROM OLD.lease_group
+       OR NEW.state IS DISTINCT FROM OLD.state) THEN
+     IF NOT EXISTS (SELECT 1 FROM public.wow_engineering_closed_writer_epochs c
+                    WHERE c.incident_id=OLD.incident_id AND c.epoch=OLD.epoch
+                      AND c.owner_id=OLD.owner_id AND c.lease_group=OLD.lease_group) THEN
+       RAISE EXCEPTION 'WRITER_EPOCH_NOT_CLOSED' USING ERRCODE='55000';
+     END IF;
+     IF NEW.epoch < OLD.epoch OR (NEW.state='HELD' AND NEW.epoch<=OLD.epoch) THEN
+       RAISE EXCEPTION 'WRITER_EPOCH_NOT_MONOTONIC' USING ERRCODE='55000';
+     END IF;
+   END IF;
+ END IF;
+ IF NEW.state='HELD' AND EXISTS (
+   SELECT 1 FROM public.wow_engineering_closed_writer_epochs c
+   WHERE c.incident_id=NEW.incident_id AND c.epoch>=NEW.epoch
+ ) AND (TG_OP='INSERT' OR NEW.epoch IS DISTINCT FROM OLD.epoch
+        OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
+        OR NEW.lease_group IS DISTINCT FROM OLD.lease_group
+        OR NEW.state IS DISTINCT FROM OLD.state) THEN
+   RAISE EXCEPTION 'WRITER_EPOCH_CLOSED' USING ERRCODE='55000';
  END IF;
  IF NEW.state='HELD' AND NEW.expires_at > clock_timestamp() THEN
    SELECT EXISTS (
@@ -76,7 +133,7 @@ BEGIN
 END $$;
 DROP TRIGGER IF EXISTS wow_engineering_atomic_group_fence ON public.wow_engineering_incident_writer_leases;
 CREATE TRIGGER wow_engineering_atomic_group_fence
- BEFORE INSERT OR UPDATE ON public.wow_engineering_incident_writer_leases
+ BEFORE INSERT OR UPDATE OR DELETE ON public.wow_engineering_incident_writer_leases
  FOR EACH ROW EXECUTE FUNCTION public.wow_engineering_enforce_lease_fence();
 
 CREATE OR REPLACE FUNCTION public.wow_engineering_begin_writer_mutation(
@@ -88,11 +145,14 @@ CREATE OR REPLACE FUNCTION public.wow_engineering_begin_writer_mutation(
 DECLARE l public.wow_engineering_incident_writer_leases%rowtype;
         m public.wow_engineering_writer_mutation_intents%rowtype;
 BEGIN
- IF p_mutation_id IS NULL OR p_incident_id IS NULL OR p_incident_id<=0 OR
-    p_epoch IS NULL OR p_epoch<=0 OR p_owner_id IS NULL OR p_lease_group IS NULL OR
-    p_operation NOT IN ('CREATE_BRANCH','PUSH_REF','CREATE_PR') OR
-    NOT (
-       (p_source_pr IS NULL AND coalesce(p_source_sha,'')='' AND p_draft IS TRUE
+ -- A nullable predicate must never skip a denial in PL/pgSQL IF.
+ IF (p_mutation_id IS NOT NULL AND p_incident_id>0 AND p_epoch>0
+    AND p_owner_id ~ '^[A-Za-z0-9:._/-]+$' AND length(p_owner_id) BETWEEN 8 AND 256
+    AND p_lease_group ~ '^(GLOBAL|P0_[A-Z0-9_]+)$'
+    AND p_operation IN ('CREATE_BRANCH','PUSH_REF','CREATE_PR')
+    AND p_source_sha IS NOT NULL AND p_draft IS NOT NULL
+    AND (
+       (p_source_pr IS NULL AND p_source_sha='' AND p_draft IS TRUE
          AND p_branch ~ ('^wow-engineering/fenced-' || p_incident_id::text ||
                          '-' || p_epoch::text || '-[a-z0-9-]{8,64}$'))
        OR
@@ -100,8 +160,8 @@ BEGIN
          AND p_draft IS FALSE AND p_operation IN ('PUSH_REF','CREATE_PR')
          AND p_branch = ('wow-engineering/exact-replay-' || p_source_pr::text ||
                          '-' || left(p_source_sha,12)))
-    ) OR
-    p_sha !~ '^[0-9a-f]{40}$' OR p_digest !~ '^[0-9a-f]{64}$' THEN
+    ) AND
+    p_sha ~ '^[0-9a-f]{40}$' AND p_digest ~ '^[0-9a-f]{64}$') IS NOT TRUE THEN
    RETURN jsonb_build_object('status','DENIED');
  END IF;
  -- Serialize across different incident IDs before taking an incident row lock.
@@ -112,18 +172,22 @@ BEGIN
  SELECT * INTO m FROM public.wow_engineering_writer_mutation_intents
  WHERE mutation_id=p_mutation_id FOR UPDATE;
  IF FOUND THEN
-   IF m.incident_id<>p_incident_id OR m.owner_id<>p_owner_id OR
-      m.epoch<>p_epoch OR m.lease_group<>p_lease_group OR
-      m.operation<>p_operation OR m.branch<>p_branch OR m.sha<>p_sha OR
-      m.payload_digest<>p_digest OR m.source_pr IS DISTINCT FROM p_source_pr OR
-      m.source_sha<>p_source_sha OR m.draft IS DISTINCT FROM p_draft THEN
+   IF m.incident_id IS DISTINCT FROM p_incident_id OR m.owner_id IS DISTINCT FROM p_owner_id OR
+      m.epoch IS DISTINCT FROM p_epoch OR m.lease_group IS DISTINCT FROM p_lease_group OR
+      m.operation IS DISTINCT FROM p_operation OR m.branch IS DISTINCT FROM p_branch OR m.sha IS DISTINCT FROM p_sha OR
+      m.payload_digest IS DISTINCT FROM p_digest OR m.source_pr IS DISTINCT FROM p_source_pr OR
+      m.source_sha IS DISTINCT FROM p_source_sha OR m.draft IS DISTINCT FROM p_draft THEN
      RETURN jsonb_build_object('status','DENIED');
    END IF;
    RETURN jsonb_build_object('status',m.state);
  END IF;
- IF l.incident_id IS NULL OR l.owner_id<>p_owner_id OR l.epoch<>p_epoch
-    OR l.lease_group<>p_lease_group OR l.state<>'HELD'
-    OR l.expires_at<=clock_timestamp() THEN
+ IF (l.incident_id=p_incident_id AND l.owner_id=p_owner_id AND l.epoch=p_epoch
+    AND l.lease_group=p_lease_group AND l.state='HELD'
+    AND l.expires_at>clock_timestamp()) IS NOT TRUE THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ IF EXISTS (SELECT 1 FROM public.wow_engineering_closed_writer_epochs c
+            WHERE c.incident_id=p_incident_id AND c.epoch>=p_epoch) THEN
    RETURN jsonb_build_object('status','DENIED');
  END IF;
  IF EXISTS (SELECT 1 FROM public.wow_engineering_incident_writer_leases other
@@ -151,6 +215,43 @@ BEGIN
  RETURN jsonb_build_object('status','STARTED');
 END $$;
 
+-- Close admission BEFORE observing provider termination. Both close and begin
+-- serialize before locking the row, so a concurrent write is either durably
+-- PENDING or denied. DRAINED never releases the lease by itself.
+CREATE OR REPLACE FUNCTION public.wow_engineering_close_writer_epoch(
+ p_incident_id bigint,p_owner_id text,p_epoch bigint,p_lease_group text
+) RETURNS jsonb LANGUAGE plpgsql SECURITY INVOKER
+ SET search_path=pg_catalog,public AS $$
+DECLARE l public.wow_engineering_incident_writer_leases%rowtype;
+BEGIN
+ IF (p_incident_id>0 AND p_epoch>0
+     AND p_owner_id ~ '^[A-Za-z0-9:._/-]+$' AND length(p_owner_id) BETWEEN 8 AND 256
+     AND p_lease_group ~ '^(GLOBAL|P0_[A-Z0-9_]+)$') IS NOT TRUE THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ PERFORM pg_catalog.pg_advisory_xact_lock(901734,1739);
+ SELECT * INTO l FROM public.wow_engineering_incident_writer_leases
+ WHERE incident_id=p_incident_id FOR UPDATE;
+ IF (l.incident_id=p_incident_id AND l.owner_id=p_owner_id AND l.epoch=p_epoch
+     AND l.lease_group=p_lease_group AND l.state='HELD') IS NOT TRUE THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ INSERT INTO public.wow_engineering_closed_writer_epochs
+   (incident_id,epoch,owner_id,lease_group)
+ VALUES (p_incident_id,p_epoch,p_owner_id,p_lease_group)
+ ON CONFLICT (incident_id,epoch) DO NOTHING;
+ IF NOT EXISTS (SELECT 1 FROM public.wow_engineering_closed_writer_epochs c
+                WHERE c.incident_id=p_incident_id AND c.epoch=p_epoch
+                  AND c.owner_id=p_owner_id AND c.lease_group=p_lease_group) THEN
+   RETURN jsonb_build_object('status','DENIED');
+ END IF;
+ IF EXISTS (SELECT 1 FROM public.wow_engineering_writer_mutation_intents m
+            WHERE m.incident_id=p_incident_id AND m.state='PENDING') THEN
+   RETURN jsonb_build_object('status','DRAINING');
+ END IF;
+ RETURN jsonb_build_object('status','DRAINED');
+END $$;
+
 -- Caller must independently read GitHub exact branch/head/body before
 -- completing; verified audit evidence is immutable.
 CREATE OR REPLACE FUNCTION public.wow_engineering_confirm_writer_mutation(
@@ -167,6 +268,9 @@ BEGIN
 END $$;
 
 REVOKE ALL ON FUNCTION public.wow_engineering_enforce_lease_fence() FROM PUBLIC,anon,authenticated;
+REVOKE ALL ON FUNCTION public.wow_engineering_preserve_closed_epoch() FROM PUBLIC,anon,authenticated;
+REVOKE ALL ON FUNCTION public.wow_engineering_close_writer_epoch(bigint,text,bigint,text) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION public.wow_engineering_close_writer_epoch(bigint,text,bigint,text) TO service_role;
 REVOKE ALL ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text,bigint,text,boolean) FROM PUBLIC,anon,authenticated;
 REVOKE ALL ON FUNCTION public.wow_engineering_confirm_writer_mutation(uuid,bigint,text,bigint,text) FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.wow_engineering_begin_writer_mutation(uuid,bigint,text,bigint,text,text,text,text,text,bigint,text,boolean) TO service_role;

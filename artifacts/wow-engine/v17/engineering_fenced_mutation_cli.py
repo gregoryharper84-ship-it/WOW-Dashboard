@@ -59,6 +59,18 @@ def deliver(args, env: dict | None = None, *, store=None, github=None) -> str:
     if not app or not readonly or app == readonly:
         raise FencingHold("INDEPENDENT_APP_WRITE_IDENTITY_REQUIRED")
     incident, owner, epoch, group = receipt_identity(Path(args.receipt), env)
+    if args.operation == "CLOSE_EPOCH":
+        if any(getattr(args, field, "") for field in (
+                "mutation_id", "branch", "sha", "payload_file", "source_pr", "source_sha")):
+            raise FencingHold("EPOCH_CLOSE_MUTATION_ARGUMENTS_FORBIDDEN")
+        if store is None:
+            store = SupabaseRpcStore(env.get("SUPABASE_URL", ""),
+                                    env.get("SUPABASE_SERVICE_ROLE_KEY", ""),
+                                    env.get("WOW_ENGINEERING_SUPABASE_PROJECT_ID", ""))
+        status = store.close_epoch(incident, owner, epoch, group)
+        if status not in {"DRAINED", "DRAINING"}:
+            raise FencingHold("WRITER_EPOCH_CLOSE_DENIED")
+        return status
     payload = ""
     if args.operation == "CREATE_PR":
         try:
@@ -100,10 +112,10 @@ def deliver(args, env: dict | None = None, *, store=None, github=None) -> str:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--receipt", required=True)
-    p.add_argument("--mutation-id", required=True)
-    p.add_argument("--operation", required=True, choices=["CREATE_BRANCH","PUSH_REF","CREATE_PR"])
-    p.add_argument("--branch", required=True)
-    p.add_argument("--sha", required=True)
+    p.add_argument("--mutation-id", default="")
+    p.add_argument("--operation", required=True, choices=["CREATE_BRANCH","PUSH_REF","CREATE_PR","CLOSE_EPOCH"])
+    p.add_argument("--branch", default="")
+    p.add_argument("--sha", default="")
     p.add_argument("--payload-file", default="")
     p.add_argument("--source-pr", type=int, default=0)
     p.add_argument("--source-sha", default="")
@@ -114,6 +126,8 @@ def main() -> None:
         print(f"::error::{err}")
         raise SystemExit(1) from None
     print(json.dumps({"status":status, "can_execute":False}, sort_keys=True))
+    if status == "DRAINING":
+        raise SystemExit(1)  # Durable owned re-entry; never a release authorization.
 
 
 if __name__ == "__main__":
