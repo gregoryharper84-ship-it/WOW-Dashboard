@@ -254,7 +254,7 @@ def _real_specialist_incident_gate(body: str, requested: str = ""):
         _ROOT / ".github/workflows/wow-v17-engineering-specialist-support.yml"
     ).read_text()
     start = workflow.index("            # Reuse strict incident identity across the repo;")
-    end = workflow.index("\n\n            checks=$(gh api", start)
+    # Find the actual check-run command, regardless of explanatory comments.\n    # The extracted snippet still runs the original incident-identity shell gate.\n    end = workflow.index("\n            checks=$(gh api", start)
     script = (
         "set -euo pipefail\n"
         + "pr=" + shlex.quote(json.dumps({"body": body})) + "\n"
