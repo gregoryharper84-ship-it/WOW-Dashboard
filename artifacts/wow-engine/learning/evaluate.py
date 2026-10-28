@@ -94,6 +94,8 @@ def public_prompts(doc: dict, split: str) -> list[dict]:
 
 def assess(doc: dict, answers: list[dict], *, split: str) -> dict:
     """Grade proposed labels, explicitly refusing to certify code or production."""
+    if split not in ("practice", "evaluation"):
+        raise ValueError("unknown split")
     if not isinstance(answers, list):
         raise ValueError("answers must be a list")
     eligible = {c["id"]: c for c in doc["cases"] if c["split"] == split}
