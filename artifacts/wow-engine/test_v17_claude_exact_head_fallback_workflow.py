@@ -90,3 +90,23 @@ def test_both_recovery_workflows_use_identical_strict_parser():
     assert "REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS" in auto
     assert "CLAUDE_REPAIR_INCIDENT_MISSING_OR_AMBIGUOUS" in claude
     assert '"$incident" = "$TARGET_INCIDENT"' in claude
+
+
+def test_claude_ambient_token_cannot_mutate_source_or_pull_requests():
+    """Only the established Engineering App token can publish source changes.
+
+    Existing issue-comment writes remain a temporary explicit legacy scope.
+    This check prevents the fallback workflow from silently reintroducing
+    a second unfenced GitHub source writer.
+    """
+    worker = CLAUDE.read_text()
+    permissions = worker.split("\npermissions:\n", 1)[1].split("\nconcurrency:", 1)[0]
+    assert "  contents: read\n" in permissions
+    assert "  pull-requests: read\n" in permissions
+    assert "  issues: write\n" in permissions
+    assert "  contents: write\n" not in permissions
+    assert "  pull-requests: write\n" not in permissions
+    assert "GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}" in worker
+    assert "GH_TOKEN: ${{ steps.eng_token.outputs.token }}" in worker
+    assert 'git push --force-with-lease="refs/heads/$branch:$REPAIR_SHA"' in worker
+    assert 'git push --set-upstream origin "$branch"' in worker
