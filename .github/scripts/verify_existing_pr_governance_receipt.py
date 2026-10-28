@@ -792,7 +792,16 @@ def classify_changed_files(files: object, *, repo_root: Path, expected_count: ob
         for path in (item["filename"], item.get("previous_filename")):
             if path is not None and _path_is_trust_root(path, protected):
                 trust = True
-    return BOOTSTRAP_MODE if trust else ORDINARY_MODE
+    if trust:
+        return BOOTSTRAP_MODE
+    if normalized and all(
+        item["filename"] in CLASS_A_EXACT_PATHS
+        and item["previous_filename"] is None
+        and item["status"] in {"added", "modified", "changed"}
+        for item in normalized
+    ):
+        return DETERMINISTIC_MODE
+    return ORDINARY_MODE
 
 
 def _owner_approval(reviews: Sequence[Mapping[str, Any]], *, head_sha: str) -> dict[str, Any]:
