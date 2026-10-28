@@ -33,6 +33,7 @@ ALLOWED_PROVIDER_ENDPOINTS = frozenset({
 # exact-head/diff/file-coverage validation remains mandatory after inference.
 REVIEW_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "decision": {"type": "string", "enum": ["PASS", "REJECT"]},
         "summary": {"type": "string"},
@@ -41,6 +42,7 @@ REVIEW_SCHEMA = {
         "reviewed_files": {"type": "array", "items": {"type": "string"}},
         "assessment": {
             "type": "object",
+            "additionalProperties": False,
             "properties": {
                 "source_review": {"type": "string", "enum": ["PASS", "FAIL"]},
                 "security_review": {"type": "string", "enum": ["PASS", "FAIL"]},
@@ -53,6 +55,7 @@ REVIEW_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                     "file": {"type": "string"},
