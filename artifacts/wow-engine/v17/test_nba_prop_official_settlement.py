@@ -261,3 +261,26 @@ def test_literal_offer_required_and_numeric_offer_must_match_prediction():
     s = snapshot()
     s["opportunity_ledger"]["literal_threshold"] = "NaN"
     assert run(s=s)["blocker"] == "NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED"
+
+
+def test_naive_settlement_clock_rejected():
+    result = settle_nba_scalar(prediction(), snapshot(), now=datetime(2026, 10, 28, 6, 0))
+    assert result["blocker"] == "NBA_SETTLEMENT_CLOCK_MUST_BE_UTC_AWARE"
+    assert "outcome" not in result
+
+
+def test_nfl_overlay_runner_preserves_nba_exact_route(monkeypatch):
+    import v17.nfl_prop_settlement_overlay as nfl
+    monkeypatch.setattr(scope, "_eligible_forward_predictions", lambda *args, **kwargs: [prediction()])
+    monkeypatch.setattr(base, "_existing_outcomes", lambda *args: set())
+    monkeypatch.setattr(base, "_snapshots", lambda *args: {"nba-snap-1": snapshot()})
+    settled = []
+    monkeypatch.setattr(base, "_persist_outcome", lambda _db, row: settled.append(row))
+    response = nfl.run_exact_route_settlement(
+        base.ExactRouteSettlementRequest(routes=["NBA:POINTS"], limit=1),
+        db=object(), now=NOW, http_get=lambda *_a, **_kw: Response(boxscore()),
+    )
+    assert response["settled_or_voided"] == 1
+    assert response["ordinary_prediction_rows_excluded"] is True
+    assert len(settled) == 1
+    assert response["can_execute"] is False
