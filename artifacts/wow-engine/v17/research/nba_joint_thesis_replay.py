@@ -50,14 +50,26 @@ def _p(raw: Any, field: str) -> float:
     return p
 
 
-def _leg(leg: Mapping[str, Any], start: datetime) -> tuple[str, float, str]:
+def _leg(leg: Mapping[str, Any], start: datetime) -> tuple[str, float, str, str]:
     for field in ("receipt_id", "stat_type", "period", "exact_line",
                   "direction", "settlement_identity"):
         _text(leg, field)  # preserve literal 7+ or 8+; never convert a threshold
     if leg["direction"].upper() not in ("MORE", "LESS"):
         raise ValueError("direction must be MORE or LESS")
-    if leg.get("calibration_status") != "PASS":
-        raise ValueError("leg calibration not PASS")
+    basis = str(leg.get("probability_basis") or "GOVERNED_CALIBRATED").strip().upper()
+    if basis == "GOVERNED_CALIBRATED":
+        if leg.get("calibration_status") != "PASS":
+            raise ValueError("leg calibration not PASS")
+        probability = _p(leg.get("calibrated_probability"), "calibrated_probability")
+    elif basis == "RESEARCH_UNCALIBRATED":
+        if leg.get("calibration_status") != "CANDIDATE_ONLY":
+            raise ValueError("research leg must remain CANDIDATE_ONLY")
+        if leg.get("calibrated_probability") is not None:
+            raise ValueError("research leg may not claim calibrated probability")
+        _text(leg, "candidate_model_artifact_id")
+        probability = _p(leg.get("raw_candidate_probability"), "raw_candidate_probability")
+    else:
+        raise ValueError("unsupported probability_basis")
     if _dt(leg.get("model_timestamp_utc")) >= start:
         raise ValueError("leg model timestamp not pregame")
     status = _text(leg, "result").upper()
@@ -66,8 +78,7 @@ def _leg(leg: Mapping[str, Any], start: datetime) -> tuple[str, float, str]:
     return (
         "|".join(_text(leg, f).casefold() for f in
                  ("stat_type", "period", "exact_line", "direction", "settlement_identity")),
-        _p(leg.get("calibrated_probability"), "calibrated_probability"),
-        status,
+        probability, status, basis,
     )
 
 
@@ -97,8 +108,20 @@ def _validate(record: Mapping[str, Any], holdout_start: datetime) -> dict[str, A
         raise ValueError("official settlement timestamp must follow event start")
     if not isinstance(record.get("legs"), list) or len(record["legs"]) != 2:
         raise ValueError("exactly two legs required")
-    a_key, a_p, a_result = _leg(record["legs"][0], start)
-    b_key, b_p, b_result = _leg(record["legs"][1], start)
+    a_key, a_p, a_result, a_basis = _leg(record["legs"][0], start)
+    b_key, b_p, b_result, b_basis = _leg(record["legs"][1], start)
+    if a_basis != b_basis:
+        raise ValueError("mixed probability basis within player thesis")
+    joint_basis = str(record.get("joint_probability_basis") or "GOVERNED_CALIBRATED").strip().upper()
+    if joint_basis != a_basis:
+        raise ValueError("joint probability basis inconsistent with leg probabilities")
+    if joint_basis == "RESEARCH_UNCALIBRATED":
+        if record.get("joint_calibration_status") != "CANDIDATE_ONLY":
+            raise ValueError("research joint model must remain CANDIDATE_ONLY")
+        if record.get("joint_calibrated_lower_bound") is not None:
+            raise ValueError("uncalibrated joint forecast may not claim calibrated lower bound")
+    elif record.get("joint_calibration_status") not in (None, "PASS"):
+        raise ValueError("governed joint calibration status invalid")
     if a_key == b_key:
         raise ValueError("duplicate exact leg")
     if record["legs"][0]["receipt_id"] == record["legs"][1]["receipt_id"]:
@@ -111,6 +134,7 @@ def _validate(record: Mapping[str, Any], holdout_start: datetime) -> dict[str, A
     return {
         "canonical": canonical, "event": event, "player": player,
         "cohort": record["matchup_cohort"].strip(), "start": start,
+        "probability_basis": joint_basis,
         "split": "holdout" if start >= holdout_start else "prior",
         "p_joint": joint, "p_independent_baseline": a_p * b_p,
         "outcomes": (a_result, b_result),
@@ -181,6 +205,12 @@ def evaluate_joint_replay(
         except (ValueError, TypeError, KeyError) as exc:
             rejected.append({"row_index": index, "reason": str(exc)})
 
+    # Never aggregate raw candidate skill with governed calibrated skill.
+    # Different evidence bases must be evaluated in separate immutable replays.
+    bases = {r["probability_basis"] for r in accepted}
+    if len(bases) > 1:
+        raise ValueError("MIXED_PROBABILITY_BASIS_REPLAY_NOT_ALLOWED")
+
     prior = [r for r in accepted if r["split"] == "prior"]
     holdout = [r for r in accepted if r["split"] == "holdout"]
     settled = [r for r in holdout if set(r["outcomes"]) <= SETTLED]
@@ -204,6 +234,7 @@ def evaluate_joint_replay(
         "terminal_authority": "V17_TERMINAL_REDUCER",
         "can_execute": False,
         "benchmark_is_not_governed_probability": True,
+        "evaluated_probability_basis": next(iter(bases), None),
         "holdout_start_utc": cutoff.isoformat(),
         "source_rows": len(records),
         "accepted_unique_rows": len(accepted),
