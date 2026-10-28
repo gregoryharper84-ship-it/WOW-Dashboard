@@ -18,7 +18,7 @@ def test_free_production_web_service_serializes_interactive_prop_work() -> None:
     service = _service()
     env = _env(service)
 
-    assert service["plan"] == "free"
+    assert service["plan"] == "1c-2g"
     assert env["WOW_INTERACTIVE_PROP_HYDRATION_WORKERS"] == "1"
     assert env["WOW_INTERACTIVE_PROP_RESEARCH_WORKERS"] == "1"
     assert env["WOW_INTERACTIVE_PROP_SCORE_WORKERS"] == "1"
