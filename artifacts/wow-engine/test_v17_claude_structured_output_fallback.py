@@ -112,3 +112,28 @@ def test_output_does_not_emit_secrets_or_relax_permission_profile():
     assert 'echo "$RESULT"' not in guard
     assert "model=claude-sonnet-5-5" in guard
     assert "api_output_present=" in guard
+
+
+def test_verified_incident_lookup_has_only_narrow_read_only_claude_tool_lease(tmp_path):
+    """The existing triage agent may query proven history without shell escalation."""
+    lookup = "Bash(python artifacts/wow-engine/v17/engineering_lesson_retrieval.py:*)"
+    for profile in (":read-only", ":workspace"):
+        rendered = _render_claude_args(profile, '{"type":"object"}', tmp_path)
+        assert rendered.count(lookup) == 1
+        assert "Bash(python:*" not in rendered
+        assert "Bash(bash:" not in rendered
+        assert "Bash(sh:" not in rendered
+        if profile == ":read-only":
+            assert "Edit," not in rendered
+            assert "Write," not in rendered
+        else:
+            assert "Edit,Read,Write" in rendered
+
+
+def test_verified_lesson_tool_lease_is_not_arbitrary_python_or_shell():
+    action = _action()
+    config = next(x for x in action["runs"]["steps"] if x.get("id") == "config")
+    script = config["run"]
+    assert script.count("Bash(python artifacts/wow-engine/v17/engineering_lesson_retrieval.py:*)") == 2
+    assert "permission_profile" in action["inputs"]
+    assert "show_full_output: \"false\"" in ACTION.read_text()
