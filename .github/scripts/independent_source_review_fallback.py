@@ -273,7 +273,8 @@ def review_fallback(
         row = {
             "provider": identity, "role": "independent_security_review",
             "head_sha": captured["pr"]["head"]["sha"],
-            "diff_sha256": captured["diff_sha256"], "retry_count": index + 1,
+            "diff_sha256": captured["diff_sha256"],
+            "retry_count": (len(attempts) + 1) if attempts is not None else index + 1,
             "can_execute": False, "review_approved": False,
         }
         if scope not in ALLOWED_FALLBACKS[identity]:
