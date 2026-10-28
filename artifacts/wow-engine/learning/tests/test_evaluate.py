@@ -151,6 +151,54 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(result["cases_scored"], 0)
         self.assertEqual(result["evaluation_kind"], "DECLARATION_ONLY_NOT_CODE_VERIFICATION")
 
+    def test_source_issue_number_must_match_record(self):
+        with self.assertRaisesRegex(ValueError, "mismatched historical"):
+            self.case_doc(lambda d: d["cases"][0].update(source="https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/99999"))
+
+    def test_source_pr_number_must_match_record(self):
+        with self.assertRaisesRegex(ValueError, "mismatched historical"):
+            self.case_doc(lambda d: d["cases"][2].update(source="https://github.com/gregoryharper84-ship-it/WOW-Dashboard/pull/99999"))
+
+    def test_source_query_rejected(self):
+        with self.assertRaisesRegex(ValueError, "mismatched historical"):
+            self.case_doc(lambda d: d["cases"][0].update(source="https://github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/2136?redirect=https://evil.invalid"))
+
+    def test_missing_reference_pr_denied(self):
+        with self.assertRaisesRegex(ValueError, "reference PR"):
+            self.case_doc(lambda d: d["cases"][0].pop("reference_pr"))
+
+    def test_partial_answer_does_not_produce_aggregate_score(self):
+        result = evaluate.assess(self.doc, [self.answer], split="practice")
+        self.assertEqual(result["cases_scored"], 1)
+        self.assertEqual(result["cases_available"], 3)
+        self.assertFalse(result["evaluation_complete"])
+        self.assertIsNone(result["full_set_declaration_score"])
+
+    def test_complete_practice_corpus_produces_aggregate_declaration_score(self):
+        answers = []
+        for row in self.doc["cases"]:
+            if row["split"] != "practice":
+                continue
+            answers.append({
+                "case_id": row["id"],
+                "root_cause_code": row["correct_root_cause"],
+                "proposed_tests": list(row["required_tests"]),
+                "preserved_controls": list(row["mandatory_controls"]),
+                "proposed_shortcuts": [],
+                "disposition": "EXPERIMENT_CREATED",
+                "incremental_spend_usd": 0,
+                "proposed_external_services": [],
+            })
+        result = evaluate.assess(self.doc, answers, split="practice")
+        self.assertTrue(result["evaluation_complete"])
+        self.assertEqual(result["full_set_declaration_score"], 100.0)
+        self.assertEqual(result["cases_scored"], result["cases_available"])
+
+    def test_no_answers_never_claim_full_completion(self):
+        result = evaluate.assess(self.doc, [], split="evaluation")
+        self.assertFalse(result["evaluation_complete"])
+        self.assertIsNone(result["full_set_declaration_score"])
+
     def test_encoded_username_source_denied(self):
         with self.assertRaisesRegex(ValueError, "ungrounded"):
             self.case_doc(lambda d: d["cases"][0].update(source="https://foo@github.com/gregoryharper84-ship-it/WOW-Dashboard/issues/1"))
