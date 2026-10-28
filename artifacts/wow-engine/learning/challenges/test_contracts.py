@@ -98,6 +98,15 @@ class LeaseContract(unittest.TestCase):
         self.active.append(self.res.copy())
         self.assertFalse(impl.safe_release(self.res, self.terminal, self.active))
 
+    def test_malformed_ledger_row_never_allows_release(self):
+        self.active.append(None)
+        self.assertFalse(impl.safe_release(self.res, self.terminal, self.active))
+
+    def test_invalid_source_sha_never_allows_release(self):
+        self.res["source_sha"] = "z" * 40
+        self.terminal["source_sha"] = "z" * 40
+        self.assertFalse(impl.safe_release(self.res, self.terminal, self.active))
+
     def test_mismatched_agent_denied(self):
         self.terminal["agent_id"] = "cursor-b"
         self.assertFalse(impl.safe_release(self.res, self.terminal, self.active))
