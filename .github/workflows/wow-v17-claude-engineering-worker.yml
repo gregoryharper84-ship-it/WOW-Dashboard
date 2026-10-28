@@ -37,9 +37,8 @@ permissions:
   # The ambient workflow token must never be a second source writer.
   contents: read
   pull-requests: read
-  # Legacy #1138 heartbeat/incident comments are staged for the fenced gateway.
-  # Keep this narrow scope until those writes move to the trusted App adapter.
-  # Incident heartbeat and receipt writes now also use the Engineering App token.
+  # Legacy heartbeat and incident comments use the Engineering App token.
+  # Canonical transactional fencing is a separate coordinated rollout.
   issues: read
 
 concurrency:
