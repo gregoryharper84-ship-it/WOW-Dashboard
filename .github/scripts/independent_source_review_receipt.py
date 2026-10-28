@@ -28,11 +28,12 @@ CREDENTIAL_SCOPE = "WOW_QA_REVIEW_OPENAI_API_KEY"
 # alternative identity. The pair is re-verified by every downstream consumer.
 ALLOWED_REVIEW_CREDENTIALS = {
     "openai-codex-action": frozenset({"WOW_QA_REVIEW_OPENAI_API_KEY"}),
+    "openai-responses-api": frozenset({"WOW_QA_REVIEW_OPENAI_API_KEY"}),
     "anthropic-claude-api": frozenset({
-        "WOW_QA_REVIEW_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY",
+        "WOW_QA_REVIEW_ANTHROPIC_API_KEY",
     }),
     "gemini-generative-api": frozenset({
-        "WOW_QA_REVIEW_GEMINI_API_KEY", "GEMINI_API_KEY",
+        "WOW_QA_REVIEW_GEMINI_API_KEY",
     }),
 }
 MAX_REVIEW_AGE = timedelta(minutes=30)
