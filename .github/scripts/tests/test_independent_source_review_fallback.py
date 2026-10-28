@@ -88,15 +88,17 @@ def test_real_reject_never_fails_over_to_more_permissive_reviewer(monkeypatch):
     assert proof["provider_identity"] == "anthropic-claude-api"
 
 
-def test_false_head_cannot_be_accepted_as_review_of_current_source(monkeypatch):
+def test_false_head_cannot_trigger_retry_to_more_permissive_reviewer(monkeypatch):
     monkeypatch.setattr(fallback, "_anthropic", lambda *args: verdict(head="b" * 40))
-    monkeypatch.setattr(fallback, "_gemini", lambda *args: verdict())
-    result, proof = fallback.review_fallback(
-        captured(), anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
-        gemini_key="test", gemini_scope="GEMINI_API_KEY",
+    monkeypatch.setattr(
+        fallback, "_gemini",
+        lambda *args: pytest.fail("Stale review cannot switch reviewers"),
     )
-    assert result["reviewed_head_sha"] == HEAD
-    assert proof["provider_identity"] == "gemini-generative-api"
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_REPLY_SCHEMA_OR_PROVENANCE_INVALID"):
+        fallback.review_fallback(
+            captured(), anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
+            gemini_key="test", gemini_scope="GEMINI_API_KEY",
+        )
 
 
 def test_no_credentials_cannot_produce_fabricated_pass():
@@ -187,3 +189,66 @@ def test_claude_native_json_schema_is_validated_after_real_transport(monkeypatch
     assert "reviewed_diff_sha256" in schema["required"]
     assert "findings" in schema["required"]
     assert schema["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("code", [
+    "REVIEW_PROVIDER_HTTP_400",
+    "REVIEW_PROVIDER_HTTP_403",  # May be a policy/governance denial
+    "REVIEW_PROVIDER_HTTP_404",
+    "REVIEW_PROVIDER_RESPONSE_INVALID",
+    "REVIEW_REPLY_SCHEMA_OR_PROVENANCE_INVALID",
+    "REVIEW_PROVIDER_HTTP_422",
+    "REVIEW_INPUT_INVALID",
+])
+def test_policy_denials_and_malformed_responses_cannot_failover(monkeypatch, code):
+    def primary(*args):
+        raise fallback.ReviewUnavailable(code)
+    monkeypatch.setattr(fallback, "_anthropic", primary)
+    monkeypatch.setattr(
+        fallback, "_gemini",
+        lambda *args: pytest.fail("Invalid or denied provider response must HOLD"),
+    )
+    with pytest.raises(fallback.ReviewUnavailable, match=code):
+        fallback.review_fallback(
+            captured(), anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
+            gemini_key="test", gemini_scope="GEMINI_API_KEY",
+        )
+
+
+@pytest.mark.parametrize("code", [
+    "REVIEW_PROVIDER_HTTP_401", "REVIEW_PROVIDER_HTTP_408",
+    "REVIEW_PROVIDER_HTTP_429", "REVIEW_PROVIDER_HTTP_500",
+    "REVIEW_PROVIDER_HTTP_502", "REVIEW_PROVIDER_HTTP_503",
+    "REVIEW_PROVIDER_HTTP_504", "REVIEW_PROVIDER_TRANSPORT_FAILURE",
+])
+def test_only_typed_provider_unavailability_permits_secondary(monkeypatch, code):
+    seen = []
+    def primary(*args):
+        seen.append("anthropic")
+        raise fallback.ReviewUnavailable(code)
+    def secondary(*args):
+        seen.append("gemini")
+        return verdict()
+    monkeypatch.setattr(fallback, "_anthropic", primary)
+    monkeypatch.setattr(fallback, "_gemini", secondary)
+    result, proof = fallback.review_fallback(
+        captured(), anthropic_key="test", anthropic_scope="ANTHROPIC_API_KEY",
+        gemini_key="test", gemini_scope="GEMINI_API_KEY",
+    )
+    assert seen == ["anthropic", "gemini"]
+    assert result["decision"] == "PASS"
+    assert proof["provider_identity"] == "gemini-generative-api"
+
+
+def test_malformed_http_json_never_reclassified_as_transient(monkeypatch):
+    from io import BytesIO
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+        def read(self, *_):
+            return b"{broken json"
+    monkeypatch.setattr(fallback, "urlopen", lambda *_, **__: FakeResponse())
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_PROVIDER_RESPONSE_INVALID"):
+        fallback._post_json("https://example.invalid", {}, {"foo": "bar"})
