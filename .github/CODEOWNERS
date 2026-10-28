@@ -20,6 +20,10 @@
 /artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_adoption_progression.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_lifecycle_live_pr.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/sirt_assurance.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_auditor_worker.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_auditor_github.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_auditor.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_hold_target.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_recovery_planner.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_remote_fallback.py @gregoryharper84-ship-it
