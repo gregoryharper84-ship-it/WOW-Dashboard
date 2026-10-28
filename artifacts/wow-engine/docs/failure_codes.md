@@ -402,6 +402,9 @@ These local codes belong to `v17/universal_intelligence_paired_replay.py`. They 
 | `REPLAY_FORECAST_RECEIPTS_NOT_INDEPENDENT` | Intelligence shadow replay | Champion and challenger use the same purported receipt | No |
 | `REPLAY_MODEL_PROVENANCE_MISSING` | Intelligence shadow replay | Missing claimed model-artifact identity | No |
 | `REPLAY_MODEL_ARTIFACT_NOT_DISTINCT` | Intelligence shadow replay | Champion and challenger claim the same artifact | No |
+| `REPLAY_FITTED_CHECKSUM_MISSING_OR_INVALID` | Intelligence shadow replay | Either alleged fitted artifact lacks an exact 64-character lowercase SHA-256 payload checksum; registry labels alone cannot establish independent model bytes | No |
+| `REPLAY_FITTED_ARTIFACT_BYTES_NOT_DISTINCT` | Intelligence shadow replay | Champion and challenger claim the same immutable fitted payload checksum despite distinct artifact IDs, model versions or training-source hashes | No |
+| `REPLAY_TRAINING_CUTOFF_UNVERIFIED` | Intelligence shadow replay | Training cutoff is missing/invalid or later than the forecast timestamp; descriptive historical pairing cannot be accepted | No |
 | `REPLAY_PROBABILITY_PACKAGE_INVALID` | Intelligence shadow replay | Invalid scalar probability/lower-bound ordering | No |
 | `REPLAY_SETTLEMENT_INVALID` | Intelligence shadow replay | Settled result is not a binary WIN/LOSS for the exact thesis | No |
 | `REPLAY_UNSETTLED_OR_VOID` | Intelligence shadow replay | Outcome not final or explicitly void/push | No |
