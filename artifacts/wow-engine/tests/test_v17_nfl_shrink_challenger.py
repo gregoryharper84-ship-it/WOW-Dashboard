@@ -114,3 +114,17 @@ def test_challenger_optional_import_failure_is_isolated(monkeypatch):
         "reason_code": "NFL_SHADOW_CHALLENGER_MODULENOTFOUNDERROR",
         "can_execute": False,
     }
+
+
+def test_advisory_challenger_ledger_unique_cohort_migration_is_fail_closed():
+    from pathlib import Path
+
+    sql = (
+        Path(__file__).resolve().parents[1]
+        / "migrations" / "20261028_nfl_shadow_challenger_unique_cohort.sql"
+    ).read_text(encoding="utf-8").lower()
+    assert "having count(*) > 1" in sql
+    assert "raise exception 'nfl_shadow_challenger_duplicate_cohort_preexists'" in sql
+    assert "create unique index if not exists" in sql
+    assert "on public.wow_intelligence_challenger_evaluations (challenger_id, cohort_key)" in sql
+    assert "delete from" not in sql and "update public." not in sql
