@@ -596,3 +596,30 @@ def test_missing_native_claude_owner_rule_fails_closed(missing_path):
     owner['codeowners'] = owner['codeowners'].replace(f'/.claude/ @{OWNER}\n', '')
     findings = run(owner)['findings']
     assert f'PROTECTION_CODEOWNERS_UNCOVERED:{missing_path}' in findings
+
+
+def test_lifecycle_attestation_is_protected_in_computed_trust_roots_and_codeowners():
+    """Regression for a high-severity helper-only change escaping governance."""
+    helper = "artifacts/wow-engine/v17/engineering_lifecycle_live_pr.py"
+    workflow = ".github/workflows/wow-v17-engineering-auditor-code-health.yml"
+    assert workflow in m.GOVERNANCE_WORKFLOWS_EXTRA
+    workflow_text = (ROOT / workflow).read_text()
+    assert helper in workflow_text, "Governed workflow must execute actual helper"
+
+    derived = frozenset(m.governance_trust_roots(ROOT))
+    assert helper in derived, "Helper-only changes must require owner approval"
+    assert m.is_trust_root(helper, derived)
+    assert not m.is_trust_root(helper, frozenset())
+
+    for owners_path in (ROOT / ".github/CODEOWNERS", PROPOSED / "CODEOWNERS.proposed"):
+        ownership = owners_path.read_text()
+        assert f"/{helper} @{OWNER}" in ownership.splitlines()
+        assert f"@{OWNER}" in m._codeowners_owners(ownership, helper)
+
+
+def test_live_pr_helper_cannot_be_deleted_from_ownership_without_detection():
+    helper = "artifacts/wow-engine/v17/engineering_lifecycle_live_pr.py"
+    for owners_path in (ROOT / ".github/CODEOWNERS", PROPOSED / "CODEOWNERS.proposed"):
+        content = owners_path.read_text()
+        stripped = content.replace(f"/{helper} @{OWNER}", "")
+        assert f"@{OWNER}" not in m._codeowners_owners(stripped, helper)
