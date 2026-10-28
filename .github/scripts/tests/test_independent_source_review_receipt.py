@@ -1118,10 +1118,9 @@ def test_both_qa_producer_payloads_use_pinned_workflow_id():
 
 @pytest.mark.parametrize("provider,scope", [
     ("openai-codex-action", "WOW_QA_REVIEW_OPENAI_API_KEY"),
+    ("openai-responses-api", "WOW_QA_REVIEW_OPENAI_API_KEY"),
     ("anthropic-claude-api", "WOW_QA_REVIEW_ANTHROPIC_API_KEY"),
-    ("anthropic-claude-api", "ANTHROPIC_API_KEY"),
     ("gemini-generative-api", "WOW_QA_REVIEW_GEMINI_API_KEY"),
-    ("gemini-generative-api", "GEMINI_API_KEY"),
 ])
 def test_only_registered_producer_provider_credentials_can_build_and_verify(provider, scope):
     authentic = review.build_artifact(
@@ -1138,6 +1137,8 @@ def test_only_registered_producer_provider_credentials_can_build_and_verify(prov
 @pytest.mark.parametrize("provider,scope", [
     ("owner-claim", "WOW_QA_REVIEW_OPENAI_API_KEY"),
     ("anthropic-claude-api", "WOW_QA_REVIEW_GEMINI_API_KEY"),
+    ("anthropic-claude-api", "ANTHROPIC_API_KEY"),
+    ("gemini-generative-api", "GEMINI_API_KEY"),
     ("gemini-generative-api", "ANTHROPIC_API_KEY"),
     ("openai-codex-action", "GEMINI_API_KEY"),
 ])
