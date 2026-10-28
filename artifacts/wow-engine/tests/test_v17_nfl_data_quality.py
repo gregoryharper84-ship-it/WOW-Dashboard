@@ -87,3 +87,23 @@ def test_run_forward_shadow_reports_feature_refresh(monkeypatch):
     )
     assert out["feature_table_refresh"] == {"status": "COMPLETED", "seasons": [2026]}
     assert out["status"] == "COMPLETED"
+
+
+def test_optional_feature_helper_import_failure_is_isolated(monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def unavailable(name, *args, **kwargs):
+        if name == "v17.nfl_feature_table_refresh":
+            raise ModuleNotFoundError("research helper unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(shadow, "active_nfl_season", lambda now=None: 2026)
+    monkeypatch.setattr(builtins, "__import__", unavailable)
+    result = shadow._refresh_feature_table(object(), {"seasons": [2026]}, None)
+    assert result == {
+        "status": "FAILED",
+        "reason_code": "NFL_FEATURE_TABLE_REFRESH_MODULENOTFOUNDERROR",
+        "can_execute": False,
+    }
