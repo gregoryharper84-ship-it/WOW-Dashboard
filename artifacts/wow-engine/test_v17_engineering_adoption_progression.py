@@ -95,3 +95,22 @@ def test_progression_has_no_external_mutation_tools_or_execution_authority():
     assert "requests" not in code
     assert "github.token" not in code
     assert "can_execute\": False" in code
+
+
+def test_workflow_run_wakeups_preserve_pending_admission_without_parallel_writers():
+    # GitHub concurrency allows one running and one pending per group. Using
+    # protected main's shared head SHA silently cancels older pending wakeups
+    # during QA/Release/source-CI event storms even with cancel-in-progress=false.
+    wf = yaml.safe_load(WF.read_text(encoding="utf-8"))
+    top = wf["concurrency"]
+    assert top["group"] == (
+        "wow-v17-engineering-auto-repair-"
+        "${{ github.event.workflow_run.id || github.run_id }}"
+    )
+    assert top["cancel-in-progress"] is False
+    assert "workflow_run.head_sha" not in top["group"]
+    # Only wakeup/read-only admission is distinct; the existing single App
+    # writer mutex must remain global, not per event/PR/commit.
+    writer = wf["jobs"]["adopt-reviewed-owner-source"]["concurrency"]
+    assert writer["group"] == "wow-v17-engineering-implementation-single-writer"
+    assert writer["cancel-in-progress"] is False
