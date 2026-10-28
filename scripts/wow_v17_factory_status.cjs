@@ -100,7 +100,12 @@ async function main() {
     if(response.check_runs.length<100) break;
     if(page===3 && response.check_runs.length===100) throw new Error('Check run inventory truncated');
   }
-  process.stdout.write(JSON.stringify(assess(pr,runs),null,2)+'\n');
+  const finalPR = await api('/repos/'+REPO+'/pulls/'+number);
+  if ((finalPR.head || {}).sha !== pr.head.sha || finalPR.state !== pr.state ||
+      finalPR.merged_at !== pr.merged_at || finalPR.merge_commit_sha !== pr.merge_commit_sha) {
+    throw new Error('PR changed during read-only inspection; rerun for current head');
+  }
+  process.stdout.write(JSON.stringify(assess(finalPR,runs),null,2)+'\n');
 }
 if(require.main===module) main().catch(err=>{console.error('Read-only status unavailable:',err.message);process.exitCode=1;});
 module.exports={assess,selectedCheck,EXPECTED};
