@@ -280,7 +280,8 @@ jobs:
             --input "$RUNNER_TEMP/source-review-input.json" \
             --result "$RUNNER_TEMP/source-review-primary-result.json" \
             --provenance "$RUNNER_TEMP/source-review-primary-provider.json" \
-            --failure "$RUNNER_TEMP/source-review-primary-failure.json"
+            --failure "$RUNNER_TEMP/source-review-primary-failure.json" \
+            --attempt "$RUNNER_TEMP/review-primary-attempt.json"
 
       - name: Verify typed primary availability before allowing fallback
         id: primary_failure
@@ -297,7 +298,8 @@ jobs:
               --input "$RUNNER_TEMP/source-review-input.json" \
               --result "$RUNNER_TEMP/unused-primary-result.json" \
               --provenance "$RUNNER_TEMP/unused-primary-provider.json" \
-              --failure "$failure"
+              --failure "$failure" \
+              --attempt "$RUNNER_TEMP/review-primary-attempt.json"
             rc=$?
             set -e
             [ "$rc" = 2 ] || { echo "::error::QA_REVIEW_EXECUTION_FAILED:PRIMARY_FAILURE_CLASSIFICATION_INVALID"; exit 1; }
@@ -333,7 +335,8 @@ jobs:
           python .github/scripts/independent_source_review_fallback.py \
             --input "$RUNNER_TEMP/source-review-input.json" \
             --result "$RUNNER_TEMP/source-review-fallback-result.json" \
-            --provenance "$RUNNER_TEMP/source-review-fallback-provider.json"
+            --provenance "$RUNNER_TEMP/source-review-fallback-provider.json" \
+            --attempts "$RUNNER_TEMP/review-fallback-attempts.json"
           jq -e '.provider_identity and .credential_scope and .can_execute == false' \
             "$RUNNER_TEMP/source-review-fallback-provider.json" >/dev/null
 
@@ -412,6 +415,17 @@ jobs:
           [ "$decision" = "PASS" ] || {
             echo "::error::INDEPENDENT_SOURCE_REVIEW_REJECTED";
           }
+
+      - name: Preserve nonauthorizing per-provider attempt receipts
+        if: always() && steps.capture.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-v17-qa-review-attempts-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/review-primary-attempt.json
+            ${{ runner.temp }}/review-fallback-attempts.json
 
       - name: Upload short-lived exact-head review receipt
         id: source_review_artifact
