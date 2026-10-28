@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any, Mapping
 
-from v17.log_incident_intake import SERVICE, ALLOWED_TYPED_CODES
+from v17.log_incident_intake import SERVICE, WORKER_SERVICE, SERVICES, ALLOWED_TYPED_CODES, WORKER_FAILURE_CODES
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 WORKFLOW = "wow-v17-log-incident-intake.yml"
@@ -20,8 +20,9 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 HEX = re.compile(r"^[0-9a-f]{64}$")
 ROUTES = frozenset({"ROOT_PROBE", "HEALTH_PROBE", "SCOUT_HANDOFF",
                     "INTERACTIVE_SCORE", "OTHER_ROUTE", "PICKEM_QUEUE_CLAIM",
-                    "PROP_SELF_ACCEPTANCE", "FITTED_MODEL", "PERSISTENCE"})
-FAILURES = ALLOWED_TYPED_CODES | frozenset({"HTTP_5XX", "HTTP_401", "HTTP_422"})
+                    "PROP_SELF_ACCEPTANCE", "FITTED_MODEL", "PERSISTENCE",
+                    "ENGINEERING_RESIDENT_SUPERVISOR"})
+FAILURES = ALLOWED_TYPED_CODES | WORKER_FAILURE_CODES | frozenset({"HTTP_5XX", "HTTP_401", "HTTP_422"})
 
 
 def _hold(reason: str) -> dict[str, Any]:
@@ -51,7 +52,7 @@ def plan_reporter_handoff(
             or type(provenance.get("run_id")) is not int
             or provenance["run_id"] <= 0):
         return _hold("SOURCE_PROVENANCE_UNVERIFIED")
-    if (report.get("source") != "DATADOG" or report.get("service") != SERVICE
+    if (report.get("source") != "DATADOG" or report.get("services") != sorted(SERVICES)
             or report.get("status") not in {"CANDIDATES", "NO_ACTION"}
             or report.get("can_execute") is not False
             or report.get("terminal_authority") != "V17_TERMINAL_REDUCER"
@@ -73,15 +74,18 @@ def plan_reporter_handoff(
         if not isinstance(row, Mapping):
             return _hold("CANDIDATE_INVALID")
         route, code = row.get("failure_boundary"), row.get("typed_failure")
-        if (row.get("source") != "DATADOG" or row.get("service") != SERVICE
+        service = row.get("service")
+        if (row.get("source") != "DATADOG" or service not in SERVICES
                 or route not in ROUTES or code not in FAILURES
                 or row.get("can_execute") is not False
                 or row.get("state") != "CANDIDATE_UNVERIFIED"
                 or row.get("next_owner") != "REPORTER_AGENT"
                 or row.get("severity") not in {"P1", "P2"}):
             return _hold("CANDIDATE_INVALID")
+        if (code in WORKER_FAILURE_CODES) != (service == WORKER_SERVICE and route == "ENGINEERING_RESIDENT_SUPERVISOR"):
+            return _hold("WORKER_SOURCE_ROUTE_MISMATCH")
         fingerprint = row.get("fingerprint")
-        expected = hashlib.sha256(json.dumps([SERVICE, route, code],
+        expected = hashlib.sha256(json.dumps([service, route, code],
                                              separators=(",", ":")).encode()).hexdigest()
         if not isinstance(fingerprint, str) or not HEX.fullmatch(fingerprint) or fingerprint != expected:
             return _hold("CANDIDATE_FINGERPRINT_INVALID")
