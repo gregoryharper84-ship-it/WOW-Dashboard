@@ -9,6 +9,8 @@ on:
       - "artifacts/wow-engine/v17/experiments/cross_sport_audit_edge_fetch.py"
       - "artifacts/wow-engine/v17/experiments/cross_sport_geometry_audit_bundle.py"
       - "artifacts/wow-engine/v17/experiments/test_cross_sport_geometry_audit.py"
+      - "artifacts/wow-engine/v17/experiments/cross_sport_stationarity_triage.py"
+      - "artifacts/wow-engine/v17/experiments/test_cross_sport_stationarity_triage.py"
       - "artifacts/wow-engine/v17/supabase/functions/wow-v17-cross-sport-audit-feed/index.ts"
   workflow_dispatch:
 
@@ -61,7 +63,9 @@ jobs:
 
       - name: Run deterministic experiment tests
         run: |
-          python -m pytest -q v17/experiments/test_cross_sport_geometry_audit.py
+          python -m pytest -q \
+            v17/experiments/test_cross_sport_geometry_audit.py \
+            v17/experiments/test_cross_sport_stationarity_triage.py
 
       - name: Fetch immutable D1 evidence through governed OIDC feed
         if: steps.source.outputs.mode == 'oidc'
@@ -87,6 +91,15 @@ jobs:
             --input "$RUNNER_TEMP/cross-sport-audit-bundle.json" \
             --output "$RUNNER_TEMP/cross-sport-geometry-audit.json" \
             | tee "$RUNNER_TEMP/cross-sport-geometry-audit.log"
+
+      - name: Run Wave-1 stationarity challenger triage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m v17.experiments.cross_sport_stationarity_triage \
+            --input "$RUNNER_TEMP/cross-sport-geometry-audit.json" \
+            --output "$RUNNER_TEMP/cross-sport-stationarity-triage.json" \
+            | tee "$RUNNER_TEMP/cross-sport-stationarity-triage.log"
 
       - name: Assert fail-closed governance
         shell: bash
@@ -117,7 +130,37 @@ jobs:
                   assert lane.get("can_execute") is False
                   assert lane.get("probability_publishable") is False
                   assert lane.get("automatic_promotion") is False
-          print("CROSS_SPORT_AUDIT_GOVERNANCE_PASS can_execute=false")
+          triage = json.loads(
+              Path(os.environ["RUNNER_TEMP"])
+              .joinpath("cross-sport-stationarity-triage.json")
+              .read_text(encoding="utf-8")
+          )
+          assert triage["can_execute"] is False
+          assert triage["probability_publishable"] is False
+          assert triage["automatic_promotion"] is False
+          assert triage["terminal_authority"] == "V17_TERMINAL_REDUCER"
+          assert triage["terminal_state"] == "EXPERIMENT_CREATED"
+          lanes = {
+              (row.get("sport"), row.get("league"))
+              for row in triage.get("lanes") or []
+          }
+          assert lanes == {
+              ("MLB", "MLB"),
+              ("NCAAB", "NCAAB"),
+              ("SOCCER", "BUNDESLIGA"),
+              ("SOCCER", "EPL"),
+              ("SOCCER", "LALIGA"),
+              ("SOCCER", "SERIE_A"),
+          }
+          for row in triage.get("lanes") or []:
+              assert row.get("can_execute") is False
+              if row.get("status") == "EXPERIMENT_CREATED":
+                  assert row.get("probability_publishable") is False
+                  assert row.get("automatic_promotion") is False
+          print(
+              "CROSS_SPORT_AUDIT_GOVERNANCE_PASS "
+              "STATIONARITY_TRIAGE_GOVERNANCE_PASS can_execute=false"
+          )
           PY
 
       - name: Publish compact audit receipt
@@ -135,6 +178,9 @@ jobs:
             echo
             echo "Audit output:"
             cat "$RUNNER_TEMP/cross-sport-geometry-audit.log"
+            echo
+            echo "Wave-1 stationarity triage:"
+            cat "$RUNNER_TEMP/cross-sport-stationarity-triage.log"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload audit evidence
@@ -145,5 +191,7 @@ jobs:
             ${{ runner.temp }}/cross-sport-geometry-audit.json
             ${{ runner.temp }}/cross-sport-geometry-audit.log
             ${{ runner.temp }}/cross-sport-audit-bundle.json
+            ${{ runner.temp }}/cross-sport-stationarity-triage.json
+            ${{ runner.temp }}/cross-sport-stationarity-triage.log
           if-no-files-found: warn
           retention-days: 90
