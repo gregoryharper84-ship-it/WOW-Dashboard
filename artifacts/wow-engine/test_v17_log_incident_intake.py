@@ -143,3 +143,10 @@ def test_main_credentials_missing_writes_deferred_receipt_not_success(tmp_path, 
     assert receipt == {"status": "SOURCE_UNAVAILABLE", "reason": "DATADOG_CREDENTIAL_MISSING",
                        "source": "DATADOG", "can_execute": False}
     assert "DATADOG_CREDENTIAL_MISSING" in capsys.readouterr().err
+
+
+def test_successful_self_acceptance_and_info_logs_not_false_incidents():
+    assert report(event("WOW_PROP_MODEL_SELF_ACCEPTANCE result=PASS"))["findings"] == []
+    assert report(event("MODEL_SCORER_FAILED", status="info"))["findings"] == []
+    r = report(event("WOW_PROP_MODEL_SELF_ACCEPTANCE result=FAIL"))
+    assert r["findings"][0]["failure_boundary"] == "PROP_SELF_ACCEPTANCE"
