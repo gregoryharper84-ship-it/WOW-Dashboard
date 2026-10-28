@@ -106,3 +106,22 @@ The unrelated cross-sport NHL synthetic-identity test defect was repaired in exi
 The PropsMadness PR requires **new** pull-request CI after this merge; 97 focused fixture passes on the prior head alone do not prove its full run green against updated main. Preserve all four-sport/16-market row coverage, no silent source deletions, identity holds, negative source-rights cases, and fail-closed `can_execute=false`.
 
 The expected output remains a human-reviewable **research-only** contract. This PR must not enable any scheduled or recurring vendor collection, allow unverified aliases to become official events/players, store an unauthorized historical corpus, or register fitted model/probability routes. Neither matching publicly displayed lines nor a successful robots request grants training or republication rights. A separately authorized real-source canary and exact official identity reconciliation are independent acceptance gates, followed by chronology-correct shadow evaluation and route-specific fitted certification before any production probability usage.
+
+
+## October 27 review scope: vendor workflows deferred
+
+The two owner-authored `.github/workflows/` proposals were removed from this PR.
+The proposed merge contains **offline Python source, test fixtures and documentation only**.
+There is no GitHub Actions `workflow_dispatch` endpoint installed by this PR,
+no schedule, no configured live scraper, and no source-rights grant. The old
+one-page workflow described above is a **historical draft design**, not an
+installed operation; it must not be invoked as if it existed.
+
+The existing repository-wide regression checks continue to run on the PR.
+The optional vendor probe workflow, should one become permitted, requires a
+separate appropriately reviewed change with a documented use grant. Removing
+this proposed workflow does not weaken any existing protected CI workflow.
+
+No data from the public website has been acquired or certified through this PR.
+Official identities, fitted-model consumption and terminal publication remain
+separate contracts. `can_execute=false`.
