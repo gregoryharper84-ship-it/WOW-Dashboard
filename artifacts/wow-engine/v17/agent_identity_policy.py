@@ -153,6 +153,7 @@ GOVERNANCE_WORKFLOWS_EXTRA = (
     ".github/workflows/wow-v17-release-authority-check.yml",
     ".github/workflows/wow-v17-governance-dispatcher.yml",
     ".github/workflows/wow-v17-engineering-auto-repair.yml",
+    ".github/workflows/wow-v17-engineering-auditor-code-health.yml",
 )
 TRUST_ROOT_PREFIXES = (".github/", ".agents/", ".claude/")
 _REF_RE = re.compile(r"((?:artifacts|scripts|\.agents|\.github/scripts)/[A-Za-z0-9_./-]+\.(?:py|json|md|sh|ya?ml|txt))")
