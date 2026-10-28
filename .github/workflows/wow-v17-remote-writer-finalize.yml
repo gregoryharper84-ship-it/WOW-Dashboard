@@ -1,8 +1,8 @@
 name: wow-v17-remote-writer-finalize
 
-# One-time recovery of the original #2054 Cursor writer, without a new agent
-# launch. This uses the SAME serialization group as existing Engineering
-# implementation workers, not the independent read-only status probe.
+# Exact-reservation terminal release of one authenticated Cursor writer.
+# Reuse the SAME global implementation mutex, never the read-only probe queue.
+# Do not auto-run on merges: an unrelated push cannot pick a safe reservation.
 on:
   workflow_dispatch:
     inputs:
@@ -10,11 +10,6 @@ on:
         description: Exact immutable Cursor reservation comment ID in issue #1138
         required: true
         type: string
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/wow-v17-remote-writer-finalize.yml
 
 permissions:
   contents: read
