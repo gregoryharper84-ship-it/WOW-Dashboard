@@ -337,8 +337,8 @@ def main() -> int:
         receipt = {
             "status": "CURSOR_TERMINAL_STATUS_UNVERIFIED",
             "code": exc.code,
-            "agent_id": AGENT_ID,
-            "run_id": RUN_ID,
+            "agent_id": None if args.reservation_comment_id else AGENT_ID,
+            "run_id": None if args.reservation_comment_id else RUN_ID,
             "repository": REPOSITORY,
             "pr_number": None if args.reservation_comment_id else PR_NUMBER,
             "reservation_comment_id": args.reservation_comment_id,
