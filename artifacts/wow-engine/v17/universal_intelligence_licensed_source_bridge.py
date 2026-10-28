@@ -95,7 +95,10 @@ def _row_evidence(
     url, rid = row.get("source_url"), row.get("source_record_id")
     _require(isinstance(url, str) and isinstance(rid, str) and bool(rid.strip()),
              "SOURCE_BRIDGE_PROVENANCE_INVALID")
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        raise SourceBridgeHold("SOURCE_BRIDGE_PROVENANCE_INVALID") from exc
     _require(parsed.scheme == "https" and bool(parsed.hostname)
              and parsed.username is None and parsed.password is None
              and parsed.hostname.lower() not in {"propsmadness.com", "www.propsmadness.com"},
@@ -123,7 +126,7 @@ def _row_evidence(
              or (type(value) in (int, float) and math.isfinite(value)),
              "SOURCE_BRIDGE_VALUE_INVALID")
     kind = row.get("evidence_kind")
-    _require(kind in {"SOURCE_OBSERVATION", "CONTEXT_HYPOTHESIS"},
+    _require(isinstance(kind, str) and kind in {"SOURCE_OBSERVATION", "CONTEXT_HYPOTHESIS"},
              "SOURCE_BRIDGE_KIND_INVALID")
     target = row.get("target_lanes")
     _require(isinstance(target, (list, tuple))
