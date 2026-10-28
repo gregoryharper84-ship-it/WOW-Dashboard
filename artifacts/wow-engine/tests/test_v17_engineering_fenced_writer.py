@@ -364,8 +364,14 @@ def test_review_only_migration_creates_all_columns_referenced_by_cas():
     assert "source_pr IS NOT NULL AND source_sha ~ '^[0-9a-f]{40}$'" in declaration
     assert "source_pr,source_sha,draft,state" in sql.replace("\n", "")
     assert "REVIEW_ONLY" in sql and "ENABLE ROW LEVEL SECURITY" in sql
-    assert "GRANT SELECT,INSERT,UPDATE" in sql
-    assert "TO service_role" in sql
+    # Direct DML was a security regression: service_role must use RPCs only.
+    assert "GRANT SELECT,INSERT,UPDATE ON public.wow_engineering_writer_mutation_intents TO service_role" not in sql
+    assert "GRANT SELECT,INSERT ON public.wow_engineering_closed_writer_epochs TO service_role" not in sql
+    assert "REVOKE ALL ON public.wow_engineering_writer_mutation_intents FROM service_role;" in sql
+    assert "REVOKE ALL ON public.wow_engineering_closed_writer_epochs FROM service_role;" in sql
+    assert "GRANT SELECT ON public.wow_engineering_writer_mutation_intents TO service_role;" in sql
+    assert "GRANT SELECT ON public.wow_engineering_closed_writer_epochs TO service_role;" in sql
+    assert sql.count("LANGUAGE plpgsql SECURITY DEFINER\\n SET search_path=pg_catalog".replace("\\n", "\n")) == 3
 
 
 @pytest.mark.parametrize("status", ["DRAINING", "DRAINED", "DENIED"])
