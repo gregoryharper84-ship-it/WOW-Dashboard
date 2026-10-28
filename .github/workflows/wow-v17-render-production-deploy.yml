@@ -47,7 +47,6 @@ jobs:
       WOW_REPOSITORY_NODE_ID: ${{ github.event.repository.node_id }}
       WOW_QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
       WOW_RELEASE_APP_ID: ${{ vars.WOW_RELEASE_APP_ID }}
-      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       WOW_RENDER_SERVICE_ID: "srv-da7sa9gu01pc73brt80g"
     steps:
       - name: Assert deployment governance
@@ -56,7 +55,6 @@ jobs:
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
           test -n "$GH_API_TOKEN"
-          test -n "$RENDER_API_KEY"
           test -n "$WOW_RENDER_SERVICE_ID"
 
       - name: Checkout controller source
@@ -98,7 +96,6 @@ jobs:
           repo = os.environ["GITHUB_REPOSITORY"]
           event_name = os.environ["GITHUB_EVENT_NAME"]
           render_service_id = os.environ["WOW_RENDER_SERVICE_ID"]
-          render_api_key = os.environ["RENDER_API_KEY"]
           receipt_path = os.path.join(os.environ["RUNNER_TEMP"], "wow-v17-render-deploy-receipt.json")
 
           def emit_receipt(payload):
@@ -172,9 +169,7 @@ jobs:
                   raise SystemExit(0)
 
           def guarded_render_post(preflight, render_json, path, payload):
-              if not preflight["eligible"]:
-                  raise RuntimeError("RENDER_RELEASE_JOURNAL_PREFLIGHT_HOLD")
-              return render_json("POST", path, payload)
+              raise RuntimeError("RENDER_API_DEPLOY_WRITER_RETIRED")
 
           github_headers = {
               "Accept": "application/vnd.github+json",
@@ -614,6 +609,30 @@ jobs:
                   "can_execute":False,
               })
               raise SystemExit(0)
+
+          emit_receipt({
+              "status": "PRODUCTION_RELEASE_HOLD",
+              "target_sha": target_sha,
+              "render_service_id": render_service_id,
+              "hold_reason": "RENDER_HOOK_PROVIDER_SCOPE_AND_READBACK_UNATTESTED",
+              "blocking_evidence": [
+                  "RENDER_HOOK_ENVIRONMENT_AND_SERVICE_BINDING_UNVERIFIED",
+                  "RENDER_PRODUCTION_WRITER_INVENTORY_UNVERIFIED",
+                  "RENDER_READ_ONLY_EXACT_SHA_OBSERVER_UNAVAILABLE",
+              ],
+              "next_action": (
+                  "Obtain independent Render/Security attestation of the protected "
+                  "environment hook's service binding and exclusive writer inventory, "
+                  "then approve a read-only observer for exact-SHA deployment readback. "
+                  "Do not retry or deploy until the protected replacement is reviewed."
+              ),
+              "runtime_generation": "V17_ACTIVE",
+              "terminal_authority": "V17_TERMINAL_REDUCER",
+              "custom_gpt_identity": "WOW_BETTING_ENGINE",
+              "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS": True,
+              "can_execute": False,
+          })
+          raise SystemExit(0)
 
           render_headers = {
               "Accept": "application/json",
