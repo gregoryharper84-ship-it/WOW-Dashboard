@@ -227,12 +227,16 @@ jobs:
         if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
-          KEY_PRESENT: ${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY != '' }}
+          OPENAI_PRESENT: ${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY != '' }}
+          CLAUDE_PRESENT: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY != '' || secrets.ANTHROPIC_API_KEY != '' }}
+          GEMINI_PRESENT: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY != '' || secrets.GEMINI_API_KEY != '' }}
         run: |
           set -euo pipefail
-          [ "${KEY_PRESENT:-false}" = "true" ] || {
-            echo "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING"; exit 1;
-          }
+          if [ "$OPENAI_PRESENT" != true ] && [ "$CLAUDE_PRESENT" != true ] && [ "$GEMINI_PRESENT" != true ]; then
+            echo "::error::QA_REVIEW_ALL_PROVIDER_CREDENTIALS_MISSING"; exit 1
+          fi
+          echo "openai_present=$OPENAI_PRESENT" >> "$GITHUB_OUTPUT"
+          # Never place credentials, provider responses or source diff into step outputs.
 
       - name: Capture complete exact-head source evidence
         id: capture
@@ -264,7 +268,8 @@ jobs:
 
       - name: Run isolated read-only adversarial review
         id: review
-        if: steps.policy.outputs.review_active == 'true'
+        if: steps.policy.outputs.review_active == 'true' && steps.review_credential.outputs.openai_present == 'true'
+        continue-on-error: true
         uses: ./.github/actions/wow-chatgpt-agent
         with:
           openai_api_key: ${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}
@@ -280,6 +285,53 @@ jobs:
             Exact head SHA: ${{ steps.target.outputs.head_sha }}
             Exact diff SHA-256: ${{ steps.capture.outputs.diff_sha }}
           output_schema: '{"type":"object","properties":{"decision":{"type":"string","enum":["PASS","REJECT"]},"summary":{"type":"string","minLength":1},"reviewed_head_sha":{"type":"string"},"reviewed_diff_sha256":{"type":"string"},"reviewed_files":{"type":"array","items":{"type":"string"}},"assessment":{"type":"object","properties":{"source_review":{"type":"string","enum":["PASS","FAIL"]},"security_review":{"type":"string","enum":["PASS","FAIL"]},"probability_integrity_review":{"type":"string","enum":["PASS","FAIL"]}},"required":["source_review","security_review","probability_integrity_review"],"additionalProperties":false},"findings":{"type":"array","items":{"type":"object","properties":{"severity":{"type":"string","enum":["critical","high","medium","low"]},"file":{"type":"string"},"detail":{"type":"string","minLength":1},"evidence":{"type":"string","minLength":1}},"required":["severity","file","detail","evidence"],"additionalProperties":false}}},"required":["decision","summary","reviewed_head_sha","reviewed_diff_sha256","reviewed_files","assessment","findings"],"additionalProperties":false}'
+
+      # Only transport/format failure of OpenAI activates these providers.
+      # A genuine REJECT is final; the fallback never shops for a PASS.
+      - name: Run authenticated independent reviewer fallback
+        id: fallback
+        if: steps.policy.outputs.review_active == 'true' && steps.review.outcome != 'success'
+        shell: bash
+        env:
+          ANTHROPIC_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY || secrets.ANTHROPIC_API_KEY }}
+          GEMINI_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY || secrets.GEMINI_API_KEY }}
+          ANTHROPIC_REVIEW_SCOPE: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY != '' && 'WOW_QA_REVIEW_ANTHROPIC_API_KEY' || 'ANTHROPIC_API_KEY' }}
+          GEMINI_REVIEW_SCOPE: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY != '' && 'WOW_QA_REVIEW_GEMINI_API_KEY' || 'GEMINI_API_KEY' }}
+        run: |
+          set -euo pipefail
+          python .github/scripts/independent_source_review_fallback.py \
+            --input "$RUNNER_TEMP/source-review-input.json" \
+            --result "$RUNNER_TEMP/source-review-fallback-result.json" \
+            --provenance "$RUNNER_TEMP/source-review-fallback-provider.json"
+          jq -e '.provider_identity and .credential_scope and .can_execute == false' \
+            "$RUNNER_TEMP/source-review-fallback-provider.json" >/dev/null
+
+      - name: Select authentic reviewer verdict and credential provenance
+        id: reviewer_selection
+        if: steps.policy.outputs.review_active == 'true'
+        shell: bash
+        env:
+          OPENAI_OUTCOME: ${{ steps.review.outcome }}
+          OPENAI_RESULT: ${{ steps.review.outputs.structured_output }}
+          FALLBACK_OUTCOME: ${{ steps.fallback.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$OPENAI_OUTCOME" = success ] && [ -n "${OPENAI_RESULT:-}" ]; then
+            printf '%s\n' "$OPENAI_RESULT" > "$RUNNER_TEMP/source-review-result.json"
+            provider_identity=openai-codex-action
+            credential_scope=WOW_QA_REVIEW_OPENAI_API_KEY
+          elif [ "$FALLBACK_OUTCOME" = success ]; then
+            cp "$RUNNER_TEMP/source-review-fallback-result.json" "$RUNNER_TEMP/source-review-result.json"
+            provider_identity=$(jq -er .provider_identity "$RUNNER_TEMP/source-review-fallback-provider.json")
+            credential_scope=$(jq -er .credential_scope "$RUNNER_TEMP/source-review-fallback-provider.json")
+          else
+            echo "::error::QA_INDEPENDENT_REVIEW_ALL_PROVIDERS_FAILED"
+            exit 1
+          fi
+          jq -e 'type == "object" and (.decision == "PASS" or .decision == "REJECT")' \
+            "$RUNNER_TEMP/source-review-result.json" >/dev/null
+          echo "provider_identity=$provider_identity" >> "$GITHUB_OUTPUT"
+          echo "credential_scope=$credential_scope" >> "$GITHUB_OUTPUT"
 
       - name: Recheck PR head and diff after review
         id: recheck
@@ -309,20 +361,22 @@ jobs:
         if: steps.policy.outputs.review_active == 'true'
         shell: bash
         env:
-          RESULT: ${{ steps.review.outputs.structured_output }}
+          PROVIDER_IDENTITY: ${{ steps.reviewer_selection.outputs.provider_identity }}
+          CREDENTIAL_SCOPE: ${{ steps.reviewer_selection.outputs.credential_scope }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           HEAD_REF: ${{ steps.capture.outputs.head_ref }}
         run: |
           set -euo pipefail
-          printf '%s\n' "$RESULT" > "$RUNNER_TEMP/source-review-result.json"
+          test -s "$RUNNER_TEMP/source-review-result.json"
           python .github/scripts/independent_source_review_receipt.py \
             --build --input "$RUNNER_TEMP/source-review-input.json" \
             --result "$RUNNER_TEMP/source-review-result.json" \
             --run "$RUNNER_TEMP/source-review-run.json" \
             --output "$RUNNER_TEMP/wow-v17-independent-source-review.json" \
             --repository "$GITHUB_REPOSITORY" --pr-number "$PR_NUMBER" \
-            --head-sha "$HEAD_SHA" --head-ref "$HEAD_REF"
+            --head-sha "$HEAD_SHA" --head-ref "$HEAD_REF" \
+            --provider-identity "$PROVIDER_IDENTITY" --credential-scope "$CREDENTIAL_SCOPE"
           decision=$(jq -r .review.decision "$RUNNER_TEMP/wow-v17-independent-source-review.json")
           [ "$decision" = "PASS" ] || {
             echo "::error::INDEPENDENT_SOURCE_REVIEW_REJECTED";
