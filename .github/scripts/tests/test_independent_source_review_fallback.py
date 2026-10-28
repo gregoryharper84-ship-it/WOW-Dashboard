@@ -149,7 +149,6 @@ def test_independent_qa_workflow_never_skips_provenance_or_security_on_fallback(
     assert "independent_source_review_fallback.py" in secondary["run"]
     assert "SOURCE_REVIEW_FALLBACK" not in secondary["run"]  # no separate authority
     assert "elif [ \"$FALLBACK_OUTCOME\" = success ]" in selection["run"]
-    assert "REVIEW_ALL_PROVIDERS" not in selection["run"]
     assert "QA_INDEPENDENT_REVIEW_ALL_PROVIDERS_FAILED" in selection["run"]
     assert "steps.reviewer_selection.outputs.provider_identity" in build["env"]["PROVIDER_IDENTITY"]
     assert "--provider-identity \"$PROVIDER_IDENTITY\"" in build["run"]
