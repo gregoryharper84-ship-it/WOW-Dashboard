@@ -69,10 +69,10 @@ REVIEW_SCHEMA = {
 # Identity must reflect a real credential made available to this QA job.
 ALLOWED_FALLBACKS = {
     "anthropic-claude-api": frozenset({
-        "WOW_QA_REVIEW_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY",
+        "WOW_QA_REVIEW_ANTHROPIC_API_KEY",
     }),
     "gemini-generative-api": frozenset({
-        "WOW_QA_REVIEW_GEMINI_API_KEY", "GEMINI_API_KEY",
+        "WOW_QA_REVIEW_GEMINI_API_KEY",
     }),
 }
 
@@ -202,7 +202,7 @@ def _gemini(prompt: str, key: str) -> str:
         GEMINI_URL,
         {"x-goog-api-key": key, "content-type": "application/json"},
         {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-         "generationConfig": {"temperature": 0, "responseMimeType": "application/json"}},
+         "generationConfig": {"responseMimeType": "application/json"}},
     )
     choices = data.get("candidates")
     if not isinstance(choices, list) or len(choices) != 1:
