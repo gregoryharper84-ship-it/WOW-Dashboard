@@ -107,12 +107,30 @@ def validate_failure_receipt(receipt: object, captured: dict[str, Any]) -> bool:
     return allowed
 
 
+def _write_attempt(path: Path | None, captured: dict[str, Any], code: str) -> None:
+    if path is None:
+        return
+    row = {
+        "provider": PRIMARY_IDENTITY, "role": "independent_security_review",
+        "head_sha": captured["pr"]["head"]["sha"],
+        "diff_sha256": captured["diff_sha256"], "typed_result": code,
+        "retry_count": 0, "source_run_id": os.environ.get("GITHUB_RUN_ID", ""),
+        "revisit_trigger": ("QA_EXACT_HEAD_CERTIFICATION" if code == "PASS" else
+                            "SOURCE_FIX_AND_NEW_HEAD" if code == "REJECT" else
+                            "PROVIDER_AVAILABLE" if code in TRANSPORT_CODES else
+                            "INDEPENDENT_REVIEW_REPAIR_REQUIRED"),
+        "can_execute": False, "review_approved": False,
+    }
+    path.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--result", type=Path)
     parser.add_argument("--provenance", type=Path)
     parser.add_argument("--failure", type=Path, required=True)
+    parser.add_argument("--attempt", type=Path)
     parser.add_argument("--verify-failure", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -139,11 +157,13 @@ def main(argv: list[str] | None = None) -> int:
     except fallback.ReviewUnavailable as exc:
         receipt = _failure_receipt(str(exc), captured)
         args.failure.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+        _write_attempt(args.attempt, captured, str(exc))
         print(json.dumps({"status": "HOLD", "typed_error": str(exc),
                           "fallback_eligible": receipt["fallback_eligible"]}), file=sys.stderr)
         return 2
     args.result.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
     args.provenance.write_text(json.dumps(proof, sort_keys=True) + "\n", encoding="utf-8")
+    _write_attempt(args.attempt, captured, result["decision"])
     print(json.dumps({"status": "REVIEW_REAL_VERDICT", "provider_identity": PRIMARY_IDENTITY,
                       "decision": result["decision"], "can_execute": False}))
     return 0
