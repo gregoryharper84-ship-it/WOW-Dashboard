@@ -166,6 +166,8 @@ def settle_nba_scalar(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Return one exact immutable-forward NBA settlement or a typed hold."""
+    if now is not None and (not isinstance(now, datetime) or now.utcoffset() is None):
+        return _hold("IDENTITY_UNRESOLVED", "NBA_SETTLEMENT_CLOCK_MUST_BE_UTC_AWARE")
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     stat = _text(prediction.get("stat_type")).upper()
     if stat not in STAT_COMPONENTS:
