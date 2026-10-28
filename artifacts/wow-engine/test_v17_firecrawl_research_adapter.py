@@ -206,3 +206,22 @@ def test_snapshot_content_identity_is_stable_across_observations(monkeypatch):
     first_id = snapshot_id_for(result)
     result.observed_at = "2026-12-01T00:00:00Z"
     assert snapshot_id_for(result) == first_id
+
+
+def test_unexpected_optional_provider_exception_cannot_stop_core_refresh(monkeypatch):
+    monkeypatch.setenv("WOW_FIRECRAWL_ENABLED", "1")
+    monkeypatch.setenv("WOW_FIRECRAWL_TARGETS_JSON", json.dumps([
+        {"sport_key": SPORT, "capability": CAPABILITY, "url": URL},
+    ]))
+    monkeypatch.setattr(scout, "SPORTSDATAIO_CAPABILITIES", ())
+
+    def crash(*args):
+        raise RuntimeError("unexpected Firecrawl upstream failure: do not leak")
+
+    monkeypatch.setattr(scout, "fetch_firecrawl_page", crash)
+    response = scout.refresh(sports=(SPORT,))
+    assert response["status"] == "COMPLETE"
+    assert response["optional_firecrawl"]["status"] == "COMPLETE_WITH_BLOCKERS"
+    assert response["optional_firecrawl"]["blocked_snapshots"][0]["source_code"] == "SOURCE_FETCH_UNEXPECTED_ERROR"
+    assert "do not leak" not in str(response)
+    assert response["can_execute"] is False
