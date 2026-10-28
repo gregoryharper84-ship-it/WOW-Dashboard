@@ -20,8 +20,8 @@ from urllib.request import Request, urlopen
 import independent_source_review_receipt as receipts
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
 MAX_REPLY_BYTES = 2 * 1024 * 1024
 MAX_INPUT_BYTES = 640 * 1024
 REQUEST_TIMEOUT_SECONDS = 90
