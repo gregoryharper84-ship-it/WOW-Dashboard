@@ -146,6 +146,7 @@ def test_independent_qa_workflow_never_skips_provenance_or_security_on_fallback(
     build = by_name["Build versioned exact-head review artifact"]
     assert primary["continue-on-error"] is True
     assert "steps.review.outcome != 'success'" in secondary["if"]
+    assert "steps.review.outputs.structured_output == ''" in secondary["if"]
     assert "independent_source_review_fallback.py" in secondary["run"]
     assert "SOURCE_REVIEW_FALLBACK" not in secondary["run"]  # no separate authority
     assert "elif [ \"$FALLBACK_OUTCOME\" = success ]" in selection["run"]
