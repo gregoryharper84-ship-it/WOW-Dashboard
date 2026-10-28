@@ -77,7 +77,16 @@ def test_progression_reuses_current_workflow_without_parallel_writer_or_new_trig
     )
     triggers = wf.get("on", wf.get(True))
     assert "workflow_dispatch" in triggers
-    assert set(triggers["workflow_dispatch"]["inputs"]) == {"source_pr", "source_sha"}
+    assert set(triggers["workflow_dispatch"]["inputs"]) == {
+        "source_pr", "source_sha", "readopt_app_pr"
+    }
+    readopt = triggers["workflow_dispatch"]["inputs"]["readopt_app_pr"]
+    assert readopt["required"] is False
+    assert readopt["type"] == "string"
+    assert "adopt-reviewed-owner-source" in jobs
+    assert "wow-v17-engineering-implementation-single-writer" in str(
+        jobs["adopt-reviewed-owner-source"]["concurrency"]
+    )
 
 
 def test_progression_has_no_external_mutation_tools_or_execution_authority():
