@@ -17,6 +17,9 @@
 /artifacts/wow-engine/v17/engineering_provider_failover.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_gemini_headless.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_authorized_adoption.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_fenced_writer.py @gregoryharper84-ship-it
+/artifacts/wow-engine/v17/engineering_fenced_mutation_cli.py @gregoryharper84-ship-it
+/artifacts/wow-engine/migrations/20261027_writer_mutation_fence_REVIEW_ONLY.sql @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_hold_target.py @gregoryharper84-ship-it
 /artifacts/wow-engine/v17/engineering_recovery_planner.py @gregoryharper84-ship-it
