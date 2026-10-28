@@ -107,8 +107,6 @@ def plan_reporter_handoff(
             return _hold("CANDIDATE_SHA_LIST_INVALID")
         route, code = row.get("failure_boundary"), row.get("typed_failure")
         service = row.get("service")
-        if (row.get("subsystem") != ("ENGINEERING_AUTONOMY" if service == WORKER_SERVICE else "BACKEND_RUNTIME")):
-            return _hold("CANDIDATE_SUBSYSTEM_INVALID")
         if (row.get("source") != "DATADOG" or service not in SERVICES
                 or route not in ROUTES or code not in FAILURES
                 or row.get("can_execute") is not False
@@ -118,6 +116,8 @@ def plan_reporter_handoff(
             return _hold("CANDIDATE_INVALID")
         if (code in WORKER_FAILURE_CODES) != (service == WORKER_SERVICE and route == "ENGINEERING_RESIDENT_SUPERVISOR"):
             return _hold("WORKER_SOURCE_ROUTE_MISMATCH")
+        if (row.get("subsystem") != ("ENGINEERING_AUTONOMY" if service == WORKER_SERVICE else "BACKEND_RUNTIME")):
+            return _hold("CANDIDATE_SUBSYSTEM_INVALID")
         fingerprint = row.get("fingerprint")
         expected = hashlib.sha256(json.dumps([service, route, code],
                                              separators=(",", ":")).encode()).hexdigest()
