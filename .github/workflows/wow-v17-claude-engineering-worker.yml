@@ -39,7 +39,8 @@ permissions:
   pull-requests: read
   # Legacy #1138 heartbeat/incident comments are staged for the fenced gateway.
   # Keep this narrow scope until those writes move to the trusted App adapter.
-  issues: write
+  # Incident heartbeat and receipt writes now also use the Engineering App token.
+  issues: read
 
 concurrency:
   group: wow-v17-engineering-implementation-single-writer
@@ -260,7 +261,7 @@ jobs:
         id: safety
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           RESTORATION: ${{ steps.dispatch.outputs.restoration }}
           ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
           LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
@@ -1165,7 +1166,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           RESTORATION: ${{ steps.dispatch.outputs.restoration }}
           ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
           QUEUE_DEPTH: ${{ steps.dispatch.outputs.queue_depth }}
@@ -1297,7 +1298,7 @@ jobs:
         if: always() && steps.lead.outputs.action == 'REPAIR'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           INCIDENT: ${{ steps.lead.outputs.incident }}
           DELIVERY: ${{ steps.delivery.outputs.delivery }}
           CODE: ${{ steps.delivery.outputs.code }}
