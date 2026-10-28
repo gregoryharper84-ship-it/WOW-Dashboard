@@ -204,6 +204,7 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
             "state": "open", "draft": False, "merged": False, "head_sha": HEAD,
             "head_ref": "copilot/fix", "head_repo": review.CANONICAL_REPOSITORY,
             "base_ref": "main", "author": "copilot-swe-agent", "author_id": 123,
+            "body": "Incident: #1822",
         },
         "files": ["src/fix.py"],
         "source_review_paths": ["src/fix.py"],
@@ -227,6 +228,10 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
     }
 
     assert qa.decision("qa", qa.qa_findings(evidence), evidence)["conclusion"] == "success"
+    # A real canonical incident is mandatory even with valid independent evidence.
+    evidence["pr"]["body"] = ""
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in qa.qa_findings(evidence)
+    evidence["pr"]["body"] = "Incident: #1822"
     evidence["source_review"].pop("producer_context")
     assert any(
         finding.startswith("QA_INDEPENDENT_SOURCE_REVIEW_INVALID:")
@@ -844,8 +849,9 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "github.ref == 'refs/heads/main'" in workflow
     assert parsed["on"]["workflow_run"]["workflows"] == [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
-        "wow-v17-trusted-governance-gate",
     ]
+    # The trusted gate must NOT trigger QA: QA -> certifier -> trusted gate -> QA deadlocks.
+    assert "wow-v17-trusted-governance-gate" not in parsed["on"]["workflow_run"]["workflows"]
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow
     assert "environment: wow-qa" in workflow
