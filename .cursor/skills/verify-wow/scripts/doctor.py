@@ -15,10 +15,21 @@ from pathlib import Path
 from time import monotonic
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 DEFAULT_ORIGIN = "https://wow-governed-probability-engine.onrender.com"
 TERMINAL_AUTHORITY = "V17_TERMINAL_REDUCER"
+
+
+class NoRedirects(HTTPRedirectHandler):
+    """Prevent a redirected foreign endpoint from proving the original host live."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def open_without_redirects(request, timeout):
+    return build_opener(NoRedirects()).open(request, timeout=timeout)
 
 
 def checked_origin(origin: str) -> str:
@@ -38,7 +49,7 @@ def checked_origin(origin: str) -> str:
     return origin.rstrip("/")
 
 
-def probe(origin: str, *, opener=urlopen) -> dict:
+def probe(origin: str, *, opener=open_without_redirects) -> dict:
     """Check only GET /health/live; never infer a product or model result."""
     origin = checked_origin(origin)
     request = Request(
