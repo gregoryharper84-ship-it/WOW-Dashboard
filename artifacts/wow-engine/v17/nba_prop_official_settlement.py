@@ -138,6 +138,7 @@ def _identity(
             or not re.fullmatch(r"espn-[0-9]{6,12}", espn_event_id)
             or not re.fullmatch(r"[A-Z]{2,4}", team_code)
             or not isinstance(names, list)
+            or not all(isinstance(name, str) for name in names)
             or not {"ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"}.issubset(set(names))):
         return None, _hold("IDENTITY_UNRESOLVED", "NBA_OFFICIAL_EVENT_PLAYER_CROSSWALK_INCOMPLETE")
     if (espn_event_id != _text(prediction.get("event_id"))
