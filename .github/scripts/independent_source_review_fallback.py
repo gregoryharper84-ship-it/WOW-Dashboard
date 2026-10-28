@@ -26,6 +26,46 @@ MAX_REPLY_BYTES = 2 * 1024 * 1024
 MAX_INPUT_BYTES = 640 * 1024
 REQUEST_TIMEOUT_SECONDS = 90
 
+# Native Claude constrained JSON output reduces format retries. Canonical
+# exact-head/diff/file-coverage validation remains mandatory after inference.
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decision": {"type": "string", "enum": ["PASS", "REJECT"]},
+        "summary": {"type": "string"},
+        "reviewed_head_sha": {"type": "string"},
+        "reviewed_diff_sha256": {"type": "string"},
+        "reviewed_files": {"type": "array", "items": {"type": "string"}},
+        "assessment": {
+            "type": "object",
+            "properties": {
+                "source_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+                "security_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+                "probability_integrity_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+            },
+            "required": ["source_review", "security_review", "probability_integrity_review"],
+            "additionalProperties": False,
+        },
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    "file": {"type": "string"},
+                    "detail": {"type": "string"},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["severity", "file", "detail", "evidence"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["decision", "summary", "reviewed_head_sha",
+                 "reviewed_diff_sha256", "reviewed_files", "assessment", "findings"],
+    "additionalProperties": False,
+}
+
 # Identity must reflect a real credential made available to this QA job.
 ALLOWED_FALLBACKS = {
     "anthropic-claude-api": frozenset({
@@ -122,6 +162,7 @@ def _anthropic(prompt: str, key: str) -> str:
         {"x-api-key": key, "anthropic-version": "2023-06-01",
          "content-type": "application/json"},
         {"model": ANTHROPIC_MODEL, "max_tokens": 8192, "temperature": 0,
+         "output_config": {"format": {"type": "json_schema", "schema": REVIEW_SCHEMA}},
          "messages": [{"role": "user", "content": prompt}]},
     )
     blocks = data.get("content")
