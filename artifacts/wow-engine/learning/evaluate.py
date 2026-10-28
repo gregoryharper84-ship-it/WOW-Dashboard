@@ -59,6 +59,16 @@ def load_cases(path: Path = ROOT / "data" / "cases.json") -> dict:
             or parsed.username or parsed.password or parsed.port
         ):
             raise ValueError("ungrounded source")
+        # A plausible GitHub hostname alone is not historical incident provenance.
+        ref_pr = row.get("reference_pr")
+        if type(ref_pr) is not int or ref_pr <= 0:
+            raise ValueError("invalid reference PR")
+        expected_paths = {
+            f"/gregoryharper84-ship-it/WOW-Dashboard/issues/{row['incident']}",
+            f"/gregoryharper84-ship-it/WOW-Dashboard/pull/{ref_pr}",
+        }
+        if parsed.path not in expected_paths or parsed.query:
+            raise ValueError("mismatched historical source reference")
         for field in ("scenario", "correct_root_cause", "failure_code", "observed_status"):
             if not isinstance(row.get(field), str) or not row[field].strip():
                 raise ValueError("missing " + field)
@@ -145,6 +155,12 @@ def assess(doc: dict, answers: list[dict], *, split: str) -> dict:
         "split": split,
         "cases_scored": len(results),
         "cases_available": len(eligible),
+        # A single perfect answer is not a complete engineering benchmark.
+        "evaluation_complete": len(results) == len(eligible),
+        "full_set_declaration_score": (
+            round(sum(r["reasoning_conformance_score"] for r in results) / len(results), 2)
+            if len(results) == len(eligible) and results else None
+        ),
         "results": results,
     }
 
