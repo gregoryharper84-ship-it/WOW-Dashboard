@@ -119,3 +119,22 @@ def test_missing_search_and_bad_limit_rejected(category, subsystem, limit):
         lesson.retrieve_verified_lessons(
             ledger(verified_record()), failure_category=category, subsystem=subsystem, limit=limit
         )
+
+
+def test_cli_reads_ledger_and_emits_advisory_receipt(tmp_path, capsys):
+    import json
+    path = tmp_path / "incident-ledger.json"
+    path.write_text(json.dumps(ledger(verified_record())))
+    assert lesson.main(["--ledger", str(path), "--subsystem", "WOW_HOST_ORCHESTRATION"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["count"] == 1 and result["advisory_only"] is True
+    assert path.read_text() == json.dumps(ledger(verified_record()))
+
+
+def test_cli_invalid_contract_exits_without_unsafe_output(tmp_path, capsys):
+    import json
+    path = tmp_path / "bad-ledger.json"
+    path.write_text(json.dumps({**ledger(verified_record()), "can_execute": True}))
+    with pytest.raises(SystemExit):
+        lesson.main(["--ledger", str(path), "--subsystem", "WOW_HOST_ORCHESTRATION"])
+    assert capsys.readouterr().out == ""
