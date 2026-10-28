@@ -229,3 +229,61 @@ def test_unsourced_or_pregame_settlement_rejected():
     r = run([a, b])
     assert len(r["rejected_rows"]) == 2
     assert r["holdout_settled_rows"] == 0
+
+
+def candidate_only(row):
+    """Explicitly typed raw NBA research forecast, not governed calibration."""
+    row = deepcopy(row)
+    row["joint_probability_basis"] = "RESEARCH_UNCALIBRATED"
+    row["joint_calibration_status"] = "CANDIDATE_ONLY"
+    row["joint_calibrated_lower_bound"] = None
+    for leg in row["legs"]:
+        raw = leg.pop("calibrated_probability")
+        leg["probability_basis"] = "RESEARCH_UNCALIBRATED"
+        leg["calibration_status"] = "CANDIDATE_ONLY"
+        leg["raw_candidate_probability"] = raw
+        leg["candidate_model_artifact_id"] = "NBA_PLAYER_PROP_EMPIRICAL_RESIDUAL_JOINT_V1"
+    return row
+
+
+def test_raw_joint_candidate_replay_is_descriptive_and_not_publishable():
+    row = candidate_only(fixture(event="raw-candidate-one"))
+    result = run([row], n=1)
+    assert result["evaluated_probability_basis"] == "RESEARCH_UNCALIBRATED"
+    assert result["metrics"]["n"] == 1
+    assert result["metrics"]["brier_independent_baseline"] == pytest.approx(.58 ** 2)
+    assert result["candidate_certified"] is False
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False
+
+
+def test_raw_candidate_cannot_pass_as_calibrated_or_mix_with_it():
+    raw = candidate_only(fixture(event="raw-1"))
+    raw["legs"][0]["calibrated_probability"] = .8
+    bad = run([raw])
+    assert bad["holdout_settled_rows"] == 0
+    assert "may not claim calibrated" in bad["rejected_rows"][0]["reason"]
+    with pytest.raises(ValueError, match="MIXED_PROBABILITY_BASIS"):
+        run([candidate_only(fixture(event="raw-2")), fixture(event="governed-1")])
+
+
+def test_raw_candidate_requires_matching_joint_basis_and_no_lower_bound_claim():
+    a = candidate_only(fixture(event="raw-mismatch"))
+    a["joint_probability_basis"] = "GOVERNED_CALIBRATED"
+    b = candidate_only(fixture(event="raw-lowerbound", player="other"))
+    b["joint_calibrated_lower_bound"] = 0.33
+    c = candidate_only(fixture(event="raw-artifact", player="p3"))
+    c["legs"][0].pop("candidate_model_artifact_id")
+    r = run([a, b, c])
+    assert r["holdout_settled_rows"] == 0
+    assert len(r["rejected_rows"]) == 3
+
+
+def test_single_player_thesis_with_one_raw_one_governed_leg_is_rejected():
+    raw = candidate_only(fixture(event="raw-mixed-within"))
+    raw["legs"][1]["probability_basis"] = "GOVERNED_CALIBRATED"
+    raw["legs"][1]["calibration_status"] = "PASS"
+    raw["legs"][1]["calibrated_probability"] = .6
+    r = run([raw])
+    assert "mixed probability basis" in r["rejected_rows"][0]["reason"]
