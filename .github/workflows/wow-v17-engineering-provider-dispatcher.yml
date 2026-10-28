@@ -550,8 +550,6 @@ jobs:
           echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
           echo "independent_fallback_allowed=$independent_fallback_allowed" >> "$GITHUB_OUTPUT"
 
-      # CISA-aligned read-only observability; unknown metering never grants
-      # permission, opens a circuit, overrides a lease, or blocks P0 recovery.
       - name: Record AI resource pressure
         id: resource_pressure
         if: steps.route.outcome == 'success'
@@ -559,7 +557,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python artifacts/wow-engine/v17/engineering_ai_resource_resilience.py \
+          python artifacts/wow-engine/v17/engineering_provider_failover.py resource-pressure \
             --route-receipt "$RUNNER_TEMP/provider-route.json" \
             --output "$RUNNER_TEMP/wow-ai-resource-pressure.json"
 
