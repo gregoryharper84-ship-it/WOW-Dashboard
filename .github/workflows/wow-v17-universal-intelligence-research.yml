@@ -7,6 +7,8 @@ on:
       - 'artifacts/wow-engine/v17/universal_intelligence_shadow_handoff.py'
       - 'artifacts/wow-engine/tests/test_universal_sports_intelligence_research.py'
       - 'artifacts/wow-engine/tests/test_universal_intelligence_shadow_handoff.py'
+      - 'artifacts/wow-engine/v17/universal_intelligence_paired_replay.py'
+      - 'artifacts/wow-engine/tests/test_universal_intelligence_paired_replay.py'
       - '.github/workflows/wow-v17-universal-intelligence-research.yml'
 
 permissions:
@@ -31,7 +33,7 @@ jobs:
         working-directory: artifacts/wow-engine
         run: |
           python -m pip install --disable-pip-version-check pytest
-          python -m pytest --confcutdir=tests -q tests/test_universal_sports_intelligence_research.py tests/test_universal_intelligence_shadow_handoff.py
+          python -m pytest --confcutdir=tests -q tests/test_universal_sports_intelligence_research.py tests/test_universal_intelligence_shadow_handoff.py tests/test_universal_intelligence_paired_replay.py
       - name: Confirm research never registers probability or execution
         working-directory: artifacts/wow-engine
         run: |
