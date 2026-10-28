@@ -103,10 +103,21 @@ def test_claude_ambient_token_cannot_mutate_source_or_pull_requests():
     permissions = worker.split("\npermissions:\n", 1)[1].split("\nconcurrency:", 1)[0]
     assert "  contents: read\n" in permissions
     assert "  pull-requests: read\n" in permissions
-    assert "  issues: write\n" in permissions
+    assert "  issues: read\n" in permissions
     assert "  contents: write\n" not in permissions
     assert "  pull-requests: write\n" not in permissions
+    assert "  issues: write\n" not in permissions
     assert "GITHUB_TOKEN: ${{ steps.eng_token.outputs.token }}" in worker
     assert "GH_TOKEN: ${{ steps.eng_token.outputs.token }}" in worker
     assert 'git push --force-with-lease="refs/heads/$branch:$REPAIR_SHA"' in worker
     assert 'git push --set-upstream origin "$branch"' in worker
+
+    # Existing comment operations must also use the trusted App identity.
+    for name in (
+        "Initialize persistent-worker safety state",
+        "Persist dual-stream heartbeat and receipt",
+        "Append incident delivery receipt",
+    ):
+        block = worker.split("      - name: " + name, 1)[1].split("\n      - name:", 1)[0]
+        assert "GH_TOKEN: ${{ steps.eng_token.outputs.token }}" in block
+        assert "GH_TOKEN: ${{ github.token }}" not in block
