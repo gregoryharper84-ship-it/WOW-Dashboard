@@ -33,8 +33,12 @@ on:
 permissions:
   actions: read
   checks: read
-  contents: write
-  pull-requests: write
+  # Source pushes and PR publication use the isolated Engineering App token.
+  # The ambient workflow token must never be a second source writer.
+  contents: read
+  pull-requests: read
+  # Legacy #1138 heartbeat/incident comments are staged for the fenced gateway.
+  # Keep this narrow scope until those writes move to the trusted App adapter.
   issues: write
 
 concurrency:
