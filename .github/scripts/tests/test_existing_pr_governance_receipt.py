@@ -2363,5 +2363,6 @@ def test_class_a_workflow_does_not_force_deterministic_route_on_nonclass_a():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "TRUST_ROOT_BOOTSTRAP|ORDINARY_ENGINEERING|CLASS_A_DETERMINISTIC" in workflow
     assert '"$classification" = "CLASS_A_DETERMINISTIC"' in workflow
-    assert 'elif [ -n "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]' not in workflow  # leave existing normal source-review route
+    assert "--trusted-reviewers-json" in workflow
+    assert "--source-review-json" in workflow  # reviewed non-Class-A PRs retain their path
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
