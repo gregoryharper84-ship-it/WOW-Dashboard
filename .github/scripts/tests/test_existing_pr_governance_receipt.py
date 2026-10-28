@@ -2116,3 +2116,188 @@ gh() {
     overflow, _ = evaluate([], total=101)
     assert overflow.returncode != 0
     assert "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE" in overflow.stderr
+
+
+# P0 #2136: zero-credit deterministic Class A is a separate reduced-assurance
+# receipt, never a human or adversarial review substitute for model/governance.
+def class_a_evidence():
+    data = evidence(author={"id": verifier.OWNER_ID, "login": verifier.OWNER_LOGIN, "type": "User"})
+    data["reviews"] = []
+    data["changed_files"] = [{
+        "filename": "artifacts/wow-engine/learning/evaluate.py",
+        "previous_filename": None,
+        "status": "modified",
+    }]
+    data["pr"]["changed_files"] = 1
+    for index, (name, app_id) in enumerate(verifier.DETERMINISTIC_CHECKS.items()):
+        data["check_runs"].append({
+            "id": 800 + index,
+            "name": name,
+            "head_sha": HEAD,
+            "app": {"id": app_id},
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": f"2026-10-17T23:{10+index:02d}:00Z",
+            "completed_at": f"2026-10-17T23:{10+index:02d}:01Z",
+            "output": {"summary": (
+                "ZERO-CREDIT DETERMINISTIC QA ONLY; no semantic/adversarial source "
+                "review performed. Exact-head evidence satisfied. No merge/deploy "
+                "authority. can_execute=false."
+            )},
+        })
+    return data
+
+
+def build_class_a(data=None, *, now=NOW):
+    return verifier.build_receipt(
+        data if data is not None else class_a_evidence(),
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        deterministic_class_a=True,
+        now=now,
+    )
+
+
+def verify_class_a(receipt, data=None, *, now=NOW):
+    source = data if data is not None else class_a_evidence()
+    return verifier.verify_receipt(
+        receipt,
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_name=verifier.WORKFLOW_NAME,
+        expected_pr_number=1822,
+        live_reviews=source["reviews"],
+        live_checks=source["check_runs"],
+        now=now,
+    )
+
+
+def test_class_a_deterministic_receipt_is_explicitly_not_semantic():
+    source = class_a_evidence()
+    receipt = build_class_a(source)
+    assert receipt["receipt_schema_version"] == 4
+    assert receipt["certification_mode"] == verifier.DETERMINISTIC_MODE
+    assert receipt["assurance"] == verifier.DETERMINISTIC_ASSURANCE
+    assert receipt["independent_review"] is None
+    assert receipt["trusted_reviewers"] == []
+    assert receipt["evidence_state"] == "CLASS_A_DETERMINISTIC_VERIFIED"
+    assert receipt["can_execute"] is False
+    assert receipt["terminal_authority"] == verifier.TERMINAL_AUTHORITY
+    assert set(verifier.DETERMINISTIC_CHECKS).issubset(receipt["required_checks"])
+    verify_class_a(receipt, source)
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/wow-v17-independent-qa-check.yml",
+    ".agents/skills/wow-nightly-engineering-autopilot/SKILL.md",
+    "artifacts/wow-engine/v17/independent_release_checks.py",
+    "artifacts/wow-engine/v17/engineering_dispatch_manifest.json",
+    "artifacts/flask-scoring-api/models/scorer.py",
+    "render.yaml",
+    "docs/wow/engineering/V17_AUTONOMY_FIRST_GOVERNANCE_DESIGN.md",
+])
+def test_class_a_denies_governance_model_and_nonallowlisted_paths(path):
+    source = class_a_evidence()
+    source["changed_files"][0]["filename"] = path
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_|TRUST_ROOT_"):
+        build_class_a(source)
+
+
+@pytest.mark.parametrize("status,previous", [
+    ("renamed", "artifacts/wow-engine/learning/README.md"),
+    ("copied", "artifacts/wow-engine/learning/README.md"),
+    ("removed", None),
+])
+def test_class_a_denies_renames_copies_and_removals(status, previous):
+    source = class_a_evidence()
+    source["changed_files"][0].update(status=status, previous_filename=previous)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_"):
+        build_class_a(source)
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("head_sha", "b" * 40, "REQUIRED_CHECK_MISSING"),
+    ("conclusion", "failure", "REQUIRED_CHECK_NOT_GREEN"),
+    ("status", "in_progress", "REQUIRED_CHECK_NOT_GREEN"),
+])
+def test_class_a_rejects_stale_or_failed_release_app(field, value, reason):
+    source = class_a_evidence()
+    source["check_runs"][-1][field] = value
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match=reason):
+        build_class_a(source)
+
+
+def test_class_a_rejects_foreign_qa_app_and_false_semantic_label():
+    source = class_a_evidence()
+    source["check_runs"][-2]["app"]["id"] = 15368
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_MISSING"):
+        build_class_a(source)
+    source = class_a_evidence()
+    source["check_runs"][-1]["output"]["summary"] = "All checks passed"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_ASSURANCE_LABEL_MISSING"):
+        build_class_a(source)
+
+
+def test_class_a_rejects_legacy_review_relabel_and_no_live_checks():
+    source = class_a_evidence()
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_CANNOT_IMPERSONATE"):
+        verifier.build_receipt(
+            source,
+            expected_repository=REPOSITORY, expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806", expected_pr_number=1822,
+            expected_incident_id="1806", expected_workflow_run_id="12345",
+            expected_workflow_run_attempt=1, trusted_reviewers=ALLOWLIST,
+            deterministic_class_a=True, now=NOW,
+        )
+    receipt = build_class_a(source)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_LIVE_CHECKS_MISSING"):
+        verifier.verify_receipt(
+            receipt, expected_repository=REPOSITORY, expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806", expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME,
+            expected_pr_number=1822, live_reviews=[], now=NOW,
+        )
+
+
+def test_class_a_replay_detects_newer_failure_and_replaced_checks():
+    source = class_a_evidence()
+    receipt = build_class_a(source)
+    source["check_runs"][-1]["id"] = 911
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_LIVE_CHECK_REPLACED"):
+        verify_class_a(receipt, source)
+    source = class_a_evidence()
+    receipt = build_class_a(source)
+    source["check_runs"][-1]["conclusion"] = "failure"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_LIVE_CHECK_NOT_GREEN"):
+        verify_class_a(receipt, source)
+
+
+def test_class_a_schema_cannot_claim_semantic_review_or_change_assurance():
+    source = class_a_evidence()
+    receipt = build_class_a(source)
+    receipt["independent_review"] = {"type": "AUTOMATED_SOURCE_REVIEW"}
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_MUST_NOT_CLAIM"):
+        verify_class_a(receipt, source)
+    receipt = build_class_a(source)
+    receipt["assurance"] = "INDEPENDENT_SEMANTIC_REVIEW_PASSED"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_ASSURANCE_IDENTITY_MISMATCH"):
+        verify_class_a(receipt, source)
+
+
+def test_class_a_workflow_and_consumers_require_no_provider_or_human_approval():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "WOW_QA_ZERO_CREDIT_MODE" in workflow
+    assert "--deterministic-class-a" in workflow
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow  # other classes still hold
+    for path in (TRUSTED_GATE, RELEASE_WORKFLOW, MORNING_GREEN_WORKFLOW):
+        source = path.read_text(encoding="utf-8")
+        assert "CLASS_A_DETERMINISTIC" in source or path == TRUSTED_GATE
+        assert "--live-checks-json" in source
+    assert '"receipt_schema" = "4"' in TRUSTED_GATE.read_text(encoding="utf-8")
