@@ -12,6 +12,7 @@ V17_TERMINAL_REDUCER remains the only terminal authority; can_execute=false.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping
 import re
 
@@ -111,8 +112,18 @@ def _identity(
     if period != "FULL_GAME":
         return None, _hold("MODEL_OR_IDENTITY_UNSUPPORTED", "NBA_EXACT_FULL_GAME_PERIOD_REQUIRED")
     threshold = _text(ledger.get("literal_threshold") or ledger.get("offer_threshold") or role.get("literal_threshold"))
-    if threshold and (threshold.endswith("+") or threshold.endswith("-")):
+    if not threshold:
+        return None, _hold("IDENTITY_UNRESOLVED", "NBA_LITERAL_EXACT_OFFER_REQUIRED")
+    offer_type = _text(ledger.get("threshold_type") or role.get("threshold_type")).upper()
+    if (threshold.endswith("+") or threshold.endswith("-")
+            or offer_type in {"AT_LEAST", "AT_MOST", "COMPOUND", "LADDER"}):
         return None, _hold("MODEL_OR_IDENTITY_UNSUPPORTED", "NBA_AT_LEAST_OFFER_ADAPTER_NOT_CERTIFIED")
+    try:
+        offered = Decimal(threshold)
+        if not offered.is_finite() or offered != Decimal(str(line)):
+            return None, _hold("IDENTITY_UNRESOLVED", "NBA_LITERAL_EXACT_OFFER_LINE_MISMATCH")
+    except InvalidOperation:
+        return None, _hold("IDENTITY_UNRESOLVED", "NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED")
 
     proof = role.get("source_identity")
     if not isinstance(proof, Mapping):
