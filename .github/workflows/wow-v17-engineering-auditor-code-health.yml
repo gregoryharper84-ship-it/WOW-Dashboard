@@ -90,6 +90,7 @@ jobs:
           artifacts/wow-engine/test_v17_24h_completion_loop.py
           artifacts/wow-engine/test_v17_lifecycle_closure_cell.py
           artifacts/wow-engine/test_v17_lifecycle_live_pr_metadata.py
+          artifacts/wow-engine/test_v17_rapid_manifest_integration.py
 
       - name: Preserve non-execution governance receipt
         if: always()
