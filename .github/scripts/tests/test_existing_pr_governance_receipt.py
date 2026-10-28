@@ -2332,3 +2332,36 @@ def test_class_a_workflow_and_consumers_require_no_provider_or_human_approval():
         assert "CLASS_A_DETERMINISTIC" in source or path == TRUSTED_GATE
         assert "--live-checks-json" in source
     assert '[ "$receipt_schema" = "4" ]' in TRUSTED_GATE.read_text(encoding="utf-8")
+
+
+def test_class_a_classifier_does_not_capture_other_ordinary_or_protected_prs():
+    eligible = class_a_evidence()["changed_files"]
+    assert verifier.classify_changed_files(
+        eligible, repo_root=REPO_ROOT, expected_count=len(eligible),
+    ) == verifier.DETERMINISTIC_MODE
+
+    mixed = eligible + [{"filename": "src/unrelated.py", "status": "added", "previous_filename": None}]
+    assert verifier.classify_changed_files(
+        mixed, repo_root=REPO_ROOT, expected_count=len(mixed),
+    ) == verifier.ORDINARY_MODE
+
+    new_training = [{"filename": "artifacts/wow-engine/learning/unapproved_new.py",
+                     "status": "added", "previous_filename": None}]
+    assert verifier.classify_changed_files(
+        new_training, repo_root=REPO_ROOT, expected_count=1,
+    ) == verifier.ORDINARY_MODE
+
+    protected = eligible + [{
+        "filename": ".github/workflows/release.yml", "status": "modified", "previous_filename": None,
+    }]
+    assert verifier.classify_changed_files(
+        protected, repo_root=REPO_ROOT, expected_count=len(protected),
+    ) == verifier.BOOTSTRAP_MODE
+
+
+def test_class_a_workflow_does_not_force_deterministic_route_on_nonclass_a():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "TRUST_ROOT_BOOTSTRAP|ORDINARY_ENGINEERING|CLASS_A_DETERMINISTIC" in workflow
+    assert '"$classification" = "CLASS_A_DETERMINISTIC"' in workflow
+    assert 'elif [ -n "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]' not in workflow  # leave existing normal source-review route
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
