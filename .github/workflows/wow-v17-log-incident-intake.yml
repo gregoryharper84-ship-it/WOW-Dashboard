@@ -1,0 +1,75 @@
+name: wow-v17-log-incident-intake
+
+# Read-only telemetry producer for the EXISTING WOW Engineering Reporter and
+# single-writer supervisor. It is NOT an independent controller or repair bot.
+# Enable only when GitHub Datadog read credentials have been provisioned.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-log-incident-intake
+  cancel-in-progress: false
+
+jobs:
+  intake:
+    if: vars.WOW_V17_LOG_INTAKE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout exact protected main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Redaction and failure-path tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install pytest
+          python -m pytest -q artifacts/wow-engine/test_v17_log_incident_intake.py artifacts/wow-engine/test_v17_log_intake_workflow.py
+      - name: Query Datadog bounded error window
+        shell: bash
+        env:
+          DD_API_KEY: ${{ secrets.WOW_DATADOG_LOG_READ_API_KEY }}
+          DD_APPLICATION_KEY: ${{ secrets.WOW_DATADOG_LOG_READ_APP_KEY }}
+          DD_SITE: ${{ vars.WOW_DATADOG_SITE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DD_SITE:-}" ]; then export DD_SITE=datadoghq.com; fi
+          python artifacts/wow-engine/v17/log_incident_intake.py \
+            --hours 2 --out "$RUNNER_TEMP/wow-v17-log-intake.json"
+      - name: Record strictly redacted Reporter candidate summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '### WOW V17 log intake — read-only' >> "$GITHUB_STEP_SUMMARY"
+          if [ -s "$RUNNER_TEMP/wow-v17-log-intake.json" ]; then
+            python - "$RUNNER_TEMP/wow-v17-log-intake.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          obj=json.load(open(sys.argv[1], encoding='utf-8'))
+          print('status:', obj.get('status', 'UNKNOWN'))
+          print('typed reason:', obj.get('reason', 'NONE'))
+          print('candidate fingerprints:', len(obj.get('findings', [])))
+          print('This is evidence for canonical Reporter intake, not an authorized repair or a production fix.')
+          PY
+          else
+            echo 'status: SOURCE_NOT_READ_OR_VALIDATED' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Preserve bounded redacted intake artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-log-incident-candidates
+          path: ${{ runner.temp }}/wow-v17-log-intake.json
+          if-no-files-found: warn
+          retention-days: 7
