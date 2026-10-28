@@ -26,7 +26,8 @@ WORKER = f"github-actions:{WORKER_RUN}:1"
 def immutable():
     return {
         "id": CID,
-        "user": {"login": "github-actions[bot]"},
+        "user": {"login": "github-actions[bot]", "id": 41898282},
+        "issue_url": f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/issues/1138",
         "body": ledger._body(ledger.receipt(
             "CURSOR_AGENT_ENQUEUED", incident_id=INCIDENT, provider="cursor",
             lease_group=f"PR_{PR}", main_sha=MAIN, hold=True,
@@ -45,6 +46,7 @@ class Fixture:
             "head_sha": MAIN, "head_branch": "main",
             "status": "completed", "conclusion": "success",
             "repository": {"full_name": probe.REPOSITORY},
+            "head_repository": {"full_name": probe.REPOSITORY},
         }
         self.agent = {"id": AGENT, "latestRunId": RUN, "status": "IDLE"}
         self.run = {"id": RUN, "agentId": AGENT, "status": "FINISHED"}
@@ -113,6 +115,9 @@ def test_verified_current_reservation_authenticates_live_run_and_advanced_pr():
 
 @pytest.mark.parametrize("change,expected", [
     (lambda f: f.comment["user"].update(login="owner"), "CURSOR_RESERVATION_UNTRUSTED"),
+    (lambda f: f.comment["user"].update(id=999), "CURSOR_RESERVATION_UNTRUSTED"),
+    (lambda f: f.comment.update(issue_url="https://api.github.com/repos/other/repo/issues/1138"), "CURSOR_RESERVATION_UNTRUSTED"),
+    (lambda f: f.origin["head_repository"].update(full_name="attacker/repo"), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
     (lambda f: f.comment.update(id=CID + 1), "CURSOR_RESERVATION_UNTRUSTED"),
     (lambda f: f.origin.update(head_sha="b" * 40), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
     (lambda f: f.origin.update(run_attempt=2), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
