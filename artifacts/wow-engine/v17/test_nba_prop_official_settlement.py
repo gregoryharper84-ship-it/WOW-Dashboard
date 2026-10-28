@@ -284,3 +284,11 @@ def test_nfl_overlay_runner_preserves_nba_exact_route(monkeypatch):
     assert response["ordinary_prediction_rows_excluded"] is True
     assert len(settled) == 1
     assert response["can_execute"] is False
+
+
+def test_malformed_source_name_collection_holds_without_exception():
+    s = snapshot()
+    s["role_status"]["source_identity"]["source_names"] = [{"not": "a provider"}]
+    result = run(s=s)
+    assert result["blocker"] == "NBA_OFFICIAL_EVENT_PLAYER_CROSSWALK_INCOMPLETE"
+    assert "outcome" not in result
