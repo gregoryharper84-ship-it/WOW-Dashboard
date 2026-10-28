@@ -180,3 +180,44 @@ def test_exhausted_log_pagination_is_not_false_complete():
         fetch_datadog(begin=BEGIN, end=NOW, api_key="private", app_key="secret",
                       opener=opener)
     assert len(calls) == MAX_PAGES
+
+
+def test_production_resident_supervisor_reconciliation_is_actionable_p1():
+    from v17.log_incident_intake import WORKER_SERVICE
+    logs = [event("[2026-10-28 WARNING/MainProcess] WOW_RESIDENT_SUPERVISOR "
+                  "outcome=REMOTE_WRITER_RECONCILIATION_REQUIRED can_execute=false",
+                  service=WORKER_SERVICE, status="info") for _ in range(3)]
+    result = report(*logs)
+    assert result["status"] == "CANDIDATES"
+    assert len(result["findings"]) == 1
+    row = result["findings"][0]
+    assert row["service"] == WORKER_SERVICE
+    assert row["failure_boundary"] == "ENGINEERING_RESIDENT_SUPERVISOR"
+    assert row["typed_failure"] == "REMOTE_WRITER_RECONCILIATION_REQUIRED"
+    assert row["severity"] == "P1"
+    assert row["can_execute"] is False
+    assert "WARNING/MainProcess" not in json.dumps(result)
+
+
+def test_worker_info_and_unknown_worker_logs_are_ignored():
+    from v17.log_incident_intake import WORKER_SERVICE
+    assert report(event("WOW_RESIDENT_SUPERVISOR outcome=RUNNING can_execute=false",
+                        service=WORKER_SERVICE, status="info"))["findings"] == []
+    assert report(event("MODEL_SCORER_FAILED", service=WORKER_SERVICE,
+                        status="info"))["findings"] == []
+    assert report(event("WOW_RESIDENT_SUPERVISOR outcome=REMOTE_WRITER_RECONCILIATION_REQUIRED",
+                        service="not-authorized-worker", status="info"))["findings"] == []
+
+
+def test_worker_and_api_same_error_have_separate_fingerprint():
+    from v17.log_incident_intake import WORKER_SERVICE
+    a = report(event("WOW_V17_NFL_PICKEM_ASYNC_CLAIM_FAILED", service=SERVICE))
+    b = report(event("WOW_RESIDENT_SUPERVISOR outcome=REMOTE_WRITER_RECONCILIATION_REQUIRED",
+                     service=WORKER_SERVICE, status="info"))
+    assert a["findings"][0]["fingerprint"] != b["findings"][0]["fingerprint"]
+    assert result_services_are_explicit(a, b)
+
+
+def result_services_are_explicit(*reports):
+    from v17.log_incident_intake import SERVICES
+    return all(r["services"] == sorted(SERVICES) for r in reports)
