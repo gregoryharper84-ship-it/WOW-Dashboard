@@ -31,3 +31,29 @@ Remaining: native PostgreSQL CI, exact source CI, real independent security /
 database review; authenticated App re-adoption; credential inventory/restriction;
 live route wiring; genuine CODEOWNER/QA/Release; protected merge and deployed
 web+worker acceptance. Source proposal is not production closure.
+
+Native PostgreSQL CI at source 5a55d5a95b827353de4ecf4599b2755066b6b210:
+run 40711568853/job 122897938326, 204 passed, signed and independently verified
+test evidence. No test skip in that job. Explicit privilege regression was also
+reproduced RED with inherited grants and GREEN with all 13 unwanted privileges
+revoked in PostgreSQL WASM.
+
+Final compatibility finding: the real legacy claim RPC uses INSERT epoch=1
+ON CONFLICT UPDATE epoch=old+1. The INSERT trigger rejected that provisional
+epoch before seeing the increment. Reproduced WRITER_EPOCH_CLOSED in PostgreSQL
+WASM, then fixed by deferring an existing incident's admission decision to its
+UPDATE trigger. Added native regression with the actual UPSERT shape. Fresh
+native CI on the follow-up SHA is required; earlier 204-pass evidence does not
+transfer. No additional reviewer approval is claimed.
+
+Broad backend result: 7663 passed, 33 skipped, 1 failed. Exact failure:
+v17/test_nfl_prop_boundary_integrity.py::test_provider_alias_conflict_is_typed_identity_unresolved
+raises NFLPropHydrationError because required remote evidence is unavailable.
+Reproduced the identical failure both on unchanged base 6b3c7950 in an isolated
+worktree and on the corrected source (preloading pick_request_runtime as in
+the broad run). No NFL probability/identity code was changed to hide it.
+
+Obsolete App #2215 closed UNMERGED with durable superseded-source re-entry
+comment 6472564150. Source #2188 and incidents #1739/#2136 remain open. This
+frees its slot for the existing authenticated adopter after source CI passes;
+it is neither a lease release nor a production repair.

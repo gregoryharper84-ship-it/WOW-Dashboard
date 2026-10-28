@@ -103,10 +103,18 @@ BEGIN
  IF NEW.state='HELD' AND EXISTS (
    SELECT 1 FROM public.wow_engineering_closed_writer_epochs c
    WHERE c.incident_id=NEW.incident_id AND c.epoch>=NEW.epoch
- ) AND (TG_OP='INSERT' OR NEW.epoch IS DISTINCT FROM OLD.epoch
+ ) AND (
+   -- Legacy claim uses INSERT(epoch=1) ON CONFLICT DO UPDATE(epoch=old+1).
+   -- Its BEFORE INSERT proposal is not the acquired epoch. Existing incident
+   -- rows are checked by the UPDATE trigger against the actual increment.
+   (TG_OP='INSERT' AND NOT EXISTS (
+     SELECT 1 FROM public.wow_engineering_incident_writer_leases l
+     WHERE l.incident_id=NEW.incident_id))
+   OR (TG_OP='UPDATE' AND (NEW.epoch IS DISTINCT FROM OLD.epoch
         OR NEW.owner_id IS DISTINCT FROM OLD.owner_id
         OR NEW.lease_group IS DISTINCT FROM OLD.lease_group
-        OR NEW.state IS DISTINCT FROM OLD.state) THEN
+        OR NEW.state IS DISTINCT FROM OLD.state))
+ ) THEN
    RAISE EXCEPTION 'WRITER_EPOCH_CLOSED' USING ERRCODE='55000';
  END IF;
  IF NEW.state='HELD' AND NEW.expires_at > clock_timestamp() THEN

@@ -217,3 +217,19 @@ def test_trusted_gateway_role_can_close_without_delete_privilege():
         claim(db)
         db.execute("SET ROLE service_role")
         assert close(db) == "DRAINED"
+
+
+def test_legacy_claim_upsert_checks_actual_incremented_epoch():
+    with connection() as db:
+        claim(db)
+        assert close(db) == "DRAINED"
+        release(db)
+        # The real legacy RPC proposes epoch=1 in BEFORE INSERT, then increments
+        # the conflicting existing row. The UPDATE trigger must assess epoch=2.
+        db.execute("""INSERT INTO public.wow_engineering_incident_writer_leases AS l
+          (incident_id,owner_id,epoch,lease_group,state,acquired_at,expires_at,updated_at)
+          VALUES (1739,'github-actions:new-worker',1,'GLOBAL','HELD',now(),now()+interval '1 hour',now())
+          ON CONFLICT (incident_id) DO UPDATE SET
+          owner_id=excluded.owner_id,epoch=l.epoch+1,state='HELD',
+          expires_at=excluded.expires_at WHERE l.state='RELEASED' OR l.expires_at<=clock_timestamp()""")
+        assert begin(db, epoch=2, owner="github-actions:new-worker") == "STARTED"
