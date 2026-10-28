@@ -597,8 +597,11 @@ def build_artifact(
     credential_scope: str = CREDENTIAL_SCOPE,
 ) -> dict[str, Any]:
     _require(repository == CANONICAL_REPOSITORY, "SOURCE_REVIEW_REPOSITORY_MISMATCH")
-    _require(credential_scope in ALLOWED_REVIEW_CREDENTIALS.get(provider_identity, frozenset()),
-             "SOURCE_REVIEW_PROVIDER_CREDENTIAL_UNTRUSTED")
+    _require(
+        isinstance(provider_identity, str) and isinstance(credential_scope, str)
+        and credential_scope in ALLOWED_REVIEW_CREDENTIALS.get(provider_identity, frozenset()),
+        "SOURCE_REVIEW_PROVIDER_CREDENTIAL_UNTRUSTED",
+    )
     _require(pr.get("state") == "open" and pr.get("draft") is False and not pr.get("merged_at"),
              "SOURCE_REVIEW_PR_NOT_READY")
     _require(pr.get("number") == _positive_int(pr.get("number"), "SOURCE_REVIEW_PR_NUMBER"),
@@ -906,8 +909,10 @@ def verify_artifact(
         and source.get("event") in {"workflow_dispatch", "workflow_run"}
         and source.get("head_branch") == "main"
         and source.get("head_sha") == run.get("head_sha")
-        and source.get("credential_scope") in ALLOWED_REVIEW_CREDENTIALS.get(
-            source.get("provider_identity"), frozenset()),
+        and isinstance(source.get("provider_identity"), str)
+        and isinstance(source.get("credential_scope"), str)
+        and source["credential_scope"] in ALLOWED_REVIEW_CREDENTIALS.get(
+            source["provider_identity"], frozenset()),
         "SOURCE_REVIEW_PROVENANCE_MISMATCH",
     )
     if producer_context:
