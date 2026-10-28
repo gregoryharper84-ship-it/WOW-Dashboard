@@ -383,3 +383,30 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
 Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.
+
+
+### Universal Intelligence paired research replay statuses — research only (#2059)
+
+These local codes belong to `v17/universal_intelligence_paired_replay.py`. They describe caller-supplied, **unattested** champion/challenger/settlement research and are not V17 terminal-reducer, sportsbook, fitted-scorer, or production publication codes. Even successful descriptive metrics are not proof of a fitted challenger advantage.
+
+| Code | Owning lane/stage | Meaning | Rank eligible? |
+|---|---|---|---|
+| `PAIR_REPLAY_INPUT_INVALID` | Intelligence shadow replay | Trial input is not a bounded list/tuple | No |
+| `PAIR_REPLAY_MINIMUM_N_INVALID` | Intelligence shadow replay | A caller tries to weaken the minimum descriptive sample | No |
+| `REPLAY_RECORD_INVALID` | Intelligence shadow replay | Nonrecord trial cannot be reconciled | No |
+| `REPLAY_EXACT_IDENTITY_MISMATCH` | Intelligence shadow replay | Sport, event, market, period, selection, exact line or direction differs | No |
+| `REPLAY_DUPLICATE_THESIS` | Intelligence shadow replay | Same exact event/market thesis repeated in one replay | No |
+| `REPLAY_TIME_LEAKAGE_OR_MISMATCH` | Intelligence shadow replay | Forecast/feature timing is post-start, settlement before start, or event start differs | No |
+| `REPLAY_NOT_HOLDOUT` | Intelligence shadow replay | Any input is not labeled HOLDOUT; label itself is not independent proof | No |
+| `REPLAY_MISSING_IMMUTABLE_RECEIPT` | Intelligence shadow replay | A forecast claims no preevent prediction ID | No |
+| `REPLAY_FORECAST_RECEIPTS_NOT_INDEPENDENT` | Intelligence shadow replay | Champion and challenger use the same purported receipt | No |
+| `REPLAY_MODEL_PROVENANCE_MISSING` | Intelligence shadow replay | Missing claimed model-artifact identity | No |
+| `REPLAY_MODEL_ARTIFACT_NOT_DISTINCT` | Intelligence shadow replay | Champion and challenger claim the same artifact | No |
+| `REPLAY_PROBABILITY_PACKAGE_INVALID` | Intelligence shadow replay | Invalid scalar probability/lower-bound ordering | No |
+| `REPLAY_SETTLEMENT_INVALID` | Intelligence shadow replay | Settled result is not a binary WIN/LOSS for the exact thesis | No |
+| `REPLAY_UNSETTLED_OR_VOID` | Intelligence shadow replay | Outcome not final or explicitly void/push | No |
+| `REPLAY_CANDIDATE_UNVERIFIED` | Intelligence shadow replay | Matched descriptive trial, still unauthenticated input | No |
+| `NOT_ENOUGH_EVIDENCE` | Intelligence shadow replay | Too few eligible descriptive pairs; no model-improvement conclusion | No |
+| `DESCRIPTIVE_SHADOW_METRICS_NOT_ATTESTED` | Intelligence shadow replay | Brier/log loss can be described for supplied rows, not independently validated or promotable | No |
+
+Global invariants remain `V17_TERMINAL_REDUCER` sole publisher, `probability_publishable=false`, `can_execute=false`; no source grant, model artifact, or immutable prediction authenticity can be inferred from synthetic inputs.
