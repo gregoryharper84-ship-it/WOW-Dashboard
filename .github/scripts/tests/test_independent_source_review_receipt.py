@@ -1114,3 +1114,43 @@ def test_both_qa_producer_payloads_use_pinned_workflow_id():
     assert 'run.get("name") == WORKFLOW_NAME' not in script
     assert 'and workflow_id == WORKFLOW_ID' in script
     assert 'run.get("path") == WORKFLOW_PATH' in script
+
+
+@pytest.mark.parametrize("provider,scope", [
+    ("openai-codex-action", "WOW_QA_REVIEW_OPENAI_API_KEY"),
+    ("anthropic-claude-api", "WOW_QA_REVIEW_ANTHROPIC_API_KEY"),
+    ("anthropic-claude-api", "ANTHROPIC_API_KEY"),
+    ("gemini-generative-api", "WOW_QA_REVIEW_GEMINI_API_KEY"),
+    ("gemini-generative-api", "GEMINI_API_KEY"),
+])
+def test_only_registered_producer_provider_credentials_can_build_and_verify(provider, scope):
+    authentic = review.build_artifact(
+        repository=review.CANONICAL_REPOSITORY,
+        pr=pr(), files=DIFF, commit=COMMIT_METADATA, review_result=RESULT,
+        run=PRODUCER_RUN, now=NOW,
+        provider_identity=provider, credential_scope=scope,
+    )
+    assert authentic["source"]["provider_identity"] == provider
+    assert authentic["source"]["credential_scope"] == scope
+    verify(authentic)
+
+
+@pytest.mark.parametrize("provider,scope", [
+    ("owner-claim", "WOW_QA_REVIEW_OPENAI_API_KEY"),
+    ("anthropic-claude-api", "WOW_QA_REVIEW_GEMINI_API_KEY"),
+    ("gemini-generative-api", "ANTHROPIC_API_KEY"),
+    ("openai-codex-action", "GEMINI_API_KEY"),
+])
+def test_unknown_or_swapped_provider_binding_cannot_issue_pass(provider, scope):
+    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_PROVIDER_CREDENTIAL_UNTRUSTED"):
+        review.build_artifact(
+            repository=review.CANONICAL_REPOSITORY,
+            pr=pr(), files=DIFF, commit=COMMIT_METADATA, review_result=RESULT,
+            run=PRODUCER_RUN, now=NOW,
+            provider_identity=provider, credential_scope=scope,
+        )
+    fake = artifact()
+    fake["source"]["provider_identity"] = provider
+    fake["source"]["credential_scope"] = scope
+    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_PROVENANCE_MISMATCH"):
+        verify(fake)
