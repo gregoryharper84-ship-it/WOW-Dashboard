@@ -5,6 +5,11 @@ name: wow-v17-remote-writer-finalize
 # implementation workers, not the independent read-only status probe.
 on:
   workflow_dispatch:
+    inputs:
+      reservation_comment_id:
+        description: Exact immutable Cursor reservation comment ID in issue #1138
+        required: true
+        type: string
   push:
     branches:
       - main
@@ -22,6 +27,7 @@ jobs:
     concurrency:
       group: wow-v17-engineering-implementation-single-writer
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       actions: read
@@ -36,9 +42,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          RESERVATION_COMMENT_ID: ${{ inputs.reservation_comment_id }}
         run: |
           set -euo pipefail
+          if [ -n "${RESERVATION_COMMENT_ID:-}" ]; then
+            [[ "$RESERVATION_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] || {
+              echo "::error::REMOTE_RELEASE_TARGET_INVALID"
+              exit 1
+            }
+          fi
           # Finalizer rereads the provider and source, rechecks the entire
           # held ledger, and appends one receipt. It never patches the old
           # reservation. Guards trust only a COMPLETED SUCCESSFUL run.
-          PYTHONPATH=artifacts/wow-engine python -m v17.engineering_remote_fallback finalize-cursor
+          args=()
+          if [ -n "${RESERVATION_COMMENT_ID:-}" ]; then
+            args+=(--reservation-comment-id "$RESERVATION_COMMENT_ID")
+          fi
+          PYTHONPATH=artifacts/wow-engine python -m v17.engineering_remote_fallback finalize-cursor "${args[@]}"
