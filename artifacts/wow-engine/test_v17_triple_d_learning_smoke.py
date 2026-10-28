@@ -36,11 +36,11 @@ def test_learning_evaluator_focused_regressions():
 def test_challenge_reference_is_green():
     result = _run("challenges/run_challenge_tests.py", "--impl", "reference")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "Ran 19 tests" in result.stderr
+    assert "Ran 21 tests" in result.stderr
 
 
 def test_challenge_starter_is_intentionally_red():
     result = _run("challenges/run_challenge_tests.py", "--impl", "starter")
     assert result.returncode != 0, "Deliberately broken starter was incorrectly green"
     assert "FAILED (failures=" in result.stderr
-    assert "Ran 19 tests" in result.stderr
+    assert "Ran 21 tests" in result.stderr
