@@ -228,7 +228,7 @@ def test_actual_specialist_workflow_accepts_canonical_incident(body, requested):
 def test_actual_specialist_workflow_rejects_unproved_incident(body, requested, error):
     result = _real_specialist_incident_gate(body, requested)
     assert result.returncode != 0
-    assert error in result.stderr
+    assert f"::error::{error}" in result.stdout + result.stderr
     assert "IDENTITY:" not in result.stdout
 
 
