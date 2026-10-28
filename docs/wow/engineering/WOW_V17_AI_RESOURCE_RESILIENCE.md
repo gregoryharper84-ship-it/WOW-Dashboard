@@ -16,7 +16,7 @@ At reported utilization **70%**, **80%**, and **90%**, the receipt emits informa
 
 ## Production integration
 
-The existing `.github/workflows/wow-v17-engineering-provider-dispatcher.yml` runs the zero-network, zero-model-call receipt calculation immediately after its native provider route receipt. The step is `continue-on-error` so observability cannot become a bootstrap deadlock. The receipt is uploaded with the current provider-control artifact for 14-day retention and its pressure band and metering status appear in the Actions summary.
+The existing `.github/workflows/wow-v17-engineering-provider-dispatcher.yml` invokes the `resource-pressure` subcommand of the already-owned `engineering_provider_failover.py` module for a zero-network, zero-model-call receipt immediately after its native provider route receipt. No new governance trust-root script is registered. The step is `continue-on-error` so observability cannot become a bootstrap deadlock. The receipt is uploaded with the current provider-control artifact for 14-day retention and its pressure band and metering status appear in the Actions summary.
 
 **Initially, expected metering status is `UNAVAILABLE`.** Actual per-provider percentage alerts require a trustworthy, provider-accounted and provenance-validated meter feed; the optional CLI `--usage-receipt` is deliberately advisory and does not attest its own input. Do not treat unknown as 0%, infer credits from token volume, or claim automated budget enforcement from this PR. The existing persistent quota breakers and explicit opt-in fallback budgets remain authoritative.
 
