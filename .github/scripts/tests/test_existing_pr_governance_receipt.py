@@ -2234,6 +2234,37 @@ def test_class_a_rejects_stale_or_failed_release_app(field, value, reason):
         build_class_a(source)
 
 
+
+def test_class_a_exact_canonical_training_inventory_not_entire_directory():
+    expected = {
+        "artifacts/wow-engine/learning/AGENT_TRAINING.md",
+        "artifacts/wow-engine/learning/README.md",
+        "artifacts/wow-engine/learning/challenges/reference.py",
+        "artifacts/wow-engine/learning/challenges/run_challenge_tests.py",
+        "artifacts/wow-engine/learning/challenges/starter.py",
+        "artifacts/wow-engine/learning/challenges/test_contracts.py",
+        "artifacts/wow-engine/learning/data/cases.json",
+        "artifacts/wow-engine/learning/evaluate.py",
+        "artifacts/wow-engine/learning/tests/test_evaluate.py",
+        "artifacts/wow-engine/test_v17_triple_d_learning_smoke.py",
+    }
+    assert verifier.CLASS_A_EXACT_PATHS == expected
+    source = class_a_evidence()
+    source["pr"]["changed_files"] = len(expected)
+    source["changed_files"] = [
+        {"filename": path, "status": "added", "previous_filename": None}
+        for path in sorted(expected)
+    ]
+    assert build_class_a(source)["certification_mode"] == verifier.DETERMINISTIC_MODE
+    for unsafe in (
+        "artifacts/wow-engine/learning/new_unreviewed.py",
+        "artifacts/wow-engine/learning/../../v17/independent_release_checks.py",
+    ):
+        source["changed_files"][0]["filename"] = unsafe
+        with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_|DIFF_PATH_INVALID"):
+            build_class_a(source)
+        source["changed_files"][0]["filename"] = sorted(expected)[0]
+
 def test_class_a_rejects_foreign_qa_app_and_false_semantic_label():
     source = class_a_evidence()
     source["check_runs"][-2]["app"]["id"] = 15368
