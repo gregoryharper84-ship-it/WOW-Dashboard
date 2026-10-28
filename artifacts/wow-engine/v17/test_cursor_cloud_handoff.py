@@ -337,63 +337,25 @@ class HandoffTests(unittest.TestCase):
         self.assertLess(script.index("incident_json="), script.index('if [ "$EVENT_NAME"'))
         self.assertIn('-f target_incident="$incident"', script)
 
-    def test_cursor_enablement_without_redundant_billing_attestation(self):
-        # The owner confirmed the provider-level $30 cap. GitHub requires only
-        # the explicit handoff enable switch; provider API retains cost refusal.
-        workflow = yaml.safe_load(
-            (ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
-        )
-        steps = workflow["jobs"]["independent-provider"]["steps"]
-        step = next(item for item in steps if item.get("name") == "Dispatch scoped Cursor Cloud Agent")
-        self.assertIn("cursor_dispatch", step["if"])
-        self.assertIn("CURSOR_HANDOFF_ENABLED", step["env"])
-        self.assertNotIn("CURSOR_SPEND_CAP_CONFIRMED", step["env"])
-        self.assertNotIn("CURSOR_SPEND_CAP_UNCONFIRMED", step["run"])
+    def test_new_cursor_handoffs_are_quarantined_without_exposing_api_secret(self):
+        workflow_text = (
+            ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
+        ).read_text()
+        workflow = yaml.safe_load(workflow_text)
         control = workflow["jobs"]["provider-control"]
-        self.assertIn("steps.remote_fence.outcome == 'success'", control["outputs"]["cursor_dispatch"])
+        steps = workflow["jobs"]["independent-provider"]["steps"]
+        self.assertEqual(control["outputs"]["cursor_dispatch"], "${{ false }}")
+        self.assertNotIn("Dispatch scoped Cursor Cloud Agent",
+                         [step.get("name") for step in steps])
+        self.assertNotIn("cursor_cloud_handoff.py", workflow_text)
+        self.assertNotIn("secrets.CURSOR_API_KEY", workflow_text)
+        self.assertNotIn("CURSOR_HANDOFF_ENABLED", workflow_text)
+        self.assertIn("reason=CURSOR_PROVIDER_QUARANTINED", workflow_text)
+        self.assertIn("engineering_remote_fallback.py guard", workflow_text)
         self.assertEqual(
             workflow["jobs"]["independent-provider"]["concurrency"]["group"],
             "wow-v17-engineering-implementation-single-writer",
         )
-        with tempfile.TemporaryDirectory() as temp:
-            root = pathlib.Path(temp)
-            bindir = root / "bin"
-            bindir.mkdir()
-            marker = root / "python-called"
-            stub = bindir / "python"
-            stub.write_text('#!/bin/sh\n: > "$CURSOR_PYTHON_CALL_MARKER"\n')
-            stub.chmod(0o755)
-            runner = root / "runner"
-            runner.mkdir()
-            env = os.environ | {
-                "PATH": f"{bindir}:{os.environ['PATH']}",
-                "RUNNER_TEMP": str(runner),
-                "GITHUB_REPOSITORY": REPO,
-                "CURSOR_HANDOFF_ENABLED": "",
-                "CURSOR_PR_NUMBER": "1948",
-                "CURSOR_INCIDENT": str(INCIDENT),
-                "CURSOR_EXPECTED_HEAD": SHA,
-                "CURSOR_TASK": "Fix existing tests",
-                "CURSOR_ACTOR": ACTOR,
-                "CURSOR_PYTHON_CALL_MARKER": str(marker),
-            }
-            env.pop("CURSOR_SPEND_CAP_CONFIRMED", None)
-            disabled = subprocess.run(
-                ["bash", "-c", step["run"]], env=env,
-                capture_output=True, text=True, check=False,
-            )
-            self.assertNotEqual(disabled.returncode, 0)
-            receipt = json.loads((runner / "cursor-handoff.json").read_text())
-            self.assertEqual(receipt["code"], "CURSOR_HANDOFF_DISABLED")
-            self.assertFalse(receipt["can_execute"])
-            self.assertFalse(marker.exists())
-            env["CURSOR_HANDOFF_ENABLED"] = "true"
-            enabled = subprocess.run(
-                ["bash", "-c", step["run"]], env=env,
-                capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(enabled.returncode, 0, enabled.stderr)
-            self.assertTrue(marker.exists())
 
     def test_cursor_provider_billing_and_rate_limits_still_fail_closed(self):
         for status in (402, 429):
@@ -406,15 +368,15 @@ class HandoffTests(unittest.TestCase):
                                      body={"agentId": "test"})
                 self.assertEqual(cm.exception.code, "CURSOR_BILLING_OR_RATE_LIMIT_BLOCKED")
 
-    def test_cursor_dispatch_requires_remote_writer_fence(self):
+    def test_cursor_disabled_and_alternative_writer_still_requires_remote_fence(self):
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml").read_text()
         )
         provider_control = workflow["jobs"]["provider-control"]
         cursor_dispatch = provider_control["outputs"]["cursor_dispatch"]
         cursor_job = workflow["jobs"]["independent-provider"]
-        self.assertIn("steps.remote_fence.outcome == 'success'", cursor_dispatch)
-        self.assertIn("needs.provider-control.outputs.cursor_dispatch == 'true'", cursor_job["if"])
+        self.assertEqual(cursor_dispatch, "${{ false }}")
+        self.assertIn("needs.provider-control.outputs.fallback_required == 'true'", cursor_job["if"])
         self.assertIn("steps.remote_fence.outcome == 'success'", provider_control["outputs"]["fallback_required"])
         self.assertNotIn("remote_fence.outcome == 'failure'", provider_control["outputs"]["fallback_required"])
 
