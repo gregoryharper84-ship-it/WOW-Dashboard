@@ -175,6 +175,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH` | QA evidence | Zero-credit policy does not bind the canonical PR, exact head SHA and head ref. | N/A |
 | `RELEASE_INPUT_HEAD_SHA_INVALID` | Release manual dispatch | Optional Release target head SHA is malformed. | N/A |
 | `RELEASE_INPUT_HEAD_SHA_STALE` | Release manual dispatch | Release requested head SHA does not match authenticated producing QA receipt head. | N/A |
+| `QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS` | required independent QA and Release | Live PR description lacks exactly one standalone canonical `Incident: #positive-integer` field, or contains duplicate/conflicting fields. Required QA fails before merge; Release independently re-derives the prefixed finding. | N/A |
 | `QA_APP_CREDENTIAL_MISSING` | independent QA | `WOW_QA_APP_ID` is not numeric or `WOW_QA_APP_PRIVATE_KEY` is absent; no QA check is published (the required check stays missing, so merges block). | N/A |
 | `QA_REVIEW_PROVIDER_CREDENTIAL_MISSING` | independent QA | Independent-review activation is enabled but the separate `WOW_QA_REVIEW_OPENAI_API_KEY` is absent; no QA decision/check is published. | N/A |
 | `QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD` | independent QA canary | Dispatch requested a canary but its PR number and head SHA do not exactly match the owner-configured single-PR/SHA admission. | N/A |
