@@ -167,3 +167,34 @@ def test_manual_recovery_does_not_create_other_controller_or_approval():
     # The worker only proposes an App PR. Existing authentic checks still own merge.
     assert 'independent_source_review_complete == false' in workflow
     assert "REQUIRED_PENDING" in workflow
+
+
+
+def test_closed_app_review_slot_wakes_only_existing_protected_main_adopter():
+    data = yaml.safe_load(WF.read_text(encoding="utf-8"))
+    triggers = data.get("on", data.get(True))
+    assert triggers["pull_request_target"] == {"types": ["closed"], "branches": ["main"]}
+    assert set(triggers["workflow_dispatch"]["inputs"]) == {"source_pr", "source_sha"}
+    jobs = data["jobs"]
+    # The event is not a license to process arbitrary fork PRs or execute their code.
+    preflight = jobs["adoption-readonly-preflight"]
+    admission = preflight["if"]
+    assert "github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'" in admission
+    assert "github.event.pull_request.user.login == 'wow-engineering[bot]'" in admission
+    assert "github.event.pull_request.base.ref == 'main'" in admission
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in admission
+    assert "startsWith(github.event.pull_request.head.ref, 'wow-engineering/exact-replay-')" in admission
+    assert preflight["steps"][0]["with"]["ref"] == "main"
+    assert preflight["steps"][0]["with"]["persist-credentials"] is False
+    assert "github.event_name != 'pull_request_target'" in jobs["discover"]["if"]
+    writer = jobs["adopt-reviewed-owner-source"]
+    assert writer["needs"] == "adoption-readonly-preflight"
+    assert writer["concurrency"] == {
+        "group": "wow-v17-engineering-implementation-single-writer",
+        "cancel-in-progress": False,
+        "queue": "max",
+    }
+    write = next(s for s in writer["steps"] if "Re-propose immutable source" in s.get("name", ""))
+    assert "engineering_targeted_adoption_guard.py" in write["run"]
+    assert "engineering_authorized_adoption.py integrate" in write["run"]
+    assert write["env"]["WOW_CAN_EXECUTE"] == "false"
