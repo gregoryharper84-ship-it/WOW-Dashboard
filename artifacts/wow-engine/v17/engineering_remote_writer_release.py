@@ -154,7 +154,8 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         raise ReleaseBlocked("REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED")
     originals = [c for c in comments if c.get("id") == expected_id]
     if (len(originals) != 1
-            or originals[0].get("user", {}).get("login") != BOT_LOGIN
+            or not isinstance(originals[0].get("user"), dict)
+            or originals[0]["user"].get("login") != BOT_LOGIN
             or not isinstance(originals[0].get("body"), str)
             or old.get("status") != "CURSOR_AGENT_ENQUEUED"):
         raise ReleaseBlocked("REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED")
@@ -224,7 +225,7 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
     }
-    body = f"{RELEASE_MARKER}{EXPECTED_INCIDENT_ID} -->\n" + json.dumps(doc, sort_keys=True)
+    body = f"{RELEASE_MARKER}{old['incident_id']} -->\n" + json.dumps(doc, sort_keys=True)
     created = api.request(LEDGER, {"body": body}, "POST")
     cid = created.get("id") if isinstance(created, dict) else None
     readback = api.request(f"/repos/{REPOSITORY}/issues/comments/{cid}") if cid else {}
