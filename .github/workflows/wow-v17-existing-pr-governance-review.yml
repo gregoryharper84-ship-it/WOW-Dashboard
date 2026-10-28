@@ -637,7 +637,7 @@ jobs:
           fi
           classification=$(tr -d '[:space:]' < "$classification_file")
           case "$classification" in
-            TRUST_ROOT_BOOTSTRAP|ORDINARY_ENGINEERING) ;;
+            TRUST_ROOT_BOOTSTRAP|ORDINARY_ENGINEERING|CLASS_A_DETERMINISTIC) ;;
             *) echo "EXISTING_PR_CLASSIFICATION_INVALID:$classification" >&2; exit 1 ;;
           esac
 
@@ -725,7 +725,7 @@ jobs:
             # A narrowly preapproved ordinary training diff may consume only genuine
             # exact-head deterministic QA and Release App evidence in zero-credit mode.
             # The receipt explicitly denies any claim of semantic source review.
-            if [ "${ZERO_CREDIT_MODE:-false}" = "true" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
+            if [ "$classification" = "CLASS_A_DETERMINISTIC" ] && [ "${ZERO_CREDIT_MODE:-false}" = "true" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
               python .github/scripts/verify_existing_pr_governance_receipt.py \
                 "${common[@]}" --deterministic-class-a
             elif [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then
