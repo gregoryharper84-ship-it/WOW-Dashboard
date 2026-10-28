@@ -24,6 +24,10 @@ def fixture(*, event="NBA-test-1", player="nba-p-1", when="2026-10-29T00:00:00+0
         "joint_model_artifact_id": "SYNTHETIC-RESEARCH-ONLY",
         "joint_research_receipt_id": event + "/" + player + "/joint",
         "matchup_cohort": cohort,
+        "matchup_cohort_asof_utc": "2026-10-28T11:00:00+00:00",
+        "joint_fit_data_cutoff_utc": "2026-10-28T10:00:00+00:00",
+        "official_settlement_source": "SYNTHETIC_FIXTURE_NOT_REAL_DATA",
+        "official_settlement_timestamp_utc": "2026-10-30T01:00:00+00:00",
         "event_start_utc": when,
         "prediction_timestamp_utc": "2026-10-28T13:00:00+00:00",
         "joint_model_timestamp_utc": "2026-10-28T12:00:00+00:00",
@@ -141,6 +145,8 @@ def test_prior_rows_never_graded_on_holdout_even_if_settled():
     prior = fixture(when="2026-10-27T23:00:00+00:00")
     prior["prediction_timestamp_utc"] = "2026-10-27T13:00:00+00:00"
     prior["joint_model_timestamp_utc"] = "2026-10-27T12:00:00+00:00"
+    prior["joint_fit_data_cutoff_utc"] = "2026-10-27T10:00:00+00:00"
+    prior["matchup_cohort_asof_utc"] = "2026-10-27T11:00:00+00:00"
     for leg in prior["legs"]:
         leg["model_timestamp_utc"] = "2026-10-27T11:00:00+00:00"
     r = run([prior, fixture(player="new-player")])
@@ -202,3 +208,24 @@ def test_unanchored_timezone_or_bad_cutoff_rejected():
         run([fixture()], cutoff="2026-10-28")
     with pytest.raises(ValueError):
         run([fixture()], n=0)
+
+
+def test_post_forecast_matchup_cohort_and_fit_leakage_rejected():
+    a = fixture()
+    a["matchup_cohort_asof_utc"] = "2026-10-28T14:00:00+00:00"
+    b = fixture(player="pb")
+    b["joint_fit_data_cutoff_utc"] = "2026-10-28T12:00:00+00:00"
+    r = run([a, b])
+    assert len(r["rejected_rows"]) == 2
+    assert "post-forecast" in r["rejected_rows"][0]["reason"]
+    assert "strictly prior" in r["rejected_rows"][1]["reason"]
+
+
+def test_unsourced_or_pregame_settlement_rejected():
+    a = fixture()
+    a.pop("official_settlement_source")
+    b = fixture(player="pb")
+    b["official_settlement_timestamp_utc"] = "2026-10-28T20:00:00+00:00"
+    r = run([a, b])
+    assert len(r["rejected_rows"]) == 2
+    assert r["holdout_settled_rows"] == 0
