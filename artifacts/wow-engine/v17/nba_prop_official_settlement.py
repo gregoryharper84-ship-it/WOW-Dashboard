@@ -81,8 +81,11 @@ def _identity(
     model_at = _utc(prediction.get("model_timestamp"))
     locked_at = _utc(prediction.get("locked_at"))
     snapshot_start = _utc(snapshot.get("event_start_time"))
+    captured_at = _utc(snapshot.get("captured_at"))
     if (event_start is None or model_at is None or locked_at is None
-            or snapshot_start != event_start or not model_at < event_start
+            or captured_at is None or snapshot_start != event_start
+            or captured_at > model_at or model_at > locked_at
+            or not captured_at < event_start or not model_at < event_start
             or not locked_at < event_start or now <= event_start):
         return None, _hold("IDENTITY_UNRESOLVED", "NBA_FORWARD_PREGAME_TEMPORAL_PROOF_REQUIRED")
 
@@ -137,7 +140,7 @@ def _identity(
     nba_captured = _utc(proof.get("nba_captured_at"))
     if (espn_captured is None or nba_captured is None
             or espn_captured >= event_start or nba_captured >= event_start
-            or max(espn_captured, nba_captured) > locked_at):
+            or max(espn_captured, nba_captured) > captured_at):
         return None, _hold("IDENTITY_UNRESOLVED", "NBA_OFFICIAL_PREGAME_SOURCE_TIMESTAMPS_INVALID")
 
     return {
