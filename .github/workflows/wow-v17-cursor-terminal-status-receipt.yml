@@ -2,13 +2,19 @@ name: wow-v17-cursor-terminal-status-receipt
 
 on:
   workflow_dispatch:
+    inputs:
+      reservation_comment_id:
+        description: Exact original immutable #1138 Cursor reservation comment ID
+        required: true
+        type: string
 
 permissions:
   contents: read
   pull-requests: read
+  actions: read
 
 concurrency:
-  group: wow-v17-cursor-terminal-status-probe-${{ github.ref }}
+  group: wow-v17-cursor-terminal-status-probe-${{ github.ref }}-${{ inputs.reservation_comment_id }}
   cancel-in-progress: false
 
 jobs:
@@ -30,8 +36,15 @@ jobs:
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           GH_TOKEN: ${{ github.token }}
+          RESERVATION_COMMENT_ID: ${{ inputs.reservation_comment_id }}
         run: |
+          set -euo pipefail
+          [[ "$RESERVATION_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::CURSOR_RESERVATION_ID_INVALID"
+            exit 1
+          }
           python artifacts/wow-engine/v17/cursor_terminal_status_receipt.py \
+            --reservation-comment-id "$RESERVATION_COMMENT_ID" \
             --receipt "$RUNNER_TEMP/cursor-terminal-status-receipt.json"
 
       - name: Upload sanitized status receipt
