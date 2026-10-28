@@ -422,13 +422,13 @@ def active_nfl_season(now: Any = None) -> int:
 
 def _refresh_feature_table(db: Any, settlement_refresh: Mapping[str, Any], fn: Any) -> dict[str, Any]:
     """Keep the training/replay feature table current. Never fails grading."""
-    if fn is None:
-        from v17.nfl_feature_table_refresh import refresh_feature_rows as fn
     refreshed = {int(s) for s in (settlement_refresh or {}).get("seasons") or []}
     active = active_nfl_season()
     if active not in refreshed:
         return {"status": "SKIPPED", "reason_code": "ACTIVE_SEASON_NOT_REFRESHED", "can_execute": False}
     try:
+        if fn is None:
+            from v17.nfl_feature_table_refresh import refresh_feature_rows as fn
         # Active season only: re-downloading a finished season's PBP daily
         # would add cost without changing any row.
         return fn(db, seasons=[active])
