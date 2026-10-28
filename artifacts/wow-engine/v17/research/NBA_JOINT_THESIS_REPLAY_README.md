@@ -44,8 +44,26 @@ Each record must contain:
 - for each leg: `receipt_id`, `stat_type`, `period`,
   **literal** `exact_line`, `direction="MORE"|"LESS"`,
   `settlement_identity`, `model_timestamp_utc` (before event),
-  `calibration_status="PASS"`, pregame `calibrated_probability`,
   and `result="WIN"|"LOSS"|"PUSH"|"VOID"|"DNP"|"UNRESOLVED"`.
+- **Choose one probability basis for the entire batch**. `GOVERNED_CALIBRATED`
+  (legacy default) requires every leg to have `calibration_status="PASS"`
+  and pregame `calibrated_probability`. The joint record uses
+  `joint_probability_basis="GOVERNED_CALIBRATED"`; this tool still cannot
+  certify the source or publish a result.
+- The strictly separate **`RESEARCH_UNCALIBRATED`** basis supports existing
+  NBA fitted candidates without false certification. Every leg must provide
+  `probability_basis="RESEARCH_UNCALIBRATED"`,
+  `calibration_status="CANDIDATE_ONLY"`,
+  `candidate_model_artifact_id`, and an authentic pregame
+  `raw_candidate_probability` while leaving `calibrated_probability=null`.
+  The joint record must provide `joint_probability_basis="RESEARCH_UNCALIBRATED"`,
+  `joint_calibration_status="CANDIDATE_ONLY"`,
+  `joint_calibrated_lower_bound=null` and its separately sourced frozen
+  `research_joint_probability`. The tool **never calculates or invents**
+  that joint forecast; it only replays genuinely recorded candidate output.
+  Mixed raw and calibrated legs, mixed joint-vs-leg basis and mixed-basis
+  replay batches are rejected. Raw candidate results cannot be promoted,
+  ranked, or interpreted as model-calibrated probabilities.
 
 The caller must independently authenticate receipt provenance, exact line,
 same-player identity, official settlement, and freeze chronology before
