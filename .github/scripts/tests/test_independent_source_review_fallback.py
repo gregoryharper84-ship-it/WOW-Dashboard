@@ -252,9 +252,31 @@ def test_malformed_http_json_never_reclassified_as_transient(monkeypatch):
             return False
         def read(self, *_):
             return b"{broken json"
-    monkeypatch.setattr(fallback, "urlopen", lambda *_, **__: FakeResponse())
+    class FakeOpener:
+        def open(self, *_, **__):
+            return FakeResponse()
+    monkeypatch.setattr(fallback, "build_opener", lambda *args: FakeOpener())
     with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_PROVIDER_RESPONSE_INVALID"):
-        fallback._post_json("https://example.invalid", {}, {"foo": "bar"})
+        fallback._post_json(fallback.ANTHROPIC_URL, {}, {"foo": "bar"})
+
+
+def test_provider_endpoint_redirects_are_disallowed():
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_PROVIDER_ENDPOINT_UNTRUSTED"):
+        fallback._post_json("https://attacker.invalid/steal", {"x-api-key": "not-a-real-secret"}, {})
+
+
+def test_secret_bearing_provider_request_never_follows_redirect(monkeypatch):
+    from urllib.error import HTTPError
+    from email.message import Message
+    headers = Message()
+    headers["Location"] = "https://attacker.invalid/steal"
+    class RedirectingOpener:
+        def open(self, request, timeout):
+            assert request.full_url == fallback.ANTHROPIC_URL
+            raise HTTPError(request.full_url, 302, "redirect", headers, None)
+    monkeypatch.setattr(fallback, "build_opener", lambda *args: RedirectingOpener())
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_PROVIDER_HTTP_302"):
+        fallback._post_json(fallback.ANTHROPIC_URL, {"x-api-key": "not-a-real-secret"}, {})
 
 
 def test_ambient_provider_credentials_cannot_act_as_independent_qa(monkeypatch):
