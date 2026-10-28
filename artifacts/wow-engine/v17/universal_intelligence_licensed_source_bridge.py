@@ -25,6 +25,23 @@ from v17.universal_intelligence_shadow_handoff import (
 SCHEMA = "WOW_V17_LICENSED_SOURCE_SHADOW_BRIDGE_V1"
 MAX_ROWS = 100
 SHA256 = re.compile(r"[a-f0-9]{64}\Z")
+# Only independently identified open-license repository origins are pinned for
+# this initial offline bridge. Other licensed/credentialed providers remain
+# registry candidates, not admitted source origins until their contract review.
+SOURCE_ORIGINS = {
+    "SPORTSDATAVERSE_ESPN": (
+        ("github.com", "/sportsdataverse/sportsdataverse-data/"),
+        ("raw.githubusercontent.com", "/sportsdataverse/sportsdataverse-data/"),
+    ),
+    "SPORTSDATAVERSE_WNBA_STATS": (
+        ("github.com", "/sportsdataverse/sportsdataverse-data/"),
+        ("raw.githubusercontent.com", "/sportsdataverse/sportsdataverse-data/"),
+    ),
+    "OPENFOOTBALL_CC0": (
+        ("github.com", "/openfootball/football.json/"),
+        ("raw.githubusercontent.com", "/openfootball/football.json/"),
+    ),
+}
 FORBIDDEN = frozenset((
     "model_probability", "calibrated_probability", "calibrated_lower_bound",
     "market_implied_probability", "scenario_probability", "probability_publishable",
@@ -83,6 +100,9 @@ def _row_evidence(
              and parsed.username is None and parsed.password is None
              and parsed.hostname.lower() not in {"propsmadness.com", "www.propsmadness.com"},
              "SOURCE_BRIDGE_PROVENANCE_INVALID")
+    _require(any(parsed.hostname.lower() == host and parsed.path.startswith(prefix)
+                 for host, prefix in SOURCE_ORIGINS.get(sid, ())),
+             "SOURCE_BRIDGE_ORIGIN_UNVERIFIED")
     digest = row.get("payload_sha256")
     _require(isinstance(digest, str) and SHA256.fullmatch(digest) is not None,
              "SOURCE_BRIDGE_PAYLOAD_DIGEST_INVALID")
@@ -107,8 +127,8 @@ def _row_evidence(
              "SOURCE_BRIDGE_KIND_INVALID")
     target = row.get("target_lanes")
     _require(isinstance(target, (list, tuple))
-             and len(set(target)) == len(target)
-             and all(isinstance(lane, str) and lane in TARGETS for lane in target),
+             and all(isinstance(lane, str) and lane in TARGETS for lane in target)
+             and len(set(target)) == len(target),
              "SOURCE_BRIDGE_TARGET_INVALID")
     source_key = (url, rid)
     _require(source_key not in seen, "SOURCE_BRIDGE_DUPLICATE_SOURCE_ROW")
