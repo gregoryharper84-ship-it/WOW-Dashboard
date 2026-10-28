@@ -228,8 +228,8 @@ jobs:
         shell: bash
         env:
           OPENAI_PRESENT: ${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY != '' }}
-          CLAUDE_PRESENT: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY != '' || secrets.ANTHROPIC_API_KEY != '' }}
-          GEMINI_PRESENT: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY != '' || secrets.GEMINI_API_KEY != '' }}
+          CLAUDE_PRESENT: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY != '' }}
+          GEMINI_PRESENT: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY != '' }}
         run: |
           set -euo pipefail
           if [ "${OPENAI_PRESENT:-false}" != true ] && [ "${CLAUDE_PRESENT:-false}" != true ] && [ "${GEMINI_PRESENT:-false}" != true ]; then
@@ -324,10 +324,10 @@ jobs:
         if: steps.policy.outputs.review_active == 'true' && steps.primary_failure.outputs.fallback_eligible == 'true'
         shell: bash
         env:
-          ANTHROPIC_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY || secrets.ANTHROPIC_API_KEY }}
-          GEMINI_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY || secrets.GEMINI_API_KEY }}
-          ANTHROPIC_REVIEW_SCOPE: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY != '' && 'WOW_QA_REVIEW_ANTHROPIC_API_KEY' || 'ANTHROPIC_API_KEY' }}
-          GEMINI_REVIEW_SCOPE: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY != '' && 'WOW_QA_REVIEW_GEMINI_API_KEY' || 'GEMINI_API_KEY' }}
+          ANTHROPIC_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_ANTHROPIC_API_KEY }}
+          GEMINI_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
+          ANTHROPIC_REVIEW_SCOPE: WOW_QA_REVIEW_ANTHROPIC_API_KEY
+          GEMINI_REVIEW_SCOPE: WOW_QA_REVIEW_GEMINI_API_KEY
         run: |
           set -euo pipefail
           python .github/scripts/independent_source_review_fallback.py \
