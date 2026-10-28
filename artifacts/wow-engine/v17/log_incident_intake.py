@@ -100,6 +100,8 @@ def _parse_event(item: Mapping[str, Any], begin: datetime, end: datetime) -> dic
     worker_code = worker_match.group(1) if worker_match and worker_match.group(1) in WORKER_FAILURE_CODES else None
     code_match = CODE_PATTERN.search(message) if service == SERVICE else None
     code = worker_code or (code_match.group(1) if code_match and code_match.group(1) in ALLOWED_TYPED_CODES else None)
+    if service == WORKER_SERVICE and not worker_code:
+        return None
     # Evidence is not an incident solely because a known token is present.
     # Reject INFO and require the explicit failed prop self-acceptance result.
     if code and status == "info" and not worker_code:
