@@ -233,7 +233,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$OPENAI_PRESENT" != true ] && [ "$CLAUDE_PRESENT" != true ] && [ "$GEMINI_PRESENT" != true ]; then
-            echo "::error::QA_REVIEW_ALL_PROVIDER_CREDENTIALS_MISSING"; exit 1
+            echo "::error::QA_REVIEW_PROVIDER_CREDENTIAL_MISSING"; exit 1
           fi
           echo "openai_present=$OPENAI_PRESENT" >> "$GITHUB_OUTPUT"
           # Never place credentials, provider responses or source diff into step outputs.
