@@ -2438,7 +2438,12 @@ def test_governance_review_route_selection_is_deterministic_and_fail_closed(
     workflow = WORKFLOW.read_text(encoding="utf-8")
     step = workflow.split("      - name: Build and verify review-evidence receipt\n", 1)[1]
     begin = '          if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then\n'
-    selector = step[step.index(begin):step.index('          sha256sum "$receipt"')]
+    end = step.index('          sha256sum "$receipt"')
+    # The same classification check also occurs earlier during bootstrap
+    # evidence collection. Exercise the final credential-route selector only.
+    start = step.rfind(begin, 0, end)
+    assert start >= 0
+    selector = step[start:end]
     if payloads:
         folder = tmp_path / "source-review"
         folder.mkdir()
