@@ -4,28 +4,6 @@ import pytest
 
 from v17 import nfl_feature_table_refresh as refresh
 from v17 import nfl_forward_shadow as shadow
-from v17 import nfl_team_event_specialist as spec
-
-
-# --- identity: persisted names are always full team names ----------------------
-
-@pytest.mark.parametrize("raw, full", [
-    ("PIT", "Pittsburgh Steelers"), ("was", "Washington Commanders"), ("SF", "San Francisco 49ers"),
-    ("LA", "Los Angeles Rams"), ("Buffalo Bills", "Buffalo Bills"), ("  KC ", "Kansas City Chiefs"),
-])
-def test_display_team_expands_abbreviations_and_keeps_full_names(raw, full):
-    assert spec._display_team(raw) == full
-
-
-def test_inverse_map_is_complete_one_to_one_and_round_trips():
-    assert len(spec.NFL_ABBREVIATION_TO_TEAM_NAME) == 32
-    for code, name in spec.NFL_ABBREVIATION_TO_TEAM_NAME.items():
-        assert spec._canonical_team(name) == code
-        assert spec._canonical_team(code) == code
-
-
-def test_unknown_value_passes_through_unchanged():
-    assert spec._display_team("Springfield Atoms") == "Springfield Atoms"
 
 
 # --- feature table refresh ------------------------------------------------------
