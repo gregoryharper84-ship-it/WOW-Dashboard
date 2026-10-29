@@ -61,12 +61,10 @@ def test_nfl_publishable_specialist_probability_is_resolved_without_scout_probab
     assert cur.calls[0][1][0] == "NFL:espn-401872931"
 
 
-def test_nfl_lookup_requires_matching_champion_and_exact_terminal_decision():
+def test_nfl_lookup_requires_champion_and_latest_actual_daily_terminal():
     cur = FakeCursor(None)
     result = lookup_governed_probability(cur, _candidate())
     sql, params = cur.calls[0]
-    # Strict exact identity: a champion artifact cannot approve a different
-    # scorer or candidate's persisted probability.
     for contract in (
         "artifact.artifact_id=p.model_artifact_id",
         "artifact.active=true",
@@ -74,24 +72,58 @@ def test_nfl_lookup_requires_matching_champion_and_exact_terminal_decision():
         "artifact.lifecycle_state='CHAMPION'",
         "artifact.can_execute=false",
         "p.model_probability_publishable=true",
-        "candidate.official_event_id=p.official_event_id",
-        "candidate.participant=p.selected_participant",
-        "candidate.candidate_payload->>'event_prediction_id'",
-        "p.event_prediction_id::text",
-        "terminal.candidate_id=candidate.candidate_id",
-        "terminal.run_id=candidate.run_id",
-        "candidate.terminal_label='FINAL_APPROVED'",
-        "terminal.terminal_label='FINAL_APPROVED'",
-        "terminal.final_terminal_ceiling='FINAL_APPROVED'",
-        "terminal.probability_publishable=true",
-        "terminal.can_execute=false",
+        "join lateral (",
+        "public.wow_v17_daily_run_row_detail",
+        "daily.identity->>'sport'='NFL'",
+        "daily.identity->>'official_event_id'=p.official_event_id",
+        "order by daily.captured_at desc,daily.row_index desc,daily.run_id desc",
+        "limit 1",
+        "latest.row_status='COMPLETED'",
+        "latest.can_execute=false",
+        "latest.detail->'result'->>'global_terminal_authority'='V17_TERMINAL_REDUCER'",
+        "latest.detail->'result'->>'event_prediction_id'=p.event_prediction_id::text",
+        "latest.detail->'result'->>'selected_participant'=p.selected_participant",
+        "latest.detail->'result'->>'terminal_label'='FINAL_APPROVED'",
+        "latest.detail->'result'->>'terminal_ceiling'='FINAL_APPROVED'",
+        "latest.detail->'result'->>'probability_publishable'='true'",
+        "latest.detail->'result'->>'rank_eligible'='true'",
+        "latest.detail->>'probability_publishable'='true'",
+        "latest.captured_at >= p.created_at",
+        "latest.captured_at >= p.event_start_time_utc - interval '7 days'",
+        "latest.captured_at < p.event_start_time_utc",
     ):
         assert contract in sql
+    assert "public.wow_agent_run_candidates" not in sql
     assert "artifact.probability_publishable=true" not in sql
     assert params[0] == "NFL:espn-401872931"
     assert result["governed_probability"] is None
     assert result["probability_publishable"] is False
     assert result["specialist_status"] == "TERMINAL_PROOF_NOT_VERIFIED"
+
+
+def test_later_terminal_hold_must_supersede_any_earlier_approval():
+    # Detect a query mutation that filters to APPROVED inside the lateral
+    # lookup and could revive an earlier pass after a newer terminal HOLD.
+    cur = FakeCursor(None)
+    lookup_governed_probability(cur, _candidate())
+    sql = cur.calls[0][0]
+    before_latest = sql.split(") as latest on true", 1)[0]
+    after_latest = sql.split(") as latest on true", 1)[1]
+    assert "daily.row_status='COMPLETED'" not in before_latest
+    assert "daily.detail->'result'->>'terminal_label'='FINAL_APPROVED'" not in before_latest
+    assert "latest.row_status='COMPLETED'" in after_latest
+    assert "latest.detail->'result'->>'terminal_label'='FINAL_APPROVED'" in after_latest
+
+
+def test_latest_terminal_requires_exact_prediction_and_fresh_pregame_receipt():
+    cur = FakeCursor(None)
+    lookup_governed_probability(cur, _candidate())
+    sql = cur.calls[0][0]
+    assert "latest.detail->'result'->>'event_prediction_id'=p.event_prediction_id::text" in sql
+    assert "latest.detail->'result'->>'selected_participant'=p.selected_participant" in sql
+    assert "latest.captured_at >= p.created_at" in sql
+    assert "latest.captured_at < p.event_start_time_utc" in sql
+    assert "latest.detail->'result'->>'global_terminal_authority'='V17_TERMINAL_REDUCER'" in sql
 
 
 def test_absent_terminal_proof_never_displays_a_row_publishable_prediction():
