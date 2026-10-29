@@ -23,7 +23,38 @@ def test_source_review_negative_suite_runs_on_pr_head():
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "Ran 26 tests" in result.stderr, result.stderr
+    # Verify complete negative suite without brittle exact-count gating.
+    # Named security regressions cannot silently disappear on future additions.
+    import re
+    count = re.search(r"Ran (\d+) tests?", result.stderr)
+    assert count is not None and int(count.group(1)) >= 42, result.stderr
+    for name in (
+        "test_global_reject_prevents_second_pr_review_without_provider_call",
+        "test_provider_reject_persists_even_if_pr_moves_before_reread",
+        "test_unclassified_http_holds_identify_safe_endpoint_without_provider_switch",
+        "test_protected_qa_gemini_first_never_provider_shops_after_reject",
+        "test_gemini_38_approved_model_preserves_strict_semantic_contract",
+        "test_malformed_provider_envelopes_hold_without_unhandled_exception",
+        "test_review_reservation_internal_error_is_typed_hold",
+        "test_gemini_native_invalid_key_400_fails_over_but_generic_400_holds",
+        "test_failed_ledger_patch_keeps_semantic_reject_and_blocks_pass",
+        "test_in_progress_reservation_fail_closed_when_reviewer_crashes",
+        "test_reject_ledger_committed_before_head_check_and_failed_commit_holds",
+        "test_reject_content_ledger_is_not_duplicated_by_same_sha_page_limit",
+        "test_content_hash_is_stable_across_pr_sha_and_base_not_file_bytes",
+        "test_review_client_denies_patch_to_anything_except_qa_check_run",
+        "test_kill_after_reservation_recovers_hold_not_pass",
+        "test_confirmed_reject_followed_by_failed_ledger_patch_recovers_as_reject",
+        "test_two_recovery_workers_race_same_reservation",
+        "test_missing_or_malformed_qa_app_auth_cannot_complete_reservation",
+        "test_duplicate_recovery_event_is_idempotent",
+        "test_stale_base_recovery_cannot_publish_pass",
+        "test_recovery_cannot_clear_reject_when_identical_content_moves_pr",
+        "test_legitimate_revised_content_is_not_blocked_by_prior_reject",
+        "test_experimental_reroll_policy_is_inactive_and_respects_legitimate_fixes",
+        "test_recorded_reject_cannot_be_downgraded_on_commit",
+    ):
+        assert name in result.stderr, result.stderr
 
 
 def test_protected_main_workflow_and_separate_qa_app_are_required():

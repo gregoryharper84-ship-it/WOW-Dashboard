@@ -62,6 +62,129 @@ automatic ruleset mutation.
 4. Repository admin updates ruleset `24907422`: **require** `WOW Independent Security Review` pinned to GitHub App `5245832`, keeping `WOW required-three regression`, `WOW governed probability backend`, and `WOW additional required regression`. Set `strict_required_status_checks_policy=true` so advancing `main` requires recertification against the new base SHA. The direct review receipt binds **both PR head SHA and base SHA**, and its runner rejects either moving during review. Verify the effective branch protection rejects unreviewed trust-root changes and stale head/base check combinations. The GitHub ruleset is not automatically updated by adding this workflow.
 5. Only after that enforcement is verified, retire the obsolete trusted certifier/canary dependencies via a separately independently reviewed change. Keep release actor separation and independent postdeploy verification by SIRT. Release is not authorized merely because a reviewer check passed.
 
+## 2026-10-29 fail-closed provider canary repair (PR #2275)
+
+The protected-main review job held on `HTTP_404` in authenticated
+run `40910909900` attempts 3 and 4. The original source emitted only
+a generic HTTP status; the QA artifact **does not establish which
+upstream endpoint returned the 404**. The candidate source now emits a
+bounded endpoint category (`ANTHROPIC_HTTP_404`, `GEMINI_HTTP_404`,
+or `GITHUB_HTTP_404`) without logging URL paths, payloads or secrets.
+An unknown 404 remains HOLD, never triggers provider shopping.
+
+Both provider keys may exist while the default Claude-first call stops
+at a legitimate fail-closed HOLD. The repaired source permits an optional,
+allowlisted **QA-environment-only** `WOW_QA_PRIMARY_PROVIDER` variable.
+The default is still `anthropic-claude-api`; a specifically authorized
+value of `gemini-generative-api` chooses Gemini first on a new semantic
+review. No arbitrary provider ID is accepted. An actual semantic REJECT
+terminates the sequence, and sticky identical-content REJECT evidence
+is rechecked across PRs; an unclassified 404 is never relabeled
+`ProviderUnavailable` simply to skip a reviewer.
+
+The model allowlist includes `gemini-2.5-flash` and current stable
+`gemini-3.8-flash`. Google's October 2026 developer documentation limits
+2.5 Flash availability for some new projects, while 3.8 Flash has an
+eligible free-tier offering. Selection is **explicit** through the trusted
+`wow-qa` environment variable `WOW_QA_GEMINI_MODEL=gemini-3.8-flash`;
+no automatic billing configuration is made. API project eligibility, tier
+and the model's effective availability must be verified independently.
+A new model without the exact allowlisted ID is HOLD, not an automatic
+upgrade. If the configured model is unavailable, a native, model-specific
+error may invoke the second approved provider only under the existing
+typed-availability policy; generic 404 still HOLDs. The reviewer must
+retain its strict source/security/probability JSON verdict schema.
+
+Security/Architect and QA must review this Class B change before protected
+adoption. The existing installed workflow does **not** support the new
+setting yet. Do not change the required ruleset or assume adding an
+environment variable fixes the running old main. The provider canary must
+prove QA App 5245832 actually produced a semantic verdict, not merely a
+workflow success, and must still prove REJECT remains terminal.
+
+### Durable review reservation recovery and cancellation
+
+A semantic review never treats a crashed or cancelled prior `in_progress` check as
+PASS. Malformed top-level provider JSON is typed HOLD; unexpected caught
+runtime exceptions after a verified reservation are likewise recorded as
+`REVIEW_INTERNAL_EXCEPTION_<type>` and the reviewer attempts to finish the
+QA-App sentinel ledger with a HOLD. The reservation records its check-run id,
+content digest, PR, head, base, Actions run id, attempt and actor before the
+provider is called, then records `provider_started` and any received verdict
+on that same check.
+
+If the runner is killed, times out, loses GitHub access, or the completing
+PATCH cannot be verified, the check stays `in_progress`. The next review on
+that digest may run **governed recovery** only when `WOW_QA_LEDGER_RECOVERY=governed`
+and `WOW_QA_APP_ID` is exactly `5245832`. Recovery uses the separate QA App
+token, never the read token or an Engineering/owner token. It completes the
+original check in place. It does not delete history and it never writes PASS.
+
+Recovery requires a provenance object, a terminal Actions run of this workflow
+whose id, attempt, path and actor match that object, and a readable protected
+`main` SHA. Recoverable run conclusions are `cancelled`, `timed_out`, `failure`
+and `startup_failure`. A run that is still active is not recovered. A recorded
+provider REJECT, or any sibling REJECT for the same digest, is completed as
+REJECT. A missing durable verdict, or a verdict that was PASS or HOLD but never
+published, is completed as HOLD. HOLD does not approve the PR. The receipt
+keeps the original evidence, sets `can_execute` false, and is idempotent for
+the same reservation. Two workers serialize on the digest and write one
+deterministic receipt. Transport retries are bounded to 3. Missing, shared,
+short, or non-QA credentials fail closed with no completing write. Evidence
+that cannot be proven, including a legacy `in_progress` check with no
+provenance, stays `in_progress` for Security/Architect. A stale `main` SHA is
+recorded on the receipt and still cannot become PASS.
+
+A one-byte modification changes the blob SHA and is a new content digest. It
+receives a fresh review. Identical bytes remain a terminal REJECT across PRs.
+`experimental_rereview_decision` is an inactive recommendation: a changed
+digest stays eligible for 3 prior content REJECTS and then HOLDs, and identical
+content stays REJECT. `main()` and this workflow do not call it. Turning that
+budget on requires a separate Security/Architect authorization because it can
+block a legitimate fix.
+
+## Cross-PR content REJECT ledger — P0 repair candidate
+
+A GitHub check bound to a PR head SHA cannot alone prevent the same rejected
+file content from being resubmitted in a new PR or on a new base. The reviewer
+therefore computes a base-independent SHA-256 digest of the sorted canonical
+`(path, Git blob SHA)` changed-file inventory. This is a conservative identity
+for identical *changed bytes* and does not replace complete-diff semantic
+review on each distinct PR.
+
+Before a semantic provider is invoked, the **separate QA App** reserves this
+digest with an `in_progress` check run on the immutable, reachable Governance
+V2 bootstrap commit `79fa0c275a58cd9d397c5a1bc81d641b6dad7f75`.
+The check name is `WOW Semantic Content Ledger <64-digit digest>`, and
+`external_id` must match the full digest. The check is NOT a branch-protection
+status. The reviewer reads **all** check runs, bounded to 1,000, and only
+accepts exact QA App ID 5245832, sentinel SHA and external ID. Previous
+`REJECT` is terminal across PRs and rebases. A stale/crashed `in_progress`
+reservation is not a new ungoverned attempt. Governed recovery may complete
+that same check as HOLD or REJECT; it never completes it as PASS. Completed
+`HOLD` (unavailability) and `PASS` do not prohibit a genuine new review.
+
+The GitHub workflow uses one **global single-writer concurrency group** for
+all reviewer PRs, preventing two separate PRs from racing between the history
+read and reservation. The reviewer commits a `PASS`, `REJECT` or `HOLD`
+verdict to the sentinel ledger *before* publishing any PR-head PASS. Failed
+ledger writes turn the PR result into HOLD; missing credentials, incorrect
+identity, provider policy denial and malformed evidence cannot become PASS.
+The QA App's checks-write permission was already required; there is no new
+public database or approval identity.
+
+**Limitations and bootstrapping:** Before this change merges, historical
+same-content REJECT runs may not have ledger entries; Security/Architect must
+independently reconcile any earlier rejected trust-root diffs or retain a hold
+on their reentry. This does not guarantee cross-PR replay security until
+the source is deployed, the QA App check-read/write canary (PASS and REJECT)
+runs, and the required semantic check is enforced. A ledger check failure
+or dangling reservation must be repaired by governed QA-App recovery or an
+authenticated provenance audit, not a silent delete/bypass. Credential names for the `wow-qa`
+environment are `WOW_QA_REVIEW_ANTHROPIC_API_KEY` and
+`WOW_QA_REVIEW_GEMINI_API_KEY`; source code cannot supply absent secrets.
+Do not print or paste actual keys.
+
 ## Policy
 
 The reviewer does not author source, approve its own implementation, merge, deploy, or change sporting-probability semantics. Missing keys, provider outages, incomplete GitHub file patches, duplicate or stale identities, and malformed JSON fail closed. An authentic REJECT never triggers provider shopping. GitHub review/CI are for admission; Render LIVE SHA, behavior and reconciliation are separate production acceptance.
