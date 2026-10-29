@@ -68,10 +68,3 @@ __pycache__/
 **/production_dump_*.sql
 **/prod-dump-*.sql
 **/prod_dump_*.sql
-
-# Paid external research stays outside the public repository.
-**/daft_private/
-**/DAFT_Research_Package_*.zip
-**/DAFT_Sharp_Alerts_Research_Package_*.zip
-**/DAFT_Discord_Research_*.md
-**/DAFT_Sharp_Alerts_LLP_Audit_*.md
