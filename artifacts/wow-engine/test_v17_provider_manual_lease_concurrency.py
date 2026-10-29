@@ -44,3 +44,17 @@ def test_remote_writer_fence_remains_a_separate_mandatory_dispatch_gate():
     assert "steps.remote_fence.outcome == 'success'" in text
     assert "REMOTE_WRITER_RECONCILIATION_REQUIRED" in text
     assert "can_execute: false" in text or "can_execute: (false)" in text or "can_execute: false" in text
+
+
+def test_unavailable_failure_log_can_never_disable_provider_breaker():
+    """A failed GitHub log fetch must not masquerade as an empty failure log."""
+    text = WORKFLOW.read_text()
+    classifier = text.split("          classify_run() {", 1)[1].split("          }", 1)[0]
+    assert 'if ! gh run view "$run_id"' in classifier
+    assert "--log-failed" in classifier
+    assert "PROVIDER_FAILURE_LOG_FETCH_UNVERIFIED" in classifier
+    assert "return 1" in classifier
+    assert "|| true" not in classifier
+    routing = text.split("          route_existing_provider() {", 1)[1]
+    assert "OPENAI_FAILURE_CLASSIFICATION_UNVERIFIED" in routing
+    assert 'if ! classification=$(classify_run "$latest_id" openai); then' in routing
