@@ -80,11 +80,13 @@ begin
  select count(*) into bad_n
  from pg_catalog.jsonb_array_elements(src.response_rows) g
  left join public.wow_ncaaf_training_games game
- on game.official_event_id=g->>'id' and game.season=p_season
+ on game.official_event_id=g->>'id' and game.season=p_season and game.week=p_week
  where game.official_event_id is null
  or src.retrieved_at <= game.event_start_time
  or pg_catalog.jsonb_typeof(g->'teams')<>'array'
  or pg_catalog.jsonb_array_length(g->'teams')<>2
+ or (select count(distinct t->>'team')
+     from pg_catalog.jsonb_array_elements(g->'teams') t)<>2
  or exists (
   select 1 from pg_catalog.jsonb_array_elements(g->'teams') t
   where t->>'team' not in (game.home_team,game.away_team)
@@ -145,7 +147,7 @@ begin
    m.stat_type,m.actual_value
   from f join public.wow_ncaaf_training_games game
     on game.official_event_id=f.event_id and game.season=p_season
-    and f.team in(game.home_team,game.away_team)
+    and game.week=p_week and f.team in(game.home_team,game.away_team)
   cross join lateral (values
    ('PASSING_YARDS',case when f.category='passing' and f.metric='YDS' then f.val::numeric end),
    ('COMPLETIONS',case when f.category='passing' and f.metric='C/ATT' then split_part(f.val,'/',1)::numeric end),
