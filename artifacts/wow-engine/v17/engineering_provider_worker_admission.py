@@ -29,12 +29,13 @@ AGENT_STEP = "Engineering Lead agent"
 
 
 def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
-              *, now: dt.datetime | None = None) -> dict[str, Any]:
+              *, run_attempt: int = 1, now: dt.datetime | None = None) -> dict[str, Any]:
     def held(code: str) -> dict[str, Any]:
         return {"status": "HELD", "code": code, "can_execute": False,
                 "terminal_authority": "V17_TERMINAL_REDUCER"}
 
-    if provider not in WORKFLOWS or type(run_id) is not int or run_id <= 0:
+    if (provider not in WORKFLOWS or type(run_id) is not int or run_id <= 0
+            or type(run_attempt) is not int or not 1 <= run_attempt <= 10):
         return held("PROVIDER_WORKER_IDENTITY_INVALID")
     workflow, job_name = WORKFLOWS[provider]
     clock = now or dt.datetime.now(dt.timezone.utc)
@@ -68,16 +69,18 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
             if ident in seen:
                 return held("PROVIDER_WORKER_RUN_DUPLICATED")
             seen.add(ident)
-            if ident == run_id:
-                if run.get("status") not in ("queued", "pending", "in_progress"):
+            is_self = ident == run_id
+            if is_self:
+                if (run.get("status") not in ("queued", "pending", "in_progress")
+                        or run.get("run_attempt") != run_attempt):
                     return held("PROVIDER_WORKER_SELF_INVALID")
-                continue
-            if run.get("status") != "completed":
+            elif run.get("status") != "completed":
                 return held("PROVIDER_WORKER_OTHER_INFLIGHT")
             attempt = run.get("run_attempt")
             if type(attempt) is not int or not 1 <= attempt <= 10:
                 return held("PROVIDER_WORKER_ATTEMPT_INVALID")
-            for number in range(attempt, 0, -1):
+            finished = attempt - 1 if is_self else attempt
+            for number in range(finished, 0, -1):
                 try:
                     jobs = json.loads(read([
                         "gh", "api",
@@ -154,7 +157,9 @@ def main() -> int:
                           "can_execute": False}))
         return 1
     rid = os.getenv("GITHUB_RUN_ID", "")
-    if not rid.isdecimal() or not os.getenv("GH_TOKEN"):
+    attempt = os.getenv("GITHUB_RUN_ATTEMPT", "")
+    if (not rid.isdecimal() or not attempt.isdecimal()
+            or not 1 <= int(attempt) <= 10 or not os.getenv("GH_TOKEN")):
         print(json.dumps({"status": "HELD", "code": "PROVIDER_WORKER_AUTH_INVALID",
                           "can_execute": False}))
         return 1
@@ -166,7 +171,7 @@ def main() -> int:
             raise ValueError("PROVIDER_WORKER_API_UNVERIFIED")
         return completed.stdout
 
-    result = admission(args.provider, int(rid), read)
+    result = admission(args.provider, int(rid), read, run_attempt=int(attempt))
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] == "ADMITTED" else 1
 
