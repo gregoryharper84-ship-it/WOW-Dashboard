@@ -126,7 +126,7 @@ jobs:
           # hourly quota and fail unrelated independent QA/release gates.
           # Preserve live-head SHA checks on EVERY attempt; never accept stale
           # receipts, missing artifacts or 403/quota errors as success.
-          for poll in $(seq 1 18); do
+          for poll in $(seq 1 19); do
             live_pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}") || {
               echo "GOVERNANCE_LIVE_PR_LOOKUP_FAILED" >&2; exit 1;
             }
@@ -146,8 +146,10 @@ jobs:
               break
             fi
             # 3 fast probes, then adaptive 45s/70s spacing. 18 attempts
-            # produce <=36 API reads over ~15 minutes versus <=180 previously.
-            if [ "$poll" -le 3 ]; then
+            # produce <=38 API reads over ~15 minutes versus <=180 previously.
+            if [ "$poll" -eq 19 ]; then
+              break
+            elif [ "$poll" -le 3 ]; then
               sleep 10
             elif [ "$poll" -le 10 ]; then
               sleep 45
