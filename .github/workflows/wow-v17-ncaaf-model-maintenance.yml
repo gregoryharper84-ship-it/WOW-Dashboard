@@ -30,6 +30,8 @@ on:
       - "artifacts/wow-engine/test_ncaaf_cfbd_player_outcome_normalization_contract.py"
       - "artifacts/wow-engine/ncaaf_cfbd_daily_outcome_research_cron_v1.sql"
       - "artifacts/wow-engine/test_ncaaf_cfbd_daily_research_cron_contract.py"
+      - "artifacts/wow-engine/ncaaf_pregame_schedule_research_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_pregame_schedule_research_contract.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_snapshot_write_size.py"
       - "artifacts/wow-engine/test_ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
@@ -63,6 +65,8 @@ on:
       - "artifacts/wow-engine/test_ncaaf_cfbd_player_outcome_normalization_contract.py"
       - "artifacts/wow-engine/ncaaf_cfbd_daily_outcome_research_cron_v1.sql"
       - "artifacts/wow-engine/test_ncaaf_cfbd_daily_research_cron_contract.py"
+      - "artifacts/wow-engine/ncaaf_pregame_schedule_research_v1.sql"
+      - "artifacts/wow-engine/test_ncaaf_pregame_schedule_research_contract.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_snapshot_write_size.py"
       - "artifacts/wow-engine/test_ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
@@ -104,6 +108,7 @@ jobs:
           test_ncaaf_cfbd_hydrator.py
           test_ncaaf_cfbd_player_outcome_normalization_contract.py
           test_ncaaf_cfbd_daily_research_cron_contract.py
+          test_ncaaf_pregame_schedule_research_contract.py
           test_ncaaf_cfbd_snapshot_write_size.py
           test_ncaaf_prop_historical_adapter.py
           test_v17_ncaaf_prop_history_maintenance.py
