@@ -157,5 +157,101 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
 
 
+    def test_review_event_tracks_exact_head(self):
+        self.assertEqual(
+            m.event_target({"pull_request": {"number": 2254, "head": {"sha": "d" * 40}}},
+                           "pull_request_review"),
+            (2254, "d" * 40),
+        )
+        with self.assertRaises(m.Hold):
+            m.event_target({"pull_request": {"number": "2254"}}, "pull_request_review")
+
+    def test_both_providers_unavailable_requires_owner_review(self):
+        target = {"pr": 2254, "head_sha": "a" * 40, "diff": "safe"}
+        creds = {provider: "key" for provider in m.PROVIDERS}
+        def unavailable(provider, key, prompt):
+            raise m.ProviderUnavailable("PROVIDER_HTTP_429")
+        with self.assertRaises(m.OwnerFallbackRequired) as cm:
+            m.semantic_review(target, creds, unavailable)
+        self.assertEqual([item["provider"] for item in cm.exception.attempts], list(m.PROVIDERS))
+        self.assertEqual(str(cm.exception), "OWNER_REVIEW_REQUIRED")
+        with self.assertRaises(m.OwnerFallbackRequired) as missing:
+            m.semantic_review(target, {}, unavailable)
+        self.assertTrue(all(x["result"] == "CREDENTIAL_UNAVAILABLE" for x in missing.exception.attempts))
+
+    def _owner_fixture(self, source_author="independent-engineer"):
+        target = {"pr": 2254, "author": "wow-engineering[bot]",
+                  "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "file_blobs": {"src.py": "d" * 40}}
+        pr = {"head": {"sha": target["head_sha"]}, "base": {"sha": target["base_sha"]},
+              "body": f"Original author/source: PR #2248, head `{'e' * 40}`.\n"}
+        src = {"head": {"sha": "e" * 40, "repo": {"full_name": m.REPO}},
+               "changed_files": 1, "user": {"login": source_author}}
+        reviews = [{"id": 123, "user": {"login": m.OWNER_LOGIN}, "state": "APPROVED",
+                    "commit_id": "a" * 40, "submitted_at": "2026-10-29T13:20:00Z",
+                    "body": m.owner_review_instruction(target)}]
+        def gh(path, token):
+            if path == "/pulls/2254":
+                return pr
+            if path == "/pulls/2248":
+                return src
+            if path.startswith("/pulls/2248/files?"):
+                return [{"filename": "src.py", "sha": "d" * 40}]
+            if path.startswith("/pulls/2254/reviews?"):
+                return reviews
+            raise AssertionError(path)
+        return target, pr, src, reviews, gh
+
+    def test_authenticated_owner_third_review_can_pass_distinct_source_only(self):
+        target, pr, src, reviews, fake = self._owner_fixture()
+        with patch.object(m, "gh", fake):
+            v = m.owner_fallback_review(target, "read")
+        self.assertEqual(v["review_id"], 123)
+        self.assertEqual(v["source_author"], "independent-engineer")
+        receipt = m.make_receipt(target, decision="PASS", reviewer=m.OWNER_REVIEWER,
+                                 verdict={"security_review": "PASS"}, attempts=[],
+                                 run_id=5, attempt=1)
+        self.assertEqual(receipt["reviewer_identity"], m.OWNER_REVIEWER)
+
+    def test_owner_cannot_certify_own_original_source_even_on_app_copy(self):
+        target, pr, src, reviews, fake = self._owner_fixture(m.OWNER_LOGIN)
+        with patch.object(m, "gh", fake):
+            with self.assertRaises(m.Hold) as cm:
+                m.owner_fallback_review(target, "read")
+        self.assertEqual(str(cm.exception), "OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED")
+        target["author"] = m.OWNER_LOGIN
+        with patch.object(m, "gh", fake):
+            with self.assertRaises(m.Hold):
+                m.owner_fallback_review(target, "read")
+
+    def test_owner_fallback_rejects_bad_review_or_stale_source(self):
+        target, pr, src, reviews, fake = self._owner_fixture()
+        reviews[0]["body"] = "LGTM"
+        with patch.object(m, "gh", fake):
+            with self.assertRaises(m.Hold) as cm:
+                m.owner_fallback_review(target, "read")
+        self.assertEqual(str(cm.exception), "OWNER_REVIEW_NOT_EXACT_OR_NOT_AUTHENTICATED")
+        reviews[0]["body"] = m.owner_review_instruction(target)
+        reviews[0]["state"] = "DISMISSED"
+        with patch.object(m, "gh", fake):
+            with self.assertRaises(m.Hold):
+                m.owner_fallback_review(target, "read")
+        reviews[0]["state"] = "APPROVED"
+        src["head"]["sha"] = "f" * 40
+        with patch.object(m, "gh", fake):
+            with self.assertRaises(m.Hold) as cm:
+                m.owner_fallback_review(target, "read")
+        self.assertEqual(str(cm.exception), "OWNER_SOURCE_SHA_OR_FILES_UNVERIFIED")
+
+    def test_owner_action_required_check_is_never_a_success(self):
+        with patch.object(m, "request_json", return_value={"id": 1}) as api:
+            m.publish_check("a" * 40, {"decision": "HOLD",
+                           "reason": "OWNER_REVIEW_REQUIRED", "pr_number": 2254}, "qa-app")
+            self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "action_required")
+            m.publish_check("a" * 40, {"decision": "HOLD",
+                           "reason": "OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED"}, "qa-app")
+            self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
+
+
 if __name__ == "__main__":
     unittest.main()
