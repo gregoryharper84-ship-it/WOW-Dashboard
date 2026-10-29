@@ -90,11 +90,6 @@ def event_target(event, kind):
         if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
             raise Hold("PR_EVENT_MISSING")
         return pr["number"], pr.get("head", {}).get("sha")
-    if kind == "pull_request_review":
-        pr = event.get("pull_request")
-        if not isinstance(pr, dict) or type(pr.get("number")) is not int:
-            raise Hold("OWNER_REVIEW_EVENT_INVALID")
-        return pr["number"], pr.get("head", {}).get("sha")
     if kind == "workflow_dispatch":
         inputs = event.get("inputs") or {}
         try:
@@ -390,6 +385,9 @@ def main():
     except Hold as exc:
         receipt["reason"] = str(exc)
     Path("wow-independent-security-decision.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+    if receipt.get("owner_review_instruction"):
+        print("OWNER_SECURITY_REVIEW_REQUIRED: " + receipt["owner_review_instruction"], file=sys.stderr)
+        print("After genuine signed-in GitHub review, dispatch this exact PR/SHA from protected main.", file=sys.stderr)
     publish_check(target["head_sha"], receipt, os.environ.get("QA_APP_TOKEN", ""))
     if receipt["decision"] != "PASS":
         print("INDEPENDENT_SECURITY_REVIEW_HOLD: " + receipt.get("reason", receipt["decision"]), file=sys.stderr)
