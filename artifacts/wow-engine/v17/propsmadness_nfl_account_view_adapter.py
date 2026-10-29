@@ -125,10 +125,14 @@ def normalize_nfl_history_view(
     # selected player detail block, not the navigation menu, shows this stat.
     table_start = section.find("<table>" + TABLE_TITLE)
     leading = section[:table_start]
-    selected_at = leading.rfind(selected_player_name.strip())
-    _require(selected_at >= 0, "PM_ACCOUNT_VIEW_IDENTITY_UNRESOLVED")
-    selected_block = leading[selected_at + len(selected_player_name.strip()):
-                             selected_at + len(selected_player_name.strip()) + 400]
+    # Do not accidentally select the name embedded in "Track a bet on ...".
+    selected_headers = list(re.finditer(
+        r"(?:^|\\n)\\s*" + re.escape(selected_player_name.strip()) + r"\\s*\\n",
+        leading,
+    ))
+    _require(bool(selected_headers), "PM_ACCOUNT_VIEW_IDENTITY_UNRESOLVED")
+    selected_at = selected_headers[-1].end()
+    selected_block = leading[selected_at:selected_at + 400]
     _require(any(re.search(r"(?<![A-Za-z])" + re.escape(label) + r"(?![A-Za-z])",
                            selected_block, flags=re.I)
                  for label in STAT_DISPLAY_LABELS[stat_type]),
