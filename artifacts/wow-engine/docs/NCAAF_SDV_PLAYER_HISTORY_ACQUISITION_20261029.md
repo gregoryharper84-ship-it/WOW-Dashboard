@@ -63,3 +63,51 @@ Missing values are never imputed as zero. It emits `partial_candidate_rows`,
 historical research, not model-ready or official canonical outcomes.**
 The archive source is still downloaded on protected-main CI with the
 same short-lived provenance artifact. No licensed-vendor collection is added.
+
+
+## Exact ESPN athlete-ID research crosswalk — October 29
+
+Source: SportsDataverse `espn_cfb_player_box` release, 2024
+(`https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_cfb_player_box/player_box_2024.parquet`).
+Its player-box dataset carries an ESPN `game_id`, ESPN `athlete_id`,
+`athlete_name`, team ID, category, and named passing/rushing/receiving
+statistics. The earlier NCAA stats release uses NCAA `contest_id`, optional
+`espn_game_id`, and name/category but no athlete ID in the selected table.
+The sources cannot be naively joined by NCAA contest ID or team ID. The
+new `v17/ncaaf_sdv_espn_crosswalk.py` reconciles only records with one
+unambiguous ESPN event ID + normalized display name + stat category match,
+two or more exact shared numeric stat values, and at least one nonzero value.
+
+Duplicate name/event/category keys, incompatible stats, zero-only parity, and
+missing athlete IDs are distinct research holds. Valid signed rushing yards
+are handled without imputing missing values. Neither party's credentials,
+private endpoints, bookmaker prices nor PropsMadness are accessed.
+
+**Important:** A passing candidate here is not certified player identity:
+- The NCAA team alias has not yet been independently mapped to the ESPN team
+  identifier; generic names and name collisions remain material risks.
+- Both the CFBD adapter and SportsDataverse ESPN player-box use ESPN-derived
+  athlete information, so comparison does NOT demonstrate independent source
+  confirmation.
+- The connected CFBD historical `/games/players` outcome records and game
+  identities were verified in Supabase separately. **This job does not
+  connect to that Supabase database**, so matching ESPN IDs to CFBD athlete
+  IDs is a future exact-key reconciliation and requires a source-read
+  receipt.
+- These are retrospectively obtained outcomes, not pregame model features,
+  archived sportsbook quotes, or fitted probabilities.
+
+The existing monthly+main-push GitHub Actions workflow reuses the same-run
+NCAA 2024 Parquet artifact; after the normal acquisition step it temporarily
+downloads an ESPN 2024 player-box release, computes source-hashed aggregate
+counts, deletes the ESPN Parquet staging file, and uploads a seven-day
+**aggregate-only** research manifest. This adds no database write, no extra
+scheduled job, and no change to scorer/terminal paths.
+
+**Next acceptance:** read the real main-branch workflow run's cross-source
+manifest and distinguish candidate/mismatch/ambiguity. Only then consider
+an authorized exact-ID `(game_id, athlete_id, stat_type)` match against the
+existing CFBD sporting outcomes, independent stat contradiction checks,
+chronological feature creation, and model replay.
+
+`V17_TERMINAL_REDUCER` remains sole authority; `can_execute=false`.
