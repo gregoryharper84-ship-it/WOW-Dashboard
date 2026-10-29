@@ -20,6 +20,7 @@ PROVIDERS = ("anthropic-claude-api", "gemini-generative-api")
 OWNER_LOGIN = "gregoryharper84-ship-it"
 OWNER_REVIEWER = "github-owner-security-review"
 REVIEWER_IDENTITIES = (*PROVIDERS, OWNER_REVIEWER)
+APPROVED_GEMINI_MODELS = frozenset(("gemini-2.5-flash", "gemini-3.8-flash"))
 RETRYABLE_HTTP = {401, 408, 429, 500, 502, 503, 504, 529}
 QA_APP_ID = 5245832
 # Immutable, reachable main commit used only as a namespaced QA App check-run store.
@@ -122,7 +123,8 @@ def request_json(url, *, token=None, data=None, headers=None, method=None):
             # denials. Require provider-native missing-model type/status AND
             # explicit identification of the exact approved configured model.
             model = ("claude-sonnet-4-6" if "api.anthropic.com" in url
-                     else "gemini-2.5-flash")
+                     else url.split("/models/", 1)[1].split(":", 1)[0]
+                     if "/models/" in url else "")
             native_missing = (error_type == "not_found_error"
                               or error_status == "NOT_FOUND")
             identifies_model = (model in words and (
@@ -284,7 +286,7 @@ def call_provider(provider, key, prompt):
             raise Hold("CLAUDE_RESPONSE_INVALID") from None
     elif provider == "gemini-generative-api":
         model = (os.getenv("WOW_QA_GEMINI_MODEL") or "gemini-2.5-flash")
-        if model not in {"gemini-2.5-flash"}:
+        if model not in APPROVED_GEMINI_MODELS:
             raise Hold("GEMINI_MODEL_INVALID")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         result = request_json(url, headers={"x-goog-api-key": key},
