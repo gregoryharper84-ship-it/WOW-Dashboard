@@ -303,6 +303,7 @@ gh() {
             "EVENT_NAME": "workflow_run",
             "REVIEW_ACTIVE": "true",
             "SOURCE_RUN_ID": "40062800000",
+            "SOURCE_RUN_ATTEMPT": "1",
             "SOURCE_CONCLUSION": "success",
             "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": []}),
             "CHECK_RUN_ID": "601",
@@ -336,8 +337,8 @@ POLICY_ARTIFACT = {"artifacts": [{"name": "wow-v17-qa-policy-40062800000-1"}]}
     ("overrides", "reason"),
     [
         # Observed in run 40062825503: QA completion while source review is inactive.
-        ({"REVIEW_ACTIVE": ""}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE"),
-        ({"REVIEW_ACTIVE": "false"}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE"),
+        ({"REVIEW_ACTIVE": "", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
+        ({"REVIEW_ACTIVE": "false", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
         ({"SOURCE_CONCLUSION": "failure"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:failure"),
         ({"SOURCE_CONCLUSION": "skipped"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:skipped"),
         ({"SOURCE_CONCLUSION": ""}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:none"),
@@ -359,6 +360,43 @@ def test_direct_pr_events_are_always_applicable(event, run_route_step):
     assert result.returncode == 0, result.stderr
     assert outputs == {"applicable": "true"}
     assert "UNEXPECTED_GH_INVOCATION" not in result.stderr
+
+
+
+def test_authenticated_exact_attempt_canary_wakes_certifier_global_off(run_route_step):
+    exact = {
+        "name": "wow-v17-independent-source-review-2247-" + "a" * 40 + "-40062800000-1",
+        "expired": False,
+    }
+    expected = {"artifacts": POLICY_ARTIFACT["artifacts"] + [exact]}
+    result, outputs = run_route_step(
+        REVIEW_ACTIVE="false", TEST_ARTIFACTS_JSON=json.dumps(expected),
+    )
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"applicable": "true"}
+
+
+@pytest.mark.parametrize("change", ["expired", "older_attempt", "duplicate"])
+def test_unbound_or_duplicate_canary_remains_neutral(change, run_route_step):
+    exact = {
+        "name": "wow-v17-independent-source-review-2247-" + "a" * 40 + "-40062800000-1",
+        "expired": False,
+    }
+    if change == "expired":
+        exact["expired"] = True
+    elif change == "older_attempt":
+        exact["name"] = exact["name"][:-1] + "0"
+    payload = POLICY_ARTIFACT["artifacts"] + [exact]
+    if change == "duplicate":
+        payload.append(dict(exact))
+    result, outputs = run_route_step(
+        REVIEW_ACTIVE="false", TEST_ARTIFACTS_JSON=json.dumps({"artifacts": payload}),
+    )
+    assert result.returncode == 0, result.stderr
+    assert outputs == {
+        "applicable": "false",
+        "reason": "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY",
+    }
 
 
 def test_targeted_successful_qa_run_is_applicable(run_route_step):
