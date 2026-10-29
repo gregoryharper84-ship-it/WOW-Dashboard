@@ -171,6 +171,9 @@ def reconcile(ncaa_rows: Iterable[Mapping[str, Any]],
     source_event_ids = {key[0] for key in ncaa}
     espn_event_ids = {key[0] for key in espn}
     candidate_player_keys: set[tuple[str, str]] = set()
+    # Public, identity-candidate-only sample for a separate read-only CFBD
+    # reference audit. No raw athlete names or full historical export.
+    candidate_stat_values: dict[tuple[str, str, str], dict[str, Any]] = {}
     for key, left in ncaa.items():
         right = espn.get(key, ())
         if not right:
@@ -197,8 +200,31 @@ def reconcile(ncaa_rows: Iterable[Mapping[str, Any]],
             results["ADDITIONAL_CATEGORY_FOR_SAME_ATHLETE"] += 1
         candidate_player_keys.add((r["game_id"], r["athlete_id"]))
         results["CANDIDATE_EXACT_STATS"] += 1
+        for stat_type in sorted(shared):
+            stat_key = (r["game_id"], r["athlete_id"], stat_type)
+            sample_row = {
+                "event_id": r["game_id"], "athlete_id": r["athlete_id"],
+                "stat_type": stat_type, "actual_value": l["stats"][stat_type],
+                "espn_team_id": r["team_alias"],
+            }
+            previous = candidate_stat_values.get(stat_key)
+            if previous is not None and previous != sample_row:
+                raise CrosswalkHold("NCAAF_CROSSWALK_CANDIDATE_STAT_CONFLICT")
+            candidate_stat_values[stat_key] = sample_row
         metric_matches.update(shared)
     unique_espn = len(espn)
+    # Four exact candidates per statistic, sorted by deterministic ID hash.
+    # The sample is not a fitted-model cohort and cannot certify a team ID.
+    sample: list[dict[str, Any]] = []
+    for stat_type in sorted({stat for group in STAT_FIELDS.values() for stat in group}):
+        eligible = [r for key, r in candidate_stat_values.items()
+                    if key[2] == stat_type]
+        eligible.sort(key=lambda r: sha256(
+            (r["event_id"] + "|" + r["athlete_id"] + "|" + r["stat_type"]).encode()
+        ).hexdigest())
+        sample.extend(eligible[:4])
+    sample.sort(key=lambda r: (r["event_id"], r["athlete_id"], r["stat_type"]))
+    sample_bytes = json.dumps(sample, sort_keys=True, separators=(",", ":")).encode()
     return {
         "schema": SCHEMA, "status": "NCAAF_NCAA_ESPN_SOURCE_CROSSWALK_RESEARCH_ONLY",
         "season": season,
@@ -213,6 +239,10 @@ def reconcile(ncaa_rows: Iterable[Mapping[str, Any]],
         "candidate_stat_category_rows": results["CANDIDATE_EXACT_STATS"],
         "candidate_distinct_espn_game_player_ids": len(candidate_player_keys),
         "candidate_stat_parity_counts": dict(sorted(metric_matches.items())),
+        "cfbd_exact_match_sample": sample,
+        "cfbd_exact_match_sample_sha256": sha256(sample_bytes).hexdigest(),
+        "cfbd_exact_match_sample_size": len(sample),
+        "cfbd_exact_match_sample_verified": False,
         "hold_reason_counts": dict(sorted((ncaa_holds + espn_holds + Counter({
             k: v for k, v in results.items() if k not in
             ("CANDIDATE_EXACT_STATS", "ADDITIONAL_CATEGORY_FOR_SAME_ATHLETE")

@@ -122,3 +122,42 @@ documentation exposes separately normalized snake_case names, which must
 **not** be used to select raw Parquet fields. The audited correction pins
 the actual source schema, preserves fail-closed missing field semantics,
 and adds a synthetic regression that rejects loader aliases in raw data.
+
+## Bounded exact-key CFBD validation sample — October 29
+
+The 2024 two-source audit was verified against public releases: 59,781 NCAA
+source rows, 78,993 ESPN box rows, 928 shared event IDs, 17,068 category
+parity candidates / 15,849 distinct ESPN game-player candidates. Those
+figures are NOT canonical CFBD player-ID matches.
+
+New deterministic `cfbd_exact_match_sample` holds at most **four source-
+parity stat cells per each of seven families** (28 total). Every selected
+cell has the same value in NCAA and ESPN raw sporting outcomes; no athlete
+name or bulk athlete export is included. A canonical JSON SHA-256 binds the
+sample to the two original source release hashes.
+
+`v17/ncaaf_cfbd_exact_sample_sql.py` refuses modified hashes, out-of-scope
+seasons, duplicate exact keys, invalid numeric IDs, unsupported stat types,
+and negative count stats. Its CLI creates one bounded **read-only SELECT**
+against the private `wow_prop_history.ncaaf_player_game_outcomes` ledger,
+compared on `season + official_event_id + official_player_id + stat_type +
+actual_value`. Statuses remain typed: no matching key, ambiguous duplicate,
+different stat value, invalid postgame chronology, or exact key/value match
+with ESPN team-ID crosswalk **still unverified**.
+
+The generated SQL can be executed by an authorized private Supabase
+research operator. The GitHub Actions workflow only produces the query and
+source receipt; it does NOT obtain DB credentials, modify private RLS, or
+publish any row as a certified sporting model input. This is a bounded live
+acceptance sample before a full-cohort protected backend implementation.
+
+An independent read-only Supabase SQL test on October 29 verified that 2024
+CFBD normalized outcomes contain 55,419 stat rows across 919 events and
+19,788 event-player keys. A strict grouped-kickoff chronological split
+produced training 38,575 stats / 626 games, calibration 9,901 / 170, test
+6,943 / 123. **These are outcomes only, not pregame historical features**.
+No leakage-free model fit or probability is implied.
+
+`V17_TERMINAL_REDUCER` remains sole terminal authority;
+`model_training_eligible=false`, `probability_publishable=false`,
+`can_execute=false`.
