@@ -616,6 +616,8 @@ def build_artifact(
     head_ref = head.get("ref")
     _require(isinstance(head_sha, str) and bool(SHA.fullmatch(head_sha)), "SOURCE_REVIEW_HEAD_INVALID")
     _require(isinstance(head_ref, str) and bool(head_ref), "SOURCE_REVIEW_HEAD_REF_INVALID")
+    base_sha = base.get("sha")
+    _require(isinstance(base_sha, str) and bool(SHA.fullmatch(base_sha)), "SOURCE_REVIEW_BASE_SHA_INVALID")
     _require(
         (head.get("repo") or {}).get("full_name") == repository
         and (base.get("repo") or {}).get("full_name") == repository
@@ -662,6 +664,7 @@ def build_artifact(
             "pr_number": pr["number"],
             "author": {"id": author_id, "login": author_login},
             "base_ref": "main",
+            "base_sha": base_sha,
             "head_ref": head_ref,
             "head_sha": head_sha,
         },
@@ -723,6 +726,8 @@ def capture_pr_evidence(
             and (base.get("repo") or {}).get("full_name") == repository,
             "SOURCE_REVIEW_PR_IDENTITY_MISMATCH",
         )
+        _require(isinstance(base.get("sha"), str) and bool(SHA.fullmatch(base["sha"])),
+                 "SOURCE_REVIEW_BASE_SHA_INVALID")
         return {
             "number": pr_number,
             "state": value["state"],
@@ -736,6 +741,7 @@ def capture_pr_evidence(
                 "repo": {"full_name": (head.get("repo") or {}).get("full_name")},
             },
             "base": {
+                "sha": base.get("sha"),
                 "ref": base.get("ref"),
                 "repo": {"full_name": (base.get("repo") or {}).get("full_name")},
             },
@@ -797,11 +803,13 @@ def verify_artifact(
     _require(artifact.get("repository") == expected_repository == CANONICAL_REPOSITORY,
              "SOURCE_REVIEW_REPOSITORY_MISMATCH")
     target = _exact_keys(
-        artifact.get("target"), {"pr_number", "author", "base_ref", "head_ref", "head_sha"},
+        artifact.get("target"), {"pr_number", "author", "base_ref", "base_sha", "head_ref", "head_sha"},
         "SOURCE_REVIEW_TARGET",
     )
     _require(target.get("pr_number") == expected_pr_number, "SOURCE_REVIEW_PR_NUMBER_MISMATCH")
     _require(target.get("base_ref") == "main", "SOURCE_REVIEW_BASE_MISMATCH")
+    _require(isinstance(target.get("base_sha"), str) and bool(SHA.fullmatch(target["base_sha"])),
+             "SOURCE_REVIEW_BASE_SHA_INVALID")
     _require(target.get("head_sha") == expected_head_sha and bool(SHA.fullmatch(expected_head_sha)),
              "SOURCE_REVIEW_HEAD_MISMATCH")
     _require(target.get("head_ref") == expected_head_ref, "SOURCE_REVIEW_HEAD_REF_MISMATCH")

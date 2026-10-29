@@ -79,7 +79,7 @@ def pr():
             "ref": "copilot/fix",
             "repo": {"full_name": review.CANONICAL_REPOSITORY},
         },
-        "base": {"ref": "main", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
+        "base": {"sha": MAIN, "ref": "main", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
     }
 
 
@@ -881,6 +881,13 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "github.run_id" in workflow and "github.run_attempt" in workflow
     assert recheck["env"]["PR_NUMBER"] == "${{ steps.target.outputs.pr_number }}"
     assert recheck["env"]["EXPECTED_HEAD_SHA"] == "${{ steps.target.outputs.head_sha }}"
+    publish = next(step for step in steps if step.get("name") == "Publish exact-head check")
+    assert "SOURCE_REVIEW_BASE_SHA_MOVED_DURING_ANALYSIS" in recheck["run"]
+    assert publish["env"]["READ_TOKEN"] == "${{ github.token }}"
+    assert publish["env"]["QA_APP_TOKEN"] == "${{ steps.app_token.outputs.token }}"
+    assert "QA_PUBLISH_HEAD_OR_BASE_MOVED" in publish["run"]
+    assert '.base.sha == $base' in publish["run"]
+    assert publish["run"].index('GH_TOKEN="$READ_TOKEN" gh api') < publish["run"].index('GH_TOKEN="$QA_APP_TOKEN" gh api')
 
 
 def test_capture_uses_read_only_api_and_rejects_head_movement(monkeypatch):
@@ -889,7 +896,7 @@ def test_capture_uses_read_only_api_and_rejects_head_movement(monkeypatch):
             "number": 1822, "state": "open", "draft": False, "merged_at": None,
             "changed_files": 1, "user": {"id": 123, "login": "copilot-swe-agent"},
             "head": {"sha": HEAD, "ref": "copilot/fix", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
-            "base": {"ref": "main", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
+            "base": {"sha": MAIN, "ref": "main", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
         },
         [{
             "filename": "src/fix.py", "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b",
@@ -905,7 +912,7 @@ def test_capture_uses_read_only_api_and_rejects_head_movement(monkeypatch):
             "number": 1822, "state": "open", "draft": False, "merged_at": None,
             "changed_files": 1, "user": {"id": 123, "login": "copilot-swe-agent"},
             "head": {"sha": HEAD, "ref": "copilot/fix", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
-            "base": {"ref": "main", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
+            "base": {"sha": MAIN, "ref": "main", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
         },
     ]
     stable_pr = responses[0]
@@ -941,12 +948,13 @@ def test_capture_uses_read_only_api_and_rejects_head_movement(monkeypatch):
     assert len(requests) == 4
     assert requests[2].full_url.endswith(f"/commits/{HEAD}")
     assert captured["files"][0]["previous_filename"] is None
+    assert captured["pr"]["base"]["sha"] == MAIN
 
     moved = {
         "number": 1822, "state": "open", "draft": False, "merged_at": None,
         "changed_files": 1, "user": {"id": 123, "login": "copilot-swe-agent"},
         "head": {"sha": "c" * 40, "ref": "copilot/fix", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
-        "base": {"ref": "main", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
+        "base": {"sha": MAIN, "ref": "main", "repo": {"full_name": review.CANONICAL_REPOSITORY}},
     }
     responses.extend([stable_pr, [{
         "filename": "src/fix.py", "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b",
@@ -1163,3 +1171,37 @@ def test_unknown_or_swapped_provider_binding_cannot_issue_pass(provider, scope):
     fake["source"]["credential_scope"] = scope
     with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_PROVENANCE_MISMATCH"):
         verify(fake)
+
+
+def test_exact_source_review_artifact_rejects_missing_or_invalid_base_sha():
+    receipt = artifact()
+    assert receipt["target"]["base_sha"] == MAIN
+    for bad in (None, "invalid", "c" * 39):
+        moved = artifact()
+        moved["target"]["base_sha"] = bad
+        with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_BASE_SHA_INVALID"):
+            verify(moved)
+
+
+def test_capture_fails_closed_when_base_moves_after_initial_snapshot(monkeypatch):
+    original = pr()
+    moved = pr()
+    moved["base"]["sha"] = "c" * 40
+    responses = [original, DIFF, COMMIT_METADATA, moved]
+
+    class Response:
+        def __init__(self, value):
+            self.body = json.dumps(value).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, _limit):
+            return self.body
+
+    monkeypatch.setattr(review, "urlopen", lambda *_args, **_kwargs: Response(responses.pop(0)))
+    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_PR_MOVED_DURING_CAPTURE"):
+        review.capture_pr_evidence(
+            repository=review.CANONICAL_REPOSITORY, pr_number=1822,
+            expected_head_sha=HEAD, token="read-only-test-token",
+        )

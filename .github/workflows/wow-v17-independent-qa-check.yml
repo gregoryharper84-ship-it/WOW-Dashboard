@@ -389,6 +389,10 @@ jobs:
             '.pr.head.ref == $ref' "$RUNNER_TEMP/source-review-recheck.json" >/dev/null || {
             echo "::error::SOURCE_REVIEW_HEAD_REF_MOVED_DURING_ANALYSIS"; exit 1;
           }
+          jq -e --arg base "$(jq -er .pr.base.sha "$RUNNER_TEMP/source-review-input.json")" \
+            '.pr.base.sha == $base' "$RUNNER_TEMP/source-review-recheck.json" >/dev/null || {
+            echo "::error::SOURCE_REVIEW_BASE_SHA_MOVED_DURING_ANALYSIS"; exit 1;
+          }
 
       - name: Build versioned exact-head review artifact
         id: source_review
@@ -547,15 +551,36 @@ jobs:
         if: always() && steps.target.outputs.pr_number != ''
         shell: bash
         env:
-          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          READ_TOKEN: ${{ github.token }}
+          QA_APP_TOKEN: ${{ steps.app_token.outputs.token }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          REVIEW_ACTIVE: ${{ steps.policy.outputs.review_active }}
         run: |
           set -euo pipefail
           for decision in "$RUNNER_TEMP"/wow-v17-qa-terminal-decision.json; do
             jq -e '.can_execute == false and .merge_or_release_authorized == false' "$decision" >/dev/null || {
               echo "::error::QA_DECISION_INVARIANT_VIOLATED: $decision"; exit 1; }
+            if [ "$(jq -r .conclusion "$decision")" = "success" ]; then
+              expected_base=""
+              if [ "${REVIEW_ACTIVE:-false}" = "true" ]; then
+                expected_base=$(jq -er '.pr.base.sha' "$RUNNER_TEMP/source-review-input.json") || {
+                  echo "::error::QA_PUBLISH_BASE_EVIDENCE_MISSING"; exit 1;
+                }
+              fi
+              current=$(GH_TOKEN="$READ_TOKEN" gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER") || {
+                echo "::error::QA_PUBLISH_LIVE_PR_UNAVAILABLE"; exit 1;
+              }
+              jq -e --arg sha "$HEAD_SHA" --arg base "$expected_base" --arg repo "$GITHUB_REPOSITORY" \
+                '.state == "open" and .merged == false and .head.sha == $sha and .base.ref == "main" and
+                 .head.repo.full_name == $repo and .base.repo.full_name == $repo and
+                 ($base == "" or .base.sha == $base)' <<<"$current" >/dev/null || {
+                echo "::error::QA_PUBLISH_HEAD_OR_BASE_MOVED"; exit 1;
+              }
+            fi
             payload=$(jq '{name: .check_name, head_sha: .head_sha, status: "completed",
               conclusion: .conclusion, output: {title: .title, summary: .summary}}' "$decision")
-            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input - <<<"$payload" >/dev/null; then
+            if ! GH_TOKEN="$QA_APP_TOKEN" gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input - <<<"$payload" >/dev/null; then
               echo "::error::QA_CHECK_PUBLISH_FAILED: $(jq -r '.head_sha' "$decision")"
               exit 1
             fi
