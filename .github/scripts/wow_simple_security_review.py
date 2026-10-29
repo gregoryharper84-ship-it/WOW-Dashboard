@@ -82,15 +82,36 @@ def request_json(url, *, token=None, data=None, headers=None):
         if is_provider and exc.code in (400, 404):
             try:
                 obj = json.loads(exc.read(4096))
-                message = obj.get("error", {}).get("message", "")
+                error = obj.get("error", {})
+                if type(error) is not dict:
+                    error = {}
+                message = error.get("message", "")
                 if type(message) is not str:
                     message = ""
+                error_type = error.get("type", "")
+                status = error.get("status", "")
+                if type(error_type) is not str:
+                    error_type = ""
+                if type(status) is not str:
+                    status = ""
             except (ValueError, TypeError, AttributeError, OSError):
-                message = ""
+                message, error_type, status = "", "", ""
             words = message.lower()
-            if exc.code == 400 and any(x in words for x in CREDIT_ERRORS):
+            if exc.code == 400 and (any(x in words for x in CREDIT_ERRORS)
+                                   or error_type in ("insufficient_quota", "billing_error")):
                 raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED") from None
-            if exc.code == 404 and any(x in words for x in MODEL_GONE_ERRORS):
+            # A generic 404 is NOT enough: require native not-found typing
+            # and the exact configured model, or an explicit retired-model
+            # description. Never fail over on permission, policy, bad path.
+            known_model = ("claude-sonnet-4-6" if "api.anthropic.com" in url
+                           else "gemini-2.5-flash")
+            model_named = known_model in words
+            native_missing = (error_type == "not_found_error"
+                              or status == "NOT_FOUND")
+            model_error = (any(x in words for x in MODEL_GONE_ERRORS)
+                           or ("model:" in words and model_named)
+                           or (model_named and "not found" in words))
+            if exc.code == 404 and native_missing and model_error:
                 raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
         raise Hold("HTTP_" + str(exc.code)) from None
     except (URLError, TimeoutError):
