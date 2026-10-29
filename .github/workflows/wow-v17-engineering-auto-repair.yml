@@ -59,7 +59,7 @@ jobs:
       (github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
        (startsWith(github.event.workflow_run.name, 'wow-v17-independent-qa-check') ||
-        startsWith(github.event.workflow_run.name, 'wow-v17-release-authority-check')))
+        startsWith(github.event.workflow_run.name, 'wow-v17-release-authority-check'))))
     runs-on: ubuntu-latest
     timeout-minutes: 8
     outputs:
