@@ -23,7 +23,13 @@ def test_source_review_negative_suite_runs_on_pr_head():
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "Ran 10 tests" in result.stderr, result.stderr
+    # Validate collection includes all negative security scenarios without
+    # coupling CI to an exact incidental unittest count.
+    for marker in ("test_sticky_reject_exact_sha_and_app_only",
+                   "test_typed_provider_error_retry_mapping",
+                   "test_claude_forced_tool_verdict_and_malformed_hold",
+                   "test_capture_rejects_head_change_during_diff_pagination"):
+        assert marker in result.stderr, result.stderr
 
 
 def test_protected_main_workflow_and_separate_qa_app_are_required():
