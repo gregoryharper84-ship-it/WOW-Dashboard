@@ -408,6 +408,32 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 m.request_json(url, data={})
             self.assertEqual(str(v.exception), "PROVIDER_MODEL_UNAVAILABLE")
 
+    def test_malformed_provider_envelopes_hold_without_unhandled_exception(self):
+        target = {"pr": 2275, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "[]"}
+        for provider, malformed in (
+            ("anthropic-claude-api", []),
+            ("anthropic-claude-api", {"stop_reason": "tool_use", "content": ["x"]}),
+            ("gemini-generative-api", []),
+            ("gemini-generative-api", {"candidates": ["x"]}),
+            ("gemini-generative-api", {"candidates": [{"finishReason": "STOP",
+                                                      "content": {"parts": ["x"]}}]}),
+        ):
+            with self.subTest(provider=provider, malformed=malformed):
+                with patch.object(m, "request_json", return_value=malformed):
+                    with self.assertRaises(m.Hold):
+                        m.call_provider(provider, "test-key", "untrusted diff")
+
+    def test_review_reservation_internal_error_is_typed_hold(self):
+        # Source-level integration guard ensures an unexpected exception after
+        # reserve cannot escape before commit_content_review is reached.
+        import inspect
+        source = inspect.getsource(m.main)
+        self.assertIn('except Exception as exc:', source)
+        self.assertIn('receipt["reason"] = "REVIEW_INTERNAL_EXCEPTION_"', source)
+        self.assertLess(source.index('except Exception as exc:'),
+                        source.index('commit_content_review(reservation, receipt, qa_token)'))
+
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
                    "probability_integrity_review": "PASS", "findings": []}
