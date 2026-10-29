@@ -86,6 +86,8 @@ concurrency:
 jobs:
   provider-control:
     name: WOW V17 engineering provider control plane
+    # Schedule/workflow_run use protected main; reject unmerged manual dispatch.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
