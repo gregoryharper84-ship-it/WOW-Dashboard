@@ -774,8 +774,9 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
                         "run_id": job_id,
                         "name": "Gemini AMRT isolated repair candidate (never a release actor)",
                         "status": "completed",
+                        "conclusion": "skipped" if outcome == "job_skipped" else "success",
                         "completed_at": origin.get("updatedAt", "2026-10-28T23:59:00Z"),
-                        "steps": [{
+                        "steps": [] if outcome == "job_skipped" else [{
                             "name": "Execute one bounded headless Gemini CLI candidate session",
                             "conclusion": outcome,
                         }],
@@ -821,6 +822,20 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
                   "updatedAt": "2026-10-28T23:59:00Z"}]
         result, _ = self._check(
             prior, attempt_outcomes={(11, 2): "skipped", (11, 1): "success"},
+        )
+        self.assertEqual(result["status"], "HELD")
+        self.assertEqual(result["code"], "GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
+
+    def test_unmerged_dispatch_job_skip_is_authenticated_no_spend(self):
+        actual = {"databaseId": 10, "headSha": "b" * 40,
+                  "status": "completed", "conclusion": "success",
+                  "updatedAt": "2026-10-28T23:59:00Z"}
+        rejected_branch = {"databaseId": 11, "headSha": "a" * 40,
+                           "status": "completed", "conclusion": "skipped",
+                           "updatedAt": "2026-10-29T00:01:00Z"}
+        result, _ = self._check(
+            [rejected_branch, actual],
+            attempt_outcomes={(11, 1): "job_skipped"},
         )
         self.assertEqual(result["status"], "HELD")
         self.assertEqual(result["code"], "GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
