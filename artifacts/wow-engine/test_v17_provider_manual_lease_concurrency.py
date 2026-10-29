@@ -67,3 +67,18 @@ def test_dispatcher_job_rejects_unmerged_manual_ref():
     assert "github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'" in provider
     assert "github.ref == 'refs/heads/main'" in provider
     assert "runs-on: ubuntu-latest" in provider
+
+
+def test_openai_and_claude_post_lock_breaker_remains_mandatory():
+    root = ROOT / ".github/workflows"
+    for workflow, provider in (
+        ("wow-v17-chatgpt-engineering-worker.yml", "openai"),
+        ("wow-v17-claude-engineering-worker.yml", "anthropic"),
+    ):
+        content = (root / workflow).read_text(encoding="utf-8")
+        assert "github.ref == 'refs/heads/main'" in content
+        assert "wow-v17-engineering-implementation-single-writer" in content
+        guard = "Recheck " + provider + " provider breaker under the global writer mutex"
+        assert guard in content
+        assert content.index(guard) < content.index("- name: Engineering Lead agent")
+        assert "engineering_provider_worker_admission.py" in content
