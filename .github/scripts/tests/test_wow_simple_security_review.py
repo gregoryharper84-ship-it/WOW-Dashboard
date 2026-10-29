@@ -358,7 +358,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         reject = {"name": m.CHECK_NAME, "conclusion": "failure",
                   "app": {"id": m.QA_APP_ID}, "output": {"title": "REJECT — finding"}}
         def pages(path, token):
-            if "page=1" in path:
+            if path.endswith("&page=1"):
                 return {"total_count": 101, "check_runs": [hold] * 100}
             return {"total_count": 101, "check_runs": [reject]}
         with patch.object(m, "gh", pages):
