@@ -97,7 +97,7 @@ def recheck_auto_worker_provider(runs: Any, comparison: Any, current_sha: str,
 
 
 
-def recheck_auto_worker_github() -> dict[str, Any]:
+def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, Any]:
     """Canonical provider recheck after acquiring the shared Actions writer lock.
 
     The workflow is the only owner of this invocation. Never trust an earlier
@@ -124,8 +124,13 @@ def recheck_auto_worker_github() -> dict[str, Any]:
 
     try:
         current_sha = read_command(["git", "rev-parse", "HEAD"])
-        if not _SHA.fullmatch(current_sha):
+        # The workflow pins checkout to github.sha; compare both independently.
+        # A queued invocation is never allowed to claim a different revision.
+        dispatch_sha = os.environ.get("GITHUB_SHA", "")
+        if not _SHA.fullmatch(current_sha) or not _SHA.fullmatch(dispatch_sha):
             return held("GEMINI_WORKER_CURRENT_SHA_INVALID")
+        if current_sha != dispatch_sha:
+            return held("GEMINI_WORKER_CHECKOUT_SHA_DRIFT")
         raw = read_command([
             "gh", "run", "list", "--repo", repo,
             "--workflow", "wow-v17-gemini-engineering-worker.yml",
@@ -176,7 +181,7 @@ def recheck_auto_worker_github() -> dict[str, Any]:
                 comparison = json.loads(read_command([
                     "gh", "api", f"repos/{repo}/compare/{failed_sha}...{current_sha}",
                 ]))
-        return recheck_auto_worker_provider(selected, comparison, current_sha)
+        return recheck_auto_worker_provider(selected, comparison, current_sha, now=now)
     except (OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return held("GEMINI_WORKER_GITHUB_EVIDENCE_UNVERIFIED")
 
