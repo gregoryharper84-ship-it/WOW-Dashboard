@@ -5,6 +5,7 @@ but its self-test cannot validate unmerged PR source. This existing backend
 pytest shard is a separate required-CI gate on the PR head itself.
 """
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -23,7 +24,16 @@ def test_source_review_negative_suite_runs_on_pr_head():
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "Ran 26 tests" in result.stderr, result.stderr
+    # Preserve the old 26-test floor and require all three new negative
+    # HTTP-diagnostic cases to execute; additional tests must not break CI.
+    match = re.search(r"Ran ([0-9]+) tests", result.stderr)
+    assert match and int(match.group(1)) >= 29, result.stderr
+    for required_test in (
+        "test_http_404_endpoint_diagnostic_is_bounded_and_redacted",
+        "test_ambiguous_provider_404_remains_terminal_hold",
+        "test_typed_model_404_only_allows_existing_provider_failover",
+    ):
+        assert required_test in result.stderr, result.stderr
 
 
 def test_protected_main_workflow_and_separate_qa_app_are_required():
