@@ -78,3 +78,16 @@ def test_sources_are_unique_non_executable_and_safely_audited():
                 for route in plan["sources"]:
                     assert route["can_execute"] is False
                     assert route["probability_publishable"] is False
+
+def test_ncaaf_sdv_research_archive_has_no_model_or_live_dataset_authority():
+    plan = compile_free_source_plan("NCAAF", "HISTORY")
+    rows = [r for r in plan["sources"] if r["source_id"] == "SPORTSDATAVERSE_NCAA_MFB_PLAYER_STATS"]
+    assert len(rows) == 1
+    source = rows[0]
+    assert source["integration"] == "SOURCE_ARCHIVE_RESEARCH_CANARY"
+    assert source["registry_candidate_training_ready"] is True
+    assert source["training_authorized_by_catalog"] is False
+    assert source["source_rights_independently_attested"] is False
+    assert source["pregame_model_feature_eligible"] is False
+    assert source["official_identity_verified"] is False
+    assert source["can_execute"] is False
