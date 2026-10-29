@@ -240,12 +240,12 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_editable_app_body_cannot_forge_immutable_commit_lineage(self):
         target, pr, src, reviews, fake = self._owner_fixture()
-        pr["body"] = "Original author/source: PR #2248, head `" + "f" * 40 + "`.\\n"
+        pr["body"] = "Original author/source: PR #2248, head `" + "f" * 40 + "`.\n"
         with patch.object(m, "gh", fake):
             with self.assertRaises(m.Hold) as cm:
                 m.owner_fallback_review(target, "read")
         self.assertEqual(str(cm.exception), "OWNER_ADOPTION_COMMIT_PROVENANCE_UNVERIFIED")
-        pr["body"] = "Original author/source: PR #2248, head `" + "e" * 40 + "`.\\n"
+        pr["body"] = "Original author/source: PR #2248, head `" + "e" * 40 + "`.\n"
         old = fake
         def wrong_parent(path, token):
             x = old(path, token)
