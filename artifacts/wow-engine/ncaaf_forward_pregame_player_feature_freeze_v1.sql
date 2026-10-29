@@ -130,7 +130,7 @@ begin
    case when p.team=s.home_team then s.away_team else s.home_team end,
    p.stat_type,s.kickoff,s.retrieved_at,s.source_snapshot_id,s.payload_sha256,
    capture_time,p.latest_observed,p.latest_game,p.prior_n,p.prior_avg,
-   p.prior_json,pg_catalog.encode(public.digest(p.prior_json::text,'sha256'),'hex')
+   p.prior_json,pg_catalog.encode(extensions.digest(p.prior_json::text,'sha256'),'hex')
   from prior p
   returning feature_id
  )
