@@ -260,6 +260,16 @@ def owner_fallback_review(target, token):
     if not match:
         raise Hold("OWNER_SOURCE_LINEAGE_UNVERIFIED")
     source_number, source_sha = int(match.group(1)), match.group(2)
+    # The PR body is editable. Require the immutable App adoption commit to
+    # independently bind the source PR/SHA and the exact protected base.
+    adopted_commit = gh(f"/commits/{target['head_sha']}", token)
+    commit_message = (adopted_commit.get("commit") or {}).get("message")
+    parents = adopted_commit.get("parents")
+    expected_message = f"integrate(reviewed source): PR #{source_number} exact {source_sha}"
+    if (commit_message != expected_message or not isinstance(parents, list)
+            or len(parents) != 1 or not isinstance(parents[0], dict)
+            or parents[0].get("sha") != target["base_sha"]):
+        raise Hold("OWNER_ADOPTION_COMMIT_PROVENANCE_UNVERIFIED")
     source = gh(f"/pulls/{source_number}", token)
     source_author = (source.get("user") or {}).get("login")
     if not source_author or source_author in (OWNER_LOGIN, "wow-engineering[bot]"):
