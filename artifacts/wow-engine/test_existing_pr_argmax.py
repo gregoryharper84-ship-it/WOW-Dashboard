@@ -328,6 +328,56 @@ def test_bootstrap_checks_keep_exact_head_and_app_authority(state, tmp_path):
         assert json.loads(path.read_text()) == evidence
 
 
+def test_bootstrap_checks_wait_for_in_flight_qa_or_release_to_supersede_earlier_hold(tmp_path):
+    directory, pr, payload = _evidence_files(tmp_path)
+    evidence = {"pr": pr, "check_runs": [], "reviews": payload}
+    path = directory / "evidence.json"
+    path.write_text(json.dumps(evidence))
+    base_checks = [
+        {"name": name, "app": {"id": app}, "head_sha": SHA, "status": "completed",
+         "conclusion": "success", "started_at": "2026-10-20T00:00:00Z", "id": i}
+        for i, (name, app) in enumerate([
+            ("WOW required-three regression", 15368),
+            ("WOW governed probability backend", 15368),
+            ("WOW additional required regression", 15368),
+            ("WOW V17 change impact gate", 15368),
+            ("WOW Independent QA exact-head", 5245832),
+            ("WOW Release Authority exact-head", 5245853),
+        ])
+    ]
+    poll1 = [dict(c) for c in base_checks]
+    poll1[4] = {**poll1[4], "conclusion": "failure", "started_at": "2026-10-20T00:00:00Z", "id": 10}
+    poll2 = [
+        *poll1,
+        {**base_checks[4], "conclusion": "success", "started_at": "2026-10-20T00:01:00Z", "id": 11},
+    ]
+    (tmp_path / "poll1.json").write_text(json.dumps({"check_runs": poll1}))
+    (tmp_path / "poll2.json").write_text(json.dumps({"check_runs": poll2}))
+    mock = """
+gh() {
+  printf '%s\\n' "$*" >> calls
+  local count
+  count=$(wc -l < calls | tr -d ' ')
+  if [ "$count" -le 1 ]; then
+    cat poll1.json
+  else
+    cat poll2.json
+  fi
+}
+sleep() { :; }
+seq() { printf '1\\n2\\n'; }
+"""
+    start = RECEIPT.index('if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then')
+    end = RECEIPT.index('\nreceipt=', start)
+    result = _run(
+        'classification=TRUST_ROOT_BOOTSTRAP\nevidence=".governance-review-evidence/evidence.json"\n'
+        + RECEIPT[start:end],
+        tmp_path, mock,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(path.read_text()) == {**evidence, "check_runs": poll2}
+
+
 def test_large_evidence_never_crosses_argv_boundary():
     text = WORKFLOW.read_text()
     for name in ("current", "next", "pr", "changed_files", "reviews",

@@ -483,6 +483,16 @@ def classify_upstream_qa(
         return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
     if job_conclusion not in {"success", "failure"}:
         raise UpstreamQaError("RELEASE_UPSTREAM_QA_JOB_INCOMPLETE")
+    steps = named[0].get("steps")
+    # A failed run/job remains applicable even when its terminal artifact step
+    # was skipped: it must never be mistaken for a deliberate QA deferral.
+    if conclusion == "success" and job_conclusion == "success" and isinstance(steps, list) and any(
+        isinstance(step, dict)
+        and step.get("name") == "Upload terminal QA outcome"
+        and step.get("conclusion") == "skipped"
+        for step in steps
+    ):
+        return {"disposition": "neutral", "reason": "RELEASE_UPSTREAM_QA_NO_TARGET"}
     return {"disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE"}
 
 

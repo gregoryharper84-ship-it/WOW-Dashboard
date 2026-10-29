@@ -707,7 +707,7 @@ def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
     assert "format('pr-{0}', github.event.pull_request.number)" in text
     assert "format('run-{0}', github.event.workflow_run.id)" in text
     assert "github.event.pull_request.head.sha) }}" not in text.split("concurrency:")[1].split("jobs:")[0]
-    assert "for _ in $(seq 1 18); do" in text
+    assert "for _ in $(seq 1 90); do" in text
     assert 'gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"' in text
     assert 'if [ "$current_head" != "$head_sha" ]; then' in text
     assert "GOVERNANCE_STALE_HEAD_DEFERRED" in text
