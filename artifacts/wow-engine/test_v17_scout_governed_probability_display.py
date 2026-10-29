@@ -72,6 +72,10 @@ def test_nfl_lookup_requires_champion_and_latest_actual_daily_terminal():
         "artifact.lifecycle_state='CHAMPION'",
         "artifact.can_execute=false",
         "p.model_probability_publishable=true",
+        "not exists (",
+        "newer.official_event_id=p.official_event_id",
+        "(newer.created_at,newer.event_prediction_id)",
+        "> (p.created_at,p.event_prediction_id)",
         "join lateral (",
         "public.wow_v17_daily_run_row_detail",
         "daily.identity->>'sport'='NFL'",
@@ -124,6 +128,19 @@ def test_latest_terminal_requires_exact_prediction_and_fresh_pregame_receipt():
     assert "latest.captured_at >= p.created_at" in sql
     assert "latest.captured_at < p.event_start_time_utc" in sql
     assert "latest.detail->'result'->>'global_terminal_authority'='V17_TERMINAL_REDUCER'" in sql
+
+
+def test_newer_unterminalized_score_cannot_inherit_older_approval():
+    cur = FakeCursor(None)
+    lookup_governed_probability(cur, _candidate())
+    sql = cur.calls[0][0]
+    # A reused APPROVED daily receipt cannot release an obsolete prediction
+    # if a newer scorer row has already persisted without terminal acceptance.
+    assert "not exists (" in sql
+    assert "from public.wow_nfl_event_predictions as newer" in sql
+    assert "newer.official_event_id=p.official_event_id" in sql
+    assert "(newer.created_at,newer.event_prediction_id)" in sql
+    assert "> (p.created_at,p.event_prediction_id)" in sql
 
 
 def test_absent_terminal_proof_never_displays_a_row_publishable_prediction():
