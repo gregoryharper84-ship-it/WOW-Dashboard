@@ -75,7 +75,10 @@ def assess_tri_sport_evidence(package: Mapping[str, Any]) -> dict[str, Any]:
         }
 
     failures: list[str] = []
+    check_count = 0
     def require(ok: bool, code: str) -> None:
+        nonlocal check_count
+        check_count += 1
         if not ok:
             failures.append(code)
 
@@ -137,13 +140,12 @@ def assess_tri_sport_evidence(package: Mapping[str, Any]) -> dict[str, Any]:
     cp, lower, upper = (cal.get("calibrated_probability"),
                         cal.get("calibrated_lower_bound"),
                         cal.get("calibrated_upper_bound"))
+    valid_bounds = all(_prob(v) for v in (cp, lower, upper))
     require(
         cal.get("independently_calibrated_exact_line") is True
         and bool(cal.get("calibration_artifact_id"))
         and _sha(cal.get("calibration_artifact_checksum"))
-        and all(_prob(v) for v in (cp, lower, upper))
-        and float(lower) <= float(cp) <= float(upper)
-        if all(_prob(v) for v in (cp, lower, upper)) else False,
+        and valid_bounds and float(lower) <= float(cp) <= float(upper),
         "TRI_SPORT_EXACT_LINE_CALIBRATION_OR_BOUNDS_INVALID",
     )
     line = _number(package.get("exact_line"))
@@ -190,7 +192,7 @@ def assess_tri_sport_evidence(package: Mapping[str, Any]) -> dict[str, Any]:
         "stat_type": stat,
         "controlling_specialist": TARGET_SPECIALISTS[key],
         "blockers": failures,
-        "evidence_check_count": 12,
+        "evidence_check_count": check_count,
         "ready_for_independent_certification": not failures,
         "model_certified_by_this_gate": False,
         "probability_publishable": False,
