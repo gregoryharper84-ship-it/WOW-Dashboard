@@ -323,6 +323,31 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     reject(code, body)
                 self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
 
+    def test_unclassified_http_holds_identify_safe_endpoint_without_provider_switch(self):
+        import io
+        from urllib.error import HTTPError
+        urls = (
+            ("https://api.anthropic.com/v1/messages", "ANTHROPIC_HTTP_404"),
+            ("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", "GEMINI_HTTP_404"),
+            ("https://api.github.com/repos/" + m.REPO + "/pulls/2275", "GITHUB_HTTP_404"),
+        )
+        for url, reason in urls:
+            with self.subTest(reason=reason):
+                with patch.object(m.HTTP_CLIENT, "open",
+                    side_effect=HTTPError(url, 404, "not found", {}, io.BytesIO(b'{}'))):
+                    with self.assertRaises(m.Hold) as caught:
+                        m.request_json(url, token="read" if "github.com" in url else None,
+                                       data=None if "github.com" in url else {})
+                    self.assertEqual(str(caught.exception), reason)
+                    self.assertNotIsInstance(caught.exception, m.ProviderUnavailable)
+        url = "https://api.anthropic.com/v1/messages"
+        with patch.object(m.HTTP_CLIENT, "open",
+            side_effect=HTTPError(url, 403, "forbidden", {}, io.BytesIO(b'{}'))):
+            with self.assertRaises(m.Hold) as denied:
+                m.request_json(url, data={}, headers={"x-api-key": "not-a-real-key"})
+            self.assertEqual(str(denied.exception), "ANTHROPIC_HTTP_403")
+            self.assertNotIsInstance(denied.exception, m.ProviderUnavailable)
+
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
                    "probability_integrity_review": "PASS", "findings": []}
