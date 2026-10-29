@@ -105,6 +105,13 @@ def gh(path, token):
     return request_json("https://api.github.com/repos/" + REPO + path, token=token)
 
 
+def require_dispatch_actor(kind, actor):
+    # Caller authorization is an entrypoint security check, not part of
+    # parsing event JSON. Unit/CI fixtures must not require PR actor identity.
+    if kind == "workflow_dispatch" and actor != "gregoryharper84-ship-it":
+        raise Hold("DISPATCH_ACTOR_UNAUTHORIZED")
+
+
 def event_target(event, kind):
     if kind == "pull_request_target":
         pr = event.get("pull_request")
@@ -112,8 +119,6 @@ def event_target(event, kind):
             raise Hold("PR_EVENT_MISSING")
         return pr["number"], pr.get("head", {}).get("sha")
     if kind == "workflow_dispatch":
-        if os.getenv("GITHUB_ACTOR") != "gregoryharper84-ship-it":
-            raise Hold("DISPATCH_ACTOR_UNAUTHORIZED")
         inputs = event.get("inputs") or {}
         try:
             number = int(inputs["pr_number"])
@@ -294,7 +299,9 @@ def prior_semantic_reject(sha, read_token):
     if not read_token:
         raise Hold("REVIEW_CHECK_READ_TOKEN_MISSING")
     # The GitHub Checks API paginates; fail closed instead of overlooking older REJECT.
-    path = f"/commits/{sha}/check-runs?check_name=WOW%20Independent%20Security%20Review&per_page=100"
+    # filter=latest silently hides older REJECT check runs after any HOLD.
+    # Enumerate ALL historical check runs, including superseded attempts.
+    path = f"/commits/{sha}/check-runs?check_name=WOW%20Independent%20Security%20Review&filter=all&per_page=100"
     for page in range(1, 11):
         data = gh(path + f"&page={page}", read_token)
         if (type(data) is not dict or type(data.get("check_runs")) is not list
@@ -336,7 +343,9 @@ def main():
     if os.environ.get("GITHUB_REPOSITORY") != REPO or os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise Hold("PROTECTED_MAIN_REQUIRED")
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-    pr_number, expected_sha = event_target(event, os.environ.get("GITHUB_EVENT_NAME", ""))
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    require_dispatch_actor(event_name, os.environ.get("GITHUB_ACTOR", ""))
+    pr_number, expected_sha = event_target(event, event_name)
     read_token = os.environ.get("GH_READ_TOKEN", "")
     if not read_token:
         raise Hold("READ_TOKEN_MISSING")
