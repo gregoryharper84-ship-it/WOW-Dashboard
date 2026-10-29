@@ -433,3 +433,23 @@ These failures belong only to the offline `propsmadness_nfl_account_view_adapter
 | `PM_ACCOUNT_VIEW_DUPLICATE_GAME` | NFL account-view research | Same observed date/opponent appears twice in one selected player history | No |
 
 This family is research-only; each failure preserves `probability_publishable=false` and `can_execute=false`. The chart comparison threshold is never a historical closing-line authority.
+
+## PropsMadness NBA, MLB, WNBA account-view research statuses
+
+These typed failures are emitted only by `propsmadness_other_sports_account_view_adapter`, never by governed fitted scorers. The same account-view timestamp validation code `PM_ACCOUNT_VIEW_TIMESTAMP_INVALID` from the NFL parser is reused.
+
+| Code | Owner | Exact cause | Model unavailable? |
+| --- | --- | --- | --- |
+| `PM_MULTISPORT_SPORT_UNSUPPORTED` | Account-view research | Sport is not NBA, MLB or WNBA | No |
+| `PM_MULTISPORT_MARKET_CONFLICT` | Account-view research | Unsupported stat or market URL contradicts requested stat | No |
+| `PM_MULTISPORT_OPERATOR_CONFIRMATION_MISSING` | Account-view research | User-controlled signed-in view confirmation absent | No |
+| `PM_MULTISPORT_INPUT_INVALID` | Account-view research | Missing or oversized rendered-view text | No |
+| `PM_MULTISPORT_PLAYER_UNRESOLVED` | Account-view research | Player label missing or cannot be found near selected chart | No |
+| `PM_MULTISPORT_SOURCE_INVALID` | Account-view research | Unallowlisted URL, duplicate query key, credential component or nonnumeric provider aliases | No |
+| `PM_MULTISPORT_SECTION_MISSING` | Account-view research | Exact selected-sport breakdown section absent | No |
+| `PM_MULTISPORT_HISTORY_TABLE_INVALID` | Account-view research | Chart table missing, duplicate, wrong header, empty or over limit | No |
+| `PM_MULTISPORT_SELECTED_MARKET_UNRESOLVED` | Account-view research | Declared statistic does not match player detail label | No |
+| `PM_MULTISPORT_ROW_INVALID` | Account-view research | Bad date/opponent/value/line, future completed result, or displayed comparison-side mismatch | No |
+| `PM_MULTISPORT_DUPLICATE_GAME` | Account-view research | Duplicate date/opponent row within one player's chart | No |
+
+These are synthetic-layout research contracts until verified against distinct real authenticated NBA, MLB and WNBA pages; none permits storage, training, market claims, probability publication or execution.
