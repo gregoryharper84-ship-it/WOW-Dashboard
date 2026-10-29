@@ -27,7 +27,7 @@ def test_source_review_negative_suite_runs_on_pr_head():
     # Named security regressions cannot silently disappear on future additions.
     import re
     count = re.search(r"Ran (\d+) tests?", result.stderr)
-    assert count is not None and int(count.group(1)) >= 41, result.stderr
+    assert count is not None and int(count.group(1)) >= 42, result.stderr
     for name in (
         "test_global_reject_prevents_second_pr_review_without_provider_call",
         "test_provider_reject_persists_even_if_pr_moves_before_reread",
@@ -37,6 +37,7 @@ def test_source_review_negative_suite_runs_on_pr_head():
         "test_malformed_provider_envelopes_hold_without_unhandled_exception",
         "test_review_reservation_internal_error_is_typed_hold",
         "test_gemini_native_invalid_key_400_fails_over_but_generic_400_holds",
+        "test_failed_ledger_patch_keeps_semantic_reject_and_blocks_pass",
         "test_in_progress_reservation_fail_closed_when_reviewer_crashes",
         "test_reject_ledger_committed_before_head_check_and_failed_commit_holds",
         "test_reject_content_ledger_is_not_duplicated_by_same_sha_page_limit",
