@@ -427,6 +427,7 @@ These failures belong only to the offline `propsmadness_nfl_account_view_adapter
 | `PM_ACCOUNT_VIEW_INPUT_INVALID` | NFL account-view research | Empty, non-text, or oversized rendered browser view | No |
 | `PM_ACCOUNT_VIEW_IDENTITY_UNRESOLVED` | NFL account-view research | Selected player label absent or malformed | No |
 | `PM_ACCOUNT_VIEW_SECTION_MISSING` | NFL account-view research | No selected NFL player breakdown section | No |
+| `PM_ACCOUNT_VIEW_SELECTED_MARKET_UNRESOLVED` | NFL account-view research | The selected player's visible detail block does not show the declared NFL statistic | No |
 | `PM_ACCOUNT_VIEW_HISTORY_TABLE_INVALID` | NFL account-view research | Missing, ambiguous, malformed or oversized dated outcome table | No |
 | `PM_ACCOUNT_VIEW_ROW_INVALID` | NFL account-view research | Missing fields, invalid dates/results/threshold, mismatched display direction, or result dated after capture | No |
 | `PM_ACCOUNT_VIEW_DUPLICATE_GAME` | NFL account-view research | Same observed date/opponent appears twice in one selected player history | No |
