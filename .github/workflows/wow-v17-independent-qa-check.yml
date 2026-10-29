@@ -373,6 +373,18 @@ jobs:
             args+=(--legacy-review-policy)
           fi
           python "$tool" "${args[@]}" > "$evidence"
+          readiness=$(python "$tool" classify-release-readiness --evidence "$evidence")
+          disposition=$(jq -er '.disposition' <<<"$readiness")
+          if [ "$disposition" = "pending" ]; then
+            checks=$(jq -er '.pending_checks | join(", ")' <<<"$readiness")
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::RELEASE_QA_EVIDENCE_PENDING:$checks (no check published)"
+            echo "QA deferred until exact-head native regression completes: $checks. No QA check published." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          [ "$disposition" = "ready" ] || {
+            echo "::error::RELEASE_READINESS_DISPOSITION_INVALID"; exit 1;
+          }
           python "$tool" decide-qa --evidence "$evidence" > "$out/decision-$PR_NUMBER.json"
           echo "count=1" >> "$GITHUB_OUTPUT"
           echo "QA decision prepared for PR $PR_NUMBER at $HEAD_SHA" >> "$GITHUB_STEP_SUMMARY"
@@ -394,8 +406,12 @@ jobs:
           SOURCE_REVIEW_OUTCOME: ${{ steps.source_review.outcome }}
           SOURCE_REVIEW_ARTIFACT_OUTCOME: ${{ steps.source_review_artifact.outcome }}
           DECIDE_OUTCOME: ${{ steps.decide.outcome }}
+          DECIDE_COUNT: ${{ steps.decide.outputs.count }}
         run: |
           set -euo pipefail
+          if [ "${DECIDE_COUNT:-}" = "0" ] && [ "${DECIDE_OUTCOME:-}" = "success" ]; then
+            exit 0
+          fi
           decision="$RUNNER_TEMP/decisions/decision-$PR_NUMBER.json"
           if [ ! -s "$decision" ]; then
             failed_step=qa_decision_unavailable
@@ -434,7 +450,7 @@ jobs:
             | cut -d' ' -f1 > "$RUNNER_TEMP/wow-v17-qa-terminal-decision.json.sha256"
 
       - name: Upload terminal QA outcome
-        if: always() && steps.target.outputs.pr_number != ''
+        if: always() && steps.target.outputs.pr_number != '' && steps.decide.outputs.count != '0'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-v17-qa-outcome-${{ steps.target.outputs.pr_number }}-${{ steps.target.outputs.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -449,8 +465,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          DECIDE_OUTCOME: ${{ steps.decide.outcome }}
+          DECIDE_COUNT: ${{ steps.decide.outputs.count }}
         run: |
           set -euo pipefail
+          if [ "${DECIDE_COUNT:-}" = "0" ] && [ "${DECIDE_OUTCOME:-}" = "success" ]; then
+            echo "QA deferred until exact-head native regression completes. No QA check published." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           for decision in "$RUNNER_TEMP"/wow-v17-qa-terminal-decision.json; do
             jq -e '.can_execute == false and .merge_or_release_authorized == false' "$decision" >/dev/null || {
               echo "::error::QA_DECISION_INVARIANT_VIOLATED: $decision"; exit 1; }
