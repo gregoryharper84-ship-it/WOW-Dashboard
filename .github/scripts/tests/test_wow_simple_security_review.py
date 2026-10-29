@@ -216,6 +216,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         }) as api:
             self.assertTrue(m.prior_semantic_reject("a" * 40, "read"))
             self.assertIn("check_name=", api.call_args.args[0])
+            self.assertIn("filter=all", api.call_args.args[0])
         with patch.object(m, "gh", return_value={"total_count": 1,
                                                  "check_runs": [foreign]}):
             self.assertFalse(m.prior_semantic_reject("a" * 40, "read"))
@@ -223,13 +224,42 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             with self.assertRaises(m.Hold):
                 m.prior_semantic_reject("a" * 40, "read")
 
+    def test_previous_reject_cannot_be_hidden_by_later_hold(self):
+        reject = {"name": m.CHECK_NAME, "conclusion": "failure",
+                  "app": {"id": m.QA_APP_ID}, "output": {"title": "REJECT — source"}}
+        hold = {"name": m.CHECK_NAME, "conclusion": "failure",
+                "app": {"id": m.QA_APP_ID}, "output": {"title": "HOLD — provider"}}
+        published = [reject, hold]
+        prompts = []
+        def filtered_github(path, token):
+            # Faithfully model GitHub's default latest behavior:
+            # when filter=all is not specified, only the newest named check.
+            page = published if "filter=all" in path else published[-1:]
+            return {"total_count": len(page), "check_runs": list(page)}
+        with patch.object(m, "gh", filtered_github):
+            for _ in range(3):
+                self.assertTrue(m.prior_semantic_reject("a" * 40, "read"))
+            self.assertEqual(len(prompts), 0)
+
+    def test_previous_reject_in_older_page_still_denies(self):
+        hold = {"name": m.CHECK_NAME, "conclusion": "failure",
+                "app": {"id": m.QA_APP_ID}, "output": {"title": "HOLD — outage"}}
+        reject = {"name": m.CHECK_NAME, "conclusion": "failure",
+                  "app": {"id": m.QA_APP_ID}, "output": {"title": "REJECT — finding"}}
+        def pages(path, token):
+            if "page=1" in path:
+                return {"total_count": 101, "check_runs": [hold] * 100}
+            return {"total_count": 101, "check_runs": [reject]}
+        with patch.object(m, "gh", pages):
+            self.assertTrue(m.prior_semantic_reject("a" * 40, "read"))
+
     def test_manual_dispatch_requires_owner_and_exact_target(self):
         event = {"inputs": {"pr_number": "2254", "head_sha": "a" * 40}}
-        with patch.dict(m.os.environ, {"GITHUB_ACTOR": "untrusted-user"}):
-            with self.assertRaises(m.Hold):
-                m.event_target(event, "workflow_dispatch")
-        with patch.dict(m.os.environ, {"GITHUB_ACTOR": "gregoryharper84-ship-it"}):
-            self.assertEqual(m.event_target(event, "workflow_dispatch"), (2254, "a" * 40))
+        with self.assertRaises(m.Hold):
+            m.require_dispatch_actor("workflow_dispatch", "untrusted-user")
+        m.require_dispatch_actor("workflow_dispatch", "gregoryharper84-ship-it")
+        m.require_dispatch_actor("pull_request_target", "wow-engineering[bot]")
+        self.assertEqual(m.event_target(event, "workflow_dispatch"), (2254, "a" * 40))
 
     def test_diff_prompt_repeats_trusted_instruction_after_data(self):
         target = {"pr": 2254, "head_sha": "a" * 40, "base_sha": "b" * 40,
