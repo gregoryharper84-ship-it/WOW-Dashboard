@@ -754,6 +754,20 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
                 if fail_history:
                     return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unavailable")
                 output = json.dumps(runs)
+            elif cmd[:2] == ["gh", "api"] and "/actions/workflows/" in cmd[2]:
+                page = int(cmd[2].split("page=")[-1])
+                segment = runs[(page - 1) * 100:page * 100]
+                output = json.dumps({
+                    "total_count": len(runs),
+                    "workflow_runs": [{
+                        "id": entry["databaseId"],
+                        "run_attempt": entry["attempt"],
+                        "head_sha": entry.get("headSha"),
+                        "status": entry.get("status"),
+                        "conclusion": entry.get("conclusion"),
+                        "updated_at": entry.get("updatedAt"),
+                    } for entry in segment],
+                })
             elif cmd[:2] == ["gh", "api"] and "/jobs?" in cmd[2]:
                 if fail_jobs:
                     return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unavailable")
@@ -860,7 +874,7 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
         result, commands = self._check([])
         self.assertEqual(result["status"], "ADMITTED")
         self.assertEqual(result["code"], "GEMINI_WORKER_FIRST_AUTO_ATTEMPT")
-        self.assertFalse(any(cmd[:2] == ["gh", "api"] for cmd in commands))
+        self.assertFalse(any("/attempts/" in cmd[2] for cmd in commands if cmd[:2] == ["gh", "api"]))
 
     def test_other_sport_lease_completion_enforces_global_cooldown(self):
         prior = [{"databaseId": 11, "headSha": "b" * 40, "status": "completed",
@@ -942,3 +956,40 @@ def test_gemini_auto_worker_rechecks_before_provider_invocation():
     assert "ref: ${{ github.sha }}" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "provider-recheck.json" in workflow
+
+
+class GeminiCompleteInventoryPaginationTests(unittest.TestCase):
+    def test_101_runs_requires_second_authenticated_page(self):
+        rows = [{"id": i, "run_attempt": 1, "head_sha": "a" * 40,
+                 "status": "completed", "conclusion": "success",
+                 "updated_at": "2026-10-29T00:00:00Z"} for i in range(1, 102)]
+        calls = []
+
+        def read(cmd):
+            calls.append(cmd[2])
+            page = int(cmd[2].split("page=")[-1])
+            return json.dumps({"total_count": len(rows),
+                               "workflow_runs": rows[(page - 1) * 100:page * 100]})
+
+        inventory = gemini.complete_gemini_run_inventory(
+            read, "gregoryharper84-ship-it/WOW-Dashboard")
+        self.assertEqual(len(inventory), 101)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(inventory[-1]["databaseId"], 101)
+
+    def test_changing_total_or_missing_page_is_fail_closed(self):
+        rows = [{"id": i, "run_attempt": 1, "head_sha": "a" * 40,
+                 "status": "completed", "conclusion": "success",
+                 "updated_at": "2026-10-29T00:00:00Z"} for i in range(1, 102)]
+        for bad in ("drift", "gap"):
+            def read(cmd):
+                page = int(cmd[2].split("page=")[-1])
+                if page == 1:
+                    return json.dumps({"total_count": 101, "workflow_runs": rows[:100]})
+                return json.dumps({
+                    "total_count": 102 if bad == "drift" else 101,
+                    "workflow_runs": rows[100:] if bad == "drift" else [],
+                })
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                gemini.complete_gemini_run_inventory(
+                    read, "gregoryharper84-ship-it/WOW-Dashboard")
