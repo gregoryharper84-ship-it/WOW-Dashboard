@@ -388,6 +388,61 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with patch.object(m, "gh", pages):
             self.assertTrue(m.prior_semantic_reject("a" * 40, "read"))
 
+    def test_prior_equivalent_diff_reject_is_sticky_after_new_non_force_commit(self):
+        target = {"pr": 2264, "head_sha": "a" * 40,
+                  "base_sha": "b" * 40, "diff_sha256": "d" * 64}
+        prior = {"name": m.CHECK_NAME, "conclusion": "failure",
+                 "app": {"id": m.QA_APP_ID},
+                 "output": {"title": "REJECT — semantic review",
+                            "summary": f"REJECT: PR #2264, SHA {'c' * 40}, provider x, base {'b' * 40}, diff {'d' * 64}, run 1/1."}}
+        def api(path, token):
+            if "/timeline?" in path:
+                return [{"event": "opened"}]
+            if "/pulls/2264/commits?" in path:
+                return [{"sha": "c" * 40}, {"sha": "a" * 40}]
+            if "/commits/" in path and "/check-runs?" in path:
+                assert "filter=all" in path
+                return {"total_count": 1, "check_runs": [prior]}
+            raise AssertionError(path)
+        with patch.object(m, "gh", side_effect=api):
+            self.assertTrue(m.prior_equivalent_pr_reject(target, "read"))
+        # A fresh diff can be independently challenged instead of inherited.
+        target["diff_sha256"] = "e" * 64
+        with patch.object(m, "gh", side_effect=api):
+            self.assertFalse(m.prior_equivalent_pr_reject(target, "read"))
+
+    def test_amended_commit_force_push_history_denies_even_when_prior_sha_orphaned(self):
+        target = {"pr": 2264, "head_sha": "a" * 40,
+                  "base_sha": "b" * 40, "diff_sha256": "d" * 64}
+        with patch.object(m, "gh", return_value=[
+            {"event": "opened"}, {"event": "head_ref_force_pushed"}
+        ]) as api:
+            with self.assertRaises(m.Hold) as cm:
+                m.prior_equivalent_pr_reject(target, "read")
+            self.assertEqual(str(cm.exception), "PR_FORCE_PUSH_REVIEW_HISTORY_HOLD")
+            self.assertIn("/issues/2264/timeline?", api.call_args.args[0])
+
+    def test_non_force_single_commit_app_pr_does_not_hold_without_reject(self):
+        target = {"pr": 2264, "head_sha": "a" * 40,
+                  "base_sha": "b" * 40, "diff_sha256": "d" * 64}
+        with patch.object(m, "gh", side_effect=[
+            [{"event": "opened"}], [{"sha": "a" * 40}]
+        ]):
+            self.assertFalse(m.prior_equivalent_pr_reject(target, "read"))
+
+    def test_unbounded_review_history_fails_closed(self):
+        target = {"pr": 2264, "head_sha": "a" * 40,
+                  "base_sha": "b" * 40, "diff_sha256": "d" * 64}
+        with patch.object(m, "gh", return_value=[{"event": "commented"}] * 100):
+            with self.assertRaises(m.Hold) as cm:
+                m.prior_equivalent_pr_reject(target, "read")
+            self.assertEqual(str(cm.exception), "PR_REVIEW_TIMELINE_UNBOUNDED")
+        with patch.object(m, "gh", side_effect=[
+            [{"event": "opened"}], [{"sha": "a" * 40}] * 9
+        ]):
+            with self.assertRaises(m.Hold):
+                m.prior_equivalent_pr_reject(target, "read")
+
     def test_manual_dispatch_requires_owner_and_exact_target(self):
         event = {"inputs": {"pr_number": "2254", "head_sha": "a" * 40}}
         with patch.dict(m.os.environ, {"GITHUB_ACTOR": "untrusted-user"}):
