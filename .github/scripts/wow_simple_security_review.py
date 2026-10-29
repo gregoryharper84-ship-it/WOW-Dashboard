@@ -387,7 +387,7 @@ def prior_semantic_reject(sha, read_token):
     if not read_token:
         raise Hold("REVIEW_CHECK_READ_TOKEN_MISSING")
     # The GitHub Checks API paginates; fail closed instead of overlooking older REJECT.
-    path = f"/commits/{sha}/check-runs?check_name=WOW%20Independent%20Security%20Review&per_page=100"
+    path = f"/commits/{sha}/check-runs?check_name=WOW%20Independent%20Security%20Review&filter=all&per_page=100"
     for page in range(1, 11):
         data = gh(path + f"&page={page}", read_token)
         if (type(data) is not dict or type(data.get("check_runs")) is not list
