@@ -136,3 +136,25 @@ def test_provider_worker_read_failure_never_grants_admission():
     result = module.admission("anthropic", 71, unavailable)
     assert result["status"] == "HELD"
     assert result["can_execute"] is False
+
+
+def test_no_provider_worker_run_provenance_cannot_be_treated_as_first_use():
+    import importlib.util
+    import json
+    import sys
+    src = ROOT / "artifacts/wow-engine/v17/engineering_provider_worker_admission.py"
+    sys.path.insert(0, str(src.parent))
+    spec = importlib.util.spec_from_file_location("post_lock_empty_inventory", src)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def not_indexed(_cmd):
+        return json.dumps({"total_count": 0, "workflow_runs": []})
+
+    denied = module.admission("openai", 71, not_indexed)
+    assert denied == {
+        "status": "HELD",
+        "code": "PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED",
+        "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
