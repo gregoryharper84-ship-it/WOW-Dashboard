@@ -112,8 +112,14 @@ def normalize_account_history_other_sport(
     # Limit the table to the selected sport's breakdown, not a foreign-sport
     # overlay or hidden second chart included in the accessibility dump.
     header = sport + " player props"
-    start = rendered_view_text.find(header)
-    _require(start >= 0, "PM_MULTISPORT_SECTION_MISSING")
+    first_breakdown = min(
+        [(i, other) for other in ("NBA", "NFL", "MLB", "WNBA")
+         for i in [rendered_view_text.find(other + " player props")] if i >= 0],
+        default=None,
+    )
+    _require(first_breakdown is not None and first_breakdown[1] == sport,
+             "PM_MULTISPORT_SECTION_MISSING")
+    start = first_breakdown[0]
     next_other = min(
         [i for other in ("NBA", "NFL", "MLB", "WNBA") if other != sport
          for i in [rendered_view_text.find(other + " player props", start + len(header))]
