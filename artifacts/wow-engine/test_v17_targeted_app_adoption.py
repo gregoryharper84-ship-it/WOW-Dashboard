@@ -198,3 +198,14 @@ def test_closed_app_review_slot_wakes_only_existing_protected_main_adopter():
     assert "engineering_targeted_adoption_guard.py" in write["run"]
     assert "engineering_authorized_adoption.py integrate" in write["run"]
     assert write["env"]["WOW_CAN_EXECUTE"] == "false"
+
+
+def test_auto_repair_discover_expression_stays_balanced():
+    """The protected workflow cannot wake any recovery jobs with malformed if syntax."""
+    data = yaml.safe_load(WF.read_text(encoding="utf-8"))
+    condition = data["jobs"]["discover"]["if"]
+    assert condition.count("(") == condition.count(")")
+    assert "github.event_name != 'pull_request_target'" in condition
+    assert "github.event.workflow_run.conclusion == 'success'" in condition
+    assert "wow-v17-independent-qa-check" in condition
+    assert "wow-v17-release-authority-check" in condition
