@@ -131,7 +131,14 @@ def request_json(url, *, token=None, data=None, headers=None, method=None):
                 or "not found" in words))
             if exc.code == 404 and native_missing and identifies_model:
                 raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
-        raise Hold("HTTP_" + str(exc.code)) from None
+        # Surface only a bounded endpoint CATEGORY and status in the QA
+        # receipt. Do not log the URL, provider error body, key or prompt.
+        # An unknown provider 404 is a HOLD, never eligible for fallback.
+        origin = ("GITHUB" if url.startswith("https://api.github.com/")
+                  else "ANTHROPIC" if url == "https://api.anthropic.com/v1/messages"
+                  else "GEMINI" if url.startswith("https://generativelanguage.googleapis.com/")
+                  else "UNTRUSTED")
+        raise Hold(origin + "_HTTP_" + str(exc.code)) from None
     except (URLError, TimeoutError):
         if not url.startswith("https://api.github.com/"):
             raise ProviderUnavailable("PROVIDER_TRANSPORT") from None
