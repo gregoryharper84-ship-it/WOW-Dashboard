@@ -70,7 +70,7 @@ def package(sport="NFL", stat="PASSING_YARDS"):
         "terminal_receipt": {
             "publisher": "V17_TERMINAL_REDUCER",
             "prediction_id": "test-prediction",
-            "decision": "HELD",
+            "decision": "FINAL_APPROVED",
             "receipt_id": "test-terminal",
             "can_execute": False,
         },
@@ -112,6 +112,7 @@ def test_synthetic_complete_package_never_self_certifies_or_publishes(sport, sta
     (("scorer_receipt","status"), "MODEL_UNAVAILABLE", "TRI_SPORT_GENUINE_SCORER_RECEIPT_MISSING"),
     (("scorer_receipt","model_probability"), 1.2, "TRI_SPORT_GENUINE_SCORER_RECEIPT_MISSING"),
     (("terminal_receipt","publisher"), "OTHER_SPECIALIST", "TRI_SPORT_TERMINAL_RECEIPT_MISSING"),
+    (("terminal_receipt","decision"), "HELD", "TRI_SPORT_TERMINAL_RECEIPT_MISSING"),
     (("terminal_receipt","can_execute"), True, "TRI_SPORT_TERMINAL_RECEIPT_MISSING"),
 ])
 def test_each_proof_failure_holds_typed_without_reranking(path, value, code):
