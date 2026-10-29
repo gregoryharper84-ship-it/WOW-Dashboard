@@ -127,7 +127,7 @@ def normalize_nfl_history_view(
     leading = section[:table_start]
     # Do not accidentally select the name embedded in "Track a bet on ...".
     selected_headers = list(re.finditer(
-        r"(?:^|\\n)\\s*" + re.escape(selected_player_name.strip()) + r"\\s*\\n",
+        r"(?:^|\n)\s*" + re.escape(selected_player_name.strip()) + r"\s*\n",
         leading,
     ))
     _require(bool(selected_headers), "PM_ACCOUNT_VIEW_IDENTITY_UNRESOLVED")
