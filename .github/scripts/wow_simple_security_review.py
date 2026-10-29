@@ -297,7 +297,9 @@ def prior_semantic_reject(sha, read_token):
     path = f"/commits/{sha}/check-runs?check_name=WOW%20Independent%20Security%20Review&per_page=100"
     for page in range(1, 11):
         data = gh(path + f"&page={page}", read_token)
-        if type(data) is not dict or type(data.get("check_runs")) is not list:
+        if (type(data) is not dict or type(data.get("check_runs")) is not list
+                or type(data.get("total_count")) is not int
+                or data["total_count"] < 0):
             raise Hold("PRIOR_REVIEW_CHECKS_INVALID")
         for run in data["check_runs"]:
             app = run.get("app") or {}
