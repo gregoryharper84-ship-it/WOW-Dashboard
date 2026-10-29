@@ -162,6 +162,11 @@ def latest_actual_provider_attempt(
                 or job.get("status") != "completed"
             ):
                 return held("GEMINI_PROVIDER_JOB_RECEIPT_UNVERIFIED")
+            # GitHub-native whole-job skip (e.g. protected-main admission
+            # rejects a non-main dispatch) definitively cannot spend Gemini.
+            # Do not let a skipped branch dispatch permanently poison routing.
+            if job.get("conclusion") == "skipped":
+                continue
             steps = job.get("steps")
             if not isinstance(steps, list):
                 return held("GEMINI_PROVIDER_STEP_RECEIPT_UNVERIFIED")
