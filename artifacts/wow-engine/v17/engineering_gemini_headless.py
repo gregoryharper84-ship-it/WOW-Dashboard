@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import argparse
+import os
 import json
 import re
 import subprocess
@@ -93,6 +94,86 @@ def recheck_auto_worker_provider(runs: Any, comparison: Any, current_sha: str,
         return held("GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
     return {"status": "ADMITTED", "code": "GEMINI_WORKER_COOLDOWN_EXPIRED",
             "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
+
+
+
+def recheck_auto_worker_github() -> dict[str, Any]:
+    """Canonical provider recheck after acquiring the shared Actions writer lock.
+
+    The workflow is the only owner of this invocation. Never trust an earlier
+    dispatcher route/canary, or classify unreadable GitHub history as healthy.
+    No GitHub write operations and no provider credentials are used here.
+    """
+    def held(code: str) -> dict[str, Any]:
+        return {"status": "HELD", "code": code, "can_execute": False,
+                "terminal_authority": MODEL_AUTHORITY}
+
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    if repo != "gregoryharper84-ship-it/WOW-Dashboard":
+        return held("GEMINI_WORKER_REPOSITORY_UNTRUSTED")
+    if not run_id.isdecimal() or int(run_id) <= 0 or not os.environ.get("GH_TOKEN"):
+        return held("GEMINI_WORKER_IDENTITY_UNVERIFIED")
+
+    def read_command(args: list[str]) -> str:
+        result = subprocess.run(args, check=False, capture_output=True,
+                                text=True, timeout=20)
+        if result.returncode != 0 or len(result.stdout) > 1024 * 1024:
+            raise ValueError("GEMINI_WORKER_GITHUB_EVIDENCE_UNVERIFIED")
+        return result.stdout.strip()
+
+    try:
+        current_sha = read_command(["git", "rev-parse", "HEAD"])
+        if not _SHA.fullmatch(current_sha):
+            return held("GEMINI_WORKER_CURRENT_SHA_INVALID")
+        raw = read_command([
+            "gh", "run", "list", "--repo", repo,
+            "--workflow", "wow-v17-gemini-engineering-worker.yml",
+            "--limit", "100",
+            "--json", "databaseId,headSha,status,conclusion,updatedAt",
+        ])
+        runs = json.loads(raw)
+        if not isinstance(runs, list) or len(runs) > 100:
+            return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+        previous = []
+        for entry in runs:
+            if not isinstance(entry, dict):
+                return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+            candidate_id = entry.get("databaseId")
+            if type(candidate_id) is not int or candidate_id <= 0:
+                return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+            if candidate_id == int(run_id):
+                continue
+            # In-flight predecessor or indeterminate provider state: do not
+            # consume the same grant from another lease in this interval.
+            if entry.get("status") in ("in_progress", "waiting", "requested"):
+                return held("GEMINI_WORKER_PREDECESSOR_NOT_TERMINAL")
+            if entry.get("status") == "completed":
+                previous.append(entry)
+            elif entry.get("status") not in ("queued", "pending"):
+                return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+        # A full page without a completed predecessor is ambiguous, not a
+        # fresh first-use grant. Do not assume missing history means success.
+        if len(runs) == 100 and not previous:
+            return held("GEMINI_WORKER_HISTORY_TRUNCATED")
+        if previous:
+            # The most recent completed provider attempt governs cooldown.
+            previous.sort(key=lambda row: (str(row.get("updatedAt") or ""),
+                                            row["databaseId"]), reverse=True)
+        selected = previous[:1]
+        comparison: dict[str, Any] = {}
+        if selected and selected[0].get("conclusion") == "failure":
+            failed_sha = selected[0].get("headSha")
+            if not isinstance(failed_sha, str) or not _SHA.fullmatch(failed_sha):
+                return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+            if failed_sha != current_sha:
+                comparison = json.loads(read_command([
+                    "gh", "api", f"repos/{repo}/compare/{failed_sha}...{current_sha}",
+                ]))
+        return recheck_auto_worker_provider(selected, comparison, current_sha)
+    except (OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return held("GEMINI_WORKER_GITHUB_EVIDENCE_UNVERIFIED")
+
 
 
 def select_incident(
@@ -383,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
     worker_recheck.add_argument("--runs-file", required=True)
     worker_recheck.add_argument("--comparison-file", required=True)
     worker_recheck.add_argument("--current-sha", required=True)
+    sub.add_parser("worker-auto-admit-github")
     changed = sub.add_parser("inspect-patch")
     changed.add_argument("--files-json", required=True)
     verify = sub.add_parser("verify-candidate")
@@ -422,6 +504,8 @@ def main(argv: list[str] | None = None) -> int:
                 json.loads(Path(args.comparison_file).read_text(encoding="utf-8")),
                 args.current_sha,
             )
+        elif args.action == "worker-auto-admit-github":
+            result = recheck_auto_worker_github()
         elif args.action == "inspect-patch":
             result = inspect_changed_paths(json.loads(Path(args.files_json).read_text(encoding="utf-8")))
         elif args.action == "validate-workspace":
