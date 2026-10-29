@@ -40,3 +40,17 @@ A repeated 2023 Week 1 call returned exactly 8,730 outcomes without duplicating 
 Normalize and independently verify pregame sporting features with chronological `feature_as_of < kickoff` before fitting. Keep settled outcomes from acting as pregame evidence; use time-forward splits and held-out calibration. Sport-specific fitted probability packages, validated calibration bounds, registered specialist selection and the `V17_TERMINAL_REDUCER` remain independent. `can_execute=false`.
 
 Cross-sport matrix: PropsMadness remains account-view research for NFL/NBA/MLB/WNBA only; real page checks for NBA/MLB/WNBA remain outstanding; recurring retention requires a permitted basis. NHL's official player boxscore adapter was merged in PR #2262, but a recurrent licensed source writer is not active.
+
+
+## Validated incremental schedule (same day)
+
+2026-10-29: After PR #2273 merged, database migration `wow_ncaaf_private_research_outcomes_daily_cron_20261029` applied. `pg_cron` job **#17**, `wow-v17-ncaaf-research-outcomes-daily`, schedule `45 14 * * *` UTC, active, created under database operator role `postgres`.
+
+- The source acquisition workflow already runs at 13:35 UTC. This DB-local 14:45 UTC research normalizer provides its own incremental post-ingestion follow-up without exposing bearer credentials or requiring GitHub Actions service_role secrets.
+- `wow_prop_history.refresh_next_ncaaf_outcome_week()` checks only CFBD `/games/players` snapshots that are `AVAILABLE`, `can_execute=false` and not yet normalized by the exact source snapshot id.
+- At most **one pending week per scheduled invocation**; the strict `normalize_ncaaf_player_week` owns all data, identity, chronology, source-hash and row-count integrity. A hold is an actual SQL job failure, not silently counted as a success.
+- An independent operator canary returned `NO_PENDING_PLAYER_WEEKS`, `new_outcome_rows=0`, all authority flags false.
+- Readback: `anon` and `authenticated` roles do not have EXECUTE on the refresh function; `service_role` does. It is in a private, non-exposed schema and is `SECURITY INVOKER`.
+- **The cron registration and no-pending manual canary are verified; the first future automatic cron execution is not yet observed.** Check `cron.job_run_details` following the next scheduled slot.
+
+No new player data or probabilities were fabricated. The real-data 205,144-row acceptance remains unchanged and non-executable.
