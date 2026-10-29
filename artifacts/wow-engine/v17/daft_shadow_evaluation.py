@@ -89,7 +89,8 @@ def settle_shadow_snapshot(snapshot: Mapping[str, Any],
     price = finite_number(snapshot.get("offer_decimal_odds"))
     quote = timestamp(snapshot.get("offer_quote_at"))
     entry = ({"contract": snapshot.get("contract"), "decimal_odds": price,
-              "quote_at": snapshot.get("offer_quote_at")} if price is not None else {})
+              "quote_at": snapshot.get("offer_quote_at"),
+              "event_start_at": snapshot.get("event_start_at")} if price is not None else {})
     close = settlement.get("closing_offer")
     clv = comparable_clv(entry, close) if isinstance(close, Mapping) else None
     actual_return = (price - 1.0 if result == "WIN" and price is not None and price > 1.0
