@@ -298,6 +298,7 @@
     },
     {
       "blockers": [
+        "CALIBRATION:ROW_CALIBRATION_NOT_PASS",
         "PUBLICATION:FORWARD_CERTIFICATION_UNPROVEN"
       ],
       "calibrated_lower_bound": 0.503638,
@@ -321,14 +322,14 @@
         "event_start_time_utc": null,
         "official_event_id": "2026_07_DAL_PHI"
       },
-      "exact_blocker": "FORWARD_CERTIFICATION_UNPROVEN",
+      "exact_blocker": "ROW_CALIBRATION_NOT_PASS",
       "feature_freshness": {
         "latest_prediction_at": "2026-10-26T20:22:35Z"
       },
-      "first_failing_stage": "PUBLICATION",
+      "first_failing_stage": "CALIBRATION",
       "github_main_sha": "68efe96256528de54f83ffc09816f298ef136342",
       "history_7d": null,
-      "hold_cause": "FORWARD_CERTIFICATION_UNPROVEN",
+      "hold_cause": "ROW_CALIBRATION_NOT_PASS",
       "market": "PLAYER_PROPS",
       "model_artifact": {
         "artifact_id": null,
@@ -345,6 +346,7 @@
       },
       "probability_status": "HELD_TYPED",
       "provenance_findings": [
+        "ROW_CALIBRATION_STATUS:PRECALIBRATION_SHRINKAGE",
         "ROW_FLAG_PUBLISHABLE_BUT_TERMINAL_NOT_PUBLISHED"
       ],
       "readiness": "hold",

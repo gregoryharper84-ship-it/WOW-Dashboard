@@ -137,6 +137,14 @@ def evaluate_route(route: Mapping[str, Any], env_blockers: Sequence[str], ev: Ma
         if gap is not None and gap < LOWER_GAP_FLOOR:
             findings.append("FORWARD_LOWER_BOUND_OVERCONFIDENT_WOULD_STILL_BLOCK_AT_MIN_N")
 
+    # Row-level calibration: a row still on shrinkage/pre-calibration (no fitted calibrator) is never acceptance-grade,
+    # whatever its forward-certification or terminal flags say (closes a fake-success path on prop routes).
+    for r in invoked:
+        if r.get("calibration_status") not in (None, "PASS"):
+            blockers.append(("CALIBRATION", "ROW_CALIBRATION_NOT_PASS"))
+            findings.append(f"ROW_CALIBRATION_STATUS:{r.get('calibration_status')}")
+            break
+
     # PUBLICATION. NOTE: the registry column `probability_publishable` is CHECK-constrained to false on the fitted
     # artifact tables BY DESIGN (registry != publication; verified live: wow_nfl_event_fitted_registry_not_probability_publication).
     # Publication is decided by the terminal reducer (active + promoted + publishing lifecycle + passing calibrator + forward
@@ -177,7 +185,7 @@ def evaluate_route(route: Mapping[str, Any], env_blockers: Sequence[str], ev: Ma
     if not blockers:
         status = "PROBABILITY_ACCEPTED"
     elif codes <= {"UNSUPPORTED_ROUTE_HOLD", *MODEL_FAILURES, "ACTIVE_CALIBRATOR_ABSENT", "FORWARD_CALIBRATION_INSUFFICIENT_N",
-                   "FORWARD_CERTIFICATION_UNPROVEN", "ARTIFACT_LIFECYCLE_NOT_PUBLICATION_ELIGIBLE", "NO_ROWS_IN_LATEST_RUN"}:
+                   "FORWARD_CERTIFICATION_UNPROVEN", "ARTIFACT_LIFECYCLE_NOT_PUBLICATION_ELIGIBLE", "NO_ROWS_IN_LATEST_RUN", "ROW_CALIBRATION_NOT_PASS"}:
         status = "HELD_TYPED"
     else:
         status = "REJECTED"

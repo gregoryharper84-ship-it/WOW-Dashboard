@@ -52,7 +52,9 @@ def test_real_capture_first_failing_stage_per_sport():
     assert (bp["first_failing_stage"], bp["exact_blocker"]) == ("MODEL", "MODEL_UNAVAILABLE")
     assert "ARTIFACTS_PRESENT_NONE_ACTIVE_PROMOTED" in bp["provenance_findings"] and bp["scorer_invocation"]["status"] == "NO_ROWS"
     fp = route(m, "NFL_PROPS")
-    assert (fp["first_failing_stage"], fp["exact_blocker"]) == ("PUBLICATION", "FORWARD_CERTIFICATION_UNPROVEN")
+    assert (fp["first_failing_stage"], fp["exact_blocker"]) == ("CALIBRATION", "ROW_CALIBRATION_NOT_PASS")
+    assert "PUBLICATION:FORWARD_CERTIFICATION_UNPROVEN" in fp["blockers"] and fp["probability_status"] == "HELD_TYPED"
+    assert "ROW_CALIBRATION_STATUS:PRECALIBRATION_SHRINKAGE" in fp["provenance_findings"]
     assert fp["scorer_invocation"]["status"] == "INVOKED" and fp["readiness"] == "hold"
 
 
@@ -183,3 +185,29 @@ def test_row_count_mismatch_and_schema_and_redaction_and_cli(tmp_path):
 def test_committed_sample_matrix_is_current():
     sample = Path(__file__).parent / "acceptance/v17-production-acceptance-matrix-20261029.json"
     assert json.loads(sample.read_text()) == mm.build_matrix(ev())
+
+
+def _all_clear(e):
+    e["render"]["worker"]["live_sha"] = e["render"]["engine"]["live_sha"]; e["database"]["production_binding"] = "PROVEN"
+
+
+def test_prop_route_on_precalibration_shrinkage_is_never_ready_even_if_every_other_signal_is_clear():
+    e = ev(); r = next(x for x in e["routes"] if x["route"] == "NFL_PROPS")["latest_run"]["rows"][0]
+    r.update(row_status="COMPLETED", rank_eligible=True, final_terminal="FINAL_APPROVED", forward_certification_status="PASS", code=None, bucket="COMPLETED")
+    _all_clear(e)
+    out = route(mm.build_matrix(e), "NFL_PROPS")
+    assert out["readiness"] == "hold" and "CALIBRATION:ROW_CALIBRATION_NOT_PASS" in out["blockers"]
+    r["calibration_status"] = "PASS"          # only a fitted, passing calibration clears it
+    assert route(mm.build_matrix(e), "NFL_PROPS")["readiness"] == "ready"
+
+
+@pytest.mark.parametrize("name", ["NBA_PROPS", "NBA_MONEYLINE", "NCAAF_MONEYLINE"])
+def test_fake_success_rows_on_routes_without_a_fitted_model_are_held(name):
+    e = ev(); rt = next(x for x in e["routes"] if x["route"] == name)
+    rt["latest_run"]["rows"] = [{"row_status": "COMPLETED", "rank_eligible": True, "final_terminal": "FINAL_APPROVED", "model_invoked": True,
+                                 "row_probability_publishable": True, "calibrated_probability": 0.7, "calibrated_lower_bound": 0.65,
+                                 "prediction_receipt_found": True, "prediction_id": "p", "official_event_id": "x",
+                                 "forward_certification_status": "PASS", "calibration_status": "PASS"}]
+    _all_clear(e)
+    out = route(mm.build_matrix(e), name)
+    assert out["readiness"] == "hold" and "MODEL:MODEL_UNAVAILABLE" in out["blockers"] and out["probability_status"] != "PROBABILITY_ACCEPTED"

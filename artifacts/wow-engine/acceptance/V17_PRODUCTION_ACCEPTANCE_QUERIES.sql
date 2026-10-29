@@ -41,3 +41,35 @@ select sport, controlling_specialist, model_artifact_lifecycle_state, calibratio
 
 -- Q8. NFL forward calibration health (certification gate).
 select * from public.wow_nfl_forward_calibration_health order by generated_at desc limit 1;
+
+-- Q9. Agent-runtime tables the #2259 gate depends on (observed 2026-10-29: all 0 -> no NFL producer writes them).
+select 'agent_runs' t, count(*) from public.wow_agent_runs
+union all select 'run_candidates', count(*) from public.wow_agent_run_candidates
+union all select 'terminal_decisions', count(*) from public.wow_agent_terminal_decisions
+union all select 'candidate_payload_has_event_prediction_id', count(*) from public.wow_agent_run_candidates where candidate_payload ? 'event_prediction_id';
+
+-- Q10. Where the NFL moneyline terminal is actually persisted: daily-run row detail (detail.result.*). `upstream_terminal_label`
+-- is a PRE-reducer value: 42 rows carry upstream FINAL_APPROVED but final terminal MODEL_QUALIFIED_HOLD / publishable=false.
+select row_status, detail->'result'->>'terminal_label' terminal_label, detail->'result'->>'terminal_ceiling' terminal_ceiling,
+       detail->'result'->>'upstream_terminal_label' upstream, detail->'result'->>'probability_publishable' pp, detail->'result'->>'rank_eligible' rank_eligible,
+       count(*) n, min(captured_at)::date first_seen, max(captured_at)::date last_seen, count(*) filter (where detail->'result'->>'event_prediction_id' is not null) with_epid
+  from public.wow_v17_daily_run_row_detail where lane='MONEYLINE' and identity->>'sport'='NFL' group by 1,2,3,4,5,6 order by n desc;
+
+-- Q11. Genuine end-to-end approved fixtures (observed: 153 rows / 31 events, 2026-09-30..10-08; all 153 join to a row-publishable prediction on an
+-- active+promoted CHAMPION artifact with matching official_event_id) and the supersession race (observed: 84 of 153 later superseded by a non-approved row).
+with fa as (select d.run_id,d.row_index,d.captured_at,d.identity->>'official_event_id' oeid,d.detail->'result'->>'event_prediction_id' epid
+  from public.wow_v17_daily_run_row_detail d where d.lane='MONEYLINE' and d.identity->>'sport'='NFL' and d.row_status='COMPLETED'
+   and d.detail->'result'->>'terminal_label'='FINAL_APPROVED' and d.detail->'result'->>'terminal_ceiling'='FINAL_APPROVED'
+   and d.detail->'result'->>'probability_publishable'='true' and d.detail->'result'->>'rank_eligible'='true' and d.can_execute=false)
+select count(*) fa_rows, count(*) filter (where p.model_probability_publishable) joined_pp_row, count(*) filter (where a.artifact_id is not null) joined_champion,
+       count(*) filter (where p.official_event_id=fa.oeid) identity_match,
+       count(*) filter (where exists (select 1 from public.wow_v17_daily_run_row_detail l where l.lane='MONEYLINE' and l.identity->>'sport'='NFL'
+            and l.identity->>'official_event_id'=fa.oeid and l.captured_at>fa.captured_at and coalesce(l.detail->'result'->>'terminal_label','HELD')<>'FINAL_APPROVED')) superseded_by_later_nonapproved,
+       count(distinct fa.oeid) distinct_events, max(p.event_start_time_utc) latest_event_start
+  from fa left join public.wow_nfl_event_predictions p on p.event_prediction_id::text=fa.epid
+  left join public.wow_nfl_event_fitted_model_artifacts a on a.artifact_id=p.model_artifact_id and a.active and a.promoted and a.lifecycle_state='CHAMPION';
+
+-- Q12. NBA/WNBA team-event specialist registry (observed: NBA 90 artifacts, 6992 train / 1755 holdout, best Brier 0.2268, none active/promoted/certified).
+select sport, model_family, active, promoted, (certified_at is not null) certified, count(*) n, max(training_row_count) train_n, max(holdout_row_count) holdout_n,
+       round(min(holdout_brier)::numeric,4) min_brier, max(created_at)::date latest
+  from public.wow_basketball_team_event_model_artifacts group by 1,2,3,4,5 order by 1;
