@@ -181,6 +181,17 @@ def latest_actual_provider_attempt(
                 continue  # Authenticated no-spend receipt; do not reset cooldown.
             if outcome not in ("success", "failure"):
                 return held("GEMINI_PROVIDER_STEP_OUTCOME_UNVERIFIED")
+            job_outcome = job.get("conclusion")
+            if job_outcome not in ("success", "failure", "cancelled", "timed_out"):
+                return held("GEMINI_PROVIDER_JOB_OUTCOME_UNVERIFIED")
+            # CLI transport success is not proof of a healthy canary: the
+            # candidate inspection, tests or security fence may fail later.
+            # Retain provider-spend timestamp, but classify a failed job as
+            # FAILED, requiring a reviewed runtime change before another try.
+            effective_outcome = (
+                "success" if outcome == "success" and job_outcome == "success"
+                else "failure"
+            )
             completed_at = cli_steps[0].get("completed_at") or job.get("completed_at")
             if not isinstance(completed_at, str):
                 return held("GEMINI_PROVIDER_ATTEMPT_TIME_UNVERIFIED")
@@ -195,7 +206,7 @@ def latest_actual_provider_attempt(
                 return held("GEMINI_PROVIDER_ATTEMPT_SHA_UNVERIFIED")
             actual.append((when, ident, number, {
                 "databaseId": ident, "run_attempt": number, "headSha": source_sha,
-                "status": "completed", "conclusion": outcome,
+                "status": "completed", "conclusion": effective_outcome,
                 "updatedAt": completed_at,
             }))
     if current_run_id is not None and current_run_id not in seen:
