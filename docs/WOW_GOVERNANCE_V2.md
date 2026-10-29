@@ -6,6 +6,53 @@ Keep Engineering and Security as distinct principals. Engineering opens a PR, th
 
 The QA reviewer independently issues one `WOW Independent Security Review` GitHub check against the live PR **head SHA**, using the existing separate QA App (ID `5245832`), with `checks:write` only. Its artifact records the reviewer provider, findings, run ID/attempt, PR/head SHA, diff digest, and negative/trading-safe disposition. This GitHub check is the source of truth; no separate QA → certifier → receipt → QA handshake is involved.
 
+
+## Three-stage security reviewer with authenticated owner recovery
+
+The only semantic-review sequence is **Claude (primary) -> Gemini (fallback on provider
+unavailability only) -> repository owner as a real human third reviewer**. No provider
+switchover is allowed after a substantive REJECT, malformed output, incomplete evidence,
+policy failure, stale identity, or security finding. A missing key, typed quota error
+or provider transport/auth outage is availability; each attempt is recorded.
+
+Owner recovery is not an automatic approval. After *both* providers are unavailable,
+the QA App evaluates a signed-in GitHub `APPROVED` pull-request review by
+`gregoryharper84-ship-it`, attached to the exact adopted **head SHA**, with an
+explicit body binding the PR number, base SHA and complete diff SHA-256:
+
+`WOW_SECURITY_FALLBACK_PASS PR=<number> HEAD=<40-char-SHA> BASE=<40-char-SHA> DIFF_SHA256=<64-char-digest>`
+
+An owner approval without that exact binding is **not** a security review. The
+workflow also checks original source PR lineage, source commit, changed-file
+blob identities, and the human/source-author separation. **An owner who authored the
+original source is NOT an independent reviewer**, even when an Engineering App
+copies the files into its own PR. For that case the check fails closed and a
+different authenticated Security/Architect is mandatory. The owner may still
+authorize release separately but cannot manufacture an independent semantic PASS.
+This applies to bootstrap PR #2254 (original owner source #2251).
+
+A genuine owner-reviewed, source-author-independent PASS can be published by
+the separate QA App; the owner cannot directly forge the QA check. Any absent,
+stale, dismissed or malformed review, untrusted file provenance, or missing
+identity is a typed HOLD. A missing review produces GitHub `action_required`,
+never `success`; submission/dismissal triggers an exact-head re-evaluation.
+This is **manual fallback**, not an automatic third model or permission to
+place orders, self-approve, merge or deploy.
+
+For Class A routine repairs keep the existing deterministic CI/release
+requirements. Class B trust roots and probability-adjacent changes need an
+independent reviewer; Class C probability changes need the full governed
+validation process. No owner fallback can waive those other gates.
+
+**One-time bootstrap:** obtain a genuine external distinct-principal review
+of the reviewer installation itself before protected merge; then configure
+the QA App and providers and canary-test both the PASS and no-review
+failure path, pin `WOW Independent Security Review` in ruleset #24907422,
+enable strict base synchronization, and retire the redundant legacy loops
+only after demonstrated enforcement. All GitHub ruleset/admin/secret
+operations require the authorized administrator; documentation is not an
+automatic ruleset mutation.
+
 ## Protected transition — must be completed before retiring legacy
 
 1. A distinct, authenticated Security/Architect reviewer validates this new trust-root migration itself through the existing authorized path. Neither an owner's self-review nor a deterministic CI PASS is that independent review.
