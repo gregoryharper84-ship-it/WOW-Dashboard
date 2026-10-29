@@ -50,7 +50,10 @@ def plan_nfl_week_dates(selection: Mapping[str,Any], inventory: SourceInventory,
         if f.start_utc <= trusted_now:
             return hold("NFL_WEEK_KICKOFF_NOT_FUTURE")
         dates[f.start_utc.astimezone(ZoneInfo("America/Chicago")).date().isoformat()].append(eid)
-    if len(dates)>9 or any(len(v)>32 for v in dates.values()):
+    # The real DailySnapshotRequest contract caps max_team_events at 12.
+    # Keep 13+ across the WEEK; refuse overfull single-date batches instead
+    # of sending invalid 422 payloads or silently truncating expected games.
+    if len(dates)>9 or any(len(v)>12 for v in dates.values()):
         return hold("NFL_WEEK_BATCH_LIMIT")
     return {"status":"DATE_PLAN_READY_NOT_ACTION_ACCEPTED","dates":[{"requested_slate_date":d,"expected_event_ids":sorted(v)} for d,v in sorted(dates.items())],"expected_event_ids":sorted(ids),"source_payload_sha256":inventory.payload_sha256,"can_execute":False,"probability_publishable":False,"global_terminal_authority":TERMINAL}
 
@@ -75,7 +78,7 @@ def reconcile_nfl_week_snapshots(plan: Mapping[str,Any], results: Mapping[str,Ma
         day=batch.get("requested_slate_date")
         ids=batch.get("expected_event_ids")
         if (not isinstance(day,str) or len(day)!=10
-                or not isinstance(ids,list) or not 1<=len(ids)<=32
+                or not isinstance(ids,list) or not 1<=len(ids)<=12
                 or any(not isinstance(e,str) or not e.strip() for e in ids)
                 or len(ids)!=len(set(ids))):
             return hold("NFL_WEEK_PLAN_EVENT_COVERAGE_INVALID")
