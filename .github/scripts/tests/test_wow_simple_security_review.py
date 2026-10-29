@@ -494,6 +494,44 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 m.trusted_content_history(m.content_fingerprint(target), "qa")
         self.assertEqual(str(cm.exception), "PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
 
+    def test_provider_reject_persists_even_if_pr_moves_before_reread(self):
+        import json
+        target = {**self._ledger_target(), "diff_sha256": "d" * 64,
+                  "author": m.OWNER_LOGIN}
+        event = {"pull_request": {"number": target["pr"],
+                                  "head": {"sha": target["head_sha"]}}}
+        env = {
+            "GITHUB_REPOSITORY": m.REPO,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "pull_request_target",
+            "GITHUB_EVENT_PATH": "/tmp/nonexistent-review-event.json",
+            "GITHUB_RUN_ID": "120", "GITHUB_RUN_ATTEMPT": "1",
+            "GH_READ_TOKEN": "read", "QA_APP_TOKEN": "qa",
+            "WOW_QA_REVIEW_ANTHROPIC_API_KEY": "fake",
+            "WOW_QA_REVIEW_GEMINI_API_KEY": "",
+        }
+        with patch.dict(m.os.environ, env):
+            with patch.object(m.Path, "read_text", return_value=json.dumps(event)):
+                with patch.object(m.Path, "write_text", return_value=0):
+                    with patch.object(m, "capture", return_value=target):
+                        with patch.object(m, "prior_semantic_reject", return_value=False):
+                            with patch.object(m, "reserve_content_review", return_value={
+                                    "id": 42, "digest": m.content_fingerprint(target)}):
+                                with patch.object(m, "semantic_review", return_value=(
+                                        "REJECT",
+                                        {"source_review": "FAIL", "security_review": "FAIL",
+                                         "probability_integrity_review": "PASS",
+                                         "findings": ["provenance violation"]},
+                                        "anthropic-claude-api", [])):
+                                    with patch.object(m, "gh",
+                                                      side_effect=AssertionError("PR reread must not erase REJECT")):
+                                        with patch.object(m, "commit_content_review") as saved:
+                                            with patch.object(m, "publish_check") as published:
+                                                with self.assertRaises(SystemExit):
+                                                    m.main()
+                                                self.assertEqual(saved.call_args.args[1]["decision"], "REJECT")
+                                                self.assertEqual(published.call_args.args[1]["decision"], "REJECT")
+
     def test_review_client_denies_patch_to_anything_except_qa_check_run(self):
         for url in ("https://api.anthropic.com/v1/messages",
                     "https://api.github.com/repos/" + m.REPO + "/pulls/2269",
