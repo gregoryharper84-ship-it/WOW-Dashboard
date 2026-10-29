@@ -5,6 +5,26 @@ name: wow-v17-simple-security-review
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+    # Stabilization mode: ordinary Class A source repairs use the three
+    # existing required regression checks, not a redundant reviewer with an
+    # unavailable provider. Security and release trust roots still trigger
+    # independent review automatically; manual exact-PR dispatch is retained.
+    paths:
+      - '.github/**'
+      - '.agents/**'
+      - '.claude/**'
+      - '.cursor/**'
+      - 'CODEOWNERS'
+      - 'artifacts/wow-engine/v17/*governance*'
+      - 'artifacts/wow-engine/v17/*release*'
+      - 'artifacts/wow-engine/v17/*security*'
+      - 'artifacts/wow-engine/v17/*writer*'
+      - 'artifacts/wow-engine/v17/*qa*'
+      - 'artifacts/wow-engine/v17/independent_*'
+      - 'artifacts/wow-engine/**/migrations/**'
+      - 'supabase/migrations/**'
+      - 'docs/WOW_GOVERNANCE_V2.md'
+      - 'docs/WOW_STABILITY_FIRST_MINIMUM_GOVERNANCE.md'
   workflow_dispatch:
     inputs:
       pr_number:
