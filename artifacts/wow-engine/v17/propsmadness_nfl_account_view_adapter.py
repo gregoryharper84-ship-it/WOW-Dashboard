@@ -140,7 +140,6 @@ def normalize_nfl_history_view(
             raise AccountViewHold("PM_ACCOUNT_VIEW_ROW_INVALID") from exc
         _require(
             bool(re.fullmatch(r"(vs|at)\s+\S.{1,90}", opponent))
-            and game_date <= capture.date()
             and bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", comparison_text)),
             "PM_ACCOUNT_VIEW_ROW_INVALID",
         )
@@ -154,6 +153,7 @@ def normalize_nfl_history_view(
             actual = None
             disposition = "UPCOMING_NOT_HISTORICAL"
         else:
+            _require(game_date <= capture.date(), "PM_ACCOUNT_VIEW_ROW_INVALID")
             _require(side_text in {"Over", "Under", "Push"}
                      and bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", result_text)),
                      "PM_ACCOUNT_VIEW_ROW_INVALID")
