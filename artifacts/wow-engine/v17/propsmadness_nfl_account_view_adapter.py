@@ -159,6 +159,9 @@ def normalize_nfl_history_view(
                      "PM_ACCOUNT_VIEW_ROW_INVALID")
             actual = float(result_text)
             _require(0 <= actual < 2000, "PM_ACCOUNT_VIEW_ROW_INVALID")
+            expected_side = ("Over" if actual > comparison_line
+                             else "Under" if actual < comparison_line else "Push")
+            _require(side_text == expected_side, "PM_ACCOUNT_VIEW_ROW_INVALID")
             disposition = "HISTORICAL_OUTCOME_REQUIRES_OFFICIAL_VERIFICATION"
         rows.append({
             "game_date": game_date.isoformat(),
