@@ -193,6 +193,9 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_REVIEW_CANARY_TRUST_ROOT` | independent QA canary | Trust-root changes are not eligible for the ordinary inert canary path. | N/A |
 | `QA_DECISION_INVARIANT_VIOLATED` | independent QA | A QA decision file claimed merge/release or execution authority; nothing published. | N/A |
 | `QA_CHECK_PUBLISH_FAILED` | independent QA | Creating the QA check run with the QA App token failed. | N/A |
+| `QA_PUBLISH_BASE_EVIDENCE_MISSING` | independent QA final publication | Active independent review lacks an authenticated expected base SHA immediately before check publication; fail closed with no success check. | N/A |
+| `QA_PUBLISH_LIVE_PR_UNAVAILABLE` | independent QA final publication | The read-only fresh PR identity query failed immediately before a successful check would be published; fail closed. | N/A |
+| `QA_PUBLISH_HEAD_OR_BASE_MOVED` | independent QA final publication | Fresh live PR is closed, merged, foreign, or its head/base differs from exact captured identity; refuse successful QA check publication. | N/A |
 | `QA_REVIEW_EXECUTION_FAILED` | independent QA | Review capture, provider, receipt, or decision execution failed after an exact target was resolved; the QA App publishes a failure and a run-scoped outcome artifact is retained. Suffixed with the failed step. | N/A |
 | `QA_EVIDENCE_INCOMPLETE` | independent QA | An evidence input was unreadable, truncated, or malformed (repo, PR, files, check runs, reviews); suffixed with the input. For changed files, both rename destination and `previous_filename` (source) are evaluated; a missing/invalid rename origin emits `QA_EVIDENCE_INCOMPLETE:FILES_RENAME_ORIGIN_MISSING`, invalid names emit `...:FILES_PATH_INVALID`, and rename origins cannot mask `...:FILES_TRUNCATED`. | N/A |
 | `QA_HEAD_INVALID` | independent QA | Expected or current head is not a 40-hex SHA. | N/A |
