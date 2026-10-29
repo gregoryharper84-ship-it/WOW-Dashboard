@@ -224,12 +224,12 @@ def read_provider_history_github() -> dict[str, Any]:
             "gh", "run", "list", "--repo", repo,
             "--workflow", "wow-v17-gemini-engineering-worker.yml",
             "--limit", "100",
-            "--json", "databaseId,headSha,status,conclusion,updatedAt",
+            "--json", "databaseId,attempt,headSha,status,conclusion,updatedAt",
         ]))
         return latest_actual_provider_attempt(
-            runs, lambda ident: json.loads(read([
+            runs, lambda ident, attempt: json.loads(read([
                 "gh", "api",
-                f"repos/{repo}/actions/runs/{ident}/jobs?per_page=100",
+                f"repos/{repo}/actions/runs/{ident}/attempts/{attempt}/jobs?per_page=100",
             ])),
         )
     except (OSError, TypeError, ValueError, subprocess.TimeoutExpired,
@@ -251,9 +251,14 @@ def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, A
 
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     run_id = os.environ.get("GITHUB_RUN_ID", "")
+    run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    if os.environ.get("GITHUB_REF") != "refs/heads/main":
+        return held("GEMINI_WORKER_UNPROTECTED_DISPATCH_REF")
     if repo != "gregoryharper84-ship-it/WOW-Dashboard":
         return held("GEMINI_WORKER_REPOSITORY_UNTRUSTED")
-    if not run_id.isdecimal() or int(run_id) <= 0 or not os.environ.get("GH_TOKEN"):
+    if (not run_id.isdecimal() or int(run_id) <= 0
+            or not run_attempt.isdecimal() or not 1 <= int(run_attempt) <= 10
+            or not os.environ.get("GH_TOKEN")):
         return held("GEMINI_WORKER_IDENTITY_UNVERIFIED")
 
     def read_command(args: list[str]) -> str:
@@ -276,18 +281,19 @@ def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, A
             "gh", "run", "list", "--repo", repo,
             "--workflow", "wow-v17-gemini-engineering-worker.yml",
             "--limit", "100",
-            "--json", "databaseId,headSha,status,conclusion,updatedAt",
+            "--json", "databaseId,attempt,headSha,status,conclusion,updatedAt",
         ])
         runs = json.loads(raw)
         if not isinstance(runs, list) or len(runs) > 100:
             return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
         history = latest_actual_provider_attempt(
             runs,
-            lambda candidate_id: json.loads(read_command([
+            lambda candidate_id, attempt: json.loads(read_command([
                 "gh", "api",
-                f"repos/{repo}/actions/runs/{candidate_id}/jobs?per_page=100",
+                f"repos/{repo}/actions/runs/{candidate_id}/attempts/{attempt}/jobs?per_page=100",
             ])),
             current_run_id=int(run_id),
+            current_run_attempt=int(run_attempt),
         )
         if history["status"] != "VERIFIED_PROVIDER_HISTORY":
             return held(history["code"])
