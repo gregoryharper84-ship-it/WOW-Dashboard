@@ -1,6 +1,39 @@
 # WOW Stability-First Governance — temporary minimum (proposed)
 Date: 2026-10-29 | Scope: engineering delivery, not probability governance | Status: review candidate
 
+## The only release decision tree during stabilization
+
+```text
+PR opened
+  |
+  +-- Ordinary Class A change (no security / probability impact)?
+  |     -> Three existing mandatory regression checks -> authorized merge
+  |
+  +-- Class B protected / probability-adjacent change?
+  |     -> Same three checks + ONE authenticated independent security decision
+  |        -> authorized merge; REJECT / unknown / provider outage = HOLD
+  |
+  +-- Class C probability-producing change?
+        -> governed challenger + replay / holdout / calibration validation
+           -> independent authorization -> protected merge
+
+After any authorized merge: deploy -> read back exact LIVE main SHA ->
+real scoring + persistence + terminal reconciliation -> SIRT independent verify.
+```
+
+There are **no mandatory human approval counts** in the current GitHub ruleset.
+Do **not** treat optional `HTTP_404`, old certifier artifacts or skipped
+workflow statuses as required Class A checks. Do **not** turn a genuine Class B
+security HOLD into an approval. The Class B security decision can be automated
+under the separately credentialed existing QA App; no second human account is
+necessary once the trust-root bootstrap is independently authorized.
+
+**Deferred until the model is stable:** elaborate governance artifact chains,
+repeated certifiers, duplicate polling, extra periodic certification, and
+optional provider-retry complexity. They are diagnostic inputs, not additional
+branch-required checks. Retire their code only after proving no authenticated
+QA/Release workflow still consumes it.
+
 ## Goal
 Restore and stabilize NFL, NBA and NCAAF model delivery without a recursive approval chain. The owner is one human; routine repairs must not require a second human account, Copilot credits or a maze of certifier receipts.
 
