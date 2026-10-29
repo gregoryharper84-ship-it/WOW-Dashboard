@@ -38,3 +38,11 @@ For a chart displaying today's selected threshold beside previous results:
 `cd artifacts/wow-engine && python -m pytest -q tests/test_propsmadness_other_sports_account_view_adapter.py tests/test_propsmadness_nfl_account_view_adapter.py`
 
 Source tree and regressions remain independent of `V17_TERMINAL_REDUCER`. No wager or live execution actions are added; `can_execute=false`.
+
+## Verified isolated staging database, 2026-10-29
+
+Connected Supabase project: `wow-engine-validation` (`iczfhsmjrrafhvcpmqhr`). A separately recorded migration `wow_prop_history_research_outcome_staging_20261029` was successfully applied. The new table is `wow_prop_history.research_outcome_snapshots`. Its readback returned **zero rows**, RLS enabled, no `anon`/`authenticated` grants and only `SELECT, INSERT` for `service_role`.
+
+The table's rows require an explicit rights-receipt ID, a nonempty source identifier, a canonical SHA-256 digest and sport/game/stat identity, and fail closed if the record attempts to claim model-training eligibility, verified historic market lines, probability publication or execution. These database constraints are additional staging protections, not independent proof that a rights receipt is genuine. Write admission must continue to check independent source entitlement before any ingestion.
+
+**This is storage infrastructure only.** It does not contain an authenticated PropsMadness corpus, does not create a service writer, does not copy cookies and does not make any existing chart comparison a historical quote. No production scoring schema was changed.
