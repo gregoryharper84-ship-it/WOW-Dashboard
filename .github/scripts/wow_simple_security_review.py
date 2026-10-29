@@ -259,7 +259,7 @@ def main():
         raise Hold("READ_TOKEN_MISSING")
     target = capture(pr_number, expected_sha, read_token)
     receipt = {"schema_version": 1, "repository": REPO, "pr_number": pr_number,
-               "head_sha": target["head_sha"], "diff_sha256": target["diff_sha256"],
+               "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
                "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
                "decision": "HOLD", "reviewer_identity": "none", "can_execute": False}
     try:
