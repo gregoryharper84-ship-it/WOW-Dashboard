@@ -61,6 +61,56 @@ def test_nfl_publishable_specialist_probability_is_resolved_without_scout_probab
     assert cur.calls[0][1][0] == "NFL:espn-401872931"
 
 
+def test_nfl_lookup_enforces_fitted_artifact_publication_and_exact_identity_join():
+    cur = FakeCursor(None)
+    result = lookup_governed_probability(cur, _candidate())
+    sql, params = cur.calls[0]
+    assert "join public.wow_nfl_event_fitted_model_artifacts as artifact" in sql
+    assert "artifact.artifact_id=p.model_artifact_id" in sql
+    assert "artifact.probability_publishable=true" in sql
+    assert "artifact.can_execute=false" in sql
+    assert "p.model_probability_publishable=true" in sql
+    assert "p.event_key=%s" in sql
+    assert params[0] == "NFL:espn-401872931"
+    assert result["governed_probability"] is None
+    assert result["probability_publishable"] is False
+
+
+def test_unpublished_fitted_artifact_row_is_never_displayed():
+    # A database JOIN excludes an otherwise row-publishable prediction when
+    # the referenced fitted artifact is unpublished. No probability substitution.
+    class ArtifactAwareCursor(FakeCursor):
+        def fetchone(self):
+            sql, _ = self.calls[-1]
+            if ("artifact.probability_publishable=true" in sql
+                    and self.artifact_publishable is False):
+                return None
+            return self.row
+
+    cur = ArtifactAwareCursor((
+        "Denver Broncos", 0.5796689600932923, 0.523750876984715,
+        True, "NFL_TEAM_EVENT_V1", datetime(2026, 9, 14, 20, 40, tzinfo=timezone.utc)
+    ))
+    cur.artifact_publishable = False
+    display = _display_row(cur, _candidate())
+    assert display["probability"] is None
+    assert display["governed_probability"] is None
+    assert display["probability_display"] == "—"
+    assert display["probability_publishable"] is False
+    assert display["can_execute"] is False
+
+
+def test_unavailable_artifact_ledger_fails_closed_and_never_derives_probability():
+    class QueryFailureCursor:
+        def execute(self, sql, params):
+            raise RuntimeError("artifact ledger unavailable")
+
+    result = lookup_governed_probability(QueryFailureCursor(), _candidate())
+    assert result["governed_probability"] is None
+    assert result["probability_publishable"] is False
+    assert result["specialist_status"] == "SPECIALIST_LEDGER_UNAVAILABLE"
+
+
 def test_board_row_keeps_legacy_scout_probability_null_and_formats_governed_score_beside_pick():
     cur = FakeCursor((
         "Denver Broncos",
