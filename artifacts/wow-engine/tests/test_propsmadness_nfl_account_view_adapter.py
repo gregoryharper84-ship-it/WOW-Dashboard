@@ -113,3 +113,26 @@ def test_account_view_is_not_public_scraper_or_password_export():
     assert result["source_page_without_credentials"] == URL
     assert result["account_authentication_independently_attested"] is False
     assert result["view_table_sha256"] and len(result["view_table_sha256"]) == 64
+
+
+
+def test_future_upcoming_row_is_not_mistaken_for_a_historical_result():
+    upcoming = ("<tr><th>Nov 1, 2026</th><td>at New York Jets</td>"
+                "<td>—</td><td>252.5</td><td>Upcoming</td></tr>")
+    r = run(view(upcoming))
+    assert r["completed_game_rows"] == 0 and r["upcoming_rows"] == 1
+    assert r["rows"][0]["historical_closing_line"] is None
+
+
+def test_inconsistent_chart_side_is_rejected_even_though_not_historical_line():
+    bad = ("<tr><th>Oct 25, 2026</th><td>vs Tampa Bay Buccaneers</td>"
+           "<td>220</td><td>252.5</td><td>Over</td></tr>")
+    with pytest.raises(AccountViewHold, match="PM_ACCOUNT_VIEW_ROW_INVALID"):
+        run(view(bad))
+
+
+def test_future_completed_result_is_rejected_as_time_leakage():
+    bad = ("<tr><th>Nov 1, 2026</th><td>at New York Jets</td>"
+           "<td>320</td><td>252.5</td><td>Over</td></tr>")
+    with pytest.raises(AccountViewHold, match="PM_ACCOUNT_VIEW_ROW_INVALID"):
+        run(view(bad))
