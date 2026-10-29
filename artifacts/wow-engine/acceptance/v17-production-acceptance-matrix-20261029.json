@@ -1,6 +1,6 @@
 {
   "can_execute": false,
-  "captured_at": "2026-10-29T13:40:00Z",
+  "captured_at": "2026-10-29T14:55:00Z",
   "dry_run_only": true,
   "environment_blockers": [
     "RENDER_WEB_WORKER_SHA_MISMATCH",
@@ -14,7 +14,7 @@
     {
       "blockers": [
         "CALIBRATION:FORWARD_CALIBRATION_INSUFFICIENT_N",
-        "PUBLICATION:ARTIFACT_NOT_CERTIFIED_FOR_PUBLICATION",
+        "PUBLICATION:CONSUMER_DISPLAYS_PROBABILITY_FOR_NON_PUBLISHED_TERMINAL",
         "PUBLICATION:FORWARD_CERTIFICATION_UNPROVEN"
       ],
       "calibrated_lower_bound": 0.7559583737198615,
@@ -52,7 +52,7 @@
         "source_snapshot_timestamp": "2026-10-28T18:25:40.108085+00:00"
       },
       "first_failing_stage": "CALIBRATION",
-      "github_main_sha": "40efaa4156d963b250354df45fadcb703c0d850a",
+      "github_main_sha": "68efe96256528de54f83ffc09816f298ef136342",
       "history_7d": {
         "latest_run_nfl_rows_by_code": {
           "LLP_EVENT_GOVERNANCE_NOT_PROVEN": 12
@@ -74,14 +74,14 @@
         "found": true,
         "prediction_id": "f155c7f0-2a40-4e6b-b883-16f1b4711454"
       },
-      "probability_status": "HELD_TYPED",
+      "probability_status": "REJECTED",
       "provenance_findings": [
-        "ARTIFACT_ROW_PUBLISHABILITY_MISMATCH",
-        "CONSUMER_TRUSTS_ROW_FLAG_ONLY:scout_governed_probability_lookup._nfl",
-        "FORWARD_LOWER_BOUND_OVERCONFIDENT_WOULD_STILL_BLOCK_AT_MIN_N"
+        "CONSUMER_IGNORES_TERMINAL:scout_governed_probability_lookup._nfl",
+        "FORWARD_LOWER_BOUND_OVERCONFIDENT_WOULD_STILL_BLOCK_AT_MIN_N",
+        "ROW_FLAG_PUBLISHABLE_BUT_TERMINAL_NOT_PUBLISHED"
       ],
       "readiness": "hold",
-      "render_engine_live_sha": "40efaa4156d963b250354df45fadcb703c0d850a",
+      "render_engine_live_sha": "68efe96256528de54f83ffc09816f298ef136342",
       "render_worker_live_sha": "25195fca42357ad5f95d1035852bc382aa22cab1",
       "route": "NFL_MONEYLINE",
       "scorer_invocation": {
@@ -128,7 +128,7 @@
         "note": "current-pregame hydration is PR #1511 (open, unmerged)"
       },
       "first_failing_stage": "MODEL",
-      "github_main_sha": "40efaa4156d963b250354df45fadcb703c0d850a",
+      "github_main_sha": "68efe96256528de54f83ffc09816f298ef136342",
       "history_7d": {
         "EVENT_WRONG_DATE": 472,
         "MODEL_UNAVAILABLE": 725
@@ -146,7 +146,7 @@
         "ARTIFACTS_PRESENT_NONE_ACTIVE_PROMOTED"
       ],
       "readiness": "hold",
-      "render_engine_live_sha": "40efaa4156d963b250354df45fadcb703c0d850a",
+      "render_engine_live_sha": "68efe96256528de54f83ffc09816f298ef136342",
       "render_worker_live_sha": "25195fca42357ad5f95d1035852bc382aa22cab1",
       "route": "NBA_MONEYLINE",
       "scorer_invocation": {
@@ -189,14 +189,18 @@
       },
       "exact_blocker": "MODEL_UNAVAILABLE",
       "feature_freshness": {
+        "calibrator_artifacts": 0,
         "event_feature_snapshots": 0,
+        "fitted_artifacts": 0,
         "latest_source_snapshot_at": "2026-10-28T18:19:22Z",
         "predictions": 0,
         "training_features": 0,
-        "training_games": 4227
+        "training_games": 4227,
+        "wow_ncaaf_calibration_ledger": 0,
+        "wow_ncaaf_predictions": 0
       },
       "first_failing_stage": "MODEL",
-      "github_main_sha": "40efaa4156d963b250354df45fadcb703c0d850a",
+      "github_main_sha": "68efe96256528de54f83ffc09816f298ef136342",
       "history_7d": {
         "EVENT_IDENTITY_UNRESOLVED": 15,
         "EVENT_WRONG_DATE": 648,
@@ -217,7 +221,7 @@
         "FITTED_ARTIFACT_ABSENT"
       ],
       "readiness": "hold",
-      "render_engine_live_sha": "40efaa4156d963b250354df45fadcb703c0d850a",
+      "render_engine_live_sha": "68efe96256528de54f83ffc09816f298ef136342",
       "render_worker_live_sha": "25195fca42357ad5f95d1035852bc382aa22cab1",
       "route": "NCAAF_MONEYLINE",
       "scorer_invocation": {
@@ -229,6 +233,135 @@
       "terminal": {
         "final_terminal": null,
         "row_status_counts": {}
+      }
+    },
+    {
+      "blockers": [
+        "MODEL:MODEL_UNAVAILABLE",
+        "CALIBRATION:ACTIVE_CALIBRATOR_ABSENT"
+      ],
+      "calibrated_lower_bound": null,
+      "calibrated_probability": null,
+      "calibration": {
+        "active_calibrator_count": 0
+      },
+      "can_execute": false,
+      "database": {
+        "production_binding": "UNPROVEN",
+        "project_name": "wow-engine-validation",
+        "project_ref": "iczfhsmjrrafhvcpmqhr"
+      },
+      "environment_blockers": [
+        "RENDER_WEB_WORKER_SHA_MISMATCH",
+        "PRODUCTION_DB_BINDING_UNPROVEN"
+      ],
+      "event": {
+        "event_key": null,
+        "event_start_time_utc": null,
+        "official_event_id": null
+      },
+      "exact_blocker": "MODEL_UNAVAILABLE",
+      "feature_freshness": {
+        "note": "wow_predictions has 0 NBA rows all-time; wow_nba_pregame_feature_rows present; no current-pregame hydration (PR #1511)"
+      },
+      "first_failing_stage": "MODEL",
+      "github_main_sha": "68efe96256528de54f83ffc09816f298ef136342",
+      "history_7d": null,
+      "hold_cause": "MODEL_UNAVAILABLE",
+      "market": "PLAYER_PROPS",
+      "model_artifact": {
+        "active_promoted": 0,
+        "artifact_count": 8
+      },
+      "notes": [
+        "NO_ROWS_IN_LATEST_RUN_SLATE_WINDOW"
+      ],
+      "prediction_receipt": null,
+      "probability_status": "HELD_TYPED",
+      "provenance_findings": [
+        "ARTIFACTS_PRESENT_NONE_ACTIVE_PROMOTED"
+      ],
+      "readiness": "hold",
+      "render_engine_live_sha": "68efe96256528de54f83ffc09816f298ef136342",
+      "render_worker_live_sha": "25195fca42357ad5f95d1035852bc382aa22cab1",
+      "route": "NBA_PROPS",
+      "scorer_invocation": {
+        "rows_invoked": 0,
+        "rows_total": 0,
+        "status": "NO_ROWS"
+      },
+      "sport": "NBA",
+      "terminal": {
+        "final_terminal": null,
+        "row_status_counts": {}
+      }
+    },
+    {
+      "blockers": [
+        "PUBLICATION:FORWARD_CERTIFICATION_UNPROVEN"
+      ],
+      "calibrated_lower_bound": 0.503638,
+      "calibrated_probability": 0.545713,
+      "calibration": {
+        "note": "no wow_calibrators rows for props; rows carry shrinkage, not a fitted calibrator",
+        "observed_calibration_status": "PRECALIBRATION_SHRINKAGE"
+      },
+      "can_execute": false,
+      "database": {
+        "production_binding": "UNPROVEN",
+        "project_name": "wow-engine-validation",
+        "project_ref": "iczfhsmjrrafhvcpmqhr"
+      },
+      "environment_blockers": [
+        "RENDER_WEB_WORKER_SHA_MISMATCH",
+        "PRODUCTION_DB_BINDING_UNPROVEN"
+      ],
+      "event": {
+        "event_key": null,
+        "event_start_time_utc": null,
+        "official_event_id": "2026_07_DAL_PHI"
+      },
+      "exact_blocker": "FORWARD_CERTIFICATION_UNPROVEN",
+      "feature_freshness": {
+        "latest_prediction_at": "2026-10-26T20:22:35Z"
+      },
+      "first_failing_stage": "PUBLICATION",
+      "github_main_sha": "68efe96256528de54f83ffc09816f298ef136342",
+      "history_7d": null,
+      "hold_cause": "FORWARD_CERTIFICATION_UNPROVEN",
+      "market": "PLAYER_PROPS",
+      "model_artifact": {
+        "artifact_id": null,
+        "checksum": "e6e93c84f6de079c01922ba3e0fddbadac355d959975f712855965aa7e6331fb",
+        "lifecycle_state": "PROSPECTIVE_CERTIFIED",
+        "model_artifact_version": "NFL_RUSHYDS_ROLLING_FITTED_V1_2026_09_20",
+        "note": "4 stat types active+promoted (ANYTIME_TD, PASSING_YARDS, RECEIVING_YARDS, RUSHING_YARDS); FANTASY_SCORE is CANDIDATE. Matrix lists one representative; champion count is per stat type, not per route",
+        "probability_publishable": false
+      },
+      "notes": [],
+      "prediction_receipt": {
+        "found": true,
+        "prediction_id": "2094b5a7-0fa4-5eec-a825-b75f48942496"
+      },
+      "probability_status": "HELD_TYPED",
+      "provenance_findings": [
+        "ROW_FLAG_PUBLISHABLE_BUT_TERMINAL_NOT_PUBLISHED"
+      ],
+      "readiness": "hold",
+      "render_engine_live_sha": "68efe96256528de54f83ffc09816f298ef136342",
+      "render_worker_live_sha": "25195fca42357ad5f95d1035852bc382aa22cab1",
+      "route": "NFL_PROPS",
+      "scorer_invocation": {
+        "rows_invoked": 1,
+        "rows_total": 1,
+        "status": "INVOKED"
+      },
+      "sport": "NFL",
+      "terminal": {
+        "final_terminal": "HELD",
+        "row_status_counts": {
+          "HELD": 1
+        }
       }
     }
   ],

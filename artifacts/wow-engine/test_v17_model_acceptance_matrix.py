@@ -36,9 +36,11 @@ def test_real_capture_first_failing_stage_per_sport():
     assert m["ready_routes"] == []
     n = route(m, "NFL_MONEYLINE")
     assert (n["first_failing_stage"], n["exact_blocker"]) == ("CALIBRATION", "FORWARD_CALIBRATION_INSUFFICIENT_N")
-    assert n["probability_status"] == "HELD_TYPED" and n["scorer_invocation"]["status"] == "INVOKED"
-    assert "PUBLICATION:ARTIFACT_NOT_CERTIFIED_FOR_PUBLICATION" in n["blockers"]
-    assert "ARTIFACT_ROW_PUBLISHABILITY_MISMATCH" in n["provenance_findings"]
+    assert n["probability_status"] == "REJECTED" and n["scorer_invocation"]["status"] == "INVOKED"
+    # The registry flag is CHECK-constrained false by design: it must never be reported as a blocker/certification signal.
+    assert not any("NOT_CERTIFIED_FOR_PUBLICATION" in b for b in n["blockers"])
+    assert "PUBLICATION:CONSUMER_DISPLAYS_PROBABILITY_FOR_NON_PUBLISHED_TERMINAL" in n["blockers"]
+    assert "ROW_FLAG_PUBLISHABLE_BUT_TERMINAL_NOT_PUBLISHED" in n["provenance_findings"]
     assert "FORWARD_LOWER_BOUND_OVERCONFIDENT_WOULD_STILL_BLOCK_AT_MIN_N" in n["provenance_findings"]
     b = route(m, "NBA_MONEYLINE")
     assert (b["first_failing_stage"], b["exact_blocker"]) == ("MODEL", "MODEL_UNAVAILABLE")
@@ -46,11 +48,18 @@ def test_real_capture_first_failing_stage_per_sport():
     c = route(m, "NCAAF_MONEYLINE")
     assert (c["first_failing_stage"], c["exact_blocker"]) == ("MODEL", "MODEL_UNAVAILABLE")
     assert "FITTED_ARTIFACT_ABSENT" in c["provenance_findings"] and c["scorer_invocation"]["status"] == "NO_ROWS"
+    bp = route(m, "NBA_PROPS")
+    assert (bp["first_failing_stage"], bp["exact_blocker"]) == ("MODEL", "MODEL_UNAVAILABLE")
+    assert "ARTIFACTS_PRESENT_NONE_ACTIVE_PROMOTED" in bp["provenance_findings"] and bp["scorer_invocation"]["status"] == "NO_ROWS"
+    fp = route(m, "NFL_PROPS")
+    assert (fp["first_failing_stage"], fp["exact_blocker"]) == ("PUBLICATION", "FORWARD_CERTIFICATION_UNPROVEN")
+    assert fp["scorer_invocation"]["status"] == "INVOKED" and fp["readiness"] == "hold"
 
 
 def test_environment_blockers_hold_every_route_and_are_not_a_model_stage():
     m = mm.build_matrix(ev())
     assert m["environment_blockers"] == ["RENDER_WEB_WORKER_SHA_MISMATCH", "PRODUCTION_DB_BINDING_UNPROVEN"]
+    assert m["routes"][0]["render_engine_live_sha"] == m["routes"][0]["github_main_sha"]
     assert all(r["readiness"] == "hold" for r in m["routes"])
     assert all(r["first_failing_stage"] != "ENVIRONMENT" for r in m["routes"])
     e = ev(); e["render"]["engine"]["live_sha"] = "0" * 40
@@ -59,17 +68,35 @@ def test_environment_blockers_hold_every_route_and_are_not_a_model_stage():
     assert mm.environment_blockers(e)[0] == "ENVIRONMENT_SHA_EVIDENCE_MISSING"
 
 
-def test_false_publishability_published_from_uncertified_artifact_is_rejected():
+def test_registry_publishable_flag_is_never_a_certification_signal():
+    e = ev()
+    for flag in (False, True):
+        nfl(e)["registry"]["active_promoted"][0]["probability_publishable"] = flag
+        assert not any("CERTIFIED_FOR_PUBLICATION" in b for b in build(e)["blockers"])
+
+
+def test_rank_eligible_without_published_terminal_is_rejected():
     e = ev(); row = nfl(e)["latest_run"]["rows"][0]
-    row.update(row_status="COMPLETED", rank_eligible=True, final_terminal="FINAL_APPROVED")
+    row.update(rank_eligible=True, final_terminal="HELD")
     r = build(e)
-    assert "PUBLICATION:PUBLISHED_FROM_UNCERTIFIED_ARTIFACT" in r["blockers"]
-    assert r["probability_status"] == "REJECTED" and r["readiness"] == "hold"
+    assert "PUBLICATION:RANK_ELIGIBLE_WITHOUT_PUBLISHED_TERMINAL" in r["blockers"] and r["probability_status"] == "REJECTED"
 
 
-def test_observed_consumer_publishing_uncertified_artifact_is_a_blocker_not_a_note():
-    e = ev(); nfl(e)["consumers"][0]["observed"] = True
-    assert "PUBLICATION:CONSUMER_PUBLISHED_FROM_UNCERTIFIED_ARTIFACT" in build(e)["blockers"]
+def test_consumer_ignoring_terminal_hold_is_a_source_proven_blocker_and_clears_when_terminal_published_or_consumer_gated():
+    e = ev()
+    assert "PUBLICATION:CONSUMER_DISPLAYS_PROBABILITY_FOR_NON_PUBLISHED_TERMINAL" in build(e)["blockers"]
+    nfl(e)["consumers"][0]["ignores_terminal"] = False
+    assert not any("CONSUMER_DISPLAYS" in b for b in build(e)["blockers"])
+    e = ev(); nfl(e)["consumers"][0].update(ignores_terminal=False, observed=True)
+    assert "PUBLICATION:CONSUMER_PUBLISHED_FROM_NON_PUBLISHED_TERMINAL" in build(e)["blockers"]
+
+
+def test_nonpublishing_lifecycle_champion_is_blocked_but_prospective_is_ok_only_where_route_declares_it():
+    e = ev()
+    nfl(e)["registry"]["active_promoted"][0]["lifecycle_state"] = "PROSPECTIVE_CERTIFIED"
+    assert "PUBLICATION:ARTIFACT_LIFECYCLE_NOT_PUBLICATION_ELIGIBLE" in build(e)["blockers"]
+    nfl(e)["registry"]["publication_lifecycles"] = ["PROSPECTIVE_CERTIFIED", "CHAMPION"]
+    assert "PUBLICATION:ARTIFACT_LIFECYCLE_NOT_PUBLICATION_ELIGIBLE" not in build(e)["blockers"]
 
 
 @pytest.mark.parametrize("mutate,code", [
@@ -119,9 +146,8 @@ def test_forward_calibration_status_and_lower_bound_gap_rules():
 
 def test_evaluator_only_all_clear_variant_is_ready_and_requires_completed_row_and_proven_env():
     e = ev(); n = nfl(e)
-    n["registry"]["active_promoted"][0]["probability_publishable"] = True
     n["calibration"]["forward_health"].update(graded_n=120, status="PASS", lower_bound_reliability_gap=0.0)
-    n["consumers"] = []
+    n["consumers"][0]["ignores_terminal"] = False
     row = n["latest_run"]["rows"][0]
     row.update(row_status="COMPLETED", rank_eligible=True, final_terminal="FINAL_APPROVED", forward_certification_status="PASS")
     e["render"]["worker"]["live_sha"] = e["render"]["engine"]["live_sha"]; e["database"]["production_binding"] = "PROVEN"

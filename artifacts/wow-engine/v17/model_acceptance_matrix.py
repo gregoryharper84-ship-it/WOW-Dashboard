@@ -137,21 +137,27 @@ def evaluate_route(route: Mapping[str, Any], env_blockers: Sequence[str], ev: Ma
         if gap is not None and gap < LOWER_GAP_FLOOR:
             findings.append("FORWARD_LOWER_BOUND_OVERCONFIDENT_WOULD_STILL_BLOCK_AT_MIN_N")
 
-    # PUBLICATION: artifact certification vs row flag vs controlling terminal vs consumers
-    cert = champion.get("probability_publishable") if champion else None
-    if champion is not None and cert is not True:
-        blockers.append(("PUBLICATION", "ARTIFACT_NOT_CERTIFIED_FOR_PUBLICATION"))
-        if any(r.get("row_probability_publishable") is True for r in invoked):
-            findings.append("ARTIFACT_ROW_PUBLISHABILITY_MISMATCH")
-        for r in invoked:
-            if r.get("rank_eligible") is True or r.get("final_terminal") in PUBLISHED_TERMINALS:
-                blockers.append(("PUBLICATION", "PUBLISHED_FROM_UNCERTIFIED_ARTIFACT"))
-                break
-        for c in route.get("consumers") or []:
-            if c.get("status") == "PUBLISHED":
-                (blockers if c.get("observed") is True else findings).append(
-                    ("PUBLICATION", "CONSUMER_PUBLISHED_FROM_UNCERTIFIED_ARTIFACT") if c.get("observed") is True
-                    else f"CONSUMER_TRUSTS_ROW_FLAG_ONLY:{c.get('name')}")
+    # PUBLICATION. NOTE: the registry column `probability_publishable` is CHECK-constrained to false on the fitted
+    # artifact tables BY DESIGN (registry != publication; verified live: wow_nfl_event_fitted_registry_not_probability_publication).
+    # Publication is decided by the terminal reducer (active + promoted + publishing lifecycle + passing calibrator + forward
+    # certification), so that column is reported for information only and is never a certification signal.
+    publishing = set(reg.get("publication_lifecycles") or ["CHAMPION"])
+    if champion is not None and champion.get("lifecycle_state") not in publishing:
+        blockers.append(("PUBLICATION", "ARTIFACT_LIFECYCLE_NOT_PUBLICATION_ELIGIBLE"))
+    held_flagged = [r for r in invoked if r.get("row_probability_publishable") is True
+                    and (r.get("final_terminal") not in PUBLISHED_TERMINALS or r.get("rank_eligible") is not True)]
+    if held_flagged:
+        findings.append("ROW_FLAG_PUBLISHABLE_BUT_TERMINAL_NOT_PUBLISHED")
+    for r in invoked:
+        if r.get("rank_eligible") is True and r.get("final_terminal") not in PUBLISHED_TERMINALS:
+            blockers.append(("PUBLICATION", "RANK_ELIGIBLE_WITHOUT_PUBLISHED_TERMINAL"))
+            break
+    for c in route.get("consumers") or []:
+        if c.get("status") == "PUBLISHED" and c.get("ignores_terminal") is True and held_flagged:
+            blockers.append(("PUBLICATION", f"CONSUMER_DISPLAYS_PROBABILITY_FOR_NON_PUBLISHED_TERMINAL"))
+            findings.append(f"CONSUMER_IGNORES_TERMINAL:{c.get('name')}")
+        elif c.get("status") == "PUBLISHED" and c.get("observed") is True and held_flagged:
+            blockers.append(("PUBLICATION", "CONSUMER_PUBLISHED_FROM_NON_PUBLISHED_TERMINAL"))
     for r in invoked:
         if r.get("forward_certification_status") not in (None, "PASS"):
             blockers.append(("PUBLICATION", "FORWARD_CERTIFICATION_UNPROVEN"))
@@ -171,7 +177,7 @@ def evaluate_route(route: Mapping[str, Any], env_blockers: Sequence[str], ev: Ma
     if not blockers:
         status = "PROBABILITY_ACCEPTED"
     elif codes <= {"UNSUPPORTED_ROUTE_HOLD", *MODEL_FAILURES, "ACTIVE_CALIBRATOR_ABSENT", "FORWARD_CALIBRATION_INSUFFICIENT_N",
-                   "FORWARD_CERTIFICATION_UNPROVEN", "ARTIFACT_NOT_CERTIFIED_FOR_PUBLICATION", "NO_ROWS_IN_LATEST_RUN"}:
+                   "FORWARD_CERTIFICATION_UNPROVEN", "ARTIFACT_LIFECYCLE_NOT_PUBLICATION_ELIGIBLE", "NO_ROWS_IN_LATEST_RUN"}:
         status = "HELD_TYPED"
     else:
         status = "REJECTED"
@@ -224,10 +230,10 @@ def build_matrix(ev: Mapping[str, Any]) -> dict[str, Any]:
 def render_markdown(m: Mapping[str, Any]) -> str:
     lines = [f"# V17 production acceptance matrix ({m['captured_at']})", "",
              f"Environment blockers: {', '.join(m['environment_blockers']) or 'none'}", "",
-             "| Route | Scorer | Artifact certified | First failing stage | Exact blocker | Readiness |", "|---|---|---|---|---|---|"]
+             "| Route | Scorer | Artifact lifecycle | First failing stage | Exact blocker | Readiness |", "|---|---|---|---|---|---|"]
     for r in m["routes"]:
         art = r["model_artifact"]
-        lines.append(f"| {r['route']} | {r['scorer_invocation']['status']} | {art.get('probability_publishable', 'n/a')} | "
+        lines.append(f"| {r['route']} | {r['scorer_invocation']['status']} | {art.get('lifecycle_state', 'none')} | "
                      f"{r['first_failing_stage']} | {r['exact_blocker']} | {r['readiness']} |")
     lines += ["", "can_execute=false; dry-run only; non-authorizing."]
     return "\n".join(lines) + "\n"

@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-10-29T13:40:00Z",
+  "captured_at": "2026-10-29T14:55:00Z",
   "database": {
     "binding_note": "Rows are written minutes after the live engine deploy but no environment-variable/project-ref match was independently observed.",
     "production_binding": "UNPROVEN",
@@ -7,12 +7,12 @@
     "project_ref": "iczfhsmjrrafhvcpmqhr"
   },
   "github": {
-    "main_sha": "40efaa4156d963b250354df45fadcb703c0d850a"
+    "main_sha": "68efe96256528de54f83ffc09816f298ef136342"
   },
   "render": {
     "engine": {
-      "deploy_id": "dep-dbhk138g45ic73bvficg",
-      "live_sha": "40efaa4156d963b250354df45fadcb703c0d850a",
+      "deploy_id": "dep-dbhl9oss728c73d95oo0",
+      "live_sha": "68efe96256528de54f83ffc09816f298ef136342",
       "service": "wow-governed-probability-engine"
     },
     "worker": {
@@ -38,8 +38,9 @@
       "consumers": [
         {
           "basis": "SOURCE_READ",
+          "ignores_terminal": true,
           "name": "scout_governed_probability_lookup._nfl",
-          "note": "selects wow_nfl_event_predictions.model_probability_publishable=true; never reads artifact probability_publishable or forward certification",
+          "note": "selects wow_nfl_event_predictions.model_probability_publishable=true and hardcodes terminal_label=FINAL_APPROVED; reads neither the terminal reducer/daily-run HELD state nor forward certification",
           "observed": false,
           "status": "PUBLISHED"
         }
@@ -102,6 +103,12 @@
           "calibration_health_pass": 630,
           "row_model_probability_publishable_true": 630,
           "total": 630
+        },
+        "publication_evidence": {
+          "registry_flag_check_constraint": "wow_nfl_event_fitted_registry_not_probability_publication CHECK (probability_publishable = false)",
+          "rows_joined_to_active_promoted_champion": 1261,
+          "rows_joined_to_registry_flag_true": 0,
+          "rows_row_flag_publishable": 1263
         }
       },
       "route": "NFL_MONEYLINE",
@@ -165,11 +172,15 @@
         "active_calibrator_count": 0
       },
       "features": {
+        "calibrator_artifacts": 0,
         "event_feature_snapshots": 0,
+        "fitted_artifacts": 0,
         "latest_source_snapshot_at": "2026-10-28T18:19:22Z",
         "predictions": 0,
         "training_features": 0,
-        "training_games": 4227
+        "training_games": 4227,
+        "wow_ncaaf_calibration_ledger": 0,
+        "wow_ncaaf_predictions": 0
       },
       "history_7d": {
         "EVENT_IDENTITY_UNRESOLVED": 15,
@@ -189,6 +200,89 @@
       },
       "route": "NCAAF_MONEYLINE",
       "sport": "NCAAF"
+    },
+    {
+      "calibration": {
+        "active_calibrator_count": 0
+      },
+      "consumers": [],
+      "features": {
+        "note": "wow_predictions has 0 NBA rows all-time; wow_nba_pregame_feature_rows present; no current-pregame hydration (PR #1511)"
+      },
+      "latest_run": {
+        "rows": []
+      },
+      "market": "PLAYER_PROPS",
+      "registry": {
+        "active_promoted": [],
+        "artifact_count": 8,
+        "predictions_total_all_time": 0,
+        "unpromoted_note": "8 stat types (POINTS,REBOUNDS,ASSISTS,PRA,POINTS_REBOUNDS,POINTS_ASSISTS,REBOUNDS_ASSISTS,FANTASY_SCORE) all lifecycle CANDIDATE, active=false, promoted=false, candidate_research_active=true, 18179 training rows each; table wow_prop_fitted_model_artifacts"
+      },
+      "route": "NBA_PROPS",
+      "sport": "NBA"
+    },
+    {
+      "calibration": {
+        "note": "no wow_calibrators rows for props; rows carry shrinkage, not a fitted calibrator",
+        "observed_calibration_status": "PRECALIBRATION_SHRINKAGE"
+      },
+      "consumers": [],
+      "features": {
+        "latest_prediction_at": "2026-10-26T20:22:35Z"
+      },
+      "latest_run": {
+        "rows": [
+          {
+            "artifact_checksum": "e6e93c84f6de079c01922ba3e0fddbadac355d959975f712855965aa7e6331fb",
+            "bucket": "OTHER_GOVERNED_HOLD",
+            "calibrated_lower_bound": 0.503638,
+            "calibrated_probability": 0.545713,
+            "calibration_status": "PRECALIBRATION_SHRINKAGE",
+            "code": "MONEY_LANE_PAYOUT_UNRESOLVED",
+            "event_key": null,
+            "event_start_time_utc": null,
+            "final_terminal": "HELD",
+            "forward_certification_status": "HOLD",
+            "model_invoked": true,
+            "model_timestamp": "2026-10-26T20:22:32.296806+00:00",
+            "official_event_id": "2026_07_DAL_PHI",
+            "prediction_id": "2094b5a7-0fa4-5eec-a825-b75f48942496",
+            "prediction_receipt_found": true,
+            "rank_eligible": false,
+            "row_probability_publishable": true,
+            "row_status": "HELD"
+          }
+        ],
+        "rows_observed_in_run": 45,
+        "rows_total": 1,
+        "run_id": null
+      },
+      "market": "PLAYER_PROPS",
+      "registry": {
+        "active_promoted": [
+          {
+            "artifact_id": null,
+            "checksum": "e6e93c84f6de079c01922ba3e0fddbadac355d959975f712855965aa7e6331fb",
+            "lifecycle_state": "PROSPECTIVE_CERTIFIED",
+            "model_artifact_version": "NFL_RUSHYDS_ROLLING_FITTED_V1_2026_09_20",
+            "note": "4 stat types active+promoted (ANYTIME_TD, PASSING_YARDS, RECEIVING_YARDS, RUSHING_YARDS); FANTASY_SCORE is CANDIDATE. Matrix lists one representative; champion count is per stat type, not per route",
+            "probability_publishable": false
+          }
+        ],
+        "artifact_count": 5,
+        "predictions_all_time": {
+          "calibration_status": "PRECALIBRATION_SHRINKAGE",
+          "last_7d": 45,
+          "publishable_true": 343
+        },
+        "publication_lifecycles": [
+          "PROSPECTIVE_CERTIFIED",
+          "CHAMPION"
+        ]
+      },
+      "route": "NFL_PROPS",
+      "sport": "NFL"
     }
   ],
   "schema": "V17_PRODUCTION_ACCEPTANCE_EVIDENCE_V1",
