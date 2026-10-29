@@ -58,7 +58,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
-              "base": {"ref": "main", "repo": {"full_name": m.REPO}},
+              "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": m.REPO}},
               "state": "open", "changed_files": 1}
         file = {"filename": "a.py", "status": "modified", "sha": "b" * 40,
                 "patch": "@@ -1 +1 @@\\n-old\\n+new"}
@@ -112,6 +112,35 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             with self.assertRaises(m.Hold) as cm:
                 m.call_provider("gemini-generative-api", "key", "review")
             self.assertEqual(str(cm.exception), "GEMINI_MODEL_INVALID")
+
+
+
+    def test_base_sha_must_be_present_and_valid_in_review_capture(self):
+        pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
+              "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": m.REPO}},
+              "state": "open", "changed_files": 1}
+        file = {"filename": "test.py", "status": "modified", "sha": "d" * 40,
+                "patch": "@@ -1 +1 @@\\n-old\\n+new"}
+        def api(path, token):
+            return [file] if "/files?" in path else pr
+        with patch.object(m, "gh", api):
+            result = m.capture(2251, "a" * 40, "read")
+            self.assertEqual(result["base_sha"], "b" * 40)
+            pr["base"]["sha"] = "INVALID"
+            with self.assertRaises(m.Hold):
+                m.capture(2251, "a" * 40, "read")
+
+    def test_live_base_or_head_move_denies_old_review(self):
+        target = {"head_sha": "a" * 40, "base_sha": "b" * 40}
+        current = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}}
+        m.require_live_identity(current, target)
+        current["base"]["sha"] = "c" * 40
+        with self.assertRaises(m.Hold):
+            m.require_live_identity(current, target)
+        current["base"]["sha"] = "b" * 40
+        current["head"]["sha"] = "d" * 40
+        with self.assertRaises(m.Hold):
+            m.require_live_identity(current, target)
 
 
 
