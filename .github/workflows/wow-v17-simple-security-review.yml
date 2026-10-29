@@ -1,9 +1,12 @@
 name: wow-v17-simple-security-review
-# One exact-head independent semantic check; no certifier/canary/QA-Release cycle.
+# Independent Claude -> Gemini -> authenticated owner recovery, no certification loop.
+# Owner review never certifies owner-authored source, including App copies.
 # Add WOW Independent Security Review (QA App 5245832) as required after bootstrap.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
   workflow_dispatch:
     inputs:
       pr_number:
