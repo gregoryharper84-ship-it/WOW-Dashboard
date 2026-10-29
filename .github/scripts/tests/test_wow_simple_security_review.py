@@ -171,7 +171,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             (529, {}, "PROVIDER_HTTP_529"),
             (400, {"error": {"type": "invalid_request_error",
                               "message": "Your credit balance is too low"}}, "PROVIDER_CREDIT_EXHAUSTED"),
-            (404, {"error": {"message": "model not found"}}, "PROVIDER_MODEL_UNAVAILABLE"),
+            (404, {"error": {"type": "not_found_error", "message": "model: claude-sonnet-4-6"}}, "PROVIDER_MODEL_UNAVAILABLE"),
         ):
             with self.subTest(code=code):
                 with self.assertRaises(m.ProviderUnavailable) as cm:
@@ -184,6 +184,24 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 with self.assertRaises(m.Hold) as cm:
                     reject(code, body)
                 self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
+
+    def test_generic_not_found_is_not_provider_failover(self):
+        import io
+        import json
+        from urllib.error import HTTPError
+        url = "https://api.anthropic.com/v1/messages"
+        for error in (
+            {"type": "not_found_error", "message": "endpoint not found"},
+            {"type": "permission_error", "message": "model: claude-sonnet-4-6"},
+            {"type": "not_found_error", "message": "model: unknown"},
+        ):
+            with self.subTest(error=error):
+                with patch.object(m.HTTP_CLIENT, "open",
+                        side_effect=HTTPError(url, 404, "Not Found", {},
+                                              io.BytesIO(json.dumps({"error": error}).encode()))):
+                    with self.assertRaises(m.Hold) as cm:
+                        m.request_json(url, data={})
+                    self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
 
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
