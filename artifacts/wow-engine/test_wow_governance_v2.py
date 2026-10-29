@@ -26,7 +26,7 @@ def test_source_review_negative_suite_runs_on_pr_head():
     # Verify complete negative suite without brittle exact-count gating.
     # Named security regressions cannot silently disappear on future additions.
     import re
-    count = re.search(r"Ran (\\d+) tests?", result.stderr)
+    count = re.search(r"Ran (\d+) tests?", result.stderr)
     assert count is not None and int(count.group(1)) >= 34, result.stderr
     for name in (
         "test_global_reject_prevents_second_pr_review_without_provider_call",
