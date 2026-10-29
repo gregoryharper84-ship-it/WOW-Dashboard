@@ -10,11 +10,15 @@ on:
       - ".github/workflows/wow-v17-ncaaf-sdv-player-history-research.yml"
       - "artifacts/wow-engine/v17/ncaaf_sdv_player_history_acquisition.py"
       - "artifacts/wow-engine/tests/test_ncaaf_sdv_player_history_acquisition.py"
+      - "artifacts/wow-engine/v17/ncaaf_sdv_espn_crosswalk.py"
+      - "artifacts/wow-engine/tests/test_ncaaf_sdv_espn_crosswalk.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-ncaaf-sdv-player-history-research.yml"
       - "artifacts/wow-engine/v17/ncaaf_sdv_player_history_acquisition.py"
       - "artifacts/wow-engine/tests/test_ncaaf_sdv_player_history_acquisition.py"
+      - "artifacts/wow-engine/v17/ncaaf_sdv_espn_crosswalk.py"
+      - "artifacts/wow-engine/tests/test_ncaaf_sdv_espn_crosswalk.py"
 
 permissions:
   contents: read
@@ -38,7 +42,7 @@ jobs:
       - name: Test parser and source boundaries
         run: |
           python -m pip install pytest==8.4.2
-          python -m pytest --noconftest -q tests/test_ncaaf_sdv_player_history_acquisition.py
+          python -m pytest --noconftest -q tests/test_ncaaf_sdv_player_history_acquisition.py tests/test_ncaaf_sdv_espn_crosswalk.py
 
   acquire:
     name: Archive a public historical player-game release (research only)
@@ -64,5 +68,40 @@ jobs:
         with:
           name: ncaaf-sdv-player-history-2024-research-${{ github.run_id }}
           path: artifacts/wow-engine/ncaaf-sdv-research/
+          if-no-files-found: error
+          retention-days: 7
+
+  cross_source:
+    name: Audit NCAA↔ESPN player-game/stat candidates (non-authoritative)
+    needs: acquire
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned offline Parquet reader
+        run: python -m pip install pyarrow==19.0.1 requests==2.32.3
+      - name: Reuse same-run NCAA source artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ncaaf-sdv-player-history-2024-research-${{ github.run_id }}
+          path: artifacts/wow-engine/ncaaf-sdv-research/
+      - name: Audit independent NCAA versus ESPN stat values for identity candidates
+        run: |
+          python -m v17.ncaaf_sdv_espn_crosswalk \
+            --season 2024 \
+            --ncaa-parquet ncaaf-sdv-research/ncaa_mfb_player_stats_2024.parquet \
+            --output-dir ncaaf-crosswalk-research/
+      - name: Archive source-sha-matched aggregate research receipt (no athlete export)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ncaaf-ncaa-espn-reconciliation-${{ github.run_id }}
+          path: artifacts/wow-engine/ncaaf-crosswalk-research/*.json
           if-no-files-found: error
           retention-days: 7
