@@ -85,8 +85,10 @@ def profile_player_rows(rows: Iterable[Mapping[str, Any]], *, season: int,
         raise NCAAFSDVSourceHold("NCAAF_SDV_CAPTURE_TIMESTAMP_INVALID")
     counts: Counter[str] = Counter()
     holds: Counter[str] = Counter()
+    rejected_stats: Counter[str] = Counter()
+    missing_stats: Counter[str] = Counter()
     games: set[str] = set()
-    input_rows = eligible_rows = 0
+    input_rows = eligible_rows = partial_candidate_rows = 0
     for row in rows:
         input_rows += 1
         if input_rows > MAX_ROWS:
@@ -111,17 +113,25 @@ def profile_player_rows(rows: Iterable[Mapping[str, Any]], *, season: int,
             holds["NCAAF_SDV_SOURCE_IDENTITY_OR_CATEGORY_MISSING"] += 1
             continue
         values: dict[str, int] = {}
-        try:
-            for stat_type, key in METRICS[category].items():
+        rejected_in_row = 0
+        for stat_type, key in METRICS[category].items():
+            try:
                 value = _stat(row[key], allow_negative=(stat_type == "RUSHING_YARDS"))
-                if value is not None:
-                    values[stat_type] = value
-        except NCAAFSDVSourceHold as exc:
-            holds[exc.code] += 1
-            continue
+            except NCAAFSDVSourceHold as exc:
+                # Never zero-fill or infer the bad value. A valid, independent
+                # stat on the same source row must not be lost.
+                rejected_stats[f"{stat_type}:{exc.code}"] += 1
+                rejected_in_row += 1
+                continue
+            if value is None:
+                missing_stats[stat_type] += 1
+            else:
+                values[stat_type] = value
         if not values:
-            holds["NCAAF_SDV_ROW_STATS_EMPTY"] += 1
+            holds["NCAAF_SDV_ROW_STATS_EMPTY_OR_INVALID"] += 1
             continue
+        if rejected_in_row:
+            partial_candidate_rows += 1
         eligible_rows += 1
         games.add(game)
         counts.update(values.keys())
@@ -135,6 +145,11 @@ def profile_player_rows(rows: Iterable[Mapping[str, Any]], *, season: int,
         "source_retrieved_at": stamp.astimezone(timezone.utc).isoformat(),
         "season": season, "input_rows": input_rows, "candidate_rows": eligible_rows,
         "held_rows": input_rows - eligible_rows, "held_reasons": dict(sorted(holds.items())),
+        "rejected_stat_cells": sum(rejected_stats.values()),
+        "rejected_stat_reasons": dict(sorted(rejected_stats.items())),
+        "missing_stat_cells": sum(missing_stats.values()),
+        "missing_stat_counts": dict(sorted(missing_stats.items())),
+        "partial_candidate_rows": partial_candidate_rows,
         "distinct_source_game_aliases": len(games),
         "stat_observation_counts": dict(sorted(counts.items())),
         "upstream_name_is_official_player_identity": False,
@@ -215,6 +230,8 @@ if __name__ == "__main__":
         "status": receipt["status"], "season": receipt["season"],
         "source_sha256": receipt["source_sha256"],
         "input_rows": receipt["input_rows"], "candidate_rows": receipt["candidate_rows"],
-        "held_rows": receipt["held_rows"], "stat_observation_counts": receipt["stat_observation_counts"],
+        "held_rows": receipt["held_rows"], "partial_candidate_rows": receipt["partial_candidate_rows"],
+        "rejected_stat_cells": receipt["rejected_stat_cells"],
+        "stat_observation_counts": receipt["stat_observation_counts"],
         "model_probability": None, "can_execute": False,
     }, sort_keys=True))

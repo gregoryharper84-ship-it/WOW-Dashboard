@@ -43,3 +43,23 @@ added in this change.
 
 `V17_TERMINAL_REDUCER` remains sole terminal authority;
 `can_execute=false`.
+
+## 2024 live canary and per-stat quality follow-up
+
+October 29, 2026: run #40899746382 successfully downloaded the 2024 release
+and uploaded the verified SHA-256
+`57fdeef7a849081a83e815a39284b0aba94061b29899cf5b5e4d7e08fd56c417`.
+The initial row-level parser found 59,781 category rows, 43,667 candidate
+rows, 16,114 held rows, 1,664 distinct **source game aliases**, and 15,547
+`STAT_INVALID` + 567 `COUNT_NEGATIVE` whole-row holds. This conflated an
+invalid metric cell with an unusable category row.
+
+The revised parser validates each stat independently: valid attempts,
+completions or yards can survive an unrelated invalid cell while invalid
+values remain excluded and are separately counted by stat/reason.
+Missing values are never imputed as zero. It emits `partial_candidate_rows`,
+`rejected_stat_cells`, `rejected_stat_reasons`, and
+`missing_stat_cells` to audit coverage. **All output remains unverified
+historical research, not model-ready or official canonical outcomes.**
+The archive source is still downloaded on protected-main CI with the
+same short-lived provenance artifact. No licensed-vendor collection is added.
