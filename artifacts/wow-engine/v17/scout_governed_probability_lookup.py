@@ -44,22 +44,65 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
     event_key = f"NFL:{event_id}"
     cur.execute(
         """
-        select selected_participant,calibrated_selection_probability,calibrated_selection_lower_bound,
-               model_probability_publishable,model_version,created_at
-        from public.wow_nfl_event_predictions
-        where event_key=%s
-          and home_team=%s and away_team=%s
-          and abs(extract(epoch from (event_start_time_utc-%s::timestamptz))) <= 900
-          and model_probability_publishable=true
-          and can_execute=false
-        order by created_at desc
+        select p.selected_participant,p.calibrated_selection_probability,p.calibrated_selection_lower_bound,
+               p.model_probability_publishable,p.model_version,p.created_at
+        from public.wow_nfl_event_predictions as p
+        join public.wow_nfl_event_fitted_model_artifacts as artifact
+          on artifact.artifact_id=p.model_artifact_id
+         and artifact.active=true
+         and artifact.promoted=true
+         and artifact.lifecycle_state='CHAMPION'
+         and artifact.can_execute=false
+        -- The agent-runtime candidate ledger is not the daily NFL scoring
+        -- terminal ledger. Inspect the single newest daily-row decision for
+        -- this exact official event BEFORE applying any approval filters:
+        -- later HOLD must supersede an earlier FINAL_APPROVED.
+        join lateral (
+            select daily.row_status,daily.detail,daily.captured_at,daily.can_execute
+            from public.wow_v17_daily_run_row_detail as daily
+            where daily.identity->>'sport'='NFL'
+              and daily.lane='MONEYLINE'
+              and daily.identity->>'official_event_id'=p.official_event_id
+            order by daily.captured_at desc,daily.row_index desc,daily.run_id desc
+            limit 1
+        ) as latest on true
+        where p.event_key=%s
+          and p.home_team=%s and p.away_team=%s
+          and abs(extract(epoch from (p.event_start_time_utc-%s::timestamptz))) <= 900
+          and p.model_probability_publishable=true
+          and p.can_execute=false
+          -- A newer persisted score without a matching terminal receipt
+          -- supersedes any earlier approved prediction of the same event.
+          and not exists (
+              select 1 from public.wow_nfl_event_predictions as newer
+              where newer.official_event_id=p.official_event_id
+                and (newer.created_at,newer.event_prediction_id)
+                    > (p.created_at,p.event_prediction_id)
+          )
+          and latest.row_status='COMPLETED'
+          and latest.can_execute=false
+          -- Require latest final reducer output, not earlier upstream approval.
+          and latest.detail->'result'->>'global_terminal_authority'='V17_TERMINAL_REDUCER'
+          and latest.detail->'result'->>'event_prediction_id'=p.event_prediction_id::text
+          and latest.detail->'result'->>'selected_participant'=p.selected_participant
+          and latest.detail->'result'->>'terminal_label'='FINAL_APPROVED'
+          and latest.detail->'result'->>'terminal_ceiling'='FINAL_APPROVED'
+          and latest.detail->'result'->>'probability_publishable'='true'
+          and latest.detail->'result'->>'rank_eligible'='true'
+          and latest.detail->>'probability_publishable'='true'
+          and latest.captured_at >= p.created_at
+          and latest.captured_at >= p.event_start_time_utc - interval '7 days'
+          and latest.captured_at < p.event_start_time_utc
+        order by p.created_at desc
         limit 1
         """,
         (event_key, candidate.get("home_team"), candidate.get("away_team"), candidate.get("commence_time")),
     )
     row = cur.fetchone()
     if not row:
-        return _base()
+        # A fitted prediction is not a terminal publication receipt.
+        # Absence of exact run/candidate/reducer proof remains a HOLD.
+        return _base("TERMINAL_PROOF_NOT_VERIFIED")
     selection, probability, lower, publishable, version, created_at = row
     if publishable is not True or probability is None or lower is None or not selection:
         return _base("MODEL_OUTPUT_INVALID")
