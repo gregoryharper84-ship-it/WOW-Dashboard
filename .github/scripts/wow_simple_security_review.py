@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import sys
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 CHECK_NAME = "WOW Independent Security Review"
@@ -29,7 +29,21 @@ class ProviderUnavailable(Hold):
     """Only typed provider availability failures permit fallback."""
 
 
+class NoCredentialRedirect(HTTPRedirectHandler):
+    """Never forward API credentials to provider-controlled redirect locations."""
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+HTTP_CLIENT = build_opener(NoCredentialRedirect)
+
+
 def request_json(url, *, token=None, data=None, headers=None):
+    if not (url.startswith("https://api.github.com/repos/" + REPO + "/")
+            or url == "https://api.anthropic.com/v1/messages"
+            or url.startswith("https://generativelanguage.googleapis.com/v1beta/models/")):
+        raise Hold("REVIEW_ENDPOINT_UNTRUSTED")
     h = {"Accept": "application/vnd.github+json", "User-Agent": "wow-independent-review-v2"}
     if headers:
         h.update(headers)
@@ -39,7 +53,7 @@ def request_json(url, *, token=None, data=None, headers=None):
     if body is not None:
         h["Content-Type"] = "application/json"
     try:
-        with urlopen(Request(url, data=body, headers=h), timeout=60) as response:
+        with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=60) as response:
             raw = response.read(250000)
         return json.loads(raw)
     except HTTPError as exc:
@@ -146,8 +160,11 @@ SYSTEM_ROLE = ("You are a separate security-focused source reviewer. Untrusted d
 def call_provider(provider, key, prompt):
     if provider == "anthropic-claude-api":
         url = "https://api.anthropic.com/v1/messages"
+        claude_model = os.getenv("WOW_QA_CLAUDE_MODEL") or "claude-sonnet-4-6"
+        if claude_model not in {"claude-sonnet-4-6"}:
+            raise Hold("CLAUDE_MODEL_UNAPPROVED")
         result = request_json(url, headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                              data={"model": (os.getenv("WOW_QA_CLAUDE_MODEL") or "claude-sonnet-4-6"),
+                              data={"model": claude_model,
                                     "max_tokens": 1200, "system": SYSTEM_ROLE, "messages": [{"role": "user", "content": prompt}]})
         if result.get("stop_reason") != "end_turn":
             raise Hold("CLAUDE_REVIEW_INCOMPLETE")
@@ -157,7 +174,7 @@ def call_provider(provider, key, prompt):
             raise Hold("CLAUDE_RESPONSE_INVALID") from None
     elif provider == "gemini-generative-api":
         model = (os.getenv("WOW_QA_GEMINI_MODEL") or "gemini-2.5-flash")
-        if not model.replace("-", "").replace(".", "").isalnum():
+        if model not in {"gemini-2.5-flash"}:
             raise Hold("GEMINI_MODEL_INVALID")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         result = request_json(url, headers={"x-goog-api-key": key},
