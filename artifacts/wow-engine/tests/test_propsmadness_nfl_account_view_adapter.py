@@ -136,3 +136,18 @@ def test_future_completed_result_is_rejected_as_time_leakage():
            "<td>320</td><td>252.5</td><td>Over</td></tr>")
     with pytest.raises(AccountViewHold, match="PM_ACCOUNT_VIEW_ROW_INVALID"):
         run(view(bad))
+
+
+def test_featured_page_cannot_pass_receiving_stat_for_passing_chart():
+    with pytest.raises(AccountViewHold, match="PM_ACCOUNT_VIEW_SELECTED_MARKET_UNRESOLVED"):
+        run(stat_type="RECEIVING_YARDS")
+
+
+def test_selected_player_stat_must_appear_near_detail_not_menu():
+    misleading = view().replace(
+        "Taylor Sample\nPass Yds\n252.5",
+        "Pass Yds in a navigation header\nTaylor Sample\nRush Yds\n252.5",
+    )
+    with pytest.raises(AccountViewHold, match="PM_ACCOUNT_VIEW_SELECTED_MARKET_UNRESOLVED"):
+        run(misleading)
+
