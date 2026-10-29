@@ -1,5 +1,7 @@
+import copy
 import importlib.util
 from pathlib import Path
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +9,73 @@ PATH = Path(__file__).resolve().parents[1] / "wow_simple_security_review.py"
 spec = importlib.util.spec_from_file_location("simple_security", PATH)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+
+QA_TOKEN = "qa-app-token-distinct"
+READ_TOKEN = "read-token-distinct"
+
+
+class LedgerDouble:
+    """In-memory QA ledger. PATCH cannot publish PASS or change a finished conclusion."""
+
+    def __init__(self, checks, run, main_sha):
+        self.checks = checks
+        self.run = run
+        self.main_sha = main_sha
+        self.patches = []
+        self.creates = []
+        self.tokens = []
+        self.lock = threading.Lock()
+        self.fail_patch = None
+        self.transport_remaining = 0
+
+    def gh(self, path, token):
+        self.tokens.append(("read", token))
+        if path.startswith("/actions/runs/"):
+            if self.transport_remaining:
+                self.transport_remaining -= 1
+                raise m.Hold("GITHUB_TRANSPORT")
+            return copy.deepcopy(self.run)
+        if path == "/git/ref/heads/main":
+            return {"object": {"sha": self.main_sha}}
+        if "/check-runs?" in path:
+            with self.lock:
+                return {"total_count": len(self.checks),
+                        "check_runs": copy.deepcopy(self.checks)}
+        if path.startswith("/check-runs/"):
+            check_id = int(path.rsplit("/", 1)[1])
+            with self.lock:
+                for check in self.checks:
+                    if check["id"] == check_id:
+                        return copy.deepcopy(check)
+            raise AssertionError(path)
+        raise AssertionError(path)
+
+    def request_json(self, url, token=None, data=None, method=None, headers=None):
+        self.tokens.append(("write", token))
+        if method != "PATCH":
+            self.creates.append(copy.deepcopy(data))
+            return {"id": 999, "head_sha": m.LEDGER_SENTINEL_SHA, "name": data["name"],
+                    "external_id": data.get("external_id")}
+        if self.fail_patch is not None:
+            raise self.fail_patch
+        if data.get("conclusion") == "success":
+            raise AssertionError("recovery published PASS")
+        check_id = int(url.rstrip("/").rsplit("/", 1)[1])
+        with self.lock:
+            for index, check in enumerate(self.checks):
+                if check["id"] != check_id:
+                    continue
+                if (check["status"] == "completed"
+                        and data["conclusion"] != check["conclusion"]):
+                    raise AssertionError("overwrote completed conclusion")
+                updated = {**check, "status": "completed", "conclusion": data["conclusion"],
+                           "output": copy.deepcopy(data["output"]),
+                           "external_id": data.get("external_id", check["external_id"]),
+                           "app": {"id": m.QA_APP_ID}}
+                self.checks[index] = updated
+                self.patches.append(copy.deepcopy(data))
+                return copy.deepcopy(updated)
+        raise AssertionError("missing check " + url)
 
 
 class SimpleSecurityReviewTests(unittest.TestCase):
@@ -588,14 +657,20 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             digest = m.content_fingerprint(target)
             created = {"id": 123, "head_sha": m.LEDGER_SENTINEL_SHA,
                        "name": m.LEDGER_NAME_PREFIX + digest}
-            with self.subTest(title=title), patch.object(m, "gh", return_value={
-                    "total_count": 1, "check_runs": [old]}):
-                with patch.object(m, "request_json", return_value=created) as api:
-                    reserved = m.reserve_content_review(target, "read", "qa")
-                    self.assertEqual(reserved, {"id": 123, "digest": digest})
-                    self.assertEqual(api.call_args.kwargs["data"]["status"], "in_progress")
-                    self.assertEqual(api.call_args.kwargs["data"]["head_sha"], m.LEDGER_SENTINEL_SHA)
-                    self.assertEqual(api.call_args.kwargs["data"]["external_id"], digest)
+            env = {"GITHUB_RUN_ID": "50", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_ACTOR": "qa-operator"}
+            with self.subTest(title=title), patch.dict(m.os.environ, env):
+                with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [old]}):
+                    with patch.object(m, "request_json", return_value=created) as api:
+                        reserved = m.reserve_content_review(target, "read", "qa")
+                        self.assertEqual(reserved["id"], 123)
+                        self.assertEqual(reserved["digest"], digest)
+                        self.assertEqual(reserved["provenance"]["phase"], "reserved")
+                        self.assertIsNone(reserved["provenance"]["provider_decision"])
+                        self.assertEqual(reserved["provenance"]["can_execute"], False)
+                        self.assertEqual(api.call_args.kwargs["data"]["status"], "in_progress")
+                        self.assertEqual(api.call_args.kwargs["data"]["head_sha"], m.LEDGER_SENTINEL_SHA)
+                        self.assertEqual(api.call_args.kwargs["data"]["external_id"], digest)
+                        self.assertIn(digest, api.call_args.kwargs["data"]["output"]["text"])
 
     def test_global_check_identity_must_match_qa_app_and_sentinel(self):
         target = self._ledger_target()
@@ -668,20 +743,22 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                         with patch.object(m, "prior_semantic_reject", return_value=False):
                             with patch.object(m, "reserve_content_review", return_value={
                                     "id": 42, "digest": m.content_fingerprint(target)}):
-                                with patch.object(m, "semantic_review", return_value=(
-                                        "REJECT",
-                                        {"source_review": "FAIL", "security_review": "FAIL",
-                                         "probability_integrity_review": "PASS",
-                                         "findings": ["provenance violation"]},
-                                        "anthropic-claude-api", [])):
-                                    with patch.object(m, "gh",
-                                                      side_effect=AssertionError("PR reread must not erase REJECT")):
-                                        with patch.object(m, "commit_content_review") as saved:
-                                            with patch.object(m, "publish_check") as published:
-                                                with self.assertRaises(SystemExit):
-                                                    m.main()
-                                                self.assertEqual(saved.call_args.args[1]["decision"], "REJECT")
-                                                self.assertEqual(published.call_args.args[1]["decision"], "REJECT")
+                                with patch.object(m, "annotate_content_reservation",
+                                                  side_effect=lambda reservation, qa_token, **kwargs: reservation):
+                                    with patch.object(m, "semantic_review", return_value=(
+                                            "REJECT",
+                                            {"source_review": "FAIL", "security_review": "FAIL",
+                                             "probability_integrity_review": "PASS",
+                                             "findings": ["provenance violation"]},
+                                            "anthropic-claude-api", [])):
+                                        with patch.object(m, "gh",
+                                                          side_effect=AssertionError("PR reread must not erase REJECT")):
+                                            with patch.object(m, "commit_content_review") as saved:
+                                                with patch.object(m, "publish_check") as published:
+                                                    with self.assertRaises(SystemExit):
+                                                        m.main()
+                                                    self.assertEqual(saved.call_args.args[1]["decision"], "REJECT")
+                                                    self.assertEqual(published.call_args.args[1]["decision"], "REJECT")
 
     def test_review_client_denies_patch_to_anything_except_qa_check_run(self):
         for url in ("https://api.anthropic.com/v1/messages",
@@ -729,6 +806,447 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn('commit_content_review(reservation, receipt, qa_token)', source)
         self.assertIn('prior_semantic_reject(target["head_sha"], read_token)', source)
         self.assertIn('receipt["decision"] = "HOLD"', source)
+
+    def _governed_env(self, **extra):
+        env = {"WOW_QA_LEDGER_RECOVERY": "governed", "WOW_QA_APP_ID": str(m.QA_APP_ID),
+               "GITHUB_RUN_ID": "881", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_ACTOR": "qa-operator"}
+        env.update(extra)
+        return env
+
+    def _dead_reservation(self, target, **overrides):
+        provenance = {
+            "schema": m.RESERVATION_SCHEMA, "phase": "reserved", "provider_decision": None,
+            "pr_number": target["pr"], "head_sha": target["head_sha"], "base_sha": target["base_sha"],
+            "run_id": 880, "run_attempt": 1, "actor": "qa-operator", "qa_app_id": m.QA_APP_ID,
+            "digest": m.content_fingerprint(target), "can_execute": False,
+        }
+        provenance.update(overrides)
+        digest = provenance["digest"]
+        check = {
+            "id": 321, "name": m.LEDGER_NAME_PREFIX + digest,
+            "head_sha": m.LEDGER_SENTINEL_SHA, "external_id": digest,
+            "app": {"id": m.QA_APP_ID}, "status": "in_progress", "conclusion": None,
+            "output": {"title": "IN_PROGRESS — content reservation",
+                       "text": m.json.dumps(provenance, sort_keys=True, separators=(",", ":"))},
+        }
+        run = {"id": provenance["run_id"], "run_attempt": provenance["run_attempt"],
+               "status": "completed", "conclusion": "cancelled", "path": m.REVIEW_WORKFLOW_PATH,
+               "actor": {"login": provenance["actor"]}}
+        return provenance, check, run
+
+    def _bind(self, double):
+        return (patch.object(m, "gh", double.gh), patch.object(m, "request_json", double.request_json),
+                patch.object(m, "publish_check", side_effect=AssertionError("recovery must not publish")),
+                patch.object(m, "semantic_review", side_effect=AssertionError("recovery must not resample")))
+
+    def test_kill_after_reservation_recovers_hold_not_pass(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(target)
+        run["conclusion"] = "failure"
+        double = LedgerDouble([check], run, target["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1], self._bind(double)[2], self._bind(double)[3]:
+                reserved = m.reserve_content_review(target, READ_TOKEN, QA_TOKEN)
+        self.assertEqual(reserved["id"], 999)
+        self.assertEqual(reserved["provenance"]["phase"], "reserved")
+        self.assertEqual(len(double.patches), 1)
+        self.assertEqual(double.patches[0]["conclusion"], "neutral")
+        self.assertEqual(double.patches[0]["status"], "completed")
+        self.assertNotEqual(double.patches[0]["conclusion"], "success")
+        self.assertEqual(double.checks[0]["id"], 321)
+        self.assertEqual(double.checks[0]["status"], "completed")
+        receipt = m.json.loads(double.checks[0]["output"]["text"])
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reservation_id"], 321)
+        self.assertEqual(receipt["digest"], m.content_fingerprint(target))
+        self.assertEqual(receipt["original_provenance"]["head_sha"], target["head_sha"])
+        self.assertEqual(receipt["original_provenance"]["base_sha"], target["base_sha"])
+        self.assertEqual(receipt["original_provenance"]["run_id"], 880)
+        self.assertEqual(receipt["original_provenance"]["actor"], "qa-operator")
+        self.assertEqual(receipt["original_provenance"]["pr_number"], target["pr"])
+        self.assertFalse(receipt["can_execute"])
+        self.assertTrue(receipt["no_live_trading"])
+        self.assertFalse(receipt["stale_base"])
+        self.assertEqual(double.creates[0]["status"], "in_progress")
+        self.assertTrue(all(kind == "read" and token == READ_TOKEN or kind == "write" and token == QA_TOKEN
+                            for kind, token in double.tokens))
+        self.assertNotEqual(QA_TOKEN, READ_TOKEN)
+
+    def test_cancellation_before_provider_recovers_hold(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(target)
+        self.assertEqual(run["conclusion"], "cancelled")
+        self.assertIsNone(_provenance["provider_decision"])
+        double = LedgerDouble([check], run, target["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1]:
+                receipt = m.recover_stale_content_reservation(
+                    m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["original_provenance"]["phase"], "reserved")
+        self.assertEqual(double.patches[0]["conclusion"], "neutral")
+        self.assertEqual(double.creates, [])
+
+    def test_cancellation_during_provider_without_verdict_recovers_hold(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(
+            target, phase="provider_started", provider_decision=None)
+        run["conclusion"] = "timed_out"
+        double = LedgerDouble([check], run, target["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1], self._bind(double)[3]:
+                receipt = m.recover_stale_content_reservation(
+                    m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["original_provenance"]["phase"], "provider_started")
+        self.assertIsNone(receipt["original_provenance"]["provider_decision"])
+        self.assertEqual(receipt["prior_run"]["conclusion"], "timed_out")
+        self.assertNotEqual(receipt["decision"], "PASS")
+        self.assertEqual(double.patches[0]["conclusion"], "neutral")
+
+    def test_confirmed_reject_followed_by_failed_ledger_patch_recovers_as_reject(self):
+        target = self._ledger_target()
+        provenance, check, run = self._dead_reservation(
+            target, phase="verdict_received", provider_decision="REJECT")
+        failed = []
+
+        def fail_commit(url, token=None, data=None, method=None, headers=None):
+            failed.append(data)
+            raise m.Hold("CONTENT_LEDGER_COMMIT_UNVERIFIED")
+
+        reservation = {"id": 321, "digest": provenance["digest"], "provenance": provenance}
+        receipt = {"pr_number": target["pr"], "head_sha": target["head_sha"],
+                   "run_id": 880, "run_attempt": 1, "decision": "REJECT"}
+        with patch.object(m, "request_json", fail_commit):
+            with self.assertRaises(m.Hold) as failed_patch:
+                m.commit_content_review(reservation, receipt, QA_TOKEN)
+        self.assertEqual(str(failed_patch.exception), "CONTENT_LEDGER_COMMIT_UNVERIFIED")
+        self.assertEqual(failed[0]["conclusion"], "failure")
+        self.assertNotEqual(failed[0]["conclusion"], "success")
+        run["conclusion"] = "failure"
+        double = LedgerDouble([check], run, target["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1], self._bind(double)[2]:
+                recovered = m.recover_stale_content_reservation(
+                    provenance["digest"], READ_TOKEN, QA_TOKEN)
+        self.assertEqual(recovered["decision"], "REJECT")
+        self.assertEqual(recovered["conclusion"], "failure")
+        self.assertEqual(double.patches[0]["conclusion"], "failure")
+        self.assertEqual(double.checks[0]["id"], 321)
+        self.assertEqual(recovered["original_provenance"]["provider_decision"], "REJECT")
+
+    def test_two_recovery_workers_race_same_reservation(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(target)
+        double = LedgerDouble([check], run, target["base_sha"])
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait(timeout=5)
+                results.append(m.recover_stale_content_reservation(
+                    m.content_fingerprint(target), READ_TOKEN, QA_TOKEN))
+            except m.Hold as exc:
+                errors.append(str(exc))
+
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1]:
+                threads = [threading.Thread(target=worker) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=5)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        self.assertEqual({item["decision"] for item in results}, {"HOLD"})
+        self.assertEqual({item["idempotency_key"] for item in results}, {results[0]["idempotency_key"]})
+        self.assertEqual(len(double.patches), 1)
+        self.assertEqual(double.patches[0]["conclusion"], "neutral")
+        self.assertNotEqual(double.checks[0]["conclusion"], "success")
+
+    def test_missing_or_malformed_qa_app_auth_cannot_complete_reservation(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(target)
+        digest = m.content_fingerprint(target)
+
+        def recover(env, qa, read):
+            double = LedgerDouble([copy.deepcopy(check)], copy.deepcopy(run), target["base_sha"])
+            with patch.dict(m.os.environ, env, clear=False):
+                with patch.object(m, "gh", double.gh), patch.object(m, "request_json", double.request_json):
+                    with patch.object(m, "publish_check", side_effect=AssertionError("no publish")):
+                        with self.assertRaises(m.Hold) as held:
+                            m.recover_stale_content_reservation(digest, read, qa)
+            self.assertEqual(double.patches, [])
+            self.assertEqual(double.checks[0]["status"], "in_progress")
+            return str(held.exception)
+
+        self.assertEqual(recover(self._governed_env(), "", READ_TOKEN), "RECOVERY_QA_APP_AUTH_MISSING")
+        self.assertEqual(recover(self._governed_env(), READ_TOKEN, READ_TOKEN), "RECOVERY_QA_APP_AUTH_MISSING")
+        self.assertEqual(recover(self._governed_env(), "short-token", READ_TOKEN),
+                         "RECOVERY_QA_APP_AUTH_MALFORMED")
+        self.assertEqual(recover(self._governed_env(WOW_QA_APP_ID="999"), QA_TOKEN, READ_TOKEN),
+                         "RECOVERY_QA_APP_AUTH_MALFORMED")
+        self.assertEqual(recover(self._governed_env(WOW_QA_APP_ID=""), QA_TOKEN, READ_TOKEN),
+                         "RECOVERY_QA_APP_AUTH_MALFORMED")
+        denied = LedgerDouble([copy.deepcopy(check)], copy.deepcopy(run), target["base_sha"])
+        denied.fail_patch = m.Hold("GITHUB_HTTP_403")
+        with patch.dict(m.os.environ, self._governed_env()):
+            with patch.object(m, "gh", denied.gh), patch.object(m, "request_json", denied.request_json):
+                with self.assertRaises(m.Hold) as rejected:
+                    m.recover_stale_content_reservation(digest, READ_TOKEN, QA_TOKEN)
+        self.assertEqual(str(rejected.exception), "RECOVERY_QA_APP_AUTH_REJECTED")
+        self.assertEqual(denied.patches, [])
+        self.assertEqual(denied.checks[0]["status"], "in_progress")
+
+        def wrong_app(url, token=None, data=None, method=None, headers=None):
+            return {"id": 321, "status": "completed", "conclusion": data["conclusion"],
+                    "external_id": data["external_id"], "app": {"id": 17}, "output": data["output"]}
+
+        with patch.dict(m.os.environ, self._governed_env()):
+            with patch.object(m, "gh", LedgerDouble([copy.deepcopy(check)], copy.deepcopy(run), target["base_sha"]).gh):
+                with patch.object(m, "request_json", wrong_app):
+                    with self.assertRaises(m.Hold) as unverified:
+                        m.recover_stale_content_reservation(digest, READ_TOKEN, QA_TOKEN)
+        self.assertEqual(str(unverified.exception), "RECOVERY_QA_APP_AUTH_UNVERIFIED")
+
+    def test_duplicate_recovery_event_is_idempotent(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(target)
+        double = LedgerDouble([check], run, target["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1]:
+                first = m.recover_stale_content_reservation(
+                    m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+                second = m.recover_stale_content_reservation(
+                    m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertEqual(first, second)
+        self.assertEqual(len(double.patches), 1)
+        self.assertEqual(first["decision"], "HOLD")
+        self.assertEqual(double.checks[0]["conclusion"], "neutral")
+
+    def test_recovery_retries_transport_and_does_not_retry_auth_failure(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(target)
+        flaky = LedgerDouble([check], run, target["base_sha"])
+        flaky.transport_remaining = 2
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(flaky)[0], self._bind(flaky)[1]:
+                receipt = m.recover_stale_content_reservation(
+                    m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["retry_bound"], 3)
+        self.assertEqual(flaky.transport_remaining, 0)
+        self.assertEqual(len(flaky.patches), 1)
+        denied_calls = {"n": 0}
+
+        def once(url, token=None, data=None, method=None, headers=None):
+            denied_calls["n"] += 1
+            raise m.Hold("GITHUB_HTTP_403")
+
+        _provenance, check, run = self._dead_reservation(target)
+        with patch.dict(m.os.environ, self._governed_env()):
+            with patch.object(m, "gh", LedgerDouble([check], run, target["base_sha"]).gh):
+                with patch.object(m, "request_json", once):
+                    with self.assertRaises(m.Hold) as rejected:
+                        m.recover_stale_content_reservation(
+                            m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertEqual(str(rejected.exception), "RECOVERY_QA_APP_AUTH_REJECTED")
+        self.assertEqual(denied_calls["n"], 1)
+
+    def test_repeated_provider_timeout_does_not_become_pass(self):
+        calls = []
+
+        def timeout(provider, key, prompt):
+            calls.append(provider)
+            raise m.ProviderUnavailable("PROVIDER_HTTP_504")
+
+        reviewed = {"pr": 2275, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                    "diff_sha256": "c" * 64, "diff": "safe"}
+        with self.assertRaises(m.OwnerFallbackRequired):
+            m.semantic_review(reviewed, {provider: "key" for provider in m.PROVIDERS}, timeout)
+        self.assertEqual(calls, list(m.PROVIDERS))
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(
+            target, phase="provider_started", provider_decision=None)
+        run["conclusion"] = "timed_out"
+        double = LedgerDouble([check], run, target["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1]:
+                receipt = m.recover_stale_content_reservation(
+                    m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertNotEqual(receipt["conclusion"], "success")
+        self.assertEqual(len(calls), len(m.PROVIDERS))
+
+    def test_stale_base_recovery_cannot_publish_pass(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(
+            target, phase="verdict_received", provider_decision="PASS")
+        live_main = "f" * 40
+        self.assertNotEqual(live_main, target["base_sha"])
+        double = LedgerDouble([check], run, live_main)
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1], self._bind(double)[2]:
+                receipt = m.recover_stale_content_reservation(
+                    m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertTrue(receipt["stale_base"])
+        self.assertEqual(receipt["live_main_sha"], live_main)
+        self.assertEqual(receipt["original_provenance"]["provider_decision"], "PASS")
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(double.patches[0]["conclusion"], "neutral")
+        self.assertNotEqual(double.patches[0]["conclusion"], "success")
+        moved = {"state": "open", "head": {"sha": target["head_sha"], "repo": {"full_name": m.REPO}},
+                 "base": {"ref": "main", "sha": live_main, "repo": {"full_name": m.REPO}}}
+        with self.assertRaises(m.Hold) as held:
+            m.require_live_identity(moved, target)
+        self.assertEqual(str(held.exception), "PR_HEAD_OR_BASE_MOVED_DURING_REVIEW")
+
+    def test_active_prior_run_blocks_recovery(self):
+        target = self._ledger_target()
+        _provenance, check, run = self._dead_reservation(target)
+        run["status"] = "in_progress"
+        run["conclusion"] = None
+        double = LedgerDouble([check], run, target["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1]:
+                with self.assertRaises(m.Hold) as held:
+                    m.recover_stale_content_reservation(
+                        m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertEqual(str(held.exception), "RECOVERY_PRIOR_RUN_UNPROVEN")
+        self.assertEqual(double.patches, [])
+        self.assertEqual(double.checks[0]["status"], "in_progress")
+
+    def test_recovery_cannot_clear_reject_when_identical_content_moves_pr(self):
+        original = self._ledger_target(pr=2269)
+        moved = self._ledger_target(pr=2270, sha="d" * 40)
+        self.assertEqual(m.content_fingerprint(original), m.content_fingerprint(moved))
+        provenance, pending, run = self._dead_reservation(moved)
+        rejected = self._ledger_run(original, "REJECT — content review", "failure")
+        rejected["id"] = 320
+        double = LedgerDouble([pending, rejected], run, moved["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1], self._bind(double)[3]:
+                with self.assertRaises(m.Hold) as held:
+                    m.reserve_content_review(moved, READ_TOKEN, QA_TOKEN)
+        self.assertEqual(str(held.exception), "PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+        self.assertEqual(double.creates, [])
+        self.assertEqual(len(double.patches), 1)
+        self.assertEqual(double.patches[0]["conclusion"], "failure")
+        self.assertEqual(rejected["output"]["title"], "REJECT — content review")
+        self.assertEqual(double.checks[1]["conclusion"], "failure")
+        self.assertNotEqual(double.patches[0]["conclusion"], "success")
+
+    def test_legitimate_revised_content_is_not_blocked_by_prior_reject(self):
+        rejected = self._ledger_target()
+        revised = self._ledger_target()
+        revised["file_blobs"] = {"src/v17.py": "f" * 40}
+        self.assertNotEqual(m.content_fingerprint(rejected), m.content_fingerprint(revised))
+        prior = self._ledger_run(rejected, "REJECT — content review", "failure")
+        with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [prior]}):
+            with self.assertRaises(m.Hold) as still_rejected:
+                m.trusted_content_history(m.content_fingerprint(rejected), READ_TOKEN)
+        self.assertEqual(str(still_rejected.exception), "PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+        created = {"id": 9, "head_sha": m.LEDGER_SENTINEL_SHA,
+                   "name": m.LEDGER_NAME_PREFIX + m.content_fingerprint(revised)}
+        with patch.dict(m.os.environ, self._governed_env()):
+            with patch.object(m, "gh", return_value={"total_count": 0, "check_runs": []}):
+                with patch.object(m, "request_json", return_value=created) as api:
+                    reserved = m.reserve_content_review(revised, READ_TOKEN, QA_TOKEN)
+        self.assertEqual(reserved["digest"], m.content_fingerprint(revised))
+        self.assertEqual(api.call_args.kwargs["data"]["status"], "in_progress")
+        self.assertEqual(api.call_args.kwargs["data"]["external_id"], reserved["digest"])
+
+    def test_in_progress_without_provenance_or_recovery_mode_stays_blocked(self):
+        target = self._ledger_target()
+        pending = self._ledger_run(target, "", None, "in_progress")
+        with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [pending]}):
+            with patch.object(m, "request_json", side_effect=AssertionError("must not write")):
+                with self.assertRaises(m.Hold) as blocked:
+                    m.reserve_content_review(target, READ_TOKEN, QA_TOKEN)
+        self.assertEqual(str(blocked.exception), "CONTENT_LEDGER_IN_PROGRESS")
+        with patch.dict(m.os.environ, self._governed_env()):
+            with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [pending]}):
+                with patch.object(m, "request_json", side_effect=AssertionError("must not write")):
+                    with self.assertRaises(m.Hold) as unproven:
+                        m.reserve_content_review(target, READ_TOKEN, QA_TOKEN)
+        self.assertEqual(str(unproven.exception), "RECOVERY_PROVENANCE_INCOMPLETE")
+
+    def test_recorded_reject_cannot_be_downgraded_on_commit(self):
+        target = self._ledger_target()
+        provenance, _check, _run = self._dead_reservation(
+            target, phase="verdict_received", provider_decision="REJECT")
+        reservation = {"id": 321, "digest": provenance["digest"], "provenance": provenance}
+        hold = {"pr_number": target["pr"], "head_sha": target["head_sha"],
+                "run_id": 880, "run_attempt": 1, "decision": "HOLD"}
+        with patch.object(m, "request_json", side_effect=AssertionError("must not downgrade")):
+            with self.assertRaises(m.Hold) as immutable:
+                m.commit_content_review(reservation, hold, QA_TOKEN)
+        self.assertEqual(str(immutable.exception), "CONTENT_LEDGER_REJECT_IMMUTABLE")
+        response = {"id": 321, "conclusion": "failure", "external_id": provenance["digest"]}
+        with patch.object(m, "request_json", return_value=response) as api:
+            m.commit_content_review(reservation, {**hold, "decision": "REJECT"}, QA_TOKEN)
+        self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
+        self.assertIn(provenance["digest"], api.call_args.kwargs["data"]["output"]["text"])
+        self.assertIn('"committed_decision":"REJECT"', api.call_args.kwargs["data"]["output"]["text"])
+
+    def test_recovery_does_not_rewrite_completed_pass_or_reject(self):
+        target = self._ledger_target()
+        digest = m.content_fingerprint(target)
+        for title, conclusion, expected in (
+                ("PASS — content review", "success", "RECOVERY_RESERVATION_ABSENT"),
+                ("REJECT — content review", "failure", "PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")):
+            finished = self._ledger_run(target, title, conclusion)
+            finished["id"] = 77
+            double = LedgerDouble([finished], {"id": 1}, target["base_sha"])
+            with patch.dict(m.os.environ, self._governed_env()):
+                with patch.object(m, "gh", double.gh), patch.object(m, "request_json", double.request_json):
+                    with self.assertRaises(m.Hold) as held:
+                        m.recover_stale_content_reservation(digest, READ_TOKEN, QA_TOKEN)
+            self.assertEqual(str(held.exception), expected)
+            self.assertEqual(double.patches, [])
+            self.assertEqual(double.checks[0]["conclusion"], conclusion)
+
+    def test_ambiguous_pending_reservations_fail_closed(self):
+        target = self._ledger_target()
+        _provenance, first, run = self._dead_reservation(target)
+        second = copy.deepcopy(first)
+        second["id"] = 322
+        double = LedgerDouble([first, second], run, target["base_sha"])
+        with patch.dict(m.os.environ, self._governed_env()):
+            with self._bind(double)[0], self._bind(double)[1]:
+                with self.assertRaises(m.Hold) as held:
+                    m.recover_stale_content_reservation(
+                        m.content_fingerprint(target), READ_TOKEN, QA_TOKEN)
+        self.assertEqual(str(held.exception), "RECOVERY_AMBIGUOUS_RESERVATION")
+        self.assertEqual(double.patches, [])
+
+    def test_experimental_reroll_policy_is_inactive_and_respects_legitimate_fixes(self):
+        import inspect
+        self.assertNotIn("experimental_rereview_decision", inspect.getsource(m.main))
+        workflow = Path(__file__).resolve().parents[2] / "workflows" / "wow-v17-simple-security-review.yml"
+        text = workflow.read_text()
+        self.assertIn("WOW_QA_LEDGER_RECOVERY: governed", text)
+        self.assertNotIn("experimental_rereview", text)
+        self.assertNotIn("REROLL", text)
+        self.assertEqual(m.experimental_rereview_decision(
+            prior_reject_count=0, content_changed=False, identical_content_reject=True),
+            "REJECT_TERMINAL")
+        self.assertEqual(m.experimental_rereview_decision(
+            prior_reject_count=0, content_changed=True, identical_content_reject=True),
+            "REJECT_TERMINAL")
+        self.assertEqual(m.experimental_rereview_decision(
+            prior_reject_count=2, content_changed=True, identical_content_reject=False),
+            "REVIEW_ELIGIBLE")
+        self.assertEqual(m.experimental_rereview_decision(
+            prior_reject_count=m.EXPERIMENTAL_REROLL_BUDGET, content_changed=True,
+            identical_content_reject=False), "HOLD_BUDGET")
+        self.assertNotEqual("PASS", m.experimental_rereview_decision(
+            prior_reject_count=0, content_changed=True, identical_content_reject=False))
+        self.assertEqual(m._recovery_terminal_decision({"provider_decision": "PASS"}, False), "HOLD")
+        self.assertEqual(m._recovery_terminal_decision({"provider_decision": "REJECT"}, False), "REJECT")
+        self.assertNotIn("success", inspect.getsource(m._complete_recovered_check))
 
 if __name__ == "__main__":
     unittest.main()

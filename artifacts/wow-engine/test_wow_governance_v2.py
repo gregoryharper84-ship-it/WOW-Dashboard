@@ -43,6 +43,16 @@ def test_source_review_negative_suite_runs_on_pr_head():
         "test_reject_content_ledger_is_not_duplicated_by_same_sha_page_limit",
         "test_content_hash_is_stable_across_pr_sha_and_base_not_file_bytes",
         "test_review_client_denies_patch_to_anything_except_qa_check_run",
+        "test_kill_after_reservation_recovers_hold_not_pass",
+        "test_confirmed_reject_followed_by_failed_ledger_patch_recovers_as_reject",
+        "test_two_recovery_workers_race_same_reservation",
+        "test_missing_or_malformed_qa_app_auth_cannot_complete_reservation",
+        "test_duplicate_recovery_event_is_idempotent",
+        "test_stale_base_recovery_cannot_publish_pass",
+        "test_recovery_cannot_clear_reject_when_identical_content_moves_pr",
+        "test_legitimate_revised_content_is_not_blocked_by_prior_reject",
+        "test_experimental_reroll_policy_is_inactive_and_respects_legitimate_fixes",
+        "test_recorded_reject_cannot_be_downgraded_on_commit",
     ):
         assert name in result.stderr, result.stderr
 

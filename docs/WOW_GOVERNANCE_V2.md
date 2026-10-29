@@ -108,25 +108,40 @@ A semantic review never treats a crashed or cancelled prior `in_progress` check 
 PASS. Malformed top-level provider JSON is typed HOLD; unexpected caught
 runtime exceptions after a verified reservation are likewise recorded as
 `REVIEW_INTERNAL_EXCEPTION_<type>` and the reviewer attempts to finish the
-QA-App sentinel ledger with a HOLD. If the runner is killed, times out, loses
-GitHub access, or ledger PATCH cannot be verified, the reservation intentionally
-remains `in_progress` and another review must not begin for the same content.
+QA-App sentinel ledger with a HOLD. The reservation records its check-run id,
+content digest, PR, head, base, Actions run id, attempt and actor before the
+provider is called, then records `provider_started` and any received verdict
+on that same check.
 
-Recovery of a dangling reservation is **an explicit independently authorized
-QA operation**, not an automatic retry or GitHub check deletion. The QA
-operator must inspect the original run ID, attempted verdict, exact content
-digest, check run ID, QA App ID, original PR/head/base and whether an adverse
-review response was received before cancellation. Any confirmed REJECT must
-be completed as REJECT, never HOLD. If the evidence is incomplete, keep
-the reservation held and escalate to Security/Architect. Only a verified
-non-adverse cancellation or provider outage may be completed as HOLD using
-the separate QA App identity, with a durable recovery receipt; check history
-must remain intact. No Engineering App or owner token may overwrite it.
+If the runner is killed, times out, loses GitHub access, or the completing
+PATCH cannot be verified, the check stays `in_progress`. The next review on
+that digest may run **governed recovery** only when `WOW_QA_LEDGER_RECOVERY=governed`
+and `WOW_QA_APP_ID` is exactly `5245832`. Recovery uses the separate QA App
+token, never the read token or an Engineering/owner token. It completes the
+original check in place. It does not delete history and it never writes PASS.
 
-A one-byte modification creates different changed content and is intentionally
-subject to a fresh review. This ledger prevents *identical-content* resampling,
-not all possible re-rolls. Per-PR attempt budgets and a content-equivalence
-policy for small edits need separate authorized design and tests.
+Recovery requires a provenance object, a terminal Actions run of this workflow
+whose id, attempt, path and actor match that object, and a readable protected
+`main` SHA. Recoverable run conclusions are `cancelled`, `timed_out`, `failure`
+and `startup_failure`. A run that is still active is not recovered. A recorded
+provider REJECT, or any sibling REJECT for the same digest, is completed as
+REJECT. A missing durable verdict, or a verdict that was PASS or HOLD but never
+published, is completed as HOLD. HOLD does not approve the PR. The receipt
+keeps the original evidence, sets `can_execute` false, and is idempotent for
+the same reservation. Two workers serialize on the digest and write one
+deterministic receipt. Transport retries are bounded to 3. Missing, shared,
+short, or non-QA credentials fail closed with no completing write. Evidence
+that cannot be proven, including a legacy `in_progress` check with no
+provenance, stays `in_progress` for Security/Architect. A stale `main` SHA is
+recorded on the receipt and still cannot become PASS.
+
+A one-byte modification changes the blob SHA and is a new content digest. It
+receives a fresh review. Identical bytes remain a terminal REJECT across PRs.
+`experimental_rereview_decision` is an inactive recommendation: a changed
+digest stays eligible for 3 prior content REJECTS and then HOLDs, and identical
+content stays REJECT. `main()` and this workflow do not call it. Turning that
+budget on requires a separate Security/Architect authorization because it can
+block a legitimate fix.
 
 ## Cross-PR content REJECT ledger — P0 repair candidate
 
@@ -145,7 +160,8 @@ The check name is `WOW Semantic Content Ledger <64-digit digest>`, and
 status. The reviewer reads **all** check runs, bounded to 1,000, and only
 accepts exact QA App ID 5245832, sentinel SHA and external ID. Previous
 `REJECT` is terminal across PRs and rebases. A stale/crashed `in_progress`
-reservation is also a typed HOLD, never a new ungoverned attempt. Completed
+reservation is not a new ungoverned attempt. Governed recovery may complete
+that same check as HOLD or REJECT; it never completes it as PASS. Completed
 `HOLD` (unavailability) and `PASS` do not prohibit a genuine new review.
 
 The GitHub workflow uses one **global single-writer concurrency group** for
@@ -163,8 +179,8 @@ independently reconcile any earlier rejected trust-root diffs or retain a hold
 on their reentry. This does not guarantee cross-PR replay security until
 the source is deployed, the QA App check-read/write canary (PASS and REJECT)
 runs, and the required semantic check is enforced. A ledger check failure
-or dangling reservation must be repaired with an authenticated provenance
-audit, not a silent delete/bypass. Credential names for the `wow-qa`
+or dangling reservation must be repaired by governed QA-App recovery or an
+authenticated provenance audit, not a silent delete/bypass. Credential names for the `wow-qa`
 environment are `WOW_QA_REVIEW_ANTHROPIC_API_KEY` and
 `WOW_QA_REVIEW_GEMINI_API_KEY`; source code cannot supply absent secrets.
 Do not print or paste actual keys.

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from pathlib import Path
 import sys
 from urllib.error import HTTPError, URLError
@@ -26,6 +27,20 @@ QA_APP_ID = 5245832
 # Immutable, reachable main commit used only as a namespaced QA App check-run store.
 LEDGER_SENTINEL_SHA = "79fa0c275a58cd9d397c5a1bc81d641b6dad7f75"
 LEDGER_NAME_PREFIX = "WOW Semantic Content Ledger "
+RESERVATION_SCHEMA = "wow-qa-content-reservation-v1"
+RECOVERY_SCHEMA = "wow-qa-ledger-recovery-v1"
+RECOVERY_MODE = "governed"
+RECOVERY_MAX_ATTEMPTS = 3
+RECOVERABLE_RUN_CONCLUSIONS = frozenset(
+    {"cancelled", "timed_out", "failure", "startup_failure"})
+REVIEW_WORKFLOW_PATH = ".github/workflows/wow-v17-simple-security-review.yml"
+# Recommendation only. main() does not call the experimental budget.
+EXPERIMENTAL_REROLL_BUDGET = 3
+_RECOVERY_RETRYABLE = frozenset({
+    "GITHUB_TRANSPORT", "GITHUB_HTTP_502", "GITHUB_HTTP_503", "GITHUB_HTTP_504",
+})
+_RECOVERY_LOCKS_GUARD = threading.Lock()
+_RECOVERY_LOCKS = {}
 # Only explicit typed availability failures are eligible for the alternate reviewer.
 CREDIT_ERRORS = ("credit balance is too low", "insufficient credits", "quota exceeded",
                  "billing quota exceeded", "quota exhausted")
@@ -524,47 +539,432 @@ def trusted_content_history(digest, read_token):
     raise Hold("CONTENT_LEDGER_UNBOUNDED")
 
 
+def build_reservation_provenance(target, digest):
+    """Exact PR/run evidence stored on the check before any provider call."""
+    try:
+        run_id = int(os.environ["GITHUB_RUN_ID"])
+        run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+    except (KeyError, TypeError, ValueError):
+        raise Hold("CONTENT_LEDGER_PROVENANCE_INCOMPLETE") from None
+    actor = os.environ.get("GITHUB_ACTOR", "")
+    pr = target.get("pr")
+    head = target.get("head_sha")
+    base = target.get("base_sha")
+    if (run_id <= 0 or run_attempt <= 0 or type(actor) is not str or not actor
+            or actor != actor.strip() or len(actor) > 128 or any(ch.isspace() for ch in actor)
+            or type(pr) is not int or pr <= 0
+            or type(head) is not str or not re.fullmatch(r"[a-f0-9]{40}", head)
+            or type(base) is not str or not re.fullmatch(r"[a-f0-9]{40}", base)
+            or type(digest) is not str or not re.fullmatch(r"[a-f0-9]{64}", digest)):
+        raise Hold("CONTENT_LEDGER_PROVENANCE_INCOMPLETE")
+    return {
+        "schema": RESERVATION_SCHEMA, "phase": "reserved", "provider_decision": None,
+        "pr_number": pr, "head_sha": head, "base_sha": base, "run_id": run_id,
+        "run_attempt": run_attempt, "actor": actor, "qa_app_id": QA_APP_ID,
+        "digest": digest, "can_execute": False,
+    }
+
+
+def _reservation_output(provenance):
+    return {
+        "title": "IN_PROGRESS — content reservation",
+        "summary": (f"QA reservation digest={provenance['digest']} "
+                    f"PR={provenance['pr_number']} phase={provenance['phase']} "
+                    f"run={provenance['run_id']}/{provenance['run_attempt']}"),
+        "text": json.dumps(provenance, sort_keys=True, separators=(",", ":")),
+    }
+
+
 def reserve_content_review(target, read_token, qa_token):
     """Record durable IN_PROGRESS before invoking any semantic reviewer."""
     digest = content_fingerprint(target)
-    trusted_content_history(digest, read_token)
+    try:
+        trusted_content_history(digest, read_token)
+    except Hold as exc:
+        if (str(exc) != "CONTENT_LEDGER_IN_PROGRESS"
+                or os.environ.get("WOW_QA_LEDGER_RECOVERY") != RECOVERY_MODE):
+            raise
+        recover_stale_content_reservation(digest, read_token, qa_token)
+        trusted_content_history(digest, read_token)
     if not qa_token:
         raise Hold("CONTENT_LEDGER_QA_APP_TOKEN_MISSING")
+    provenance = build_reservation_provenance(target, digest)
     result = request_json(
         "https://api.github.com/repos/" + REPO + "/check-runs", token=qa_token,
         data={"name": LEDGER_NAME_PREFIX + digest,
               "head_sha": LEDGER_SENTINEL_SHA, "external_id": digest,
-              "status": "in_progress"})
+              "status": "in_progress", "output": _reservation_output(provenance)})
     if (type(result) is not dict or type(result.get("id")) is not int
             or result["id"] <= 0 or result.get("head_sha") != LEDGER_SENTINEL_SHA
             or result.get("name") != LEDGER_NAME_PREFIX + digest):
         raise Hold("CONTENT_LEDGER_RESERVATION_UNVERIFIED")
-    return {"id": result["id"], "digest": digest}
+    return {"id": result["id"], "digest": digest, "provenance": provenance}
+
+
+def annotate_content_reservation(reservation, qa_token, *, phase, provider_decision=None):
+    """Durably record the provider phase before the runner can be cancelled."""
+    if not qa_token:
+        raise Hold("CONTENT_LEDGER_QA_APP_TOKEN_MISSING")
+    if phase not in ("reserved", "provider_started", "verdict_received"):
+        raise Hold("CONTENT_LEDGER_PHASE_INVALID")
+    if provider_decision not in (None, "PASS", "REJECT", "HOLD"):
+        raise Hold("CONTENT_LEDGER_DECISION_INVALID")
+    if (phase == "verdict_received") != (provider_decision is not None):
+        raise Hold("CONTENT_LEDGER_PHASE_INVALID")
+    provenance = dict(reservation.get("provenance") or {})
+    if (provenance.get("schema") != RESERVATION_SCHEMA
+            or provenance.get("digest") != reservation.get("digest")):
+        raise Hold("CONTENT_LEDGER_PROVENANCE_INCOMPLETE")
+    provenance["phase"] = phase
+    provenance["provider_decision"] = provider_decision
+    provenance["check_run_id"] = reservation["id"]
+    response = request_json(
+        "https://api.github.com/repos/" + REPO + f"/check-runs/{reservation['id']}",
+        token=qa_token, method="PATCH",
+        data={"status": "in_progress", "external_id": reservation["digest"],
+              "output": _reservation_output(provenance)})
+    if (type(response) is not dict or response.get("id") != reservation["id"]
+            or response.get("external_id") != reservation["digest"]
+            or response.get("status") != "in_progress"
+            or (response.get("app") or {}).get("id") != QA_APP_ID):
+        raise Hold("CONTENT_LEDGER_RESERVATION_UNVERIFIED")
+    updated = dict(reservation)
+    updated["provenance"] = provenance
+    return updated
 
 
 def commit_content_review(reservation, receipt, qa_token):
     """Persist decision before publishing any PR-head PASS.
 
-    If the update fails, the incomplete reservation remains as a permanent
-    fail-closed HOLD, requiring an independently inspected recovery action.
+    A failed PATCH leaves the reservation in_progress. Governed recovery may
+    later complete that same check. A durable REJECT is never rewritten.
     """
     decision = receipt.get("decision")
     if decision not in ("PASS", "REJECT", "HOLD"):
         raise Hold("CONTENT_LEDGER_DECISION_INVALID")
+    provenance = reservation.get("provenance") or {}
+    if type(provenance) is not dict:
+        raise Hold("CONTENT_LEDGER_PROVENANCE_INCOMPLETE")
+    if provenance.get("provider_decision") == "REJECT" and decision != "REJECT":
+        raise Hold("CONTENT_LEDGER_REJECT_IMMUTABLE")
     results = {"PASS": "success", "REJECT": "failure", "HOLD": "neutral"}
+    evidence = {"schema": RESERVATION_SCHEMA, "provenance": provenance,
+                "committed_decision": decision, "can_execute": False}
     output = {"title": decision + " — content review",
               "summary": (f"QA-only immutable content review. digest={reservation['digest']} "
                           f"PR={receipt['pr_number']} SHA={receipt['head_sha']} "
                           f"review={receipt['run_id']}/{receipt['run_attempt']} "
-                          f"decision={decision}; no wagering/release authority.")}
+                          f"decision={decision}; no wagering/release authority."),
+              "text": json.dumps(evidence, sort_keys=True, separators=(",", ":"))}
     response = request_json(
         "https://api.github.com/repos/" + REPO +
         f"/check-runs/{reservation['id']}", token=qa_token, method="PATCH",
-        data={"status": "completed", "conclusion": results[decision], "output": output})
+        data={"status": "completed", "conclusion": results[decision], "output": output,
+              "external_id": reservation["digest"]})
     if (type(response) is not dict or response.get("id") != reservation["id"]
             or response.get("conclusion") != results[decision]
             or response.get("external_id") != reservation["digest"]):
         raise Hold("CONTENT_LEDGER_COMMIT_UNVERIFIED")
+
+
+def _recovery_lock(digest):
+    with _RECOVERY_LOCKS_GUARD:
+        lock = _RECOVERY_LOCKS.get(digest)
+        if lock is None:
+            lock = threading.Lock()
+            _RECOVERY_LOCKS[digest] = lock
+        return lock
+
+
+def _recovery_call(operation):
+    """Bound GitHub transport retries. Auth and evidence failures are not retried."""
+    for attempt in range(1, RECOVERY_MAX_ATTEMPTS + 1):
+        try:
+            return operation()
+        except Hold as exc:
+            if str(exc) not in _RECOVERY_RETRYABLE or attempt == RECOVERY_MAX_ATTEMPTS:
+                if str(exc) in _RECOVERY_RETRYABLE:
+                    raise Hold("RECOVERY_RETRIES_EXHAUSTED") from None
+                raise
+    raise Hold("RECOVERY_RETRIES_EXHAUSTED")
+
+
+def require_recovery_qa_identity(qa_token, read_token):
+    """Recovery mutations require a distinct QA App token, not the read token."""
+    if os.environ.get("WOW_QA_APP_ID") != str(QA_APP_ID):
+        raise Hold("RECOVERY_QA_APP_AUTH_MALFORMED")
+    if type(read_token) is not str or not read_token:
+        raise Hold("RECOVERY_QA_APP_AUTH_MISSING")
+    if type(qa_token) is not str or not qa_token or qa_token == read_token:
+        raise Hold("RECOVERY_QA_APP_AUTH_MISSING")
+    if qa_token != qa_token.strip() or len(qa_token) < 16:
+        raise Hold("RECOVERY_QA_APP_AUTH_MALFORMED")
+
+
+def list_qa_ledger_runs(digest, read_token):
+    if not read_token:
+        raise Hold("CONTENT_LEDGER_READ_TOKEN_MISSING")
+    if type(digest) is not str or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise Hold("CONTENT_LEDGER_PROVENANCE_INVALID")
+    name = LEDGER_NAME_PREFIX + digest
+    path = (f"/commits/{LEDGER_SENTINEL_SHA}/check-runs?"
+            f"check_name=WOW%20Semantic%20Content%20Ledger%20{digest}&filter=all&per_page=100")
+    total = None
+    matched = []
+    for page in range(1, 11):
+        result = gh(path + f"&page={page}", read_token)
+        if (type(result) is not dict or type(result.get("total_count")) is not int
+                or result["total_count"] < 0 or result["total_count"] > 1000
+                or type(result.get("check_runs")) is not list
+                or (total is not None and total != result["total_count"])):
+            raise Hold("CONTENT_LEDGER_INVENTORY_UNTRUSTED")
+        total = result["total_count"]
+        for run in result["check_runs"]:
+            if type(run) is not dict:
+                raise Hold("CONTENT_LEDGER_CHECK_INVALID")
+            app = run.get("app")
+            if type(app) is not dict or app.get("id") != QA_APP_ID:
+                continue
+            if run.get("name") != name:
+                continue
+            if (run.get("head_sha") != LEDGER_SENTINEL_SHA
+                    or run.get("external_id") != digest):
+                raise Hold("CONTENT_LEDGER_PROVENANCE_INVALID")
+            matched.append(run)
+        if page * 100 >= total:
+            if len(matched) > 1000:
+                raise Hold("CONTENT_LEDGER_UNBOUNDED")
+            return matched
+    raise Hold("CONTENT_LEDGER_UNBOUNDED")
+
+
+def _provenance_from_check(run, digest):
+    if (type(run) is not dict or run.get("head_sha") != LEDGER_SENTINEL_SHA
+            or run.get("external_id") != digest or type(run.get("id")) is not int
+            or run["id"] <= 0):
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    text = (run.get("output") or {}).get("text") if type(run.get("output")) is dict else None
+    if type(text) is not str or not text or len(text) > 20000:
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE") from None
+    required = ("schema", "phase", "provider_decision", "pr_number", "head_sha", "base_sha",
+                "run_id", "run_attempt", "actor", "qa_app_id", "digest", "can_execute")
+    if (type(obj) is not dict or any(key not in obj for key in required)
+            or obj["schema"] != RESERVATION_SCHEMA or obj["digest"] != digest
+            or obj["can_execute"] is not False or obj["qa_app_id"] != QA_APP_ID):
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    if obj["phase"] not in ("reserved", "provider_started", "verdict_received"):
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    if type(obj["pr_number"]) is not int or obj["pr_number"] <= 0:
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    if any(type(obj[key]) is not str or not re.fullmatch(r"[a-f0-9]{40}", obj[key])
+           for key in ("head_sha", "base_sha")):
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    if (type(obj["run_id"]) is not int or type(obj["run_attempt"]) is not int
+            or obj["run_id"] <= 0 or obj["run_attempt"] <= 0):
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    actor = obj["actor"]
+    if type(actor) is not str or not actor or actor != actor.strip() or len(actor) > 128:
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    decision = obj["provider_decision"]
+    if decision not in (None, "PASS", "REJECT", "HOLD"):
+        raise Hold("RECOVERY_PROVIDER_DECISION_UNPROVEN")
+    if obj["phase"] == "verdict_received" and decision is None:
+        raise Hold("RECOVERY_PROVIDER_DECISION_UNPROVEN")
+    if obj["phase"] != "verdict_received" and decision is not None:
+        raise Hold("RECOVERY_PROVIDER_DECISION_UNPROVEN")
+    if "check_run_id" in obj and obj["check_run_id"] != run["id"]:
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    return obj
+
+
+def _receipt_from_output(run, digest):
+    output = run.get("output") if type(run) is dict else None
+    text = output.get("text") if type(output) is dict else None
+    if type(text) is not str or not text or len(text) > 20000:
+        return None
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if (type(obj) is not dict or obj.get("schema") != RECOVERY_SCHEMA
+            or obj.get("can_execute") is not False or obj.get("no_live_trading") is not True
+            or obj.get("decision") not in ("HOLD", "REJECT") or obj.get("digest") != digest
+            or obj.get("reservation_id") != run.get("id")):
+        return None
+    expected = "failure" if obj["decision"] == "REJECT" else "neutral"
+    if (run.get("status") != "completed" or run.get("conclusion") != expected
+            or obj.get("conclusion") != expected):
+        return None
+    return obj
+
+
+def _prove_prior_run(provenance, read_token):
+    run = _recovery_call(lambda: gh(f"/actions/runs/{provenance['run_id']}", read_token))
+    actor = run.get("actor") if type(run) is dict else None
+    login = actor.get("login") if type(actor) is dict else None
+    if (type(run) is not dict or run.get("id") != provenance["run_id"]
+            or run.get("run_attempt") != provenance["run_attempt"]
+            or run.get("status") != "completed"
+            or run.get("conclusion") not in RECOVERABLE_RUN_CONCLUSIONS
+            or run.get("path") != REVIEW_WORKFLOW_PATH
+            or login != provenance["actor"]):
+        raise Hold("RECOVERY_PRIOR_RUN_UNPROVEN")
+    return run
+
+
+def _live_main_sha(read_token):
+    ref = _recovery_call(lambda: gh("/git/ref/heads/main", read_token))
+    sha = (ref.get("object") or {}).get("sha") if type(ref) is dict else None
+    if type(sha) is not str or not re.fullmatch(r"[a-f0-9]{40}", sha):
+        raise Hold("RECOVERY_BASE_UNPROVEN")
+    return sha
+
+
+def _recovery_terminal_decision(provenance, sibling_reject):
+    """Complete a dead reservation as REJECT or HOLD. Never PASS."""
+    if sibling_reject or provenance.get("provider_decision") == "REJECT":
+        return "REJECT"
+    return "HOLD"
+
+
+def _recovery_receipt(check, provenance, decision, prior_run, live_main):
+    conclusion = "failure" if decision == "REJECT" else "neutral"
+    material = {
+        "reservation_id": check["id"], "digest": provenance["digest"],
+        "run_id": provenance["run_id"], "run_attempt": provenance["run_attempt"],
+        "phase": provenance["phase"], "provider_decision": provenance["provider_decision"],
+        "decision": decision,
+    }
+    idem = hashlib.sha256(json.dumps(
+        material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {
+        "schema": RECOVERY_SCHEMA, "reservation_id": check["id"],
+        "digest": provenance["digest"], "decision": decision, "conclusion": conclusion,
+        "original_provenance": provenance,
+        "prior_run": {"id": prior_run["id"], "run_attempt": prior_run["run_attempt"],
+                      "status": prior_run["status"], "conclusion": prior_run["conclusion"],
+                      "actor": provenance["actor"], "path": prior_run["path"]},
+        "live_main_sha": live_main, "stale_base": live_main != provenance["base_sha"],
+        "idempotency_key": idem, "retry_bound": RECOVERY_MAX_ATTEMPTS,
+        "can_execute": False, "no_live_trading": True,
+    }
+
+
+def _classify_ledger_runs(runs):
+    rejects = []
+    pending = []
+    receipts = []
+    for run in runs:
+        status = run.get("status")
+        if status == "in_progress":
+            pending.append(run)
+            continue
+        if status != "completed":
+            raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+        title = (run.get("output") or {}).get("title") if type(run.get("output")) is dict else None
+        conclusion = run.get("conclusion")
+        if title == "REJECT — content review" and conclusion == "failure":
+            rejects.append(run)
+            continue
+        if title == "HOLD — content review" and conclusion == "neutral":
+            receipts.append(run)
+            continue
+        if title == "PASS — content review" and conclusion == "success":
+            continue
+        raise Hold("CONTENT_LEDGER_VERDICT_UNTRUSTED")
+    return rejects, pending, receipts
+
+
+def _complete_recovered_check(check, receipt, qa_token):
+    decision = receipt["decision"]
+    if decision not in ("HOLD", "REJECT"):
+        raise Hold("RECOVERY_DECISION_INVALID")
+    conclusion = receipt["conclusion"]
+    output = {"title": decision + " — content review",
+              "summary": (f"QA governed recovery. digest={receipt['digest']} "
+                          f"check={check['id']} decision={decision} "
+                          f"prior_run={receipt['prior_run']['id']} "
+                          f"stale_base={receipt['stale_base']}; no pass and no wagering."),
+              "text": json.dumps(receipt, sort_keys=True, separators=(",", ":"))}
+    try:
+        response = _recovery_call(lambda: request_json(
+            "https://api.github.com/repos/" + REPO + f"/check-runs/{check['id']}",
+            token=qa_token, method="PATCH",
+            data={"status": "completed", "conclusion": conclusion, "output": output,
+                  "external_id": receipt["digest"]}))
+    except Hold as exc:
+        if str(exc) == "GITHUB_HTTP_403":
+            raise Hold("RECOVERY_QA_APP_AUTH_REJECTED") from None
+        raise
+    if (type(response) is not dict or response.get("id") != check["id"]
+            or response.get("status") != "completed" or response.get("conclusion") != conclusion
+            or response.get("external_id") != receipt["digest"]
+            or (response.get("app") or {}).get("id") != QA_APP_ID):
+        raise Hold("RECOVERY_QA_APP_AUTH_UNVERIFIED")
+    return response
+
+
+def recover_stale_content_reservation(digest, read_token, qa_token):
+    """Complete one stale QA reservation in place. Never PASS and never delete."""
+    if os.environ.get("WOW_QA_LEDGER_RECOVERY") != RECOVERY_MODE:
+        raise Hold("RECOVERY_MODE_INACTIVE")
+    require_recovery_qa_identity(qa_token, read_token)
+    if type(digest) is not str or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise Hold("RECOVERY_PROVENANCE_INCOMPLETE")
+    with _recovery_lock(digest):
+        runs = _recovery_call(lambda: list_qa_ledger_runs(digest, read_token))
+        rejects, pending, hold_runs = _classify_ledger_runs(runs)
+        if len(pending) > 1:
+            raise Hold("RECOVERY_AMBIGUOUS_RESERVATION")
+        if not pending:
+            if rejects:
+                raise Hold("PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+            for run in hold_runs:
+                receipt = _receipt_from_output(run, digest)
+                if receipt is not None and receipt.get("decision") != "PASS":
+                    return receipt
+            raise Hold("RECOVERY_RESERVATION_ABSENT")
+        check = pending[0]
+        provenance = _provenance_from_check(check, digest)
+        prior_run = _prove_prior_run(provenance, read_token)
+        live_main = _live_main_sha(read_token)
+        decision = _recovery_terminal_decision(provenance, bool(rejects))
+        if decision == "PASS":
+            raise Hold("RECOVERY_DECISION_INVALID")
+        receipt = _recovery_receipt(check, provenance, decision, prior_run, live_main)
+        _complete_recovered_check(check, receipt, qa_token)
+        confirmed = _recovery_call(lambda: gh(f"/check-runs/{check['id']}", read_token))
+        confirmed_receipt = _receipt_from_output(confirmed, digest)
+        if (confirmed_receipt is None
+                or confirmed_receipt.get("idempotency_key") != receipt["idempotency_key"]
+                or confirmed_receipt.get("decision") != decision
+                or confirmed.get("conclusion") == "success"):
+            raise Hold("RECOVERY_RACE_UNVERIFIED")
+        return confirmed_receipt
+
+
+def experimental_rereview_decision(*, prior_reject_count, content_changed, identical_content_reject):
+    """Inactive attempt budget. Not called by main() or the QA workflow.
+
+    Identical bytes stay a terminal REJECT. A changed digest may be reviewed
+    until EXPERIMENTAL_REROLL_BUDGET prior content REJECTS, then HOLD.
+    This function never returns PASS. Activation needs Security/Architect approval.
+    """
+    if identical_content_reject is True:
+        return "REJECT_TERMINAL"
+    if identical_content_reject is not False or type(content_changed) is not bool:
+        raise Hold("REROLL_POLICY_EVIDENCE_INVALID")
+    if content_changed is False:
+        return "REJECT_TERMINAL"
+    if type(prior_reject_count) is not int or prior_reject_count < 0:
+        raise Hold("REROLL_POLICY_EVIDENCE_INVALID")
+    if prior_reject_count >= EXPERIMENTAL_REROLL_BUDGET:
+        return "HOLD_BUDGET"
+    return "REVIEW_ELIGIBLE"
 
 
 def publish_check(head_sha, receipt, token):
@@ -623,6 +1023,8 @@ def main():
         if not any(credentials.values()) and target["author"] != "wow-engineering[bot]":
             raise Hold("PROVIDER_CREDENTIALS_UNAVAILABLE")
         reservation = reserve_content_review(target, read_token, qa_token)
+        reservation = annotate_content_reservation(
+            reservation, qa_token, phase="provider_started")
         verdict, output, provider, attempts = semantic_review(target, credentials)
         if verdict == "REJECT":
             # A real rejection must be persisted for the captured file bytes
@@ -631,7 +1033,9 @@ def main():
             receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
                                    attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
                                    attempt=os.environ["GITHUB_RUN_ATTEMPT"])
-        else:
+        reservation = annotate_content_reservation(
+            reservation, qa_token, phase="verdict_received", provider_decision=verdict)
+        if verdict != "REJECT":
             # Only positive acceptance requires a current live head/base.
             current = gh(f"/pulls/{pr_number}", read_token)
             require_live_identity(current, target)
@@ -647,6 +1051,9 @@ def main():
             require_live_identity(gh(f"/pulls/{pr_number}", read_token), target)
             human_verdict = {"source_review": "PASS", "security_review": "PASS",
                              "probability_integrity_review": "PASS", "findings": []}
+            if reservation is not None:
+                reservation = annotate_content_reservation(
+                    reservation, qa_token, phase="verdict_received", provider_decision="PASS")
             receipt = make_receipt(
                 target, decision="PASS", reviewer=OWNER_REVIEWER,
                 verdict=human_verdict, attempts=exc.attempts,

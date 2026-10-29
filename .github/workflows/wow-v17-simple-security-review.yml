@@ -20,7 +20,9 @@ permissions:
   pull-requests: read
   checks: read
 concurrency:
-  # Global single-writer lease: serialize QA App content-ledger reservations across PRs.
+  # Global single-writer lease: serialize QA App content-ledger reservations and
+  # governed stale-reservation recovery across PRs. Do not cancel an in-flight
+  # reviewer; cancellation is what orphans an in_progress reservation.
   group: wow-independent-security-qa-ledger-writer
   cancel-in-progress: false
   queue: max
@@ -61,6 +63,10 @@ jobs:
           WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
           # Optional, protected wow-qa environment variable. Default remains Claude.
           WOW_QA_PRIMARY_PROVIDER: ${{ vars.WOW_QA_PRIMARY_PROVIDER }}
+          # Governed recovery completes a dead in_progress reservation as HOLD or
+          # a recorded REJECT. It is not an attempt-budget or re-roll policy.
+          WOW_QA_LEDGER_RECOVERY: governed
+          WOW_QA_APP_ID: ${{ vars.WOW_QA_APP_ID }}
         run: python .github/scripts/wow_simple_security_review.py
       - name: Retain attributable reviewer decision
         if: always()
