@@ -429,3 +429,29 @@ def test_global_off_semantic_canary_requires_unique_current_attempt_receipt():
     assert "--verify" in content
     assert '(.event == "workflow_dispatch" or .event == "workflow_run")' in content
     assert "steps.route.outputs.applicable == 'true' && github.event_name == 'workflow_run'" in content
+
+
+def test_semantic_canary_jq_receipt_cardinality_rejects_unbound_attempts():
+    jq = shutil.which("jq")
+    if jq is None:
+        pytest.skip("GitHub Actions requires jq")
+    prefix = "wow-v17-independent-source-review-2247-" + "a" * 40
+    suffix = "-40800668523-2"
+    selector = ('[.artifacts[] | select(.expired == false and '
+                '(.name | startswith("wow-v17-independent-source-review-")) and '
+                '(.name | endswith($suffix)))] | length')
+    genuine = {"name": prefix + suffix, "expired": False}
+    for items, expected in [
+        ([genuine], 1),
+        ([dict(genuine, expired=True)], 0),
+        ([dict(genuine, name=prefix + "-40800668523-1")], 0),
+        ([genuine, genuine], 2),
+        ([], 0),
+    ]:
+        result = subprocess.run(
+            [jq, "-er", "--arg", "suffix", suffix, selector],
+            input=json.dumps({"artifacts": items}),
+            text=True, capture_output=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert int(result.stdout.strip()) == expected
