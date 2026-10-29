@@ -135,8 +135,11 @@ def normalize_capture(row: Mapping[str, Any]) -> dict[str, Any] | None:
     contract = row.get("contract")
     key = contract_key(contract)
     version = row.get("version")  # absence is a real unknown, not 'v1'
+    version_key = hashlib.sha256(json.dumps(
+        [channel, source_id, version, kind],
+        separators=(",", ":"), default=str).encode()).hexdigest()[:32]
     instance = hashlib.sha256(json.dumps(
-        [channel, source_id, version, kind, row.get("captured_at")],
+        [version_key, row.get("captured_at")],
         separators=(",", ":"), default=str).encode()).hexdigest()[:32]
     known = {"channel", "message_id", "kind", "captured_at", "published_at", "edited_at",
              "event_start_at", "edit_history_complete", "edit_indicated",
@@ -145,6 +148,7 @@ def normalize_capture(row: Mapping[str, Any]) -> dict[str, Any] | None:
              "independent_result", "text", "prices", "staking", "quality"}
     return {
         "schema_version": "WOW_DAFT_CAPTURE_V1", "instance_id": instance,
+        "message_version_key": version_key,
         "source": "DAFT", "channel": channel, "message_id": source_id,
         "message_url": row.get("message_url"), "kind": kind,
         "parent_alert_id": row.get("parent_alert_id"), "version": version,
@@ -173,11 +177,15 @@ def deduplicate_captures(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         if normalized is not None:
             versions[normalized["instance_id"]] = normalized
     theses: dict[str, list[str]] = {}
+    version_groups: dict[str, list[str]] = {}
     for item in versions.values():
+        version_groups.setdefault(item["message_version_key"], []).append(item["instance_id"])
         # Unknown exact contracts never get merged as a guessed thesis.
         k = item["thesis_key"] or ("UNRESOLVED:" + item["instance_id"])
         theses.setdefault(k, []).append(item["instance_id"])
-    return {"source_rows": len(rows), "distinct_message_versions": len(versions),
+    return {"source_rows": len(rows), "distinct_capture_instances": len(versions),
+            "distinct_message_versions": len(version_groups),
+            "message_versions": version_groups,
             "messages": list(versions.values()), "thesis_clusters": theses,
             "can_execute": False}
 
@@ -241,8 +249,13 @@ def analyze_sharp_alert(alert: Mapping[str, Any], reference: Mapping[str, Any],
     age = quote_age_seconds(offered.get("quote_at"), now)
     fresh = age is not None and age <= max_quote_age_seconds
     outcomes = tuple(reference.get("outcomes") or ())
-    source_probs = normalized_no_vig(reference.get("prices") or {}, outcomes) if reference_match else None
-    side = contract.get("side") if isinstance(contract, Mapping) else None
+    family = str((contract or {}).get("market_family") or "").upper()
+    three_way = family in {"1X2", "SOCCER_1X2", "THREE_WAY_MONEYLINE"}
+    complete_space = (set(outcomes) == {"home", "draw", "away"} if three_way
+                      else len(outcomes) == 2)
+    source_probs = (normalized_no_vig(reference.get("prices") or {}, outcomes)
+                    if reference_match and complete_space else None)
+    side = str(contract.get("side") or "").lower() if isinstance(contract, Mapping) else None
     market_p = source_probs.get(side) if source_probs else None
     # Market-only EV is permitted only for push-free binary, exact contracts.
     push_free = bool(contract.get("push_possible") is False) if isinstance(contract, Mapping) else False
