@@ -80,3 +80,26 @@ def test_stability_first_skips_premature_pr_receipt_certification_without_hiding
         assert reason in gate
     assert "if: steps.artifact.outputs.applicable == 'true'" in gate
     assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in gate
+
+def test_optional_semantic_reviewer_scoped_to_trust_roots_not_every_pr():
+    """Broken optional reviewer must not fail ordinary Class A PR checks."""
+    from fnmatch import fnmatchcase
+    review = (ROOT / ".github/workflows/wow-v17-simple-security-review.yml").read_text(encoding="utf-8")
+    auto = review.split("  pull_request_target:\\n", 1)[1].split("  workflow_dispatch:\\n", 1)[0]
+    assert "    paths:\\n" in auto
+    rules = [line.strip()[2:].strip("'\\\"") for line in auto.splitlines()
+             if line.strip().startswith("- ")]
+    for protected in (".github/workflows/wow-v17-simple-security-review.yml",
+                      ".github/scripts/wow_simple_security_review.py",
+                      ".agents/skills/security/SKILL.md",
+                      ".claude/settings.json",
+                      "artifacts/wow-engine/v17/independent_release_checks.py",
+                      "supabase/migrations/20261029_security.sql",
+                      "docs/WOW_GOVERNANCE_V2.md"):
+        assert any(fnmatchcase(protected, pat) for pat in rules), protected
+    for routine in ("artifacts/flask-scoring-api/services/health.py",
+                    "docs/user-facing-readme.md"):
+        assert not any(fnmatchcase(routine, pat) for pat in rules), routine
+    assert "  workflow_dispatch:\\n" in review
+    assert "permission-checks: write" in review
+    assert "ref: main" in review
