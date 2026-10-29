@@ -181,6 +181,39 @@ def latest_actual_provider_attempt(
     return {"status": "VERIFIED_PROVIDER_HISTORY", "run": None, "can_execute": False}
 
 
+def read_provider_history_github() -> dict[str, Any]:
+    """The canonical dispatcher uses the same authenticated attempt selector."""
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if repo != "gregoryharper84-ship-it/WOW-Dashboard" or not os.environ.get("GH_TOKEN"):
+        return {"status": "HELD", "code": "GEMINI_PROVIDER_IDENTITY_UNVERIFIED",
+                "can_execute": False}
+
+    def read(args: list[str]) -> str:
+        result = subprocess.run(args, capture_output=True, text=True,
+                                check=False, timeout=20)
+        if result.returncode != 0 or len(result.stdout) > 1024 * 1024:
+            raise ValueError("GEMINI_PROVIDER_API_UNVERIFIED")
+        return result.stdout.strip()
+
+    try:
+        runs = json.loads(read([
+            "gh", "run", "list", "--repo", repo,
+            "--workflow", "wow-v17-gemini-engineering-worker.yml",
+            "--limit", "100",
+            "--json", "databaseId,headSha,status,conclusion,updatedAt",
+        ]))
+        return latest_actual_provider_attempt(
+            runs, lambda ident: json.loads(read([
+                "gh", "api",
+                f"repos/{repo}/actions/runs/{ident}/jobs?per_page=100",
+            ])),
+        )
+    except (OSError, TypeError, ValueError, subprocess.TimeoutExpired,
+            json.JSONDecodeError):
+        return {"status": "HELD", "code": "GEMINI_PROVIDER_HISTORY_UNAVAILABLE",
+                "can_execute": False}
+
+
 def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, Any]:
     """Canonical provider recheck after acquiring the shared Actions writer lock.
 
@@ -543,6 +576,7 @@ def main(argv: list[str] | None = None) -> int:
     worker_recheck.add_argument("--comparison-file", required=True)
     worker_recheck.add_argument("--current-sha", required=True)
     sub.add_parser("worker-auto-admit-github")
+    sub.add_parser("provider-history-github")
     changed = sub.add_parser("inspect-patch")
     changed.add_argument("--files-json", required=True)
     verify = sub.add_parser("verify-candidate")
@@ -584,6 +618,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.action == "worker-auto-admit-github":
             result = recheck_auto_worker_github()
+        elif args.action == "provider-history-github":
+            result = read_provider_history_github()
         elif args.action == "inspect-patch":
             result = inspect_changed_paths(json.loads(Path(args.files_json).read_text(encoding="utf-8")))
         elif args.action == "validate-workspace":
@@ -599,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in {
         "SELECTED", "ADMITTED", "NO_ACTION", "CANDIDATE_ONLY", "COMPLETED", "TRUSTED",
-        "TESTED_CANDIDATE", "RECOVERY_ADMITTED",
+        "TESTED_CANDIDATE", "RECOVERY_ADMITTED", "VERIFIED_PROVIDER_HISTORY",
     } else 2
 
 
