@@ -60,3 +60,23 @@ def test_certifier_and_trusted_gate_preserve_exact_lineage():
         body = read(name)
         assert "permissions:" in body
         assert "can_execute=true" not in body
+
+def test_stability_first_skips_premature_pr_receipt_certification_without_hiding_qa():
+    """Opening a PR is not a signed QA receipt; preserve real re-entry routes."""
+    cert = read("wow-v17-existing-pr-governance-review")
+    gate = read("wow-v17-trusted-governance-gate")
+    assert "github.event_name != 'pull_request_target'" in cert
+    assert "github.event_name == 'workflow_run'" in gate
+    assert "github.event.workflow_run.conclusion == 'success'" in gate
+    assert "github.event.check_run.app.id == 5245853" in cert
+    assert "github.event.check_run.name == 'WOW Release Authority exact-head'" in cert
+    assert 'workflows: [wow-v17-independent-qa-check]' in cert
+    assert 'workflows: [wow-v17-existing-pr-governance-review]' in gate
+    # Retain genuine failure modes: no successful certification without
+    # unique, authenticated exact-head source artifact and its checksum.
+    for reason in ("GOVERNANCE_CERTIFIER_RECEIPT_MISSING_OR_DUPLICATE",
+                   "GOVERNANCE_RECEIPT_CHECKSUM_MISMATCH",
+                   "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH"):
+        assert reason in gate
+    assert "if: steps.artifact.outputs.applicable == 'true'" in gate
+    assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in gate
