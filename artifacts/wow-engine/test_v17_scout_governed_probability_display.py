@@ -61,42 +61,50 @@ def test_nfl_publishable_specialist_probability_is_resolved_without_scout_probab
     assert cur.calls[0][1][0] == "NFL:espn-401872931"
 
 
-def test_nfl_lookup_enforces_fitted_artifact_publication_and_exact_identity_join():
+def test_nfl_lookup_requires_matching_champion_and_exact_terminal_decision():
     cur = FakeCursor(None)
     result = lookup_governed_probability(cur, _candidate())
     sql, params = cur.calls[0]
-    assert "join public.wow_nfl_event_fitted_model_artifacts as artifact" in sql
-    assert "artifact.artifact_id=p.model_artifact_id" in sql
-    assert "artifact.probability_publishable=true" in sql
-    assert "artifact.can_execute=false" in sql
-    assert "p.model_probability_publishable=true" in sql
-    assert "p.event_key=%s" in sql
+    # Strict exact identity: a champion artifact cannot approve a different
+    # scorer or candidate's persisted probability.
+    for contract in (
+        "artifact.artifact_id=p.model_artifact_id",
+        "artifact.active=true",
+        "artifact.promoted=true",
+        "artifact.lifecycle_state='CHAMPION'",
+        "artifact.can_execute=false",
+        "p.model_probability_publishable=true",
+        "candidate.official_event_id=p.official_event_id",
+        "candidate.participant=p.selected_participant",
+        "candidate.candidate_payload->>'event_prediction_id'",
+        "p.event_prediction_id::text",
+        "terminal.candidate_id=candidate.candidate_id",
+        "terminal.run_id=candidate.run_id",
+        "candidate.terminal_label='FINAL_APPROVED'",
+        "terminal.terminal_label='FINAL_APPROVED'",
+        "terminal.final_terminal_ceiling='FINAL_APPROVED'",
+        "terminal.probability_publishable=true",
+        "terminal.can_execute=false",
+    ):
+        assert contract in sql
+    assert "artifact.probability_publishable=true" not in sql
     assert params[0] == "NFL:espn-401872931"
     assert result["governed_probability"] is None
     assert result["probability_publishable"] is False
+    assert result["specialist_status"] == "TERMINAL_PROOF_NOT_VERIFIED"
 
 
-def test_unpublished_fitted_artifact_row_is_never_displayed():
-    # A database JOIN excludes an otherwise row-publishable prediction when
-    # the referenced fitted artifact is unpublished. No probability substitution.
-    class ArtifactAwareCursor(FakeCursor):
-        def fetchone(self):
-            sql, _ = self.calls[-1]
-            if ("artifact.probability_publishable=true" in sql
-                    and self.artifact_publishable is False):
-                return None
-            return self.row
-
-    cur = ArtifactAwareCursor((
-        "Denver Broncos", 0.5796689600932923, 0.523750876984715,
-        True, "NFL_TEAM_EVENT_V1", datetime(2026, 9, 14, 20, 40, tzinfo=timezone.utc)
-    ))
-    cur.artifact_publishable = False
+def test_absent_terminal_proof_never_displays_a_row_publishable_prediction():
+    # The real Postgres query returns no row if champion lifecycle OR exact
+    # terminal/reducer evidence is missing. A fake cursor must not pretend that
+    # a model row is itself independent FINAL_APPROVED proof.
+    cur = FakeCursor(None)
     display = _display_row(cur, _candidate())
     assert display["probability"] is None
     assert display["governed_probability"] is None
     assert display["probability_display"] == "—"
     assert display["probability_publishable"] is False
+    assert display["specialist_status"] == "TERMINAL_PROOF_NOT_VERIFIED"
     assert display["can_execute"] is False
 
 
@@ -138,7 +146,7 @@ def test_missing_publishable_specialist_result_displays_pending_not_market_proba
     assert result["governed_probability"] is None
     assert result["calibrated_lower_bound"] is None
     assert result["probability_display"] == "—"
-    assert result["specialist_status"] == "PENDING_SPECIALIST"
+    assert result["specialist_status"] == "TERMINAL_PROOF_NOT_VERIFIED"
     assert result["probability_publishable"] is False
 
 
