@@ -74,7 +74,7 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
           and latest.row_status='COMPLETED'
           and latest.can_execute=false
           -- Require latest final reducer output, not earlier upstream approval.
-          and latest.detail->'result'->>'global_terminal_reducer'='V17_TERMINAL_REDUCER'
+          and latest.detail->'result'->>'global_terminal_authority'='V17_TERMINAL_REDUCER'
           and latest.detail->'result'->>'event_prediction_id'=p.event_prediction_id::text
           and latest.detail->'result'->>'selected_participant'=p.selected_participant
           and latest.detail->'result'->>'terminal_label'='FINAL_APPROVED'
@@ -83,7 +83,7 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
           and latest.detail->'result'->>'rank_eligible'='true'
           and latest.detail->>'probability_publishable'='true'
           and latest.captured_at >= p.created_at
-          and latest.captured_at >= p.event_start_time_utc - interval '48 hours'
+          and latest.captured_at >= p.event_start_time_utc - interval '7 days'
           and latest.captured_at < p.event_start_time_utc
         order by p.created_at desc
         limit 1
