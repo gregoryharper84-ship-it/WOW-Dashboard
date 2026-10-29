@@ -209,7 +209,11 @@ def reconcile(ncaa_rows: Iterable[Mapping[str, Any]],
         "candidate_stat_category_rows": results["CANDIDATE_EXACT_STATS"],
         "candidate_distinct_espn_game_player_ids": len(candidate_player_keys),
         "candidate_stat_parity_counts": dict(sorted(metric_matches.items())),
-        "hold_reason_counts": dict(sorted((ncaa_holds + espn_holds + results).items())),
+        "hold_reason_counts": dict(sorted((ncaa_holds + espn_holds + Counter({
+            k: v for k, v in results.items() if k not in
+            ("CANDIDATE_EXACT_STATS", "ADDITIONAL_CATEGORY_FOR_SAME_ATHLETE")
+        })).items())),
+        "additional_category_rows_for_same_player": results["ADDITIONAL_CATEGORY_FOR_SAME_ATHLETE"],
         "espn_id_is_verified_cfbd_player_id_in_this_run": False,
         "ncaa_team_id_crosswalk_verified": False,
         "source_vendor_independence_proven": False,
