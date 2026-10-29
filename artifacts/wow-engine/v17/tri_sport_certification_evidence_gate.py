@@ -174,7 +174,7 @@ def assess_tri_sport_evidence(package: Mapping[str, Any]) -> dict[str, Any]:
     require(
         terminal.get("publisher") == TERMINAL_AUTHORITY
         and terminal.get("prediction_id") == scorer.get("prediction_id")
-        and terminal.get("decision") in ("FINAL_APPROVED", "HELD")
+        and terminal.get("decision") == "FINAL_APPROVED"
         and terminal.get("can_execute") is False
         and bool(terminal.get("receipt_id")),
         "TRI_SPORT_TERMINAL_RECEIPT_MISSING",
