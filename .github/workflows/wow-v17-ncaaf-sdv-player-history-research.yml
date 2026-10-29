@@ -12,6 +12,8 @@ on:
       - "artifacts/wow-engine/tests/test_ncaaf_sdv_player_history_acquisition.py"
       - "artifacts/wow-engine/v17/ncaaf_sdv_espn_crosswalk.py"
       - "artifacts/wow-engine/tests/test_ncaaf_sdv_espn_crosswalk.py"
+      - "artifacts/wow-engine/v17/ncaaf_cfbd_exact_sample_sql.py"
+      - "artifacts/wow-engine/tests/test_ncaaf_cfbd_exact_sample_sql.py"
   pull_request:
     paths:
       - ".github/workflows/wow-v17-ncaaf-sdv-player-history-research.yml"
@@ -19,6 +21,8 @@ on:
       - "artifacts/wow-engine/tests/test_ncaaf_sdv_player_history_acquisition.py"
       - "artifacts/wow-engine/v17/ncaaf_sdv_espn_crosswalk.py"
       - "artifacts/wow-engine/tests/test_ncaaf_sdv_espn_crosswalk.py"
+      - "artifacts/wow-engine/v17/ncaaf_cfbd_exact_sample_sql.py"
+      - "artifacts/wow-engine/tests/test_ncaaf_cfbd_exact_sample_sql.py"
 
 permissions:
   contents: read
@@ -42,7 +46,7 @@ jobs:
       - name: Test parser and source boundaries
         run: |
           python -m pip install pytest==8.4.2
-          python -m pytest --noconftest -q tests/test_ncaaf_sdv_player_history_acquisition.py tests/test_ncaaf_sdv_espn_crosswalk.py
+          python -m pytest --noconftest -q tests/test_ncaaf_sdv_player_history_acquisition.py tests/test_ncaaf_sdv_espn_crosswalk.py tests/test_ncaaf_cfbd_exact_sample_sql.py
 
   acquire:
     name: Archive a public historical player-game release (research only)
@@ -98,10 +102,17 @@ jobs:
             --season 2024 \
             --ncaa-parquet ncaaf-sdv-research/ncaa_mfb_player_stats_2024.parquet \
             --output-dir ncaaf-crosswalk-research/
-      - name: Archive source-sha-matched aggregate research receipt (no athlete export)
+      - name: Produce strict read-only 2024 CFBD sample comparison SQL
+        run: |
+          python -m v17.ncaaf_cfbd_exact_sample_sql \
+            --manifest ncaaf-crosswalk-research/ncaaf_national_espn_crosswalk_manifest.json \
+            --season 2024 \
+            --output-sql ncaaf-crosswalk-research/ncaaf_cfbd_exact_sample_read_only.sql
+      - name: Archive source-hashed manifest and bounded public stat sample
+
         uses: actions/upload-artifact@v4
         with:
           name: ncaaf-ncaa-espn-reconciliation-${{ github.run_id }}
-          path: artifacts/wow-engine/ncaaf-crosswalk-research/*.json
+          path: artifacts/wow-engine/ncaaf-crosswalk-research/
           if-no-files-found: error
           retention-days: 7
