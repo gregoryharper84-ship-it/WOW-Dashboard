@@ -82,3 +82,57 @@ def test_openai_and_claude_post_lock_breaker_remains_mandatory():
         assert guard in content
         assert content.index(guard) < content.index("- name: Engineering Lead agent")
         assert "engineering_provider_worker_admission.py" in content
+
+
+def test_queued_provider_gate_holds_quota_and_same_run_reruns():
+    import datetime as dt
+    import importlib.util
+    import json
+    import sys
+
+    src = ROOT / "artifacts/wow-engine/v17/engineering_provider_worker_admission.py"
+    sys.path.insert(0, str(src.parent))
+    spec = importlib.util.spec_from_file_location("post_lock_provider", src)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def read(command):
+        target = command[2] if len(command) > 2 else ""
+        if "/actions/workflows/" in target:
+            return json.dumps({"total_count": 1, "workflow_runs": [
+                {"id": 71, "run_attempt": 2, "status": "in_progress"}
+            ]})
+        if "/attempts/1/jobs?" in target:
+            return json.dumps({"total_count": 1, "jobs": [{
+                "run_id": 71, "status": "completed",
+                "name": "WOW V17 ChatGPT engineering team",
+                "conclusion": "failure",
+                "steps": [{"name": "Engineering Lead agent", "conclusion": "failure",
+                           "completed_at": "2026-10-29T00:00:00Z"}],
+            }]})
+        if command[:3] == ["gh", "run", "view"]:
+            return "insufficient_quota"
+        raise AssertionError("Unexpected GitHub evidence")
+
+    clock = dt.datetime(2026, 10, 29, 0, 30, tzinfo=dt.timezone.utc)
+    denied = module.admission("openai", 71, read, run_attempt=2, now=clock)
+    assert denied["status"] == "HELD"
+    assert "CIRCUIT_BREAKER" in denied["code"]
+
+
+def test_provider_worker_read_failure_never_grants_admission():
+    import importlib.util
+    import sys
+
+    src = ROOT / "artifacts/wow-engine/v17/engineering_provider_worker_admission.py"
+    sys.path.insert(0, str(src.parent))
+    spec = importlib.util.spec_from_file_location("post_lock_provider_failure", src)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def unavailable(_command):
+        raise ValueError("authenticated provider inventory unreadable")
+
+    result = module.admission("anthropic", 71, unavailable)
+    assert result["status"] == "HELD"
+    assert result["can_execute"] is False
