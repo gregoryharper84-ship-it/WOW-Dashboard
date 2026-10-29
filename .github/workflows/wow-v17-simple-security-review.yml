@@ -21,6 +21,14 @@ on:
       - 'artifacts/wow-engine/v17/*writer*'
       - 'artifacts/wow-engine/v17/*qa*'
       - 'artifacts/wow-engine/v17/independent_*'
+      # Policy and App adoption are trust roots even when their filenames
+      # do not contain 'governance' or 'security'. Unknown trust-root files
+      # remain subject to separate Class B review policy.
+      - 'artifacts/wow-engine/v17/agent_identity_policy.py'
+      - 'artifacts/wow-engine/v17/engineering_authorized_adoption.py'
+      - 'artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py'
+      - 'artifacts/wow-engine/v17/engineering_recovery_planner.py'
+      - 'artifacts/wow-engine/v17/engineering_provider_failover.py'
       - 'artifacts/wow-engine/**/migrations/**'
       - 'supabase/migrations/**'
       - 'docs/WOW_GOVERNANCE_V2.md'
