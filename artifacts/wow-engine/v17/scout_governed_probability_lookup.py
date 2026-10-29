@@ -49,13 +49,33 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
         from public.wow_nfl_event_predictions as p
         join public.wow_nfl_event_fitted_model_artifacts as artifact
           on artifact.artifact_id=p.model_artifact_id
-         and artifact.probability_publishable=true
+         and artifact.active=true
+         and artifact.promoted=true
+         and artifact.lifecycle_state='CHAMPION'
          and artifact.can_execute=false
         where p.event_key=%s
           and p.home_team=%s and p.away_team=%s
           and abs(extract(epoch from (p.event_start_time_utc-%s::timestamptz))) <= 900
           and p.model_probability_publishable=true
           and p.can_execute=false
+          and exists (
+            select 1
+            from public.wow_agent_run_candidates as candidate
+            join public.wow_agent_terminal_decisions as terminal
+              on terminal.candidate_id=candidate.candidate_id
+             and terminal.run_id=candidate.run_id
+            where candidate.official_event_id=p.official_event_id
+              and candidate.participant=p.selected_participant
+              and candidate.candidate_payload->>'event_prediction_id'
+                  =p.event_prediction_id::text
+              and candidate.can_execute=false
+              and candidate.terminal_label='FINAL_APPROVED'
+              and candidate.terminal_ceiling='FINAL_APPROVED'
+              and terminal.terminal_label='FINAL_APPROVED'
+              and terminal.final_terminal_ceiling='FINAL_APPROVED'
+              and terminal.probability_publishable=true
+              and terminal.can_execute=false
+          )
         order by p.created_at desc
         limit 1
         """,
@@ -63,7 +83,9 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
     )
     row = cur.fetchone()
     if not row:
-        return _base()
+        # A fitted prediction is not a terminal publication receipt.
+        # Absence of exact run/candidate/reducer proof remains a HOLD.
+        return _base("TERMINAL_PROOF_NOT_VERIFIED")
     selection, probability, lower, publishable, version, created_at = row
     if publishable is not True or probability is None or lower is None or not selection:
         return _base("MODEL_OUTPUT_INVALID")
