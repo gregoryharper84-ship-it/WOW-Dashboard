@@ -44,15 +44,19 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
     event_key = f"NFL:{event_id}"
     cur.execute(
         """
-        select selected_participant,calibrated_selection_probability,calibrated_selection_lower_bound,
-               model_probability_publishable,model_version,created_at
-        from public.wow_nfl_event_predictions
-        where event_key=%s
-          and home_team=%s and away_team=%s
-          and abs(extract(epoch from (event_start_time_utc-%s::timestamptz))) <= 900
-          and model_probability_publishable=true
-          and can_execute=false
-        order by created_at desc
+        select p.selected_participant,p.calibrated_selection_probability,p.calibrated_selection_lower_bound,
+               p.model_probability_publishable,p.model_version,p.created_at
+        from public.wow_nfl_event_predictions as p
+        join public.wow_nfl_event_fitted_model_artifacts as artifact
+          on artifact.artifact_id=p.model_artifact_id
+         and artifact.probability_publishable=true
+         and artifact.can_execute=false
+        where p.event_key=%s
+          and p.home_team=%s and p.away_team=%s
+          and abs(extract(epoch from (p.event_start_time_utc-%s::timestamptz))) <= 900
+          and p.model_probability_publishable=true
+          and p.can_execute=false
+        order by p.created_at desc
         limit 1
         """,
         (event_key, candidate.get("home_team"), candidate.get("away_team"), candidate.get("commence_time")),
