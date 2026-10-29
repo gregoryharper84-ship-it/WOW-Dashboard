@@ -594,13 +594,22 @@ def main():
             raise Hold("PROVIDER_CREDENTIALS_UNAVAILABLE")
         reservation = reserve_content_review(target, read_token, qa_token)
         verdict, output, provider, attempts = semantic_review(target, credentials)
-        current = gh(f"/pulls/{pr_number}", read_token)
-        require_live_identity(current, target)
-        if prior_semantic_reject(target["head_sha"], read_token):
-            raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
-        receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
-                               attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
-                               attempt=os.environ["GITHUB_RUN_ATTEMPT"])
+        if verdict == "REJECT":
+            # A real rejection must be persisted for the captured file bytes
+            # EVEN IF a subsequent PR-head reread fails or the branch moves.
+            # Moving the PR cannot erase a provider's adverse verdict.
+            receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
+                                   attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
+                                   attempt=os.environ["GITHUB_RUN_ATTEMPT"])
+        else:
+            # Only positive acceptance requires a current live head/base.
+            current = gh(f"/pulls/{pr_number}", read_token)
+            require_live_identity(current, target)
+            if prior_semantic_reject(target["head_sha"], read_token):
+                raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+            receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
+                                   attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
+                                   attempt=os.environ["GITHUB_RUN_ATTEMPT"])
     except OwnerFallbackRequired as exc:
         receipt["attempts"] = exc.attempts
         try:
