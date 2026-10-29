@@ -38,7 +38,7 @@ jobs:
       - name: Install minimal test dependency
         run: python -m pip install pytest==8.3.5
       - name: Verify adversarial certification evidence holds
-        run: python -m pytest -q test_tri_sport_certification_evidence_gate.py
+        run: python -m pytest --noconftest -q test_tri_sport_certification_evidence_gate.py
       - name: Confirm research gate cannot publish
         run: |
           grep -q 'CAN_EXECUTE = False' v17/tri_sport_certification_evidence_gate.py
