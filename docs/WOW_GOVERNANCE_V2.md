@@ -35,8 +35,8 @@ A genuine owner-reviewed, source-author-independent PASS can be published by
 the separate QA App; the owner cannot directly forge the QA check. Any absent,
 stale, dismissed or malformed review, untrusted file provenance, or missing
 identity is a typed HOLD. A missing review produces GitHub `action_required`,
-never `success`; submission/dismissal triggers an exact-head re-evaluation.
-This is **manual fallback**, not an automatic third model or permission to
+never `success`; after authentic GitHub approval, the owner explicitly dispatches the read-only reviewer from protected main at the exact current PR head; GitHub PR review events execute from untrusted merge refs and MUST NOT be granted QA secrets.
+For example, after review: `gh workflow run wow-v17-simple-security-review.yml --ref main -f pr_number=<PR> -f head_sha=<HEAD_SHA>`. The check's detailed failure log/receipt supplies the required digest-bound approval text. This is **manual fallback**, not an automatic third model or permission to
 place orders, self-approve, merge or deploy.
 
 For Class A routine repairs keep the existing deterministic CI/release
