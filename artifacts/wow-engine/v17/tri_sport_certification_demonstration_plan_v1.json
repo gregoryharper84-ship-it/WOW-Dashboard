@@ -63,8 +63,9 @@
     "training": "fitted sport-specific model with frozen SHA/versions and chronological untouched holdout",
     "calibration": "genuine exact-line lower-bound package with independent validator",
     "scorer": "canonical V17 score-pick-request, real prediction_id and immutable snapshot",
-    "terminal": "V17_TERMINAL_REDUCER FINAL_APPROVED proof; never simulate",
-    "safety": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS; can_execute=false"
+    "terminal": "Genuine V17_TERMINAL_REDUCER FINAL_APPROVED, or typed MARKET/CARD-only HELD with completed sporting probability explicitly preserved. Never infer certification or market approval from a hold.",
+    "safety": "DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS; can_execute=false",
+    "sporting_vs_market": "Completed certified sporting probability package may survive unavailable downstream price; separate card and execution decisions from model evidence."
   },
   "parallel_research": [
     {
