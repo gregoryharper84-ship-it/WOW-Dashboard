@@ -58,10 +58,10 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
-              "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": m.REPO}},
+              "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
               "state": "open", "changed_files": 1}
-        file = {"filename": "a.py", "status": "modified", "sha": "b" * 40,
-                "patch": "@@ -1 +1 @@\\n-old\\n+new"}
+        file = {"filename": "a.py", "status": "modified", "sha": "b" * 40, "additions": 1, "deletions": 1,
+                "patch": "@@ -1 +1 @@\n-old\n+new"}
         def api(path, token):
             return [file] if "/files?" in path else pr
         with patch.object(m, "gh", api):
@@ -117,10 +117,10 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
-              "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": m.REPO}},
+              "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
               "state": "open", "changed_files": 1}
-        file = {"filename": "test.py", "status": "modified", "sha": "d" * 40,
-                "patch": "@@ -1 +1 @@\\n-old\\n+new"}
+        file = {"filename": "test.py", "status": "modified", "sha": "d" * 40, "additions": 1, "deletions": 1,
+                "patch": "@@ -1 +1 @@\n-old\n+new"}
         def api(path, token):
             return [file] if "/files?" in path else pr
         with patch.object(m, "gh", api):
@@ -129,6 +129,19 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             pr["base"]["sha"] = "INVALID"
             with self.assertRaises(m.Hold):
                 m.capture(2251, "a" * 40, "read")
+
+    def test_truncated_patch_denied_even_when_nonempty(self):
+        pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
+              "base": {"ref": "main", "sha": "b" * 40, "repo": {"full_name": m.REPO}},
+              "state": "open", "changed_files": 1}
+        file = {"filename": "test.py", "status": "modified", "sha": "d" * 40,
+                "additions": 2, "deletions": 1, "patch": "@@ -1 +1 @@\n-old\n+new"}
+        def api(path, token):
+            return [file] if "/files?" in path else pr
+        with patch.object(m, "gh", api):
+            with self.assertRaises(m.Hold) as ctx:
+                m.capture(2251, "a" * 40, "read")
+            self.assertEqual(str(ctx.exception), "DIFF_PATCH_TRUNCATED_OR_INCOMPLETE")
 
     def test_live_base_or_head_move_denies_old_review(self):
         target = {"head_sha": "a" * 40, "base_sha": "b" * 40}
