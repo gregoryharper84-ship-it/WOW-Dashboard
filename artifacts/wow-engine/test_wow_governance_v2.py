@@ -23,7 +23,24 @@ def test_source_review_negative_suite_runs_on_pr_head():
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "Ran 26 tests" in result.stderr, result.stderr
+    # Verify complete negative suite without brittle exact-count gating.
+    # Named security regressions cannot silently disappear on future additions.
+    import re
+    count = re.search(r"Ran (\d+) tests?", result.stderr)
+    assert count is not None and int(count.group(1)) >= 38, result.stderr
+    for name in (
+        "test_global_reject_prevents_second_pr_review_without_provider_call",
+        "test_provider_reject_persists_even_if_pr_moves_before_reread",
+        "test_unclassified_http_holds_identify_safe_endpoint_without_provider_switch",
+        "test_protected_qa_gemini_first_never_provider_shops_after_reject",
+        "test_gemini_38_approved_model_preserves_strict_semantic_contract",
+        "test_in_progress_reservation_fail_closed_when_reviewer_crashes",
+        "test_reject_ledger_committed_before_head_check_and_failed_commit_holds",
+        "test_reject_content_ledger_is_not_duplicated_by_same_sha_page_limit",
+        "test_content_hash_is_stable_across_pr_sha_and_base_not_file_bytes",
+        "test_review_client_denies_patch_to_anything_except_qa_check_run",
+    ):
+        assert name in result.stderr, result.stderr
 
 
 def test_protected_main_workflow_and_separate_qa_app_are_required():

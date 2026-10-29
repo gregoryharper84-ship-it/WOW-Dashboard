@@ -20,7 +20,8 @@ permissions:
   pull-requests: read
   checks: read
 concurrency:
-  group: wow-independent-security-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  # Global single-writer lease: serialize QA App content-ledger reservations across PRs.
+  group: wow-independent-security-qa-ledger-writer
   cancel-in-progress: false
   queue: max
 jobs:
@@ -58,6 +59,8 @@ jobs:
           WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
           WOW_QA_CLAUDE_MODEL: ${{ vars.WOW_QA_CLAUDE_MODEL }}
           WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
+          # Optional, protected wow-qa environment variable. Default remains Claude.
+          WOW_QA_PRIMARY_PROVIDER: ${{ vars.WOW_QA_PRIMARY_PROVIDER }}
         run: python .github/scripts/wow_simple_security_review.py
       - name: Retain attributable reviewer decision
         if: always()
