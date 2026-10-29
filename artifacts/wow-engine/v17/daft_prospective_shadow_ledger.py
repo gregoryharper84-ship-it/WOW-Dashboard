@@ -28,7 +28,7 @@ def _serialized(data: Mapping[str, Any]) -> bytes:
 
 def _ledger_path(filename: str) -> Path:
     path = Path(filename).expanduser().absolute()
-    repo = Path(__file__).resolve().parents[2]
+    repo = Path(__file__).resolve().parents[3]
     if repo == path or repo in path.parents:
         raise ValueError("Paid shadow ledger cannot be written in public repository")
     if path.is_symlink() or not path.parent.is_dir() or path.parent.stat().st_mode & 0o077:

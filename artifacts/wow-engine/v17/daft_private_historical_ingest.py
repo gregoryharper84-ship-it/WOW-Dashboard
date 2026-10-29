@@ -35,7 +35,7 @@ def import_historical_packages(
 ) -> dict:
     """Write a strict 0600 offline archive without public repository modifications."""
     output = Path(destination).expanduser().resolve()
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[3]
     if output == repo_root or repo_root in output.parents:
         raise ValueError("Refuse to store paid research within public repository")
     if output.exists():

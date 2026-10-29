@@ -328,3 +328,52 @@ def test_private_prospective_shadow_ledger_is_immutable(tmp_path):
             str(ledger), {**record, "message_id": "different"},
             observed_at="2026-10-29T10:01:30Z", now=now,
         )
+
+
+
+def test_prospective_ledger_refuses_any_public_repo_path():
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from v17.daft_prospective_shadow_ledger import append_prospective_shadow
+    repo = Path(__file__).resolve().parents[3]
+    with pytest.raises(ValueError, match="public repository"):
+        append_prospective_shadow(
+            str(repo / "synthetic-prospective-should-never-write.jsonl"),
+            normalize(), observed_at="2026-10-29T10:01:30Z",
+            now=datetime(2026, 10, 29, 10, 2, tzinfo=timezone.utc),
+        )
+
+
+def test_private_historical_ingest_refuses_public_repo_root():
+    from pathlib import Path
+    from v17.daft_private_historical_ingest import import_historical_packages
+    repo = Path(__file__).resolve().parents[3]
+    with pytest.raises(ValueError, match="public repository"):
+        import_historical_packages(
+            sharp_zip="/does/not/matter.zip", vip_zip="/does/not/matter.zip",
+            captured_at="2026-10-29T15:00:00Z",
+            destination=str(repo / "synthetic-historical-should-never-write.json"),
+        )
+
+
+def test_mlb_extended_innings_contract_annotates_without_modifying_package(monkeypatch):
+    monkeypatch.setenv("WOW_DAFT_LLP_SHADOW_ENABLED", "true")
+    request = SimpleNamespace(**{
+        "sport": "MLB", "league": "MLB", "official_event_id": "synthetic-42",
+        "market_family": "OUTRIGHT_WINNER", "settlement_basis": "FULL_GAME_INCLUDING_EXTRA_INNINGS",
+        "home_team": "Team A", "away_team": "Team B",
+    })
+    source = normalize(sport="MLB", league="MLB",
+                       settlement_rule="FULL_GAME_INCLUDING_EXTRA_INNINGS")
+    output = {"calibrated_home_probability": .6, "calibrated_home_lower_bound": .55,
+              "terminal_status": "HELD", "rank_eligible": False, "can_execute": False}
+    module = SimpleNamespace(score_team_event_request=lambda *a, **k: output)
+    assert install_daft_llp_research_shadow(module, observations=[source])
+    with monkeypatch.context() as patcher:
+        patcher.setattr("v17.daft_llp_research_shadow.datetime",
+                        SimpleNamespace(now=lambda tz: __import__("datetime").datetime(
+                            2026, 10, 29, 10, 1, 30, tzinfo=tz)))
+        annotated = module.score_team_event_request(request, event_api=object())
+    assert annotated["daft_external_research_shadow"]["home"]["exact_contract_match"]
+    assert annotated["calibrated_home_probability"] == .6
+    assert annotated["terminal_status"] == "HELD"

@@ -40,11 +40,18 @@ def _loaded_private_rows() -> list[dict[str, Any]]:
 
 def _request_contract(req: Any, result: Mapping[str, Any], selection: str) -> dict[str, Any]:
     """Only exact contract semantics match; missing fields remain unknown."""
-    outcome_space = (
-        "HOME_DRAW_AWAY" if str(getattr(req, "settlement_basis", "")).upper().find("3WAY") >= 0
-        else "HOME_AWAY" if "OVERTIME" in str(getattr(req, "settlement_basis", "")).upper()
-        else None
-    )
+    basis = str(getattr(req, "settlement_basis", "") or "").upper()
+    sport = str(getattr(req, "sport", "") or "").upper()
+    # Only contracts that explicitly specify their draw/extra-time semantics
+    # may match an external snapshot. Never infer two-way soccer 1X2.
+    if "3WAY" in basis or "1X2" in basis:
+        outcome_space = "HOME_DRAW_AWAY"
+    elif "OVERTIME" in basis or "EXTRA_INNINGS" in basis:
+        outcome_space = "HOME_AWAY"
+    elif "FULL_GAME_OUTRIGHT" == basis and sport in {"NFL", "NBA", "WNBA", "MLB", "NHL"}:
+        outcome_space = "HOME_AWAY"
+    else:
+        outcome_space = None
     return {
         "sport": getattr(req, "sport", None),
         "league": getattr(req, "league", None),
