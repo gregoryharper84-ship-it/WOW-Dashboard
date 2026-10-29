@@ -86,3 +86,61 @@ The initial reviewer installation requires separately authenticated Security/Arc
 review. An owner-authored source cannot use owner fallback to certify itself. Pin the
 QA App security check and strict protected-base recertification before retiring the old
 governance certifier. Preserve the three existing required regression checks.
+
+## Durable QA content-ledger recovery (Cursor P0 lane, issue #2136)
+
+Engineering PR #2275 introduces a QA App content-ledger reservation on the immutable
+sentinel SHA `79fa0c275a58cd9d397c5a1bc81d641b6dad7f75` before any semantic provider
+call. A cancelled, killed, timed-out or disconnected runner can leave that reservation
+`in_progress`, which #2275 fail-closes as `CONTENT_LEDGER_IN_PROGRESS`. That is correct
+safety and an operational deadlock.
+
+Recovery is a **separate** protected-main workflow, `wow-v17-qa-ledger-recovery.yml`,
+using the same QA App identity (5245832, `checks:write` only) and the same global
+single-writer concurrency group `wow-independent-security-qa-ledger-writer`. It is not
+a second reviewer and is not a required merge check.
+
+Recovery may complete an orphaned reservation only as **HOLD** or confirmed **REJECT**.
+It never publishes PASS, never deletes check history, and never uses the Engineering
+App, owner token, or workflow `GITHUB_TOKEN` to mutate the ledger. Missing or
+non-distinct QA App authentication fails closed without mutation.
+
+Required provenance is written onto the still-`in_progress` check by
+`attach_reservation_evidence` immediately after reservation: exact check-run ID,
+content digest, PR/head/base, originating run ID/attempt, actor, and whether a
+provider has been invoked. Integration with #2275 is three calls after
+`reserve_content_review` / before and after `semantic_review`; until those marks exist,
+recovery refuses to guess and leaves the reservation in place.
+
+Rules:
+
+- Source workflow run must be completed with `cancelled`, `failure`, `timed_out` or
+  `startup_failure`. An active run is not recovered.
+- Confirmed REJECT (reservation mark, PR-head QA check, or sibling ledger REJECT)
+  completes the reservation as REJECT.
+- Kill/cancel **before** provider invocation, with provenance, completes as HOLD.
+- Kill/cancel **during** provider review without a persisted decision fails closed
+  (`LEDGER_RECOVERY_PROVIDER_DECISION_UNPROVEN`) and does not mutate.
+- Two recovery workers take a lease on the same check; the loser aborts. Duplicate
+  recovery events are idempotent. Transient GitHub 5xx/429 PATCH failures retry at
+  most three times.
+- A stale reservation is never converted automatically to PASS.
+
+### Experimental re-roll budget — inactive unless authorized
+
+A one-byte file modification changes the Git blob SHA and therefore the content
+digest. The ledger blocks *identical* content across PRs; it does not by itself
+stop trivial edits from resampling a previous REJECT. `wow_qa_reroll_policy.py`
+implements a bounded per-PR REJECT budget behind
+`WOW_QA_EXPERIMENTAL_PR_REJECT_BUDGET`. The variable is **not** set by the recovery
+or reviewer workflows. An authorized administrator must set a positive integer
+1–20 on the `wow-qa` environment before the budget may hold further distinct-content
+attempts on the same PR. Identical-content REJECT remains terminal even when the
+budget is inactive. A genuine revised file set on that PR remains reviewable until
+the authorized budget is exhausted.
+
+`custom_gpt_identity=WOW_BETTING_ENGINE`
+`runtime_generation=V17_ACTIVE`
+`terminal_authority=V17_TERMINAL_REDUCER`
+`can_execute=false`
+`DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`
