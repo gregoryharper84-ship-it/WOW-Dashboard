@@ -91,3 +91,15 @@ def test_ncaaf_sdv_research_archive_has_no_model_or_live_dataset_authority():
     assert source["pregame_model_feature_eligible"] is False
     assert source["official_identity_verified"] is False
     assert source["can_execute"] is False
+
+def test_espn_player_box_remains_research_not_canonical_cfbd_source():
+    rows = compile_free_source_plan("NCAAF", "HISTORY")["sources"]
+    espn = next(s for s in rows
+                if s["source_id"] == "SPORTSDATAVERSE_ESPN_CFB_PLAYER_BOX")
+    assert espn["integration"] == "SOURCE_ARCHIVE_CROSSWALK_RESEARCH"
+    assert espn["registry_source_id"] is None
+    assert espn["training_authorized_by_catalog"] is False
+    assert espn["official_identity_verified"] is False
+    assert espn["pregame_model_feature_eligible"] is False
+    assert espn["model_probability"] is None
+    assert espn["can_execute"] is False
