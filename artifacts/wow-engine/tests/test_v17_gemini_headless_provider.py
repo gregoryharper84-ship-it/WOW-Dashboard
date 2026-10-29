@@ -275,7 +275,9 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         )
         self.assertIn("wow-v17-engineering-implementation-single-writer", worker)
         self.assertIn("engineering_remote_fallback.py guard", worker)
-        self.assertIn("ref: main", worker)
+        # The exact dispatch revision must remain pinned across long queue waits.
+        self.assertIn("ref: ${{ github.sha }}", worker)
+        self.assertIn("worker-auto-admit-github", worker)
         self.assertIn("persist-credentials: false", worker)
         self.assertIn("contents: read", worker)
         self.assertNotIn("pull-requests: write", worker)
@@ -330,7 +332,9 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
         worker = (
             ROOT / ".github/workflows/wow-v17-gemini-engineering-worker.yml"
         ).read_text()
-        self.assertIn("ref: main", worker)
+        # The exact dispatch revision must remain pinned across long queue waits.
+        self.assertIn("ref: ${{ github.sha }}", worker)
+        self.assertIn("worker-auto-admit-github", worker)
         self.assertIn('source_head_sha=$(git rev-parse HEAD)', worker)
         self.assertIn('--source-sha "$source_head_sha"', worker)
         self.assertIn('--exit-code "$rc"', worker)
