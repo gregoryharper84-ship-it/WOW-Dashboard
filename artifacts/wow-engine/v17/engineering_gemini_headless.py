@@ -224,38 +224,18 @@ def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, A
         runs = json.loads(raw)
         if not isinstance(runs, list) or len(runs) > 100:
             return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
-        previous = []
-        self_seen = False
-        for entry in runs:
-            if not isinstance(entry, dict):
-                return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
-            candidate_id = entry.get("databaseId")
-            if type(candidate_id) is not int or candidate_id <= 0:
-                return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
-            if candidate_id == int(run_id):
-                self_seen = True
-                if entry.get("status") not in ("in_progress", "queued", "pending"):
-                    return held("GEMINI_WORKER_SELF_STATUS_UNVERIFIED")
-                continue
-            # In-flight predecessor or indeterminate provider state: do not
-            # consume the same grant from another lease in this interval.
-            if entry.get("status") in ("in_progress", "waiting", "requested"):
-                return held("GEMINI_WORKER_PREDECESSOR_NOT_TERMINAL")
-            if entry.get("status") == "completed":
-                previous.append(entry)
-            elif entry.get("status") not in ("queued", "pending"):
-                return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
-        if not self_seen:
-            return held("GEMINI_WORKER_CURRENT_RUN_MISSING")
-        # A full page without a completed predecessor is ambiguous, not a
-        # fresh first-use grant. Do not assume missing history means success.
-        if len(runs) == 100 and not previous:
-            return held("GEMINI_WORKER_HISTORY_TRUNCATED")
-        if previous:
-            # The most recent completed provider attempt governs cooldown.
-            previous.sort(key=lambda row: (str(row.get("updatedAt") or ""),
-                                            row["databaseId"]), reverse=True)
-        selected = previous[:1]
+        history = latest_actual_provider_attempt(
+            runs,
+            lambda candidate_id: json.loads(read_command([
+                "gh", "api",
+                f"repos/{repo}/actions/runs/{candidate_id}/jobs?per_page=100",
+            ])),
+            current_run_id=int(run_id),
+        )
+        if history["status"] != "VERIFIED_PROVIDER_HISTORY":
+            return held(history["code"])
+        last_actual = history["run"]
+        selected = [last_actual] if last_actual is not None else []
         comparison: dict[str, Any] = {}
         if selected and selected[0].get("conclusion") == "failure":
             failed_sha = selected[0].get("headSha")
@@ -265,7 +245,10 @@ def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, A
                 comparison = json.loads(read_command([
                     "gh", "api", f"repos/{repo}/compare/{failed_sha}...{current_sha}",
                 ]))
-        return recheck_auto_worker_provider(selected, comparison, current_sha, now=now)
+        decision = recheck_auto_worker_provider(selected, comparison, current_sha, now=now)
+        # Durable typed result saved by workflow in an exact-run Actions artifact.
+        # The provider itself remains inaccessible to the recheck job.
+        return dict(decision, run_id=int(run_id), head_sha=current_sha)
     except (OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return held("GEMINI_WORKER_GITHUB_EVIDENCE_UNVERIFIED")
 
