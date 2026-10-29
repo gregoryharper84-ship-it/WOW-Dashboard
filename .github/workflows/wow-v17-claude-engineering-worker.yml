@@ -53,12 +53,28 @@ jobs:
     environment: wow-engineering
 
     steps:
-      - name: Checkout protected main
+      - name: Checkout exact dispatch SHA (no persisted credential)
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Reject stale queued worker before credential mint
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo "::error::PROVIDER_WORKER_CHECKOUT_SHA_DRIFT"
+            exit 1
+          }
+          current_main=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$current_main" = "$GITHUB_SHA" || {
+            echo "::error::PROVIDER_WORKER_PROTECTED_MAIN_ADVANCED"
+            exit 1
+          }
 
       - name: Mint wow-engineering App token
         id: eng_token
