@@ -755,6 +755,8 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unavailable")
                 output = json.dumps(runs)
             elif cmd[:2] == ["gh", "api"] and "/actions/workflows/" in cmd[2]:
+                if fail_history:
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unavailable")
                 page = int(cmd[2].split("page=")[-1])
                 segment = runs[(page - 1) * 100:page * 100]
                 output = json.dumps({
@@ -788,7 +790,7 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
                         "run_id": job_id,
                         "name": "Gemini AMRT isolated repair candidate (never a release actor)",
                         "status": "completed",
-                        "conclusion": "skipped" if outcome == "job_skipped" else ("failure" if job_id in job_fail_ids or origin.get("conclusion") == "failure" else "success"),
+                        "conclusion": "skipped" if outcome == "job_skipped" else ("failure" if job_id in job_fail_ids or (number == origin.get("attempt") and origin.get("conclusion") == "failure") else "success"),
                         "completed_at": origin.get("updatedAt", "2026-10-28T23:59:00Z"),
                         "steps": [] if outcome == "job_skipped" else [{
                             "name": "Execute one bounded headless Gemini CLI candidate session",
