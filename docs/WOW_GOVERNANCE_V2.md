@@ -102,6 +102,32 @@ environment variable fixes the running old main. The provider canary must
 prove QA App 5245832 actually produced a semantic verdict, not merely a
 workflow success, and must still prove REJECT remains terminal.
 
+### Durable review reservation recovery and cancellation
+
+A semantic review never treats a crashed or cancelled prior `in_progress` check as
+PASS. Malformed top-level provider JSON is typed HOLD; unexpected caught
+runtime exceptions after a verified reservation are likewise recorded as
+`REVIEW_INTERNAL_EXCEPTION_<type>` and the reviewer attempts to finish the
+QA-App sentinel ledger with a HOLD. If the runner is killed, times out, loses
+GitHub access, or ledger PATCH cannot be verified, the reservation intentionally
+remains `in_progress` and another review must not begin for the same content.
+
+Recovery of a dangling reservation is **an explicit independently authorized
+QA operation**, not an automatic retry or GitHub check deletion. The QA
+operator must inspect the original run ID, attempted verdict, exact content
+digest, check run ID, QA App ID, original PR/head/base and whether an adverse
+review response was received before cancellation. Any confirmed REJECT must
+be completed as REJECT, never HOLD. If the evidence is incomplete, keep
+the reservation held and escalate to Security/Architect. Only a verified
+non-adverse cancellation or provider outage may be completed as HOLD using
+the separate QA App identity, with a durable recovery receipt; check history
+must remain intact. No Engineering App or owner token may overwrite it.
+
+A one-byte modification creates different changed content and is intentionally
+subject to a fresh review. This ledger prevents *identical-content* resampling,
+not all possible re-rolls. Per-PR attempt budgets and a content-equivalence
+policy for small edits need separate authorized design and tests.
+
 ## Cross-PR content REJECT ledger — P0 repair candidate
 
 A GitHub check bound to a PR head SHA cannot alone prevent the same rejected
