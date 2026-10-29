@@ -63,12 +63,18 @@ def contract_key(contract: Mapping[str, Any] | None) -> str | None:
     # For moneylines, an absent line is meaningful; for spreads/totals it is not.
     line = finite_number(contract.get("line"))
     family = str(contract["market_family"]).upper()
-    if family in {"SPREAD", "TOTAL", "PLAYER_PROP", "ALTERNATE_SPREAD",
-                  "ALTERNATE_TOTAL"} and line is None:
+    numeric_family = family in {"SPREAD", "TOTAL", "PLAYER_PROP",
+                                "ALTERNATE_SPREAD", "ALTERNATE_TOTAL"}
+    if numeric_family and line is None:
+        return None
+    # At integer spread/total boundaries, push settlement is part of identity.
+    if numeric_family and line is not None and line.is_integer() and not isinstance(contract.get("push_possible"), bool):
         return None
     canonical = [str(contract[field]).strip().casefold()
                  if field != "line" else (str(line) if line is not None else "NONE")
                  for field in CONTRACT_FIELDS]
+    canonical.extend([str(contract.get("push_possible")),
+                      str(contract.get("push_rule"))])
     return hashlib.sha256(json.dumps(canonical, separators=(",", ":")).encode()).hexdigest()[:32]
 
 
@@ -83,8 +89,13 @@ def same_market(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
             return False
     if str(a.get("market_family")).upper() in {"SPREAD", "TOTAL", "PLAYER_PROP",
                                                 "ALTERNATE_SPREAD", "ALTERNATE_TOTAL"}:
-        return finite_number(a.get("line")) is not None and finite_number(a.get("line")) == finite_number(b.get("line"))
-    return a.get("line") is None and b.get("line") is None
+        return (finite_number(a.get("line")) is not None
+                and finite_number(a.get("line")) == finite_number(b.get("line"))
+                and a.get("push_possible") == b.get("push_possible")
+                and a.get("push_rule") == b.get("push_rule"))
+    return (a.get("line") is None and b.get("line") is None
+            and a.get("push_possible") == b.get("push_possible")
+            and a.get("push_rule") == b.get("push_rule"))
 
 
 def same_contract(a: Mapping[str, Any] | None, b: Mapping[str, Any] | None) -> bool:
@@ -231,9 +242,13 @@ def comparable_clv(entry: Mapping[str, Any], closing: Mapping[str, Any]) -> floa
                                 finite_number(closing.get("decimal_odds")))
     if entry_odds is None or closing_odds is None or min(entry_odds, closing_odds) <= 1:
         return None
-    if timestamp(entry.get("quote_at")) is None or timestamp(closing.get("quote_at")) is None:
+    entry_at, close_at = timestamp(entry.get("quote_at")), timestamp(closing.get("quote_at"))
+    event_start = timestamp(entry.get("event_start_at") or closing.get("event_start_at"))
+    if entry_at is None or close_at is None or event_start is None:
         return None
-    if timestamp(entry["quote_at"]) >= timestamp(closing["quote_at"]):
+    if not (entry_at < close_at <= event_start):
+        return None
+    if closing.get("is_closing_snapshot") is not True:
         return None
     return entry_odds - closing_odds
 
