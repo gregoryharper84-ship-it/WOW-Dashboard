@@ -71,3 +71,18 @@ The reviewer does not author source, approve its own implementation, merge, depl
 `terminal_authority=V17_TERMINAL_REDUCER`
 `can_execute=false`
 `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`
+
+## Reviewer hardening consolidated for the final adoption
+
+The reviewer validates a typed Anthropic tool response, not unstructured prose. Explicit
+529, quota exhaustion and retired-model availability errors may invoke Gemini. Substantive
+policy rejection, malformed output or actual security findings remain terminal and cannot
+provider-shop. The QA App checks all prior review checks bound to the same head SHA: an
+authentic REJECT is sticky until the code SHA changes. The workflow double-checks PR head,
+base and current protected main immediately before publishing a PASS, including the human
+fallback path, and fails closed if the source moves during diff pagination.
+
+The initial reviewer installation requires separately authenticated Security/Architect
+review. An owner-authored source cannot use owner fallback to certify itself. Pin the
+QA App security check and strict protected-base recertification before retiring the old
+governance certifier. Preserve the three existing required regression checks.
