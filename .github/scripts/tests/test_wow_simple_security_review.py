@@ -454,6 +454,16 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     with self.assertRaises(m.Hold):
                         m.call_provider(provider, "test-key", "untrusted diff")
 
+    def test_failed_ledger_patch_keeps_semantic_reject_and_blocks_pass(self):
+        import inspect
+        source = inspect.getsource(m.main)
+        guard = source[source.index('except Hold as exc:', source.index('commit_content_review(')):]
+        self.assertIn('if receipt["decision"] != "REJECT":', guard)
+        self.assertIn('receipt["decision"] = "HOLD"', guard)
+        self.assertIn('receipt["reason"] = "CONTENT_LEDGER_COMMIT_FAILED: "', guard)
+        self.assertLess(guard.index('if receipt["decision"] != "REJECT":'),
+                        guard.index('receipt["reason"] = "CONTENT_LEDGER_COMMIT_FAILED: "'))
+
     def test_review_reservation_internal_error_is_typed_hold(self):
         # Source-level integration guard ensures an unexpected exception after
         # reserve cannot escape before commit_content_review is reached.
