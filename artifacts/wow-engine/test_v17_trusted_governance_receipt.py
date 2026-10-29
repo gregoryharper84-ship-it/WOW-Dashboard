@@ -707,12 +707,13 @@ def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
     assert "format('pr-{0}', github.event.pull_request.number)" in text
     assert "format('run-{0}', github.event.workflow_run.id)" in text
     assert "github.event.pull_request.head.sha) }}" not in text.split("concurrency:")[1].split("jobs:")[0]
-    assert "for poll in $(seq 1 18); do" in text
+    assert "for poll in $(seq 1 19); do" in text
     assert "for _ in $(seq 1 90); do" not in text
-    # Worst-case budget: 18 paired exact-head / artifact requests, <=36,
+    # Worst-case budget: 19 paired exact-head / artifact requests, <=38,
     # while preserving ~15m receipt availability and fail-closed semantics.
-    assert 18 * 2 <= 36
+    assert 19 * 2 <= 38
     assert (3 * 10 + 7 * 45 + 8 * 70) >= 900
+    assert 'if [ "$poll" -eq 19 ]; then' in text
     assert 'if [ "$poll" -le 3 ]; then' in text
     assert 'elif [ "$poll" -le 10 ]; then' in text
     assert "sleep 10" in text and "sleep 45" in text and "sleep 70" in text
