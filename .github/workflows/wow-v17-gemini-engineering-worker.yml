@@ -37,6 +37,9 @@ concurrency:
 jobs:
   gemini-headless:
     name: Gemini AMRT isolated repair candidate (never a release actor)
+    # A workflow_dispatch aimed at a feature branch/tag must never execute
+    # unmerged admission/fencing code with workflow credentials.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: wow-engineering
