@@ -358,6 +358,36 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     reject(code, body)
                 self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
 
+    def test_gemini_native_invalid_key_400_fails_over_but_generic_400_holds(self):
+        import io
+        from urllib.error import HTTPError
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+        for message, status, expected in [
+            ("API key not valid. Please pass a valid API key.", "INVALID_ARGUMENT",
+             "PROVIDER_AUTH_INVALID"),
+            ("Invalid tool schema", "INVALID_ARGUMENT", "GEMINI_HTTP_400"),
+            ("API key not valid", "PERMISSION_DENIED", "GEMINI_HTTP_400"),
+        ]:
+            with self.subTest(message=message, status=status):
+                body = m.json.dumps({"error": {"status": status, "message": message}}).encode()
+                with patch.object(m.HTTP_CLIENT, "open",
+                                  side_effect=HTTPError(url, 400, "error", {}, io.BytesIO(body))):
+                    if expected == "PROVIDER_AUTH_INVALID":
+                        caught = m.ProviderUnavailable
+                    else:
+                        caught = m.Hold
+                    with self.assertRaises(caught) as failure:
+                        m.request_json(url, data={})
+                    self.assertEqual(str(failure.exception), expected)
+        github_url = "https://api.github.com/repos/" + m.REPO + "/pulls/2275"
+        body = m.json.dumps({"error": {"status": "INVALID_ARGUMENT",
+                                       "message": "API key not valid"}}).encode()
+        with patch.object(m.HTTP_CLIENT, "open",
+                          side_effect=HTTPError(github_url, 400, "error", {}, io.BytesIO(body))):
+            with self.assertRaises(m.Hold) as failure:
+                m.request_json(github_url, token="fake-read")
+            self.assertEqual(str(failure.exception), "GITHUB_HTTP_400")
+
     def test_unclassified_http_holds_identify_safe_endpoint_without_provider_switch(self):
         import io
         from urllib.error import HTTPError
