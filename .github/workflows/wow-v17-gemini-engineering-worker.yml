@@ -41,10 +41,11 @@ jobs:
     timeout-minutes: 45
     environment: wow-engineering
     steps:
-      - name: Checkout protected main (no persisted credential)
+      - name: Checkout exact dispatch SHA (no persisted credential)
         uses: actions/checkout@v6
         with:
-          ref: main
+          # Never silently execute a different runtime when main advances in queue.
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
