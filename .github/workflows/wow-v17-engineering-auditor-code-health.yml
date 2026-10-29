@@ -48,10 +48,27 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         env:
-          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/lifecycle-pr-body.md"
+          # An old Actions event can hold a stale PR body after a metadata edit.
+          # Read the current trusted body, but only if the PR head is unchanged.
+          [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "${EXPECTED_HEAD_SHA:-}" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "::error::LIFECYCLE_PR_IDENTITY_INVALID"; exit 1;
+            }
+          live_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}") || {
+            echo "::error::LIFECYCLE_PR_READ_FAILED"; exit 1;
+          }
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg sha "$EXPECTED_HEAD_SHA" '
+            .state == "open" and .base.ref == "main" and
+            .base.repo.full_name == $repo and .head.sha == $sha
+          ' <<<"$live_pr" >/dev/null || {
+            echo "::error::LIFECYCLE_PR_STALE_OR_WRONG_TARGET"; exit 1;
+          }
+          jq -r '.body // ""' <<<"$live_pr" > "$RUNNER_TEMP/lifecycle-pr-body.md"
           git diff --name-only HEAD^1 HEAD^2 > "$RUNNER_TEMP/lifecycle-changed-paths.txt"
           python artifacts/wow-engine/v17/engineering_agent_team.py lifecycle-classify \
             --pr-body-file "$RUNNER_TEMP/lifecycle-pr-body.md" \
