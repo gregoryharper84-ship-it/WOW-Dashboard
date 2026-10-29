@@ -472,3 +472,30 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+
+## DAFT external research shadow statuses
+
+These values are **local research annotations, not V17 terminal/fitted-model
+failure codes**. The canonical backend's existing native blocker always remains
+authoritative. They are registered here to prevent proliferation of competing
+unreviewed status codes. No research status authorizes rank, model calibration,
+stakes, deployment, or betting execution.
+
+| Research status | Owning component | Meaning | Changes model probability/terminal? |
+| --- | --- | --- | --- |
+| `RETROSPECTIVE_OR_UNRESOLVED` | DAFT evidence intake | Pre-event capture, identity, timing, or edit evidence cannot be attested | No |
+| `PROSPECTIVE_SHADOW` | DAFT evidence intake | Exact contract and pre-event attested capture supplied for research | No |
+| `INCOMPLETE_OUTCOME_SPACE` | DAFT market research | Required 2-way or 1X2 quote outcome set cannot be normalized | No |
+| `UNVERIFIED_QUOTE_IDENTITY_OR_TIME` | DAFT market research | Quotes lack matching exact contract/book/time | No |
+| `RESEARCH_ESTIMATE_ONLY` | DAFT market research | Proportional no-vig estimate from complete matched quotes; not model output | No |
+| `NOT_COMPARABLE` | DAFT movement research | Reference/current/offered contracts or timestamps do not permit a comparison | No |
+| `MARKET_RESEARCH_ONLY` | DAFT movement research | Exact market move and offer metadata recorded without a fitted win probability | No |
+| `UNAVAILABLE` | DAFT LLP annotation | No fresh, attested, exact matching external alert; no impact on LLP | No |
+| `UNRESOLVED` | DAFT LLP annotation | Missing, stale, or unmatched evidence prevents eligibility | No |
+| `FROZEN_RESEARCH_ONLY` | DAFT private prospective ledger | Append-only, hash-chained research observation persisted privately | No |
+| `DUPLICATE_IMMUTABLE_OBSERVATION` | DAFT private prospective ledger | Identical capture/version already frozen; no duplicate record | No |
+
+All DAFT source-result reconciliations, model comparisons and closing-price
+statistics are research evidence only; unrelated V17 model failures never become
+a DAFT research code, and `can_execute=false` remains invariant.
