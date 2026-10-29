@@ -345,7 +345,7 @@ def test_malformed_review_still_produces_terminal_attempt_receipt(monkeypatch):
 def test_valid_escaped_patch_above_old_capture_limit(tmp_path):
     """Escaped JSON overhead cannot reject a canonical under-512KiB patch."""
     source = captured()
-    source["files"][0]["patch"] = "@@ -1 +1 @@\\n-a\\n+" + ("\\\\" * 390_019) + "\\n"
+    source["files"][0]["patch"] = "@@ -1 +1 @@\n-a\n+" + ("\\" * 390_019) + "\n"
     source["diff_sha256"] = receipts.canonical_diff(source["files"], expected_count=1)[1]
     raw = json.dumps(source)
     assert 640 * 1024 < len(raw.encode("utf-8")) < fallback.MAX_INPUT_BYTES
