@@ -60,6 +60,7 @@ def test_prospective_requires_attested_capture_and_known_exact_contract():
     assert normalize()["prospective_eligible"]
     assert not normalize(capture_attested=False)["prospective_eligible"]
     assert not normalize(official_event_id=None)["prospective_eligible"]
+    assert not normalize(edit_at="2026-10-29T10:02:00Z")["prospective_eligible"]
     late = normalize_research_record(message(), capture_at="2026-10-29T16:00:00Z")
     assert not late["prospective_eligible"]
     assert late["research_eligibility"] == "RETROSPECTIVE_OR_UNRESOLVED"

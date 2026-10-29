@@ -67,11 +67,14 @@ def normalize_research_record(raw: Mapping[str, Any], *, capture_at: str) -> dic
     published = _time(raw.get("published_at"))
     captured = _time(capture_at)
     event = _time(raw.get("event_start_at"))
+    edited = _time(raw.get("edit_at"))
     assert captured is not None
     attested = raw.get("capture_attested") is True
     prospective = bool(
         attested and published is not None and event is not None
         and published <= captured < event
+        and (raw.get("edit_at") in (None, "") or
+             (edited is not None and published <= edited <= captured))
         and exact_contract_key(raw) is not None
     )
     # Source bodies remain only in the private intake. Do not emit or log them.
@@ -331,13 +334,15 @@ def analyze_reference_and_offer(
     first = _time(opening.get("quote_timestamp"))
     now = _time(current.get("quote_timestamp"))
     age = quote_age_seconds(offered.get("quote_timestamp"), observed_at)
+    reference_age = quote_age_seconds(current.get("quote_timestamp"), observed_at)
     p_first = american_implied_probability(opening.get("american_odds"))
     p_now = american_implied_probability(current.get("american_odds"))
     offered_decimal = american_to_decimal(offered.get("american_odds"))
     if first is None or now is None or now < first or p_first is None or p_now is None:
         return {"status": "NOT_COMPARABLE", "reason": "REFERENCE_QUOTE_UNRESOLVED",
                 "can_execute": False}
-    if age is None or age > max_quote_age_seconds or offered_decimal is None:
+    if (age is None or age > max_quote_age_seconds or offered_decimal is None or
+            reference_age is None or reference_age > max_quote_age_seconds):
         return {"status": "NOT_COMPARABLE", "reason": "OFFER_QUOTE_STALE_OR_UNRESOLVED",
                 "can_execute": False}
     return {
