@@ -412,3 +412,20 @@ def test_class_a_deterministic_receipt_regressions_execute_in_native_ci():
     )
     assert result.returncode == 0, (result.stdout + "\n" + result.stderr)[-4500:]
     assert "passed" in result.stdout
+
+
+def test_global_off_semantic_canary_requires_unique_current_attempt_receipt():
+    """Only an authenticated exact-run semantic review reaches certification."""
+    content = WORKFLOW.read_text(encoding="utf-8")
+    assert "SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}" in content
+    assert '[ "$SOURCE_CONCLUSION" = "success" ] || neutral' in content
+    assert 'if [ "$REVIEW_ACTIVE" != "true" ]; then' in content
+    assert "wow-v17-independent-source-review-" in content
+    assert '(.expired == false and' in content
+    assert '(.name | endswith($suffix))' in content
+    assert '"INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"' in content
+    assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in content
+    assert "independent_source_review_receipt.py" in content
+    assert "--verify" in content
+    assert '(.event == "workflow_dispatch" or .event == "workflow_run")' in content
+    assert "steps.route.outputs.applicable == 'true' && github.event_name == 'workflow_run'" in content
