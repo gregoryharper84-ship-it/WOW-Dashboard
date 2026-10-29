@@ -62,6 +62,33 @@ automatic ruleset mutation.
 4. Repository admin updates ruleset `24907422`: **require** `WOW Independent Security Review` pinned to GitHub App `5245832`, keeping `WOW required-three regression`, `WOW governed probability backend`, and `WOW additional required regression`. Set `strict_required_status_checks_policy=true` so advancing `main` requires recertification against the new base SHA. The direct review receipt binds **both PR head SHA and base SHA**, and its runner rejects either moving during review. Verify the effective branch protection rejects unreviewed trust-root changes and stale head/base check combinations. The GitHub ruleset is not automatically updated by adding this workflow.
 5. Only after that enforcement is verified, retire the obsolete trusted certifier/canary dependencies via a separately independently reviewed change. Keep release actor separation and independent postdeploy verification by SIRT. Release is not authorized merely because a reviewer check passed.
 
+## 2026-10-29 fail-closed provider canary repair (PR #2275)
+
+The protected-main review job held on `HTTP_404` in authenticated
+run `40910909900` attempts 3 and 4. The original source emitted only
+a generic HTTP status; the QA artifact **does not establish which
+upstream endpoint returned the 404**. The candidate source now emits a
+bounded endpoint category (`ANTHROPIC_HTTP_404`, `GEMINI_HTTP_404`,
+or `GITHUB_HTTP_404`) without logging URL paths, payloads or secrets.
+An unknown 404 remains HOLD, never triggers provider shopping.
+
+Both provider keys may exist while the default Claude-first call stops
+at a legitimate fail-closed HOLD. The repaired source permits an optional,
+allowlisted **QA-environment-only** `WOW_QA_PRIMARY_PROVIDER` variable.
+The default is still `anthropic-claude-api`; a specifically authorized
+value of `gemini-generative-api` chooses Gemini first on a new semantic
+review. No arbitrary provider ID is accepted. An actual semantic REJECT
+terminates the sequence, and sticky identical-content REJECT evidence
+is rechecked across PRs; an unclassified 404 is never relabeled
+`ProviderUnavailable` simply to skip a reviewer.
+
+Security/Architect and QA must review this Class B change before protected
+adoption. The existing installed workflow does **not** support the new
+setting yet. Do not change the required ruleset or assume adding an
+environment variable fixes the running old main. The provider canary must
+prove QA App 5245832 actually produced a semantic verdict, not merely a
+workflow success, and must still prove REJECT remains terminal.
+
 ## Cross-PR content REJECT ledger — P0 repair candidate
 
 A GitHub check bound to a PR head SHA cannot alone prevent the same rejected
