@@ -734,7 +734,7 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
     def _check(self, prior, *, current_id=12, current_attempt=1,
                include_current=True, compare=None, fail_history=False, now=None,
                no_spend_ids=(), checkout_sha="b" * 40, fail_jobs=False,
-               attempt_outcomes=None, git_ref="refs/heads/main"):
+               attempt_outcomes=None, job_fail_ids=(), git_ref="refs/heads/main"):
         import datetime as dt
         from unittest.mock import patch
         me = {"databaseId": current_id, "attempt": current_attempt,
@@ -774,7 +774,7 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
                         "run_id": job_id,
                         "name": "Gemini AMRT isolated repair candidate (never a release actor)",
                         "status": "completed",
-                        "conclusion": "skipped" if outcome == "job_skipped" else "success",
+                        "conclusion": "skipped" if outcome == "job_skipped" else ("failure" if job_id in job_fail_ids or origin.get("conclusion") == "failure" else "success"),
                         "completed_at": origin.get("updatedAt", "2026-10-28T23:59:00Z"),
                         "steps": [] if outcome == "job_skipped" else [{
                             "name": "Execute one bounded headless Gemini CLI candidate session",
@@ -839,6 +839,16 @@ class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "HELD")
         self.assertEqual(result["code"], "GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
+
+    def test_successful_cli_but_failed_later_regression_is_not_healthy_canary(self):
+        prior = [{"databaseId": 11, "headSha": "b" * 40,
+                  "status": "completed", "conclusion": "failure",
+                  "updatedAt": "2026-10-28T23:59:00Z"}]
+        result, _ = self._check(
+            prior, attempt_outcomes={(11, 1): "success"}, job_fail_ids={11},
+        )
+        self.assertEqual(result["status"], "HELD")
+        self.assertEqual(result["code"], "GEMINI_RECOVERY_ALREADY_ATTEMPTED_SHA")
 
     def test_non_main_workflow_dispatch_is_rejected(self):
         result, commands = self._check([], git_ref="refs/heads/unmerged-branch")
