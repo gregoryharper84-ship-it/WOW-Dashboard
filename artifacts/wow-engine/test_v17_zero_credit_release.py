@@ -122,7 +122,11 @@ def test_workflows_keep_paid_review_and_explicit_free_flag():
     assert "WOW_QA_ZERO_CREDIT_MODE" in release_yaml
     assert "--zero-credit-policy-enabled" in qa_yaml
     assert "--zero-credit-policy-enabled" in release_yaml
-    assert "uses: ./.github/actions/wow-chatgpt-agent" in qa_yaml
+    assert "independent_source_review_primary.py" in qa_yaml
+    assert "OPENAI_REVIEW_KEY: ${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}" in qa_yaml
+    assert "Verify typed primary availability before allowing fallback" in qa_yaml
+    assert "steps.primary_failure.outputs.fallback_eligible == 'true'" in qa_yaml
+    assert "Run isolated read-only adversarial review" in qa_yaml
 
 
 def dispatcher_case(*, zero_credit=True, checks=None, author="copilot-swe-agent[bot]",

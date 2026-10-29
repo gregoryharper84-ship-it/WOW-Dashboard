@@ -24,6 +24,18 @@ WORKFLOW_PATH = ".github/workflows/wow-v17-independent-qa-check.yml"
 WORKFLOW_ID = 380562324
 PROVIDER_IDENTITY = "openai-codex-action"
 CREDENTIAL_SCOPE = "WOW_QA_REVIEW_OPENAI_API_KEY"
+# Only reviews genuinely produced in this protected QA workflow can claim an
+# alternative identity. The pair is re-verified by every downstream consumer.
+ALLOWED_REVIEW_CREDENTIALS = {
+    "openai-codex-action": frozenset({"WOW_QA_REVIEW_OPENAI_API_KEY"}),
+    "openai-responses-api": frozenset({"WOW_QA_REVIEW_OPENAI_API_KEY"}),
+    "anthropic-claude-api": frozenset({
+        "WOW_QA_REVIEW_ANTHROPIC_API_KEY",
+    }),
+    "gemini-generative-api": frozenset({
+        "WOW_QA_REVIEW_GEMINI_API_KEY",
+    }),
+}
 MAX_REVIEW_AGE = timedelta(minutes=30)
 MAX_DIFF_FILES = 100
 MAX_DIFF_BYTES = 512 * 1024
@@ -582,8 +594,15 @@ def build_artifact(
     review_result: object,
     run: Mapping[str, Any],
     now: datetime | None = None,
+    provider_identity: str = PROVIDER_IDENTITY,
+    credential_scope: str = CREDENTIAL_SCOPE,
 ) -> dict[str, Any]:
     _require(repository == CANONICAL_REPOSITORY, "SOURCE_REVIEW_REPOSITORY_MISMATCH")
+    _require(
+        isinstance(provider_identity, str) and isinstance(credential_scope, str)
+        and credential_scope in ALLOWED_REVIEW_CREDENTIALS.get(provider_identity, frozenset()),
+        "SOURCE_REVIEW_PROVIDER_CREDENTIAL_UNTRUSTED",
+    )
     _require(pr.get("state") == "open" and pr.get("draft") is False and not pr.get("merged_at"),
              "SOURCE_REVIEW_PR_NOT_READY")
     _require(pr.get("number") == _positive_int(pr.get("number"), "SOURCE_REVIEW_PR_NUMBER"),
@@ -597,6 +616,8 @@ def build_artifact(
     head_ref = head.get("ref")
     _require(isinstance(head_sha, str) and bool(SHA.fullmatch(head_sha)), "SOURCE_REVIEW_HEAD_INVALID")
     _require(isinstance(head_ref, str) and bool(head_ref), "SOURCE_REVIEW_HEAD_REF_INVALID")
+    base_sha = base.get("sha")
+    _require(isinstance(base_sha, str) and bool(SHA.fullmatch(base_sha)), "SOURCE_REVIEW_BASE_SHA_INVALID")
     _require(
         (head.get("repo") or {}).get("full_name") == repository
         and (base.get("repo") or {}).get("full_name") == repository
@@ -643,6 +664,7 @@ def build_artifact(
             "pr_number": pr["number"],
             "author": {"id": author_id, "login": author_login},
             "base_ref": "main",
+            "base_sha": base_sha,
             "head_ref": head_ref,
             "head_sha": head_sha,
         },
@@ -661,8 +683,8 @@ def build_artifact(
             "event": source_event,
             "head_branch": "main",
             "head_sha": source_head_sha,
-            "provider_identity": PROVIDER_IDENTITY,
-            "credential_scope": CREDENTIAL_SCOPE,
+            "provider_identity": provider_identity,
+            "credential_scope": credential_scope,
         },
         "created_at_utc": _utc(clock),
         "expires_at_utc": _utc(expires),
@@ -704,6 +726,8 @@ def capture_pr_evidence(
             and (base.get("repo") or {}).get("full_name") == repository,
             "SOURCE_REVIEW_PR_IDENTITY_MISMATCH",
         )
+        _require(isinstance(base.get("sha"), str) and bool(SHA.fullmatch(base["sha"])),
+                 "SOURCE_REVIEW_BASE_SHA_INVALID")
         return {
             "number": pr_number,
             "state": value["state"],
@@ -717,6 +741,7 @@ def capture_pr_evidence(
                 "repo": {"full_name": (head.get("repo") or {}).get("full_name")},
             },
             "base": {
+                "sha": base.get("sha"),
                 "ref": base.get("ref"),
                 "repo": {"full_name": (base.get("repo") or {}).get("full_name")},
             },
@@ -778,11 +803,13 @@ def verify_artifact(
     _require(artifact.get("repository") == expected_repository == CANONICAL_REPOSITORY,
              "SOURCE_REVIEW_REPOSITORY_MISMATCH")
     target = _exact_keys(
-        artifact.get("target"), {"pr_number", "author", "base_ref", "head_ref", "head_sha"},
+        artifact.get("target"), {"pr_number", "author", "base_ref", "base_sha", "head_ref", "head_sha"},
         "SOURCE_REVIEW_TARGET",
     )
     _require(target.get("pr_number") == expected_pr_number, "SOURCE_REVIEW_PR_NUMBER_MISMATCH")
     _require(target.get("base_ref") == "main", "SOURCE_REVIEW_BASE_MISMATCH")
+    _require(isinstance(target.get("base_sha"), str) and bool(SHA.fullmatch(target["base_sha"])),
+             "SOURCE_REVIEW_BASE_SHA_INVALID")
     _require(target.get("head_sha") == expected_head_sha and bool(SHA.fullmatch(expected_head_sha)),
              "SOURCE_REVIEW_HEAD_MISMATCH")
     _require(target.get("head_ref") == expected_head_ref, "SOURCE_REVIEW_HEAD_REF_MISMATCH")
@@ -891,8 +918,10 @@ def verify_artifact(
         and source.get("event") in {"workflow_dispatch", "workflow_run"}
         and source.get("head_branch") == "main"
         and source.get("head_sha") == run.get("head_sha")
-        and source.get("provider_identity") == PROVIDER_IDENTITY
-        and source.get("credential_scope") == CREDENTIAL_SCOPE,
+        and isinstance(source.get("provider_identity"), str)
+        and isinstance(source.get("credential_scope"), str)
+        and source["credential_scope"] in ALLOWED_REVIEW_CREDENTIALS.get(
+            source["provider_identity"], frozenset()),
         "SOURCE_REVIEW_PROVENANCE_MISMATCH",
     )
     if producer_context:
@@ -1276,6 +1305,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--head-ref")
     parser.add_argument("--attempt", type=int)
     parser.add_argument("--policy-mode", choices=("legacy", "independent", "canary", "zero_credit"))
+    parser.add_argument("--provider-identity", default=PROVIDER_IDENTITY)
+    parser.add_argument("--credential-scope", default=CREDENTIAL_SCOPE)
     args = parser.parse_args(argv)
     try:
         if args.capture:
@@ -1304,6 +1335,8 @@ def main(argv: list[str] | None = None) -> int:
                 commit=captured.get("commit"),
                 review_result=json.loads(args.result.read_text(encoding="utf-8")),
                 run=run,
+                provider_identity=args.provider_identity,
+                credential_scope=args.credential_scope,
             )
             _require(artifact["target"]["pr_number"] == args.pr_number
                      and artifact["target"]["head_sha"] == args.head_sha

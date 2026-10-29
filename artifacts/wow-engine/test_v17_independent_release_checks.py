@@ -83,7 +83,7 @@ def source_review_evidence(
             "changed_files": len(diff),
             "user": {"id": author_id, "login": author},
             "head": {"sha": HEAD, "ref": "fix/issue-1830", "repo": {"full_name": REPO}},
-            "base": {"ref": "main", "repo": {"full_name": REPO}},
+            "base": {"sha": OLD, "ref": "main", "repo": {"full_name": REPO}},
         },
         files=diff,
         commit={
@@ -1103,7 +1103,10 @@ if "--method" in args:
 path = args[-1]
 routes = json.load(open(os.environ["FAKE_GH_ROUTES"]))
 status, body = routes.get(path, [404, {"message": "Not Found"}])
-print(f"HTTP/2.0 {status} OK\r\n\r\n" + json.dumps(body))
+if os.environ.get("FAKE_GH_JSON_ONLY") == "1":
+    print(json.dumps(body))
+else:
+    print(f"HTTP/2.0 {status} OK\r\n\r\n" + json.dumps(body))
 '''
 
 
@@ -1156,6 +1159,7 @@ def _run_decide(tmp, wf, routes, env_extra):
     source = source_review_evidence(["artifacts/x.py"], author="wow-engineering[bot]")
     (runner / "wow-v17-independent-source-review.json").write_text(json.dumps(source["artifact"]))
     (runner / "source-review-run.json").write_text(json.dumps(source["run"]))
+    (runner / "source-review-input.json").write_text(json.dumps({"pr": {"base": {"sha": OLD}}}))
     qa_policy = {
         "artifact_id": 88,
         "policy": {
@@ -1196,7 +1200,9 @@ def _evidence_runs(extra=()):
 @pytest.mark.parametrize("event", ["workflow_run", "workflow_dispatch"])
 def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, event):
     prs = json.dumps([{"number": 7, "head": {"sha": HEAD}, "base": {"ref": "main"}}])
-    proc, runner, env = _run_decide(fake_gh, QA_WF, _routes_for_pr(_evidence_runs()),
+    routes = _routes_for_pr(_evidence_runs())
+    routes[f"repos/{REPO}/pulls/7"][1]["base"]["sha"] = OLD
+    proc, runner, env = _run_decide(fake_gh, QA_WF, routes,
                                     {"EVENT": event, "WR_PRS": prs if event == "workflow_run" else "null",
                                      "INPUT_PR": "7" if event == "workflow_dispatch" else ""})
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -1220,7 +1226,7 @@ def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, ev
         cwd=ROOT, env=env, capture_output=True, text=True,
     )
     assert terminal.returncode == 0, terminal.stdout + terminal.stderr
-    env["GH_TOKEN"] = "qa-app-token"
+    env.update(READ_TOKEN="read-only", QA_APP_TOKEN="qa-app-token", FAKE_GH_JSON_ONLY="1")
     pub = subprocess.run(["bash", "-c", _step_script(QA_WF, "Publish exact-head check")], cwd=ROOT, env=env,
                          capture_output=True, text=True)
     assert pub.returncode == 0, pub.stdout + pub.stderr
@@ -1230,6 +1236,48 @@ def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, ev
     assert posted[0]["payload"] == {"name": m.QA_CHECK, "head_sha": HEAD, "status": "completed", "conclusion": "success",
                                     "output": {"title": decision["title"], "summary": decision["summary"]}}
 
+
+
+@pytest.mark.parametrize("mutation", ["base", "head", "closed"])
+def test_qa_publish_never_posts_success_after_last_moment_pr_movement(fake_gh, mutation):
+    routes = _routes_for_pr(_evidence_runs())
+    route = f"repos/{REPO}/pulls/7"
+    routes[route][1]["base"]["sha"] = OLD
+    proc, runner, env = _run_decide(fake_gh, QA_WF, routes, {
+        "EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
+    })
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads((runner / "decisions" / "decision-7.json").read_text())["conclusion"] == "success"
+    env.update({
+        "PR_NUMBER": "7", "HEAD_SHA": HEAD, "POLICY_OUTCOME": "success",
+        "POLICY_RECEIPT_OUTCOME": "success", "POLICY_ARTIFACT_OUTCOME": "success",
+        "CAPTURE_OUTCOME": "success", "REVIEW_OUTCOME": "success",
+        "RECHECK_OUTCOME": "success", "SOURCE_REVIEW_OUTCOME": "success",
+        "SOURCE_REVIEW_ARTIFACT_OUTCOME": "success", "DECIDE_OUTCOME": "success",
+        "READ_TOKEN": "read-only", "QA_APP_TOKEN": "qa-app-token",
+        "FAKE_GH_JSON_ONLY": "1",
+    })
+    terminal = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Preserve terminal QA decision for every resolved target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert terminal.returncode == 0, terminal.stdout + terminal.stderr
+    live = routes[route][1]
+    if mutation == "base":
+        live["base"]["sha"] = "c" * 40
+    elif mutation == "head":
+        live["head"]["sha"] = "d" * 40
+    else:
+        live["state"] = "closed"
+    (fake_gh / "routes.json").write_text(json.dumps(routes))
+    publish = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Publish exact-head check")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert publish.returncode != 0
+    assert "QA_PUBLISH_HEAD_OR_BASE_MOVED" in publish.stdout + publish.stderr
+    log = fake_gh / "gh.log"
+    assert not log.exists() or not log.read_text().strip(), "Stale reviewer posted an App check"
 
 def test_qa_workflow_publishes_failure_when_evidence_is_missing(fake_gh):
     proc, runner, _ = _run_decide(
@@ -1497,6 +1545,8 @@ def test_provider_failure_publishes_exact_head_qa_app_failure_after_prior_pass(f
         GITHUB_OUTPUT=str(fake_gh / "out"),
         GITHUB_STEP_SUMMARY=str(fake_gh / "summary"),
         GH_TOKEN="qa-app-token",
+        READ_TOKEN="read-only",
+        QA_APP_TOKEN="qa-app-token",
         PR_NUMBER="7",
         HEAD_SHA=HEAD,
         POLICY_OUTCOME="success",
