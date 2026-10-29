@@ -23,7 +23,14 @@ concurrency:
 jobs:
   trusted-governance:
     name: Trusted exact-head engineering governance
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && (github.event_name != 'workflow_run' || ((github.event.workflow_run.event == 'workflow_run' || github.event.workflow_run.event == 'check_run') && github.event.workflow_run.conclusion == 'success'))
+    # Only authenticated successful certifier completion can start this
+    # optional evidence check. A new PR is not a receipt and must not burn
+    # a 15-minute polling window or yield an apparent success.
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.event_name == 'workflow_run' &&
+      (github.event.workflow_run.event == 'workflow_run' || github.event.workflow_run.event == 'check_run') &&
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
