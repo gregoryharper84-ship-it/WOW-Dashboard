@@ -1,0 +1,46 @@
+name: wow-v17-tri-sport-certification-evidence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-tri-sport-certification-evidence.yml"
+      - "artifacts/wow-engine/v17/tri_sport_certification_evidence_gate.py"
+      - "artifacts/wow-engine/v17/tri_sport_certification_demonstration_plan_v1.json"
+      - "artifacts/wow-engine/tests/test_tri_sport_certification_evidence_gate.py"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/wow-v17-tri-sport-certification-evidence.yml"
+      - "artifacts/wow-engine/v17/tri_sport_certification_evidence_gate.py"
+      - "artifacts/wow-engine/v17/tri_sport_certification_demonstration_plan_v1.json"
+      - "artifacts/wow-engine/tests/test_tri_sport_certification_evidence_gate.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fail-closed-evidence:
+    name: Three-sport proof package contract
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/wow-engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal test dependency
+        run: python -m pip install pytest==8.3.5
+      - name: Verify adversarial certification evidence holds
+        run: python -m pytest -q tests/test_tri_sport_certification_evidence_gate.py
+      - name: Confirm research gate cannot publish
+        run: |
+          grep -q 'CAN_EXECUTE = False' v17/tri_sport_certification_evidence_gate.py
+          grep -q 'CERTIFICATION_AUTHORITY = False' v17/tri_sport_certification_evidence_gate.py
+          grep -q '"probability_publishable": False' v17/tri_sport_certification_evidence_gate.py
