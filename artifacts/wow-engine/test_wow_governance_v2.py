@@ -23,7 +23,12 @@ def test_source_review_negative_suite_runs_on_pr_head():
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "Ran 26 tests" in result.stderr, result.stderr
+    assert "Ran 30 tests" in result.stderr, result.stderr
+    for required in ("test_prior_equivalent_diff_reject_is_sticky_after_new_non_force_commit",
+                     "test_amended_commit_force_push_history_denies_even_when_prior_sha_orphaned",
+                     "test_non_force_single_commit_app_pr_does_not_hold_without_reject",
+                     "test_unbounded_review_history_fails_closed"):
+        assert required in result.stderr, result.stderr
 
 
 def test_protected_main_workflow_and_separate_qa_app_are_required():

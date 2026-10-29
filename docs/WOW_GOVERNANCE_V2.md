@@ -25,12 +25,19 @@ explicit body binding the PR number, base SHA and complete diff SHA-256:
 An owner approval without that exact binding is **not** a security review. The
 workflow also checks original source PR lineage, exact source commit, immutable Engineering App adoption
 commit message/parent SHA, changed-file blob identities, and human/source-author
-separation. An editable PR description alone never certifies source authorship. **An owner who authored the
-original source is NOT an independent reviewer**, even when an Engineering App
-copies the files into its own PR. For that case the check fails closed and a
-different authenticated Security/Architect is mandatory. The owner may still
-authorize release separately but cannot manufacture an independent semantic PASS.
-This applies to bootstrap PR #2254 (original owner source #2251).
+separation. An editable PR description alone never certifies source authorship. An owner who
+wrote the original source is **not an independent semantic reviewer** even if
+the Engineering App copied the code. The QA App must never manufacture an
+independent PASS on that basis.
+
+**Solo-operator rule:** WOW has one human operator. No second GitHub user,
+external human Security/Architect, or separate human login is required for
+governed release. The owner's signed-in exact-head CODEOWNER approval is the
+human release authorization; the existing separate QA and Release Apps verify
+technical evidence independently of Engineering. An owner-approved first
+installation is expressly recorded as an **owner-authorized bootstrap**, not
+as an independent semantic AI review. After the reviewer is live, the isolated
+QA App conducts automated Claude/Gemini semantic reviews.
 
 A genuine owner-reviewed, source-author-independent PASS can be published by
 the separate QA App; the owner cannot directly forge the QA check. Any absent,
@@ -40,27 +47,35 @@ never `success`; after authentic GitHub approval, the owner explicitly dispatche
 For example, after review: `gh workflow run wow-v17-simple-security-review.yml --ref main -f pr_number=<PR> -f head_sha=<HEAD_SHA>`. The check's detailed failure log/receipt supplies the required digest-bound approval text. This is **manual fallback**, not an automatic third model or permission to
 place orders, self-approve, merge or deploy.
 
-For Class A routine repairs keep the existing deterministic CI/release
-requirements. Class B trust roots and probability-adjacent changes need an
-independent reviewer; Class C probability changes need the full governed
-validation process. No owner fallback can waive those other gates.
+For Class A reliability repairs, preserve the three native regression checks
+and normal authorized release path without a separate semantic review. For
+Class B governance and probability-adjacent changes, retain explicit owner
+CODEOWNER authorization (when required), independently published QA/Release App
+checks, and automated semantic security review after activation. Provider
+unavailability cannot become a fabricated security PASS. For Class C
+probability-producing changes, retain historical replay, independent model QA,
+and full governed validation: no owner exception to sporting probabilities.
 
-**One-time bootstrap:** obtain a genuine external distinct-principal review
-of the reviewer installation itself before protected merge; then configure
-the QA App and providers and canary-test both the PASS and no-review
-failure path, pin `WOW Independent Security Review` in ruleset #24907422,
-enable strict base synchronization, and retire the redundant legacy loops
-only after demonstrated enforcement. All GitHub ruleset/admin/secret
-operations require the authorized administrator; documentation is not an
-automatic ruleset mutation.
+**One-time single-operator bootstrap:** on the exact Engineering App adoption
+SHA require the existing QA App, distinct Release Authority App, all three
+native regression checks, legitimate CODEOWNER approval, and unchanged
+source/blob/SHA lineage. Missing evidence or known security findings remain
+HOLD. This is a transparent owner-authorized first installation with reduced
+semantic-review assurance, not a falsely signed independent review receipt.
+After the protected merge, activate the isolated QA App provider credentials,
+run actual PASS, REJECT, outage, and moved-SHA negative canaries, add
+`WOW Independent Security Review` from QA App ID `5245832` to ruleset
+`24907422` with strict base recertification, and verify unreviewed protected
+changes are rejected. Only then retire old certifier loops. This does not
+automatically mutate GitHub rulesets, enable trading, or authorize deployment.
 
 ## Protected transition — must be completed before retiring legacy
 
-1. A distinct, authenticated Security/Architect reviewer validates this new trust-root migration itself through the existing authorized path. Neither an owner's self-review nor a deterministic CI PASS is that independent review.
+1. The repository's sole human owner authorizes the exact App-adopted trust-root SHA. Existing independent QA App, Release App and three native regressions independently enforce technical gates. This bootstrap is documented as owner authorization, not independent semantic source review; no second human reviewer account is required.
 2. Configure credentials only in the existing `wow-qa` GitHub Environment: `WOW_QA_APP_ID`, `WOW_QA_APP_PRIVATE_KEY`, and QA-only `WOW_QA_REVIEW_ANTHROPIC_API_KEY` and/or `WOW_QA_REVIEW_GEMINI_API_KEY`. Owner authorizes any relevant API spend; never expose credential values in comments or logs.
-3. After the reviewed migration merges to `main`, run it on one exact-head PR. Confirm an actual external reviewer response, correct SHA/diff digest, **QA App** check provenance, and fail-closed results for a REJECT and a moved SHA.
+3. After the owner-authorized migration merges to `main`, run Claude/Gemini through the existing isolated **QA App** on one exact-head PR. Verify real provider output, SHA/diff digest and QA App identity, and fail-closed outcomes for REJECT, stale SHA and quota outage. This is an automated independent service, not a second human account.
 4. Repository admin updates ruleset `24907422`: **require** `WOW Independent Security Review` pinned to GitHub App `5245832`, keeping `WOW required-three regression`, `WOW governed probability backend`, and `WOW additional required regression`. Set `strict_required_status_checks_policy=true` so advancing `main` requires recertification against the new base SHA. The direct review receipt binds **both PR head SHA and base SHA**, and its runner rejects either moving during review. Verify the effective branch protection rejects unreviewed trust-root changes and stale head/base check combinations. The GitHub ruleset is not automatically updated by adding this workflow.
-5. Only after that enforcement is verified, retire the obsolete trusted certifier/canary dependencies via a separately independently reviewed change. Keep release actor separation and independent postdeploy verification by SIRT. Release is not authorized merely because a reviewer check passed.
+5. Only after the QA App gate is enforced and a negative no-review merge test passes, retire obsolete certifier/canary dependencies through the same owner-authorized, QA/Release-App-governed process. Retain independent postdeploy SIRT verification and exact live SHA acceptance. Review alone never authorizes deployment.
 
 ## Policy
 
@@ -82,7 +97,11 @@ authentic REJECT is sticky until the code SHA changes. The workflow double-check
 base and current protected main immediately before publishing a PASS, including the human
 fallback path, and fails closed if the source moves during diff pagination.
 
-The initial reviewer installation requires separately authenticated Security/Architect
-review. An owner-authored source cannot use owner fallback to certify itself. Pin the
-QA App security check and strict protected-base recertification before retiring the old
-governance certifier. Preserve the three existing required regression checks.
+The first installation uses owner-controlled bootstrap plus existing independent
+QA/Release App checks; **no second human reviewer account is needed**. Owner
+authorship still cannot be labeled an independent semantic PASS. This must not
+change the permanent post-bootstrap automated semantic check, which remains
+separate from Engineering and fails closed on unavailable providers.
+Preserve the three existing required regression checks.
+
+Preserve the three existing required regression checks.

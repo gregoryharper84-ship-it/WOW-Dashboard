@@ -405,6 +405,61 @@ def prior_semantic_reject(sha, read_token):
     raise Hold("PRIOR_REVIEW_CHECKS_UNBOUNDED")
 
 
+
+def prior_equivalent_pr_reject(target, read_token):
+    """Do not re-sample a rejected diff by adding an empty commit or amending it.
+
+    The exact-head check is authoritative for the current SHA. This additional
+    PR-history fence also examines earlier ancestry; an amended/force-pushed
+    review history cannot be trusted and therefore requires a fresh governed PR.
+    It is intentionally bounded: uncertain GitHub history is HOLD, never PASS.
+    """
+    if not read_token:
+        raise Hold("REVIEW_HISTORY_READ_TOKEN_MISSING")
+    number = target["pr"]
+    timeline = gh(f"/issues/{number}/timeline?per_page=100", read_token)
+    if not isinstance(timeline, list) or len(timeline) >= 100:
+        raise Hold("PR_REVIEW_TIMELINE_UNBOUNDED")
+    if any(not isinstance(item, dict) for item in timeline):
+        raise Hold("PR_REVIEW_TIMELINE_INVALID")
+    if any(item.get("event") == "head_ref_force_pushed" for item in timeline):
+        raise Hold("PR_FORCE_PUSH_REVIEW_HISTORY_HOLD")
+
+    commits = gh(f"/pulls/{number}/commits?per_page=100", read_token)
+    if not isinstance(commits, list) or not commits or len(commits) > 8:
+        raise Hold("PR_REVIEW_COMMIT_HISTORY_UNBOUNDED")
+    shas = []
+    for commit in commits:
+        sha = commit.get("sha") if isinstance(commit, dict) else None
+        if not isinstance(sha, str) or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
+            raise Hold("PR_REVIEW_COMMIT_ID_INVALID")
+        shas.append(sha)
+    if shas[-1] != target["head_sha"] or len(set(shas)) != len(shas):
+        raise Hold("PR_REVIEW_COMMIT_HISTORY_STALE")
+
+    for sha in shas[:-1]:
+        data = gh(f"/commits/{sha}/check-runs?check_name=WOW%20Independent%20Security%20Review&filter=all&per_page=100", read_token)
+        if (not isinstance(data, dict) or not isinstance(data.get("check_runs"), list)
+                or type(data.get("total_count")) is not int
+                or data["total_count"] < 0 or data["total_count"] > 100):
+            raise Hold("PR_REVIEW_ANCESTOR_CHECKS_UNBOUNDED")
+        for run in data["check_runs"]:
+            if not isinstance(run, dict):
+                raise Hold("PR_REVIEW_ANCESTOR_CHECK_INVALID")
+            if ((run.get("app") or {}).get("id") != QA_APP_ID
+                    or run.get("name") != CHECK_NAME
+                    or run.get("conclusion") != "failure"
+                    or not str((run.get("output") or {}).get("title", "")).startswith("REJECT")):
+                continue
+            summary = (run.get("output") or {}).get("summary")
+            if not isinstance(summary, str):
+                raise Hold("PRIOR_REJECT_PROVENANCE_MISSING")
+            if (f"PR #{number}," in summary
+                    and f"base {target['base_sha']}, diff {target['diff_sha256']}" in summary):
+                return True
+    return False
+
+
 def publish_check(head_sha, receipt, token):
     if not token:
         raise Hold("QA_APP_TOKEN_MISSING")
@@ -449,6 +504,8 @@ def main():
     try:
         if prior_semantic_reject(target["head_sha"], read_token):
             raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        if prior_equivalent_pr_reject(target, read_token):
+            raise Hold("PREVIOUS_SEMANTIC_REJECT_EQUIVALENT_DIFF")
         verdict, output, provider, attempts = semantic_review(target, {
             "anthropic-claude-api": os.environ.get("WOW_QA_REVIEW_ANTHROPIC_API_KEY", ""),
             "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
@@ -457,6 +514,8 @@ def main():
         require_live_identity(current, target)
         if prior_semantic_reject(target["head_sha"], read_token):
             raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        if prior_equivalent_pr_reject(target, read_token):
+            raise Hold("PREVIOUS_SEMANTIC_REJECT_EQUIVALENT_DIFF")
         receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
                                attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
                                attempt=os.environ["GITHUB_RUN_ATTEMPT"])
@@ -488,6 +547,8 @@ def main():
                 raise Hold("PROTECTED_BASE_MOVED_BEFORE_PUBLICATION")
             if prior_semantic_reject(target["head_sha"], read_token):
                 raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+            if prior_equivalent_pr_reject(target, read_token):
+                raise Hold("PREVIOUS_SEMANTIC_REJECT_EQUIVALENT_DIFF")
         except Hold as final_hold:
             receipt["decision"] = "HOLD"
             receipt["reason"] = str(final_hold)
