@@ -123,6 +123,15 @@ def capture(pr_number, expected_sha, token):
             raise Hold("DIFF_PATCH_MISSING")
         if not isinstance(file.get("filename"), str) or not isinstance(file.get("sha"), str):
             raise Hold("DIFF_FILE_IDENTITY_INVALID")
+        added, deleted = file.get("additions"), file.get("deletions")
+        if (type(added) is not int or type(deleted) is not int
+                or added < 0 or deleted < 0):
+            raise Hold("DIFF_CHANGE_COUNTS_INVALID")
+        lines = file["patch"].splitlines()
+        actual_added = sum(line.startswith("+") for line in lines)
+        actual_deleted = sum(line.startswith("-") for line in lines)
+        if actual_added != added or actual_deleted != deleted:
+            raise Hold("DIFF_PATCH_TRUNCATED_OR_INCOMPLETE")
         entries.append({k: file[k] for k in ("filename", "status", "sha", "patch")})
     serialized = json.dumps(entries, sort_keys=True, separators=(",", ":"))
     if len(serialized.encode()) > MAX_DIFF:
