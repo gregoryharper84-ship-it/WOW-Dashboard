@@ -18,8 +18,8 @@ The QA reviewer independently issues one `WOW Independent Security Review` GitHu
 
 The reviewer does not author source, approve its own implementation, merge, deploy, or change sporting-probability semantics. Missing keys, provider outages, incomplete GitHub file patches, duplicate or stale identities, and malformed JSON fail closed. An authentic REJECT never triggers provider shopping. GitHub review/CI are for admission; Render LIVE SHA, behavior and reconciliation are separate production acceptance.
 
-`custom_gpt_identity=WOW_BETTING_ENGINE`  
-`runtime_generation=V17_ACTIVE`  
-`terminal_authority=V17_TERMINAL_REDUCER`  
-`can_execute=false`  
+`custom_gpt_identity=WOW_BETTING_ENGINE`
+`runtime_generation=V17_ACTIVE`
+`terminal_authority=V17_TERMINAL_REDUCER`
+`can_execute=false`
 `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`
