@@ -97,6 +97,90 @@ def recheck_auto_worker_provider(runs: Any, comparison: Any, current_sha: str,
 
 
 
+def latest_actual_provider_attempt(
+    runs: Any, lookup_jobs: Any, *, current_run_id: int | None = None,
+) -> dict[str, Any]:
+    """Use authenticated GitHub job-step proof to distinguish spend from no-spend.
+
+    A completed worker whose Gemini CLI step was *skipped* could not call the
+    provider; its GitHub-native step record is the immutable no-spend receipt.
+    Preserve the preceding actual provider attempt for the global cooldown.
+    Unknown provenance, truncated history and in-flight predecessors HOLD.
+    """
+    def held(code: str) -> dict[str, Any]:
+        return {"status": "HELD", "code": code, "can_execute": False}
+
+    if not isinstance(runs, list) or len(runs) > 100:
+        return held("GEMINI_PROVIDER_HISTORY_UNVERIFIED")
+    seen: set[int] = set()
+    completed = []
+    for run in runs:
+        if not isinstance(run, dict):
+            return held("GEMINI_PROVIDER_HISTORY_UNVERIFIED")
+        ident = run.get("databaseId")
+        if type(ident) is not int or ident <= 0 or ident in seen:
+            return held("GEMINI_PROVIDER_RUN_ID_INVALID")
+        seen.add(ident)
+        if ident == current_run_id:
+            if run.get("status") not in ("queued", "pending", "in_progress"):
+                return held("GEMINI_PROVIDER_SELF_STATUS_UNVERIFIED")
+            continue
+        status = run.get("status")
+        if status == "completed":
+            completed.append(run)
+        elif status in ("queued", "pending"):
+            continue
+        elif status in ("in_progress", "waiting", "requested"):
+            return held("GEMINI_PROVIDER_PREDECESSOR_NOT_TERMINAL")
+        else:
+            return held("GEMINI_PROVIDER_RUN_STATUS_UNVERIFIED")
+    if current_run_id is not None and current_run_id not in seen:
+        return held("GEMINI_WORKER_CURRENT_RUN_MISSING")
+    completed.sort(key=lambda item: (
+        str(item.get("updatedAt") or ""), item["databaseId"],
+    ), reverse=True)
+    for candidate in completed:
+        ident = candidate["databaseId"]
+        if candidate.get("conclusion") not in ("success", "failure"):
+            return held("GEMINI_PROVIDER_WORKFLOW_OUTCOME_UNVERIFIED")
+        try:
+            payload = lookup_jobs(ident)
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+            return held("GEMINI_PROVIDER_JOB_RECEIPT_UNAVAILABLE")
+        if not isinstance(payload, dict) or type(payload.get("total_count")) is not int:
+            return held("GEMINI_PROVIDER_JOB_RECEIPT_UNVERIFIED")
+        jobs = payload.get("jobs")
+        if payload["total_count"] != 1 or not isinstance(jobs, list) or len(jobs) != 1:
+            return held("GEMINI_PROVIDER_JOB_RECEIPT_UNVERIFIED")
+        job = jobs[0]
+        if not isinstance(job, dict) or job.get("run_id") != ident or (
+            job.get("name") != "Gemini AMRT isolated repair candidate (never a release actor)"
+            or job.get("status") != "completed"
+        ):
+            return held("GEMINI_PROVIDER_JOB_RECEIPT_UNVERIFIED")
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            return held("GEMINI_PROVIDER_STEP_RECEIPT_UNVERIFIED")
+        cli_steps = [
+            step for step in steps if isinstance(step, dict)
+            and step.get("name") == "Execute one bounded headless Gemini CLI candidate session"
+        ]
+        if len(cli_steps) != 1:
+            return held("GEMINI_PROVIDER_STEP_RECEIPT_UNVERIFIED")
+        outcome = cli_steps[0].get("conclusion")
+        if outcome in ("success", "failure"):
+            return {"status": "VERIFIED_PROVIDER_HISTORY", "run": candidate,
+                    "can_execute": False}
+        if outcome == "skipped":
+            # Verified by GitHub Actions' immutable job-step outcome.
+            # Provider was never invoked; do not reset 24h recovery/cooldown.
+            continue
+        return held("GEMINI_PROVIDER_STEP_OUTCOME_UNVERIFIED")
+    if len(runs) == 100:
+        return held("GEMINI_PROVIDER_HISTORY_TRUNCATED")
+    return {"status": "VERIFIED_PROVIDER_HISTORY", "run": None, "can_execute": False}
+
+
 def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, Any]:
     """Canonical provider recheck after acquiring the shared Actions writer lock.
 
