@@ -71,6 +71,14 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
           and abs(extract(epoch from (p.event_start_time_utc-%s::timestamptz))) <= 900
           and p.model_probability_publishable=true
           and p.can_execute=false
+          -- A newer persisted score without a matching terminal receipt
+          -- supersedes any earlier approved prediction of the same event.
+          and not exists (
+              select 1 from public.wow_nfl_event_predictions as newer
+              where newer.official_event_id=p.official_event_id
+                and (newer.created_at,newer.event_prediction_id)
+                    > (p.created_at,p.event_prediction_id)
+          )
           and latest.row_status='COMPLETED'
           and latest.can_execute=false
           -- Require latest final reducer output, not earlier upstream approval.
