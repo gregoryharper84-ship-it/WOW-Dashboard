@@ -23,13 +23,14 @@ def test_source_review_negative_suite_runs_on_pr_head():
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "Ran 10 tests" in result.stderr, result.stderr
+    assert "Ran 16 tests" in result.stderr, result.stderr
 
 
 def test_protected_main_workflow_and_separate_qa_app_are_required():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     code = SCRIPT.read_text(encoding="utf-8")
     assert "pull_request_target:" in workflow
+    assert "pull_request_review:" in workflow
     assert "github.ref == 'refs/heads/main'" in workflow
     assert "environment: wow-qa" in workflow
     assert "ref: main" in workflow
@@ -40,5 +41,7 @@ def test_protected_main_workflow_and_separate_qa_app_are_required():
     assert "NoCredentialRedirect" in code
     assert "HTTP_CLIENT.open" in code
     assert "except ProviderUnavailable" in code
+    assert "except OwnerFallbackRequired" in code
+    assert "OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED" in code
     assert "except Hold as exc" in code
     assert 'CHECK_NAME = "WOW Independent Security Review"' in code
