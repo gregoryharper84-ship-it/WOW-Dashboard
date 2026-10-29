@@ -1,0 +1,54 @@
+name: wow-sirt-engineering-finding-bridge
+on:
+  schedule:
+    - cron: "11,26,41,56 * * * *"
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - wow-sirt-independent-reliability-sentinel
+    types: [completed]
+
+# Separate controlled bridge. Independent SIRT monitor remains read-only.
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: wow-sirt-engineering-finding-bridge
+  cancel-in-progress: false
+
+jobs:
+  deliver-and-reconcile:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Reconcile persistent SIRT findings into Engineering issues
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/sirt_engineering_intake.py |
+            tee "$RUNNER_TEMP/sirt-engineering-intake.jsonl"
+      - name: Retain bounded intake receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sirt-engineering-intake-${{ github.run_id }}
+          path: ${{ runner.temp }}/sirt-engineering-intake.jsonl
+          if-no-files-found: warn
+          retention-days: 30
