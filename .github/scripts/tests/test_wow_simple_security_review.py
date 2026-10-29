@@ -57,6 +57,41 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaises(m.Hold):
             m.semantic_review(target, {})
 
+    def test_protected_qa_gemini_first_never_provider_shops_after_reject(self):
+        target = {"pr": 2275, "head_sha": "a" * 40,
+                  "diff_sha256": "b" * 64, "diff": "safe"}
+        creds = {provider: "qa-key" for provider in m.PROVIDERS}
+        calls = []
+        def rejected(provider, key, prompt):
+            calls.append(provider)
+            return ("REJECT", {"source_review": "FAIL",
+                                "security_review": "FAIL",
+                                "probability_integrity_review": "PASS",
+                                "findings": ["security issue"]})
+        with patch.dict(m.os.environ, {"WOW_QA_PRIMARY_PROVIDER": "gemini-generative-api"}):
+            self.assertEqual(m.reviewer_provider_order(),
+                             ("gemini-generative-api", "anthropic-claude-api"))
+            self.assertEqual(m.semantic_review(target, creds, rejected)[0], "REJECT")
+            self.assertEqual(calls, ["gemini-generative-api"])
+            calls.clear()
+            def unavailable(provider, key, prompt):
+                calls.append(provider)
+                if provider == "gemini-generative-api":
+                    raise m.ProviderUnavailable("PROVIDER_HTTP_503")
+                return ("PASS", {"source_review": "PASS", "security_review": "PASS",
+                                 "probability_integrity_review": "PASS", "findings": []})
+            verdict, _, who, attempts = m.semantic_review(target, creds, unavailable)
+            self.assertEqual((verdict, who), ("PASS", "anthropic-claude-api"))
+            self.assertEqual(calls, ["gemini-generative-api", "anthropic-claude-api"])
+            self.assertEqual(attempts[0]["result"], "PROVIDER_HTTP_503")
+        with patch.dict(m.os.environ, {"WOW_QA_PRIMARY_PROVIDER": "unapproved-provider"}):
+            with self.assertRaises(m.Hold) as fail:
+                m.reviewer_provider_order()
+            self.assertEqual(str(fail.exception), "QA_PRIMARY_PROVIDER_UNAPPROVED")
+        with patch.dict(m.os.environ, {"WOW_QA_PRIMARY_PROVIDER": ""}):
+            self.assertEqual(m.reviewer_provider_order(), tuple(m.PROVIDERS))
+
+
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
               "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
