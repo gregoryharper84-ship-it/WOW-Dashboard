@@ -684,7 +684,10 @@ def main():
             commit_content_review(reservation, receipt, qa_token)
             receipt["content_fingerprint"] = reservation["digest"]
         except Hold as exc:
-            receipt["decision"] = "HOLD"
+            # Preserve a real semantic REJECT in the attributable PR receipt.
+            # A failed sentinel PATCH remains blocked; it cannot authorize PASS.
+            if receipt["decision"] != "REJECT":
+                receipt["decision"] = "HOLD"
             receipt["reason"] = "CONTENT_LEDGER_COMMIT_FAILED: " + str(exc)
     # One final GitHub identity re-read after the ledger write. Main/PR may
     # have moved during the remote write even though the serialized semantic
