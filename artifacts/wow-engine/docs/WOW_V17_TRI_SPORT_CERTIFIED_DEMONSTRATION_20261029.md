@@ -22,7 +22,7 @@
 
 ## Single exact acceptance contract
 
-One **genuine** sport-specific terminal acceptance package per target includes: rights-approved source and official identity with SHA, available-before-kickoff player-level input frozen at a real snapshot ID, immutable fitted artifact + independent holdout and model fitting details, exact line/period/direction, independently calibrated numeric lower bound and calibration artifact, a canonical Action score receipt with genuine prediction ID, and V17_TERMINAL_REDUCER `FINAL_APPROVED` from the matching row. The shared audit module `v17/tri_sport_certification_evidence_gate.py` validates evidence fields but **never** creates probabilities, certification, picks or wagering actions. Its fully filled synthetic test fixture is explicitly not an actual production receipt. An already selected scorer throwing or timing out must keep its typed failure (not be rewritten MODEL_UNAVAILABLE).
+One **genuine** sport-specific terminal acceptance package per target includes: rights-approved source and official identity with SHA, available-before-kickoff player-level input frozen at a real snapshot ID, immutable fitted artifact + independent holdout and model fitting details, exact line/period/direction, independently calibrated numeric lower bound and calibration artifact, a canonical Action score receipt with genuine prediction ID, and a genuine V17_TERMINAL_REDUCER receipt for the same row. A typed MARKET/CARD-only `HELD` disposition may preserve a complete sporting probability but is **not** full market/card approval; a MODEL/SPORTING hold cannot be counted. The shared audit module `v17/tri_sport_certification_evidence_gate.py` validates evidence fields but **never** creates probabilities, certification, picks or wagering actions. Its fully filled synthetic test fixture is explicitly not an actual production receipt. An already selected scorer throwing or timing out must keep its typed failure (not be rewritten MODEL_UNAVAILABLE).
 
 ## Parallel sources, always active as research unless entitled
 
@@ -37,6 +37,6 @@ One **genuine** sport-specific terminal acceptance package per target includes: 
 - **SIRT:** non-owner read-only challenge of exact SHA, source/identity chronology, held-out selection/overfitting, calibration integrity and terminal receipts; not a second deployment controller.
 - **Claude/Gemini:** independent *advisory* model/code challenge and test ideas as permitted. Their responses cannot impersonate an independently authenticated approval principal or waive real calibration tests.
 
-The first finished milestone is **3/3 independent, externally verifiable sporting probability and terminal receipt demonstrations**, not one green PR and not a tally of candidate models. Never place, route, modify, approve or cancel a wager. `V17_TERMINAL_REDUCER` remains global authority. `can_execute=false`.
+The first finished milestone is **3/3 independently verifiable sporting probability packages with genuine reducer dispositions**, separately recording full market/card approval versus market-only hold, not one green PR and not a tally of candidate models. Never place, route, modify, approve or cancel a wager. `V17_TERMINAL_REDUCER` remains global authority. `can_execute=false`.
 
 *See machine-readable target plan* `v17/tri_sport_certification_demonstration_plan_v1.json`.
