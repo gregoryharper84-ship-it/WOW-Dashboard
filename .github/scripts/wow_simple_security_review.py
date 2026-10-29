@@ -93,10 +93,13 @@ def capture(pr_number, expected_sha, token):
         raise Hold("PR_NUMBER_INVALID")
     pr = gh(f"/pulls/{pr_number}", token)
     sha = pr.get("head", {}).get("sha", "")
+    base_sha = pr.get("base", {}).get("sha", "")
     if (pr.get("state") != "open" or pr.get("base", {}).get("ref") != "main"
             or pr.get("base", {}).get("repo", {}).get("full_name") != REPO
             or pr.get("head", {}).get("repo", {}).get("full_name") != REPO
             or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha)
+            or not isinstance(base_sha, str) or len(base_sha) != 40
+            or any(c not in "0123456789abcdef" for c in base_sha)
             or (expected_sha and sha != expected_sha)):
         raise Hold("PR_TARGET_STALE_OR_UNTRUSTED")
     count = pr.get("changed_files")
@@ -124,7 +127,7 @@ def capture(pr_number, expected_sha, token):
     serialized = json.dumps(entries, sort_keys=True, separators=(",", ":"))
     if len(serialized.encode()) > MAX_DIFF:
         raise Hold("DIFF_SIZE_UNBOUNDED")
-    return {"pr": pr_number, "head_sha": sha, "diff_sha256": hashlib.sha256(serialized.encode()).hexdigest(),
+    return {"pr": pr_number, "head_sha": sha, "base_sha": base_sha, "diff_sha256": hashlib.sha256(serialized.encode()).hexdigest(),
             "author": pr.get("user", {}).get("login", ""), "title": pr.get("title", ""), "diff": serialized}
 
 
@@ -148,7 +151,7 @@ def prompt_for(target):
             "replay, security regressions and release control. If important safety concerns remain or review "
             "is incomplete, FAIL. Return ONLY a JSON object with exactly four fields: source_review, "
             "security_review, probability_integrity_review (each PASS or FAIL), findings (array of short strings). "
-            f"Repository: {REPO}. PR: {target['pr']}; SHA: {target['head_sha']}; "
+            f"Repository: {REPO}. PR: {target['pr']}; SHA: {target['head_sha']}; base SHA: {target.get('base_sha', 'unknown')}; "
             f"diff digest: {target['diff_sha256']}.\n" + target["diff"])
 
 
@@ -220,7 +223,7 @@ def make_receipt(target, *, decision, reviewer, verdict, attempts, run_id, attem
     if reviewer not in PROVIDERS or decision not in ("PASS", "REJECT") or int(run_id) <= 0 or int(attempt) <= 0:
         raise Hold("RECEIPT_IDENTITY_INVALID")
     return {"schema_version": 1, "repository": REPO, "pr_number": target["pr"],
-            "head_sha": target["head_sha"], "diff_sha256": target["diff_sha256"],
+            "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
             "run_id": int(run_id), "run_attempt": int(attempt), "reviewer_identity": reviewer,
             "credential_scope": "wow-qa", "decision": decision, "verdict": verdict,
             "attempts": attempts, "can_execute": False, "no_live_trading": True}
@@ -232,7 +235,7 @@ def publish_check(head_sha, receipt, token):
     decision = receipt.get("decision", "HOLD")
     conclusion = "success" if decision == "PASS" else "failure"
     summary = (f"{decision}: independent semantic review. PR #{receipt.get('pr_number')}, SHA {head_sha}, "
-               f"provider {receipt.get('reviewer_identity', 'none')}, diff {receipt.get('diff_sha256', 'none')}, "
+               f"provider {receipt.get('reviewer_identity', 'none')}, base {receipt.get('base_sha', 'none')}, diff {receipt.get('diff_sha256', 'none')}, "
                f"run {receipt.get('run_id', 'none')}/{receipt.get('run_attempt', 'none')}. "
                "No merge/deploy/trading authority; see run artifact for findings.")
     payload = {"name": CHECK_NAME, "head_sha": head_sha, "status": "completed", "conclusion": conclusion,
@@ -259,8 +262,9 @@ def main():
             "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
         })
         current = gh(f"/pulls/{pr_number}", read_token)
-        if current.get("head", {}).get("sha") != target["head_sha"]:
-            raise Hold("PR_HEAD_MOVED_DURING_REVIEW")
+        if (current.get("head", {}).get("sha") != target["head_sha"]
+                or current.get("base", {}).get("sha") != target["base_sha"]):
+            raise Hold("PR_HEAD_OR_BASE_MOVED_DURING_REVIEW")
         receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
                                attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
                                attempt=os.environ["GITHUB_RUN_ATTEMPT"])
