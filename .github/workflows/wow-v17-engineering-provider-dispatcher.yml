@@ -390,12 +390,14 @@ jobs:
             local comparison recovery recovery_status
             local recent_file comparison_file compare_path
             gemini_route_reason=GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY
-            if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
-                 --workflow wow-v17-gemini-engineering-worker.yml \
-                 --limit 1 \
-                 --json headSha,status,conclusion,updatedAt 2>/dev/null); then
+            # Ignore verified no-spend worker holds without resetting the
+            # provider-wide cooldown; unknown job-step provenance fails closed.
+            if ! recent=$(python artifacts/wow-engine/v17/engineering_gemini_headless.py \
+                provider-history-github); then
               return 1
             fi
+            recent=$(jq -ce 'select(.status == "VERIFIED_PROVIDER_HISTORY") | [.run] | map(select(. != null))' \
+                <<<"$recent") || return 1
             status=$(jq -r '.[0].status // empty' <<<"$recent") || return 1
             conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") \
               || return 1
