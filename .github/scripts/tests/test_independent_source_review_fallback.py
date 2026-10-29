@@ -340,3 +340,45 @@ def test_malformed_review_still_produces_terminal_attempt_receipt(monkeypatch):
     assert len(attempts) == 1
     assert attempts[0]["typed_result"] == "REVIEW_REPLY_SCHEMA_OR_PROVENANCE_INVALID"
     assert attempts[0]["revisit_trigger"] == "INDEPENDENT_REVIEW_REPAIR_REQUIRED"
+
+
+def test_valid_escaped_patch_above_old_capture_limit(tmp_path):
+    """Escaped JSON overhead cannot reject a canonical under-512KiB patch."""
+    source = captured()
+    source["files"][0]["patch"] = "@@ -1 +1 @@\\n-a\\n+" + ("\\\\" * 390_019) + "\\n"
+    source["diff_sha256"] = receipts.canonical_diff(source["files"], expected_count=1)[1]
+    raw = json.dumps(source)
+    assert 640 * 1024 < len(raw.encode("utf-8")) < fallback.MAX_INPUT_BYTES
+    path = tmp_path / "escaped-valid-source.json"
+    path.write_text(raw, encoding="utf-8")
+    validated = fallback._read_input(path)
+    assert validated["diff_sha256"] == source["diff_sha256"]
+
+
+def test_interrupted_chunked_provider_response_is_retryable_transport(monkeypatch):
+    """A partial chunk is an availability failure, not completed malformed JSON."""
+    from http.client import IncompleteRead
+
+    class PartialResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def read(self, _limit):
+            raise IncompleteRead(b'{"partial":', 32)
+
+    class PartialOpener:
+        def open(self, *_args, **_kwargs):
+            return PartialResponse()
+
+    monkeypatch.setattr(fallback, "build_opener", lambda *_args: PartialOpener())
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_PROVIDER_TRANSPORT_FAILURE") as error:
+        fallback._post_json(fallback.ANTHROPIC_URL, {}, {"demo": "safe"})
+    assert fallback.is_retryable_provider_failure(error.value)
+
+
+def test_serialized_capture_remains_bounded(tmp_path):
+    path = tmp_path / "too-large-capture.json"
+    path.write_bytes(b" " * (fallback.MAX_INPUT_BYTES + 1))
+    with pytest.raises(fallback.ReviewUnavailable, match="REVIEW_INPUT_LIMIT_OR_EMPTY"):
+        fallback._read_input(path)
