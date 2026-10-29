@@ -172,7 +172,12 @@ jobs:
             local run_id="$1"
             local provider_name="$2"
             local log_file="$RUNNER_TEMP/provider-${run_id}.log"
-            gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed > "$log_file" 2>&1 || true
+            # Never classify a CLI/API transport error as an empty provider log.
+            # Unknown log evidence cannot disable the OpenAI failure breaker.
+            if ! gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed > "$log_file" 2>&1; then
+              echo "::error::PROVIDER_FAILURE_LOG_FETCH_UNVERIFIED" >&2
+              return 1
+            fi
             python artifacts/wow-engine/v17/engineering_provider_failover.py classify \
               --provider "$provider_name" \
               --log-file "$log_file"
