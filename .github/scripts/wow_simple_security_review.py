@@ -20,8 +20,12 @@ PROVIDERS = ("anthropic-claude-api", "gemini-generative-api")
 OWNER_LOGIN = "gregoryharper84-ship-it"
 OWNER_REVIEWER = "github-owner-security-review"
 REVIEWER_IDENTITIES = (*PROVIDERS, OWNER_REVIEWER)
+APPROVED_GEMINI_MODELS = frozenset(("gemini-2.5-flash", "gemini-3.8-flash"))
 RETRYABLE_HTTP = {401, 408, 429, 500, 502, 503, 504, 529}
 QA_APP_ID = 5245832
+# Immutable, reachable main commit used only as a namespaced QA App check-run store.
+LEDGER_SENTINEL_SHA = "79fa0c275a58cd9d397c5a1bc81d641b6dad7f75"
+LEDGER_NAME_PREFIX = "WOW Semantic Content Ledger "
 # Only explicit typed availability failures are eligible for the alternate reviewer.
 CREDIT_ERRORS = ("credit balance is too low", "insufficient credits", "quota exceeded",
                  "billing quota exceeded", "quota exhausted")
@@ -68,11 +72,14 @@ class NoCredentialRedirect(HTTPRedirectHandler):
 HTTP_CLIENT = build_opener(NoCredentialRedirect)
 
 
-def request_json(url, *, token=None, data=None, headers=None):
+def request_json(url, *, token=None, data=None, headers=None, method=None):
     if not (url.startswith("https://api.github.com/repos/" + REPO + "/")
             or url == "https://api.anthropic.com/v1/messages"
             or url.startswith("https://generativelanguage.googleapis.com/v1beta/models/")):
         raise Hold("REVIEW_ENDPOINT_UNTRUSTED")
+    if method is not None and (method != "PATCH" or data is None
+            or not re.fullmatch(r"https://api.github.com/repos/" + re.escape(REPO) + r"/check-runs/[0-9]+", url)):
+        raise Hold("REVIEW_HTTP_METHOD_UNTRUSTED")
     h = {"Accept": "application/vnd.github+json", "User-Agent": "wow-independent-review-v2"}
     if headers:
         h.update(headers)
@@ -82,7 +89,7 @@ def request_json(url, *, token=None, data=None, headers=None):
     if body is not None:
         h["Content-Type"] = "application/json"
     try:
-        with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=60) as response:
+        with HTTP_CLIENT.open(Request(url, data=body, headers=h, method=method), timeout=60) as response:
             raw = response.read(250000)
         return json.loads(raw)
     except HTTPError as exc:
@@ -94,17 +101,53 @@ def request_json(url, *, token=None, data=None, headers=None):
         if is_provider and exc.code in (400, 404):
             try:
                 obj = json.loads(exc.read(4096))
-                message = obj.get("error", {}).get("message", "")
+                err = obj.get("error", {})
+                if type(err) is not dict:
+                    err = {}
+                message = err.get("message", "")
+                error_type = err.get("type", "")
+                error_status = err.get("status", "")
                 if type(message) is not str:
                     message = ""
+                if type(error_type) is not str:
+                    error_type = ""
+                if type(error_status) is not str:
+                    error_status = ""
             except (ValueError, TypeError, AttributeError, OSError):
-                message = ""
+                message, error_type, error_status = "", "", ""
             words = message.lower()
-            if exc.code == 400 and any(x in words for x in CREDIT_ERRORS):
+            # Only provider-native invalid API-key 400s may fail over.
+            # A generic 400 remains a security HOLD.
+            if (exc.code == 400 and url.startswith(
+                    "https://generativelanguage.googleapis.com/v1beta/models/")
+                    and error_status == "INVALID_ARGUMENT"
+                    and ("api key not valid" in words or "api_key_invalid" in words)):
+                raise ProviderUnavailable("PROVIDER_AUTH_INVALID") from None
+            if exc.code == 400 and (any(x in words for x in CREDIT_ERRORS)
+                                    or error_type in ("insufficient_quota", "billing_error")):
                 raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED") from None
-            if exc.code == 404 and any(x in words for x in MODEL_GONE_ERRORS):
+            # Do not switch reviewers on generic missing URLs or permission
+            # denials. Require provider-native missing-model type/status AND
+            # explicit identification of the exact approved configured model.
+            model = ("claude-sonnet-4-6" if "api.anthropic.com" in url
+                     else url.split("/models/", 1)[1].split(":", 1)[0]
+                     if "/models/" in url else "")
+            native_missing = (error_type == "not_found_error"
+                              or error_status == "NOT_FOUND")
+            identifies_model = (model in words and (
+                "model:" in words or "models/" in words
+                or any(x in words for x in MODEL_GONE_ERRORS)
+                or "not found" in words))
+            if exc.code == 404 and native_missing and identifies_model:
                 raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
-        raise Hold("HTTP_" + str(exc.code)) from None
+        # Surface only a bounded endpoint CATEGORY and status in the QA
+        # receipt. Do not log the URL, provider error body, key or prompt.
+        # An unknown provider 404 is a HOLD, never eligible for fallback.
+        origin = ("GITHUB" if url.startswith("https://api.github.com/")
+                  else "ANTHROPIC" if url == "https://api.anthropic.com/v1/messages"
+                  else "GEMINI" if url.startswith("https://generativelanguage.googleapis.com/")
+                  else "UNTRUSTED")
+        raise Hold(origin + "_HTTP_" + str(exc.code)) from None
     except (URLError, TimeoutError):
         if not url.startswith("https://api.github.com/"):
             raise ProviderUnavailable("PROVIDER_TRANSPORT") from None
@@ -238,7 +281,7 @@ def call_provider(provider, key, prompt):
                                                "description": "Return a strict security review verdict.",
                                                "input_schema": REVIEW_SCHEMA}],
                                     "tool_choice": {"type": "tool", "name": "submit_review"}})
-        if result.get("stop_reason") != "tool_use":
+        if type(result) is not dict or result.get("stop_reason") != "tool_use":
             raise Hold("CLAUDE_REVIEW_INCOMPLETE")
         try:
             responses = [part["input"] for part in result["content"]
@@ -246,22 +289,24 @@ def call_provider(provider, key, prompt):
             if len(responses) != 1:
                 raise Hold("CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE")
             return parse_verdict(responses[0])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError):
             raise Hold("CLAUDE_RESPONSE_INVALID") from None
     elif provider == "gemini-generative-api":
         model = (os.getenv("WOW_QA_GEMINI_MODEL") or "gemini-2.5-flash")
-        if model not in {"gemini-2.5-flash"}:
+        if model not in APPROVED_GEMINI_MODELS:
             raise Hold("GEMINI_MODEL_INVALID")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         result = request_json(url, headers={"x-goog-api-key": key},
                               data={"contents": [{"parts": [{"text": prompt}]}],
                                     "systemInstruction": {"parts": [{"text": SYSTEM_ROLE}]},
                                     "generationConfig": {"responseMimeType": "application/json"}})
-        if not result.get("candidates") or result["candidates"][0].get("finishReason") != "STOP":
+        if (type(result) is not dict or type(result.get("candidates")) is not list
+                or not result["candidates"] or type(result["candidates"][0]) is not dict
+                or result["candidates"][0].get("finishReason") != "STOP") :
             raise Hold("GEMINI_REVIEW_INCOMPLETE")
         try:
             raw = result["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, TypeError, IndexError):
+        except (KeyError, TypeError, IndexError, AttributeError):
             raise Hold("GEMINI_RESPONSE_INVALID") from None
     else:
         raise Hold("PROVIDER_IDENTITY_INVALID")
@@ -273,10 +318,22 @@ def call_provider(provider, key, prompt):
         raise Hold("SEMANTIC_RESPONSE_NOT_JSON") from None
 
 
+def reviewer_provider_order():
+    """Allow protected wow-qa environment to select a different APPROVED primary.
+
+    This does not weaken REJECT handling: existing sticky SHA/content fences
+    execute before review, and a semantic REJECT stops the chain immediately.
+    """
+    primary = os.environ.get("WOW_QA_PRIMARY_PROVIDER", "").strip() or PROVIDERS[0]
+    if primary not in PROVIDERS:
+        raise Hold("QA_PRIMARY_PROVIDER_UNAPPROVED")
+    return (primary,) + tuple(item for item in PROVIDERS if item != primary)
+
+
 def semantic_review(target, credentials, invoke=call_provider):
     prompt = prompt_for(target)
     attempts = []
-    for provider in PROVIDERS:
+    for provider in reviewer_provider_order():
         key = credentials.get(provider)
         if not key:
             attempts.append({"provider": provider, "result": "CREDENTIAL_UNAVAILABLE"})
@@ -405,6 +462,111 @@ def prior_semantic_reject(sha, read_token):
     raise Hold("PRIOR_REVIEW_CHECKS_UNBOUNDED")
 
 
+def content_fingerprint(target):
+    """Content-only digest; identical changed file bytes match across PRs and bases."""
+    files = target.get("file_blobs")
+    if (type(files) is not dict or not files or len(files) > MAX_FILES
+            or any(type(name) is not str or not name
+                   or type(sha) is not str or not re.fullmatch(r"[a-f0-9]{40}", sha)
+                   for name, sha in files.items())):
+        raise Hold("REVIEW_CONTENT_IDENTITY_INVALID")
+    canonical = json.dumps(sorted(files.items()), separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def trusted_content_history(digest, read_token):
+    """QA-App-only checks, bounded and unfiltered by latest-run semantics.
+
+    A previous REJECT or orphaned in-progress review of identical source bytes
+    blocks all subsequent PRs, even after a base change or amended commit.
+    A completed HOLD may be retried; malformed/unknown states fail closed.
+    """
+    if not read_token:
+        raise Hold("CONTENT_LEDGER_READ_TOKEN_MISSING")
+    name = LEDGER_NAME_PREFIX + digest
+    path = (f"/commits/{LEDGER_SENTINEL_SHA}/check-runs?"
+            f"check_name=WOW%20Semantic%20Content%20Ledger%20{digest}&filter=all&per_page=100")
+    total = None
+    matched = 0
+    for page in range(1, 11):
+        result = gh(path + f"&page={page}", read_token)
+        if (type(result) is not dict or type(result.get("total_count")) is not int
+                or result["total_count"] < 0 or result["total_count"] > 1000
+                or type(result.get("check_runs")) is not list
+                or (total is not None and total != result["total_count"])):
+            raise Hold("CONTENT_LEDGER_INVENTORY_UNTRUSTED")
+        total = result["total_count"]
+        for run in result["check_runs"]:
+            if type(run) is not dict:
+                raise Hold("CONTENT_LEDGER_CHECK_INVALID")
+            app = run.get("app")
+            if type(app) is not dict or app.get("id") != QA_APP_ID:
+                continue
+            if run.get("name") != name:
+                continue
+            matched += 1
+            if (run.get("head_sha") != LEDGER_SENTINEL_SHA
+                    or run.get("external_id") != digest):
+                raise Hold("CONTENT_LEDGER_PROVENANCE_INVALID")
+            if run.get("status") != "completed":
+                raise Hold("CONTENT_LEDGER_IN_PROGRESS")
+            title = (run.get("output") or {}).get("title")
+            conclusion = run.get("conclusion")
+            if title == "REJECT — content review" and conclusion == "failure":
+                raise Hold("PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+            if not ((title == "PASS — content review" and conclusion == "success")
+                    or (title == "HOLD — content review" and conclusion == "neutral")):
+                raise Hold("CONTENT_LEDGER_VERDICT_UNTRUSTED")
+        if page * 100 >= total:
+            if matched > 1000:
+                raise Hold("CONTENT_LEDGER_UNBOUNDED")
+            return
+    raise Hold("CONTENT_LEDGER_UNBOUNDED")
+
+
+def reserve_content_review(target, read_token, qa_token):
+    """Record durable IN_PROGRESS before invoking any semantic reviewer."""
+    digest = content_fingerprint(target)
+    trusted_content_history(digest, read_token)
+    if not qa_token:
+        raise Hold("CONTENT_LEDGER_QA_APP_TOKEN_MISSING")
+    result = request_json(
+        "https://api.github.com/repos/" + REPO + "/check-runs", token=qa_token,
+        data={"name": LEDGER_NAME_PREFIX + digest,
+              "head_sha": LEDGER_SENTINEL_SHA, "external_id": digest,
+              "status": "in_progress"})
+    if (type(result) is not dict or type(result.get("id")) is not int
+            or result["id"] <= 0 or result.get("head_sha") != LEDGER_SENTINEL_SHA
+            or result.get("name") != LEDGER_NAME_PREFIX + digest):
+        raise Hold("CONTENT_LEDGER_RESERVATION_UNVERIFIED")
+    return {"id": result["id"], "digest": digest}
+
+
+def commit_content_review(reservation, receipt, qa_token):
+    """Persist decision before publishing any PR-head PASS.
+
+    If the update fails, the incomplete reservation remains as a permanent
+    fail-closed HOLD, requiring an independently inspected recovery action.
+    """
+    decision = receipt.get("decision")
+    if decision not in ("PASS", "REJECT", "HOLD"):
+        raise Hold("CONTENT_LEDGER_DECISION_INVALID")
+    results = {"PASS": "success", "REJECT": "failure", "HOLD": "neutral"}
+    output = {"title": decision + " — content review",
+              "summary": (f"QA-only immutable content review. digest={reservation['digest']} "
+                          f"PR={receipt['pr_number']} SHA={receipt['head_sha']} "
+                          f"review={receipt['run_id']}/{receipt['run_attempt']} "
+                          f"decision={decision}; no wagering/release authority.")}
+    response = request_json(
+        "https://api.github.com/repos/" + REPO +
+        f"/check-runs/{reservation['id']}", token=qa_token, method="PATCH",
+        data={"status": "completed", "conclusion": results[decision], "output": output})
+    if (type(response) is not dict or response.get("id") != reservation["id"]
+            or response.get("conclusion") != results[decision]
+            or response.get("external_id") != reservation["digest"]):
+        raise Hold("CONTENT_LEDGER_COMMIT_UNVERIFIED")
+
+
 def publish_check(head_sha, receipt, token):
     if not token:
         raise Hold("QA_APP_TOKEN_MISSING")
@@ -446,20 +608,38 @@ def main():
                "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
                "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
                "decision": "HOLD", "reviewer_identity": "none", "can_execute": False}
+    reservation = None
+    qa_token = os.environ.get("QA_APP_TOKEN", "")
+    credentials = {
+        "anthropic-claude-api": os.environ.get("WOW_QA_REVIEW_ANTHROPIC_API_KEY", ""),
+        "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
+    }
     try:
         if prior_semantic_reject(target["head_sha"], read_token):
             raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
-        verdict, output, provider, attempts = semantic_review(target, {
-            "anthropic-claude-api": os.environ.get("WOW_QA_REVIEW_ANTHROPIC_API_KEY", ""),
-            "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
-        })
-        current = gh(f"/pulls/{pr_number}", read_token)
-        require_live_identity(current, target)
-        if prior_semantic_reject(target["head_sha"], read_token):
-            raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
-        receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
-                               attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
-                               attempt=os.environ["GITHUB_RUN_ATTEMPT"])
+        # Avoid writing a global reservation for an owner-authored change that
+        # has no usable reviewer at all. This is credential configuration,
+        # not an API-credit outage or a reason to self-approve.
+        if not any(credentials.values()) and target["author"] != "wow-engineering[bot]":
+            raise Hold("PROVIDER_CREDENTIALS_UNAVAILABLE")
+        reservation = reserve_content_review(target, read_token, qa_token)
+        verdict, output, provider, attempts = semantic_review(target, credentials)
+        if verdict == "REJECT":
+            # A real rejection must be persisted for the captured file bytes
+            # EVEN IF a subsequent PR-head reread fails or the branch moves.
+            # Moving the PR cannot erase a provider's adverse verdict.
+            receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
+                                   attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
+                                   attempt=os.environ["GITHUB_RUN_ATTEMPT"])
+        else:
+            # Only positive acceptance requires a current live head/base.
+            current = gh(f"/pulls/{pr_number}", read_token)
+            require_live_identity(current, target)
+            if prior_semantic_reject(target["head_sha"], read_token):
+                raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+            receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
+                                   attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
+                                   attempt=os.environ["GITHUB_RUN_ATTEMPT"])
     except OwnerFallbackRequired as exc:
         receipt["attempts"] = exc.attempts
         try:
@@ -478,6 +658,11 @@ def main():
                 receipt["owner_review_instruction"] = owner_review_instruction(target)
     except Hold as exc:
         receipt["reason"] = str(exc)
+    except Exception as exc:
+        # Once a reservation exists, unexpected provider/parser failures must
+        # receive an attributable HOLD rather than orphaning the ledger.
+        # Never expose exception text (potential HTTP bodies/secrets).
+        receipt["reason"] = "REVIEW_INTERNAL_EXCEPTION_" + type(exc).__name__
     # Last-second guarded acceptance. A moved protected main or a prior QA REJECT
     # must never be overwritten with a success, including the owner fallback path.
     if receipt["decision"] == "PASS":
@@ -491,6 +676,33 @@ def main():
         except Hold as final_hold:
             receipt["decision"] = "HOLD"
             receipt["reason"] = str(final_hold)
+    # The reservation is created before calling any model, and its completed
+    # verdict is persisted before the PR-head check. Failed ledger writes
+    # always cause HOLD, never a PASS or silent alternate-provider retry.
+    if reservation is not None:
+        try:
+            commit_content_review(reservation, receipt, qa_token)
+            receipt["content_fingerprint"] = reservation["digest"]
+        except Hold as exc:
+            # Preserve a real semantic REJECT in the attributable PR receipt.
+            # A failed sentinel PATCH remains blocked; it cannot authorize PASS.
+            if receipt["decision"] != "REJECT":
+                receipt["decision"] = "HOLD"
+            receipt["reason"] = "CONTENT_LEDGER_COMMIT_FAILED: " + str(exc)
+    # One final GitHub identity re-read after the ledger write. Main/PR may
+    # have moved during the remote write even though the serialized semantic
+    # reviewer itself did not race another QA job.
+    if receipt["decision"] == "PASS":
+        try:
+            require_live_identity(gh(f"/pulls/{pr_number}", read_token), target)
+            live = gh("/git/ref/heads/main", read_token)
+            if (live.get("object") or {}).get("sha") != target["base_sha"]:
+                raise Hold("PROTECTED_BASE_MOVED_AFTER_LEDGER_COMMIT")
+            if prior_semantic_reject(target["head_sha"], read_token):
+                raise Hold("PRIOR_REJECT_BEFORE_PUBLICATION")
+        except Hold as exc:
+            receipt["decision"] = "HOLD"
+            receipt["reason"] = str(exc)
     Path("wow-independent-security-decision.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
     if receipt.get("owner_review_instruction"):
         print("OWNER_SECURITY_REVIEW_REQUIRED: " + receipt["owner_review_instruction"], file=sys.stderr)

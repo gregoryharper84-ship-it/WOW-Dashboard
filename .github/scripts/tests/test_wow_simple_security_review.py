@@ -57,6 +57,41 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaises(m.Hold):
             m.semantic_review(target, {})
 
+    def test_protected_qa_gemini_first_never_provider_shops_after_reject(self):
+        target = {"pr": 2275, "head_sha": "a" * 40,
+                  "diff_sha256": "b" * 64, "diff": "safe"}
+        creds = {provider: "qa-key" for provider in m.PROVIDERS}
+        calls = []
+        def rejected(provider, key, prompt):
+            calls.append(provider)
+            return ("REJECT", {"source_review": "FAIL",
+                                "security_review": "FAIL",
+                                "probability_integrity_review": "PASS",
+                                "findings": ["security issue"]})
+        with patch.dict(m.os.environ, {"WOW_QA_PRIMARY_PROVIDER": "gemini-generative-api"}):
+            self.assertEqual(m.reviewer_provider_order(),
+                             ("gemini-generative-api", "anthropic-claude-api"))
+            self.assertEqual(m.semantic_review(target, creds, rejected)[0], "REJECT")
+            self.assertEqual(calls, ["gemini-generative-api"])
+            calls.clear()
+            def unavailable(provider, key, prompt):
+                calls.append(provider)
+                if provider == "gemini-generative-api":
+                    raise m.ProviderUnavailable("PROVIDER_HTTP_503")
+                return ("PASS", {"source_review": "PASS", "security_review": "PASS",
+                                 "probability_integrity_review": "PASS", "findings": []})
+            verdict, _, who, attempts = m.semantic_review(target, creds, unavailable)
+            self.assertEqual((verdict, who), ("PASS", "anthropic-claude-api"))
+            self.assertEqual(calls, ["gemini-generative-api", "anthropic-claude-api"])
+            self.assertEqual(attempts[0]["result"], "PROVIDER_HTTP_503")
+        with patch.dict(m.os.environ, {"WOW_QA_PRIMARY_PROVIDER": "unapproved-provider"}):
+            with self.assertRaises(m.Hold) as fail:
+                m.reviewer_provider_order()
+            self.assertEqual(str(fail.exception), "QA_PRIMARY_PROVIDER_UNAPPROVED")
+        with patch.dict(m.os.environ, {"WOW_QA_PRIMARY_PROVIDER": ""}):
+            self.assertEqual(m.reviewer_provider_order(), tuple(m.PROVIDERS))
+
+
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
               "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
@@ -306,7 +341,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             (529, {}, "PROVIDER_HTTP_529"),
             (400, {"error": {"type": "invalid_request_error",
                               "message": "Your credit balance is too low"}}, "PROVIDER_CREDIT_EXHAUSTED"),
-            (404, {"error": {"message": "model not found"}}, "PROVIDER_MODEL_UNAVAILABLE"),
+            (404, {"error": {"type": "not_found_error", "message": "model: claude-sonnet-4-6"}}, "PROVIDER_MODEL_UNAVAILABLE"),
         ):
             with self.subTest(code=code):
                 with self.assertRaises(m.ProviderUnavailable) as cm:
@@ -314,11 +349,130 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 self.assertEqual(str(cm.exception), expected)
         for code, body in ((400, {"error": {"message": "invalid request schema"}}),
                            (403, {"error": {"message": "policy denied"}}),
-                           (404, {"error": {"message": "endpoint inaccessible"}})):
+                           (404, {"error": {"message": "endpoint inaccessible"}}),
+                           (404, {"error": {"type": "not_found_error", "message": "endpoint not found"}}),
+                           (404, {"error": {"type": "permission_error", "message": "model: claude-sonnet-4-6"}}),
+                           (404, {"error": {"type": "not_found_error", "message": "model: unrelated-model"}})):
             with self.subTest(denied=code):
                 with self.assertRaises(m.Hold) as cm:
                     reject(code, body)
                 self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
+
+    def test_gemini_native_invalid_key_400_fails_over_but_generic_400_holds(self):
+        import io
+        from urllib.error import HTTPError
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+        for message, status, expected in [
+            ("API key not valid. Please pass a valid API key.", "INVALID_ARGUMENT",
+             "PROVIDER_AUTH_INVALID"),
+            ("Invalid tool schema", "INVALID_ARGUMENT", "GEMINI_HTTP_400"),
+            ("API key not valid", "PERMISSION_DENIED", "GEMINI_HTTP_400"),
+        ]:
+            with self.subTest(message=message, status=status):
+                body = m.json.dumps({"error": {"status": status, "message": message}}).encode()
+                with patch.object(m.HTTP_CLIENT, "open",
+                                  side_effect=HTTPError(url, 400, "error", {}, io.BytesIO(body))):
+                    if expected == "PROVIDER_AUTH_INVALID":
+                        caught = m.ProviderUnavailable
+                    else:
+                        caught = m.Hold
+                    with self.assertRaises(caught) as failure:
+                        m.request_json(url, data={})
+                    self.assertEqual(str(failure.exception), expected)
+        github_url = "https://api.github.com/repos/" + m.REPO + "/pulls/2275"
+        body = m.json.dumps({"error": {"status": "INVALID_ARGUMENT",
+                                       "message": "API key not valid"}}).encode()
+        with patch.object(m.HTTP_CLIENT, "open",
+                          side_effect=HTTPError(github_url, 400, "error", {}, io.BytesIO(body))):
+            with self.assertRaises(m.Hold) as failure:
+                m.request_json(github_url, token="fake-read")
+            self.assertEqual(str(failure.exception), "GITHUB_HTTP_400")
+
+    def test_unclassified_http_holds_identify_safe_endpoint_without_provider_switch(self):
+        import io
+        from urllib.error import HTTPError
+        urls = (
+            ("https://api.anthropic.com/v1/messages", "ANTHROPIC_HTTP_404"),
+            ("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", "GEMINI_HTTP_404"),
+            ("https://api.github.com/repos/" + m.REPO + "/pulls/2275", "GITHUB_HTTP_404"),
+        )
+        for url, reason in urls:
+            with self.subTest(reason=reason):
+                with patch.object(m.HTTP_CLIENT, "open",
+                    side_effect=HTTPError(url, 404, "not found", {}, io.BytesIO(b'{}'))):
+                    with self.assertRaises(m.Hold) as caught:
+                        m.request_json(url, token="read" if "github.com" in url else None,
+                                       data=None if "github.com" in url else {})
+                    self.assertEqual(str(caught.exception), reason)
+                    self.assertNotIsInstance(caught.exception, m.ProviderUnavailable)
+        url = "https://api.anthropic.com/v1/messages"
+        with patch.object(m.HTTP_CLIENT, "open",
+            side_effect=HTTPError(url, 403, "forbidden", {}, io.BytesIO(b'{}'))):
+            with self.assertRaises(m.Hold) as denied:
+                m.request_json(url, data={}, headers={"x-api-key": "not-a-real-key"})
+            self.assertEqual(str(denied.exception), "ANTHROPIC_HTTP_403")
+            self.assertNotIsInstance(denied.exception, m.ProviderUnavailable)
+
+    def test_gemini_38_approved_model_preserves_strict_semantic_contract(self):
+        verdict = {"source_review": "PASS", "security_review": "PASS",
+                   "probability_integrity_review": "PASS", "findings": []}
+        result = {"candidates": [{"finishReason": "STOP",
+                  "content": {"parts": [{"text": m.json.dumps(verdict)}]}}]}
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
+            with patch.object(m, "request_json", return_value=result) as called:
+                decision, body = m.call_provider("gemini-generative-api", "fake-key", "test diff")
+                self.assertEqual(decision, "PASS")
+                self.assertEqual(body, verdict)
+                self.assertIn("/models/gemini-3.8-flash:generateContent", called.call_args.args[0])
+                self.assertEqual(called.call_args.kwargs["data"]["generationConfig"]["responseMimeType"],
+                                 "application/json")
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+        from urllib.error import HTTPError
+        import io
+        missing = {"error": {"status": "NOT_FOUND",
+                             "message": "models/gemini-3.8-flash is not found"}}
+        with patch.object(m.HTTP_CLIENT, "open",
+                          side_effect=HTTPError(url, 404, "not found", {},
+                                                io.BytesIO(m.json.dumps(missing).encode()))):
+            with self.assertRaises(m.ProviderUnavailable) as v:
+                m.request_json(url, data={})
+            self.assertEqual(str(v.exception), "PROVIDER_MODEL_UNAVAILABLE")
+
+    def test_malformed_provider_envelopes_hold_without_unhandled_exception(self):
+        target = {"pr": 2275, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "[]"}
+        for provider, malformed in (
+            ("anthropic-claude-api", []),
+            ("anthropic-claude-api", {"stop_reason": "tool_use", "content": ["x"]}),
+            ("gemini-generative-api", []),
+            ("gemini-generative-api", {"candidates": ["x"]}),
+            ("gemini-generative-api", {"candidates": [{"finishReason": "STOP",
+                                                      "content": {"parts": ["x"]}}]}),
+        ):
+            with self.subTest(provider=provider, malformed=malformed):
+                with patch.object(m, "request_json", return_value=malformed):
+                    with self.assertRaises(m.Hold):
+                        m.call_provider(provider, "test-key", "untrusted diff")
+
+    def test_failed_ledger_patch_keeps_semantic_reject_and_blocks_pass(self):
+        import inspect
+        source = inspect.getsource(m.main)
+        guard = source[source.index('except Hold as exc:', source.index('commit_content_review(')):]
+        self.assertIn('if receipt["decision"] != "REJECT":', guard)
+        self.assertIn('receipt["decision"] = "HOLD"', guard)
+        self.assertIn('receipt["reason"] = "CONTENT_LEDGER_COMMIT_FAILED: "', guard)
+        self.assertLess(guard.index('if receipt["decision"] != "REJECT":'),
+                        guard.index('receipt["reason"] = "CONTENT_LEDGER_COMMIT_FAILED: "'))
+
+    def test_review_reservation_internal_error_is_typed_hold(self):
+        # Source-level integration guard ensures an unexpected exception after
+        # reserve cannot escape before commit_content_review is reached.
+        import inspect
+        source = inspect.getsource(m.main)
+        self.assertIn('except Exception as exc:', source)
+        self.assertIn('receipt["reason"] = "REVIEW_INTERNAL_EXCEPTION_"', source)
+        self.assertLess(source.index('except Exception as exc:'),
+                        source.index('commit_content_review(reservation, receipt, qa_token)'))
 
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
@@ -388,6 +542,156 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with patch.object(m, "gh", pages):
             self.assertTrue(m.prior_semantic_reject("a" * 40, "read"))
 
+    def _ledger_target(self, pr=2269, sha="a" * 40):
+        return {"pr": pr, "head_sha": sha, "base_sha": "b" * 40,
+                "file_blobs": {"src/v17.py": "c" * 40}}
+
+    def _ledger_run(self, target, title, conclusion, status="completed", app=None):
+        digest = m.content_fingerprint(target)
+        return {"name": m.LEDGER_NAME_PREFIX + digest,
+                "head_sha": m.LEDGER_SENTINEL_SHA, "external_id": digest,
+                "app": {"id": m.QA_APP_ID if app is None else app},
+                "status": status, "conclusion": conclusion, "output": {"title": title}}
+
+    def test_content_hash_is_stable_across_pr_sha_and_base_not_file_bytes(self):
+        left = self._ledger_target()
+        right = self._ledger_target(pr=2270, sha="d" * 40)
+        right["base_sha"] = "e" * 40
+        self.assertEqual(m.content_fingerprint(left), m.content_fingerprint(right))
+        right["file_blobs"]["src/v17.py"] = "f" * 40
+        self.assertNotEqual(m.content_fingerprint(left), m.content_fingerprint(right))
+        with self.assertRaises(m.Hold):
+            m.content_fingerprint({**left, "file_blobs": {"src/v17.py": "invalid"}})
+
+    def test_global_reject_prevents_second_pr_review_without_provider_call(self):
+        target = self._ledger_target(pr=2270, sha="d" * 40)
+        prior = self._ledger_run(target, "REJECT — content review", "failure")
+        with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [prior]}):
+            with patch.object(m, "request_json", side_effect=AssertionError("must not post")):
+                with self.assertRaises(m.Hold) as cm:
+                    m.reserve_content_review(target, "read", "qa")
+        self.assertEqual(str(cm.exception), "PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+
+    def test_in_progress_reservation_fail_closed_when_reviewer_crashes(self):
+        target = self._ledger_target()
+        pending = self._ledger_run(target, "", None, "in_progress")
+        with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [pending]}):
+            with self.assertRaises(m.Hold) as cm:
+                m.trusted_content_history(m.content_fingerprint(target), "read")
+        self.assertEqual(str(cm.exception), "CONTENT_LEDGER_IN_PROGRESS")
+
+    def test_historical_hold_or_pass_allows_rechallenge_and_reserves_first(self):
+        target = self._ledger_target()
+        for title, conclusion in (("HOLD — content review", "neutral"),
+                                  ("PASS — content review", "success")):
+            old = self._ledger_run(target, title, conclusion)
+            digest = m.content_fingerprint(target)
+            created = {"id": 123, "head_sha": m.LEDGER_SENTINEL_SHA,
+                       "name": m.LEDGER_NAME_PREFIX + digest}
+            with self.subTest(title=title), patch.object(m, "gh", return_value={
+                    "total_count": 1, "check_runs": [old]}):
+                with patch.object(m, "request_json", return_value=created) as api:
+                    reserved = m.reserve_content_review(target, "read", "qa")
+                    self.assertEqual(reserved, {"id": 123, "digest": digest})
+                    self.assertEqual(api.call_args.kwargs["data"]["status"], "in_progress")
+                    self.assertEqual(api.call_args.kwargs["data"]["head_sha"], m.LEDGER_SENTINEL_SHA)
+                    self.assertEqual(api.call_args.kwargs["data"]["external_id"], digest)
+
+    def test_global_check_identity_must_match_qa_app_and_sentinel(self):
+        target = self._ledger_target()
+        trusted = self._ledger_run(target, "HOLD — content review", "neutral")
+        for field, wrong in (("head_sha", "0" * 40), ("external_id", "0" * 64),
+                             ("conclusion", "failure")):
+            malformed = dict(trusted, **{field: wrong})
+            with self.subTest(field=field), patch.object(m, "gh", return_value={
+                    "total_count": 1, "check_runs": [malformed]}):
+                with self.assertRaises(m.Hold):
+                    m.trusted_content_history(m.content_fingerprint(target), "read")
+        foreign = self._ledger_run(target, "REJECT — content review", "failure", app=999)
+        with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [foreign]}):
+            m.trusted_content_history(m.content_fingerprint(target), "read")
+        with patch.object(m, "gh", return_value={"total_count": 1001, "check_runs": []}):
+            with self.assertRaises(m.Hold):
+                m.trusted_content_history(m.content_fingerprint(target), "read")
+
+    def test_reject_ledger_committed_before_head_check_and_failed_commit_holds(self):
+        target = self._ledger_target()
+        digest = m.content_fingerprint(target)
+        reserved = {"id": 125, "digest": digest}
+        receipt = {"pr_number": target["pr"], "head_sha": target["head_sha"],
+                   "run_id": 100, "run_attempt": 1, "decision": "REJECT"}
+        response = {"id": 125, "conclusion": "failure", "external_id": digest}
+        with patch.object(m, "request_json", return_value=response) as api:
+            m.commit_content_review(reserved, receipt, "qa")
+            self.assertEqual(api.call_args.kwargs["method"], "PATCH")
+            self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
+            self.assertEqual(api.call_args.kwargs["data"]["output"]["title"], "REJECT — content review")
+        with patch.object(m, "request_json", return_value={"id": 125, "conclusion": "success"}):
+            with self.assertRaises(m.Hold):
+                m.commit_content_review(reserved, receipt, "qa")
+
+    def test_reject_content_ledger_is_not_duplicated_by_same_sha_page_limit(self):
+        target = self._ledger_target()
+        prior = self._ledger_run(target, "REJECT — content review", "failure")
+        extra = self._ledger_run(target, "HOLD — content review", "neutral")
+        def page(path, token):
+            self.assertIn("filter=all", path)
+            self.assertIn("check_name=", path)
+            if path.endswith("&page=1"):
+                return {"total_count": 101, "check_runs": [extra] * 100}
+            return {"total_count": 101, "check_runs": [prior]}
+        with patch.object(m, "gh", page):
+            with self.assertRaises(m.Hold) as cm:
+                m.trusted_content_history(m.content_fingerprint(target), "qa")
+        self.assertEqual(str(cm.exception), "PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+
+    def test_provider_reject_persists_even_if_pr_moves_before_reread(self):
+        import json
+        target = {**self._ledger_target(), "diff_sha256": "d" * 64,
+                  "author": m.OWNER_LOGIN}
+        event = {"pull_request": {"number": target["pr"],
+                                  "head": {"sha": target["head_sha"]}}}
+        env = {
+            "GITHUB_REPOSITORY": m.REPO,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "pull_request_target",
+            "GITHUB_EVENT_PATH": "/tmp/nonexistent-review-event.json",
+            "GITHUB_RUN_ID": "120", "GITHUB_RUN_ATTEMPT": "1",
+            "GH_READ_TOKEN": "read", "QA_APP_TOKEN": "qa",
+            "WOW_QA_REVIEW_ANTHROPIC_API_KEY": "fake",
+            "WOW_QA_REVIEW_GEMINI_API_KEY": "",
+        }
+        with patch.dict(m.os.environ, env):
+            with patch.object(m.Path, "read_text", return_value=json.dumps(event)):
+                with patch.object(m.Path, "write_text", return_value=0):
+                    with patch.object(m, "capture", return_value=target):
+                        with patch.object(m, "prior_semantic_reject", return_value=False):
+                            with patch.object(m, "reserve_content_review", return_value={
+                                    "id": 42, "digest": m.content_fingerprint(target)}):
+                                with patch.object(m, "semantic_review", return_value=(
+                                        "REJECT",
+                                        {"source_review": "FAIL", "security_review": "FAIL",
+                                         "probability_integrity_review": "PASS",
+                                         "findings": ["provenance violation"]},
+                                        "anthropic-claude-api", [])):
+                                    with patch.object(m, "gh",
+                                                      side_effect=AssertionError("PR reread must not erase REJECT")):
+                                        with patch.object(m, "commit_content_review") as saved:
+                                            with patch.object(m, "publish_check") as published:
+                                                with self.assertRaises(SystemExit):
+                                                    m.main()
+                                                self.assertEqual(saved.call_args.args[1]["decision"], "REJECT")
+                                                self.assertEqual(published.call_args.args[1]["decision"], "REJECT")
+
+    def test_review_client_denies_patch_to_anything_except_qa_check_run(self):
+        for url in ("https://api.anthropic.com/v1/messages",
+                    "https://api.github.com/repos/" + m.REPO + "/pulls/2269",
+                    "https://api.github.com/repos/" + m.REPO + "/check-runs/abc"):
+            with self.subTest(url=url):
+                with self.assertRaises(m.Hold) as cm:
+                    m.request_json(url, token="qa", method="PATCH", data={})
+                self.assertEqual(str(cm.exception), "REVIEW_HTTP_METHOD_UNTRUSTED")
+
     def test_manual_dispatch_requires_owner_and_exact_target(self):
         event = {"inputs": {"pr_number": "2254", "head_sha": "a" * 40}}
         with patch.dict(m.os.environ, {"GITHUB_ACTOR": "untrusted-user"}):
@@ -421,6 +725,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         import inspect
         source = inspect.getsource(m.main)
         self.assertIn('PROTECTED_BASE_MOVED_BEFORE_PUBLICATION', source)
+        self.assertIn('PROTECTED_BASE_MOVED_AFTER_LEDGER_COMMIT', source)
+        self.assertIn('commit_content_review(reservation, receipt, qa_token)', source)
         self.assertIn('prior_semantic_reject(target["head_sha"], read_token)', source)
         self.assertIn('receipt["decision"] = "HOLD"', source)
 
