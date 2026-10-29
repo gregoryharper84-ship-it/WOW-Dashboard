@@ -58,3 +58,12 @@ def test_unavailable_failure_log_can_never_disable_provider_breaker():
     routing = text.split("          route_existing_provider() {", 1)[1]
     assert "OPENAI_FAILURE_CLASSIFICATION_UNVERIFIED" in routing
     assert 'if ! classification=$(classify_run "$latest_id" openai); then' in routing
+
+
+def test_dispatcher_job_rejects_unmerged_manual_ref():
+    """No provider control-plane credentials or actions on unmerged refs."""
+    text = WORKFLOW.read_text()
+    provider = text.split("\n  provider-control:\n", 1)[1].split("\n    steps:\n", 1)[0]
+    assert "github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'" in provider
+    assert "github.ref == 'refs/heads/main'" in provider
+    assert "runs-on: ubuntu-latest" in provider
