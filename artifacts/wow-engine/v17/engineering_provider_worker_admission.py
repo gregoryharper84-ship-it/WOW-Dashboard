@@ -44,6 +44,7 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
     seen: set[int] = set()
     expected_total: int | None = None
     count = 0
+    current_seen = False
     # Bounded pagination, never infer first-use from a truncated run inventory.
     for page in range(1, 51):
         try:
@@ -71,6 +72,7 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
             seen.add(ident)
             is_self = ident == run_id
             if is_self:
+                current_seen = True
                 if (run.get("status") not in ("queued", "pending", "in_progress")
                         or run.get("run_attempt") != run_attempt):
                     return held("PROVIDER_WORKER_SELF_INVALID")
@@ -112,6 +114,8 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
                 # A successful agent is not a healthy run if subsequent
                 # validation or delivery failed.
                 if job.get("conclusion") == "success" and outcome == "success":
+                    if not current_seen:
+                        return held("PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED")
                     return {"status": "ADMITTED", "code": "PREVIOUS_WORKER_HEALTHY",
                             "can_execute": False}
                 stamp = lead[0].get("completed_at") or job.get("completed_at")
@@ -136,6 +140,8 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
                         and age < 120 * 60):
                     return held("PROVIDER_WORKER_CIRCUIT_BREAKER:"+finding.code)
                 if finding.code.startswith(("OPENAI_API_", "ANTHROPIC_API_")):
+                    if not current_seen:
+                        return held("PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED")
                     return {"status": "ADMITTED", "code": "PROVIDER_COOLDOWN_EXPIRED_PROBE",
                             "can_execute": False}
                 # Unclassified, policy and code faults need a typed repair,
@@ -143,6 +149,8 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
                 return held("PROVIDER_WORKER_FAILED_REVIEW_REQUIRED:"+finding.code)
         count += len(entries)
         if count == total:
+            if not current_seen:
+                return held("PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED")
             return {"status": "ADMITTED", "code": "NO_PREVIOUS_PROVIDER_INVOCATION",
                     "can_execute": False}
     return held("PROVIDER_WORKER_INVENTORY_PAGE_CAP")
