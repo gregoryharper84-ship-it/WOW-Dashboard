@@ -146,7 +146,9 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_live_base_or_head_move_denies_old_review(self):
         target = {"head_sha": "a" * 40, "base_sha": "b" * 40}
-        current = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40}}
+        current = {"state": "open",
+                   "head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
+                   "base": {"sha": "b" * 40, "ref": "main", "repo": {"full_name": m.REPO}}}
         m.require_live_identity(current, target)
         current["base"]["sha"] = "c" * 40
         with self.assertRaises(m.Hold):
@@ -157,6 +159,26 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             m.require_live_identity(current, target)
 
 
+
+    def test_final_identity_denies_changed_base_branch_repo_or_closed_pr(self):
+        target = {"head_sha": "a" * 40, "base_sha": "b" * 40}
+        current = {"state": "open",
+                   "head": {"sha": target["head_sha"], "repo": {"full_name": m.REPO}},
+                   "base": {"sha": target["base_sha"], "ref": "main",
+                            "repo": {"full_name": m.REPO}}}
+        m.require_live_identity(current, target)
+        for section, key, wrong in (("base", "ref", "other"),
+                                    ("head", "repo", {"full_name": "foreign/fork"}),
+                                    ("base", "repo", {"full_name": "foreign/fork"})):
+            saved = current[section][key]
+            current[section][key] = wrong
+            with self.subTest(section=section, key=key):
+                with self.assertRaises(m.Hold):
+                    m.require_live_identity(current, target)
+            current[section][key] = saved
+        current["state"] = "closed"
+        with self.assertRaises(m.Hold):
+            m.require_live_identity(current, target)
 
     def test_both_providers_unavailable_requires_owner_review(self):
         target = {"pr": 2254, "head_sha": "a" * 40, "base_sha": "b" * 40,
@@ -176,7 +198,9 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         target = {"pr": 2254, "author": "wow-engineering[bot]",
                   "head_sha": "a" * 40, "base_sha": "b" * 40,
                   "diff_sha256": "c" * 64, "file_blobs": {"src.py": "d" * 40}}
-        pr = {"head": {"sha": target["head_sha"]}, "base": {"sha": target["base_sha"]},
+        pr = {"state": "open",
+              "head": {"sha": target["head_sha"], "repo": {"full_name": m.REPO}},
+              "base": {"sha": target["base_sha"], "ref": "main", "repo": {"full_name": m.REPO}},
               "body": f"Original author/source: PR #2248, head `{'e' * 40}`.\n"}
         src = {"head": {"sha": "e" * 40, "repo": {"full_name": m.REPO}},
                "changed_files": 1, "user": {"login": source_author}}

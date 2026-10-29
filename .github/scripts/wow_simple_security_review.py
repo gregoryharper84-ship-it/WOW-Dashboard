@@ -422,8 +422,14 @@ def publish_check(head_sha, receipt, token):
 
 
 def require_live_identity(current, target):
-    if (current.get("head", {}).get("sha") != target["head_sha"]
-            or current.get("base", {}).get("sha") != target["base_sha"]):
+    # Recheck the full trusted PR identity, not just commit hashes. Another
+    # branch at the same base SHA must never inherit a main-targeted PASS.
+    if (current.get("state") != "open"
+            or (current.get("head") or {}).get("sha") != target["head_sha"]
+            or ((current.get("head") or {}).get("repo") or {}).get("full_name") != REPO
+            or (current.get("base") or {}).get("sha") != target["base_sha"]
+            or (current.get("base") or {}).get("ref") != "main"
+            or ((current.get("base") or {}).get("repo") or {}).get("full_name") != REPO):
         raise Hold("PR_HEAD_OR_BASE_MOVED_DURING_REVIEW")
 
 
