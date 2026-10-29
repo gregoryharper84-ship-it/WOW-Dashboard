@@ -958,6 +958,31 @@ def test_prless_or_skipped_upstream_qa_is_neutral(run_over, jobs, reason):
     assert classified == {"disposition": "neutral", "reason": reason}
 
 
+@pytest.mark.parametrize("run_conclusion,job_conclusion", [
+    ("failure", "failure"),
+    ("failure", "success"),
+    ("success", "failure"),
+])
+def test_failed_qa_with_skipped_upload_must_still_reach_release_hold(
+    run_conclusion, job_conclusion,
+):
+    """A skipped artifact step cannot erase a failed QA workflow or job."""
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(
+            _qa_run(conclusion=run_conclusion),
+            _qa_jobs(
+                job_conclusion,
+                steps=[{"name": "Upload terminal QA outcome",
+                        "status": "completed", "conclusion": "skipped"}],
+            ),
+        ),
+    )
+    assert classified == {
+        "disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE",
+    }
+
+
 @pytest.mark.parametrize("run_over, jobs, jobs_body_status, code", [
     ({"head_repository": {"full_name": "other/WOW-Dashboard"}}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
     ({"repository": {"full_name": "other/WOW-Dashboard"}}, None, 200, "RELEASE_UPSTREAM_QA_UNTRUSTED"),
