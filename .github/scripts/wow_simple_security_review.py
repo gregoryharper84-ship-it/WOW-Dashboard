@@ -651,6 +651,20 @@ def main():
         except Hold as exc:
             receipt["decision"] = "HOLD"
             receipt["reason"] = "CONTENT_LEDGER_COMMIT_FAILED: " + str(exc)
+    # One final GitHub identity re-read after the ledger write. Main/PR may
+    # have moved during the remote write even though the serialized semantic
+    # reviewer itself did not race another QA job.
+    if receipt["decision"] == "PASS":
+        try:
+            require_live_identity(gh(f"/pulls/{pr_number}", read_token), target)
+            live = gh("/git/ref/heads/main", read_token)
+            if (live.get("object") or {}).get("sha") != target["base_sha"]:
+                raise Hold("PROTECTED_BASE_MOVED_AFTER_LEDGER_COMMIT")
+            if prior_semantic_reject(target["head_sha"], read_token):
+                raise Hold("PRIOR_REJECT_BEFORE_PUBLICATION")
+        except Hold as exc:
+            receipt["decision"] = "HOLD"
+            receipt["reason"] = str(exc)
     Path("wow-independent-security-decision.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
     if receipt.get("owner_review_instruction"):
         print("OWNER_SECURITY_REVIEW_REQUIRED: " + receipt["owner_review_instruction"], file=sys.stderr)
