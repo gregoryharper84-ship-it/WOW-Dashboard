@@ -85,6 +85,18 @@ illustrative unit conversion, not independent proof of cash profit.
   the Git checkout and outside public static assets with `0600` permissions.
   No private index is bundled or installed by this PR. Missing or invalid input
   means source unavailable, not `MODEL_UNAVAILABLE`.
+- `v17/daft_private_historical_ingest.py` accepts the two captured research ZIPs,
+  archives the original source fields in a mode-0600 output file under a mode-0700
+  non-repository directory, and explicitly marks all historical rows retrospective.
+  Invoke from `artifacts/wow-engine`: `python -m v17.daft_private_historical_ingest
+  --sharp-zip /private/sharp.zip --vip-zip /private/vip.zip
+  --capture-time 2026-10-29T15:00:00Z --output /private/daft-historical.json`.
+  The output is an **archive**, not the live prospective annotation index.
+- `v17/daft_prospective_shadow_ledger.py` provides append-only hash-chained
+  private observation freezing. It requires attested source capture plus a
+  current pre-event ingestion clock, exact identity, and a private file path.
+  No scheduled collector or external timestamp-attestation service is installed;
+  a caller-supplied `capture_attested` alone is not independent proof.
 - No authenticated Discord ingestion, scheduled private feed, quote vendor,
   database schema migration, persistence RPC, or prospectively frozen
   production ledger is installed in this version. The numeric evaluation

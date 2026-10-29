@@ -291,3 +291,40 @@ def test_private_historical_ingest_keeps_raw_package_private(tmp_path):
             sharp_zip=str(sharp), vip_zip=str(vip),
             captured_at="2026-10-29T15:00:00Z", destination=str(output),
         )
+
+
+
+def test_private_prospective_shadow_ledger_is_immutable(tmp_path):
+    from datetime import datetime, timezone
+    import json
+    from v17.daft_prospective_shadow_ledger import append_prospective_shadow
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    ledger = private / "prospective.jsonl"
+    record = normalize()
+    now = datetime(2026, 10, 29, 10, 2, tzinfo=timezone.utc)
+    first = append_prospective_shadow(
+        str(ledger), record,
+        observed_at="2026-10-29T10:01:30Z", now=now,
+    )
+    assert first["status"] == "FROZEN_RESEARCH_ONLY"
+    duplicate = append_prospective_shadow(
+        str(ledger), record,
+        observed_at="2026-10-29T10:01:30Z", now=now,
+    )
+    assert duplicate["status"] == "DUPLICATE_IMMUTABLE_OBSERVATION"
+    assert len(ledger.read_text().splitlines()) == 1
+    assert not (ledger.stat().st_mode & 0o077)
+    with pytest.raises(ValueError):
+        append_prospective_shadow(
+            str(ledger), record, observed_at="2026-10-29T10:01:30Z",
+            now=datetime(2026, 10, 29, 16, tzinfo=timezone.utc),
+        )
+    corrupted = json.loads(ledger.read_text().strip())
+    corrupted["record"]["source_market_probability"] = 0.99
+    ledger.write_text(json.dumps(corrupted) + "\n")
+    with pytest.raises(ValueError, match="hash chain"):
+        append_prospective_shadow(
+            str(ledger), {**record, "message_id": "different"},
+            observed_at="2026-10-29T10:01:30Z", now=now,
+        )
