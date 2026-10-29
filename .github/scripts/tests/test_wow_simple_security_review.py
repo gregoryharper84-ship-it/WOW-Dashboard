@@ -292,6 +292,83 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
 
 
+    def test_http_404_endpoint_diagnostic_is_bounded_and_redacted(self):
+        import io
+        from urllib.error import HTTPError
+        github = "https://api.github.com/repos/" + m.REPO
+        cases = (
+            (github + "/pulls/2291", False, "GITHUB_API:GET:PR_METADATA"),
+            (github + "/pulls/2291/files?per_page=100&key=SECRET", False,
+             "GITHUB_API:GET:PR_FILES"),
+            (github + "/commits/" + "a"*40 + "/check-runs?check_name=SECRET",
+             False, "GITHUB_API:GET:CHECK_RUNS_READ"),
+            (github + "/check-runs", True, "GITHUB_API:POST:CHECK_RUN_CREATE"),
+            ("https://api.anthropic.com/v1/messages", True,
+             "ANTHROPIC_API:POST:MESSAGES"),
+            ("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=SECRET",
+             True, "GEMINI_API:POST:GENERATE_CONTENT"),
+        )
+        for url, has_body, operation in cases:
+            with self.subTest(operation=operation):
+                self.assertEqual(m.safe_http_operation(url, has_body), operation)
+                with patch.object(m.HTTP_CLIENT, "open", side_effect=HTTPError(
+                        url, 404, "Not Found", {},
+                        io.BytesIO(b'{"message":"SECRET private response"}'))):
+                    with self.assertRaises(m.Hold) as error:
+                        m.request_json(url, data={} if has_body else None)
+                self.assertEqual(str(error.exception), "HTTP_404:" + operation)
+                self.assertNotIn("SECRET", str(error.exception))
+        self.assertEqual(m.safe_http_operation(
+            "https://attacker.example/steal?key=SECRET", True),
+            "UNKNOWN_API:POST:UNCLASSIFIED")
+
+    def test_ambiguous_provider_404_remains_terminal_hold(self):
+        import io
+        from urllib.error import HTTPError
+        url = "https://api.anthropic.com/v1/messages"
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=HTTPError(
+                url, 404, "Not Found", {},
+                io.BytesIO(b'{"error":{"message":"not found"}}'))):
+            with self.assertRaises(m.Hold) as error:
+                m.request_json(url, data={})
+        self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
+        self.assertEqual(str(error.exception),
+                         "HTTP_404:ANTHROPIC_API:POST:MESSAGES")
+        invoked = []
+        def invoke(provider, key, prompt):
+            invoked.append(provider)
+            raise m.Hold("HTTP_404:ANTHROPIC_API:POST:MESSAGES")
+        with self.assertRaises(m.Hold):
+            m.semantic_review({"pr": 2291, "head_sha": "a"*40,
+                               "base_sha": "b"*40, "diff_sha256": "c"*64,
+                               "diff": "test"},
+                              {p: "test" for p in m.PROVIDERS}, invoke)
+        self.assertEqual(invoked, ["anthropic-claude-api"])
+
+    def test_typed_model_404_only_allows_existing_provider_failover(self):
+        import io
+        from urllib.error import HTTPError
+        url = "https://api.anthropic.com/v1/messages"
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=HTTPError(
+                url, 404, "Not Found", {},
+                io.BytesIO(b'{"error":{"message":"model not found"}}'))):
+            with self.assertRaises(m.ProviderUnavailable) as error:
+                m.request_json(url, data={})
+        self.assertEqual(str(error.exception), "PROVIDER_MODEL_UNAVAILABLE")
+        invoked = []
+        def invoke(provider, key, prompt):
+            invoked.append(provider)
+            if provider == "anthropic-claude-api":
+                raise m.ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
+            return "PASS", {"findings": []}
+        outcome = m.semantic_review(
+            {"pr": 2291, "head_sha": "a"*40, "base_sha": "b"*40,
+             "diff_sha256": "c"*64, "diff": "test"},
+            {p: "test" for p in m.PROVIDERS}, invoke)
+        self.assertEqual(outcome[0], "PASS")
+        self.assertEqual(outcome[2], "gemini-generative-api")
+        self.assertEqual(invoked, list(m.PROVIDERS))
+
     def test_typed_provider_error_retry_mapping(self):
         import io
         import json
