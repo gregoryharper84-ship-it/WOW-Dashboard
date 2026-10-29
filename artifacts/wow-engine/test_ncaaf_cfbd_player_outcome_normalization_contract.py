@@ -51,3 +51,10 @@ def test_pregame_leakage_and_incorrect_completion_pairs_are_not_silent():
     assert "src.retrieved_at <= game.event_start_time" in SQL
     assert "split_part(val,'/',1)::numeric>split_part(val,'/',2)::numeric" in SQL
     assert "ncaaf_prop_normalization_stat_invalid" in SQL
+
+
+def test_week_specific_event_identity_does_not_mix_games_or_teams():
+    assert "game.week=p_week" in SQL
+    assert "count(distinct t->>'team')" in SQL
+    assert "f.team in(game.home_team,game.away_team)" in SQL
+    assert "ncaaf_prop_normalization_source_ambiguous_or_missing" in SQL
