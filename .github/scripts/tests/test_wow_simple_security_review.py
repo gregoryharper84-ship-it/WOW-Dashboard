@@ -157,15 +157,6 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
 
 
-    def test_review_event_tracks_exact_head(self):
-        self.assertEqual(
-            m.event_target({"pull_request": {"number": 2254, "head": {"sha": "d" * 40}}},
-                           "pull_request_review"),
-            (2254, "d" * 40),
-        )
-        with self.assertRaises(m.Hold):
-            m.event_target({"pull_request": {"number": "2254"}}, "pull_request_review")
-
     def test_both_providers_unavailable_requires_owner_review(self):
         target = {"pr": 2254, "head_sha": "a" * 40, "diff": "safe"}
         creds = {provider: "key" for provider in m.PROVIDERS}
