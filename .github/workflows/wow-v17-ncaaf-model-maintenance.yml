@@ -26,6 +26,7 @@ on:
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_snapshot_write_size.py"
       - "artifacts/wow-engine/test_ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
@@ -54,6 +55,7 @@ on:
       - "artifacts/wow-engine/team_event_request_runtime.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_client.py"
       - "artifacts/wow-engine/test_ncaaf_cfbd_hydrator.py"
+      - "artifacts/wow-engine/test_ncaaf_cfbd_snapshot_write_size.py"
       - "artifacts/wow-engine/test_ncaaf_prop_historical_adapter.py"
       - "artifacts/wow-engine/test_ncaaf_feature_compiler.py"
       - "artifacts/wow-engine/test_v17_ncaaf_model_maintenance.py"
@@ -92,6 +94,7 @@ jobs:
           python -m pytest -q
           test_ncaaf_cfbd_client.py
           test_ncaaf_cfbd_hydrator.py
+          test_ncaaf_cfbd_snapshot_write_size.py
           test_ncaaf_prop_historical_adapter.py
           test_v17_ncaaf_prop_history_maintenance.py
           test_ncaaf_feature_compiler.py
