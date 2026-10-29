@@ -1237,6 +1237,48 @@ def test_qa_workflow_end_to_end_publishes_success_with_its_own_token(fake_gh, ev
                                     "output": {"title": decision["title"], "summary": decision["summary"]}}
 
 
+
+@pytest.mark.parametrize("mutation", ["base", "head", "closed"])
+def test_qa_publish_never_posts_success_after_last_moment_pr_movement(fake_gh, mutation):
+    routes = _routes_for_pr(_evidence_runs())
+    route = f"repos/{REPO}/pulls/7"
+    routes[route][1]["base"]["sha"] = OLD
+    proc, runner, env = _run_decide(fake_gh, QA_WF, routes, {
+        "EVENT": "workflow_dispatch", "INPUT_PR": "7", "WR_PRS": "null",
+    })
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads((runner / "decisions" / "decision-7.json").read_text())["conclusion"] == "success"
+    env.update({
+        "PR_NUMBER": "7", "HEAD_SHA": HEAD, "POLICY_OUTCOME": "success",
+        "POLICY_RECEIPT_OUTCOME": "success", "POLICY_ARTIFACT_OUTCOME": "success",
+        "CAPTURE_OUTCOME": "success", "REVIEW_OUTCOME": "success",
+        "RECHECK_OUTCOME": "success", "SOURCE_REVIEW_OUTCOME": "success",
+        "SOURCE_REVIEW_ARTIFACT_OUTCOME": "success", "DECIDE_OUTCOME": "success",
+        "READ_TOKEN": "read-only", "QA_APP_TOKEN": "qa-app-token",
+        "FAKE_GH_JSON_ONLY": "1",
+    })
+    terminal = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Preserve terminal QA decision for every resolved target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert terminal.returncode == 0, terminal.stdout + terminal.stderr
+    live = routes[route][1]
+    if mutation == "base":
+        live["base"]["sha"] = "c" * 40
+    elif mutation == "head":
+        live["head"]["sha"] = "d" * 40
+    else:
+        live["state"] = "closed"
+    (fake_gh / "routes.json").write_text(json.dumps(routes))
+    publish = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Publish exact-head check")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert publish.returncode != 0
+    assert "QA_PUBLISH_HEAD_OR_BASE_MOVED" in publish.stdout + publish.stderr
+    log = fake_gh / "gh.log"
+    assert not log.exists() or not log.read_text().strip(), "Stale reviewer posted an App check"
+
 def test_qa_workflow_publishes_failure_when_evidence_is_missing(fake_gh):
     proc, runner, _ = _run_decide(
         fake_gh,
