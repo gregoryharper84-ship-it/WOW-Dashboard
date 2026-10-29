@@ -273,6 +273,26 @@ jobs:
             gh workflow run wow-v17-nightly-engineering-scan.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
 
+      - name: Surface three-track delegation queue (read-only)
+        if: steps.decision.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_three_track_handoffs.py \
+            --config artifacts/wow-engine/v17/engineering_three_track_queue.json \
+            --output "$RUNNER_TEMP/wow-three-track-queue.json" > /dev/null
+          python - "$RUNNER_TEMP/wow-three-track-queue.json" <<'PY'
+          import json, os, sys
+          queue = json.load(open(sys.argv[1], encoding="utf-8"))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              print("## Three-track delegated work queue (advisory)", file=out)
+              for track in queue["tracks"]:
+                  print(f'- {track["track"]}: issue #{track["issue_number"]}, {track["state"]}', file=out)
+              for link in queue["handoffs"]:
+                  print(f'- {link["from"]} -> {link["to"]}: {link["state"]}', file=out)
+              print("- No production promotion, self-approval, worker dispatch or wager execution from this snapshot.", file=out)
+          PY
+
       - name: Record 24-hour loop receipt
         if: always()
         run: |
