@@ -14,6 +14,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from http.client import IncompleteRead
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -23,7 +24,9 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
 MAX_REPLY_BYTES = 2 * 1024 * 1024
-MAX_INPUT_BYTES = 640 * 1024
+# Preserve the producer's 512 KiB decoded diff cap; serialized JSON escaping
+# can expand a valid patch several times (e.g., backslashes/control chars).
+MAX_INPUT_BYTES = 4 * 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 90
 ALLOWED_PROVIDER_ENDPOINTS = frozenset({
     ANTHROPIC_URL, GEMINI_URL, "https://api.openai.com/v1/responses",
@@ -185,7 +188,9 @@ def _post_json(url: str, headers: dict[str, str], payload: dict) -> dict:
     except HTTPError as exc:
         # NEVER log the provider response: it may contain user evidence or tokens.
         raise ReviewUnavailable(f"REVIEW_PROVIDER_HTTP_{exc.code}") from None
-    except (URLError, TimeoutError, OSError):
+    except (URLError, TimeoutError, OSError, IncompleteRead):
+        # Chunked response disconnects are transport failures, not malformed
+        # completed JSON; never print the partial response or provider secrets.
         raise ReviewUnavailable("REVIEW_PROVIDER_TRANSPORT_FAILURE") from None
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise ReviewUnavailable("REVIEW_PROVIDER_RESPONSE_INVALID") from None
