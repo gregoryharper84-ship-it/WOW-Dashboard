@@ -307,10 +307,22 @@ def call_provider(provider, key, prompt):
         raise Hold("SEMANTIC_RESPONSE_NOT_JSON") from None
 
 
+def reviewer_provider_order():
+    """Allow protected wow-qa environment to select a different APPROVED primary.
+
+    This does not weaken REJECT handling: existing sticky SHA/content fences
+    execute before review, and a semantic REJECT stops the chain immediately.
+    """
+    primary = os.environ.get("WOW_QA_PRIMARY_PROVIDER", "").strip() or PROVIDERS[0]
+    if primary not in PROVIDERS:
+        raise Hold("QA_PRIMARY_PROVIDER_UNAPPROVED")
+    return (primary,) + tuple(item for item in PROVIDERS if item != primary)
+
+
 def semantic_review(target, credentials, invoke=call_provider):
     prompt = prompt_for(target)
     attempts = []
-    for provider in PROVIDERS:
+    for provider in reviewer_provider_order():
         key = credentials.get(provider)
         if not key:
             attempts.append({"provider": provider, "result": "CREDENTIAL_UNAVAILABLE"})
