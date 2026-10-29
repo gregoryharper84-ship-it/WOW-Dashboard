@@ -28,8 +28,11 @@ permissions:
   pull-requests: read
 
 concurrency:
+  # Same global writer mutex. queue: max is GitHub's native pending cap
+  # (100), not a second controller or a per-sport writer lane.
   group: wow-v17-engineering-implementation-single-writer
   cancel-in-progress: false
+  queue: max
 
 jobs:
   gemini-headless:
@@ -71,6 +74,12 @@ jobs:
             --auto-enabled "$AUTO_ENABLED" --mode "$INVOCATION_MODE" \
             > "$RUNNER_TEMP/wow-gemini/admission.json"
           echo "admitted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Recheck provider cooldown in serialized worker
+        if: steps.admission.outputs.admitted == 'true' && inputs.invocation_mode == 'auto'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python artifacts/wow-engine/v17/engineering_gemini_headless.py worker-auto-admit-github
 
       - name: Fence unresolved remote writers
         if: steps.admission.outputs.admitted == 'true'

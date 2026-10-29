@@ -662,3 +662,152 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeminiProviderWideAdmissionTests(unittest.TestCase):
+    """Two queued sport leases must not spend one provider-wide recovery grant."""
+
+    def test_first_auto_admission_then_second_lease_is_held(self):
+        import datetime as dt
+        now = dt.datetime(2026, 10, 29, 0, 0, tzinfo=dt.timezone.utc)
+        sha = "a" * 40
+        first = gemini.recheck_auto_worker_provider([], {}, sha, now=now)
+        self.assertEqual(first["status"], "ADMITTED")
+        completed = [{"headSha": sha, "status": "completed", "conclusion": "success",
+                      "updatedAt": "2026-10-28T23:59:00Z"}]
+        second = gemini.recheck_auto_worker_provider(completed, {}, sha, now=now)
+        self.assertEqual(second["status"], "HELD")
+        self.assertEqual(second["code"], "GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
+        self.assertFalse(second["can_execute"])
+        later = gemini.recheck_auto_worker_provider(
+            completed, {}, sha, now=now + dt.timedelta(hours=25))
+        self.assertEqual(later["status"], "ADMITTED")
+
+    def test_failed_run_allows_only_reviewed_runtime_recovery(self):
+        import datetime as dt
+        sha1, sha2 = "a" * 40, "b" * 40
+        now = dt.datetime(2026, 10, 29, tzinfo=dt.timezone.utc)
+        failed = [{"headSha": sha1, "status": "completed", "conclusion": "failure",
+                   "updatedAt": "2026-10-28T23:50:00Z"}]
+        self.assertEqual(
+            gemini.recheck_auto_worker_provider(failed, {}, sha1, now=now)["status"],
+            "HELD",
+        )
+        comparison = {
+            "status": "ahead", "base_commit": {"sha": sha1},
+            "merge_base_commit": {"sha": sha1}, "total_commits": 1,
+            "files": [{"filename": ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+                       "status": "modified"}],
+        }
+        self.assertEqual(
+            gemini.recheck_auto_worker_provider(failed, comparison, sha2, now=now)["status"],
+            "RECOVERY_ADMITTED",
+        )
+        failed_again = [{**failed[0], "headSha": sha2}]
+        self.assertEqual(
+            gemini.recheck_auto_worker_provider(failed_again, comparison, sha2, now=now)["status"],
+            "HELD",
+        )
+
+    def test_unknown_provider_history_fails_closed(self):
+        import datetime as dt
+        now = dt.datetime(2026, 10, 29, tzinfo=dt.timezone.utc)
+        sha = "a" * 40
+        for history in (None, {}, [{"status": "in_progress"}],
+                        [{"status": "completed", "conclusion": "cancelled"}],
+                        [{"status": "completed", "conclusion": "success",
+                          "updatedAt": "invalid"}]):
+            with self.subTest(history=history):
+                self.assertEqual(
+                    gemini.recheck_auto_worker_provider(history, {}, sha, now=now)["status"],
+                    "HELD",
+                )
+
+
+class GeminiSerializedWorkerAdmissionTests(unittest.TestCase):
+    """The workflow must revalidate the shared provider before any Gemini API."""
+
+    def _check(self, prior, *, current_id=12, include_current=True,
+               compare=None, fail_history=False):
+        from unittest.mock import patch
+        me = {"databaseId": current_id, "headSha": "b" * 40,
+              "status": "in_progress", "conclusion": "",
+              "updatedAt": "2026-10-29T00:00:00Z"}
+        runs = ([me] if include_current else []) + prior
+        commands = []
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+                output = "b" * 40
+            elif cmd[:3] == ["gh", "run", "list"]:
+                if fail_history:
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unavailable")
+                output = json.dumps(runs)
+            elif cmd[:2] == ["gh", "api"]:
+                output = json.dumps(compare or {})
+            else:
+                self.fail("Unexpected command in provider admission: " + str(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout=output, stderr="")
+
+        with patch.dict(gemini.os.environ, {
+            "GITHUB_REPOSITORY": "gregoryharper84-ship-it/WOW-Dashboard",
+            "GITHUB_RUN_ID": str(current_id), "GH_TOKEN": "synthetic-test-token",
+        }):
+            with patch.object(gemini.subprocess, "run", side_effect=fake_run):
+                return gemini.recheck_auto_worker_github(), commands
+
+    def test_current_run_only_is_first_grant(self):
+        result, commands = self._check([])
+        self.assertEqual(result["status"], "ADMITTED")
+        self.assertEqual(result["code"], "GEMINI_WORKER_FIRST_AUTO_ATTEMPT")
+        self.assertFalse(any(cmd[:2] == ["gh", "api"] for cmd in commands))
+
+    def test_other_sport_lease_completion_enforces_global_cooldown(self):
+        prior = [{"databaseId": 11, "headSha": "b" * 40, "status": "completed",
+                  "conclusion": "success", "updatedAt": "2026-10-28T23:59:00Z"}]
+        result, _ = self._check(prior)
+        self.assertEqual(result["status"], "HELD")
+        self.assertEqual(result["code"], "GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
+
+    def test_second_lease_unknown_or_active_predecessor_held(self):
+        for previous in (
+            [{"databaseId": 11, "status": "in_progress"}],
+            [{"databaseId": 11, "status": "completed", "conclusion": "cancelled"}],
+        ):
+            with self.subTest(previous=previous):
+                result, _ = self._check(previous)
+                self.assertEqual(result["status"], "HELD")
+        self.assertEqual(self._check([], include_current=False)[0]["status"], "HELD")
+        self.assertEqual(self._check([], fail_history=True)[0]["status"], "HELD")
+
+    def test_failed_previous_sha_is_not_a_second_canary(self):
+        prior = [{"databaseId": 11, "headSha": "b" * 40, "status": "completed",
+                  "conclusion": "failure", "updatedAt": "2026-10-28T23:59:00Z"}]
+        result, _ = self._check(prior)
+        self.assertEqual(result["status"], "HELD")
+        self.assertEqual(result["code"], "GEMINI_RECOVERY_ALREADY_ATTEMPTED_SHA")
+
+    def test_different_sha_requires_verified_runtime_fix(self):
+        old_sha, new_sha = "a" * 40, "b" * 40
+        prior = [{"databaseId": 11, "headSha": old_sha, "status": "completed",
+                  "conclusion": "failure", "updatedAt": "2026-10-28T23:59:00Z"}]
+        compare = {
+            "status": "ahead", "base_commit": {"sha": old_sha},
+            "merge_base_commit": {"sha": old_sha}, "total_commits": 1,
+            "files": [{"filename": ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+                       "status": "modified"}],
+        }
+        result, cmds = self._check(prior, compare=compare)
+        self.assertEqual(result["status"], "RECOVERY_ADMITTED")
+        self.assertTrue(any(cmd[:2] == ["gh", "api"] for cmd in cmds))
+
+
+def test_gemini_auto_worker_rechecks_before_provider_invocation():
+    workflow = (ROOT / ".github" / "workflows" /
+                "wow-v17-gemini-engineering-worker.yml").read_text()
+    marker = "      - name: Recheck provider cooldown in serialized worker"
+    assert marker in workflow
+    assert workflow.index(marker) < workflow.index("      - name: Execute one bounded headless Gemini CLI")
+    assert "worker-auto-admit-github" in workflow
+    assert "wow-v17-engineering-implementation-single-writer" in workflow
