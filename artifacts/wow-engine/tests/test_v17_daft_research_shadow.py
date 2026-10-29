@@ -208,11 +208,14 @@ def test_stale_and_missing_quote_timestamp():
 
 def test_comparable_clv_requires_same_contract_and_timestamps():
     entry = {"contract": contract(), "decimal_odds": 2.10,
-             "quote_at": "2026-10-29T17:00:00Z"}
+             "quote_at": "2026-10-29T17:00:00Z", "event_start_at": EVENT}
     close = {"contract": contract(), "decimal_odds": 1.95,
-             "quote_at": NOW}
+             "quote_at": NOW, "is_closing_snapshot": True}
     assert comparable_clv(entry, close) == pytest.approx(.15)
     close["contract"] = contract(period="FIRST_HALF")
+    assert comparable_clv(entry, close) is None
+    close["contract"] = contract()
+    close["is_closing_snapshot"] = False
     assert comparable_clv(entry, close) is None
 
 
