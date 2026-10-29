@@ -204,6 +204,7 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
             "state": "open", "draft": False, "merged": False, "head_sha": HEAD,
             "head_ref": "copilot/fix", "head_repo": review.CANONICAL_REPOSITORY,
             "base_ref": "main", "author": "copilot-swe-agent", "author_id": 123,
+            "body": "Incident: #1822",
         },
         "files": ["src/fix.py"],
         "source_review_paths": ["src/fix.py"],
@@ -227,6 +228,10 @@ def test_capture_build_and_local_qa_decision_use_live_producer_context(monkeypat
     }
 
     assert qa.decision("qa", qa.qa_findings(evidence), evidence)["conclusion"] == "success"
+    # A real canonical incident is mandatory even with valid independent evidence.
+    evidence["pr"]["body"] = ""
+    assert "QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS" in qa.qa_findings(evidence)
+    evidence["pr"]["body"] = "Incident: #1822"
     evidence["source_review"].pop("producer_context")
     assert any(
         finding.startswith("QA_INDEPENDENT_SOURCE_REVIEW_INVALID:")
@@ -844,14 +849,16 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "github.ref == 'refs/heads/main'" in workflow
     assert parsed["on"]["workflow_run"]["workflows"] == [
         "wow-verify", "wow-engine-verify", "wow-v17-rapid-repair", "wow-v17-change-impact-gate",
-        "wow-v17-trusted-governance-gate",
     ]
+    # The trusted gate must NOT trigger QA: QA -> certifier -> trusted gate -> QA deadlocks.
+    assert "wow-v17-trusted-governance-gate" not in parsed["on"]["workflow_run"]["workflows"]
     assert parsed["on"]["workflow_run"]["types"] == ["completed"]
     assert "actions: read" in workflow
     assert "environment: wow-qa" in workflow
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" in workflow
     assert "QA_REVIEW_PROVIDER_CREDENTIAL_MISSING" in workflow
-    assert 'permission_profile: ":read-only"' in workflow
+    assert "independent_source_review_primary.py" in workflow
+    assert "Verify typed primary availability before allowing fallback" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert '--arg repository "$GITHUB_REPOSITORY" --arg head_sha "$GITHUB_SHA"' in workflow
     assert "WOW_QA_INDEPENDENT_REVIEW_ACTIVE" in workflow
@@ -862,8 +869,9 @@ def test_workflow_integrates_read_only_review_in_protected_qa_boundary():
     assert "independent_review_canary" in workflow
     assert "WOW_REVIEW_OPENAI_API_KEY" not in workflow
     assert "wow-review" not in workflow
-    assert review_step["with"]["openai_api_key"] == "${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}"
-    assert "WOW_QA_APP_PRIVATE_KEY" not in review_step["with"].values()
+    assert review_step["env"]["OPENAI_REVIEW_KEY"] == "${{ secrets.WOW_QA_REVIEW_OPENAI_API_KEY }}"
+    assert "independent_source_review_primary.py" in review_step["run"]
+    assert "WOW_QA_APP_PRIVATE_KEY" not in str(review_step)
     assert "WOW_QA_REVIEW_OPENAI_API_KEY" not in str(publisher_step)
     assert "contents: write" not in workflow
     assert "pull-requests: write" not in workflow
@@ -1114,3 +1122,44 @@ def test_both_qa_producer_payloads_use_pinned_workflow_id():
     assert 'run.get("name") == WORKFLOW_NAME' not in script
     assert 'and workflow_id == WORKFLOW_ID' in script
     assert 'run.get("path") == WORKFLOW_PATH' in script
+
+
+@pytest.mark.parametrize("provider,scope", [
+    ("openai-codex-action", "WOW_QA_REVIEW_OPENAI_API_KEY"),
+    ("openai-responses-api", "WOW_QA_REVIEW_OPENAI_API_KEY"),
+    ("anthropic-claude-api", "WOW_QA_REVIEW_ANTHROPIC_API_KEY"),
+    ("gemini-generative-api", "WOW_QA_REVIEW_GEMINI_API_KEY"),
+])
+def test_only_registered_producer_provider_credentials_can_build_and_verify(provider, scope):
+    authentic = review.build_artifact(
+        repository=review.CANONICAL_REPOSITORY,
+        pr=pr(), files=DIFF, commit=COMMIT_METADATA, review_result=RESULT,
+        run=PRODUCER_RUN, now=NOW,
+        provider_identity=provider, credential_scope=scope,
+    )
+    assert authentic["source"]["provider_identity"] == provider
+    assert authentic["source"]["credential_scope"] == scope
+    verify(authentic)
+
+
+@pytest.mark.parametrize("provider,scope", [
+    ("owner-claim", "WOW_QA_REVIEW_OPENAI_API_KEY"),
+    ("anthropic-claude-api", "WOW_QA_REVIEW_GEMINI_API_KEY"),
+    ("anthropic-claude-api", "ANTHROPIC_API_KEY"),
+    ("gemini-generative-api", "GEMINI_API_KEY"),
+    ("gemini-generative-api", "ANTHROPIC_API_KEY"),
+    ("openai-codex-action", "GEMINI_API_KEY"),
+])
+def test_unknown_or_swapped_provider_binding_cannot_issue_pass(provider, scope):
+    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_PROVIDER_CREDENTIAL_UNTRUSTED"):
+        review.build_artifact(
+            repository=review.CANONICAL_REPOSITORY,
+            pr=pr(), files=DIFF, commit=COMMIT_METADATA, review_result=RESULT,
+            run=PRODUCER_RUN, now=NOW,
+            provider_identity=provider, credential_scope=scope,
+        )
+    fake = artifact()
+    fake["source"]["provider_identity"] = provider
+    fake["source"]["credential_scope"] = scope
+    with pytest.raises(review.SourceReviewError, match="SOURCE_REVIEW_PROVENANCE_MISMATCH"):
+        verify(fake)
