@@ -350,3 +350,26 @@ def test_cancel_in_progress_still_replaces_the_running_writer_when_explicitly_en
     )
     assert state == {"running": "replacement", "pending": []}
     assert cancelled == ["holder", "P0_NBA_RESTORE"]
+
+
+def test_provider_worker_checkout_is_pinned_before_credential_mint() -> None:
+    """A queued worker must never run a newer main than its admitted SHA."""
+    for filename in (
+        "wow-v17-chatgpt-engineering-worker.yml",
+        "wow-v17-claude-engineering-worker.yml",
+    ):
+        text = (WORKFLOWS / filename).read_text(encoding="utf-8")
+        checkout = "Checkout exact dispatch SHA (no persisted credential)"
+        stale_guard = "Reject stale queued worker before credential mint"
+        credential = "Mint wow-engineering App token"
+        assert text.count(checkout) == 1
+        assert text.count(stale_guard) == 1
+        assert text.index(checkout) < text.index(stale_guard) < text.index(credential)
+        pre_credentials = text[text.index(checkout):text.index(credential)]
+        assert "ref: ${{ github.sha }}" in pre_credentials
+        assert "persist-credentials: false" in pre_credentials
+        assert 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' in pre_credentials
+        assert 'current_main=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in pre_credentials
+        assert 'test "$current_main" = "$GITHUB_SHA"' in pre_credentials
+        assert "PROVIDER_WORKER_PROTECTED_MAIN_ADVANCED" in pre_credentials
+        assert "PROVIDER_WORKER_CHECKOUT_SHA_DRIFT" in pre_credentials
