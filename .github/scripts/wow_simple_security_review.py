@@ -116,6 +116,13 @@ def request_json(url, *, token=None, data=None, headers=None, method=None):
             except (ValueError, TypeError, AttributeError, OSError):
                 message, error_type, error_status = "", "", ""
             words = message.lower()
+            # Only provider-native invalid API-key 400s may fail over.
+            # A generic 400 remains a security HOLD.
+            if (exc.code == 400 and url.startswith(
+                    "https://generativelanguage.googleapis.com/v1beta/models/")
+                    and error_status == "INVALID_ARGUMENT"
+                    and ("api key not valid" in words or "api_key_invalid" in words)):
+                raise ProviderUnavailable("PROVIDER_AUTH_INVALID") from None
             if exc.code == 400 and (any(x in words for x in CREDIT_ERRORS)
                                     or error_type in ("insufficient_quota", "billing_error")):
                 raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED") from None
