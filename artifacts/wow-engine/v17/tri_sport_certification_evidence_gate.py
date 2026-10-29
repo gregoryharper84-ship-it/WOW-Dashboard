@@ -171,10 +171,18 @@ def assess_tri_sport_evidence(package: Mapping[str, Any]) -> dict[str, Any]:
     )
     terminal = package.get("terminal_receipt")
     terminal = terminal if isinstance(terminal, Mapping) else {}
+    # A genuine market-only hold may preserve a completed sporting probability.
+    # It must never be relabelled FINAL_APPROVED or treated as card publication.
+    market_only_hold = (
+        terminal.get("decision") == "HELD"
+        and terminal.get("hold_domain") in ("MARKET", "CARD")
+        and terminal.get("sporting_probability_preserved") is True
+    )
+    full_terminal_approval = terminal.get("decision") == "FINAL_APPROVED"
     require(
         terminal.get("publisher") == TERMINAL_AUTHORITY
         and terminal.get("prediction_id") == scorer.get("prediction_id")
-        and terminal.get("decision") == "FINAL_APPROVED"
+        and (full_terminal_approval or market_only_hold)
         and terminal.get("can_execute") is False
         and bool(terminal.get("receipt_id")),
         "TRI_SPORT_TERMINAL_RECEIPT_MISSING",
@@ -185,8 +193,9 @@ def assess_tri_sport_evidence(package: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schema": SCHEMA,
         "status": (
-            "EVIDENCE_COMPLETE_REQUIRES_INDEPENDENT_CERTIFICATION"
-            if not failures else "BLOCKED_WITH_EXACT_REASONS"
+            "BLOCKED_WITH_EXACT_REASONS" if failures
+            else ("SPORTING_EVIDENCE_COMPLETE_MARKET_HELD"
+                  if market_only_hold else "EVIDENCE_COMPLETE_REQUIRES_INDEPENDENT_CERTIFICATION")
         ),
         "sport": sport,
         "stat_type": stat,
@@ -194,6 +203,10 @@ def assess_tri_sport_evidence(package: Mapping[str, Any]) -> dict[str, Any]:
         "blockers": failures,
         "evidence_check_count": check_count,
         "ready_for_independent_certification": not failures,
+        "full_terminal_approval": bool(not failures and full_terminal_approval),
+        "sporting_probability_preserved_on_market_hold": bool(
+            not failures and market_only_hold
+        ),
         "model_certified_by_this_gate": False,
         "probability_publishable": False,
         "can_execute": False,
