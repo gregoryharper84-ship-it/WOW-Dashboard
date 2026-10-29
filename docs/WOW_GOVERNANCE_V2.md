@@ -82,6 +82,19 @@ terminates the sequence, and sticky identical-content REJECT evidence
 is rechecked across PRs; an unclassified 404 is never relabeled
 `ProviderUnavailable` simply to skip a reviewer.
 
+The model allowlist includes `gemini-2.5-flash` and current stable
+`gemini-3.8-flash`. Google's October 2026 developer documentation limits
+2.5 Flash availability for some new projects, while 3.8 Flash has an
+eligible free-tier offering. Selection is **explicit** through the trusted
+`wow-qa` environment variable `WOW_QA_GEMINI_MODEL=gemini-3.8-flash`;
+no automatic billing configuration is made. API project eligibility, tier
+and the model's effective availability must be verified independently.
+A new model without the exact allowlisted ID is HOLD, not an automatic
+upgrade. If the configured model is unavailable, a native, model-specific
+error may invoke the second approved provider only under the existing
+typed-availability policy; generic 404 still HOLDs. The reviewer must
+retain its strict source/security/probability JSON verdict schema.
+
 Security/Architect and QA must review this Class B change before protected
 adoption. The existing installed workflow does **not** support the new
 setting yet. Do not change the required ruleset or assume adding an
