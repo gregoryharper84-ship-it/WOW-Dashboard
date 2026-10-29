@@ -53,29 +53,38 @@ def _nfl(cur: Any, candidate: dict[str, Any]) -> dict[str, Any]:
          and artifact.promoted=true
          and artifact.lifecycle_state='CHAMPION'
          and artifact.can_execute=false
+        -- The agent-runtime candidate ledger is not the daily NFL scoring
+        -- terminal ledger. Inspect the single newest daily-row decision for
+        -- this exact official event BEFORE applying any approval filters:
+        -- later HOLD must supersede an earlier FINAL_APPROVED.
+        join lateral (
+            select daily.row_status,daily.detail,daily.captured_at,daily.can_execute
+            from public.wow_v17_daily_run_row_detail as daily
+            where daily.identity->>'sport'='NFL'
+              and daily.lane='MONEYLINE'
+              and daily.identity->>'official_event_id'=p.official_event_id
+            order by daily.captured_at desc,daily.row_index desc,daily.run_id desc
+            limit 1
+        ) as latest on true
         where p.event_key=%s
           and p.home_team=%s and p.away_team=%s
           and abs(extract(epoch from (p.event_start_time_utc-%s::timestamptz))) <= 900
           and p.model_probability_publishable=true
           and p.can_execute=false
-          and exists (
-            select 1
-            from public.wow_agent_run_candidates as candidate
-            join public.wow_agent_terminal_decisions as terminal
-              on terminal.candidate_id=candidate.candidate_id
-             and terminal.run_id=candidate.run_id
-            where candidate.official_event_id=p.official_event_id
-              and candidate.participant=p.selected_participant
-              and candidate.candidate_payload->>'event_prediction_id'
-                  =p.event_prediction_id::text
-              and candidate.can_execute=false
-              and candidate.terminal_label='FINAL_APPROVED'
-              and candidate.terminal_ceiling='FINAL_APPROVED'
-              and terminal.terminal_label='FINAL_APPROVED'
-              and terminal.final_terminal_ceiling='FINAL_APPROVED'
-              and terminal.probability_publishable=true
-              and terminal.can_execute=false
-          )
+          and latest.row_status='COMPLETED'
+          and latest.can_execute=false
+          -- Require latest final reducer output, not earlier upstream approval.
+          and latest.detail->'result'->>'global_terminal_reducer'='V17_TERMINAL_REDUCER'
+          and latest.detail->'result'->>'event_prediction_id'=p.event_prediction_id::text
+          and latest.detail->'result'->>'selected_participant'=p.selected_participant
+          and latest.detail->'result'->>'terminal_label'='FINAL_APPROVED'
+          and latest.detail->'result'->>'terminal_ceiling'='FINAL_APPROVED'
+          and latest.detail->'result'->>'probability_publishable'='true'
+          and latest.detail->'result'->>'rank_eligible'='true'
+          and latest.detail->>'probability_publishable'='true'
+          and latest.captured_at >= p.created_at
+          and latest.captured_at >= p.event_start_time_utc - interval '48 hours'
+          and latest.captured_at < p.event_start_time_utc
         order by p.created_at desc
         limit 1
         """,
