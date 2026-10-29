@@ -27,10 +27,11 @@ def test_source_review_negative_suite_runs_on_pr_head():
     # Named security regressions cannot silently disappear on future additions.
     import re
     count = re.search(r"Ran (\d+) tests?", result.stderr)
-    assert count is not None and int(count.group(1)) >= 35, result.stderr
+    assert count is not None and int(count.group(1)) >= 36, result.stderr
     for name in (
         "test_global_reject_prevents_second_pr_review_without_provider_call",
         "test_provider_reject_persists_even_if_pr_moves_before_reread",
+        "test_unclassified_http_holds_identify_safe_endpoint_without_provider_switch",
         "test_in_progress_reservation_fail_closed_when_reviewer_crashes",
         "test_reject_ledger_committed_before_head_check_and_failed_commit_holds",
         "test_reject_content_ledger_is_not_duplicated_by_same_sha_page_limit",
