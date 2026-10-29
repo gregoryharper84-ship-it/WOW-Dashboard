@@ -41,7 +41,7 @@ concurrency:
 jobs:
   multi-agent-engineering:
     name: WOW V17 ChatGPT engineering team
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     environment: wow-engineering
@@ -431,6 +431,17 @@ jobs:
             echo "available=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Claude peer analysis unavailable; primary OpenAI engineering path remains active."
           fi
+
+      - name: Recheck openai provider breaker under the global writer mutex
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # This exact workflow owns the existing global single-writer lock.
+          # Dispatcher-time provider health is never sufficient after queueing.
+          python artifacts/wow-engine/v17/engineering_provider_worker_admission.py \
+            --provider openai
 
       - name: Engineering Lead agent
         id: lead_agent
