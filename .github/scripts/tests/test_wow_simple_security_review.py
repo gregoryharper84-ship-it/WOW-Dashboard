@@ -383,6 +383,31 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(str(denied.exception), "ANTHROPIC_HTTP_403")
             self.assertNotIsInstance(denied.exception, m.ProviderUnavailable)
 
+    def test_gemini_38_approved_model_preserves_strict_semantic_contract(self):
+        verdict = {"source_review": "PASS", "security_review": "PASS",
+                   "probability_integrity_review": "PASS", "findings": []}
+        result = {"candidates": [{"finishReason": "STOP",
+                  "content": {"parts": [{"text": m.json.dumps(verdict)}]}}]}
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
+            with patch.object(m, "request_json", return_value=result) as called:
+                decision, body = m.call_provider("gemini-generative-api", "fake-key", "test diff")
+                self.assertEqual(decision, "PASS")
+                self.assertEqual(body, verdict)
+                self.assertIn("/models/gemini-3.8-flash:generateContent", called.call_args.args[0])
+                self.assertEqual(called.call_args.kwargs["data"]["generationConfig"]["responseMimeType"],
+                                 "application/json")
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+        from urllib.error import HTTPError
+        import io
+        missing = {"error": {"status": "NOT_FOUND",
+                             "message": "models/gemini-3.8-flash is not found"}}
+        with patch.object(m.HTTP_CLIENT, "open",
+                          side_effect=HTTPError(url, 404, "not found", {},
+                                                io.BytesIO(m.json.dumps(missing).encode()))):
+            with self.assertRaises(m.ProviderUnavailable) as v:
+                m.request_json(url, data={})
+            self.assertEqual(str(v.exception), "PROVIDER_MODEL_UNAVAILABLE")
+
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
                    "probability_integrity_review": "PASS", "findings": []}
