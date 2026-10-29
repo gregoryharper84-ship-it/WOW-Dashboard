@@ -140,3 +140,37 @@ def test_empty_evidence_never_passes_and_does_not_infer_from_implied_market():
     assert "TRI_SPORT_GENUINE_SCORER_RECEIPT_MISSING" in result["blockers"]
     assert "TRI_SPORT_EXACT_LINE_CALIBRATION_OR_BOUNDS_INVALID" in result["blockers"]
     assert result["model_certified_by_this_gate"] is False
+
+
+def test_market_only_held_terminal_preserves_sporting_proof_not_card():
+    p = package()
+    p["terminal_receipt"].update({
+        "decision": "HELD",
+        "hold_domain": "MARKET",
+        "sporting_probability_preserved": True,
+    })
+    x = assess_tri_sport_evidence(p)
+    assert x["blockers"] == []
+    assert x["status"] == "SPORTING_EVIDENCE_COMPLETE_MARKET_HELD"
+    assert x["ready_for_independent_certification"] is True
+    assert x["sporting_probability_preserved_on_market_hold"] is True
+    assert x["full_terminal_approval"] is False
+    assert x["probability_publishable"] is False and x["can_execute"] is False
+
+
+@pytest.mark.parametrize("hold_domain,preserved", [
+    ("MODEL", True), ("MARKET", False), ("SPORTING", True), (None, True),
+])
+def test_model_or_unsubstantiated_terminal_hold_never_counts_as_sporting_proof(
+    hold_domain, preserved
+):
+    p = package()
+    p["terminal_receipt"].update({
+        "decision": "HELD",
+        "hold_domain": hold_domain,
+        "sporting_probability_preserved": preserved,
+    })
+    result = assess_tri_sport_evidence(p)
+    assert result["status"] == "BLOCKED_WITH_EXACT_REASONS"
+    assert "TRI_SPORT_TERMINAL_RECEIPT_MISSING" in result["blockers"]
+    assert result["sporting_probability_preserved_on_market_hold"] is False
