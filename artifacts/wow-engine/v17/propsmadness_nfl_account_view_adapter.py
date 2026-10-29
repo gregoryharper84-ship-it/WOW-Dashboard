@@ -23,6 +23,12 @@ ALLOWED_STATS = {
     "RUSHING_YARDS": "rushing-yards",
     "RECEPTIONS": "receptions",
 }
+STAT_DISPLAY_LABELS = {
+    "PASSING_YARDS": ("Pass Yds", "Passing Yards"),
+    "RECEIVING_YARDS": ("Rec Yds", "Receiving Yards"),
+    "RUSHING_YARDS": ("Rush Yds", "Rushing Yards"),
+    "RECEPTIONS": ("Receptions", "Rec"),
+}
 MAX_VIEW_CHARS = 250_000
 MAX_GAME_ROWS = 40
 TABLE_TITLE = "Game-by-game detail for the chart above"
@@ -115,6 +121,18 @@ def normalize_nfl_history_view(
         section, flags=re.S | re.I,
     )
     _require(len(tables) == 1, "PM_ACCOUNT_VIEW_HISTORY_TABLE_INVALID")
+    # A featured player URL does not uniquely identify a market. Ensure the
+    # selected player detail block, not the navigation menu, shows this stat.
+    table_start = section.find("<table>" + TABLE_TITLE)
+    leading = section[:table_start]
+    selected_at = leading.rfind(selected_player_name.strip())
+    _require(selected_at >= 0, "PM_ACCOUNT_VIEW_IDENTITY_UNRESOLVED")
+    selected_block = leading[selected_at + len(selected_player_name.strip()):
+                             selected_at + len(selected_player_name.strip()) + 400]
+    _require(any(re.search(r"(?<![A-Za-z])" + re.escape(label) + r"(?![A-Za-z])",
+                           selected_block, flags=re.I)
+                 for label in STAT_DISPLAY_LABELS[stat_type]),
+             "PM_ACCOUNT_VIEW_SELECTED_MARKET_UNRESOLVED")
     table = tables[0]
     table_rows = [
         [_clean(cell) for cell in CELL_RE.findall(row)]
