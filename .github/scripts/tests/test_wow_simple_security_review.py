@@ -574,6 +574,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         import inspect
         source = inspect.getsource(m.main)
         self.assertIn('PROTECTED_BASE_MOVED_BEFORE_PUBLICATION', source)
+        self.assertIn('PROTECTED_BASE_MOVED_AFTER_LEDGER_COMMIT', source)
+        self.assertIn('commit_content_review(reservation, receipt, qa_token)', source)
         self.assertIn('prior_semantic_reject(target["head_sha"], read_token)', source)
         self.assertIn('receipt["decision"] = "HOLD"', source)
 
