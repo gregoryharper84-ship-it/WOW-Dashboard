@@ -112,7 +112,7 @@ def latest_actual_provider_attempt(
     def held(code: str) -> dict[str, Any]:
         return {"status": "HELD", "code": code, "can_execute": False}
 
-    if not isinstance(runs, list) or len(runs) > 100:
+    if not isinstance(runs, list) or len(runs) > 5000:
         return held("GEMINI_PROVIDER_HISTORY_UNVERIFIED")
     if current_run_id is not None and (
         type(current_run_id) is not int or current_run_id <= 0
@@ -211,14 +211,56 @@ def latest_actual_provider_attempt(
             }))
     if current_run_id is not None and current_run_id not in seen:
         return held("GEMINI_WORKER_CURRENT_RUN_MISSING")
-    # The current inventory is the first 100 by run creation, not necessarily
-    # every historical rerun. Do not infer absence from a truncated page.
-    if len(runs) == 100:
-        return held("GEMINI_PROVIDER_HISTORY_TRUNCATED")
     latest = max(actual, key=lambda v: (v[0], v[1], v[2]))[3] if actual else None
     return {"status": "VERIFIED_PROVIDER_HISTORY", "run": latest,
             "can_execute": False}
 
+
+
+def complete_gemini_run_inventory(read: Any, repo: str, *,
+                                  max_pages: int = 50) -> list[dict[str, Any]]:
+    """Fetch *all* GitHub Actions runs, not the latest 100.
+
+    GitHub's authenticated total_count and page boundaries certify pagination.
+    No short page, missing field, API error, duplicate or cap can imply an
+    unspent provider. A bounded 50-page ceiling remains a typed HOLD, not a
+    false green. This is read-only and returns no capability token.
+    """
+    if not 1 <= max_pages <= 50:
+        raise ValueError("GEMINI_INVENTORY_PAGE_LIMIT_INVALID")
+    result: list[dict[str, Any]] = []
+    expected_total: int | None = None
+    for page in range(1, max_pages + 1):
+        payload = json.loads(read([
+            "gh", "api",
+            f"repos/{repo}/actions/workflows/wow-v17-gemini-engineering-worker.yml/runs?per_page=100&page={page}",
+        ]))
+        if not isinstance(payload, dict) or type(payload.get("total_count")) is not int:
+            raise ValueError("GEMINI_INVENTORY_TOTAL_UNVERIFIED")
+        total, rows = payload["total_count"], payload.get("workflow_runs")
+        if total < 0 or not isinstance(rows, list) or len(rows) > 100:
+            raise ValueError("GEMINI_INVENTORY_PAGE_INVALID")
+        if expected_total is None:
+            expected_total = total
+        if total != expected_total or len(rows) != min(100, total - len(result)):
+            raise ValueError("GEMINI_INVENTORY_DRIFT_OR_GAP")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("GEMINI_INVENTORY_ROW_INVALID")
+            result.append({
+                "databaseId": row.get("id"),
+                "attempt": row.get("run_attempt"),
+                "headSha": row.get("head_sha"),
+                "status": row.get("status"),
+                "conclusion": row.get("conclusion"),
+                "updatedAt": row.get("updated_at"),
+            })
+        if len(result) == total:
+            identities = [row["databaseId"] for row in result]
+            if len(identities) != len(set(identities)):
+                raise ValueError("GEMINI_INVENTORY_DUPLICATED_RUN")
+            return result
+    raise ValueError("GEMINI_INVENTORY_PAGE_CAP_UNVERIFIED")
 
 
 def read_provider_history_github() -> dict[str, Any]:
@@ -236,12 +278,7 @@ def read_provider_history_github() -> dict[str, Any]:
         return result.stdout.strip()
 
     try:
-        runs = json.loads(read([
-            "gh", "run", "list", "--repo", repo,
-            "--workflow", "wow-v17-gemini-engineering-worker.yml",
-            "--limit", "100",
-            "--json", "databaseId,attempt,headSha,status,conclusion,updatedAt",
-        ]))
+        runs = complete_gemini_run_inventory(read, repo)
         return latest_actual_provider_attempt(
             runs, lambda ident, attempt: json.loads(read([
                 "gh", "api",
@@ -293,15 +330,7 @@ def recheck_auto_worker_github(*, now: dt.datetime | None = None) -> dict[str, A
             return held("GEMINI_WORKER_CURRENT_SHA_INVALID")
         if current_sha != dispatch_sha:
             return held("GEMINI_WORKER_CHECKOUT_SHA_DRIFT")
-        raw = read_command([
-            "gh", "run", "list", "--repo", repo,
-            "--workflow", "wow-v17-gemini-engineering-worker.yml",
-            "--limit", "100",
-            "--json", "databaseId,attempt,headSha,status,conclusion,updatedAt",
-        ])
-        runs = json.loads(raw)
-        if not isinstance(runs, list) or len(runs) > 100:
-            return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+        runs = complete_gemini_run_inventory(read_command, repo)
         history = latest_actual_provider_attempt(
             runs,
             lambda candidate_id, attempt: json.loads(read_command([
