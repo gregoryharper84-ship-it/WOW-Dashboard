@@ -37,3 +37,25 @@ Proposed fast-follow after dependency audit: collapse duplicate certifier/artifa
 
 ## Current incident #2136
 #2287 has combined #2275+Cursor work; the three native checks passed on head `f2f3f08376703f8dd659de4eb74b674984b86c22`, but independent security review and trusted-governance evidence remain absent and its base is stale. This document is **not** an authorization to merge that PR or drop any gate. It is the contract for reducing redundant governance work safely.
+
+## Phase 1 source implementation (review required before adoption)
+The first bounded source change is included in this PR. Existing-PR certification now
+**skips its own runner on an initial pull_request_target event**; PR creation is
+not authenticated QA evidence. The trusted-governance job likewise admits
+only a **successful authenticated workflow_run** of its existing certifier,
+not a premature PR-open event. Both workflow triggers remain in YAML for
+compatibility and follow-up analysis, but these job admission guards avoid
+redundant premature work and historical false-negative missing-receipt runs.
+
+Importantly, the QA workflow_run, independent Release Authority check_run,
+manual repair route, exact artifact identity validation, failure handling, and
+three actual branch-required regressions remain unchanged. No check failure is
+treated as success, and no proof is fabricated. A PR must still obtain all
+applicable security approvals and release acceptance; these changed jobs do not
+themselves authorize merge. The regression
+`test_stability_first_skips_premature_pr_receipt_certification_without_hiding_qa`
+pins both the new admission behavior and the retained evidence contract.
+
+Further removal of obsolete 784-line and 450-line certifier scripts is a
+**fast-follow**, only after authenticated QA/Release canaries prove the proposed
+replacement handles positive, negative, stale, lost-event and duplicate cases.
