@@ -158,7 +158,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
 
     def test_both_providers_unavailable_requires_owner_review(self):
-        target = {"pr": 2254, "head_sha": "a" * 40, "diff": "safe"}
+        target = {"pr": 2254, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "safe"}
         creds = {provider: "key" for provider in m.PROVIDERS}
         def unavailable(provider, key, prompt):
             raise m.ProviderUnavailable("PROVIDER_HTTP_429")
