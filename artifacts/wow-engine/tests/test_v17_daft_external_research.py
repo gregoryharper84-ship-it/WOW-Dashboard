@@ -271,7 +271,24 @@ def test_private_historical_ingest_keeps_raw_package_private(tmp_path):
             {"kind": "result", "message_id": "x2", "channel": "US_FOOTBALL",
              "result_reported": "WIN", "alert_id": "100"},
         ]))
+    with zipfile.ZipFile(sharp, "a") as archive:
+        archive.writestr("alert_result_pairs.json", json.dumps([{
+            "alert_id": "100", "same_displayed_primary_target": False
+        }]))
+        archive.writestr("audit_summary.json", json.dumps({
+            "linked_pairs": 1,
+            "different_displayed_target_pairs": 1,
+            "classification": {"alert": 1, "result": 1},
+        }))
     with zipfile.ZipFile(vip, "w") as archive:
+        archive.writestr("source_index.json", json.dumps({
+            "records": [
+                {"message_id": "vp1", "channel": "VIP Picks",
+                 "url": "https://example.invalid/vip-pick"},
+                {"message_id": "vr1", "channel": "VIP Recaps",
+                 "url": "https://example.invalid/vip-recap"},
+            ]
+        }))
         archive.writestr("nba_reported_ledger.json", json.dumps({
             "entries": [{"recap_message_id": "x3",
                          "selection_as_reported": "fictional player over 9.5"}],
@@ -281,11 +298,18 @@ def test_private_historical_ingest_keeps_raw_package_private(tmp_path):
         sharp_zip=str(sharp), vip_zip=str(vip),
         captured_at="2026-10-29T15:00:00Z", destination=str(output),
     )
-    assert summary["total_imported"] == 3
+    assert summary["total_imported"] == 5
+    assert summary["counts"]["VIP_SOURCE_INDEX"] == 2
+    assert summary["sharp_linked_pairs"] == 1
+    assert summary["sharp_primary_vs_graded_mismatches"] == 1
     assert summary["prospective_eligible"] == 0
     assert (output.stat().st_mode & 0o077) == 0
     parsed = json.loads(output.read_text())
     assert all(not row["normalized"]["prospective_eligible"] for row in parsed["rows"])
+    assert {r["normalized"]["kind"] for r in parsed["rows"]} == {
+        "SHARP_ALERT", "SHARP_RESULT", "VIP_PICK", "VIP_RECAP",
+    }
+    assert len(parsed["sharp_alert_result_pairs"]) == 1
     with pytest.raises(FileExistsError):
         import_historical_packages(
             sharp_zip=str(sharp), vip_zip=str(vip),

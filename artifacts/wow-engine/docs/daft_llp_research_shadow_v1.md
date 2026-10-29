@@ -19,6 +19,13 @@ It refuses to invent missing IDs or capture time. Preserve raw original records,
 edit versions, and unrecognized fields in the **private** evidence archive, not
 as a trusted or public production row.
 
+The original captured VIP export has 495 message-index records:
+440 in **VIP Picks** and 55 in **VIP Recaps**, plus 81 structured
+NBA recap entries. The sharp export has 835 alert records, 697
+result records, and 690 linked alert/result pairs. The private importer
+preserves all four record groups and the sharp link/grade audit, without
+treating overlaps or image links as independent winning bets.
+
 The current historical exports have source-display timestamps and source-reported
 claims, but do not establish independently attested, immutable, pre-event capture
 or complete official contract identities. All historical observations therefore

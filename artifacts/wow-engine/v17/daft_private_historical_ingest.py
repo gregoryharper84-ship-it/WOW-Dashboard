@@ -20,7 +20,7 @@ def _zip_rows(filename: Path, member: str) -> list[dict]:
     with zipfile.ZipFile(filename) as archive:
         data = json.loads(archive.read(member).decode("utf-8"))
     if isinstance(data, dict):
-        data = data.get("entries", [])
+        data = data.get("entries", data.get("records", []))
     if not isinstance(data, list):
         raise ValueError(f"Expected list in {member}")
     return [row for row in data if isinstance(row, dict)]
@@ -49,6 +49,7 @@ def import_historical_packages(
     mapping = [
         (sharp_zip, "alerts_research_only.json", "SHARP_ALERT"),
         (sharp_zip, "results_source_reported.json", "SHARP_RESULT"),
+        (vip_zip, "source_index.json", "VIP_SOURCE_INDEX"),
         (vip_zip, "nba_reported_ledger.json", "VIP_RECAP"),
     ]
     archive_rows = []
@@ -57,13 +58,22 @@ def import_historical_packages(
         raw_rows = _zip_rows(Path(archive_name), member)
         counts[kind] = len(raw_rows)
         for raw in raw_rows:
+            record_kind = kind
+            if kind == "VIP_SOURCE_INDEX":
+                channel = str(raw.get("channel") or "")
+                if channel == "VIP Picks":
+                    record_kind = "VIP_PICK"
+                elif channel == "VIP Recaps":
+                    record_kind = "VIP_RECAP"
+                else:
+                    continue
             message_id = raw.get("message_id") or raw.get("recap_message_id")
-            url = raw.get("source_url") or raw.get("recap_url")
+            url = raw.get("source_url") or raw.get("recap_url") or raw.get("url")
             if not message_id:
                 continue
             original_label = raw.get("play") or raw.get("selection_as_reported")
             normalized = normalize_research_record({
-                "kind": kind, "channel": raw.get("channel") or "VIP_RECAP",
+                "kind": record_kind, "channel": raw.get("channel") or "VIP Recaps",
                 "message_id": str(message_id), "message_url": url,
                 "source": "DAFT",
                 # These display times are not authoritative timezone-aware stamps.
@@ -79,18 +89,39 @@ def import_historical_packages(
                 "original_source_fields": raw,  # PRIVATE ONLY; never emit in public API
                 "source_member": member,
             })
-    fd = os.open(str(output), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # Historical alert/result mismatches and source-index gaps are audit
+    # evidence, not grade outcomes. Preserve them inside the private archive.
+    with zipfile.ZipFile(sharp_zip) as archive:
+        pairing = json.loads(archive.read("alert_result_pairs.json"))
+        summary = json.loads(archive.read("audit_summary.json"))
+    if not isinstance(pairing, list) or not isinstance(summary, dict):
+        raise ValueError("Invalid private sharp reconciliation package")
+    if len(pairing) != summary.get("linked_pairs"):
+        raise ValueError("Private linked-pair count mismatch")
+    if (counts["SHARP_ALERT"] != summary.get("classification", {}).get("alert") or
+            counts["SHARP_RESULT"] != summary.get("classification", {}).get("result")):
+        raise ValueError("Private source counts disagree with audit summary")
+    if sum(r.get("same_displayed_primary_target") is False for r in pairing) != summary.get(
+            "different_displayed_target_pairs"):
+        raise ValueError("Private primary/graded target mismatch count")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(str(output), flags, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as writer:
             json.dump({
                 "schema": "WOW_DAFT_PRIVATE_HISTORICAL_V1",
                 "can_execute": False, "counts": counts, "rows": archive_rows,
+                "sharp_alert_result_pairs": pairing, "sharp_audit_summary": summary,
             }, writer, ensure_ascii=False)
     except BaseException:
         output.unlink(missing_ok=True)
         raise
     return {
         "counts": counts, "total_imported": len(archive_rows),
+        "sharp_linked_pairs": len(pairing),
+        "sharp_primary_vs_graded_mismatches": summary["different_displayed_target_pairs"],
         "prospective_eligible": 0,
         "mode": "RETROSPECTIVE_PRIVATE_RESEARCH_ONLY",
         "can_execute": False,
