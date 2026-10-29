@@ -23,8 +23,9 @@ explicit body binding the PR number, base SHA and complete diff SHA-256:
 `WOW_SECURITY_FALLBACK_PASS PR=<number> HEAD=<40-char-SHA> BASE=<40-char-SHA> DIFF_SHA256=<64-char-digest>`
 
 An owner approval without that exact binding is **not** a security review. The
-workflow also checks original source PR lineage, source commit, changed-file
-blob identities, and the human/source-author separation. **An owner who authored the
+workflow also checks original source PR lineage, exact source commit, immutable Engineering App adoption
+commit message/parent SHA, changed-file blob identities, and human/source-author
+separation. An editable PR description alone never certifies source authorship. **An owner who authored the
 original source is NOT an independent reviewer**, even when an Engineering App
 copies the files into its own PR. For that case the check fails closed and a
 different authenticated Security/Architect is mandatory. The owner may still
