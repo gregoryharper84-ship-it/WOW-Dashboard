@@ -22,6 +22,9 @@ OWNER_REVIEWER = "github-owner-security-review"
 REVIEWER_IDENTITIES = (*PROVIDERS, OWNER_REVIEWER)
 RETRYABLE_HTTP = {401, 408, 429, 500, 502, 503, 504, 529}
 QA_APP_ID = 5245832
+# Immutable, reachable main commit used only as a namespaced QA App check-run store.
+LEDGER_SENTINEL_SHA = "79fa0c275a58cd9d397c5a1bc81d641b6dad7f75"
+LEDGER_NAME_PREFIX = "WOW Semantic Content Ledger "
 # Only explicit typed availability failures are eligible for the alternate reviewer.
 CREDIT_ERRORS = ("credit balance is too low", "insufficient credits", "quota exceeded",
                  "billing quota exceeded", "quota exhausted")
@@ -68,11 +71,14 @@ class NoCredentialRedirect(HTTPRedirectHandler):
 HTTP_CLIENT = build_opener(NoCredentialRedirect)
 
 
-def request_json(url, *, token=None, data=None, headers=None):
+def request_json(url, *, token=None, data=None, headers=None, method=None):
     if not (url.startswith("https://api.github.com/repos/" + REPO + "/")
             or url == "https://api.anthropic.com/v1/messages"
             or url.startswith("https://generativelanguage.googleapis.com/v1beta/models/")):
         raise Hold("REVIEW_ENDPOINT_UNTRUSTED")
+    if method is not None and (method != "PATCH" or data is None
+            or not re.fullmatch(r"https://api.github.com/repos/" + re.escape(REPO) + r"/check-runs/[0-9]+", url)):
+        raise Hold("REVIEW_HTTP_METHOD_UNTRUSTED")
     h = {"Accept": "application/vnd.github+json", "User-Agent": "wow-independent-review-v2"}
     if headers:
         h.update(headers)
@@ -82,7 +88,7 @@ def request_json(url, *, token=None, data=None, headers=None):
     if body is not None:
         h["Content-Type"] = "application/json"
     try:
-        with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=60) as response:
+        with HTTP_CLIENT.open(Request(url, data=body, headers=h, method=method), timeout=60) as response:
             raw = response.read(250000)
         return json.loads(raw)
     except HTTPError as exc:
@@ -405,6 +411,111 @@ def prior_semantic_reject(sha, read_token):
     raise Hold("PRIOR_REVIEW_CHECKS_UNBOUNDED")
 
 
+def content_fingerprint(target):
+    """Content-only digest; identical changed file bytes match across PRs and bases."""
+    files = target.get("file_blobs")
+    if (type(files) is not dict or not files or len(files) > MAX_FILES
+            or any(type(name) is not str or not name
+                   or type(sha) is not str or not re.fullmatch(r"[a-f0-9]{40}", sha)
+                   for name, sha in files.items())):
+        raise Hold("REVIEW_CONTENT_IDENTITY_INVALID")
+    canonical = json.dumps(sorted(files.items()), separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def trusted_content_history(digest, read_token):
+    """QA-App-only checks, bounded and unfiltered by latest-run semantics.
+
+    A previous REJECT or orphaned in-progress review of identical source bytes
+    blocks all subsequent PRs, even after a base change or amended commit.
+    A completed HOLD may be retried; malformed/unknown states fail closed.
+    """
+    if not read_token:
+        raise Hold("CONTENT_LEDGER_READ_TOKEN_MISSING")
+    name = LEDGER_NAME_PREFIX + digest
+    path = (f"/commits/{LEDGER_SENTINEL_SHA}/check-runs?"
+            f"check_name=WOW%20Semantic%20Content%20Ledger%20{digest}&filter=all&per_page=100")
+    total = None
+    matched = 0
+    for page in range(1, 11):
+        result = gh(path + f"&page={page}", read_token)
+        if (type(result) is not dict or type(result.get("total_count")) is not int
+                or result["total_count"] < 0 or result["total_count"] > 1000
+                or type(result.get("check_runs")) is not list
+                or (total is not None and total != result["total_count"])):
+            raise Hold("CONTENT_LEDGER_INVENTORY_UNTRUSTED")
+        total = result["total_count"]
+        for run in result["check_runs"]:
+            if type(run) is not dict:
+                raise Hold("CONTENT_LEDGER_CHECK_INVALID")
+            app = run.get("app")
+            if type(app) is not dict or app.get("id") != QA_APP_ID:
+                continue
+            if run.get("name") != name:
+                continue
+            matched += 1
+            if (run.get("head_sha") != LEDGER_SENTINEL_SHA
+                    or run.get("external_id") != digest):
+                raise Hold("CONTENT_LEDGER_PROVENANCE_INVALID")
+            if run.get("status") != "completed":
+                raise Hold("CONTENT_LEDGER_IN_PROGRESS")
+            title = (run.get("output") or {}).get("title")
+            conclusion = run.get("conclusion")
+            if title == "REJECT — content review" and conclusion == "failure":
+                raise Hold("PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+            if not ((title == "PASS — content review" and conclusion == "success")
+                    or (title == "HOLD — content review" and conclusion == "neutral")):
+                raise Hold("CONTENT_LEDGER_VERDICT_UNTRUSTED")
+        if page * 100 >= total:
+            if matched > 1000:
+                raise Hold("CONTENT_LEDGER_UNBOUNDED")
+            return
+    raise Hold("CONTENT_LEDGER_UNBOUNDED")
+
+
+def reserve_content_review(target, read_token, qa_token):
+    """Record durable IN_PROGRESS before invoking any semantic reviewer."""
+    digest = content_fingerprint(target)
+    trusted_content_history(digest, read_token)
+    if not qa_token:
+        raise Hold("CONTENT_LEDGER_QA_APP_TOKEN_MISSING")
+    result = request_json(
+        "https://api.github.com/repos/" + REPO + "/check-runs", token=qa_token,
+        data={"name": LEDGER_NAME_PREFIX + digest,
+              "head_sha": LEDGER_SENTINEL_SHA, "external_id": digest,
+              "status": "in_progress"})
+    if (type(result) is not dict or type(result.get("id")) is not int
+            or result["id"] <= 0 or result.get("head_sha") != LEDGER_SENTINEL_SHA
+            or result.get("name") != LEDGER_NAME_PREFIX + digest):
+        raise Hold("CONTENT_LEDGER_RESERVATION_UNVERIFIED")
+    return {"id": result["id"], "digest": digest}
+
+
+def commit_content_review(reservation, receipt, qa_token):
+    """Persist decision before publishing any PR-head PASS.
+
+    If the update fails, the incomplete reservation remains as a permanent
+    fail-closed HOLD, requiring an independently inspected recovery action.
+    """
+    decision = receipt.get("decision")
+    if decision not in ("PASS", "REJECT", "HOLD"):
+        raise Hold("CONTENT_LEDGER_DECISION_INVALID")
+    results = {"PASS": "success", "REJECT": "failure", "HOLD": "neutral"}
+    output = {"title": decision + " — content review",
+              "summary": (f"QA-only immutable content review. digest={reservation['digest']} "
+                          f"PR={receipt['pr_number']} SHA={receipt['head_sha']} "
+                          f"review={receipt['run_id']}/{receipt['run_attempt']} "
+                          f"decision={decision}; no wagering/release authority.")}
+    response = request_json(
+        "https://api.github.com/repos/" + REPO +
+        f"/check-runs/{reservation['id']}", token=qa_token, method="PATCH",
+        data={"status": "completed", "conclusion": results[decision], "output": output})
+    if (type(response) is not dict or response.get("id") != reservation["id"]
+            or response.get("conclusion") != results[decision]
+            or response.get("external_id") != reservation["digest"]):
+        raise Hold("CONTENT_LEDGER_COMMIT_UNVERIFIED")
+
+
 def publish_check(head_sha, receipt, token):
     if not token:
         raise Hold("QA_APP_TOKEN_MISSING")
@@ -446,13 +557,22 @@ def main():
                "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
                "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
                "decision": "HOLD", "reviewer_identity": "none", "can_execute": False}
+    reservation = None
+    qa_token = os.environ.get("QA_APP_TOKEN", "")
+    credentials = {
+        "anthropic-claude-api": os.environ.get("WOW_QA_REVIEW_ANTHROPIC_API_KEY", ""),
+        "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
+    }
     try:
         if prior_semantic_reject(target["head_sha"], read_token):
             raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
-        verdict, output, provider, attempts = semantic_review(target, {
-            "anthropic-claude-api": os.environ.get("WOW_QA_REVIEW_ANTHROPIC_API_KEY", ""),
-            "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
-        })
+        # Avoid writing a global reservation for an owner-authored change that
+        # has no usable reviewer at all. This is credential configuration,
+        # not an API-credit outage or a reason to self-approve.
+        if not any(credentials.values()) and target["author"] != "wow-engineering[bot]":
+            raise Hold("PROVIDER_CREDENTIALS_UNAVAILABLE")
+        reservation = reserve_content_review(target, read_token, qa_token)
+        verdict, output, provider, attempts = semantic_review(target, credentials)
         current = gh(f"/pulls/{pr_number}", read_token)
         require_live_identity(current, target)
         if prior_semantic_reject(target["head_sha"], read_token):
@@ -491,6 +611,16 @@ def main():
         except Hold as final_hold:
             receipt["decision"] = "HOLD"
             receipt["reason"] = str(final_hold)
+    # The reservation is created before calling any model, and its completed
+    # verdict is persisted before the PR-head check. Failed ledger writes
+    # always cause HOLD, never a PASS or silent alternate-provider retry.
+    if reservation is not None:
+        try:
+            commit_content_review(reservation, receipt, qa_token)
+            receipt["content_fingerprint"] = reservation["digest"]
+        except Hold as exc:
+            receipt["decision"] = "HOLD"
+            receipt["reason"] = "CONTENT_LEDGER_COMMIT_FAILED: " + str(exc)
     Path("wow-independent-security-decision.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
     if receipt.get("owner_review_instruction"):
         print("OWNER_SECURITY_REVIEW_REQUIRED: " + receipt["owner_review_instruction"], file=sys.stderr)
