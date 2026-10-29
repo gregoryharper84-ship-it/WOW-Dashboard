@@ -388,6 +388,118 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with patch.object(m, "gh", pages):
             self.assertTrue(m.prior_semantic_reject("a" * 40, "read"))
 
+    def _ledger_target(self, pr=2269, sha="a" * 40):
+        return {"pr": pr, "head_sha": sha, "base_sha": "b" * 40,
+                "file_blobs": {"src/v17.py": "c" * 40}}
+
+    def _ledger_run(self, target, title, conclusion, status="completed", app=None):
+        digest = m.content_fingerprint(target)
+        return {"name": m.LEDGER_NAME_PREFIX + digest,
+                "head_sha": m.LEDGER_SENTINEL_SHA, "external_id": digest,
+                "app": {"id": m.QA_APP_ID if app is None else app},
+                "status": status, "conclusion": conclusion, "output": {"title": title}}
+
+    def test_content_hash_is_stable_across_pr_sha_and_base_not_file_bytes(self):
+        left = self._ledger_target()
+        right = self._ledger_target(pr=2270, sha="d" * 40)
+        right["base_sha"] = "e" * 40
+        self.assertEqual(m.content_fingerprint(left), m.content_fingerprint(right))
+        right["file_blobs"]["src/v17.py"] = "f" * 40
+        self.assertNotEqual(m.content_fingerprint(left), m.content_fingerprint(right))
+        with self.assertRaises(m.Hold):
+            m.content_fingerprint({**left, "file_blobs": {"src/v17.py": "invalid"}})
+
+    def test_global_reject_prevents_second_pr_review_without_provider_call(self):
+        target = self._ledger_target(pr=2270, sha="d" * 40)
+        prior = self._ledger_run(target, "REJECT — content review", "failure")
+        with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [prior]}):
+            with patch.object(m, "request_json", side_effect=AssertionError("must not post")):
+                with self.assertRaises(m.Hold) as cm:
+                    m.reserve_content_review(target, "read", "qa")
+        self.assertEqual(str(cm.exception), "PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+
+    def test_in_progress_reservation_fail_closed_when_reviewer_crashes(self):
+        target = self._ledger_target()
+        pending = self._ledger_run(target, "", None, "in_progress")
+        with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [pending]}):
+            with self.assertRaises(m.Hold) as cm:
+                m.trusted_content_history(m.content_fingerprint(target), "read")
+        self.assertEqual(str(cm.exception), "CONTENT_LEDGER_IN_PROGRESS")
+
+    def test_historical_hold_or_pass_allows_rechallenge_and_reserves_first(self):
+        target = self._ledger_target()
+        for title, conclusion in (("HOLD — content review", "neutral"),
+                                  ("PASS — content review", "success")):
+            old = self._ledger_run(target, title, conclusion)
+            digest = m.content_fingerprint(target)
+            created = {"id": 123, "head_sha": m.LEDGER_SENTINEL_SHA,
+                       "name": m.LEDGER_NAME_PREFIX + digest}
+            with self.subTest(title=title), patch.object(m, "gh", return_value={
+                    "total_count": 1, "check_runs": [old]}):
+                with patch.object(m, "request_json", return_value=created) as api:
+                    reserved = m.reserve_content_review(target, "read", "qa")
+                    self.assertEqual(reserved, {"id": 123, "digest": digest})
+                    self.assertEqual(api.call_args.kwargs["data"]["status"], "in_progress")
+                    self.assertEqual(api.call_args.kwargs["data"]["head_sha"], m.LEDGER_SENTINEL_SHA)
+                    self.assertEqual(api.call_args.kwargs["data"]["external_id"], digest)
+
+    def test_global_check_identity_must_match_qa_app_and_sentinel(self):
+        target = self._ledger_target()
+        trusted = self._ledger_run(target, "HOLD — content review", "neutral")
+        for field, wrong in (("head_sha", "0" * 40), ("external_id", "0" * 64),
+                             ("conclusion", "failure")):
+            malformed = dict(trusted, **{field: wrong})
+            with self.subTest(field=field), patch.object(m, "gh", return_value={
+                    "total_count": 1, "check_runs": [malformed]}):
+                with self.assertRaises(m.Hold):
+                    m.trusted_content_history(m.content_fingerprint(target), "read")
+        foreign = self._ledger_run(target, "REJECT — content review", "failure", app=999)
+        with patch.object(m, "gh", return_value={"total_count": 1, "check_runs": [foreign]}):
+            m.trusted_content_history(m.content_fingerprint(target), "read")
+        with patch.object(m, "gh", return_value={"total_count": 1001, "check_runs": []}):
+            with self.assertRaises(m.Hold):
+                m.trusted_content_history(m.content_fingerprint(target), "read")
+
+    def test_reject_ledger_committed_before_head_check_and_failed_commit_holds(self):
+        target = self._ledger_target()
+        digest = m.content_fingerprint(target)
+        reserved = {"id": 125, "digest": digest}
+        receipt = {"pr_number": target["pr"], "head_sha": target["head_sha"],
+                   "run_id": 100, "run_attempt": 1, "decision": "REJECT"}
+        response = {"id": 125, "conclusion": "failure", "external_id": digest}
+        with patch.object(m, "request_json", return_value=response) as api:
+            m.commit_content_review(reserved, receipt, "qa")
+            self.assertEqual(api.call_args.kwargs["method"], "PATCH")
+            self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
+            self.assertEqual(api.call_args.kwargs["data"]["output"]["title"], "REJECT — content review")
+        with patch.object(m, "request_json", return_value={"id": 125, "conclusion": "success"}):
+            with self.assertRaises(m.Hold):
+                m.commit_content_review(reserved, receipt, "qa")
+
+    def test_reject_content_ledger_is_not_duplicated_by_same_sha_page_limit(self):
+        target = self._ledger_target()
+        prior = self._ledger_run(target, "REJECT — content review", "failure")
+        extra = self._ledger_run(target, "HOLD — content review", "neutral")
+        def page(path, token):
+            self.assertIn("filter=all", path)
+            self.assertIn("check_name=", path)
+            if path.endswith("&page=1"):
+                return {"total_count": 101, "check_runs": [extra] * 100}
+            return {"total_count": 101, "check_runs": [prior]}
+        with patch.object(m, "gh", page):
+            with self.assertRaises(m.Hold) as cm:
+                m.trusted_content_history(m.content_fingerprint(target), "qa")
+        self.assertEqual(str(cm.exception), "PREVIOUS_SEMANTIC_REJECT_IDENTICAL_CONTENT")
+
+    def test_review_client_denies_patch_to_anything_except_qa_check_run(self):
+        for url in ("https://api.anthropic.com/v1/messages",
+                    "https://api.github.com/repos/" + m.REPO + "/pulls/2269",
+                    "https://api.github.com/repos/" + m.REPO + "/check-runs/abc"):
+            with self.subTest(url=url):
+                with self.assertRaises(m.Hold) as cm:
+                    m.request_json(url, token="qa", method="PATCH", data={})
+                self.assertEqual(str(cm.exception), "REVIEW_HTTP_METHOD_UNTRUSTED")
+
     def test_manual_dispatch_requires_owner_and_exact_target(self):
         event = {"inputs": {"pr_number": "2254", "head_sha": "a" * 40}}
         with patch.dict(m.os.environ, {"GITHUB_ACTOR": "untrusted-user"}):
