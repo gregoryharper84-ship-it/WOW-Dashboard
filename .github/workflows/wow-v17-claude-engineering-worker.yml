@@ -47,6 +47,7 @@ concurrency:
 jobs:
   multi-agent-engineering:
     name: WOW V17 Claude fallback engineering team
+    if: github.ref == 'refs/heads/main' && github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     environment: wow-engineering
@@ -375,6 +376,17 @@ jobs:
             echo "::error::Anthropic fallback authentication is missing."
             exit 1
           fi
+
+      - name: Recheck anthropic provider breaker under the global writer mutex
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # This exact workflow owns the existing global single-writer lock.
+          # Dispatcher-time provider health is never sufficient after queueing.
+          python artifacts/wow-engine/v17/engineering_provider_worker_admission.py \
+            --provider anthropic
 
       - name: Engineering Lead agent
         id: lead_agent
