@@ -59,3 +59,30 @@ pins both the new admission behavior and the retained evidence contract.
 Further removal of obsolete 784-line and 450-line certifier scripts is a
 **fast-follow**, only after authenticated QA/Release canaries prove the proposed
 replacement handles positive, negative, stale, lost-event and duplicate cases.
+
+## Phase 2: optional semantic review is scoped, not required for routine repair
+Ruleset #24907422 does **not** require `WOW Independent Security Review`.
+The installed optional reviewer on protected main currently produces a generic
+`HTTP_404` for several PRs. This is not one of the three mandatory regressions
+and must not be presented as a mandatory Class A release gate.
+
+To stop the recurring irrelevant red checks without concealing a genuine
+security HOLD, the `pull_request_target` trigger is narrowed with explicit
+`paths` for protected trust roots: GitHub workflows/actions/scripts,
+agent configs, independent QA/release/governance/writer code, security migrations,
+and governance policy. The full `workflow_dispatch` route is preserved for
+independent Class B challenges and any changed path identified by a security
+reviewer. A protected path still runs the reviewer and a provider error stays
+red; the scope change does not make a failed review green.
+
+Do **not** treat file paths alone as proof of Class A. If a change affects
+sporting probability semantics, security, authentication, protected routing,
+QA/trust roots or production release behavior outside this globs list, its owner
+must still classify it B/C and obtain the appropriate independent approval
+and governed model validation. Adding a new sensitive path requires adding
+it to the guarded list and regression tests. Unknown or protected changes
+must never inherit a fabricated reviewer PASS.
+
+This reduces **automatic reviewer noise**, not the substantive trust-root
+review obligation. Complete reviewer bootstrap with an authentic QA App
+verdict and canaries before making its check branch-required.
