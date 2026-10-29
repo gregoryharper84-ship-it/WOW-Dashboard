@@ -1,6 +1,7 @@
 """Opt-in headless Gemini AMRT admission and typed results; no betting or repo writes."""
 from __future__ import annotations
 
+import datetime as dt
 import argparse
 import json
 import re
@@ -46,6 +47,52 @@ def admit(enabled: str, spend_confirmed: str, auto_enabled: str, mode: str) -> d
         code = "ADMITTED"
     return {"status": "ADMITTED" if code == "ADMITTED" else "HELD", "code": code,
             "provider": "gemini", "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
+
+
+
+def recheck_auto_worker_provider(runs: Any, comparison: Any, current_sha: str,
+                                 *, now: dt.datetime | None = None) -> dict[str, Any]:
+    """Recheck provider-wide Gemini recovery *inside* the existing writer mutex.
+
+    Dispatchers may accept distinct sport leases simultaneously, but a queued
+    Gemini worker is not allowed to spend a second canary/cooldown grant.
+    The protected worker fetches the latest completed Gemini run at admission,
+    after the previous writer finished. Unknown history is always a HOLD.
+    """
+    def held(code: str) -> dict[str, Any]:
+        return {"status": "HELD", "code": code, "can_execute": False,
+                "terminal_authority": MODEL_AUTHORITY}
+
+    if not isinstance(current_sha, str) or not _SHA.fullmatch(current_sha):
+        return held("GEMINI_WORKER_CURRENT_SHA_INVALID")
+    if not isinstance(runs, list) or len(runs) > 1:
+        return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+    if not runs:
+        return {"status": "ADMITTED", "code": "GEMINI_WORKER_FIRST_AUTO_ATTEMPT",
+                "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
+    last = runs[0]
+    if not isinstance(last, dict) or last.get("status") != "completed":
+        return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+    if last.get("conclusion") == "failure":
+        # Preserve the existing immutable-SHA one-shot runtime-fix rule.
+        return admit_one_shot_recovery(runs, comparison, current_sha)
+    if last.get("conclusion") != "success":
+        return held("GEMINI_WORKER_PREVIOUS_OUTCOME_UNVERIFIED")
+    timestamp = last.get("updatedAt")
+    if not isinstance(timestamp, str):
+        return held("GEMINI_WORKER_SUCCESS_TIME_UNVERIFIED")
+    try:
+        finished = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        observed = now if now is not None else dt.datetime.now(dt.timezone.utc)
+        if finished.tzinfo is None or observed.tzinfo is None:
+            return held("GEMINI_WORKER_SUCCESS_TIME_UNVERIFIED")
+        age = observed - finished
+    except (ValueError, OverflowError, TypeError):
+        return held("GEMINI_WORKER_SUCCESS_TIME_UNVERIFIED")
+    if age < dt.timedelta(hours=24):
+        return held("GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
+    return {"status": "ADMITTED", "code": "GEMINI_WORKER_COOLDOWN_EXPIRED",
+            "can_execute": False, "terminal_authority": MODEL_AUTHORITY}
 
 
 def select_incident(
@@ -332,6 +379,10 @@ def main(argv: list[str] | None = None) -> int:
     recovery.add_argument("--runs-file", required=True)
     recovery.add_argument("--comparison-file", required=True)
     recovery.add_argument("--current-sha", required=True)
+    worker_recheck = sub.add_parser("worker-auto-admit")
+    worker_recheck.add_argument("--runs-file", required=True)
+    worker_recheck.add_argument("--comparison-file", required=True)
+    worker_recheck.add_argument("--current-sha", required=True)
     changed = sub.add_parser("inspect-patch")
     changed.add_argument("--files-json", required=True)
     verify = sub.add_parser("verify-candidate")
@@ -361,6 +412,12 @@ def main(argv: list[str] | None = None) -> int:
                                   source_sha=args.source_sha)
         elif args.action == "recovery-admit":
             result = admit_one_shot_recovery(
+                json.loads(Path(args.runs_file).read_text(encoding="utf-8")),
+                json.loads(Path(args.comparison_file).read_text(encoding="utf-8")),
+                args.current_sha,
+            )
+        elif args.action == "worker-auto-admit":
+            result = recheck_auto_worker_provider(
                 json.loads(Path(args.runs_file).read_text(encoding="utf-8")),
                 json.loads(Path(args.comparison_file).read_text(encoding="utf-8")),
                 args.current_sha,
