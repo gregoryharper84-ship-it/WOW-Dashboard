@@ -7,6 +7,7 @@ QA App publishes the exact-head result; GitHub's native required checks enforce 
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sys
 from urllib.error import HTTPError, URLError
@@ -16,6 +17,9 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 CHECK_NAME = "WOW Independent Security Review"
 ALLOWED = {"PASS", "FAIL"}
 PROVIDERS = ("anthropic-claude-api", "gemini-generative-api")
+OWNER_LOGIN = "gregoryharper84-ship-it"
+OWNER_REVIEWER = "github-owner-security-review"
+REVIEWER_IDENTITIES = (*PROVIDERS, OWNER_REVIEWER)
 RETRYABLE_HTTP = {401, 408, 429, 500, 502, 503, 504}
 MAX_FILES = 50
 MAX_DIFF = 90000
@@ -27,6 +31,14 @@ class Hold(Exception):
 
 class ProviderUnavailable(Hold):
     """Only typed provider availability failures permit fallback."""
+
+
+class OwnerFallbackRequired(Hold):
+    """Both actual semantic-review providers were unavailable, never rejected."""
+
+    def __init__(self, attempts):
+        super().__init__("OWNER_REVIEW_REQUIRED")
+        self.attempts = attempts
 
 
 class NoCredentialRedirect(HTTPRedirectHandler):
@@ -77,6 +89,11 @@ def event_target(event, kind):
         pr = event.get("pull_request")
         if not isinstance(pr, dict) or not isinstance(pr.get("number"), int):
             raise Hold("PR_EVENT_MISSING")
+        return pr["number"], pr.get("head", {}).get("sha")
+    if kind == "pull_request_review":
+        pr = event.get("pull_request")
+        if not isinstance(pr, dict) or type(pr.get("number")) is not int:
+            raise Hold("OWNER_REVIEW_EVENT_INVALID")
         return pr["number"], pr.get("head", {}).get("sha")
     if kind == "workflow_dispatch":
         inputs = event.get("inputs") or {}
@@ -137,7 +154,8 @@ def capture(pr_number, expected_sha, token):
     if len(serialized.encode()) > MAX_DIFF:
         raise Hold("DIFF_SIZE_UNBOUNDED")
     return {"pr": pr_number, "head_sha": sha, "base_sha": base_sha, "diff_sha256": hashlib.sha256(serialized.encode()).hexdigest(),
-            "author": pr.get("user", {}).get("login", ""), "title": pr.get("title", ""), "diff": serialized}
+            "author": pr.get("user", {}).get("login", ""), "title": pr.get("title", ""), "diff": serialized,
+            "file_blobs": {f["filename"]: f["sha"] for f in entries}}
 
 
 def parse_verdict(value):
@@ -225,11 +243,81 @@ def semantic_review(target, credentials, invoke=call_provider):
         # A semantic REJECT, malformed output or policy denial NEVER fails over.
         attempts.append({"provider": provider, "result": decision})
         return decision, payload, provider, attempts
-    raise Hold("ALL_REVIEW_PROVIDERS_UNAVAILABLE")
+    raise OwnerFallbackRequired(attempts)
+
+
+def owner_fallback_review(target, token):
+    """Third reviewer: real authenticated human, only when source-author independent.
+
+    An Engineering App copy does not erase original source authorship. The App
+    lineage and exact file blob inventory are verified against GitHub before
+    a human owner approval can satisfy an independent semantic review.
+    """
+    if target.get("author") != "wow-engineering[bot]":
+        raise Hold("OWNER_FALLBACK_REQUIRES_ENGINEERING_APP_SOURCE")
+    pr = gh(f"/pulls/{target['pr']}", token)
+    require_live_identity(pr, target)
+    body = pr.get("body") or ""
+    match = re.search(
+        r"^Original author/source: PR #([1-9][0-9]*), head `([a-f0-9]{40})`\.$",
+        body, re.MULTILINE,
+    )
+    if not match:
+        raise Hold("OWNER_SOURCE_LINEAGE_UNVERIFIED")
+    source_number, source_sha = int(match.group(1)), match.group(2)
+    source = gh(f"/pulls/{source_number}", token)
+    source_author = (source.get("user") or {}).get("login")
+    if not source_author or source_author in (OWNER_LOGIN, "wow-engineering[bot]"):
+        raise Hold("OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED")
+    if (source.get("head", {}).get("sha") != source_sha
+            or source.get("head", {}).get("repo", {}).get("full_name") != REPO
+            or source.get("changed_files") != len(target["file_blobs"])):
+        raise Hold("OWNER_SOURCE_SHA_OR_FILES_UNVERIFIED")
+    source_files = gh(f"/pulls/{source_number}/files?per_page=100", token)
+    if not isinstance(source_files, list) or len(source_files) != len(target["file_blobs"]):
+        raise Hold("OWNER_SOURCE_INVENTORY_UNVERIFIED")
+    inventory = {}
+    for row in source_files:
+        if not isinstance(row, dict) or not isinstance(row.get("filename"), str) or not isinstance(row.get("sha"), str):
+            raise Hold("OWNER_SOURCE_FILE_UNVERIFIED")
+        inventory[row["filename"]] = row["sha"]
+    if inventory != target["file_blobs"]:
+        raise Hold("OWNER_SOURCE_BLOBS_DIFFER_FROM_ADOPTED_HEAD")
+
+    reviews = gh(f"/pulls/{target['pr']}/reviews?per_page=100", token)
+    if not isinstance(reviews, list) or len(reviews) >= 100:
+        raise Hold("OWNER_REVIEW_INVENTORY_UNVERIFIED")
+    owner_reviews = [review for review in reviews if isinstance(review, dict)
+                     and (review.get("user") or {}).get("login") == OWNER_LOGIN]
+    if not owner_reviews:
+        raise Hold("OWNER_REVIEW_REQUIRED")
+    # Last submitted owner review wins; stale approvals, dismissals and changes
+    # requested are not interchangeable with an exact-head security approval.
+    last = owner_reviews[-1]
+    expected = (f"WOW_SECURITY_FALLBACK_PASS PR={target['pr']} "
+                f"HEAD={target['head_sha']} BASE={target['base_sha']} "
+                f"DIFF_SHA256={target['diff_sha256']}")
+    if (last.get("state") != "APPROVED"
+            or last.get("commit_id") != target["head_sha"]
+            or (last.get("body") or "").strip() != expected
+            or not isinstance(last.get("id"), int) or last["id"] <= 0
+            or not last.get("submitted_at")):
+        raise Hold("OWNER_REVIEW_NOT_EXACT_OR_NOT_AUTHENTICATED")
+    return {"source_pr": source_number, "source_sha": source_sha,
+            "source_author": source_author, "owner": OWNER_LOGIN,
+            "review_id": last["id"], "review_commit": last["commit_id"],
+            "submitted_at": last["submitted_at"]}
+
+
+def owner_review_instruction(target):
+    return (f"WOW_SECURITY_FALLBACK_PASS PR={target['pr']} "
+            f"HEAD={target['head_sha']} BASE={target['base_sha']} "
+            f"DIFF_SHA256={target['diff_sha256']}")
+
 
 
 def make_receipt(target, *, decision, reviewer, verdict, attempts, run_id, attempt):
-    if reviewer not in PROVIDERS or decision not in ("PASS", "REJECT") or int(run_id) <= 0 or int(attempt) <= 0:
+    if reviewer not in REVIEWER_IDENTITIES or decision not in ("PASS", "REJECT") or int(run_id) <= 0 or int(attempt) <= 0:
         raise Hold("RECEIPT_IDENTITY_INVALID")
     return {"schema_version": 1, "repository": REPO, "pr_number": target["pr"],
             "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
@@ -242,10 +330,12 @@ def publish_check(head_sha, receipt, token):
     if not token:
         raise Hold("QA_APP_TOKEN_MISSING")
     decision = receipt.get("decision", "HOLD")
-    conclusion = "success" if decision == "PASS" else "failure"
+    conclusion = ("success" if decision == "PASS" else
+                  "action_required" if receipt.get("reason") == "OWNER_REVIEW_REQUIRED" else "failure")
     summary = (f"{decision}: independent semantic review. PR #{receipt.get('pr_number')}, SHA {head_sha}, "
                f"provider {receipt.get('reviewer_identity', 'none')}, base {receipt.get('base_sha', 'none')}, diff {receipt.get('diff_sha256', 'none')}, "
                f"run {receipt.get('run_id', 'none')}/{receipt.get('run_attempt', 'none')}. "
+               f"reason {receipt.get('reason', 'none')}. "
                "No merge/deploy/trading authority; see run artifact for findings.")
     payload = {"name": CHECK_NAME, "head_sha": head_sha, "status": "completed", "conclusion": conclusion,
                "output": {"title": decision + " — independent semantic source review", "summary": summary[:64000]}}
@@ -281,6 +371,22 @@ def main():
         receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
                                attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
                                attempt=os.environ["GITHUB_RUN_ATTEMPT"])
+    except OwnerFallbackRequired as exc:
+        receipt["attempts"] = exc.attempts
+        try:
+            owner_evidence = owner_fallback_review(target, read_token)
+            require_live_identity(gh(f"/pulls/{pr_number}", read_token), target)
+            human_verdict = {"source_review": "PASS", "security_review": "PASS",
+                             "probability_integrity_review": "PASS", "findings": []}
+            receipt = make_receipt(
+                target, decision="PASS", reviewer=OWNER_REVIEWER,
+                verdict=human_verdict, attempts=exc.attempts,
+                run_id=os.environ["GITHUB_RUN_ID"], attempt=os.environ["GITHUB_RUN_ATTEMPT"])
+            receipt["owner_review_provenance"] = owner_evidence
+        except Hold as owner_hold:
+            receipt["reason"] = str(owner_hold)
+            if str(owner_hold) == "OWNER_REVIEW_REQUIRED":
+                receipt["owner_review_instruction"] = owner_review_instruction(target)
     except Hold as exc:
         receipt["reason"] = str(exc)
     Path("wow-independent-security-decision.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
