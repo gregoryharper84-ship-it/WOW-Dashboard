@@ -706,7 +706,7 @@ def automated_review_data(data=None, *, now=NOW):
                 "ref": "fix/issue-1806",
                 "repo": {"full_name": REPOSITORY},
             },
-            "base": {"ref": "main", "repo": {"full_name": REPOSITORY}},
+            "base": {"sha": "b" * 40, "ref": "main", "repo": {"full_name": REPOSITORY}},
         },
         files=files,
         commit={

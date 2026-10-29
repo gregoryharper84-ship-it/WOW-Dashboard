@@ -387,6 +387,7 @@ def test_trusted_gate_consumes_authenticated_automatic_qa_review_run(tmp_path):
                 "repo": {"full_name": source_review.CANONICAL_REPOSITORY},
             },
             "base": {
+                "sha": main_sha,
                 "ref": "main",
                 "repo": {"full_name": source_review.CANONICAL_REPOSITORY},
             },
