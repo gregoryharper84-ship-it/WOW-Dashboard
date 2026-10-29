@@ -1545,6 +1545,8 @@ def test_provider_failure_publishes_exact_head_qa_app_failure_after_prior_pass(f
         GITHUB_OUTPUT=str(fake_gh / "out"),
         GITHUB_STEP_SUMMARY=str(fake_gh / "summary"),
         GH_TOKEN="qa-app-token",
+        READ_TOKEN="read-only",
+        QA_APP_TOKEN="qa-app-token",
         PR_NUMBER="7",
         HEAD_SHA=HEAD,
         POLICY_OUTCOME="success",
