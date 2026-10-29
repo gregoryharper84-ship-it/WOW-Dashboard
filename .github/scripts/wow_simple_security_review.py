@@ -274,7 +274,7 @@ def call_provider(provider, key, prompt):
                                                "description": "Return a strict security review verdict.",
                                                "input_schema": REVIEW_SCHEMA}],
                                     "tool_choice": {"type": "tool", "name": "submit_review"}})
-        if result.get("stop_reason") != "tool_use":
+        if type(result) is not dict or result.get("stop_reason") != "tool_use":
             raise Hold("CLAUDE_REVIEW_INCOMPLETE")
         try:
             responses = [part["input"] for part in result["content"]
@@ -282,7 +282,7 @@ def call_provider(provider, key, prompt):
             if len(responses) != 1:
                 raise Hold("CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE")
             return parse_verdict(responses[0])
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError):
             raise Hold("CLAUDE_RESPONSE_INVALID") from None
     elif provider == "gemini-generative-api":
         model = (os.getenv("WOW_QA_GEMINI_MODEL") or "gemini-2.5-flash")
@@ -293,11 +293,13 @@ def call_provider(provider, key, prompt):
                               data={"contents": [{"parts": [{"text": prompt}]}],
                                     "systemInstruction": {"parts": [{"text": SYSTEM_ROLE}]},
                                     "generationConfig": {"responseMimeType": "application/json"}})
-        if not result.get("candidates") or result["candidates"][0].get("finishReason") != "STOP":
+        if (type(result) is not dict or type(result.get("candidates")) is not list
+                or not result["candidates"] or type(result["candidates"][0]) is not dict
+                or result["candidates"][0].get("finishReason") != "STOP") :
             raise Hold("GEMINI_REVIEW_INCOMPLETE")
         try:
             raw = result["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, TypeError, IndexError):
+        except (KeyError, TypeError, IndexError, AttributeError):
             raise Hold("GEMINI_RESPONSE_INVALID") from None
     else:
         raise Hold("PROVIDER_IDENTITY_INVALID")
@@ -649,6 +651,11 @@ def main():
                 receipt["owner_review_instruction"] = owner_review_instruction(target)
     except Hold as exc:
         receipt["reason"] = str(exc)
+    except Exception as exc:
+        # Once a reservation exists, unexpected provider/parser failures must
+        # receive an attributable HOLD rather than orphaning the ledger.
+        # Never expose exception text (potential HTTP bodies/secrets).
+        receipt["reason"] = "REVIEW_INTERNAL_EXCEPTION_" + type(exc).__name__
     # Last-second guarded acceptance. A moved protected main or a prior QA REJECT
     # must never be overwritten with a success, including the owner fallback path.
     if receipt["decision"] == "PASS":
