@@ -98,6 +98,14 @@ def test_deduplicates_same_capture_not_same_thesis():
     assert len(next(iter(ledger["thesis_clusters"].values()))) == 2
 
 
+def test_recapture_of_same_message_version_does_not_invent_new_version():
+    rows = [capture(), capture(captured_at="2026-10-29T17:20:00Z")]
+    ledger = deduplicate_captures(rows)
+    assert ledger["distinct_capture_instances"] == 2
+    assert ledger["distinct_message_versions"] == 1
+    assert len(next(iter(ledger["message_versions"].values()))) == 2
+
+
 def test_missing_exact_identity_is_not_merged_as_thesis():
     rows = [capture(contract=None), capture(message_id="second", contract=None)]
     assert len(deduplicate_captures(rows)["thesis_clusters"]) == 2
@@ -141,6 +149,18 @@ def test_soccer_three_way_requires_draw():
     assert sum(p.values()) == pytest.approx(1.0)
     assert normalized_no_vig({"home": 2.5, "away": 3.2},
                              ("home", "draw", "away")) is None
+
+
+def test_soccer_1x2_alert_cannot_drop_the_draw():
+    c = contract(family="SOCCER_1X2", settlement="REGULATION",
+                 overtime="EXCLUDE", push_possible=False)
+    r = analyze_sharp_alert(
+        {"contract": c},
+        {"contract": c, "prices": {"home": 2.1, "away": 3.2},
+         "outcomes": ("home", "away")},
+        {"contract": c, "decimal_odds": 2.3, "quote_at": NOW}, now=NOW)
+    assert r["independent_market_no_vig"] is None
+    assert r["independent_market_ev_push_free_only"] is None
 
 
 def test_binary_ev_and_push_ev_differ():
@@ -279,6 +299,20 @@ def test_settlement_exact_line_and_independent_verification_required():
         "settlement_source": "synthetic", "source_reported_result": "LOSS"})
     assert settled["source_result_agrees"] is False
     assert settled["available_price_return_per_unit"] == pytest.approx(1.0)
+
+
+def test_source_result_for_different_alternate_line_does_not_grade():
+    spread = contract(family="SPREAD", selection="AWAY", side="away", line=3.5)
+    snap = prospective_snapshot({**capture(contract=spread),
+        "research_eligibility": "PROSPECTIVE",
+        "offer_decimal_odds": 2.0, "offer_quote_at": "2026-10-29T17:09:00Z"})
+    shifted = contract(family="SPREAD", selection="AWAY", side="away", line=4.5)
+    result = settle_shadow_snapshot(snap, {
+        "contract": shifted, "independently_verified": True,
+        "settlement_source": "synthetic", "official_result": "WIN",
+        "source_reported_result": "WIN"})
+    assert result["status"] == "EXACT_CONTRACT_UNRESOLVED"
+    assert not result["graded"]
 
 
 def test_evaluation_does_not_claim_incremental_outperformance():
