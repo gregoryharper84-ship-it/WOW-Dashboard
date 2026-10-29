@@ -243,6 +243,12 @@ def publish_check(head_sha, receipt, token):
     return request_json("https://api.github.com/repos/" + REPO + "/check-runs", token=token, data=payload)
 
 
+def require_live_identity(current, target):
+    if (current.get("head", {}).get("sha") != target["head_sha"]
+            or current.get("base", {}).get("sha") != target["base_sha"]):
+        raise Hold("PR_HEAD_OR_BASE_MOVED_DURING_REVIEW")
+
+
 def main():
     if os.environ.get("GITHUB_REPOSITORY") != REPO or os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise Hold("PROTECTED_MAIN_REQUIRED")
@@ -262,9 +268,7 @@ def main():
             "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
         })
         current = gh(f"/pulls/{pr_number}", read_token)
-        if (current.get("head", {}).get("sha") != target["head_sha"]
-                or current.get("base", {}).get("sha") != target["base_sha"]):
-            raise Hold("PR_HEAD_OR_BASE_MOVED_DURING_REVIEW")
+        require_live_identity(current, target)
         receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
                                attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
                                attempt=os.environ["GITHUB_RUN_ATTEMPT"])
