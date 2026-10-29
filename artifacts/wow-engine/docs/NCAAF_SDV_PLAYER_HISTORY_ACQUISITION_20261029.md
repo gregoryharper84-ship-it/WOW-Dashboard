@@ -111,3 +111,14 @@ existing CFBD sporting outcomes, independent stat contradiction checks,
 chronological feature creation, and model replay.
 
 `V17_TERMINAL_REDUCER` remains sole authority; `can_execute=false`.
+
+### Live raw-Parquet schema correction, October 29
+
+Protected-main run #40906843881 downloaded both releases and correctly
+failed at schema validation. The ESPN **raw Parquet** contains
+`passingYards`, `completions/passingAttempts`, `rushingYards`,
+`rushingAttempts`, `receptions`, `receivingYards`. Public loader-facing
+documentation exposes separately normalized snake_case names, which must
+**not** be used to select raw Parquet fields. The audited correction pins
+the actual source schema, preserves fail-closed missing field semantics,
+and adds a synthetic regression that rejects loader aliases in raw data.

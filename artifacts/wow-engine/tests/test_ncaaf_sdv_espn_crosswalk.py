@@ -30,9 +30,9 @@ def espn(category="passing", **changes):
         "season": 2024, "game_id": 401677189,
         "team_id": 87, "athlete_id": 4683423,
         "athlete_name": "Riley Leonard", "category": category,
-        "passing_yards": "273", "completions_passing_attempts": "15/23",
-        "rushing_yards": "-2", "rushing_attempts": "14",
-        "receptions": "5", "receiving_yards": "60",
+        "passingYards": "273", "completions/passingAttempts": "15/23",
+        "rushingYards": "-2", "rushingAttempts": "14",
+        "receptions": "5", "receivingYards": "60",
     })
     x.update(changes)
     return x
@@ -91,14 +91,14 @@ def test_same_name_dual_espn_ids_is_ambiguous():
 
 def test_weak_all_zero_statistics_are_not_sufficient_for_identity():
     o = audit([ncaa(category="receiving", rec="0", receiving_yards="0")],
-              [espn(category="receiving", receptions="0", receiving_yards="0")])
+              [espn(category="receiving", receptions="0", receivingYards="0")])
     assert o["candidate_stat_category_rows"] == 0
     assert o["hold_reason_counts"]["WEAK_ZERO_ONLY_PARITY"] == 1
 
 
 def test_rushing_negative_yards_count_parity_is_admitted():
     o = audit([ncaa(category="rushing", yds_rush="-2", rush_attempts="14")],
-              [espn(category="rushing", rushing_yards="-2", rushing_attempts="14")])
+              [espn(category="rushing", rushingYards="-2", rushingAttempts="14")])
     assert o["candidate_stat_parity_counts"]["RUSHING_YARDS"] == 1
     assert o["candidate_stat_parity_counts"]["RUSH_ATTEMPTS"] == 1
 
@@ -146,3 +146,18 @@ def test_espn_release_url_is_pinned_to_public_source_family():
     assert espn_release_url(2024) == (
         "https://github.com/sportsdataverse/sportsdataverse-data/"
         "releases/download/espn_cfb_player_box/player_box_2024.parquet")
+
+def test_actual_public_parquet_uses_source_fields_not_normalized_loader_fields():
+    assert "passingYards" in ESPN_COLUMNS
+    assert "completions/passingAttempts" in ESPN_COLUMNS
+    assert "rushingYards" in ESPN_COLUMNS
+    assert "receivingYards" in ESPN_COLUMNS
+    assert "passing_yards" not in ESPN_COLUMNS
+    assert "completions_passing_attempts" not in ESPN_COLUMNS
+
+
+def test_legacy_loader_aliases_without_raw_parquet_schema_are_rejected():
+    row = espn()
+    row["passing_yards"] = row.pop("passingYards")
+    with pytest.raises(CrosswalkHold, match="NCAAF_ESPN_SCHEMA_DRIFT"):
+        audit([ncaa()], [row])
