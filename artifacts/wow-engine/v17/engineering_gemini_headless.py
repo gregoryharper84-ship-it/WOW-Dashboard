@@ -136,6 +136,7 @@ def recheck_auto_worker_github() -> dict[str, Any]:
         if not isinstance(runs, list) or len(runs) > 100:
             return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
         previous = []
+        self_seen = False
         for entry in runs:
             if not isinstance(entry, dict):
                 return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
@@ -143,6 +144,9 @@ def recheck_auto_worker_github() -> dict[str, Any]:
             if type(candidate_id) is not int or candidate_id <= 0:
                 return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
             if candidate_id == int(run_id):
+                self_seen = True
+                if entry.get("status") not in ("in_progress", "queued", "pending"):
+                    return held("GEMINI_WORKER_SELF_STATUS_UNVERIFIED")
                 continue
             # In-flight predecessor or indeterminate provider state: do not
             # consume the same grant from another lease in this interval.
@@ -152,6 +156,8 @@ def recheck_auto_worker_github() -> dict[str, Any]:
                 previous.append(entry)
             elif entry.get("status") not in ("queued", "pending"):
                 return held("GEMINI_WORKER_HISTORY_UNVERIFIED")
+        if not self_seen:
+            return held("GEMINI_WORKER_CURRENT_RUN_MISSING")
         # A full page without a completed predecessor is ambiguous, not a
         # fresh first-use grant. Do not assume missing history means success.
         if len(runs) == 100 and not previous:
