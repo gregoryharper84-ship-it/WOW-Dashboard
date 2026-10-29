@@ -80,7 +80,13 @@ jobs:
         if: steps.admission.outputs.admitted == 'true' && inputs.invocation_mode == 'auto'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python artifacts/wow-engine/v17/engineering_gemini_headless.py worker-auto-admit-github
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Save the exact run/SHA typed no-spend receipt even when held.
+          # This step never invokes Gemini or acquires additional authority.
+          python artifacts/wow-engine/v17/engineering_gemini_headless.py worker-auto-admit-github \
+            > "$RUNNER_TEMP/wow-gemini/provider-recheck.json"
 
       - name: Fence unresolved remote writers
         if: steps.admission.outputs.admitted == 'true'
@@ -266,6 +272,7 @@ jobs:
           retention-days: 7
           path: |
             ${{ runner.temp }}/wow-gemini/admission.json
+            ${{ runner.temp }}/wow-gemini/provider-recheck.json
             ${{ runner.temp }}/wow-gemini/selection.json
             ${{ runner.temp }}/wow-gemini/workspace.json
             ${{ runner.temp }}/wow-gemini/model-receipt.json
