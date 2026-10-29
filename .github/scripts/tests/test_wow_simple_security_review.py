@@ -85,5 +85,35 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(payload["conclusion"], "failure")
 
 
+    def test_security_client_refuses_all_redirects_with_credentials(self):
+        from urllib.request import Request
+        from urllib.error import HTTPError
+        req = Request("https://api.anthropic.com/v1/messages", data=b"{}",
+                      headers={"x-api-key": "private-review-key"})
+        redirected = m.NoCredentialRedirect().redirect_request(
+            req, None, 302, "Found", {"Location": "https://untrusted.example/steal"},
+            "https://untrusted.example/steal")
+        self.assertIsNone(redirected)
+        with self.assertRaises(m.Hold):
+            m.request_json("https://untrusted.example/steal", data={})
+        with patch.object(m.HTTP_CLIENT, "open",
+                          side_effect=HTTPError(req.full_url, 302, "redirect", {}, None)):
+            with self.assertRaises(m.Hold) as cm:
+                m.request_json("https://api.anthropic.com/v1/messages", data={},
+                               headers={"x-api-key": "private-review-key"})
+        self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
+
+    def test_unknown_provider_models_are_denied_before_network(self):
+        with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": "unapproved-model"}):
+            with self.assertRaises(m.Hold) as cm:
+                m.call_provider("anthropic-claude-api", "key", "review")
+            self.assertEqual(str(cm.exception), "CLAUDE_MODEL_UNAPPROVED")
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-unapproved"}):
+            with self.assertRaises(m.Hold) as cm:
+                m.call_provider("gemini-generative-api", "key", "review")
+            self.assertEqual(str(cm.exception), "GEMINI_MODEL_INVALID")
+
+
+
 if __name__ == "__main__":
     unittest.main()
