@@ -172,7 +172,7 @@ candidate settled value and the unresolved ESPN team alias; no name or
 historical market odds. The full file's hash, size and underlying release
 SHA-256 fingerprints are included in the aggregate receipt.
 
-On *manual* protected-main `workflow_dispatch`, a bounded script
+On protected-main push, monthly schedule, or manual `workflow_dispatch`, a bounded script
 `v17/ncaaf_cfbd_full_audit_log.py` validates row cardinality, source hashes,
 strict IDs/stat families, uniqueness and deterministic sort order, and emits
 source-only candidate chunks to GitHub Actions log lines prefixed
