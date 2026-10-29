@@ -1,0 +1,67 @@
+name: wow-v17-qa-ledger-recovery
+# Independently authenticated QA App recovery for orphaned content-ledger reservations.
+# Completes stale in_progress checks as HOLD or confirmed REJECT only. Never PASS.
+# Serializes with the reviewer via the same global ledger writer group as PR #2275.
+# can_execute=false; DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true
+on:
+  workflow_run:
+    workflows: [wow-v17-simple-security-review]
+    types: [completed]
+  schedule:
+    - cron: '17,37,57 * * * *'
+  workflow_dispatch:
+    inputs:
+      check_run_id:
+        description: Optional exact QA content-ledger check-run ID
+        required: false
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  actions: read
+concurrency:
+  group: wow-independent-security-qa-ledger-writer
+  cancel-in-progress: false
+  queue: max
+jobs:
+  recover-orphaned-ledger:
+    name: Recover orphaned QA content-ledger reservations
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: wow-qa
+    steps:
+      - name: Checkout trusted protected main only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - name: Validate recovery code locally
+        run: python -m unittest discover -s .github/scripts/tests -p test_wow_qa_ledger_recovery.py -q
+      - name: Mint separate QA App checks-only token
+        id: qa
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.WOW_QA_APP_ID }}
+          private-key: ${{ secrets.WOW_QA_APP_PRIVATE_KEY }}
+          repositories: WOW-Dashboard
+          permission-checks: write
+      - name: Recover stale QA content-ledger reservations
+        env:
+          GH_READ_TOKEN: ${{ github.token }}
+          QA_APP_TOKEN: ${{ steps.qa.outputs.token }}
+          WOW_QA_RECOVERY_CHECK_RUN_ID: ${{ inputs.check_run_id }}
+        run: python .github/scripts/wow_qa_ledger_recovery.py
+      - name: Retain attributable recovery receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wow-qa-ledger-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: wow-qa-ledger-recovery.json
+          if-no-files-found: ignore
+          retention-days: 30
