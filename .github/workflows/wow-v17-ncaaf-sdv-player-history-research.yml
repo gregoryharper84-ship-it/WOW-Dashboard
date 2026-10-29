@@ -38,7 +38,7 @@ jobs:
       - name: Test parser and source boundaries
         run: |
           python -m pip install pytest==8.4.2
-          python -m pytest -q tests/test_ncaaf_sdv_player_history_acquisition.py
+          python -m pytest --noconftest -q tests/test_ncaaf_sdv_player_history_acquisition.py
 
   acquire:
     name: Archive a public historical player-game release (research only)
