@@ -27,10 +27,14 @@ NCAA_COLUMNS = ("season", "contest_id", "espn_game_id", "team_id",
                 "name", "category", "pass_yards", "completions",
                 "pass_attempts", "yds_rush", "rush_attempts", "rec",
                 "receiving_yards")
+# IMPORTANT: GitHub release Parquet stores ESPN source keys in camelCase,
+# including the literal slash-containing 'completions/passingAttempts'. The
+# public loader exposes a separate snake_case normalized presentation. We
+# read the raw Parquet file, not the loader output; never confuse the two.
 ESPN_COLUMNS = ("season", "game_id", "team_id", "athlete_id",
-                "athlete_name", "category", "passing_yards",
-                "completions_passing_attempts", "rushing_yards",
-                "rushing_attempts", "receptions", "receiving_yards")
+                "athlete_name", "category", "passingYards",
+                "completions/passingAttempts", "rushingYards",
+                "rushingAttempts", "receptions", "receivingYards")
 STAT_FIELDS = {
     "passing": ("PASSING_YARDS", "COMPLETIONS", "PASS_ATTEMPTS"),
     "rushing": ("RUSHING_YARDS", "RUSH_ATTEMPTS"),
@@ -104,15 +108,15 @@ def _stats(row: Mapping[str, Any], category: str, provider: str) -> dict[str, in
                 out[stat_type] = value
         return out
     if category == "passing":
-        c, a = _passing_pair(row.get("completions_passing_attempts"))
-        fields = {"PASSING_YARDS": _value(row.get("passing_yards")),
+        c, a = _passing_pair(row.get("completions/passingAttempts"))
+        fields = {"PASSING_YARDS": _value(row.get("passingYards")),
                   "COMPLETIONS": c, "PASS_ATTEMPTS": a}
     elif category == "rushing":
-        fields = {"RUSHING_YARDS": _value(row.get("rushing_yards"), signed=True),
-                  "RUSH_ATTEMPTS": _value(row.get("rushing_attempts"))}
+        fields = {"RUSHING_YARDS": _value(row.get("rushingYards"), signed=True),
+                  "RUSH_ATTEMPTS": _value(row.get("rushingAttempts"))}
     else:
         fields = {"RECEPTIONS": _value(row.get("receptions")),
-                  "RECEIVING_YARDS": _value(row.get("receiving_yards"))}
+                  "RECEIVING_YARDS": _value(row.get("receivingYards"))}
     return {key: value for key, value in fields.items() if value is not None}
 
 
