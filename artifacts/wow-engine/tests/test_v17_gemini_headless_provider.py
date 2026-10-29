@@ -662,3 +662,63 @@ class GeminiHeadlessProviderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeminiProviderWideAdmissionTests(unittest.TestCase):
+    """Two queued sport leases must not spend one provider-wide recovery grant."""
+
+    def test_first_auto_admission_then_second_lease_is_held(self):
+        import datetime as dt
+        now = dt.datetime(2026, 10, 29, 0, 0, tzinfo=dt.timezone.utc)
+        sha = "a" * 40
+        first = gemini.recheck_auto_worker_provider([], {}, sha, now=now)
+        self.assertEqual(first["status"], "ADMITTED")
+        completed = [{"headSha": sha, "status": "completed", "conclusion": "success",
+                      "updatedAt": "2026-10-28T23:59:00Z"}]
+        second = gemini.recheck_auto_worker_provider(completed, {}, sha, now=now)
+        self.assertEqual(second["status"], "HELD")
+        self.assertEqual(second["code"], "GEMINI_WORKER_PROVIDER_COOLDOWN_ACTIVE")
+        self.assertFalse(second["can_execute"])
+        later = gemini.recheck_auto_worker_provider(
+            completed, {}, sha, now=now + dt.timedelta(hours=25))
+        self.assertEqual(later["status"], "ADMITTED")
+
+    def test_failed_run_allows_only_reviewed_runtime_recovery(self):
+        import datetime as dt
+        sha1, sha2 = "a" * 40, "b" * 40
+        now = dt.datetime(2026, 10, 29, tzinfo=dt.timezone.utc)
+        failed = [{"headSha": sha1, "status": "completed", "conclusion": "failure",
+                   "updatedAt": "2026-10-28T23:50:00Z"}]
+        self.assertEqual(
+            gemini.recheck_auto_worker_provider(failed, {}, sha1, now=now)["status"],
+            "HELD",
+        )
+        comparison = {
+            "status": "ahead", "base_commit": {"sha": sha1},
+            "merge_base_commit": {"sha": sha1}, "total_commits": 1,
+            "files": [{"filename": ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+                       "status": "modified"}],
+        }
+        self.assertEqual(
+            gemini.recheck_auto_worker_provider(failed, comparison, sha2, now=now)["status"],
+            "RECOVERY_ADMITTED",
+        )
+        failed_again = [{**failed[0], "headSha": sha2}]
+        self.assertEqual(
+            gemini.recheck_auto_worker_provider(failed_again, comparison, sha2, now=now)["status"],
+            "HELD",
+        )
+
+    def test_unknown_provider_history_fails_closed(self):
+        import datetime as dt
+        now = dt.datetime(2026, 10, 29, tzinfo=dt.timezone.utc)
+        sha = "a" * 40
+        for history in (None, {}, [{"status": "in_progress"}],
+                        [{"status": "completed", "conclusion": "cancelled"}],
+                        [{"status": "completed", "conclusion": "success",
+                          "updatedAt": "invalid"}]):
+            with self.subTest(history=history):
+                self.assertEqual(
+                    gemini.recheck_auto_worker_provider(history, {}, sha, now=now)["status"],
+                    "HELD",
+                )
