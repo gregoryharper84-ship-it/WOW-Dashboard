@@ -208,7 +208,7 @@ def _visible_nba_table_rows(html: bytes, market: str) -> list[dict[str, Any]]:
             continue
         (player, match), player_name = players[0]
         matchup = re.search(
-            r"\\b([A-Z]{2,3})\\s*(@|vs\\.?)\\s*([A-Z]{2,3})\\b",
+            r"\b([A-Z]{2,3})\s*(@|vs\.?)\s*([A-Z]{2,3})\b",
             " ".join(cells[1]["text"]),
         )
         if not matchup:
@@ -218,7 +218,7 @@ def _visible_nba_table_rows(html: bytes, market: str) -> list[dict[str, Any]]:
             continue
         # A valid NBA board line is decimal; odds and ranking figures are
         # different fields. Never infer the line from L10/other cells.
-        line_match = re.search(r"(?<![A-Za-z0-9+-])(\\d{1,3}\\.5)\\b", line_cell)
+        line_match = re.search(r"(?<![A-Za-z0-9+-])(\d{1,3}\.5)\b", line_cell)
         if not line_match:
             continue
         line = float(line_match[1])
@@ -228,10 +228,10 @@ def _visible_nba_table_rows(html: bytes, market: str) -> list[dict[str, Any]]:
         if key in seen:
             raise PublicPageHold("PM_PUBLIC_DUPLICATE_PLAYER_EVENT_LINE")
         seen.add(key)
-        odds_match = re.search(r"\\bO\\s*([+-]\\d{3,5})\\s*U\\s*([+-]\\d{3,5})\\b",
+        odds_match = re.search(r"\bO\s*([+-]\d{3,5})\s*U\s*([+-]\d{3,5})\b",
                                line_cell, re.I)
         avg_cell = " ".join(cells[5]["text"])
-        average = re.fullmatch(r"\\d+(?:\\.\\d+)?", avg_cell)
+        average = re.fullmatch(r"\d+(?:\.\d+)?", avg_cell)
         output.append({
             "provider_player_id": player,
             "provider_match_id": match,
