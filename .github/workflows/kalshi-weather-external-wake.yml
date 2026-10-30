@@ -1,0 +1,50 @@
+name: kalshi-weather-external-wake
+
+# Read-only remote heartbeat, never an alternate weather writer or trading agent.
+# GitHub scheduled events can be delayed or dropped. A dedicated always-on
+# compute instance or paid cron job is the stronger long-term option.
+on:
+  schedule:
+    - cron: "2-59/5 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/kalshi-weather-external-wake.yml
+      - artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py
+      - artifacts/wow-engine/kalshi_weather_v2/test_external_wake_probe.py
+  pull_request:
+    paths:
+      - .github/workflows/kalshi-weather-external-wake.yml
+      - artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py
+      - artifacts/wow-engine/kalshi_weather_v2/test_external_wake_probe.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kalshi-weather-external-wake-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'live' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    name: Verify external wake probe offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run network-free wake probe checks
+        run: |
+          cd artifacts/wow-engine/kalshi_weather_v2
+          python3 -m unittest -v test_external_wake_probe.py
+
+  heartbeat:
+    if: github.event_name != 'pull_request'
+    name: Wake and validate isolated weather shadow service
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wake API, verify DB-read and shadow collector flags
+        run: python3 artifacts/wow-engine/kalshi_weather_v2/external_wake_probe.py
