@@ -1,5 +1,8 @@
 import importlib.util
+import json
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -500,6 +503,578 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn('PROTECTED_BASE_MOVED_BEFORE_PUBLICATION', source)
         self.assertIn('prior_semantic_reject(target["head_sha"], read_token)', source)
         self.assertIn('receipt["decision"] = "HOLD"', source)
+
+
+HEAD40 = "a" * 40
+BASE40 = "b" * 40
+PASS_VERDICT = {"source_review": "PASS", "security_review": "PASS",
+                "probability_integrity_review": "PASS", "findings": []}
+REJECT_VERDICT = {**PASS_VERDICT, "security_review": "FAIL", "findings": ["unsafe token scope"]}
+
+
+def claude_message(verdict):
+    return {"stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "name": "submit_review", "input": dict(verdict)}]}
+
+
+def gemini_message(verdict):
+    return {"candidates": [{"finishReason": "STOP",
+                            "content": {"parts": [{"text": json.dumps(verdict)}]}}]}
+
+
+class FakeReviewAPI:
+    """Real orchestration paths with mocked HTTP: GitHub reads, providers, check and comment writes."""
+
+    def __init__(self, *, author="independent-engineer", checks=None, main_sha=None,
+                 anthropic=None, gemini=None, pr_error=None, checks_error=None,
+                 check_post_error=None):
+        self.pr = {"state": "open", "changed_files": 1, "title": "test",
+                   "user": {"login": author},
+                   "head": {"sha": HEAD40, "repo": {"full_name": m.REPO}},
+                   "base": {"sha": BASE40, "ref": "main", "repo": {"full_name": m.REPO}}}
+        self.file = {"filename": "review.py", "status": "modified", "sha": "d" * 40,
+                     "additions": 1, "deletions": 1,
+                     "patch": "@@ -1 +1 @@\n-old\n+new"}
+        self.checks = checks or {"total_count": 0, "check_runs": []}
+        self.main_sha = main_sha or BASE40
+        self.anthropic, self.gemini = anthropic, gemini
+        self.pr_error, self.checks_error = pr_error, checks_error
+        self.check_post_error = check_post_error
+        self.provider_calls = []
+        self.check_posts = []
+        self.comments = []
+        self.comment_posts = 0
+        self.comment_patches = 0
+
+    def __call__(self, url, *, token=None, data=None, headers=None, method=None):
+        verb = method or ("POST" if data is not None else "GET")
+        if "api.anthropic.com" in url:
+            self.provider_calls.append("anthropic-claude-api")
+            return self._provider(self.anthropic)
+        if "generativelanguage.googleapis.com" in url:
+            self.provider_calls.append("gemini-generative-api")
+            return self._provider(self.gemini)
+        if url.endswith("/check-runs") and data is not None:
+            if self.check_post_error is not None:
+                raise self.check_post_error
+            self.check_posts.append(data)
+            return {"id": len(self.check_posts)}
+        if "/issues/comments/" in url:
+            self.comment_patches += 1
+            self.comments[0] = data["body"]
+            return {"id": 900}
+        if "/issues/" in url and "/comments" in url:
+            if verb == "POST":
+                self.comment_posts += 1
+                self.comments.insert(0, data["body"])
+                return {"id": 900}
+            return [{"id": 900, "body": body} for body in self.comments]
+        if "/check-runs" in url:
+            if self.checks_error is not None:
+                raise self.checks_error
+            return self.checks
+        if "/files?" in url:
+            return [self.file]
+        if "/git/ref/heads/main" in url:
+            return {"object": {"sha": self.main_sha}}
+        if self.pr_error is not None:
+            raise self.pr_error
+        return self.pr
+
+    @staticmethod
+    def _provider(outcome):
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if outcome is None:
+            raise AssertionError("provider route unexpectedly invoked")
+        return outcome
+
+
+class TempWorkspace(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._cwd = os.getcwd()
+        os.chdir(self._tmp.name)
+        self.addCleanup(os.chdir, self._cwd)
+        self.event = Path(self._tmp.name) / "event.json"
+        self.event.write_text(json.dumps({"pull_request": {"number": 2291,
+                                                            "head": {"sha": HEAD40}}}))
+
+
+class ReviewerRecoveryOrchestrationTests(TempWorkspace):
+    """End-to-end reviewer orchestration with mocked HTTP only."""
+
+    def review(self, api, *, env=None):
+        values = {
+            "GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "pull_request_target",
+            "GITHUB_EVENT_PATH": str(self.event),
+            "GITHUB_RUN_ID": "4242", "GITHUB_RUN_ATTEMPT": "2",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "GH_READ_TOKEN": "read-token", "QA_APP_TOKEN": "qa-app-token",
+            "WOW_QA_REVIEW_ANTHROPIC_API_KEY": "anthropic-key",
+            "WOW_QA_REVIEW_GEMINI_API_KEY": "gemini-key",
+            "WOW_QA_CLAUDE_MODEL": "", "WOW_QA_GEMINI_MODEL": "",
+        }
+        values.update(env or {})
+        with patch.dict(m.os.environ, values, clear=True), \
+                patch.object(m, "request_json", side_effect=api):
+            code = m.main()
+        return code, json.loads(Path(m.ARTIFACT_NAME).read_text())
+
+    def test_claude_pass_binds_exact_target_without_escalation(self):
+        api = FakeReviewAPI(anthropic=claude_message(PASS_VERDICT))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt["decision"], "PASS")
+        self.assertEqual(receipt["reviewer_identity"], "anthropic-claude-api")
+        self.assertEqual((receipt["head_sha"], receipt["base_sha"]), (HEAD40, BASE40))
+        self.assertEqual(api.provider_calls, ["anthropic-claude-api"])
+        self.assertEqual(len(api.check_posts), 1)
+        self.assertEqual(api.check_posts[0]["conclusion"], "success")
+        self.assertEqual(api.check_posts[0]["head_sha"], HEAD40)
+        self.assertEqual(receipt["check_publication"]["status"], "PUBLISHED")
+        self.assertFalse(receipt["escalation"]["required"])
+
+    def test_typed_unavailable_records_both_providers_and_accepts_gemini_pass(self):
+        api = FakeReviewAPI(
+            anthropic=m.ProviderUnavailable("PROVIDER_HTTP_529",
+                                           endpoint="ANTHROPIC_API:POST:MESSAGES", http_status=529),
+            gemini=gemini_message(PASS_VERDICT))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 0)
+        self.assertEqual(api.provider_calls, list(m.PROVIDERS))
+        self.assertEqual([item["result"] for item in receipt["attempts"]],
+                         ["PROVIDER_HTTP_529", "PASS"])
+        self.assertTrue(all(item["network_attempt"] for item in receipt["attempts"]))
+        self.assertEqual(receipt["reviewer_identity"], "gemini-generative-api")
+        self.assertFalse(receipt["escalation"]["required"])
+
+    def test_both_providers_unavailable_escalates_with_full_ledger(self):
+        api = FakeReviewAPI(
+            anthropic=m.ProviderUnavailable("PROVIDER_HTTP_503",
+                                           endpoint="ANTHROPIC_API:POST:MESSAGES", http_status=503),
+            gemini=m.ProviderUnavailable("PROVIDER_HTTP_503",
+                                        endpoint="GEMINI_API:POST:GENERATE_CONTENT", http_status=503))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reason"], "OWNER_FALLBACK_REQUIRES_ENGINEERING_APP_SOURCE")
+        self.assertEqual(receipt["owner_fallback"]["stage"], "owner.fallback")
+        self.assertEqual(len(receipt["attempts"]), 2)
+        self.assertEqual(api.check_posts[0]["conclusion"], "failure")
+        self.assertTrue(receipt["escalation"]["required"])
+        self.assertEqual(receipt["escalation"]["failure_class"], "OWNER_FALLBACK_BLOCKED")
+        self.assertFalse(receipt["escalation"]["owner_eligible"])
+        self.assertNotIn("owner_review_instruction", receipt)
+
+    def test_missing_credentials_never_claim_a_network_attempt(self):
+        api = FakeReviewAPI()
+        code, receipt = self.review(
+            api, env={"WOW_QA_REVIEW_ANTHROPIC_API_KEY": "", "WOW_QA_REVIEW_GEMINI_API_KEY": ""})
+        self.assertEqual(code, 1)
+        self.assertEqual(api.provider_calls, [])
+        self.assertEqual([item["result"] for item in receipt["attempts"]],
+                         ["CREDENTIAL_UNAVAILABLE", "CREDENTIAL_UNAVAILABLE"])
+        self.assertFalse(any(item["network_attempt"] for item in receipt["attempts"]))
+        self.assertTrue(receipt["escalation"]["required"])
+
+    def test_ambiguous_claude_404_escalates_and_gemini_is_not_attempted(self):
+        api = FakeReviewAPI(anthropic=m.Hold("HTTP_404", endpoint="ANTHROPIC_API:POST:MESSAGES",
+                                             http_status=404),
+                            gemini=gemini_message(PASS_VERDICT))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(api.provider_calls, ["anthropic-claude-api"])
+        self.assertEqual(receipt["attempts"][0]["result"], "HTTP_404")
+        self.assertEqual(receipt["attempts"][0]["http_status"], 404)
+        self.assertEqual(receipt["attempts"][0]["endpoint"], "ANTHROPIC_API:POST:MESSAGES")
+        self.assertEqual(receipt["attempts"][1]["provider"], "gemini-generative-api")
+        self.assertEqual(receipt["attempts"][1]["result"], "NOT_ATTEMPTED")
+        self.assertFalse(receipt["attempts"][1]["network_attempt"])
+        self.assertEqual((receipt["stage"], receipt["reason"]), ("anthropic.messages", "HTTP_404"))
+        self.assertEqual(receipt["escalation"]["failure_class"], "REVIEW_INFRASTRUCTURE_PROVIDER")
+        self.assertEqual(api.check_posts[0]["conclusion"], "failure")
+
+    def test_gemini_404_after_claude_unavailable_retains_both_outcomes(self):
+        api = FakeReviewAPI(
+            anthropic=m.ProviderUnavailable("PROVIDER_HTTP_529",
+                                           endpoint="ANTHROPIC_API:POST:MESSAGES", http_status=529),
+            gemini=m.Hold("HTTP_404", endpoint="GEMINI_API:POST:GENERATE_CONTENT", http_status=404))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(api.provider_calls, list(m.PROVIDERS))
+        self.assertEqual([item["result"] for item in receipt["attempts"]],
+                         ["PROVIDER_HTTP_529", "HTTP_404"])
+        self.assertEqual(receipt["stage"], "gemini.generate_content")
+        self.assertTrue(receipt["escalation"]["required"])
+        self.assertEqual(api.check_posts[0]["conclusion"], "failure")
+
+    def test_github_404_on_capture_is_attributed_and_skips_providers(self):
+        api = FakeReviewAPI(pr_error=m.Hold("HTTP_404", endpoint="GITHUB_API:GET:PR_METADATA",
+                                           http_status=404),
+                            anthropic=claude_message(PASS_VERDICT))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(api.provider_calls, [])
+        self.assertEqual((receipt["stage"], receipt["reason"]), ("github.pr", "HTTP_404"))
+        self.assertEqual(receipt["escalation"]["failure_class"], "REVIEW_INFRASTRUCTURE_GITHUB")
+        self.assertEqual(receipt["check_publication"],
+                         {"status": "NOT_ATTEMPTED", "reason": "TARGET_UNVALIDATED"})
+        self.assertEqual(api.check_posts, [])
+        self.assertIsNone(receipt["head_sha"])
+        self.assertTrue(receipt["escalation"]["required"])
+
+    def test_github_404_on_prior_check_read_is_attributed_separately(self):
+        api = FakeReviewAPI(
+            checks_error=m.Hold("HTTP_404", endpoint="GITHUB_API:GET:CHECK_RUNS_READ", http_status=404),
+            anthropic=claude_message(PASS_VERDICT))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["stage"], "github.prior_checks")
+        self.assertEqual(api.provider_calls, [])
+        self.assertEqual(receipt["head_sha"], HEAD40)
+        self.assertEqual(receipt["escalation"]["failure_class"], "REVIEW_INFRASTRUCTURE_GITHUB")
+        self.assertEqual(api.check_posts[0]["conclusion"], "failure")
+
+    def test_semantic_reject_is_terminal_and_not_escalated(self):
+        api = FakeReviewAPI(anthropic=claude_message(REJECT_VERDICT),
+                            gemini=gemini_message(PASS_VERDICT))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["decision"], "REJECT")
+        self.assertEqual(api.provider_calls, ["anthropic-claude-api"])
+        self.assertFalse(receipt["escalation"]["required"])
+        self.assertEqual(receipt["escalation"]["failure_class"], "SEMANTIC_REJECT")
+        self.assertEqual(api.check_posts[0]["conclusion"], "failure")
+
+    def test_prior_reject_is_sticky_and_blocks_providers(self):
+        checks = {"total_count": 1, "check_runs": [
+            {"name": m.CHECK_NAME, "conclusion": "failure", "app": {"id": m.QA_APP_ID},
+             "output": {"title": "REJECT — independent semantic source review"}}]}
+        api = FakeReviewAPI(checks=checks, anthropic=claude_message(PASS_VERDICT))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["reason"], "PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        self.assertEqual(api.provider_calls, [])
+        self.assertFalse(receipt["escalation"]["required"])
+        self.assertNotEqual(api.check_posts[0]["conclusion"], "success")
+
+    def test_invalid_verdict_schema_is_terminal_hold_without_fallback(self):
+        api = FakeReviewAPI(
+            anthropic={"stop_reason": "tool_use",
+                       "content": [{"type": "tool_use", "name": "submit_review",
+                                    "input": {"source_review": "PASS"}}]},
+            gemini=gemini_message(PASS_VERDICT))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["reason"], "SEMANTIC_SCHEMA_INVALID")
+        self.assertEqual(api.provider_calls, ["anthropic-claude-api"])
+        self.assertEqual(receipt["attempts"][0]["result"], "SEMANTIC_SCHEMA_INVALID")
+        self.assertEqual(receipt["attempts"][1]["result"], "NOT_ATTEMPTED")
+        self.assertFalse(receipt["escalation"]["required"])
+        self.assertNotEqual(api.check_posts[0]["conclusion"], "success")
+
+    def test_owner_authored_app_copy_gets_attention_but_no_pass(self):
+        api = FakeReviewAPI(
+            author="wow-engineering[bot]",
+            anthropic=m.ProviderUnavailable("PROVIDER_HTTP_503",
+                                           endpoint="ANTHROPIC_API:POST:MESSAGES", http_status=503),
+            gemini=m.ProviderUnavailable("PROVIDER_HTTP_503",
+                                        endpoint="GEMINI_API:POST:GENERATE_CONTENT", http_status=503))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reason"], "OWNER_SOURCE_LINEAGE_UNVERIFIED")
+        self.assertNotIn("owner_review_instruction", receipt)
+        self.assertFalse(receipt["escalation"]["owner_eligible"])
+        self.assertEqual(receipt["escalation"]["failure_class"], "OWNER_FALLBACK_BLOCKED")
+        self.assertNotEqual(api.check_posts[0]["conclusion"], "success")
+
+    def test_eligible_genuine_owner_approval_satisfies_only_the_owner_route(self):
+        api = FakeReviewAPI(
+            author="wow-engineering[bot]",
+            anthropic=m.ProviderUnavailable("PROVIDER_HTTP_503",
+                                           endpoint="ANTHROPIC_API:POST:MESSAGES", http_status=503),
+            gemini=m.ProviderUnavailable("PROVIDER_HTTP_503",
+                                        endpoint="GEMINI_API:POST:GENERATE_CONTENT", http_status=503))
+        evidence = {"review_id": 77, "review_commit": HEAD40,
+                    "source_author": "independent-engineer"}
+        with patch.object(m, "owner_fallback_review", return_value=evidence):
+            code, receipt = self.review(api)
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt["decision"], "PASS")
+        self.assertEqual(receipt["reviewer_identity"], m.OWNER_REVIEWER)
+        self.assertEqual(receipt["owner_review_provenance"], evidence)
+        self.assertEqual(api.check_posts[0]["conclusion"], "success")
+        self.assertEqual([item["result"] for item in receipt["attempts"]],
+                         ["PROVIDER_HTTP_503", "PROVIDER_HTTP_503"])
+        self.assertFalse(receipt["escalation"]["required"])
+
+    def test_stale_base_move_prevents_stale_pass(self):
+        api = FakeReviewAPI(anthropic=claude_message(PASS_VERDICT), main_sha="c" * 40)
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["previous_decision"], "PASS")
+        self.assertEqual(receipt["reason"], "PROTECTED_BASE_MOVED_BEFORE_PUBLICATION")
+        self.assertEqual(api.check_posts[0]["conclusion"], "failure")
+
+    def test_check_publication_failure_is_never_a_silent_pass(self):
+        api = FakeReviewAPI(anthropic=claude_message(PASS_VERDICT),
+                            check_post_error=m.Hold("HTTP_403",
+                                                    endpoint="GITHUB_API:POST:CHECK_RUN_CREATE",
+                                                    http_status=403))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["decision"], "PASS")
+        self.assertEqual(receipt["reason"], "CHECK_PUBLICATION_FAILED")
+        self.assertEqual(receipt["check_publication"]["status"], "FAILED")
+        self.assertEqual(receipt["escalation"]["failure_class"], "CHECK_PUBLICATION_FAILURE")
+
+    def test_early_protected_main_hold_writes_artifact_without_check(self):
+        api = FakeReviewAPI(anthropic=claude_message(PASS_VERDICT))
+        code, receipt = self.review(api, env={"GITHUB_REF": "refs/heads/feature"})
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["reason"], "PROTECTED_MAIN_REQUIRED")
+        self.assertEqual(receipt["check_publication"]["status"], "NOT_ATTEMPTED")
+        self.assertEqual(api.check_posts, [])
+        self.assertFalse(receipt["escalation"]["required"])
+
+    def test_unexpected_failure_is_sanitized_and_never_pass(self):
+        api = FakeReviewAPI(pr_error=RuntimeError("SECRET_LEAK_TOKEN"))
+        code, receipt = self.review(api)
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reason"], "REVIEWER_UNEXPECTED_FAILURE")
+        self.assertEqual(receipt["exception_type"], "RuntimeError")
+        self.assertNotIn("SECRET_LEAK_TOKEN", json.dumps(receipt))
+        self.assertTrue(receipt["escalation"]["required"])
+        self.assertEqual(receipt["escalation"]["failure_class"], "UNKNOWN_REVIEWER_FAILURE")
+
+
+def attention_receipt(**overrides):
+    receipt = m.receipt_base()
+    receipt.update({"pr_number": 2291, "head_sha": HEAD40, "base_sha": BASE40,
+                    "diff_sha256": "c" * 64, "decision": "HOLD",
+                    "stage": "anthropic.messages", "reason": "HTTP_404",
+                    "attempts": [
+                        {"provider": "anthropic-claude-api", "attempt_index": 0,
+                         "network_attempt": True, "result": "HTTP_404",
+                         "endpoint": "ANTHROPIC_API:POST:MESSAGES", "http_status": 404},
+                        {"provider": "gemini-generative-api", "attempt_index": 1,
+                         "network_attempt": False, "result": "NOT_ATTEMPTED"}],
+                    "check_publication": {"status": "PUBLISHED"}})
+    receipt.update(overrides)
+    receipt["escalation"] = m.escalation_state(receipt, {"author": "independent-engineer"})
+    return receipt
+
+
+class OwnerAttentionTests(unittest.TestCase):
+    receipt = staticmethod(attention_receipt)
+
+    def test_attention_publishes_once_then_updates_without_repeating_mention(self):
+        receipt = self.receipt()
+        api = FakeReviewAPI()
+        with patch.object(m, "request_json", side_effect=api):
+            first = m.publish_attention(receipt, "notify", notify_url="run", sleeper=lambda _: None)
+            second = m.publish_attention(dict(receipt), "notify", notify_url="run",
+                                         sleeper=lambda _: None)
+        self.assertEqual((first, second), ("PUBLISHED", "PUBLISHED"))
+        self.assertEqual(api.comment_posts, 1)
+        self.assertEqual(api.comment_patches, 1)
+        self.assertEqual(len(api.comments), 1)
+        body = api.comments[0]
+        self.assertIn(f"<!-- {m.ATTENTION_MARKER} key={receipt['escalation']['dedupe_key']} -->", body)
+        self.assertIn("NOT_ATTEMPTED", body)
+        self.assertIn(HEAD40, body)
+        self.assertIn(BASE40, body)
+        self.assertIn("c" * 64, body)
+        self.assertIn("incident #2136", body)
+        self.assertFalse(body.startswith("@"), "an update must not re-mention the owner")
+
+    def test_new_head_or_failure_class_changes_dedupe_key(self):
+        base = self.receipt()
+        moved = self.receipt(head_sha="e" * 40)
+        self.assertNotEqual(base["escalation"]["dedupe_key"], moved["escalation"]["dedupe_key"])
+        move_base = self.receipt(base_sha="f" * 40)
+        self.assertNotEqual(base["escalation"]["dedupe_key"],
+                            move_base["escalation"]["dedupe_key"])
+        other_class = self.receipt(reason="PROVIDER_HTTP_429", stage="reviewer.provider")
+        self.assertEqual(other_class["escalation"]["failure_class"], "PROVIDER_ROUTE_EXHAUSTED")
+        self.assertNotEqual(base["escalation"]["dedupe_key"],
+                            other_class["escalation"]["dedupe_key"])
+
+    def test_ineligible_owner_source_never_advertises_fallback_pass(self):
+        receipt = self.receipt(reason="OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED",
+                               stage="owner.fallback")
+        receipt["escalation"] = m.escalation_state(receipt, {"author": "wow-engineering[bot]"})
+        body = m.attention_body(receipt, marker="<!-- marker -->", mention=True,
+                                run_url_value="run-url")
+        self.assertNotIn("WOW_SECURITY_FALLBACK_PASS PR=", body)
+        self.assertIn("Do **not** submit", body)
+        self.assertIn("not eligible", body)
+        self.assertIn("OWNER_FALLBACK_BLOCKED", body)
+
+    def test_eligible_owner_route_advertises_the_exact_binding_only(self):
+        receipt = self.receipt(reason="OWNER_REVIEW_REQUIRED", stage="owner.fallback")
+        receipt["escalation"] = m.escalation_state(receipt, {"author": "wow-engineering[bot]"})
+        instruction = m.owner_review_instruction(
+            {"pr": 2291, "head_sha": HEAD40, "base_sha": BASE40, "diff_sha256": "c" * 64})
+        receipt["owner_review_instruction"] = instruction
+        body = m.attention_body(receipt, marker="<!-- marker -->", mention=True,
+                                run_url_value="run-url")
+        self.assertIn("eligible", body)
+        self.assertIn(instruction, body)
+        self.assertNotIn("gh workflow run", body)
+
+    def test_attention_publication_failure_is_bounded_and_preserves_cause(self):
+        receipt = self.receipt()
+        sleeps = []
+
+        def failing(url, **kwargs):
+            raise m.Hold("HTTP_403", endpoint="GITHUB_API:GET:ISSUE_COMMENTS", http_status=403)
+
+        with patch.object(m, "request_json", side_effect=failing):
+            status = m.publish_attention(receipt, "notify", notify_url="run",
+                                         sleeper=sleeps.append)
+        self.assertEqual(status, "FAILED")
+        self.assertEqual(len(sleeps), m.ATTENTION_ATTEMPTS - 1)
+        self.assertEqual(receipt["reason"], "HTTP_404")
+        self.assertEqual(receipt["check_publication"]["status"], "PUBLISHED")
+
+    def test_notification_token_is_required_and_typed(self):
+        with self.assertRaises(m.Hold) as ctx:
+            m.publish_attention(self.receipt(), "", notify_url="run")
+        self.assertEqual(str(ctx.exception), "NOTIFICATION_TOKEN_MISSING")
+
+    def test_published_pass_requires_no_attention(self):
+        receipt = self.receipt()
+        receipt["decision"] = "PASS"
+        receipt["check_publication"] = {"status": "PUBLISHED"}
+        receipt["escalation"] = m.escalation_state(receipt, {"author": "independent-engineer"})
+        with patch.object(m, "request_json") as api:
+            self.assertEqual(m.publish_attention(receipt, "notify", notify_url="run"),
+                             "NOT_REQUIRED")
+            api.assert_not_called()
+
+    def test_arbitrary_endpoint_labels_are_dropped(self):
+        hold = m.Hold("HTTP_404", endpoint="https://attacker.example/steal?token=SECRET")
+        self.assertIsNone(hold.endpoint)
+        self.assertNotIn("attacker", str(hold))
+        record = m.attempt_record("anthropic-claude-api", 0, network_attempt=True,
+                                  reason="X" * 500,
+                                  endpoint="https://attacker.example/steal?token=SECRET")
+        self.assertEqual(record["result"], "X" * m.MAX_REASON_LEN)
+        self.assertNotIn("endpoint", record)
+        self.assertNotIn("attacker", json.dumps(record))
+
+    def test_stage_labels_are_fixed_allowlisted_values(self):
+        for code, endpoint, stage in (
+                ("HTTP_404", "GITHUB_API:GET:PR_METADATA", "github.pr"),
+                ("HTTP_404", "GITHUB_API:GET:PR_FILES", "github.diff_inventory"),
+                ("GITHUB_TRANSPORT", None, "reviewer.internal"),
+                ("HTTP_404", "ANTHROPIC_API:POST:MESSAGES", "anthropic.messages"),
+                ("HTTP_404", "GEMINI_API:POST:GENERATE_CONTENT", "gemini.generate_content"),
+                ("PRIOR_REVIEW_CHECKS_INVALID", None, "github.prior_checks"),
+                ("OWNER_REVIEW_REQUIRED", None, "owner.fallback"),
+                ("QA_APP_TOKEN_MISSING", None, "github.publish_check")):
+            with self.subTest(code=code, endpoint=endpoint):
+                self.assertEqual(m.stage_for(code, endpoint), stage)
+
+    def test_non_infrastructure_holds_do_not_invent_escalation(self):
+        for code in ("SEMANTIC_SCHEMA_INVALID", "PR_TARGET_STALE_OR_UNTRUSTED",
+                     "REVIEW_ENDPOINT_UNTRUSTED"):
+            receipt = self.receipt(reason=code, stage="reviewer.semantic")
+            receipt["escalation"] = m.escalation_state(receipt, {"author": "independent-engineer"})
+            with self.subTest(code=code):
+                self.assertFalse(receipt["escalation"]["required"])
+
+
+class ReviewerWorkflowContractTests(unittest.TestCase):
+    WORKFLOW = (Path(__file__).resolve().parents[2] / "workflows"
+                / "wow-v17-simple-security-review.yml")
+
+    def test_attention_publication_has_its_own_scoped_job(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("owner-attention:", text)
+        self.assertIn("needs: independent-security", text)
+        self.assertIn("pull-requests: write", text)
+        attention_job = text.split("owner-attention:", 1)[1]
+        for secret in ("WOW_QA_REVIEW_ANTHROPIC_API_KEY", "WOW_QA_REVIEW_GEMINI_API_KEY",
+                       "WOW_QA_APP_PRIVATE_KEY", "permission-checks:"):
+            self.assertNotIn(secret, attention_job)
+        review_job = text.split("owner-attention:", 1)[0]
+        self.assertIn("permission-checks: write", review_job)
+        self.assertIn("persist-credentials: false", review_job)
+        self.assertIn("ref: main", review_job)
+        self.assertIn("environment: wow-qa", review_job)
+
+    def test_workflow_level_failure_paths_and_serialization(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("cancel-in-progress: false", text)
+        self.assertIn("queue: max", text)
+        self.assertIn("id: attention", text)
+        self.assertIn("--emit-payload", text)
+        self.assertIn("--publish-attention", text)
+        self.assertEqual(text.count("if: always()"), 3)
+        self.assertNotIn("github.event.pull_request.head.ref", text)
+        self.assertIn("outputs:", text)
+        self.assertIn("payload: ${{ steps.attention.outputs.payload }}", text)
+
+
+class WorkflowFailurePathTests(TempWorkspace):
+    def env(self, **overrides):
+        values = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+                  "GITHUB_EVENT_PATH": str(self.event), "GITHUB_EVENT_NAME": "pull_request_target",
+                  "GITHUB_RUN_ID": "4242", "GITHUB_RUN_ATTEMPT": "1",
+                  "GITHUB_SERVER_URL": "https://github.com",
+                  "GITHUB_OUTPUT": str(Path("gh_output")), "ATTENTION_PAYLOAD": "",
+                  "GH_NOTIFY_TOKEN": "notify-token"}
+        values.update(overrides)
+        return values
+
+    def test_missing_receipt_emits_workflow_failure_attention(self):
+        api = FakeReviewAPI()
+        Path("gh_output").touch()
+        with patch.dict(m.os.environ, self.env(), clear=True):
+            self.assertEqual(m.run(["--emit-payload"]), 0)
+            payload_line = Path("gh_output").read_text().strip().splitlines()[-1]
+            self.assertTrue(payload_line.startswith("payload="))
+            payload = json.loads(payload_line[len("payload="):])
+            self.assertEqual(payload["reason"], "WORKFLOW_STEP_FAILED")
+            self.assertEqual(payload["pr_number"], 2291)
+            self.assertTrue(payload["escalation"]["required"])
+            with patch.object(m, "request_json", side_effect=api):
+                with patch.dict(m.os.environ,
+                                self.env(ATTENTION_PAYLOAD=payload_line[len("payload="):]),
+                                clear=True):
+                    self.assertEqual(m.run(["--publish-attention"]), 0)
+        self.assertEqual(api.comment_posts, 1)
+        self.assertIn("WORKFLOW_STEP_FAILED", api.comments[0])
+        self.assertIn("not eligible", api.comments[0])
+
+    def test_publish_attention_mode_fails_observably_without_token(self):
+        receipt = attention_receipt()
+        payload = json.dumps(receipt)
+        with patch.object(m, "request_json") as api:
+            with patch.dict(m.os.environ, self.env(ATTENTION_PAYLOAD=payload, GH_NOTIFY_TOKEN=""),
+                            clear=True):
+                self.assertEqual(m.run(["--publish-attention"]), 1)
+            api.assert_not_called()
+
+    def test_publish_attention_mode_is_idempotent_for_a_passing_receipt(self):
+        receipt = attention_receipt()
+        receipt["decision"] = "PASS"
+        receipt["check_publication"] = {"status": "PUBLISHED"}
+        receipt["escalation"] = m.escalation_state(receipt, {"author": "independent-engineer"})
+        with patch.object(m, "request_json") as api:
+            with patch.dict(m.os.environ, self.env(ATTENTION_PAYLOAD=json.dumps(receipt)),
+                            clear=True):
+                self.assertEqual(m.run(["--publish-attention"]), 0)
+            api.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
