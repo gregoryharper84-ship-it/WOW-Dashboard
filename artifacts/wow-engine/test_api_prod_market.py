@@ -525,7 +525,7 @@ def test_forged_money_resolved_is_not_persisted_or_approved(monkeypatch):
     assert recorded["money_lane_status"] == "PAYOUT_UNRESOLVED"
     assert body["objective_lanes"]["MONEY"]["status"] == "HOLD"
     assert body["objective_lanes"]["MONEY"]["money_lane_status"] == "PAYOUT_UNRESOLVED"
-    assert body["objective_lanes"]["MONEY"]["observed_money_lane_status"] == "RESOLVED"
+    assert "observed_money_lane_status" not in body["objective_lanes"]["MONEY"]
     assert body["objective_lanes"]["MODEL"]["status"] == "PASS"
     assert body["probability_publishable"] is True
     assert body["probability_qualification"]["final_approved_allowed"] is False
@@ -540,7 +540,7 @@ def test_unverified_resolved_cannot_pass_even_with_settlement_pass():
     )
     assert money["status"] == "HOLD"
     assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
-    assert money["observed_money_lane_status"] == "RESOLVED"
+    assert "observed_money_lane_status" not in money
     assert money["blocks_model_probability"] is False
     assert money["can_execute"] is False
 
@@ -562,7 +562,7 @@ def test_untrusted_money_observation_is_bounded_and_never_reflected():
     )
     assert money["status"] == "HOLD"
     assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
-    assert money["observed_money_lane_status"] == "UNRECOGNIZED"
+    assert "observed_money_lane_status" not in money
     assert money["money_authority"] == "UNVERIFIED"
     assert money["money_transition"] == "SERVER_RECEIPT_REQUIRED"
     assert attack not in str(money)
@@ -590,5 +590,16 @@ def test_non_string_money_claim_never_authorizes_money():
         row = SimpleNamespace(money_lane_status=raw)
         money = api_prod_market._money_lane(row)
         assert money["status"] == "HOLD"
-        assert money["observed_money_lane_status"] == "UNRECOGNIZED"
+        assert "observed_money_lane_status" not in money
         assert money["can_execute"] is False
+
+
+def test_unauthenticated_score_prop_cannot_emit_money_override_audit(caplog):
+    """FastAPI bearer dependency must reject before endpoint audit runs."""
+    caplog.clear()
+    payload = _request_payload()
+    payload["money_lane_status"] = "RESOLVED"
+    with caplog.at_level("WARNING", logger="wow.v17.prop_score.money"):
+        response = client.post("/score-prop", json=payload)
+    assert response.status_code in (401, 403)
+    assert not any(r.name == "wow.v17.prop_score.money" for r in caplog.records)
