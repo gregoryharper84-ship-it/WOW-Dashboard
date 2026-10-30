@@ -30,6 +30,8 @@ from agent_runtime.state_machine import RUN_TERMINAL_STATES
 from ml_research_readiness import get_ml_research_readiness
 
 GOVERNANCE_VERSION = "WOW-AGENT-RUNTIME-V1-PHASE1"
+MAX_RUN_CANDIDATES = 32
+MAX_IDEMPOTENCY_KEY_LENGTH = 128
 
 _REQUEST_HASH_FIELDS = (
     "run_type", "as_of", "user_timezone", "lanes", "sports",
@@ -129,10 +131,22 @@ def create_run(
             status_code=422,
             detail={"code": "EXECUTION_PROHIBITED", "can_execute": False},
         )
+    # Bound authenticated batch amplification before service-role DB access.
+    if len(req.candidate_inputs) > MAX_RUN_CANDIDATES:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RUN_BATCH_LIMIT_EXCEEDED", "max_candidates": MAX_RUN_CANDIDATES, "can_execute": False},
+        )
     if not idempotency_key or not idempotency_key.strip():
         raise HTTPException(
             status_code=400,
             detail={"code": "IDEMPOTENCY_KEY_REQUIRED", "message": "Idempotency-Key header is required."},
+        )
+
+    if len(idempotency_key) > MAX_IDEMPOTENCY_KEY_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "IDEMPOTENCY_KEY_TOO_LONG", "max_length": MAX_IDEMPOTENCY_KEY_LENGTH, "can_execute": False},
         )
 
     request_hash = idempotency.compute_request_hash(
@@ -183,7 +197,7 @@ def create_run(
     }
 
 
-@app.get("/wow/runs/{run_id}")
+@app.get("/wow/runs/{run_id}", dependencies=[Depends(_require_action_api_key)])
 def get_run_state(run_id: str) -> dict[str, Any]:
     client = get_client()
     run_row = repository.get_run(client, run_id)
@@ -198,7 +212,7 @@ def get_run_state(run_id: str) -> dict[str, Any]:
     }
 
 
-@app.get("/wow/runs/{run_id}/manifest")
+@app.get("/wow/runs/{run_id}/manifest", dependencies=[Depends(_require_action_api_key)])
 def get_manifest(run_id: str) -> dict[str, Any]:
     client = get_client()
     run_row = repository.get_run(client, run_id)
@@ -247,7 +261,7 @@ def get_manifest(run_id: str) -> dict[str, Any]:
     }
 
 
-@app.get("/wow/runs/{run_id}/audit")
+@app.get("/wow/runs/{run_id}/audit", dependencies=[Depends(_require_action_api_key)])
 def get_audit(run_id: str) -> dict[str, Any]:
     client = get_client()
     result = (
