@@ -482,25 +482,3 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
-
-## Flint fixed-input synthetic canary (experimental, non-production)
-
-This section describes only the disabled-by-default source-only canary `engineering_openrouter_flint_probe.py`; the external-issue worker, downstream handoff, and draft hosted workflow are **not** part of this scoped source. Every status is research-only with `can_execute=false` and `terminal_authority=V17_TERMINAL_REDUCER`; none can publish a probability, approve security, route engineering work, create an order, or certify production.
-
-| Code / status | Owner / stage | Condition and recovery class / next action |
-| --- | --- | --- |
-| `DISABLED` | Flint canary / opt-in | Network is disabled (expected safe default); no action required |
-| `KEY_MISSING` | Flint canary / preflight | Opt-in without an OpenRouter credential; `AUTH_OR_CONFIGURATION`; provision only through separately authorized secure hosted runner |
-| `READY_FOR_ONE_SYNTHETIC_REQUEST` | Flint canary / preflight | Nonempty credential and explicit opt-in, no request made; not provider capability evidence |
-| `SMOKE_PASSED` | Flint canary / synthetic read | One bounded nonsecret fixed prompt completed; does not establish engineering agent readiness |
-| `AUTH_FAILED` | Flint canary / provider | HTTP 401/403; `AUTH_OR_CONFIGURATION`; correct credential/permissions without exposing provider body |
-| `PAYMENT_REQUIRED` | Flint canary / provider | HTTP 402; `AUTH_OR_CONFIGURATION`; no paid-model fallback |
-| `RATE_LIMITED` | Flint canary / provider | HTTP 429; `TRANSIENT`; no automatic retry or paid fallback |
-| `UPSTREAM_FAILURE` | Flint canary / provider | HTTP 5xx; `TRANSIENT`; bounded provider-health verification, no automatic retry |
-| `HTTP_FAILURE` | Flint canary / provider | Other non-404 HTTP response; `EVIDENCE_PENDING`; inspect safe status and endpoint preflight |
-| `FLINT_HTTP_404_UNATTRIBUTED` | Flint canary / provider | Unattributed HTTP 404; `AUTH_OR_CONFIGURATION`; verify URL, model, entitlement without classifying generic provider unavailability |
-| `FLINT_MODEL_COMPLETION_INCOMPLETE` | Flint canary / response | Missing or non-stop finish reason; `EVIDENCE_PENDING`; no success from partial generation |
-| `TRANSPORT_FAILURE` | Flint canary / network | URL, timeout, or OS/network failure; `TRANSIENT`; investigate safe transport/health metrics |
-| `OUTPUT_INVALID` | Flint canary / response | Malformed, missing, oversized JSON/text; `EVIDENCE_PENDING`; reject without processing the body |
-
-**Boundary:** No installed workflow, no external issue/title ingestion, no self-authorizing reviews, no agent/repair worker, no credential logging, and no downstream handoff in this source-only pilot.
