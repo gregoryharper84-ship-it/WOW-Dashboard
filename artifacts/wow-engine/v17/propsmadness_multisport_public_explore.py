@@ -72,7 +72,10 @@ def _config(sport: str, market: str) -> tuple[str, str, str]:
     if market not in MARKETS[sport]:
         raise PublicPageHold("PM_PUBLIC_MARKET_NOT_ALLOWLISTED")
     stat, label = MARKETS[sport][market]
-    return stat, label, f"{ROOT}/{sport.lower()}/props/{market}"
+    # This is a public-page URL, NOT a new market/stat identity or a license.
+    # NBA's currently published threes slug differs from the UI market key.
+    page_slug = "made-threes" if (sport, market) == ("NBA", "threes") else market
+    return stat, label, f"{ROOT}/{sport.lower()}/props/{page_slug}"
 
 
 def _candidate(href: str, sport: str, market: str) -> tuple[str, str] | None:
@@ -84,7 +87,10 @@ def _candidate(href: str, sport: str, market: str) -> tuple[str, str] | None:
     if target.path.rstrip("/") != f"/{sport.lower()}":
         return None
     query = parse_qs(target.query)
-    if query.get("market") != [f"player-{market}"]:
+    accepted = {f"player-{market}"}
+    if (sport, market) == ("NBA", "threes"):
+        accepted.add("player-made-threes")
+    if tuple(query.get("market", [])) not in {(name,) for name in accepted}:
         return None
     ids = (query.get("player"), query.get("match"))
     if any(not isinstance(v, list) or len(v) != 1 or
