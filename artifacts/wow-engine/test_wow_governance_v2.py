@@ -27,7 +27,7 @@ def test_source_review_negative_suite_runs_on_pr_head():
     # Preserve the previous floor and require the recovery/escalation suite plus
     # the HTTP-diagnostic cases to execute; additional tests must not break CI.
     match = re.search(r"Ran ([0-9]+) tests", result.stderr)
-    assert match and int(match.group(1)) >= 61, result.stderr
+    assert match and int(match.group(1)) >= 62, result.stderr
     for required_test in (
         "test_http_404_endpoint_diagnostic_is_bounded_and_redacted",
         "test_ambiguous_provider_404_remains_terminal_hold",
