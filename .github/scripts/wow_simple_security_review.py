@@ -4,6 +4,7 @@
 Untrusted PR content is read as data, never checked out or executed. A distinct
 QA App publishes the exact-head result; GitHub's native required checks enforce it.
 """
+import copy
 import hashlib
 import json
 import os
@@ -64,6 +65,18 @@ REVIEW_SCHEMA = {
     "required": ["source_review", "security_review", "probability_integrity_review", "findings"],
     "additionalProperties": False,
 }
+# Claude strict tool schemas do not support minLength/maxLength/maxItems.
+# Compile the exact, unchanged 1..500-character bound into a supported regex
+# while retaining the original REVIEW_SCHEMA for human contract/test readers.
+# The authoritative parse_verdict validator still enforces all three bounds
+# and the max 12 findings, and retains REJECT/HOLD without automatic retries.
+CLAUDE_STRICT_SCHEMA = copy.deepcopy(REVIEW_SCHEMA)
+CLAUDE_STRICT_SCHEMA["properties"]["findings"].pop("maxItems")
+for _field in ("file", "detail", "evidence"):
+    _schema = CLAUDE_STRICT_SCHEMA["properties"]["findings"]["items"]["properties"][_field]
+    _schema.pop("minLength")
+    _schema.pop("maxLength")
+    _schema["pattern"] = rf"^[\\s\\S]{{1,{MAX_FINDING_TEXT}}}$"
 MAX_FILES = 50
 MAX_DIFF = 90000
 
@@ -351,7 +364,8 @@ def call_provider(provider, key, prompt):
                   "messages": [{"role": "user", "content": prompt}],
                   "tools": [{"name": "submit_review",
                              "description": "Return a strict security review verdict.",
-                             "input_schema": REVIEW_SCHEMA}],
+                             "strict": True,
+                             "input_schema": CLAUDE_STRICT_SCHEMA}],
                   "tool_choice": {"type": "tool", "name": "submit_review"}})
         if type(result) is not dict:
             raise Hold("CLAUDE_RESPONSE_INVALID")
