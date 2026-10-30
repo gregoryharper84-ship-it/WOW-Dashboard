@@ -7,6 +7,7 @@ This file is the repository source of truth for governed typed failure/status co
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
 | `DISCOVERY_MAIN_SHA_INVALID_HOLD` | Engineering App source discovery | The caller supplied a malformed purported current protected-main SHA; reject before any GitHub source inventory or writer admission. | No |
+| `GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD` | Engineering recovery planner | Authenticated owner-authored QA HOLD cannot be reconciled against the read-only gate matrix or its bounded route contract. Return a typed non-dispatching WAITING_ON_EVIDENCE with attempts unchanged; never infer approval or call a repair worker. | N/A |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |
@@ -209,7 +210,6 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_EVIDENCE_FAILED` | independent QA | The latest exact-head run of a required check is not `success`; suffixed `:<check>`. | N/A |
 | `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING` | independent QA | The PR changes a trust root (`.github/`, `.agents/`, or a file a governance workflow executes or reads) and the owner's latest review is not APPROVED on this exact head. | N/A |
 | `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; the owner's self-review is not independent. Engineering App source replay does not itself prove independent authorship or review. | N/A |
-| `GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD` | Engineering recovery planner | Authenticated owner-authored QA HOLD cannot be reconciled against the read-only gate matrix or its bounded route contract. Return a typed non-dispatching WAITING_ON_EVIDENCE with attempts unchanged; never infer approval or call a repair worker. | N/A |
 | `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
 | `RELEASE_PR_NUMBER_INVALID` | release authority | Manual Release re-entry did not provide a valid PR number to bind to its QA receipt. | N/A |
 | `RELEASE_QA_RUN_IDENTITY_INVALID` | Release read-only admission | Producing QA run ID or attempt is missing or malformed before assigning a PR-scoped writer. | N/A |
