@@ -30,6 +30,9 @@ PUBLIC_MARKETS = {
     "rebounds": ("REBOUNDS", "player-rebounds"),
     "threes": ("THREE_POINTERS_MADE", "player-threes"),
 }
+# Keep the human-facing market name separate from the actual public-page slug.
+# The current NBA threes page is /made-threes, not /threes.
+PUBLIC_PAGE_SLUGS = {"threes": "made-threes"}
 USER_AGENT = "WOW-V17-Public-Research-Probe/1.0 (no-login; one-shot)"
 MAX_HTML_BYTES = 2_000_000
 POINT_IN_TIME_SOURCE_AUTHORITY = False
@@ -42,6 +45,12 @@ GAME_RE = re.compile(
 )
 ODDS_RE = re.compile(r"\bO\s+([+-]\d{3,5})\s+U\s+([+-]\d{3,5})\b")
 AVG_RE = re.compile(r"\bL10\s+AVG\s+(\d+(?:\.\d+)?)\b", re.I)
+
+
+def _source_url(market: str) -> str:
+    if market not in PUBLIC_MARKETS:
+        raise PublicPageHold("PM_PUBLIC_MARKET_NOT_ALLOWLISTED")
+    return ROOT + "/nba/props/" + PUBLIC_PAGE_SLUGS.get(market, market)
 
 
 class PublicPageHold(RuntimeError):
@@ -98,7 +107,10 @@ def _player_link(url: str, market_key: str) -> tuple[str, str] | None:
         return None
     params = parse_qs(target.query, strict_parsing=False)
     expected_market = PUBLIC_MARKETS[market_key][1]
-    if params.get("market") != [expected_market]:
+    permitted_markets = {expected_market}
+    if market_key == "threes":
+        permitted_markets.add("player-made-threes")
+    if params.get("market") not in ([name] for name in permitted_markets):
         return None
     player, match = params.get("player"), params.get("match")
     if not player or not match or len(player) != 1 or len(match) != 1:
@@ -164,7 +176,7 @@ def parse_public_explore_html(html: bytes, *, market: str, fetched_at: str) -> d
             "under_odds_display": int(odds[2]) if odds else None,
             "l10_avg_display": float(avg[1]) if avg else None,
             "capture_utc": fetched.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "source_page": ROOT + "/nba/props/" + market,
+            "source_page": _source_url(market),
             "canonical_player_id": None,
             "canonical_event_id": None,
             "sportsbook": None,
@@ -179,7 +191,7 @@ def parse_public_explore_html(html: bytes, *, market: str, fetched_at: str) -> d
     return {
         "schema": "WOW_PM_NBA_PUBLIC_EXPLORE_PROBE_V1",
         "status": "PUBLIC_ROWS_PARSED_DISCOVERY_ONLY" if result else "PUBLIC_HTML_NO_VERIFIED_ROWS",
-        "source_url": ROOT + "/nba/props/" + market,
+        "source_url": _source_url(market),
         "html_sha256": hashlib.sha256(html).hexdigest(),
         "rows": result,
         "row_count": len(result),
@@ -239,7 +251,7 @@ def fetch_public_explore_once(
         raise PublicPageHold("PM_PUBLIC_ROBOTS_UNVERIFIED")
     robots = RobotFileParser()
     robots.parse(text.splitlines())
-    url = ROOT + "/nba/props/" + market
+    url = _source_url(market)
     if not robots.can_fetch(USER_AGENT, url):
         raise PublicPageHold("PM_PUBLIC_ROBOTS_DISALLOW")
     html = read(url, MAX_HTML_BYTES)
