@@ -1,4 +1,6 @@
+import json
 from pathlib import Path
+from textwrap import dedent
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,3 +66,63 @@ def test_ncaaf_compiler_diagnostics_are_visible_without_raw_evidence_payloads():
     assert 'assert payload.get("can_execute") is False' in maintenance
     assert 'if payload.get("status") == "BLOCKED":' in maintenance
 
+
+def test_ncaaf_compiler_sample_logging_executes_with_strict_bounds(capsys):
+    """Exercise the workflow's real log projection, not a duplicate mock."""
+    workflow = _workflow("wow-v17-ncaaf-model-maintenance.yml")
+    start_marker = '          raw_samples = feature.get("blocker_samples")'
+    end_marker = '          if payload.get("status") == "BLOCKED":'
+    assert workflow.count(start_marker) == 1
+    tail = workflow.split(start_marker, 1)[1]
+    assert tail.count(end_marker) >= 1
+    script = dedent(start_marker + tail.split(end_marker, 1)[0])
+
+    # Server-supplied samples may contain bulky fields not authorized for logs.
+    # The log projection must not accidentally emit these extras.
+    samples = [
+        {
+            "official_event_id": "E" * 80 + str(i),
+            "code": "X" * 150,
+            "blockers": ["B" * 120 + str(j) for j in range(12)],
+            "payload": {"secret": "NEVER_LOG_SECRET"},
+            "provider_raw_body": "NEVER_LOG_RAW_BODY",
+        }
+        for i in range(6)
+    ]
+    feature = {
+        "status": "BLOCKED",
+        "games_seen": 4231,
+        "evidence_rows_seen": 0,
+        "blocked_games": 4231,
+        "blocker_counts": {"NCAAF_MODEL_FEATURE_EVIDENCE_INCOMPLETE": 4231},
+        "blocker_samples": samples,
+        "complete_feature_rows": 0,
+    }
+    payload = {
+        "status": "CANDIDATE_EVIDENCE_UPDATED",
+        "feature_compilation": feature,
+        "can_execute": False,
+        "automatic_certification": False,
+        "automatic_promotion": False,
+        "probability_publishable": False,
+        "blockers": [],
+    }
+    exec(compile(script, "<ncaaf-workflow-diagnostics>", "exec"), {
+        "feature": feature, "payload": payload, "json": json,
+    })
+    logged = capsys.readouterr().out
+    assert "NEVER_LOG_SECRET" not in logged
+    assert "NEVER_LOG_RAW_BODY" not in logged
+    message = json.loads(logged)
+    assert message["feature_blocker_counts"] == feature["blocker_counts"]
+    assert message["blocked_games"] == 4231
+    assert message["evidence_rows_seen"] == 0
+    assert message["can_execute"] is False
+    projected = message["feature_blocker_samples"]
+    assert len(projected) == 3
+    for sample in projected:
+        assert set(sample) == {"official_event_id", "code", "blockers"}
+        assert len(sample["official_event_id"]) <= 40
+        assert len(sample["code"]) <= 100
+        assert len(sample["blockers"]) == 8
+        assert all(len(value) <= 80 for value in sample["blockers"])
