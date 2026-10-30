@@ -82,6 +82,9 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("exactly these five keys and no others", prompt)
         self.assertIn("Never return whitespace-only", prompt)
         self.assertIn("cross-cutting concern", prompt)
+        self.assertIn("100-200 characters in detail", prompt)
+        self.assertIn("30-150 in evidence", prompt)
+        self.assertIn("preserve every material risk", prompt)
 
     def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
         good = self._passing()
@@ -91,7 +94,30 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
         with self.assertRaises(m.Hold) as err:
             m.parse_verdict({**good, "findings": [over]})
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_finding_text_failures_are_field_specific_and_fail_closed(self):
+        good = self._passing()
+        for key in ("file", "detail", "evidence"):
+            for suffix, bad in (
+                ("TYPE", 123),
+                ("EMPTY", "  "),
+                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
+            ):
+                with self.subTest(field=key, error=suffix):
+                    malformed = {**self._finding("low"), key: bad}
+                    with self.assertRaises(m.Hold) as hold:
+                        m.parse_verdict({**good, "findings": [malformed]})
+                    self.assertEqual(
+                        str(hold.exception),
+                        "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix,
+                    )
+        # The new codes are diagnostics, not permission to retry malformed
+        # model output or to discard genuine risk-category findings.
+        decision, _ = m.parse_verdict({
+            **good, "findings": [self._finding("low", category="security")]
+        })
+        self.assertEqual(decision, "REJECT")
 
     def test_finding_rejections_have_allowlisted_typed_reasons(self):
         good = self._passing()
@@ -103,7 +129,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             ("FIELD_SET", [{**finding, "extra": True}]),
             ("SEVERITY", [{**finding, "severity": "unknown"}]),
             ("CATEGORY", [{**finding, "category": "unknown"}]),
-            ("TEXT", [{**finding, "evidence": " " * 3}]),
+            ("TEXT_EVIDENCE_EMPTY", [{**finding, "evidence": " " * 3}]),
         )
         for suffix, malformed in samples:
             with self.subTest(reason=suffix):
@@ -114,27 +140,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaises(m.Hold) as too_long:
             m.parse_verdict({**good, "findings": [{**finding,
                 "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
-        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
-
-    def test_invalid_finding_text_has_only_allowlisted_reason_context(self):
-        base = self._passing()
-        finding = self._finding("medium")
-        for key, value, expected in (
-            ("file", None, "NOT_STRING"),
-            ("detail", "  ", "BLANK"),
-            ("evidence", "e" * (m.MAX_FINDING_TEXT + 1), "OVER_LIMIT"),
-        ):
-            with self.subTest(field=key, condition=expected):
-                with self.assertRaises(m.Hold) as exc:
-                    m.parse_verdict({**base, "findings": [{**finding, key: value}]})
-                self.assertEqual(str(exc.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
-                self.assertEqual(exc.exception.safe_context,
-                                 {"field": key, "condition": expected})
-                self.assertNotIn(str(value), str(exc.exception))
-        with self.assertRaises(ValueError):
-            m.finding_text_hold("untrusted-field-name", "BLANK")
-        with self.assertRaises(ValueError):
-            m.finding_text_hold("file", "USER_SUPPLIED_CONDITION")
+        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
 
     def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
         target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,
@@ -284,8 +290,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         called = []
         def unusable(provider, key, prompt):
             called.append(provider)
-            return m.parse_verdict({**self._passing(), "findings": [
-                {**self._finding("medium"), "evidence": "   "} ]})
+            raise m.Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
         with self.assertRaises(m.Hold) as err:
             m.semantic_review(target, {p: "key" for p in m.PROVIDERS}, unusable)
         self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
@@ -333,7 +338,6 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(receipt["reason"], "SEMANTIC_FINDINGS_INVALID:TEXT")
         self.assertEqual(receipt["reviewer_identity"], "none")
         self.assertEqual(receipt["attempts"], err.exception.attempts)
-        self.assertEqual(receipt["safe_context"], {"field": "evidence", "condition": "BLANK"})
         self.assertEqual(receipt["recovery_class"], "EVIDENCE_PENDING")
         self.assertEqual(receipt["next_action"], "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD")
         self.assertEqual(called, ["anthropic-claude-api", "anthropic-claude-api"])

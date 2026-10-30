@@ -72,15 +72,6 @@ class Hold(Exception):
     """The security review could not establish an authentic PASS."""
 
 
-def finding_text_hold(field, condition):
-    """Only fixed, source-derived diagnostic labels; no untrusted reviewer text."""
-    if field not in ("file", "detail", "evidence") or condition not in ("NOT_STRING", "BLANK", "OVER_LIMIT"):
-        raise ValueError("REVIEW_TEXT_CONTEXT_UNCLASSIFIED")
-    err = Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
-    err.safe_context = {"field": field, "condition": condition}
-    return err
-
-
 class ProviderUnavailable(Hold):
     """Only typed provider availability failures permit fallback."""
 
@@ -288,14 +279,18 @@ def parse_verdict(value):
             raise Hold("SEMANTIC_FINDINGS_INVALID:SEVERITY")
         if type(finding["category"]) is not str or finding["category"] not in FINDING_CATEGORIES:
             raise Hold("SEMANTIC_FINDINGS_INVALID:CATEGORY")
+        # A real malformed provider response must remain HOLD, but the repair
+        # owner needs a safe, allowlisted reason that distinguishes type,
+        # blank and size, and identifies the field without logging its value.
+        # Key names and suffixes are fixed here, never model-controlled.
         for key in ("file", "detail", "evidence"):
-            value = finding[key]
-            if type(value) is not str:
-                raise finding_text_hold(key, "NOT_STRING")
-            if not value.strip():
-                raise finding_text_hold(key, "BLANK")
-            if len(value) > MAX_FINDING_TEXT:
-                raise finding_text_hold(key, "OVER_LIMIT")
+            field_value = finding[key]
+            if type(field_value) is not str:
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TYPE")
+            if not field_value.strip():
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_EMPTY")
+            if len(field_value) > MAX_FINDING_TEXT:
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TOO_LONG")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
     # Model-provided severity alone cannot downgrade any safety or correctness
     # concern. Even LOW severity in a risk category remains blocking.
@@ -621,12 +616,6 @@ def main():
         # Persist a truthful (possibly empty) attempt list on *every* HOLD.
         # This is provenance, never permission to retry malformed output.
         receipt["attempts"] = list(getattr(exc, "attempts", []))
-        # Precise diagnosis is allowlisted; never store model text, lengths,
-        # provider bodies, credentials or reconstructed findings in a HOLD.
-        context = getattr(exc, "safe_context", None)
-        if str(exc) == "SEMANTIC_FINDINGS_INVALID:TEXT" and type(context) is dict:
-            if context.get("field") in ("file", "detail", "evidence") and context.get("condition") in ("NOT_STRING", "BLANK", "OVER_LIMIT"):
-                receipt["safe_context"] = {"field": context["field"], "condition": context["condition"]}
         if str(exc).startswith("SEMANTIC_FINDINGS_INVALID:"):
             receipt["recovery_class"] = "EVIDENCE_PENDING"
             receipt["next_action"] = "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD"
