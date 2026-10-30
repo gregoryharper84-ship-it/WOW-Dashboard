@@ -317,7 +317,9 @@ def test_forward_pagination_rejects_never_ending_full_page_source():
     db = _AlwaysFullPageDB({})
     with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID:.*:PAGE_LIMIT_EXCEEDED"):
         _paginate(db, table, "event_prediction_id", page_size=2, max_pages=3)
-    assert db.orders == [(table, "event_prediction_id")] * 3
+    # Three full pages plus one bounded existence probe: no unbounded loop.
+    assert db.orders == [(table, "event_prediction_id")] * 4
+    assert db.selections[-1] == (table, "event_prediction_id")
 
 
 @pytest.mark.parametrize("raw_id", [1, 1.0, True, ["a"], {"a": 1}])
@@ -335,3 +337,55 @@ def test_forward_pagination_rejects_invalid_page_limit(max_pages):
     with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID"):
         _paginate(db, table, "event_prediction_id", max_pages=max_pages)
     assert db.orders == []
+
+
+@pytest.mark.parametrize("table,key", [
+    ("wow_nfl_event_predictions", "event_prediction_id"),
+    ("wow_nfl_training_games", "game_id"),
+    ("wow_nfl_forward_shadow_grades", "grade_id"),
+])
+def test_forward_pagination_exactly_fills_bounded_pages_without_false_failure(table, key):
+    db = _ForwardPagedDB({
+        table: [{key: f"id{i:04d}"} for i in reversed(range(6))]
+    })
+    rows = _paginate(db, table, key, page_size=2, max_pages=3)
+    assert [r[key] for r in rows] == [f"id{i:04d}" for i in range(6)]
+    assert db.orders == [(table, key)] * 4
+    # Probe must read the identity only, not duplicate a full data page.
+    assert db.selections[-1] == (table, key)
+
+
+@pytest.mark.parametrize("table,key", [
+    ("wow_nfl_event_predictions", "event_prediction_id"),
+    ("wow_nfl_training_games", "game_id"),
+    ("wow_nfl_forward_shadow_grades", "grade_id"),
+])
+def test_forward_pagination_rejects_one_row_over_exact_boundary(table, key):
+    db = _ForwardPagedDB({
+        table: [{key: f"id{i:04d}"} for i in reversed(range(7))]
+    })
+    with pytest.raises(NFLForwardShadowError, match="PAGE_LIMIT_EXCEEDED"):
+        _paginate(db, table, key, page_size=2, max_pages=3)
+    assert db.orders == [(table, key)] * 4
+    assert db.selections[-1] == (table, key)
+
+
+def test_over_limit_corpus_never_persists_grades_or_forward_health(monkeypatch):
+    from v17 import nfl_forward_shadow as shadow
+    table = "wow_nfl_event_predictions"
+    data = [{"event_prediction_id": f"id{i:04d}"} for i in range(7)]
+    db = _ForwardPagedDB({table: data})
+    writes = []
+    monkeypatch.setattr(
+        shadow, "load_prediction_rows",
+        lambda client: shadow._paginate(
+            client, table, "event_prediction_id", page_size=2, max_pages=3
+        ),
+    )
+    monkeypatch.setattr(shadow, "persist_new_grades", lambda *_: writes.append("grades"))
+    monkeypatch.setattr(shadow, "persist_health", lambda *_: writes.append("health"))
+    with pytest.raises(NFLForwardShadowError, match="PAGE_LIMIT_EXCEEDED"):
+        shadow.run_forward_shadow(
+            db, settlement_refresh_fn=lambda _: {"status": "COMPLETED", "can_execute": False}
+        )
+    assert writes == []
