@@ -606,6 +606,37 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     reject(code, body)
                 self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
 
+    def test_strict_tool_grammar_matches_same_fail_closed_500_char_contract(self):
+        import re
+
+        schema = m.CLAUDE_STRICT_SCHEMA
+        self.assertIsNot(schema, m.REVIEW_SCHEMA)
+        self.assertEqual(schema["required"], m.REVIEW_SCHEMA["required"])
+        self.assertFalse(schema["additionalProperties"])
+        tool_findings = schema["properties"]["findings"]
+        self.assertNotIn("maxItems", tool_findings)
+        props = tool_findings["items"]["properties"]
+        for field in ("file", "detail", "evidence"):
+            definition = props[field]
+            self.assertEqual(definition["type"], "string")
+            self.assertNotIn("minLength", definition)
+            self.assertNotIn("maxLength", definition)
+            pattern = re.compile(definition["pattern"])
+            self.assertIsNotNone(pattern.fullmatch("X" * 1))
+            self.assertIsNotNone(pattern.fullmatch("X" * m.MAX_FINDING_TEXT))
+            self.assertIsNone(pattern.fullmatch("X" * (m.MAX_FINDING_TEXT + 1)))
+            self.assertIsNotNone(pattern.fullmatch("line1\\nline2"))
+        self.assertEqual(props["category"]["enum"], list(m.FINDING_CATEGORIES))
+        self.assertEqual(props["severity"]["enum"], list(m.FINDING_SEVERITIES))
+        # Parsing is authoritative, not the provider's claimed schema support.
+        failing = {**self._passing(), "findings": [{
+            **self._finding("low"), "detail": "x" * 501}]}
+        with self.assertRaisesRegex(m.Hold, "TEXT_DETAIL_TOO_LONG"):
+            m.parse_verdict(failing)
+        risky = {**self._passing(), "findings": [{
+            **self._finding("low"), "category": "probability_integrity"}]}
+        self.assertEqual(m.parse_verdict(risky)[0], "REJECT")
+
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
                    "probability_integrity_review": "PASS", "findings": []}
@@ -616,7 +647,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(decision, "PASS")
             data = req.call_args.kwargs["data"]
             self.assertEqual(data["tool_choice"]["name"], "submit_review")
-            self.assertEqual(data["tools"][0]["input_schema"], m.REVIEW_SCHEMA)
+            self.assertEqual(data["tools"][0]["input_schema"], m.CLAUDE_STRICT_SCHEMA)
+            self.assertIs(data["tools"][0]["strict"], True)
         with patch.object(m, "request_json", return_value={
             "stop_reason": "end_turn", "content": [{"type": "text", "text": "PASS"}]}):
             with self.assertRaises(m.Hold):
@@ -640,7 +672,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(sent["max_tokens"], 6144)
         self.assertEqual(sent["messages"], [{"role": "user", "content": "source diff"}])
         self.assertEqual(sent["tool_choice"]["name"], "submit_review")
-        self.assertEqual(sent["tools"][0]["input_schema"], m.REVIEW_SCHEMA)
+        self.assertEqual(sent["tools"][0]["input_schema"], m.CLAUDE_STRICT_SCHEMA)
+        self.assertIs(sent["tools"][0]["strict"], True)
 
     def test_claude_truncation_holds_without_resending_untrusted_diff(self):
         truncated = {"stop_reason": "max_tokens", "content": [
