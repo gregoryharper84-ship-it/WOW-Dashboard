@@ -101,6 +101,18 @@ def classify_stage_status(payload: Any) -> str:
             nfl_receipt = controlling["nfl_stage_receipt"]
             if not isinstance(nfl_receipt, dict) or _label(nfl_receipt, "status") != "PASS":
                 return DEFAULT_ROW_STATUS
+            # A PASS label cannot override contradictory stage-level evidence.
+            # Preserve optional absent fields for existing specialist adapters,
+            # but fail closed on explicitly blocking calibration/forward proof.
+            if nfl_receipt.get("blockers"):
+                return DEFAULT_ROW_STATUS
+            if any(nfl_receipt.get(flag) is False for flag in (
+                "probability_publishable", "rank_eligible", "probability_rank_eligible"
+            )):
+                return DEFAULT_ROW_STATUS
+            receipt_ceiling = _label(nfl_receipt, "terminal_ceiling")
+            if receipt_ceiling and receipt_ceiling != "FINAL_APPROVED":
+                return DEFAULT_ROW_STATUS
 
     publishable = payload.get("probability_publishable") is True
     rank_eligible = (
