@@ -149,12 +149,12 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     with contextlib.redirect_stderr(stderr):
                         with self.assertRaises(m.Hold) as error:
                             m.call_provider("anthropic-claude-api", "TEST_SECRET_KEY", "review")
-                # Explicit max_tokens is the sole typed incomplete state
-                # eligible for one bounded retry, never for provider failover.
+                # Even a truncated untrusted diff is never re-sent just
+                # to obtain a more favorable security decision.
                 self.assertEqual(str(error.exception),
                                  "CLAUDE_REVIEW_TRUNCATED" if raw == "max_tokens"
                                  else "CLAUDE_REVIEW_INCOMPLETE")
-                self.assertEqual(request.call_count, 2 if raw == "max_tokens" else 1)
+                self.assertEqual(request.call_count, 1)
                 self.assertIn("REVIEW_CLAUDE_STOP_REASON:" + expected, stderr.getvalue())
                 for forbidden in ("PRIVATE_RESPONSE_BODY", "TEST_SECRET_KEY", "SENSITIVE_TOKEN"):
                     self.assertNotIn(forbidden, stderr.getvalue())
@@ -470,33 +470,30 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                  "input": {**verdict, "security_review": "FAIL"}}]}):
             self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
 
-    def test_claude_truncation_one_bounded_same_provider_retry(self):
+    def test_claude_high_budget_uses_one_strict_tool_request(self):
         verdict = self._passing()
         successful = {"stop_reason": "tool_use", "content": [
             {"type": "tool_use", "name": "submit_review", "input": verdict}]}
-        truncated = {"stop_reason": "max_tokens", "content": [
-            {"type": "text", "text": "incomplete untrusted reply"}]}
-        with patch.object(m, "request_json", side_effect=[truncated, successful]) as req:
+        with patch.object(m, "request_json", return_value=successful) as req:
             decision, payload = m.call_provider("anthropic-claude-api", "private", "source diff")
         self.assertEqual(decision, "PASS")
         self.assertEqual(payload, verdict)
-        self.assertEqual(req.call_count, 2)
-        first, second = [c.kwargs["data"] for c in req.call_args_list]
-        self.assertEqual([first["max_tokens"], second["max_tokens"]], [4096, 6144])
-        self.assertEqual(first["messages"], second["messages"])
-        self.assertEqual(first["model"], second["model"])
-        self.assertEqual(first["tools"], second["tools"])
-        self.assertEqual(first["tool_choice"], second["tool_choice"])
-        self.assertEqual(first["tool_choice"]["name"], "submit_review")
+        self.assertEqual(req.call_count, 1)
+        sent = req.call_args.kwargs["data"]
+        self.assertEqual(sent["max_tokens"], 6144)
+        self.assertEqual(sent["messages"], [{"role": "user", "content": "source diff"}])
+        self.assertEqual(sent["tool_choice"]["name"], "submit_review")
+        self.assertEqual(sent["tools"][0]["input_schema"], m.REVIEW_SCHEMA)
 
-    def test_claude_repeated_truncation_holds_without_provider_shopping(self):
-        truncated = {"stop_reason": "max_tokens", "content": []}
+    def test_claude_truncation_holds_without_resending_untrusted_diff(self):
+        truncated = {"stop_reason": "max_tokens", "content": [
+            {"type": "text", "text": "partial output, untrusted"}]}
         with patch.object(m, "request_json", return_value=truncated) as req:
             with self.assertRaises(m.Hold) as err:
                 m.call_provider("anthropic-claude-api", "private", "source diff")
         self.assertEqual(str(err.exception), "CLAUDE_REVIEW_TRUNCATED")
         self.assertNotIsInstance(err.exception, m.ProviderUnavailable)
-        self.assertEqual(req.call_count, 2)
+        self.assertEqual(req.call_count, 1)
 
     def test_claude_refusal_and_nontruncation_do_not_retry(self):
         for reason, expected in (
