@@ -239,3 +239,107 @@ def test_protected_recovery_workflow_routes_author_vs_codeowner_without_fake_app
     assert "unrelated Engineering work continues" in workflow
     assert "gh pr review --approve" not in workflow
     assert "gh pr merge" not in workflow
+
+
+def test_owner_authored_source_reuses_executable_gate_matrix():
+    route = rp._owner_authored_gate_route()
+    assert route["recovery_class"] == "POLICY_UNREACHABLE"
+    assert route["reason"] == "QA_TRUST_ROOT_OWNER_AUTHORED"
+    for is_bot in (True, False):
+        result = rp.plan_recovery(
+            pr_number=2301, findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+            attempts=2, is_wow_engineering_pr=is_bot,
+        )
+        assert result["required_actor"] == route["actor"]
+        assert result["next_action"] == route["action"]
+        assert result["gate_recovery_class"] == "POLICY_UNREACHABLE"
+        assert result["independent_review_status"] == "UNVERIFIED"
+        assert result["attempts"] == 2
+        assert result["can_execute"] is False
+
+
+def test_incomplete_matrix_fails_closed_without_dispatch(monkeypatch):
+    monkeypatch.setattr(
+        rp._gate_matrix, "assess",
+        lambda **kwargs: {
+            "unreachable": [{
+                "gate": "existing_pr_governance", "reason": "QA_TRUST_ROOT_OWNER_AUTHORED",
+                "recovery_class": "TRANSIENT", "actor": "OWNER",
+                "action": "DISPATCH_REPAIR",
+            }],
+            "can_execute": False,
+            "grants_merge": False,
+            "merge_blocked_scope": "STRUCTURAL_PINNED_CI_ONLY",
+            "independent_review_status": "UNVERIFIED",
+        },
+    )
+    for is_bot in (True, False):
+        result = rp.plan_recovery(
+            pr_number=2301, findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+            attempts=2, is_wow_engineering_pr=is_bot,
+        )
+        assert result["action"] == "WAITING_ON_EVIDENCE"
+        assert result["reason"] == "GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"
+        assert result["pending_findings"] == ["GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"]
+        assert result["attempts"] == 2
+        assert result["can_execute"] is False
+
+
+def test_other_repairable_findings_do_not_consult_gate_authorship_matrix(monkeypatch):
+    def unavailable(**kwargs):
+        raise AssertionError("matrix must not run without an authenticated typed reason")
+    monkeypatch.setattr(rp._gate_matrix, "assess", unavailable)
+    result = rp.plan_recovery(
+        pr_number=2301, findings=["QA_REGRESSION_FAILED"],
+        attempts=0, is_wow_engineering_pr=True,
+    )
+    assert result["action"] == "DISPATCH_REPAIR"
+    assert result["attempts"] == 1
+
+
+def test_unexpected_route_actor_or_merge_permission_fails_closed(monkeypatch):
+    original_assess = rp._gate_matrix.assess
+
+    def poisoned(**kwargs):
+        result = original_assess(**kwargs)
+        entries = [dict(row) for row in result["unreachable"]]
+        for row in entries:
+            if row["gate"] == "existing_pr_governance":
+                row["actor"] = "OWNER"
+                row["action"] = "MERGE"
+        return {**result, "unreachable": entries}
+
+    monkeypatch.setattr(rp._gate_matrix, "assess", poisoned)
+    response = rp.plan_recovery(
+        pr_number=2302, findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+        attempts=1, is_wow_engineering_pr=True,
+    )
+    assert response["action"] == "WAITING_ON_EVIDENCE"
+    assert response["reason"] == "GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"
+    assert response["attempts"] == 1
+    assert response["can_execute"] is False
+
+
+def test_matrix_hold_cli_writes_typed_non_dispatching_json(monkeypatch, capsys):
+    monkeypatch.setattr(rp._gate_matrix, "assess", lambda **kwargs: {})
+    rc = rp.main([
+        "--pr-number", "2302",
+        "--findings-json", '["QA_TRUST_ROOT_OWNER_AUTHORED"]',
+        "--attempts", "2", "--is-wow-engineering-pr"
+    ])
+    import json
+    result = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert result["action"] == "WAITING_ON_EVIDENCE"
+    assert result["reason"] == "GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"
+    assert result["attempts"] == 2
+    assert result["can_execute"] is False
+
+
+def test_retired_qa_owner_authored_code_is_not_active_v3_qa():
+    route = rp._owner_authored_gate_route()
+    assert route["gate"] == "existing_pr_governance"
+    assert route["requirement"] == "advisory"
+    assert rp._gate_matrix.assess(
+        change_class="S", author_is_owner=True, touches_trust_root=True
+    )["grants_merge"] is False
