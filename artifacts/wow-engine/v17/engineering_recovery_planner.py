@@ -60,14 +60,32 @@ def _owner_authored_gate_route() -> dict[str, Any]:
     ]
     if (len(matches) != 1
             or matches[0]["recovery_class"] != "POLICY_UNREACHABLE"
-            or not matches[0].get("actor")
-            or not matches[0].get("action")
+            or matches[0].get("actor") != "INDEPENDENT_ENGINEERING_AUTHOR"
+            or matches[0].get("action")
+            != "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE"
+            or report.get("policy_review_required") is not True
+            or report.get("source_independence_status") != "UNVERIFIED"
             or report.get("can_execute") is not False
             or report.get("grants_merge") is not False
             or report.get("merge_blocked_scope") != "STRUCTURAL_PINNED_CI_ONLY"
             or report.get("independent_review_status") != "UNVERIFIED"):
         raise ValueError("GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD")
     return matches[0]
+
+
+def _matrix_integrity_hold(*, pr_number: int, findings: list[str],
+                           attempts: int) -> dict[str, Any]:
+    """Typed, non-dispatching HOLD when a matrix contract cannot be trusted."""
+    return {
+        "pr_number": pr_number,
+        "action": "WAITING_ON_EVIDENCE",
+        "reason": "GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD",
+        "pending_findings": ["GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"],
+        "findings": list(findings),
+        "attempts": attempts,
+        "release_admission": "DENIED_UNTIL_INDEPENDENT_EVIDENCE",
+        "can_execute": False,
+    }
 
 
 def parse_findings_from_summary(summary: str) -> list[str]:
@@ -106,7 +124,12 @@ def plan_recovery(
     # This route is advisory only; source adoption requires an independently
     # authenticated agent and positively reconciled canonical writer lease.
     if not is_wow_engineering_pr and "QA_TRUST_ROOT_OWNER_AUTHORED" in findings:
-        route = _owner_authored_gate_route()
+        try:
+            route = _owner_authored_gate_route()
+        except (ValueError, KeyError, TypeError):
+            return _matrix_integrity_hold(
+                pr_number=pr_number, findings=findings, attempts=attempts
+            )
         return {
             "pr_number": pr_number,
             "action": "WAITING_ON_OWNER",
@@ -148,7 +171,12 @@ def plan_recovery(
         # necessary independent actor without granting write authority or
         # starting a competing repair while the canonical lease is unresolved.
         owner_authored = "QA_TRUST_ROOT_OWNER_AUTHORED" in non_repairable
-        route = _owner_authored_gate_route() if owner_authored else None
+        try:
+            route = _owner_authored_gate_route() if owner_authored else None
+        except (ValueError, KeyError, TypeError):
+            return _matrix_integrity_hold(
+                pr_number=pr_number, findings=findings, attempts=attempts
+            )
         return {
             "pr_number": pr_number,
             "action": "WAITING_ON_OWNER",

@@ -273,13 +273,16 @@ def test_incomplete_matrix_fails_closed_without_dispatch(monkeypatch):
             "independent_review_status": "UNVERIFIED",
         },
     )
-    import pytest
     for is_bot in (True, False):
-        with pytest.raises(ValueError, match="GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"):
-            rp.plan_recovery(
-                pr_number=2301, findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
-                attempts=0, is_wow_engineering_pr=is_bot,
-            )
+        result = rp.plan_recovery(
+            pr_number=2301, findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+            attempts=2, is_wow_engineering_pr=is_bot,
+        )
+        assert result["action"] == "WAITING_ON_EVIDENCE"
+        assert result["reason"] == "GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"
+        assert result["pending_findings"] == ["GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"]
+        assert result["attempts"] == 2
+        assert result["can_execute"] is False
 
 
 def test_other_repairable_findings_do_not_consult_gate_authorship_matrix(monkeypatch):
@@ -292,3 +295,42 @@ def test_other_repairable_findings_do_not_consult_gate_authorship_matrix(monkeyp
     )
     assert result["action"] == "DISPATCH_REPAIR"
     assert result["attempts"] == 1
+
+
+def test_unexpected_route_actor_or_merge_permission_fails_closed(monkeypatch):
+    original_assess = rp._gate_matrix.assess
+
+    def poisoned(**kwargs):
+        result = original_assess(**kwargs)
+        entries = [dict(row) for row in result["unreachable"]]
+        for row in entries:
+            if row["gate"] == "independent_qa":
+                row["actor"] = "OWNER"
+                row["action"] = "MERGE"
+        return {**result, "unreachable": entries}
+
+    monkeypatch.setattr(rp._gate_matrix, "assess", poisoned)
+    response = rp.plan_recovery(
+        pr_number=2302, findings=["QA_TRUST_ROOT_OWNER_AUTHORED"],
+        attempts=1, is_wow_engineering_pr=True,
+    )
+    assert response["action"] == "WAITING_ON_EVIDENCE"
+    assert response["reason"] == "GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"
+    assert response["attempts"] == 1
+    assert response["can_execute"] is False
+
+
+def test_matrix_hold_cli_writes_typed_non_dispatching_json(monkeypatch, capsys):
+    monkeypatch.setattr(rp._gate_matrix, "assess", lambda **kwargs: {})
+    rc = rp.main([
+        "--pr-number", "2302",
+        "--findings-json", '["QA_TRUST_ROOT_OWNER_AUTHORED"]',
+        "--attempts", "2", "--is-wow-engineering-pr"
+    ])
+    import json
+    result = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert result["action"] == "WAITING_ON_EVIDENCE"
+    assert result["reason"] == "GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"
+    assert result["attempts"] == 2
+    assert result["can_execute"] is False
