@@ -4,7 +4,7 @@ The failed #2291/#2293 runs end at `INDEPENDENT_SECURITY_REVIEW_HOLD: HTTP_404`
 with `Reviewer: none`. Nothing recorded which route returned the 404, so GitHub
 PR/file/check reads, Anthropic `messages` and Gemini `generateContent` were all
 indistinguishable. This is a diagnostics-only change: it adds a fixed
-allowlisted endpoint label to the failure and to the decision receipt. It does
+allowlisted endpoint label to the runner log while retaining the original receipt reason. It does
 NOT reclassify any status, does not promote a 404 to availability, and cannot
 turn a HOLD into a PASS.
 
@@ -75,31 +75,40 @@ class HttpAttributionTests(unittest.TestCase):
 
     def test_github_404_names_the_failing_github_stage(self):
         for url, expected in (
-            (GITHUB + "/pulls/2291", "HTTP_404:GITHUB_API:GET:PR_METADATA"),
+            (GITHUB + "/pulls/2291", "GITHUB_API:GET:PR_METADATA"),
             (GITHUB + "/commits/" + "a" * 40 + "/check-runs?check_name=WOW",
-             "HTTP_404:GITHUB_API:GET:CHECK_RUNS_READ"),
-            (GITHUB + "/check-runs", "HTTP_404:GITHUB_API:POST:CHECK_RUN_CREATE"),
+             "GITHUB_API:GET:CHECK_RUNS_READ"),
+            (GITHUB + "/check-runs", "GITHUB_API:POST:CHECK_RUN_CREATE"),
         ):
             with self.subTest(url=url):
-                with self.assertRaises(m.Hold) as error:
-                    fail(url, 404, {"message": "Not Found"},
-                         data={} if url.endswith("/check-runs") else None)
-                self.assertEqual(str(error.exception), expected)
-                self.assertNotIn("Not Found", str(error.exception))
+                import contextlib
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(m.Hold) as error:
+                        fail(url, 404, {"message": "Not Found"},
+                             data={} if url.endswith("/check-runs") else None)
+                self.assertEqual(str(error.exception), "HTTP_404")
+                self.assertIn("REVIEW_HTTP_DIAGNOSTIC:HTTP_404:" + expected,
+                              stderr.getvalue())
+                self.assertNotIn("Not Found", stderr.getvalue())
 
     def test_provider_404_stays_a_plain_hold_and_is_attributable(self):
         for url, expected in (
-            (ANTHROPIC, "HTTP_404:ANTHROPIC_API:POST:MESSAGES"),
-            (GEMINI, "HTTP_404:GEMINI_API:POST:GENERATE_CONTENT"),
+            (ANTHROPIC, "ANTHROPIC_API:POST:MESSAGES"),
+            (GEMINI, "GEMINI_API:POST:GENERATE_CONTENT"),
         ):
             with self.subTest(url=url):
-                with self.assertRaises(m.Hold) as error:
-                    fail(url, 404, {"error": {"message": "SECRET provider body"}},
-                         data={"model": "claude-sonnet-4-6"}, headers={"x-api-key": "k"})
-                # Diagnostics only: no availability promotion was introduced.
+                import contextlib
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(m.Hold) as error:
+                        fail(url, 404, {"error": {"message": "SECRET provider body"}},
+                             data={"model": "claude-sonnet-4-6"}, headers={"x-api-key": "k"})
                 self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
-                self.assertEqual(str(error.exception), expected)
-                self.assertNotIn("SECRET", str(error.exception))
+                self.assertEqual(str(error.exception), "HTTP_404")
+                self.assertIn("REVIEW_HTTP_DIAGNOSTIC:HTTP_404:" + expected,
+                              stderr.getvalue())
+                self.assertNotIn("SECRET", stderr.getvalue())
 
     def test_diagnostic_line_is_printed_for_every_http_failure(self):
         import contextlib
@@ -112,13 +121,13 @@ class HttpAttributionTests(unittest.TestCase):
             stderr.getvalue())
         self.assertNotIn("not found", stderr.getvalue())
 
-    def test_transport_and_json_failures_keep_their_cause_and_label(self):
+    def test_transport_and_json_failures_keep_their_original_cause(self):
         from urllib.error import URLError
         with patch.object(m.HTTP_CLIENT, "open", side_effect=URLError("boom")):
             with self.assertRaises(m.Hold) as error:
                 m.request_json(GITHUB + "/pulls/2291")
         self.assertEqual(str(error.exception), "GITHUB_TRANSPORT")
-        self.assertEqual(error.exception.endpoint, "GITHUB_API:GET:PR_METADATA")
+        self.assertFalse(hasattr(error.exception, "endpoint"))
         with patch.object(m.HTTP_CLIENT, "open") as opened:
             handle = opened.return_value.__enter__.return_value
             handle.read.return_value = b"not json"
@@ -133,8 +142,8 @@ class HttpAttributionTests(unittest.TestCase):
 
     def test_non_http_holds_keep_their_exact_reason(self):
         self.assertEqual(str(m.Hold("SEMANTIC_SCHEMA_INVALID")), "SEMANTIC_SCHEMA_INVALID")
-        self.assertEqual(str(m.Hold("HTTP_404", endpoint="GITHUB_API:GET:PR_METADATA")),
-                         "HTTP_404:GITHUB_API:GET:PR_METADATA")
+        self.assertEqual(str(m.Hold("HTTP_404")), "HTTP_404")
+        self.assertFalse(hasattr(m.Hold("HTTP_404"), "endpoint"))
 
 
 if __name__ == "__main__":
