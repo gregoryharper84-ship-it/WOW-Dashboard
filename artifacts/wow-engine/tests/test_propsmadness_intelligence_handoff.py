@@ -43,6 +43,26 @@ def test_four_sport_receipts_feed_research_only_and_maintain_reconciliation():
         assert out[key] is False
 
 
+def test_nba_threes_current_public_slug_handoff_is_research_only():
+    receipt = source("NBA", "threes", player=103, match=104)
+    assert receipt["source_url"] == "https://propsmadness.com/nba/props/made-threes"
+    result = build_shared_intelligence_handoff([receipt])
+    assert result["source_rows"] == result["unique_prop_hints"] == 1
+    hint = result["prop_discovery_hints"][0]
+    assert hint["stat_type"] == "THREE_POINTERS_MADE"
+    assert hint["source_url"] == receipt["source_url"]
+    assert hint["pregame_feature_eligible"] is False
+    assert hint["model_probability"] is None
+    assert result["historical_training_authorized"] is False
+    assert result["production_write_authorized"] is False
+    assert result["can_execute"] is False
+
+    # Old path is not valid provenance for the real published page.
+    receipt["source_url"] = "https://propsmadness.com/nba/props/threes"
+    with pytest.raises(IntelligenceHandoffHold, match="PM_HANDOFF_PROVENANCE_INVALID"):
+        build_shared_intelligence_handoff([receipt])
+
+
 def test_two_props_same_provider_event_yield_one_llp_event_without_claimed_match():
     r = source("NBA", "points")
     a = source("NBA", "assists", player=202, match=102)
