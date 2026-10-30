@@ -502,3 +502,53 @@ def test_score_stage_timer_success_is_timing_only(caplog):
     assert "stage=prediction_persistence" in log_text
     assert "status=PASS" in log_text
     assert "private-prediction-id" not in log_text
+
+def test_forged_money_resolved_is_not_persisted_or_approved(monkeypatch):
+    """A caller cannot upgrade a fitted prediction or the MONEY objective."""
+    recorded = {}
+
+    def fake_score(**kwargs):
+        recorded.update(kwargs)
+        fake = _result(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")
+        # Also simulate an improperly returned scorer row; the money
+        # reducer must still trust no mere RESOLVED status string.
+        fake.row.money_lane_status = "RESOLVED"
+        return fake
+
+    _install_common(monkeypatch, fake_score)
+    payload = _request_payload()
+    payload["money_lane_status"] = "RESOLVED"
+    response = client.post("/score-prop", json=payload, headers=AUTH)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert recorded["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert body["objective_lanes"]["MONEY"]["status"] == "HOLD"
+    assert body["objective_lanes"]["MONEY"]["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert body["objective_lanes"]["MONEY"]["observed_money_lane_status"] == "RESOLVED"
+    assert body["objective_lanes"]["MODEL"]["status"] == "PASS"
+    assert body["probability_publishable"] is True
+    assert body["probability_qualification"]["final_approved_allowed"] is False
+    assert body["can_execute"] is False
+
+
+def test_unverified_resolved_cannot_pass_even_with_settlement_pass():
+    """A legitimate settlement rule is not independent payout provenance."""
+    row = SimpleNamespace(money_lane_status="RESOLVED")
+    money = api_prod_market._effective_money_lane(
+        row, {"status": "PASS", "money_context_required": False}
+    )
+    assert money["status"] == "HOLD"
+    assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert money["observed_money_lane_status"] == "RESOLVED"
+    assert money["blocks_model_probability"] is False
+    assert money["can_execute"] is False
+
+
+def test_absent_payout_quote_is_not_recovered_from_caller_status():
+    row = SimpleNamespace(money_lane_status="RESOLVED")
+    settlement = {"status": "HOLD", "blocker": "SETTLEMENT_RULE_UNRESOLVED"}
+    money = api_prod_market._effective_money_lane(row, settlement)
+    assert money["status"] == "HOLD"
+    assert money["settlement_blocker"] == "SETTLEMENT_RULE_UNRESOLVED"
+    assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
