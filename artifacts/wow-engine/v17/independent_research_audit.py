@@ -106,8 +106,18 @@ def _row(raw: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         actual = Decimal(str(raw.get("actual_stat"))) if raw.get("actual_stat") is not None else None
         if actual is not None and not actual.is_finite():
             actual = None
-    except InvalidOperation:
+    except (InvalidOperation, ValueError, TypeError):
         actual = None
+    # Pitcher strikeouts are nonnegative integers. A verified actual is
+    # mandatory; a missing value cannot justify grading a binary hit flag.
+    if actual is None or actual < 0 or actual != actual.to_integral_value():
+        return None, "ACTUAL_STAT_UNVERIFIED"
+    threshold = Decimal(line)
+    if actual == threshold:
+        return None, "PUSH_SETTLEMENT_CONFLICT"
+    expected_hit = actual > threshold if direction == "MORE" else actual < threshold
+    if expected_hit is not raw["hit"]:
+        return None, "OUTCOME_STAT_CONFLICT"
     return {
         "thesis": thesis, "base": base, "game_pk": game_pk,
         "event_id": event_id, "prediction_id": pid,
@@ -135,13 +145,22 @@ def audit_mlb_strikeout_forecasts(
     for r in eligible:
         groups[r["thesis"]].append(r)
         game_aliases[r["game_pk"]].add(r["event_id"])
-    # A mismatched official outcome across aliases is a hard hold, never averaged.
-    conflicts = [k for k, rows in groups.items()
-                 if len({r["hit"] for r in rows}) > 1 or
-                 len({r["actual"] for r in rows if r["actual"] is not None}) > 1]
+    # A player's game stat cannot vary with direction, line, artifact, or
+    # input alias. Validate against the official game/player/stat key first.
+    stat_values: dict[tuple[str, str, str], set[Decimal]] = defaultdict(set)
+    for r in eligible:
+        stat_values[(r["game_pk"], r["thesis"][1], r["thesis"][2])].add(r["actual"])
+    conflicting_stats = [k for k, values in stat_values.items() if len(values) > 1]
+    conflicts = [
+        k for k, rows in groups.items()
+        if len({r["hit"] for r in rows}) > 1 or len({r["actual"] for r in rows}) > 1
+    ]
+    contradictory_rows = sum(rejected[key] for key in
+                             ("OUTCOME_STAT_CONFLICT", "PUSH_SETTLEMENT_CONFLICT"))
+    must_hold = bool(conflicts or conflicting_stats or contradictory_rows)
     base_result: dict[str, Any] = {
         "schema_version": "WOW17_CANONICAL_HISTORICAL_RESEARCH_V1",
-        "status": "HOLD" if conflicts else "RESEARCH_ONLY",
+        "status": "HOLD" if must_hold else "RESEARCH_ONLY",
         "authority": "ADVISORY_ONLY", "certified": False, "can_execute": False,
         "selection": selection, "eligible_forecast_rows": len(eligible),
         "rejected_rows": sum(rejected.values()), "rejection_reasons": dict(sorted(rejected.items())),
@@ -151,13 +170,18 @@ def audit_mlb_strikeout_forecasts(
         "canonical_directional_theses": len(groups),
         "canonical_base_markets": len({r["base"] for r in eligible}),
         "conflicting_official_theses": len(conflicts),
+        "conflicting_game_player_stats": len(conflicting_stats),
+        "settlement_contradiction_rows": contradictory_rows,
         "identity_level": "OFFICIAL_GAME_ID_AND_PLAYER_NAME_RESEARCH_ONLY",
         "readiness": "FORWARD_CALIBRATION_AND_INDEPENDENT_HOLDOUT_UNVERIFIED",
     }
-    if conflicts or not groups:
-        if not groups:
-            base_result["status"] = "HOLD"
-        base_result["blocker"] = "OFFICIAL_SETTLEMENT_CONFLICT" if conflicts else "NO_VERIFIED_ROWS"
+    if must_hold or not groups:
+        base_result["status"] = "HOLD"
+        base_result["blocker"] = (
+            "OFFICIAL_SETTLEMENT_CONFLICT" if conflicts or conflicting_stats
+            else "OFFICIAL_SETTLEMENT_INTERNAL_CONTRADICTION" if contradictory_rows
+            else "NO_VERIFIED_ROWS"
+        )
         return base_result
     selected = []
     for rows in groups.values():
