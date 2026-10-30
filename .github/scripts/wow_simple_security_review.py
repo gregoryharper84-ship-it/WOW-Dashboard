@@ -72,6 +72,15 @@ class Hold(Exception):
     """The security review could not establish an authentic PASS."""
 
 
+def finding_text_hold(field, condition):
+    """Only fixed, source-derived diagnostic labels; no untrusted reviewer text."""
+    if field not in ("file", "detail", "evidence") or condition not in ("NOT_STRING", "BLANK", "OVER_LIMIT"):
+        raise ValueError("REVIEW_TEXT_CONTEXT_UNCLASSIFIED")
+    err = Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
+    err.safe_context = {"field": field, "condition": condition}
+    return err
+
+
 class ProviderUnavailable(Hold):
     """Only typed provider availability failures permit fallback."""
 
@@ -279,10 +288,14 @@ def parse_verdict(value):
             raise Hold("SEMANTIC_FINDINGS_INVALID:SEVERITY")
         if type(finding["category"]) is not str or finding["category"] not in FINDING_CATEGORIES:
             raise Hold("SEMANTIC_FINDINGS_INVALID:CATEGORY")
-        if any(type(finding[key]) is not str or not finding[key].strip()
-               or len(finding[key]) > MAX_FINDING_TEXT
-               for key in ("file", "detail", "evidence")):
-            raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
+        for key in ("file", "detail", "evidence"):
+            value = finding[key]
+            if type(value) is not str:
+                raise finding_text_hold(key, "NOT_STRING")
+            if not value.strip():
+                raise finding_text_hold(key, "BLANK")
+            if len(value) > MAX_FINDING_TEXT:
+                raise finding_text_hold(key, "OVER_LIMIT")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
     # Model-provided severity alone cannot downgrade any safety or correctness
     # concern. Even LOW severity in a risk category remains blocking.
@@ -309,7 +322,10 @@ def prompt_for(target):
             "others: severity in critical|high|medium|low, category in security|probability_integrity|"
             "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
             "evidence are non-empty strings of at most 500 characters each, so quote only the shortest "
-            "decisive excerpt as evidence. "
+            "decisive excerpt as evidence. Never return whitespace-only file, detail, or evidence. "
+            "For a cross-cutting concern, cite the most relevant changed repository-relative file path, never blank. "
+            "Prefer 100-200 characters in detail and 30-150 in evidence. Split complex concerns into separate "
+            "short findings rather than producing an oversized string; preserve every material risk. "
             f"Repository: {REPO}. PR: {target['pr']}; SHA: {target['head_sha']}; base SHA: {target.get('base_sha', 'unknown')}; "
             f"diff digest: {target['diff_sha256']}.\nBEGIN_UNTRUSTED_DIFF\n" +
             target["diff"] +
@@ -605,6 +621,12 @@ def main():
         # Persist a truthful (possibly empty) attempt list on *every* HOLD.
         # This is provenance, never permission to retry malformed output.
         receipt["attempts"] = list(getattr(exc, "attempts", []))
+        # Precise diagnosis is allowlisted; never store model text, lengths,
+        # provider bodies, credentials or reconstructed findings in a HOLD.
+        context = getattr(exc, "safe_context", None)
+        if str(exc) == "SEMANTIC_FINDINGS_INVALID:TEXT" and type(context) is dict:
+            if context.get("field") in ("file", "detail", "evidence") and context.get("condition") in ("NOT_STRING", "BLANK", "OVER_LIMIT"):
+                receipt["safe_context"] = {"field": context["field"], "condition": context["condition"]}
         if str(exc).startswith("SEMANTIC_FINDINGS_INVALID:"):
             receipt["recovery_class"] = "EVIDENCE_PENDING"
             receipt["next_action"] = "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD"
