@@ -89,7 +89,30 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
         with self.assertRaises(m.Hold) as err:
             m.parse_verdict({**good, "findings": [over]})
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_finding_text_failures_are_field_specific_and_fail_closed(self):
+        good = self._passing()
+        for key in ("file", "detail", "evidence"):
+            for suffix, bad in (
+                ("TYPE", 123),
+                ("EMPTY", "  "),
+                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
+            ):
+                with self.subTest(field=key, error=suffix):
+                    malformed = {**self._finding("low"), key: bad}
+                    with self.assertRaises(m.Hold) as hold:
+                        m.parse_verdict({**good, "findings": [malformed]})
+                    self.assertEqual(
+                        str(hold.exception),
+                        "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix,
+                    )
+        # The new codes are diagnostics, not permission to retry malformed
+        # model output or to discard genuine risk-category findings.
+        decision, _ = m.parse_verdict({
+            **good, "findings": [self._finding("low", category="security")]
+        })
+        self.assertEqual(decision, "REJECT")
 
     def test_finding_rejections_have_allowlisted_typed_reasons(self):
         good = self._passing()
@@ -101,7 +124,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             ("FIELD_SET", [{**finding, "extra": True}]),
             ("SEVERITY", [{**finding, "severity": "unknown"}]),
             ("CATEGORY", [{**finding, "category": "unknown"}]),
-            ("TEXT", [{**finding, "evidence": " " * 3}]),
+            ("TEXT_EVIDENCE_EMPTY", [{**finding, "evidence": " " * 3}]),
         )
         for suffix, malformed in samples:
             with self.subTest(reason=suffix):
@@ -112,7 +135,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaises(m.Hold) as too_long:
             m.parse_verdict({**good, "findings": [{**finding,
                 "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
-        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
 
     def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
         target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,
