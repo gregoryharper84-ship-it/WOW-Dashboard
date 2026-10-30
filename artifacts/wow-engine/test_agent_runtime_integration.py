@@ -23,6 +23,8 @@ orchestration.
 """
 from __future__ import annotations
 
+import secrets
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -36,12 +38,15 @@ from agent_runtime_test_support import FakeSupabaseClient
 
 client = TestClient(api_prod.app)
 
-_AUTH_HEADERS = {"Authorization": "Bearer ci-agent-runtime-key"}
+_AUTH_HEADERS = {}
 
 
 @pytest.fixture(autouse=True)
 def _agent_runtime_auth_config(monkeypatch):
-    monkeypatch.setenv("WOW_ACTION_API_KEY", "ci-agent-runtime-key")
+    # Isolated random key per test: never reuse a hardcoded token as a credential.
+    key = secrets.token_urlsafe(32)
+    monkeypatch.setenv("WOW_ACTION_API_KEY", key)
+    monkeypatch.setitem(_AUTH_HEADERS, "Authorization", f"Bearer {key}")
 
 _RUN_PAYLOAD = {
     "run_type": "FULL_MODEL",
