@@ -89,7 +89,56 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
         with self.assertRaises(m.Hold) as err:
             m.parse_verdict({**good, "findings": [over]})
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
+
+    def test_finding_rejections_have_allowlisted_typed_reasons(self):
+        good = self._passing()
+        finding = self._finding("low")
+        samples = (
+            ("NOT_LIST", "invalid"),
+            ("TOO_MANY", [finding] * (m.MAX_FINDINGS + 1)),
+            ("NOT_OBJECT", ["legacy free text"]),
+            ("FIELD_SET", [{**finding, "extra": True}]),
+            ("SEVERITY", [{**finding, "severity": "unknown"}]),
+            ("CATEGORY", [{**finding, "category": "unknown"}]),
+            ("TEXT", [{**finding, "evidence": " " * 3}]),
+        )
+        for suffix, malformed in samples:
+            with self.subTest(reason=suffix):
+                with self.assertRaises(m.Hold) as error:
+                    m.parse_verdict({**good, "findings": malformed})
+                self.assertEqual(str(error.exception), "SEMANTIC_FINDINGS_INVALID:" + suffix)
+        # The schema's upper bound is also enforced at the parser boundary.
+        with self.assertRaises(m.Hold) as too_long:
+            m.parse_verdict({**good, "findings": [{**finding,
+                "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
+        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
+
+    def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
+        target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64}
+        event = {"pull_request": {"number": 2320, "head": {"sha": target["head_sha"]}}}
+        env = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+               "GITHUB_EVENT_PATH": "/mock/event.json", "GITHUB_EVENT_NAME": "pull_request_target",
+               "GH_READ_TOKEN": "fake-read-token", "GITHUB_RUN_ID": "33",
+               "GITHUB_RUN_ATTEMPT": "1", "QA_APP_TOKEN": "fake-check-token"}
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+             patch.object(m.Path, "write_text", autospec=True) as save, \
+             patch.object(m, "capture", return_value=target), \
+             patch.object(m, "prior_semantic_reject", side_effect=m.Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")), \
+             patch.object(m, "semantic_review") as forbidden_review, \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaises(SystemExit) as exiting:
+                m.main()
+        self.assertEqual(exiting.exception.code, 1)
+        forbidden_review.assert_not_called()
+        saved = m.json.loads(save.call_args.args[1])
+        self.assertEqual(saved["decision"], "HOLD")
+        self.assertEqual(saved["reason"], "PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        self.assertEqual(saved["attempts"], [])
+        self.assertNotIn("recovery_class", saved)
+        publish.assert_called_once()
 
     def test_category_prevents_severity_downgrade_of_real_risks(self):
         good = self._passing()
@@ -110,7 +159,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         good = self._passing()
         with self.assertRaises(m.Hold) as err:
             m.parse_verdict({**good, "findings": ["legacy string finding"]})
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
         called = []
         def malformed(provider, key, prompt):
             called.append(provider)
@@ -121,6 +170,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                               {p: "key" for p in m.PROVIDERS}, malformed)
         self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
         self.assertEqual(called, ["anthropic-claude-api"])
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
 
     def test_receipt_schema_is_versioned_without_rewriting_prior_verdicts(self):
         target = {"pr": 2301, "head_sha": "a" * 40, "base_sha": "b" * 40,
@@ -207,14 +257,17 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_unusable_verdict_attributes_the_provider_that_produced_it(self):
         target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "safe"}
+        called = []
         def unusable(provider, key, prompt):
-            raise m.Hold("SEMANTIC_FINDINGS_INVALID")
+            called.append(provider)
+            raise m.Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
         with self.assertRaises(m.Hold) as err:
             m.semantic_review(target, {p: "key" for p in m.PROVIDERS}, unusable)
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
         self.assertEqual(err.exception.attempts,
                          [{"provider": "anthropic-claude-api",
-                           "result": "SEMANTIC_FINDINGS_INVALID"}])
+                           "result": "SEMANTIC_FINDINGS_INVALID:TEXT"}])
+        self.assertEqual(called, ["anthropic-claude-api"])
         # Exercise the HOLD path in main(): searching its source text would
         # also match the owner-fallback handler and miss lost attribution.
         target_with_base = {**target, "base_sha": "c" * 40}
@@ -252,9 +305,12 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(str(save.call_args.args[0]), "wow-independent-security-decision.json")
         receipt = m.json.loads(save.call_args.args[1])
         self.assertEqual(receipt["decision"], "HOLD")
-        self.assertEqual(receipt["reason"], "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(receipt["reason"], "SEMANTIC_FINDINGS_INVALID:TEXT")
         self.assertEqual(receipt["reviewer_identity"], "none")
         self.assertEqual(receipt["attempts"], err.exception.attempts)
+        self.assertEqual(receipt["recovery_class"], "EVIDENCE_PENDING")
+        self.assertEqual(receipt["next_action"], "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD")
+        self.assertEqual(called, ["anthropic-claude-api", "anthropic-claude-api"])
         publish.assert_called_once_with(target["head_sha"], receipt, "fake-check-token")
 
     def test_complete_diff_and_stale_sha_required(self):
@@ -590,7 +646,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             ({"stop_reason": "tool_use", "content": [
                 {"type": "tool_use", "name": "submit_review",
                  "input": {**self._passing(), "findings": ["unsafe"]}}]},
-             "SEMANTIC_FINDINGS_INVALID"),
+             "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT"),
             ({"stop_reason": "tool_use", "content": []},
              "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE"),
             ({"stop_reason": "tool_use", "content": [{"type": "text", "text": "PASS"}]},
