@@ -215,9 +215,47 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(err.exception.attempts,
                          [{"provider": "anthropic-claude-api",
                            "result": "SEMANTIC_FINDINGS_INVALID"}])
-        # Attribution is recorded, never retried against the other provider.
-        import inspect
-        self.assertIn('receipt["attempts"] = exc.attempts', inspect.getsource(m.main))
+        # Exercise the HOLD path in main(): searching its source text would
+        # also match the owner-fallback handler and miss lost attribution.
+        target_with_base = {**target, "base_sha": "c" * 40}
+        event = {"pull_request": {"number": target["pr"], "head": {"sha": target["head_sha"]}}}
+        env = {
+            "GITHUB_REPOSITORY": m.REPO,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_PATH": "/mock/event.json",
+            "GITHUB_EVENT_NAME": "pull_request_target",
+            "GH_READ_TOKEN": "fake-read-token",
+            "GITHUB_RUN_ID": "33",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "WOW_QA_REVIEW_ANTHROPIC_API_KEY": "fake-claude-token",
+            "WOW_QA_REVIEW_GEMINI_API_KEY": "fake-gemini-token",
+            "QA_APP_TOKEN": "fake-check-token",
+        }
+        original_semantic_review = m.semantic_review
+
+        def review_with_unusable_verdict(captured, credentials):
+            return original_semantic_review(captured, credentials, unusable)
+
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+             patch.object(m.Path, "write_text", autospec=True) as save, \
+             patch.object(m, "capture", return_value=target_with_base) as capture, \
+             patch.object(m, "prior_semantic_reject", return_value=False), \
+             patch.object(m, "semantic_review", side_effect=review_with_unusable_verdict), \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaises(SystemExit) as exiting:
+                m.main()
+
+        self.assertEqual(exiting.exception.code, 1)
+        capture.assert_called_once_with(target["pr"], target["head_sha"], "fake-read-token")
+        save.assert_called_once()
+        self.assertEqual(str(save.call_args.args[0]), "wow-independent-security-decision.json")
+        receipt = m.json.loads(save.call_args.args[1])
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reason"], "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(receipt["reviewer_identity"], "none")
+        self.assertEqual(receipt["attempts"], err.exception.attempts)
+        publish.assert_called_once_with(target["head_sha"], receipt, "fake-check-token")
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
