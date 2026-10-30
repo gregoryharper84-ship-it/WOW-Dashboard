@@ -36,8 +36,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run network-free wake probe checks
         run: |
-          cd artifacts/wow-engine/kalshi_weather_v2
-          python3 -m unittest -v test_external_wake_probe.py
+          cd artifacts/wow-engine
+          python3 -m unittest -v kalshi_weather_v2.test_external_wake_probe
 
   heartbeat:
     if: github.event_name != 'pull_request'
