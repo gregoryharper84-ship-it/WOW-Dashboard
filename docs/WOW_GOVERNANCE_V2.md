@@ -40,23 +40,6 @@ never `success`; after authentic GitHub approval, the owner explicitly dispatche
 For example, after review: `gh workflow run wow-v17-simple-security-review.yml --ref main -f pr_number=<PR> -f head_sha=<HEAD_SHA>`. The check's detailed failure log/receipt supplies the required digest-bound approval text. This is **manual fallback**, not an automatic third model or permission to
 place orders, self-approve, merge or deploy.
 
-### Owner attention is separate from owner approval (incident #2136)
-
-Whenever the reviewer cannot obtain a verdict — missing credentials, typed provider
-unavailability, an ambiguous provider `400`/`404`, a GitHub read/publish failure, an
-unknown reviewer failure, or an owner fallback that policy blocks — it publishes one
-durable `@gregoryharper84-ship-it` attention request on the PR instead of only printing
-to stderr. The request states the exact head/base/diff digest (or that capture failed),
-the failed stage, the sanitized cause, the full attempt ledger (including providers that
-were never attempted), the security decision, owner-approval eligibility and the valid
-next actions. A stable dedupe key over repository, PR, head, base, failure class and
-incident means a retried identical failure updates the same comment without repeating
-the mention; a new head/base or failure class creates one new event. Publication runs in
-a separate job holding `pull-requests: write` and no provider credentials, so a
-notification failure is observable without overwriting the review failure. Attention is
-advisory recovery authority only: it never publishes a PASS, never becomes an owner
-approval, and is never offered when source-author independence makes approval ineligible.
-
 For Class A routine repairs keep the existing deterministic CI/release
 requirements. Class B trust roots and probability-adjacent changes need an
 independent reviewer; Class C probability changes need the full governed
