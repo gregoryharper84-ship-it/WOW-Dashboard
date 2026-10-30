@@ -500,14 +500,14 @@ provider outages, retry authorization, or evidence of a fitted probability.
 | `AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE` | `INFRA_UNAVAILABLE` | Existing Redis admission bound cannot be checked | Restore Redis; never bypass throttle or DB safety |
 
 Source/receipt contract: `WOW-AGENT-RUNTIME-V1-PHASE1`; actor:
-`wow.agent-runtime-api`. These limits bound a single admission, **not**
-global request rate. The existing bearer comparison is reused, but sports Agent Runtime now requires
+`wow.agent-runtime-api`. The per-request size limits do not replace the separate
+global Redis admission bound. The existing bearer comparison is reused, but sports Agent Runtime now requires
 a distinct `WOW_AGENT_RUNTIME_API_KEY` of at least 32 characters; it cannot
 fall back to or equal `WOW_ACTION_API_KEY`. A deployment without this separate
 secret fails closed with HTTP 401. Configure it securely in the existing Render
 web service and the authorized live canary caller before attempting a POST.
-The existing Redis broker enforces a global 60-admissions/minute fixed bucket
-with atomic increments and fails closed if Redis is unavailable. This is not
+The existing Redis broker enforces a deployment-wide 60-admissions-per-rolling-minute
+sliding window with atomic Lua checks and fails closed if Redis is unavailable. This is not
 a claim of externally verified gateway throttling. Authenticated run reads use
 `api._require_agent_runtime_api_key`; `/health/live` and `/health/ready`
 remain public. No change to `V17_TERMINAL_REDUCER`.
