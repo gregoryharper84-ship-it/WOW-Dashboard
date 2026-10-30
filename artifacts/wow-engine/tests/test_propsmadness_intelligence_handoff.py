@@ -63,6 +63,29 @@ def test_nba_threes_current_public_slug_handoff_is_research_only():
         build_shared_intelligence_handoff([receipt])
 
 
+def test_real_style_nba_table_reaches_research_handoff_without_fitted_authority():
+    html = b"""<html><table><tr>
+      <td>1</td><td><a href="/nba?player=55&amp;market=player-made-threes&amp;match=77">
+      A. Sample</a><span>BOS vs NYK &#183; G</span></td>
+      <td><div>2.5</div><button>O-125</button><button>U-104</button></td>
+      <td>Graph</td><td>1/4</td><td>2.2</td><td>B</td>
+    </tr></table></html>"""
+    receipt = parse_multisport_public_html(
+        html, sport="NBA", market="threes", fetched_at="2026-10-30T13:00:00Z")
+    assert receipt["row_count"] == 1
+    handoff = build_shared_intelligence_handoff([receipt])
+    assert handoff["unique_prop_hints"] == 1
+    hint = handoff["prop_discovery_hints"][0]
+    assert hint["stat_type"] == "THREE_POINTERS_MADE"
+    assert hint["source_url"] == "https://propsmadness.com/nba/props/made-threes"
+    assert hint["pregame_feature_eligible"] is False
+    assert hint["model_probability"] is None
+    assert handoff["model_consumption_receipts"] == []
+    assert handoff["historical_training_authorized"] is False
+    assert handoff["probability_publishable"] is False
+    assert handoff["can_execute"] is False
+
+
 def test_two_props_same_provider_event_yield_one_llp_event_without_claimed_match():
     r = source("NBA", "points")
     a = source("NBA", "assists", player=202, match=102)
