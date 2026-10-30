@@ -124,6 +124,42 @@ def test_invalid_audit_upgrade_to_completed_fails_closed():
     assert RUN_INVALID_TERMINAL_UPGRADE in upgraded["blockers"]
 
 
+@pytest.mark.parametrize(
+    "stages,claimed_lowest,claimed_final,exception,expected",
+    [
+        (["COMPLETED"], "HELD", "COMPLETED", True, "HELD"),
+        (["REJECTED", "COMPLETED"], "HELD", "COMPLETED", True, "REJECTED"),
+        (["COMPLETED", "HELD"], "REJECTED", "COMPLETED", True, "REJECTED"),
+        (["COMPLETED", "REJECTED"], "REJECTED", "COMPLETED", False, "REJECTED"),
+        (["COMPLETED", "MYSTERY"], "HELD", "COMPLETED", True, "HELD"),
+    ],
+)
+def test_forged_reduction_audit_never_softens_terminal(
+    stages, claimed_lowest, claimed_final, exception, expected,
+):
+    audited = assert_no_terminal_upgrade({
+        "stage_terminals": stages,
+        "lowest_stage_terminal": claimed_lowest,
+        "final_terminal": claimed_final,
+        "approved_stage_exception_applied": exception,
+    })
+    assert audited["final_terminal"] == expected
+    assert audited["terminal_upgraded_from_rejection"] is True
+    assert RUN_INVALID_TERMINAL_UPGRADE in audited["blockers"]
+
+
+def test_empty_reduction_audit_fails_closed_even_if_marked_approved():
+    audited = assert_no_terminal_upgrade({
+        "stage_terminals": [],
+        "lowest_stage_terminal": "COMPLETED",
+        "final_terminal": "COMPLETED",
+        "approved_stage_exception_applied": True,
+    })
+    assert audited["final_terminal"] == "HELD"
+    assert audited["terminal_upgraded_from_rejection"] is True
+    assert RUN_INVALID_TERMINAL_UPGRADE in audited["blockers"]
+
+
 def test_a_softened_terminal_is_caught_and_reverted():
     upgraded = assert_no_terminal_upgrade(
         {"lowest_stage_terminal": "REJECTED", "final_terminal": "HELD", "stage_terminals": ["REJECTED"]}
