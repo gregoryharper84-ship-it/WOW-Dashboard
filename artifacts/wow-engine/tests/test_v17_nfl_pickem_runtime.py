@@ -238,6 +238,7 @@ def test_pickem_audit_uses_classifier_rank_aliases_consistently():
             "forward_certification_status": "PASS",
             "blockers": [],
         },
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
         "can_execute": False,
     }
     for rank_key in ("rank_eligible", "probability_rank_eligible"):
@@ -254,6 +255,35 @@ def test_pickem_audit_uses_classifier_rank_aliases_consistently():
     assert qualified["row_status"] == "COMPLETED"
     assert qualified["probability_publishable"] is True
     assert qualified["can_execute"] is False
+
+
+@pytest.mark.parametrize("authority,can_execute", [
+    (None, False),
+    ("UNVERIFIED_TERMINAL", False),
+    ("V17_TERMINAL_REDUCER", True),
+    ("V17_TERMINAL_REDUCER", None),
+])
+def test_pickem_refuses_final_publication_without_global_reducer_authority(
+    authority, can_execute,
+):
+    payload = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "global_terminal_authority": authority,
+        "can_execute": can_execute,
+        "nfl_stage_receipt": {
+            "status": "PASS",
+            "forward_certification_status": "PASS",
+            "blockers": [],
+        },
+    }
+    row = runtime._audit_row(payload)
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["terminal_reduction"]["final_terminal"] == "HELD"
+    assert row["can_execute"] is False
 
 
 def test_pickem_without_actual_fitted_nfl_stage_proof_stays_held():
