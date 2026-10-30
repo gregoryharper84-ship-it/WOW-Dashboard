@@ -269,6 +269,21 @@ These are evidence/freshness publication holds, **not** fitted-model unavailabil
 | `FINAL_REFRESH_MATERIAL_SOURCE_CHANGED` | NFL team-event / final refresh | Canonical NFL schedule content hash differs from that used for the scored prediction; rerun required. | No |
 | `FINAL_REFRESH_SOURCE_STALE_OR_INVALID` | NFL team-event / final refresh | Latest canonical schedule capture lacks a valid UTC timestamp, is future-dated, or exceeds the 24-hour publication freshness window. | No |
 
+## Gate-capability matrix reason codes (V25 §2)
+
+Codes the gate-capability matrix (`v17/gate_capability_matrix.py`) relies on to prove a
+path is reachable or `POLICY_UNREACHABLE`. Registering them here is required by the same
+rule as any other typed code: a code a planner or reviewer leans on must be discoverable
+from the registry, not only from the module that emits it.
+
+| Code | Owning lane/stage | Meaning | Rank eligible? |
+|---|---|---|---:|
+| `RELEASE_TRUST_ROOT_OWNER_APPROVAL_MISSING` | Release Authority exact-head | A trust-root change has no owner `APPROVED` review at the exact head, so Release cannot admit it. Owner-**authored** trust-root source reports `QA_TRUST_ROOT_OWNER_AUTHORED` instead, because the owner's own approval is not independence. | N/A |
+| `OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED` | semantic reviewer third stage (owner fallback) | The owner fallback requires an Engineering App author **and** a non-owner original source author. Owner-origin source can never satisfy it, so it is structurally unreachable rather than temporarily blocked. | N/A |
+| `SEMANTIC_FINDINGS_INVALID` | semantic reviewer verdict parsing | The provider returned findings that do not satisfy the governed `{severity, file, detail, evidence}` contract with `critical|high|medium|low` severity — legacy string findings, unknown severity, or missing fields. Fail-closed `HOLD`; malformed findings never become PASS and never become REJECT. | N/A |
+| `PREVIOUS_SEMANTIC_REJECT_SAME_SHA` | semantic reviewer re-review guard | A terminal semantic `REJECT` is already published for this exact head. Re-review requires a changed diff, a corrected dependency, or materially new evidence; unchanged inputs are never re-dispatched for a more favourable verdict. | N/A |
+| `PROVIDER_MODEL_UNAVAILABLE` | semantic reviewer provider chain | The provider itself named this exact approved model as gone (Anthropic `not_found_error` naming `model: <id>`, or Gemini `NOT_FOUND` for `models/<id>`). Only this narrow, structured availability promotes to the next approved reviewer; a semantic `REJECT` remains terminal, and a bare or unattributed 404 stays an attributable `HOLD`. | N/A |
+
 ## Registry rule
 
 A new code requires, in the same change: code name, owning lane/stage, exact condition, whether it affects sporting probability/rank, and a regression test. Provider-specific detail codes may be preserved underneath a registered class; they must never be rewritten into `MODEL_UNAVAILABLE` unless the fitted model capability itself is truly absent.
