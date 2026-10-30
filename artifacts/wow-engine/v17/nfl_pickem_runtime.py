@@ -398,10 +398,12 @@ def _audit_row(source: Mapping[str, Any]) -> dict[str, Any]:
         "lane": "MONEYLINE",
         "identity": identity,
         "row_status": final_terminal,
+        # Use the classifier's already-governed ranking decision, including
+        # probability_rank_eligible / qualified aliases. Rechecking only the
+        # top-level rank_eligible key creates contradictory saved rows
+        # (COMPLETED with probability_publishable=False) for valid aliases.
         "probability_publishable": bool(
-            final_terminal == "COMPLETED"
-            and scored.get("probability_publishable") is True
-            and scored.get("rank_eligible") is True
+            final_terminal == "COMPLETED" and stage_status == "COMPLETED"
         ),
         "result": scored,
         "terminal_reduction": reduction,
