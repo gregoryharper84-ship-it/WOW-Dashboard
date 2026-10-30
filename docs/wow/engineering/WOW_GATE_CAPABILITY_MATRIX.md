@@ -20,11 +20,11 @@ are advisory unless separately established as policy obligations.
 
 | Gate | Published check | Requirement | Impossible for | Typed reason | Recovery class | Authorized route |
 | --- | --- | --- | --- | --- | --- | --- |
-| `required_three_regression` | WOW required-three regression | ruleset_live | - | - | - | passes when CI passes |
-| `governed_probability_backend` | WOW governed probability backend | ruleset_live | - | - | - | passes when CI passes |
-| `additional_required_regression` | WOW additional required regression | ruleset_live | - | - | - | passes when CI passes |
-| `independent_qa` | WOW Independent QA exact-head | ruleset_proposed | `owner_authored_trust_root` | `QA_TRUST_ROOT_OWNER_AUTHORED` | `POLICY_UNREACHABLE` | INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE (`INDEPENDENT_ENGINEERING_AUTHOR`) |
-| `release_authority` | WOW Release Authority exact-head | ruleset_proposed | `owner_authored_trust_root` | `QA_TRUST_ROOT_OWNER_AUTHORED` | `POLICY_UNREACHABLE` | INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE (`INDEPENDENT_ENGINEERING_AUTHOR`) |
+| `required_three_regression` | WOW required-three regression | ruleset_live | - | - | - | no structural impossibility declared |
+| `governed_probability_backend` | WOW governed probability backend | ruleset_live | - | - | - | no structural impossibility declared |
+| `additional_required_regression` | WOW additional required regression | ruleset_live | - | - | - | no structural impossibility declared |
+| `independent_qa` | WOW Independent QA exact-head | ruleset_proposed | - | - | - | no structural impossibility declared |
+| `release_authority` | WOW Release Authority exact-head | ruleset_proposed | - | - | - | no structural impossibility declared |
 | `semantic_review` | WOW Independent Security Review | advisory | `provider_unavailable` | `PROVIDER_MODEL_UNAVAILABLE` | `AUTH_OR_CONFIGURATION` | REPAIR_PROVIDER_CREDENTIAL_OR_ROUTE (`OWNER`) |
 | `semantic_review` | WOW Independent Security Review | advisory | `unchanged_head_after_reject` | `PREVIOUS_SEMANTIC_REJECT_SAME_SHA` | `PROVEN_REJECT` | NEW_HEAD_OR_NEW_EVIDENCE_REQUIRED (`OWNER`) |
 | `owner_fallback` | (third stage; publishes no check) | advisory | `owner_authored_trust_root` | `OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED` | `POLICY_UNREACHABLE` | INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE (`INDEPENDENT_ENGINEERING_AUTHOR`) |

@@ -263,7 +263,7 @@ def test_incomplete_matrix_fails_closed_without_dispatch(monkeypatch):
         rp._gate_matrix, "assess",
         lambda **kwargs: {
             "unreachable": [{
-                "gate": "independent_qa", "reason": "QA_TRUST_ROOT_OWNER_AUTHORED",
+                "gate": "existing_pr_governance", "reason": "QA_TRUST_ROOT_OWNER_AUTHORED",
                 "recovery_class": "TRANSIENT", "actor": "OWNER",
                 "action": "DISPATCH_REPAIR",
             }],
@@ -334,3 +334,12 @@ def test_matrix_hold_cli_writes_typed_non_dispatching_json(monkeypatch, capsys):
     assert result["reason"] == "GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD"
     assert result["attempts"] == 2
     assert result["can_execute"] is False
+
+
+def test_retired_qa_owner_authored_code_is_not_active_v3_qa():
+    route = rp._owner_authored_gate_route()
+    assert route["gate"] == "existing_pr_governance"
+    assert route["requirement"] == "advisory"
+    assert rp._gate_matrix.assess(
+        change_class="S", author_is_owner=True, touches_trust_root=True
+    )["grants_merge"] is False

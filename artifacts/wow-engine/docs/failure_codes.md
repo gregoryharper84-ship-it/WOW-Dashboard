@@ -4,10 +4,13 @@ This file is the repository source of truth for governed typed failure/status co
 
 `can_execute=false` remains invariant. Market/evidence failures never imply a sporting-model capability failure.
 
+Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
+
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
 | `DISCOVERY_MAIN_SHA_INVALID_HOLD` | Engineering App source discovery | The caller supplied a malformed purported current protected-main SHA; reject before any GitHub source inventory or writer admission. | No |
 | `GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD` | Engineering recovery planner | Authenticated owner-authored QA HOLD cannot be reconciled against the read-only gate matrix or its bounded route contract. Return a typed non-dispatching WAITING_ON_EVIDENCE with attempts unchanged; never infer approval or call a repair worker. | N/A |
+| `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; the owner's self-review is not independent. Engineering App source replay does not itself prove independent authorship or review. | N/A |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |
@@ -209,7 +212,6 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_EVIDENCE_MISSING` | independent QA | A required exact-head check from `github-actions` (App 15368) has no completed run at the head; same-named checks from other Apps are ignored. Suffixed `:<check>`. | N/A |
 | `QA_EVIDENCE_FAILED` | independent QA | The latest exact-head run of a required check is not `success`; suffixed `:<check>`. | N/A |
 | `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING` | independent QA | The PR changes a trust root (`.github/`, `.agents/`, or a file a governance workflow executes or reads) and the owner's latest review is not APPROVED on this exact head. | N/A |
-| `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; the owner's self-review is not independent. Engineering App source replay does not itself prove independent authorship or review. | N/A |
 | `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
 | `RELEASE_PR_NUMBER_INVALID` | release authority | Manual Release re-entry did not provide a valid PR number to bind to its QA receipt. | N/A |
 | `RELEASE_QA_RUN_IDENTITY_INVALID` | Release read-only admission | Producing QA run ID or attempt is missing or malformed before assigning a PR-scoped writer. | N/A |
@@ -269,21 +271,6 @@ These are evidence/freshness publication holds, **not** fitted-model unavailabil
 | `FINAL_REFRESH_EVENT_IDENTITY_CHANGED` | NFL team-event / final refresh | Canonical event/team identity no longer matches the fitted-model event. | No |
 | `FINAL_REFRESH_MATERIAL_SOURCE_CHANGED` | NFL team-event / final refresh | Canonical NFL schedule content hash differs from that used for the scored prediction; rerun required. | No |
 | `FINAL_REFRESH_SOURCE_STALE_OR_INVALID` | NFL team-event / final refresh | Latest canonical schedule capture lacks a valid UTC timestamp, is future-dated, or exceeds the 24-hour publication freshness window. | No |
-
-## Gate-capability matrix reason codes (V25 §2)
-
-Codes the gate-capability matrix (`v17/gate_capability_matrix.py`) relies on to prove a
-path is reachable or `POLICY_UNREACHABLE`. Registering them here is required by the same
-rule as any other typed code: a code a planner or reviewer leans on must be discoverable
-from the registry, not only from the module that emits it.
-
-| Code | Owning lane/stage | Meaning | Rank eligible? |
-|---|---|---|---:|
-| `RELEASE_TRUST_ROOT_OWNER_APPROVAL_MISSING` | Release Authority exact-head | A trust-root change has no owner `APPROVED` review at the exact head, so Release cannot admit it. Owner-**authored** trust-root source reports `QA_TRUST_ROOT_OWNER_AUTHORED` instead, because the owner's own approval is not independence. | N/A |
-| `OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED` | semantic reviewer third stage (owner fallback) | The owner fallback requires an Engineering App author **and** a non-owner original source author. Owner-origin source can never satisfy it, so it is structurally unreachable rather than temporarily blocked. | N/A |
-| `SEMANTIC_FINDINGS_INVALID` | semantic reviewer verdict parsing | The provider returned findings that do not satisfy the governed `{severity, file, detail, evidence}` contract with `critical|high|medium|low` severity — legacy string findings, unknown severity, or missing fields. Fail-closed `HOLD`; malformed findings never become PASS and never become REJECT. | N/A |
-| `PREVIOUS_SEMANTIC_REJECT_SAME_SHA` | semantic reviewer re-review guard | A terminal semantic `REJECT` is already published for this exact head. Re-review requires a changed diff, a corrected dependency, or materially new evidence; unchanged inputs are never re-dispatched for a more favourable verdict. | N/A |
-| `PROVIDER_MODEL_UNAVAILABLE` | semantic reviewer provider chain | The provider itself named this exact approved model as gone (Anthropic `not_found_error` naming `model: <id>`, or Gemini `NOT_FOUND` for `models/<id>`). Only this narrow, structured availability promotes to the next approved reviewer; a semantic `REJECT` remains terminal, and a bare or unattributed 404 stays an attributable `HOLD`. | N/A |
 
 ## Registry rule
 

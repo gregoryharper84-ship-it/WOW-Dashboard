@@ -45,17 +45,18 @@ EVIDENCE_PENDING_CODES = frozenset({"RELEASE_QA_MISSING", "RELEASE_QA_FAILED"})
 
 
 def _owner_authored_gate_route() -> dict[str, Any]:
-    """Consult the read-only matrix for an exact-head QA authorship HOLD.
+    """Classify a historical pre-V3 owner-authorship HOLD without redispatch.
 
-    Only the existing adoption worker can re-propose source. Its byte-for-byte
-    App copy is never proof of independent authorship or semantic review.
+    V3 deterministic QA no longer emits this code. Retired advisory certifiers
+    may still expose it in historical evidence. Never infer present QA failure,
+    independent review, or permission to merge from that legacy evidence.
     """
     report = _gate_matrix.assess(
         change_class="S", author_is_owner=True, touches_trust_root=True
     )
     matches = [
         entry for entry in report["unreachable"]
-        if entry["gate"] == "independent_qa"
+        if entry["gate"] == "existing_pr_governance"
         and entry["reason"] == "QA_TRUST_ROOT_OWNER_AUTHORED"
     ]
     if (len(matches) != 1

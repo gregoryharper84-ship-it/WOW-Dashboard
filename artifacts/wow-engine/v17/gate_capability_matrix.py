@@ -21,8 +21,10 @@ Change classes are the repository's own taxonomy
 - ``C`` probability-producing, calibrating or threshold-affecting
 
 The ``requirement`` field records pinned CI, not authorization: ``ruleset_live``
-identifies the three checks observed in ruleset #24907422. Non-pinned semantic
-security review may still be policy-required before protected releases.
+identifies the three checks observed in ruleset #24907422. Governance V3 permits
+owner-authored protected source under deterministic QA; legacy certifiers can
+remain advisory-unreachable and a historical REJECT cannot be rewritten.
+Separately applicable project security/release authorization still governs.
 The static model is not permission to merge and cannot prove source independence.
 ``ruleset_proposed`` gates are declared in ``ruleset-main.proposed.json`` but are not
 live, and ``advisory`` gates publish a check without gating the merge. A gate that is
@@ -117,18 +119,10 @@ GATES = (
         requirement="ruleset_proposed",
         required_by=(
             "ruleset-main.proposed.json placeholder __WOW_QA_APP_ID__; not in the live "
-            "ruleset, so never merge-blocking today (docs/WOW_GOVERNANCE_V2.md step 4 governs pinning)"
+            "ruleset, so never merge-blocking today (see Governance V3; owner-authored source is not an automatic QA failure)"
         ),
         publisher="QA App check_run API (no literal job name)",
-        impossible=(
-            ImpossibleState(
-                condition="owner_authored_trust_root",
-                reason="QA_TRUST_ROOT_OWNER_AUTHORED",
-                recovery_class="POLICY_UNREACHABLE",
-                actor=_ADOPTION[0],
-                action=_ADOPTION[1],
-            ),
-        ),
+
     ),
     Gate(
         id="release_authority",
@@ -140,15 +134,7 @@ GATES = (
             "ruleset, so never merge-blocking today"
         ),
         publisher="Release App check_run API (no literal job name)",
-        impossible=(
-            ImpossibleState(
-                condition="owner_authored_trust_root",
-                reason="QA_TRUST_ROOT_OWNER_AUTHORED",
-                recovery_class="POLICY_UNREACHABLE",
-                actor=_ADOPTION[0],
-                action=_ADOPTION[1],
-            ),
-        ),
+
     ),
     Gate(
         id="semantic_review",
@@ -228,10 +214,10 @@ def assess(
 ) -> dict:
     """Return per-gate reachability for one change.
 
-    ``author_is_owner`` plus ``touches_trust_root`` is the structural impasse: the
-    repository refuses to let the owner certify owner-authored trust-root source, so
-    a certification path that requires independence can never pass for it. The
-    correct response is the named authorized route, not another dispatch.
+    Owner authorship does not make V3 deterministic QA or Release structurally
+    unreachable. Legacy advisory certifiers and owner-source reviewer fallback
+    can remain unreachable: preserve that evidence without conflating it with
+    required CI or authorizing a merge.
     """
     if change_class not in CHANGE_CLASSES:
         raise ValueError(f"unknown change class: {change_class!r}")
@@ -311,7 +297,7 @@ def render_markdown() -> str:
         if not gate.impossible:
             lines.append(
                 f"| `{gate.id}` | {gate.check_context} | {gate.requirement} | - | - | - | "
-                "passes when CI passes |"
+                "no structural impossibility declared |"
             )
             continue
         for state in gate.impossible:

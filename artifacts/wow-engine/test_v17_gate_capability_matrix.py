@@ -90,8 +90,10 @@ def test_app_checks_are_proposed_not_live():
 def test_owner_authored_trust_root_is_policy_unreachable_not_retryable():
     result = gcm.assess(change_class="S", author_is_owner=True, touches_trust_root=True)
     reasons = {entry["reason"] for entry in result["unreachable"]}
-    assert "QA_TRUST_ROOT_OWNER_AUTHORED" in reasons
+    assert "QA_TRUST_ROOT_OWNER_AUTHORED" in reasons  # retired certifier only
     assert "OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED" in reasons
+    assert not any(row["gate"] in ("independent_qa", "release_authority")
+                   for row in result["unreachable"])
     assert result["retryable"] == []
     for entry in result["unreachable"]:
         assert entry["recovery_class"] == "POLICY_UNREACHABLE", entry
@@ -188,3 +190,14 @@ def test_matrix_does_not_equate_pinned_ci_with_release_authority():
         assert report["policy_review_required"] == (change_class in ("S", "C"))
         assert report["can_execute"] is False
         assert report["grants_merge"] is False
+
+
+def test_v3_owner_authored_trust_root_not_unreachable_in_qa_or_release():
+    result = gcm.assess(change_class="S", author_is_owner=True, touches_trust_root=True)
+    by_id = {gate.id: gate for gate in gcm.GATES}
+    assert by_id["independent_qa"].impossible == ()
+    assert by_id["release_authority"].impossible == ()
+    assert all(row["gate"] not in {"independent_qa", "release_authority"}
+               for row in result["unreachable"])
+    assert result["grants_merge"] is False
+    assert result["independent_review_status"] == "UNVERIFIED"

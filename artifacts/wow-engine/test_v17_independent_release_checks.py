@@ -408,10 +408,21 @@ def test_ordinary_engine_code_stays_autonomous():
     assert m.qa_findings(ev) == []
 
 
-def test_owner_authored_trust_root_pr_can_never_pass():
-    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[
-        {"user": OWNER, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"}])
-    assert "QA_TRUST_ROOT_OWNER_AUTHORED" in m.qa_findings(ev)
+def test_owner_authored_trust_root_is_not_rejected_for_authorship():
+    # No fake independent review: source-review validation remains separately active.
+    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[])
+    assert "QA_TRUST_ROOT_OWNER_AUTHORED" not in m.qa_findings(ev)
+    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" not in m.qa_findings(ev)
+    ev["expected_head_sha"] = OLD
+    assert "QA_HEAD_STALE" in m.qa_findings(ev)
+
+
+def test_non_owner_trust_root_still_needs_exact_head_owner_approval():
+    ev = evidence(files=TRUST_ROOT_FILES, author="wow-engineering[bot]", reviews=[])
+    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+    ev["reviews"] = [{"user": OWNER, "state": "APPROVED", "commit_id": OLD,
+                      "submitted_at": "2026-10-09T02:00:00Z"}]
+    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
 
 
 # --- Release decisions --------------------------------------------------------------
