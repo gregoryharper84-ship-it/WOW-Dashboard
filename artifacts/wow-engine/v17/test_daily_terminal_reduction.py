@@ -170,6 +170,51 @@ def test_unblocked_nfl_pass_receipt_preserves_real_stage_completion():
     )["final_terminal"] == "COMPLETED"
 
 
+def test_arbitrarily_nested_qualified_receipt_hold_never_upgrades():
+    payload = {
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "detail": {
+            "detail": {
+                "probability_qualification": {
+                    "detail": {
+                        "nfl_stage_receipt": {
+                            "status": "HOLD",
+                            "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+                        },
+                    },
+                },
+            },
+        },
+    }
+    assert classify_stage_status(payload) == "HELD"
+
+
+def test_nested_qualification_key_matches_actual_fitted_receipt():
+    # The actual producer key is probability_qualification (not qualification).
+    payload = {
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "probability_qualification": {
+            "detail": {"detail": {"terminal_ceiling": "MODEL_QUALIFIED_HOLD"}},
+        },
+    }
+    assert classify_stage_status(payload) == "HELD"
+
+
+def test_unbounded_or_cyclic_certification_envelopes_fail_closed():
+    outer = {"probability_publishable": True, "rank_eligible": True}
+    current = outer
+    for _ in range(10):
+        nxt = {}
+        current["detail"] = nxt
+        current = nxt
+    assert classify_stage_status(outer) == "HELD"
+    cyclic = {"probability_publishable": True, "rank_eligible": True}
+    cyclic["detail"] = cyclic
+    assert classify_stage_status(cyclic) == "HELD"
+
+
 @pytest.mark.parametrize("blocking", ["HELD", "INVALID", "PURGED"])
 def test_approved_stage_cannot_override_an_unresolved_or_invalid_stage(blocking):
     audited = assert_no_terminal_upgrade(reduce_row_terminal(["COMPLETED", blocking]))
