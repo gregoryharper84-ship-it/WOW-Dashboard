@@ -11,7 +11,8 @@ response body. Network access is limited to the same two provider endpoints the
 reviewer already uses.
 
 Usage:
-    WOW_QA_REVIEW_ANTHROPIC_API_KEY=... python scripts/wow_reviewer_provider_probe.py
+    # Set the key securely in the environment; never paste it into a shell command or issue.
+    python scripts/wow_reviewer_provider_probe.py
     python scripts/wow_reviewer_provider_probe.py --provider anthropic
     python scripts/wow_reviewer_provider_probe.py --provider gemini
 
@@ -23,6 +24,7 @@ Exit status:
 import argparse
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -39,12 +41,16 @@ PROVIDER_IDS = {
 }
 HINTS = {
     "PROVIDER_HTTP_401": "401 = the key was rejected (malformed, expired, revoked, or no access)",
-    "PROVIDER_HTTP_403": "403 = the key is valid but not permitted for this model or project",
-    "PROVIDER_HTTP_404": "404 = the model or API version is not available to this key (entitlement, not auth)",
+    "PROVIDER_HTTP_403": "403 = access denied; inspect provider policy, project and key permissions",
+    "HTTP_403": "403 = access denied; inspect provider policy, project and key permissions",
+    "PROVIDER_HTTP_404": "404 = resource not found; check model, API version and account availability",
+    "HTTP_404": "404 = resource not found; check model, API version and account availability",
     "PROVIDER_HTTP_429": "429 = rate limited or out of quota",
     "PROVIDER_CREDIT_EXHAUSTED": "the account has no remaining credit",
     "PROVIDER_MODEL_UNAVAILABLE": "the provider reported the model as retired or absent",
     "PROVIDER_TRANSPORT": "the provider endpoint was unreachable from this machine",
+    "CREDENTIAL_WHITESPACE": "key contains surrounding whitespace; fix stored secret before testing",
+    "PROBE_UNEXPECTED_ERROR": "unexpected local or provider exception; inspect probe setup without logging secrets",
     "CLAUDE_MODEL_UNAPPROVED": "WOW_QA_CLAUDE_MODEL is set to a value the reviewer does not allow",
     "GEMINI_MODEL_INVALID": "WOW_QA_GEMINI_MODEL is set to a value the reviewer does not allow",
 }
@@ -90,19 +96,27 @@ def probe(module, name):
         print(f"PROBE_RESULT:{name}:CREDENTIAL_UNAVAILABLE ({env_var} is unset or blank)")
         return False, "CREDENTIAL_UNAVAILABLE"
     if key != key.strip():
-        # Not fatal, but a trailing newline or padding makes the provider reject
-        # an otherwise valid key, and the reviewer does not trim it either.
+        # The installed reviewer sends the raw stored value. Trimming here would
+        # create a false healthy preflight for a broken production credential.
         print(f"PROBE_WARNING:{name}:LEADING_OR_TRAILING_WHITESPACE_IN_CREDENTIAL")
+        print(f"PROBE_RESULT:{name}:CREDENTIAL_WHITESPACE")
+        return False, "CREDENTIAL_WHITESPACE"
     try:
-        decision, _payload = module.call_provider(PROVIDER_IDS[name], key.strip(),
+        decision, _payload = module.call_provider(PROVIDER_IDS[name], key,
                                                   module.prompt_for(sample_target()))
     except module.Hold as exc:
-        code = str(exc)
+        raw_code = str(exc)
+        # Never relay arbitrary provider or future exception strings to stdout.
+        # Only typed codes with a closed character set are safe to print.
+        code = raw_code if re.fullmatch(r"[A-Z][A-Z0-9_]{1,79}", raw_code) else "PROBE_UNEXPECTED_ERROR"
         print(f"PROBE_RESULT:{name}:{code}")
         hint = HINTS.get(code)
         if hint:
             print(f"PROBE_HINT:{name}:{hint}")
         return False, code
+    except Exception:
+        print(f"PROBE_RESULT:{name}:PROBE_UNEXPECTED_ERROR")
+        return False, "PROBE_UNEXPECTED_ERROR"
     # A REJECT on the sample diff is still a healthy provider: it proves transport,
     # authentication and the verdict schema all worked.
     print(f"PROBE_RESULT:{name}:OK (schema-valid verdict, decision={decision})")
@@ -116,7 +130,7 @@ def main():
     module = load_reviewer()
     names = ("anthropic", "gemini") if args.provider == "all" else (args.provider,)
     print("PROBE_TARGET: reviewer request path at " + str(REVIEWER.relative_to(REPO_ROOT)))
-    print("PROBE_NOTE: this spends a few tokens per provider and publishes no check run.")
+    print("PROBE_NOTE: uses provider API and may incur charges; publishes no GitHub check run.")
     results = [probe(module, name) for name in names]
     if all(code == "CREDENTIAL_UNAVAILABLE" for _ok, code in results):
         print("PROBE_SUMMARY: no credential available to test")
