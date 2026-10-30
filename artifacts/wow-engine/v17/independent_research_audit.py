@@ -64,6 +64,8 @@ def _row(raw: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         return None, "ARCHIVED_PUBLICATION_FALSE"
     if raw.get("void") is True or raw.get("push") is True:
         return None, "VOID_OR_PUSH"
+    if raw.get("void") is not False or raw.get("push") is not False:
+        return None, "SETTLEMENT_FLAGS_UNVERIFIED"
     if not isinstance(raw.get("hit"), bool):
         return None, "OUTCOME_UNRESOLVED"
     game_pk = _game_pk(raw.get("settlement_source"))
@@ -74,11 +76,14 @@ def _row(raw: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     created = _time(raw.get("created_at"))
     settled = _time(raw.get("settlement_timestamp"))
     locked = _time(raw.get("locked_at")) if raw.get("locked_at") is not None else None
-    if not all((start, model, created, settled)):
+    if not all((start, model, created, settled)) or (raw.get("locked_at") is not None and locked is None):
         return None, "TIMESTAMP_UNVERIFIED"
     if model >= start or created >= start or settled < start or (locked is not None and locked >= start):
         return None, "NOT_FROZEN_PREGAME"
-    if _BAD_EVENT.search(str(raw.get("event_id") or "")):
+    event_id = str(raw.get("event_id") or "").strip()
+    if not event_id:
+        return None, "EXACT_IDENTITY_UNVERIFIED"
+    if _BAD_EVENT.search(event_id):
         return None, "SYNTHETIC_OR_PROBE"
     player = str(raw.get("player") or "").strip().casefold()
     stat = str(raw.get("stat_type") or "").strip().upper()
@@ -105,7 +110,7 @@ def _row(raw: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         actual = None
     return {
         "thesis": thesis, "base": base, "game_pk": game_pk,
-        "event_id": str(raw.get("event_id")), "prediction_id": pid,
+        "event_id": event_id, "prediction_id": pid,
         "model_time": model, "created": created, "probability": probability,
         "hit": int(raw["hit"]), "actual": actual,
     }, None
