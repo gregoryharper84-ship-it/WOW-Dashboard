@@ -73,8 +73,10 @@ REVIEW_SCHEMA = {
 def _build_claude_strict_schema():
     """Adapt unsupported JSON-Schema length keywords without weakening policy.
 
-    A new isolated object is produced on every call. The provider sees a
-    bounded regex; parse_verdict independently enforces original 500/12 caps.
+    A new isolated object is produced for each provider request, so there is
+    no cached schema that could drift from REVIEW_SCHEMA. The provider sees a
+    bounded regex; parse_verdict separately rejects whitespace-only values,
+    oversized fields, >12 findings, and blocking security risk categories.
     Invalid transport or rejected source always holds/rejects; no retry.
     """
     schema = copy.deepcopy(REVIEW_SCHEMA)
@@ -87,7 +89,6 @@ def _build_claude_strict_schema():
     return schema
 
 
-CLAUDE_STRICT_SCHEMA = _build_claude_strict_schema()
 MAX_FILES = 50
 MAX_DIFF = 90000
 
@@ -376,7 +377,7 @@ def call_provider(provider, key, prompt):
                   "tools": [{"name": "submit_review",
                              "description": "Return a strict security review verdict.",
                              "strict": True,
-                             "input_schema": CLAUDE_STRICT_SCHEMA}],
+                             "input_schema": _build_claude_strict_schema()}],
                   "tool_choice": {"type": "tool", "name": "submit_review"}})
         if type(result) is not dict:
             raise Hold("CLAUDE_RESPONSE_INVALID")
