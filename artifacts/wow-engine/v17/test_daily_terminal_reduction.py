@@ -85,6 +85,36 @@ def test_stage_classification_reads_the_controlling_model_receipt(payload, expec
             "rank_eligible": True,
             "probability_qualification": {"terminal_ceiling": "MODEL_QUALIFIED_HOLD"},
         },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "probability_qualification": {
+                "nfl_stage_receipt": {
+                    "status": "HOLD",
+                    "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+                },
+            },
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "probability_qualification": {"detail": {"nfl_stage_receipt": {"status": "HOLD"}}},
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "detail": {"nfl_stage_receipt": {"status": "HOLD"}},
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "nfl_stage_receipt": {},
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "probability_qualification": {"nfl_stage_receipt": "HOLD"},
+        },
     ],
 )
 def test_controlling_hold_overrides_stale_wrapper_approval(payload):
