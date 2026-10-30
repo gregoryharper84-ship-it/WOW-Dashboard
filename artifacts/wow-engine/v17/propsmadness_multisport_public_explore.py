@@ -21,7 +21,7 @@ import re
 from typing import Any, Callable
 
 from v17.propsmadness_nba_public_explore import (
-    _AnchorsAndTokens, PublicPageHold, ODDS_RE, AVG_RE,
+    _AnchorsAndTokens, PublicPageHold, ODDS_RE, AVG_RE, _visible_nba_table_rows,
 )
 
 ROOT = "https://propsmadness.com"
@@ -174,6 +174,31 @@ def parse_multisport_public_html(
             "model_probability": None, "calibrated_lower_bound": None,
             "can_execute": False,
         })
+    # NBA's live public listing now places player, matchup, line, and L10
+    # metrics in separate <td> cells. Reuse the same strict NBA-only reader
+    # as the original public parser; do not invent historical snapshots.
+    if sport == "NBA" and not rows:
+        for item in _visible_nba_table_rows(html, market):
+            rows.append({
+                "sport": sport, "stat_type": stat, "period": "FULL_GAME",
+                "source_provider": "PROPSMADNESS_PUBLIC_EXPLORE",
+                "source_page": source_url,
+                "provider_player_id": item["provider_player_id"],
+                "provider_match_id": item["provider_match_id"],
+                "display_name_unverified": item["display_name_unverified"],
+                "display_line": item["line"],
+                "fixture_text": item["fixture_text"],
+                "over_odds_display": item["over_odds_display"],
+                "under_odds_display": item["under_odds_display"],
+                "l10_avg_display": item["l10_avg_display"],
+                "capture_utc": timestamp,
+                "canonical_player_id": None, "canonical_event_id": None,
+                "sportsbook": None, "event_start_utc": None,
+                "pregame_verified": False, "historical_line_evidence": False,
+                "exact_line_market_authority": False,
+                "model_probability": None, "calibrated_lower_bound": None,
+                "can_execute": False,
+            })
     return {
         "schema": "WOW_PM_MULTISPORT_PUBLIC_DISCOVERY_V1",
         "status": "PUBLIC_ROWS_PARSED_DISCOVERY_ONLY" if rows else "PUBLIC_HTML_NO_VERIFIED_ROWS",
