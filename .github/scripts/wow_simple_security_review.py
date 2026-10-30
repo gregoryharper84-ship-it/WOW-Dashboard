@@ -46,13 +46,6 @@ MAX_DIFF = 90000
 class Hold(Exception):
     """The security review could not establish an authentic PASS."""
 
-    def __init__(self, code, endpoint=None):
-        self.code = str(code)
-        self.endpoint = endpoint
-        detail = self.code if endpoint is None or not self.code.startswith("HTTP_") \
-            else self.code + ":" + endpoint
-        super().__init__(detail)
-
 
 class ProviderUnavailable(Hold):
     """Only typed provider availability failures permit fallback."""
@@ -151,13 +144,13 @@ def request_json(url, *, token=None, data=None, headers=None):
                 raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED") from None
             if exc.code == 404 and any(x in words for x in MODEL_GONE_ERRORS):
                 raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
-        raise Hold("HTTP_" + str(exc.code), endpoint=endpoint) from None
+        raise Hold("HTTP_" + str(exc.code)) from None
     except (URLError, TimeoutError):
         if not url.startswith("https://api.github.com/"):
             raise ProviderUnavailable("PROVIDER_TRANSPORT") from None
-        raise Hold("GITHUB_TRANSPORT", endpoint=endpoint) from None
+        raise Hold("GITHUB_TRANSPORT") from None
     except (ValueError, UnicodeError):
-        raise Hold("RESPONSE_JSON_INVALID", endpoint=endpoint) from None
+        raise Hold("RESPONSE_JSON_INVALID") from None
 
 
 def gh(path, token):
