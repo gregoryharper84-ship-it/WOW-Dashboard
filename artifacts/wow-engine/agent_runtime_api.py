@@ -131,8 +131,9 @@ def create_run(
             status_code=422,
             detail={"code": "EXECUTION_PROHIBITED", "can_execute": False},
         )
-    # Bound authenticated batch amplification before service-role DB access.
-    if len(req.candidate_inputs) > MAX_RUN_CANDIDATES:
+    # Pydantic enforces list[dict] for HTTP calls; also fail closed if a
+    # direct/internal caller bypasses request-model validation.
+    if not isinstance(req.candidate_inputs, list) or len(req.candidate_inputs) > MAX_RUN_CANDIDATES:
         raise HTTPException(
             status_code=422,
             detail={"code": "RUN_BATCH_LIMIT_EXCEEDED", "max_candidates": MAX_RUN_CANDIDATES, "can_execute": False},
