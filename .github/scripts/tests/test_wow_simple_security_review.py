@@ -138,6 +138,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             ("end_turn", "end_turn"),
             ("secret-redirect?key=SENSITIVE_TOKEN", "UNCLASSIFIED"),
             (None, "UNCLASSIFIED"),
+            (["max_tokens"], "UNCLASSIFIED"),
+            ({"stop": "max_tokens"}, "UNCLASSIFIED"),
         ):
             with self.subTest(raw=raw):
                 stderr = io.StringIO()

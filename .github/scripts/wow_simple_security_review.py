@@ -326,7 +326,7 @@ def call_provider(provider, key, prompt):
             # Only fixed provider-defined labels may enter logs. Never log
             # the provider body, arbitrary stop reason, prompt, or token.
             raw_reason = result.get("stop_reason")
-            reason = raw_reason if raw_reason in {
+            reason = raw_reason if type(raw_reason) is str and raw_reason in {
                 "max_tokens", "end_turn", "stop_sequence", "pause_turn", "refusal"
             } else "UNCLASSIFIED"
             print("REVIEW_CLAUDE_STOP_REASON:" + reason, file=sys.stderr)
