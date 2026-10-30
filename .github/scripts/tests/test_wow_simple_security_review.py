@@ -19,16 +19,116 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaises(m.Hold):
             m.event_target({"inputs": {"pr_number": "invalid"}}, "workflow_dispatch")
 
-    def test_pass_requires_every_dimension_and_no_findings(self):
-        good = {"source_review": "PASS", "security_review": "PASS",
+    def _finding(self, severity, detail="note", category="informational"):
+        return {"severity": severity, "category": category, "file": "src.py",
+                "detail": detail, "evidence": "observed"}
+
+    def _passing(self):
+        return {"source_review": "PASS", "security_review": "PASS",
                 "probability_integrity_review": "PASS", "findings": []}
+
+    def test_findings_block_only_at_critical_or_high(self):
+        good = self._passing()
         self.assertEqual(m.parse_verdict(good)[0], "PASS")
+        for severity in ("low", "medium"):
+            with self.subTest(advisory=severity):
+                decision, payload = m.parse_verdict({**good, "findings": [self._finding(severity)]})
+                self.assertEqual(decision, "PASS")
+                self.assertEqual(payload["findings"][0]["severity"], severity)
+        for severity in ("high", "critical"):
+            with self.subTest(blocking=severity):
+                self.assertEqual(m.parse_verdict(
+                    {**good, "findings": [self._finding(severity)]})[0], "REJECT")
         self.assertEqual(m.parse_verdict({**good, "security_review": "FAIL"})[0], "REJECT")
-        self.assertEqual(m.parse_verdict({**good, "findings": ["Issue found"]})[0], "REJECT")
-        for bad in ({}, {**good, "source_review": "UNKNOWN"},
-                    {**good, "source_review": []}, {**good, "findings": [0]}, {**good, "extra": True}):
+
+    def test_unclassifiable_findings_fail_closed(self):
+        good = self._passing()
+        incomplete = self._finding("medium")
+        del incomplete["evidence"]
+        for bad in ({}, {**good, "source_review": "UNKNOWN"}, {**good, "source_review": []},
+                    {**good, "extra": True}, {**good, "findings": ["Issue found"]},
+                    {**good, "findings": [{**self._finding("medium"), "extra": 1}]},
+                    {**good, "findings": [{**self._finding("medium"), "detail": "  "}]},
+                    {**good, "findings": [{**self._finding("medium"), "severity": "blocker"}]},
+                    {**good, "findings": [{**self._finding("low"), "category": "unknown"}]},
+                    {**good, "findings": [{key: value for key, value in self._finding("low").items()
+                                           if key != "category"}]},
+                    {**good, "findings": [incomplete]},
+                    {**good, "findings": [self._finding("low")] * 13},
+                    {**good, "findings": [0]}):
             with self.assertRaises(m.Hold):
                 m.parse_verdict(bad)
+
+    def test_review_schema_and_prompt_pin_the_severity_contract(self):
+        items = m.REVIEW_SCHEMA["properties"]["findings"]["items"]
+        self.assertEqual(items["properties"]["severity"]["enum"], list(m.FINDING_SEVERITIES))
+        self.assertEqual(sorted(items["required"]), ["category", "detail", "evidence", "file", "severity"])
+        self.assertEqual(items["properties"]["category"]["enum"], list(m.FINDING_CATEGORIES))
+        self.assertEqual(m.REVIEW_CONTRACT_VERSION, 2)
+        self.assertFalse(items["additionalProperties"])
+        prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
+                               "diff_sha256": "b" * 64, "diff": "d"})
+        self.assertIn("critical or high", prompt)
+        self.assertIn("medium/low", prompt)
+        self.assertIn("blocks regardless of severity", prompt)
+
+    def test_category_prevents_severity_downgrade_of_real_risks(self):
+        good = self._passing()
+        for category in m.BLOCKING_CATEGORIES:
+            for severity in ("low", "medium", "high", "critical"):
+                with self.subTest(category=category, severity=severity):
+                    result = m.parse_verdict({**good, "findings": [
+                        self._finding(severity, "unresolved concern", category)]})[0]
+                    self.assertEqual(result, "REJECT")
+        # Even an informational label cannot waive a high-severity finding
+        # or a FAIL dimension.
+        self.assertEqual(m.parse_verdict({**good, "findings": [
+            self._finding("critical", category="informational")]})[0], "REJECT")
+        self.assertEqual(m.parse_verdict({**good, "security_review": "FAIL",
+            "findings": [self._finding("low", category="informational")]})[0], "REJECT")
+
+    def test_legacy_free_text_findings_are_terminal_not_provider_fallback(self):
+        good = self._passing()
+        with self.assertRaises(m.Hold) as err:
+            m.parse_verdict({**good, "findings": ["legacy string finding"]})
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        called = []
+        def malformed(provider, key, prompt):
+            called.append(provider)
+            return m.parse_verdict({**good, "findings": ["legacy string finding"]}) + (provider, [])
+        with self.assertRaises(m.Hold) as err:
+            m.semantic_review({"pr": 2301, "head_sha": "a" * 40,
+                               "diff_sha256": "b" * 64, "diff": "safe"},
+                              {p: "key" for p in m.PROVIDERS}, malformed)
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(called, ["anthropic-claude-api"])
+
+    def test_receipt_schema_is_versioned_without_rewriting_prior_verdicts(self):
+        target = {"pr": 2301, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64}
+        output = self._passing()
+        receipt = m.make_receipt(target, decision="PASS",
+                                 reviewer="anthropic-claude-api", verdict=output,
+                                 attempts=[{"provider": "anthropic-claude-api", "result": "PASS"}],
+                                 run_id=33, attempt=2)
+        self.assertEqual(receipt["schema_version"], 2)
+        self.assertEqual(receipt["verdict"], output)
+        self.assertEqual(receipt["head_sha"], target["head_sha"])
+        self.assertEqual(receipt["base_sha"], target["base_sha"])
+        self.assertEqual(receipt["diff_sha256"], target["diff_sha256"])
+        self.assertNotIn("owner_review_provenance", receipt)
+
+    def test_claude_advisory_findings_keep_pass_but_high_rejects(self):
+        good = self._passing()
+        def tool(verdict):
+            return {"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review", "input": verdict}]}
+        with patch.object(m, "request_json",
+                          return_value=tool({**good, "findings": [self._finding("medium")]})):
+            self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "PASS")
+        with patch.object(m, "request_json",
+                          return_value=tool({**good, "findings": [self._finding("critical")]})):
+            self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
 
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
