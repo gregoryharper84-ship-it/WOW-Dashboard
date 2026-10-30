@@ -152,7 +152,7 @@ def test_matrix_grants_no_execution_or_merge_authority():
 
 
 def test_unknown_change_class_is_rejected():
-    for bad in ("", "B", "s", "X"):
+    for bad in ("", "p", "s", "X"):
         try:
             gcm.assess(change_class=bad, author_is_owner=False, touches_trust_root=False)
         except ValueError:
@@ -187,7 +187,7 @@ def test_matrix_does_not_equate_pinned_ci_with_release_authority():
         assert report["independent_review_status"] == "UNVERIFIED"
         assert report["source_independence_status"] == "UNVERIFIED"
         assert report["live_ruleset_status"] == "NOT_QUERIED_THIS_INVOCATION"
-        assert report["policy_review_required"] == (change_class in ("S", "C"))
+        assert report["policy_review_required"] is True
         assert report["can_execute"] is False
         assert report["grants_merge"] is False
 
@@ -201,3 +201,23 @@ def test_v3_owner_authored_trust_root_not_unreachable_in_qa_or_release():
                for row in result["unreachable"])
     assert result["grants_merge"] is False
     assert result["independent_review_status"] == "UNVERIFIED"
+
+
+def test_v3_and_v24_class_aliases_cannot_downgrade_protected_paths():
+    for alias in ("A", "D", "R"):
+        result = gcm.assess(change_class=alias, author_is_owner=True,
+                            touches_trust_root=True)
+        assert result["normalized_release_class"] == "P"
+        assert result["policy_review_required"] is True
+        assert result["model_governance_required"] is False
+        assert result["grants_merge"] is False
+    for alias in ("P", "B", "S", "C"):
+        result = gcm.assess(change_class=alias, author_is_owner=False,
+                            touches_trust_root=False)
+        assert result["normalized_release_class"] == "P"
+        assert result["policy_review_required"] is True
+        assert result["model_governance_required"] == (alias == "C")
+    unprotected = gcm.assess(change_class="R", author_is_owner=False,
+                              touches_trust_root=False)
+    assert unprotected["normalized_release_class"] == "R"
+    assert unprotected["policy_review_required"] is False

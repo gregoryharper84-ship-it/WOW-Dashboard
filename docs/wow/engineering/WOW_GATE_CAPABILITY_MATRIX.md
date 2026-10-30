@@ -42,3 +42,9 @@ are advisory unless separately established as policy obligations.
 | `S` | yes | no |
 | `C` | no | no |
 | `C` | yes | no |
+| `R` | no | no |
+| `R` | yes | no |
+| `P` | no | no |
+| `P` | yes | no |
+| `B` | no | no |
+| `B` | yes | no |

@@ -12,13 +12,12 @@ Recovery actions reuse the vocabulary already owned by
 ``WAITING_ON_EVIDENCE``, ``DISPATCH_REPAIR``, ``INDEPENDENT_SOURCE_ADOPTION_*``), so
 this module classifies reachability and does not introduce a second control plane.
 
-Change classes are the repository's own taxonomy
-(``docs/wow/engineering/WOW_REVIEWER_INCIDENT_2136_SIMPLIFICATION.md`` section 3):
-
-- ``A`` routine reliability, no protected semantics
-- ``D`` diagnostic-only overlay that provably cannot change a decision
-- ``S`` semantic / trust-root: reviewer classification, routing, permissions, receipts
-- ``C`` probability-producing, calibrating or threshold-affecting
+V3 release classes are ``R`` (routine) and ``P`` (protected). The matrix also
+accepts inherited project classification ``A`` (routine), ``D`` (diagnostic),
+``B`` (probability-adjacent), ``S`` (protected semantics), and ``C``
+(probability-producing). A protected trust-root path is always classified
+protected even when the caller labels the task routine. ``C`` also requires
+separate fitted-model validation before any probability publication.
 
 The ``requirement`` field records pinned CI, not authorization: ``ruleset_live``
 identifies the three checks observed in ruleset #24907422. Governance V3 permits
@@ -38,7 +37,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-CHANGE_CLASSES = ("A", "D", "S", "C")
+CHANGE_CLASSES = ("A", "D", "S", "C", "R", "P", "B")
 
 # Classification vocabulary requested by V25 section 1. Only TRANSIENT may be retried.
 RECOVERY_CLASSES = (
@@ -251,11 +250,16 @@ def assess(
     retryable = [e for e in unreachable if e["recovery_class"] == "TRANSIENT"]
     return {
         "change_class": change_class,
+        "normalized_release_class": (
+            "P" if change_class in ("P", "B", "S", "C") or touches_trust_root
+            else "R"
+        ),
+        "model_governance_required": change_class == "C",
         "unreachable": unreachable,
         "blocking": blocking,
         "merge_blocked": bool(blocking),
         "merge_blocked_scope": "STRUCTURAL_PINNED_CI_ONLY",
-        "policy_review_required": change_class in ("S", "C"),
+        "policy_review_required": change_class in ("P", "B", "S", "C") or touches_trust_root,
         "independent_review_status": "UNVERIFIED",
         "source_independence_status": "UNVERIFIED",
         "live_ruleset_status": "NOT_QUERIED_THIS_INVOCATION",
