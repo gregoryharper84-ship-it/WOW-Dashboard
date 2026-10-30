@@ -90,12 +90,13 @@ class ProbeTests(unittest.TestCase):
         self.assertNotIn("entitlement, not auth", output)
 
     def test_untrusted_exception_text_never_reaches_stdout(self):
-        for error in (FakeHold("SECRET_KEY=do-not-print"), RuntimeError("secret-value")):
+        for error in (FakeHold("SECRET_KEY=do-not-print"), FakeHold("SECRETKEY"), RuntimeError("secret-value")):
             with self.subTest(error_type=type(error).__name__):
                 ok, code, output, _ = self.execute("anthropic", "key-private", FakeReviewer(error=error))
                 self.assertFalse(ok)
                 self.assertEqual(code, "PROBE_UNEXPECTED_ERROR")
                 self.assertNotIn("do-not-print", output)
+                self.assertNotIn("SECRETKEY", output)
                 self.assertNotIn("secret-value", output)
                 self.assertNotIn("key-private", output)
 
