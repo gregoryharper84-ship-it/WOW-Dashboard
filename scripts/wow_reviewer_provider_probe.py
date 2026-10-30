@@ -108,7 +108,16 @@ def probe(module, name):
         raw_code = str(exc)
         # Never relay arbitrary provider or future exception strings to stdout.
         # Only typed codes with a closed character set are safe to print.
-        code = raw_code if re.fullmatch(r"[A-Z][A-Z0-9_]{1,79}", raw_code) else "PROBE_UNEXPECTED_ERROR"
+        code = (raw_code if (raw_code in HINTS or re.fullmatch(
+            r"PROVIDER_HTTP_(?:401|408|429|500|502|503|504|529)", raw_code)
+            or raw_code in {
+                "CLAUDE_REVIEW_INCOMPLETE", "CLAUDE_RESPONSE_INVALID",
+                "GEMINI_REVIEW_INCOMPLETE", "GEMINI_RESPONSE_INVALID",
+                "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE",
+                "SEMANTIC_RESPONSE_INVALID", "SEMANTIC_SCHEMA_INVALID",
+                "SEMANTIC_VERDICT_INVALID", "SEMANTIC_FINDINGS_INVALID",
+                "SEMANTIC_RESPONSE_NOT_JSON", "RESPONSE_JSON_INVALID",
+            }) else "PROBE_UNEXPECTED_ERROR")
         print(f"PROBE_RESULT:{name}:{code}")
         hint = HINTS.get(code)
         if hint:
