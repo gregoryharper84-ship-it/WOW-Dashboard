@@ -80,6 +80,11 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("at most 12", prompt)
         self.assertIn("at most 500 characters", prompt)
         self.assertIn("exactly these five keys and no others", prompt)
+        self.assertIn("Never return whitespace-only", prompt)
+        self.assertIn("cross-cutting concern", prompt)
+        self.assertIn("100-200 characters in detail", prompt)
+        self.assertIn("30-150 in evidence", prompt)
+        self.assertIn("preserve every material risk", prompt)
 
     def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
         good = self._passing()

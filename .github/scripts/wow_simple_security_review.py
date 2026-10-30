@@ -317,7 +317,10 @@ def prompt_for(target):
             "others: severity in critical|high|medium|low, category in security|probability_integrity|"
             "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
             "evidence are non-empty strings of at most 500 characters each, so quote only the shortest "
-            "decisive excerpt as evidence. "
+            "decisive excerpt as evidence. Never return whitespace-only file, detail, or evidence. "
+            "For a cross-cutting concern, cite the most relevant changed repository-relative file path, never blank. "
+            "Prefer 100-200 characters in detail and 30-150 in evidence. Split complex concerns into separate "
+            "short findings rather than producing an oversized string; preserve every material risk. "
             f"Repository: {REPO}. PR: {target['pr']}; SHA: {target['head_sha']}; base SHA: {target.get('base_sha', 'unknown')}; "
             f"diff digest: {target['diff_sha256']}.\nBEGIN_UNTRUSTED_DIFF\n" +
             target["diff"] +
