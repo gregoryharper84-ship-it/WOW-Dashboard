@@ -492,9 +492,14 @@ provider outages, retry authorization, or evidence of a fitted probability.
 | --- | --- | --- | --- |
 | `RUN_BATCH_LIMIT_EXCEEDED` | `INVALID_REQUEST` | Authenticated run contains more than 32 candidate inputs | Submit a smaller genuine input batch under the same authorized caller; never split into synthetic jobs |
 | `IDEMPOTENCY_KEY_TOO_LONG` | `INVALID_REQUEST` | Caller-supplied Idempotency-Key exceeds 128 characters | Supply a bounded unique key; preserve the original request identity and `can_execute=false` |
+| `IDEMPOTENCY_KEY_INVALID_CHARACTERS` | `INVALID_REQUEST` | Key contains whitespace, control, non-ASCII or characters outside `[A-Za-z0-9._:-]` | Use a safe unique ASCII key; never coerce an unsafe key silently |
+| `RUN_CANDIDATE_PAYLOAD_TOO_LARGE` | `INVALID_REQUEST` | Candidate JSON batch exceeds 65536 UTF-8 bytes or cannot serialize safely | Reduce the genuine candidate payload without fabricating evidence |
 
 Source/receipt contract: `WOW-AGENT-RUNTIME-V1-PHASE1`; actor:
 `wow.agent-runtime-api`. These limits bound a single admission, **not**
-global request rate. All authenticated run reads use the existing
+global request rate. The existing shared `WOW_ACTION_API_KEY` is intentionally
+reused for dry-run sports routes; this is not per-route credential segmentation.
+An authenticated credential compromise remains a security incident. Any
+gateway/global throttling claim requires separately verified deployment evidence. All authenticated run reads use the existing
 `api._require_action_api_key` dependency; `/health/live` and
 `/health/ready` remain public. No change to `V17_TERMINAL_REDUCER`.
