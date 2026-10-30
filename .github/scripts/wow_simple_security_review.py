@@ -26,8 +26,6 @@ QA_APP_ID = 5245832
 # Only explicit typed availability failures are eligible for the alternate reviewer.
 CREDIT_ERRORS = ("credit balance is too low", "insufficient credits", "quota exceeded",
                  "billing quota exceeded", "quota exhausted")
-MODEL_GONE_ERRORS = ("model not found", "model does not exist", "model is deprecated",
-                     "model has been retired")
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -143,10 +141,10 @@ def provider_model_unavailable(url, data, error):
         return False
     model = model.lower()
     if kind == "not_found_error":
-        return words.startswith("model") and model in words
+        return re.fullmatch(r"model:\s*" + re.escape(model), words) is not None
     if kind == "NOT_FOUND":
-        return (("models/" + model) in words
-                and ("not found" in words or "not supported" in words))
+        return re.match(r"^models/" + re.escape(model) +
+                        r"\s+(?:is\s+)?(?:not found|not supported)\b", words) is not None
     return False
 
 
@@ -190,8 +188,7 @@ def request_json(url, *, token=None, data=None, headers=None):
             words = message.lower()
             if exc.code == 400 and any(x in words for x in CREDIT_ERRORS):
                 raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED") from None
-            if exc.code == 404 and (any(x in words for x in MODEL_GONE_ERRORS)
-                                    or provider_model_unavailable(url, data, error)):
+            if exc.code == 404 and provider_model_unavailable(url, data, error):
                 raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
         raise Hold("HTTP_" + str(exc.code), endpoint=endpoint) from None
     except (URLError, TimeoutError):
