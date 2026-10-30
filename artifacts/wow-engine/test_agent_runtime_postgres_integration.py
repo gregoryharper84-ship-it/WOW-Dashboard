@@ -158,7 +158,8 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     """Real HTTP -> PostgREST -> Redis/Celery -> reducer/reconciliation E2E."""
     _apply_schema()
     key = secrets.token_urlsafe(32)
-    monkeypatch.setenv("WOW_ACTION_API_KEY", key)
+    monkeypatch.setenv("WOW_ACTION_API_KEY", secrets.token_urlsafe(32))
+    monkeypatch.setenv("WOW_AGENT_RUNTIME_API_KEY", key)
 
     from fastapi.testclient import TestClient
     import api_ncaaf_acceptance as prod
@@ -200,7 +201,7 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
         if manifest["terminal"]:
             terminal = manifest
             break
-        time.sleep(0.2)
+        time.sleep(0.2)  # bounded 20-second poll, not a CPU busy-wait
 
     assert terminal is not None, "run did not terminalize within the polling window"
     assert terminal["status"] == "COMPLETED_WITH_BLOCKERS"

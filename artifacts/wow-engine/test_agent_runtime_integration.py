@@ -39,15 +39,35 @@ from agent_runtime_test_support import FakeSupabaseClient
 
 client = TestClient(api_prod.app)
 
-_AUTH_HEADERS = {}
-
-
 @pytest.fixture(autouse=True)
 def _agent_runtime_auth_config(monkeypatch):
-    # Isolated random key per test: never reuse a hardcoded token as a credential.
-    key = secrets.token_urlsafe(32)
-    monkeypatch.setenv("WOW_ACTION_API_KEY", key)
-    monkeypatch.setitem(_AUTH_HEADERS, "Authorization", f"Bearer {key}")
+    # Independent per-test credentials; never use a shared static bearer.
+    scoring_key = secrets.token_urlsafe(32)
+    runtime_key = secrets.token_urlsafe(32)
+    monkeypatch.setenv("WOW_ACTION_API_KEY", scoring_key)
+    monkeypatch.setenv("WOW_AGENT_RUNTIME_API_KEY", runtime_key)
+    monkeypatch.setenv("REDIS_URL", "redis://fake-for-test/0")
+
+    class FakeAdmissionRedis:
+        count = 0
+        def pipeline(self, transaction=True):
+            return self
+        def incr(self, key):
+            self.count += 1
+            return self
+        def expire(self, key, ttl):
+            return self
+        def execute(self):
+            return [self.count, True]
+
+    fake_rate = FakeAdmissionRedis()
+    monkeypatch.setattr("redis.Redis.from_url", lambda *args, **kwargs: fake_rate)
+    return {"Authorization": f"Bearer {runtime_key}"}
+
+
+@pytest.fixture
+def auth_headers(_agent_runtime_auth_config):
+    return _agent_runtime_auth_config
 
 _RUN_PAYLOAD = {
     "run_type": "FULL_MODEL",
@@ -165,25 +185,25 @@ def test_run_reads_require_existing_bearer_before_database_access(monkeypatch):
             assert response.status_code == 401, (path, response.text)
 
 
-def test_authenticated_run_reads_preserve_contract(monkeypatch):
+def test_authenticated_run_reads_preserve_contract(monkeypatch, auth_headers):
     fake = FakeSupabaseClient()
     created = _created_run(fake, "read-auth-contract")
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     run_id = created["run_id"]
-    state = client.get(f"/wow/runs/{run_id}", headers=_AUTH_HEADERS)
+    state = client.get(f"/wow/runs/{run_id}", headers=auth_headers)
     assert state.status_code == 200
     assert state.json()["run_id"] == run_id
     assert state.json()["can_execute"] is False
-    manifest = client.get(f"/wow/runs/{run_id}/manifest", headers=_AUTH_HEADERS)
+    manifest = client.get(f"/wow/runs/{run_id}/manifest", headers=auth_headers)
     assert manifest.status_code == 200
     assert manifest.json()["terminal"] is False
-    audit = client.get(f"/wow/runs/{run_id}/audit", headers=_AUTH_HEADERS)
+    audit = client.get(f"/wow/runs/{run_id}/audit", headers=auth_headers)
     assert audit.status_code == 200
     assert audit.json()["run_id"] == run_id
     assert audit.json()["can_execute"] is False
 
 
-def test_malformed_candidate_batch_fails_closed_before_database_access(monkeypatch):
+def test_malformed_candidate_batch_fails_closed_before_database_access(monkeypatch, auth_headers):
     """HTTP schema and internal direct-call paths both reject bad batches."""
     def forbidden_db_access():
         raise AssertionError("malformed admission accessed service-role database")
@@ -193,7 +213,7 @@ def test_malformed_candidate_batch_fails_closed_before_database_access(monkeypat
         response = client.post(
             "/wow/runs",
             json={**_RUN_PAYLOAD, "candidate_inputs": invalid},
-            headers={"Idempotency-Key": "invalid-batch", **_AUTH_HEADERS},
+            headers={"Idempotency-Key": "invalid-batch", **auth_headers},
         )
         assert response.status_code == 422, (invalid, response.text)
 
@@ -208,27 +228,27 @@ def test_malformed_candidate_batch_fails_closed_before_database_access(monkeypat
     assert exc.value.detail["code"] == "RUN_BATCH_LIMIT_EXCEEDED"
 
 
-def test_run_batch_and_key_limits_reject_before_database_access(monkeypatch):
+def test_run_batch_and_key_limits_reject_before_database_access(monkeypatch, auth_headers):
     def forbidden_db_access():
         raise AssertionError("oversized admission accessed service-role database")
 
     monkeypatch.setattr(agent_runtime_api, "get_client", forbidden_db_access)
     batch = client.post(
         "/wow/runs", json={**_RUN_PAYLOAD, "candidate_inputs": [{}] * 33},
-        headers={"Idempotency-Key": "batch-limit", **_AUTH_HEADERS},
+        headers={"Idempotency-Key": "batch-limit", **auth_headers},
     )
     assert batch.status_code == 422
     assert batch.json()["detail"]["code"] == "RUN_BATCH_LIMIT_EXCEEDED"
     key = client.post(
         "/wow/runs", json=_RUN_PAYLOAD,
-        headers={"Idempotency-Key": "x" * 129, **_AUTH_HEADERS},
+        headers={"Idempotency-Key": "x" * 129, **auth_headers},
     )
     assert key.status_code == 422
     assert key.json()["detail"]["code"] == "IDEMPOTENCY_KEY_TOO_LONG"
 
     unsafe_key = client.post(
         "/wow/runs", json=_RUN_PAYLOAD,
-        headers={"Idempotency-Key": "key with spaces", **_AUTH_HEADERS},
+        headers={"Idempotency-Key": "key with spaces", **auth_headers},
     )
     assert unsafe_key.status_code == 422
     assert unsafe_key.json()["detail"]["code"] == "IDEMPOTENCY_KEY_INVALID_CHARACTERS"
@@ -236,7 +256,7 @@ def test_run_batch_and_key_limits_reject_before_database_access(monkeypatch):
     large_candidate = client.post(
         "/wow/runs",
         json={**_RUN_PAYLOAD, "candidate_inputs": [{"payload": "x" * 65536}]},
-        headers={"Idempotency-Key": "bounded-payload", **_AUTH_HEADERS},
+        headers={"Idempotency-Key": "bounded-payload", **auth_headers},
     )
     assert large_candidate.status_code == 422
     assert large_candidate.json()["detail"]["code"] == "RUN_CANDIDATE_PAYLOAD_TOO_LARGE"
@@ -250,28 +270,85 @@ def test_run_batch_and_key_limits_reject_before_database_access(monkeypatch):
     assert invalid_key.value.detail["code"] == "IDEMPOTENCY_KEY_INVALID_CHARACTERS"
 
 
-def test_create_run_rejects_can_execute_true(monkeypatch):
+
+def test_scoped_runtime_key_rejects_scoring_key_and_unconfigured_key(monkeypatch, auth_headers):
+    def no_db():
+        raise AssertionError("bad scoped auth accessed DB")
+    monkeypatch.setattr(agent_runtime_api, "get_client", no_db)
+    scoring_key = __import__("os").environ["WOW_ACTION_API_KEY"]
+    response = client.post("/wow/runs", json=_RUN_PAYLOAD,
+        headers={"Authorization": f"Bearer {scoring_key}", "Idempotency-Key": "wrong-scope"})
+    assert response.status_code == 401
+    monkeypatch.delenv("WOW_AGENT_RUNTIME_API_KEY")
+    response = client.post("/wow/runs", json=_RUN_PAYLOAD,
+        headers={**auth_headers, "Idempotency-Key": "unset-runtime"})
+    assert response.status_code == 401
+    monkeypatch.setenv("WOW_AGENT_RUNTIME_API_KEY", scoring_key)
+    response = client.post("/wow/runs", json=_RUN_PAYLOAD,
+        headers={"Authorization": f"Bearer {scoring_key}", "Idempotency-Key": "same-key"})
+    assert response.status_code == 401
+
+
+def test_run_id_validation_rejects_before_db(monkeypatch, auth_headers):
+    def no_db():
+        raise AssertionError("invalid UUID reached DB")
+    monkeypatch.setattr(agent_runtime_api, "get_client", no_db)
+    for path in ("/wow/runs/not-a-uuid", "/wow/runs/not-a-uuid/manifest",
+                 "/wow/runs/not-a-uuid/audit"):
+        response = client.get(path, headers=auth_headers)
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "RUN_ID_INVALID"
+    response = client.post("/wow/runs/not-a-uuid/cancel", headers=auth_headers)
+    assert response.status_code == 422
+
+
+def test_candidate_depth_limit_rejects_before_db(monkeypatch, auth_headers):
+    def no_db():
+        raise AssertionError("deep payload reached DB")
+    monkeypatch.setattr(agent_runtime_api, "get_client", no_db)
+    nested = {}
+    for _ in range(agent_runtime_api.MAX_RUN_CANDIDATE_DEPTH + 2):
+        nested = {"child": nested}
+    response = client.post("/wow/runs", json={**_RUN_PAYLOAD, "candidate_inputs": [nested]},
+        headers={**auth_headers, "Idempotency-Key": "too-deep"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "RUN_CANDIDATE_COMPLEXITY_EXCEEDED"
+
+
+def test_existing_redis_global_admission_limit_and_outage_fail_closed(monkeypatch):
+    for _ in range(agent_runtime_api.MAX_RUN_ADMISSIONS_PER_MINUTE):
+        agent_runtime_api._check_admission_rate_limit()
+    with pytest.raises(HTTPException) as exc:
+        agent_runtime_api._check_admission_rate_limit()
+    assert exc.value.status_code == 429
+    assert exc.value.detail["code"] == "AGENT_RUNTIME_ADMISSION_RATE_LIMITED"
+    monkeypatch.delenv("REDIS_URL")
+    with pytest.raises(HTTPException) as unavailable:
+        agent_runtime_api._check_admission_rate_limit()
+    assert unavailable.value.status_code == 503
+
+def test_create_run_rejects_can_execute_true(monkeypatch, auth_headers):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
     response = client.post(
         "/wow/runs", json={**_RUN_PAYLOAD, "can_execute": True},
-        headers={"Idempotency-Key": "should-not-matter", **_AUTH_HEADERS},
+        headers={"Idempotency-Key": "should-not-matter", **auth_headers},
     )
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "EXECUTION_PROHIBITED"
 
 
-def test_create_run_requires_idempotency_key_header(monkeypatch):
+def test_create_run_requires_idempotency_key_header(monkeypatch, auth_headers):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
-    response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers=_AUTH_HEADERS)
+    response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers=auth_headers)
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
 
-def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch):
+def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch, auth_headers):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     monkeypatch.setattr("ledger.get_client", lambda: fake)
-    response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-happy-1", **_AUTH_HEADERS})
+    response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-happy-1", **auth_headers})
     assert response.status_code == 202
     body = response.json()
     assert body["status"] == "COMPLETED"
@@ -281,29 +358,29 @@ def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch):
     assert body["poll_url"] == f"/wow/runs/{body['run_id']}/manifest"
 
 
-def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch):
+def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch, auth_headers):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     monkeypatch.setattr("ledger.get_client", lambda: fake)
-    first = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1", **_AUTH_HEADERS})
-    second = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1", **_AUTH_HEADERS})
+    first = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1", **auth_headers})
+    second = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1", **auth_headers})
     assert first.json()["run_id"] == second.json()["run_id"]
     assert second.json()["reused"] is True
     assert len(fake._store["wow_agent_runs"]) == 1
 
 
-def test_get_run_not_found_is_404(monkeypatch):
+def test_get_run_not_found_is_404(monkeypatch, auth_headers):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
-    response = client.get("/wow/runs/00000000-0000-0000-0000-000000000000", headers=_AUTH_HEADERS)
+    response = client.get("/wow/runs/00000000-0000-0000-0000-000000000000", headers=auth_headers)
     assert response.status_code == 404
 
 
-def test_nonterminal_manifest_is_never_reported_as_zero_picks_means_no_play(monkeypatch):
+def test_nonterminal_manifest_is_never_reported_as_zero_picks_means_no_play(monkeypatch, auth_headers):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     created = _created_run(fake, "run-nonterminal-1")
 
-    manifest = client.get(f"/wow/runs/{created['run_id']}/manifest", headers=_AUTH_HEADERS)
+    manifest = client.get(f"/wow/runs/{created['run_id']}/manifest", headers=auth_headers)
     assert manifest.status_code == 200
     body = manifest.json()
     assert body["terminal"] is False
@@ -311,27 +388,27 @@ def test_nonterminal_manifest_is_never_reported_as_zero_picks_means_no_play(monk
     assert "reconciliation" not in body
 
 
-def test_cancel_run_transitions_to_canceled(monkeypatch):
+def test_cancel_run_transitions_to_canceled(monkeypatch, auth_headers):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     created = _created_run(fake, "run-cancel-1")
 
-    cancel = client.post(f"/wow/runs/{created['run_id']}/cancel", headers=_AUTH_HEADERS)
+    cancel = client.post(f"/wow/runs/{created['run_id']}/cancel", headers=auth_headers)
     assert cancel.status_code == 200
     assert cancel.json() == {"run_id": created["run_id"], "status": "CANCELED", "terminal": True, "can_execute": False}
 
-    manifest = client.get(f"/wow/runs/{created['run_id']}/manifest", headers=_AUTH_HEADERS)
+    manifest = client.get(f"/wow/runs/{created['run_id']}/manifest", headers=auth_headers)
     assert manifest.json()["status"] == "CANCELED"
     assert manifest.json()["terminal"] is True
 
 
-def test_cancel_already_terminal_run_is_a_no_op(monkeypatch):
+def test_cancel_already_terminal_run_is_a_no_op(monkeypatch, auth_headers):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     created = _created_run(fake, "run-cancel-2")
-    client.post(f"/wow/runs/{created['run_id']}/cancel", headers=_AUTH_HEADERS)
+    client.post(f"/wow/runs/{created['run_id']}/cancel", headers=auth_headers)
 
-    second_cancel = client.post(f"/wow/runs/{created['run_id']}/cancel", headers=_AUTH_HEADERS)
+    second_cancel = client.post(f"/wow/runs/{created['run_id']}/cancel", headers=auth_headers)
     assert second_cancel.status_code == 200
     assert second_cancel.json()["status"] == "CANCELED"
 
@@ -354,7 +431,7 @@ _RUN_WALK = [
 ]
 
 
-def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(monkeypatch):
+def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(monkeypatch, auth_headers):
     """Packet section 22, Phase 1 exit criterion, verbatim: a synchronous
     fake-worker fixture completes with balanced reconciliation.
 
@@ -440,7 +517,7 @@ def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(
     )
     assert final.applied is True
 
-    manifest = client.get(f"/wow/runs/{run_id}/manifest", headers=_AUTH_HEADERS)
+    manifest = client.get(f"/wow/runs/{run_id}/manifest", headers=auth_headers)
     assert manifest.status_code == 200
     body = manifest.json()
     assert body["terminal"] is True

@@ -494,12 +494,11 @@ provider outages, retry authorization, or evidence of a fitted probability.
 | `IDEMPOTENCY_KEY_TOO_LONG` | `INVALID_REQUEST` | Caller-supplied Idempotency-Key exceeds 128 characters | Supply a bounded unique key; preserve the original request identity and `can_execute=false` |
 | `IDEMPOTENCY_KEY_INVALID_CHARACTERS` | `INVALID_REQUEST` | Key contains whitespace, control, non-ASCII or characters outside `[A-Za-z0-9._:-]` | Use a safe unique ASCII key; never coerce an unsafe key silently |
 | `RUN_CANDIDATE_PAYLOAD_TOO_LARGE` | `INVALID_REQUEST` | Candidate JSON batch exceeds 65536 UTF-8 bytes or cannot serialize safely | Reduce the genuine candidate payload without fabricating evidence |
+| `RUN_CANDIDATE_COMPLEXITY_EXCEEDED` | `INVALID_REQUEST` | Candidate exceeds 12 nesting levels or 4096 traversed nodes | Reduce genuine candidate complexity |
+| `RUN_ID_INVALID` | `INVALID_REQUEST` | Run identifier is not a UUID | Supply the authentic persisted UUID |
+| `AGENT_RUNTIME_ADMISSION_RATE_LIMITED` | `RATE_LIMITED` | Existing Redis minute bucket exceeds 60 admitted calls | Retry later with the same authentic idempotency key; no synthetic jobs |
+| `AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE` | `INFRA_UNAVAILABLE` | Existing Redis admission bound cannot be checked | Restore Redis; never bypass throttle or DB safety |
 
 Source/receipt contract: `WOW-AGENT-RUNTIME-V1-PHASE1`; actor:
 `wow.agent-runtime-api`. These limits bound a single admission, **not**
-global request rate. The existing shared `WOW_ACTION_API_KEY` is intentionally
-reused for dry-run sports routes; this is not per-route credential segmentation.
-An authenticated credential compromise remains a security incident. Any
-gateway/global throttling claim requires separately verified deployment evidence. All authenticated run reads use the existing
-`api._require_action_api_key` dependency; `/health/live` and
-`/health/ready` remain public. No change to `V17_TERMINAL_REDUCER`.
+global request rate. The existing bearer comparison is reused, but sports Agent Runtime now requires\na distinct `WOW_AGENT_RUNTIME_API_KEY` of at least 32 characters; it cannot\nfall back to or equal `WOW_ACTION_API_KEY`. A deployment without this separate\nsecret fails closed with HTTP 401. Configure it securely in the existing Render\nweb service and the authorized live canary caller before attempting a POST.\nThe existing Redis broker enforces a global 60-admissions/minute fixed bucket\nwith atomic increments and fails closed if Redis is unavailable. This is not\na claim of externally verified gateway throttling. Authenticated run reads use\n`api._require_agent_runtime_api_key`; `/health/live` and `/health/ready`\nremain public. No change to `V17_TERMINAL_REDUCER`.
