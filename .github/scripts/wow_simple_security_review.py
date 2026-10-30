@@ -1041,6 +1041,9 @@ def main():
             receipt["reason"] = "OWNER_REVIEW_REQUIRED"
             receipt["stage"] = "owner.fallback"
         try:
+            # An ambiguous provider outage permits attention, never an owner PASS.
+            if required.cause is not None:
+                raise Hold("OWNER_INFRASTRUCTURE_HOLD_NOT_APPROVABLE")
             if target is None:
                 raise Hold("PR_TARGET_STALE_OR_UNTRUSTED")
             owner_evidence = owner_fallback_review(target, read_token)
