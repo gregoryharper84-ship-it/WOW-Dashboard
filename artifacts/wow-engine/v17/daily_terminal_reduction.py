@@ -151,19 +151,34 @@ def assert_no_terminal_upgrade(reduction: dict[str, Any]) -> dict[str, Any]:
     A softer-than-lowest final terminal is only ever permitted for a genuinely
     approved stage. Anything else is ``RUN_INVALID_TERMINAL_UPGRADE``.
     """
-    final_terminal = str(reduction.get("final_terminal") or DEFAULT_ROW_STATUS)
-    lowest = str(reduction.get("lowest_stage_terminal") or DEFAULT_ROW_STATUS)
+    final_terminal = str(reduction.get("final_terminal") or DEFAULT_ROW_STATUS).upper()
+    declared_lowest = str(reduction.get("lowest_stage_terminal") or DEFAULT_ROW_STATUS).upper()
     audited = dict(reduction)
-    stages = [str(value or "").upper() for value in audited.get("stage_terminals") or []]
-    approved_complement = (
-        final_terminal == "COMPLETED"
-        and "COMPLETED" in stages
-        and all(stage in {"COMPLETED", "REJECTED"} for stage in stages)
+    stages = [str(value or "").strip().upper() for value in audited.get("stage_terminals") or []]
+    normalized = [stage if stage in TERMINAL_RANK else DEFAULT_ROW_STATUS for stage in stages]
+    actual_lowest = lowest_stage_terminal(normalized)
+    audit_consistent = (
+        bool(normalized)
+        and normalized == stages
+        and declared_lowest == actual_lowest
     )
-    if rank_of(final_terminal) > rank_of(lowest) and not approved_complement:
+    # A forged audit must not claim a softer lowest stage than its own ladder.
+    # Conversely, a forged stricter low stage cannot be overridden merely by
+    # presenting a COMPLETED-only ladder. Preserve the stricter of the two.
+    strictest = min((declared_lowest, actual_lowest), key=rank_of)
+    approved_complement = (
+        audit_consistent
+        and final_terminal == "COMPLETED"
+        and bool(audited.get("approved_stage_exception_applied"))
+        and actual_lowest == "REJECTED"
+        and "COMPLETED" in normalized
+        and "REJECTED" in normalized
+        and all(stage in {"COMPLETED", "REJECTED"} for stage in normalized)
+    )
+    if not audit_consistent or (rank_of(final_terminal) > rank_of(strictest) and not approved_complement):
         audited["terminal_upgraded_from_rejection"] = True
         audited["blockers"] = list(dict.fromkeys([*(audited.get("blockers") or []), RUN_INVALID_TERMINAL_UPGRADE]))
-        audited["final_terminal"] = lowest
+        audited["final_terminal"] = strictest
     return audited
 
 
