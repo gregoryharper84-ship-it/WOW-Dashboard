@@ -43,7 +43,17 @@ BLOCKING_CATEGORIES = frozenset(FINDING_CATEGORIES) - {"informational"}
 # told about while the fail-closed validation itself stays unchanged.
 MAX_FINDINGS = 12
 MAX_FINDING_TEXT = 500
-FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_TEXT}
+# A signed M1 review exposed detail-only overrun while path and evidence were
+# already bounded. Permit longer explanations without widening quotes/paths.
+# All three destinations below read these same exact limits.
+MAX_FINDING_DETAIL = 1600
+FINDING_TEXT_LIMITS = {
+    "file": MAX_FINDING_TEXT,
+    "detail": MAX_FINDING_DETAIL,
+    "evidence": MAX_FINDING_TEXT,
+}
+def _finding_text_schema(key):
+    return {"type": "string", "minLength": 1, "maxLength": FINDING_TEXT_LIMITS[key]}
 REVIEW_CONTRACT_VERSION = 2
 REVIEW_SCHEMA = {
     "type": "object",
@@ -55,9 +65,9 @@ REVIEW_SCHEMA = {
             "type": "object",
             "properties": {"severity": {"type": "string", "enum": list(FINDING_SEVERITIES)},
                            "category": {"type": "string", "enum": list(FINDING_CATEGORIES)},
-                           "file": dict(FINDING_TEXT_SCHEMA),
-                           "detail": dict(FINDING_TEXT_SCHEMA),
-                           "evidence": dict(FINDING_TEXT_SCHEMA)},
+                           "file": _finding_text_schema("file"),
+                           "detail": _finding_text_schema("detail"),
+                           "evidence": _finding_text_schema("evidence")},
             "required": ["severity", "category", "file", "detail", "evidence"],
             "additionalProperties": False}},
     },
@@ -289,7 +299,7 @@ def parse_verdict(value):
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TYPE")
             if not field_value.strip():
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_EMPTY")
-            if len(field_value) > MAX_FINDING_TEXT:
+            if len(field_value) > FINDING_TEXT_LIMITS[key]:
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TOO_LONG")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
     # Model-provided severity alone cannot downgrade any safety or correctness
@@ -315,9 +325,10 @@ def prompt_for(target):
             "security_review, probability_integrity_review (each PASS or FAIL), findings (at most 12 "
             "objects; empty array when none). Each finding object has exactly these five keys and no "
             "others: severity in critical|high|medium|low, category in security|probability_integrity|"
-            "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
-            "evidence are non-empty strings of at most 500 characters each, so quote only the shortest "
-            "decisive excerpt as evidence. "
+            "governance|provenance|reliability|informational, file, detail, evidence. "
+            f"file and evidence are non-empty strings of at most {MAX_FINDING_TEXT} characters each; "
+            f"detail is a non-empty string of at most {MAX_FINDING_DETAIL} characters. "
+            "Quote only the shortest decisive excerpt as evidence. "
             f"Repository: {REPO}. PR: {target['pr']}; SHA: {target['head_sha']}; base SHA: {target.get('base_sha', 'unknown')}; "
             f"diff digest: {target['diff_sha256']}.\nBEGIN_UNTRUSTED_DIFF\n" +
             target["diff"] +
