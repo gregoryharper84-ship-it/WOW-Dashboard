@@ -481,3 +481,20 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## Sports Agent Runtime authenticated run admission (contract v1)
+
+These bounded HTTP 422 failures occur **before service-role database access** on the
+existing authenticated `POST /wow/runs` route. They are not model failures,
+provider outages, retry authorization, or evidence of a fitted probability.
+
+| Code | recovery_class | Trigger | Authorized next action |
+| --- | --- | --- | --- |
+| `RUN_BATCH_LIMIT_EXCEEDED` | `INVALID_REQUEST` | Authenticated run contains more than 32 candidate inputs | Submit a smaller genuine input batch under the same authorized caller; never split into synthetic jobs |
+| `IDEMPOTENCY_KEY_TOO_LONG` | `INVALID_REQUEST` | Caller-supplied Idempotency-Key exceeds 128 characters | Supply a bounded unique key; preserve the original request identity and `can_execute=false` |
+
+Source/receipt contract: `WOW-AGENT-RUNTIME-V1-PHASE1`; actor:
+`wow.agent-runtime-api`. These limits bound a single admission, **not**
+global request rate. All authenticated run reads use the existing
+`api._require_action_api_key` dependency; `/health/live` and
+`/health/ready` remain public. No change to `V17_TERMINAL_REDUCER`.
