@@ -194,7 +194,7 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
 
     terminal = None
     for _ in range(100):
-        response = client.get(f"/wow/runs/{run_id}/manifest")
+        response = client.get(f"/wow/runs/{run_id}/manifest", headers=headers)
         assert response.status_code == 200, response.text
         manifest = response.json()
         if manifest["terminal"]:
