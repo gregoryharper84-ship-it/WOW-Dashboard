@@ -130,6 +130,35 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                           return_value=tool({**good, "findings": [self._finding("critical")]})):
             self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
 
+    def test_claude_non_tool_stop_reason_is_attributed_without_exposure_or_fallback(self):
+        import contextlib
+        import io
+        for raw, expected in (
+            ("max_tokens", "max_tokens"),
+            ("end_turn", "end_turn"),
+            ("secret-redirect?key=SENSITIVE_TOKEN", "UNCLASSIFIED"),
+            (None, "UNCLASSIFIED"),
+            (["max_tokens"], "UNCLASSIFIED"),
+            ({"stop": "max_tokens"}, "UNCLASSIFIED"),
+        ):
+            with self.subTest(raw=raw):
+                stderr = io.StringIO()
+                provider_payload = {"stop_reason": raw, "content": [
+                    {"type": "text", "text": "PRIVATE_RESPONSE_BODY"}]}
+                with patch.object(m, "request_json", return_value=provider_payload) as request:
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(m.Hold) as error:
+                            m.call_provider("anthropic-claude-api", "TEST_SECRET_KEY", "review")
+                # Even a truncated untrusted diff is never re-sent just
+                # to obtain a more favorable security decision.
+                self.assertEqual(str(error.exception),
+                                 "CLAUDE_REVIEW_TRUNCATED" if raw == "max_tokens"
+                                 else "CLAUDE_REVIEW_INCOMPLETE")
+                self.assertEqual(request.call_count, 1)
+                self.assertIn("REVIEW_CLAUDE_STOP_REASON:" + expected, stderr.getvalue())
+                for forbidden in ("PRIVATE_RESPONSE_BODY", "TEST_SECRET_KEY", "SENSITIVE_TOKEN"):
+                    self.assertNotIn(forbidden, stderr.getvalue())
+
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
         creds = {p: "scoped-key" for p in m.PROVIDERS}
@@ -440,6 +469,73 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 {"type": "tool_use", "name": "submit_review",
                  "input": {**verdict, "security_review": "FAIL"}}]}):
             self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
+
+    def test_claude_high_budget_uses_one_strict_tool_request(self):
+        verdict = self._passing()
+        successful = {"stop_reason": "tool_use", "content": [
+            {"type": "tool_use", "name": "submit_review", "input": verdict}]}
+        with patch.object(m, "request_json", return_value=successful) as req:
+            decision, payload = m.call_provider("anthropic-claude-api", "private", "source diff")
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(payload, verdict)
+        self.assertEqual(req.call_count, 1)
+        sent = req.call_args.kwargs["data"]
+        self.assertEqual(sent["max_tokens"], 6144)
+        self.assertEqual(sent["messages"], [{"role": "user", "content": "source diff"}])
+        self.assertEqual(sent["tool_choice"]["name"], "submit_review")
+        self.assertEqual(sent["tools"][0]["input_schema"], m.REVIEW_SCHEMA)
+
+    def test_claude_truncation_holds_without_resending_untrusted_diff(self):
+        truncated = {"stop_reason": "max_tokens", "content": [
+            {"type": "text", "text": "partial output, untrusted"}]}
+        with patch.object(m, "request_json", return_value=truncated) as req:
+            with self.assertRaises(m.Hold) as err:
+                m.call_provider("anthropic-claude-api", "private", "source diff")
+        self.assertEqual(str(err.exception), "CLAUDE_REVIEW_TRUNCATED")
+        self.assertNotIsInstance(err.exception, m.ProviderUnavailable)
+        self.assertEqual(req.call_count, 1)
+
+    def test_claude_refusal_and_nontruncation_do_not_retry(self):
+        for reason, expected in (
+            ("refusal", "CLAUDE_REVIEW_REFUSED"),
+            ("end_turn", "CLAUDE_REVIEW_INCOMPLETE"),
+            ("pause_turn", "CLAUDE_REVIEW_INCOMPLETE"),
+            ("not-a-provider-stop", "CLAUDE_REVIEW_INCOMPLETE"),
+        ):
+            with self.subTest(reason=reason):
+                with patch.object(m, "request_json", return_value={
+                    "stop_reason": reason, "content": [{"type": "text", "text": "refuse"}]
+                }) as req:
+                    with self.assertRaises(m.Hold) as err:
+                        m.call_provider("anthropic-claude-api", "private", "source diff")
+                self.assertEqual(str(err.exception), expected)
+                self.assertEqual(req.call_count, 1)
+
+    def test_claude_security_reject_and_malformed_tool_never_retry(self):
+        real_reject = {**self._passing(), "security_review": "FAIL"}
+        for result, expected in (
+            ({"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review", "input": real_reject}]}, None),
+            ({"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review",
+                 "input": {**self._passing(), "findings": ["unsafe"]}}]},
+             "SEMANTIC_FINDINGS_INVALID"),
+            ({"stop_reason": "tool_use", "content": []},
+             "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE"),
+            ({"stop_reason": "tool_use", "content": [{"type": "text", "text": "PASS"}]},
+             "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE"),
+            ({"stop_reason": "tool_use", "content": "invalid"},
+             "CLAUDE_RESPONSE_INVALID"),
+        ):
+            with self.subTest(result=result):
+                with patch.object(m, "request_json", return_value=result) as req:
+                    if expected is None:
+                        self.assertEqual(m.call_provider("anthropic-claude-api", "private", "diff")[0], "REJECT")
+                    else:
+                        with self.assertRaises(m.Hold) as err:
+                            m.call_provider("anthropic-claude-api", "private", "diff")
+                        self.assertEqual(str(err.exception), expected)
+                self.assertEqual(req.call_count, 1)
 
     def test_sticky_reject_exact_sha_and_app_only(self):
         qa_reject = {"name": m.CHECK_NAME, "conclusion": "failure",

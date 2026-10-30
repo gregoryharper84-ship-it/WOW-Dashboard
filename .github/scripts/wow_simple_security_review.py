@@ -314,24 +314,43 @@ def call_provider(provider, key, prompt):
         claude_model = os.getenv("WOW_QA_CLAUDE_MODEL") or "claude-sonnet-4-6"
         if claude_model not in {"claude-sonnet-4-6"}:
             raise Hold("CLAUDE_MODEL_UNAPPROVED")
-        result = request_json(url, headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                              data={"model": claude_model,
-                                    "max_tokens": 1800, "system": SYSTEM_ROLE,
-                                    "messages": [{"role": "user", "content": prompt}],
-                                    "tools": [{"name": "submit_review",
-                                               "description": "Return a strict security review verdict.",
-                                               "input_schema": REVIEW_SCHEMA}],
-                                    "tool_choice": {"type": "tool", "name": "submit_review"}})
-        if result.get("stop_reason") != "tool_use":
-            raise Hold("CLAUDE_REVIEW_INCOMPLETE")
-        try:
-            responses = [part["input"] for part in result["content"]
+        # One complete, bounded, authenticated tool response. Never replay
+        # attacker-controlled diff text solely because an earlier model
+        # completion was truncated or incomplete: retrying the source gives
+        # prompt injection another opportunity to influence the decision.
+        result = request_json(
+            url, headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+            data={"model": claude_model, "max_tokens": 6144,
+                  "system": SYSTEM_ROLE,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "tools": [{"name": "submit_review",
+                             "description": "Return a strict security review verdict.",
+                             "input_schema": REVIEW_SCHEMA}],
+                  "tool_choice": {"type": "tool", "name": "submit_review"}})
+        if type(result) is not dict:
+            raise Hold("CLAUDE_RESPONSE_INVALID")
+        reason = result.get("stop_reason")
+        if reason == "tool_use":
+            content = result.get("content")
+            if type(content) is not list or any(type(part) is not dict for part in content):
+                raise Hold("CLAUDE_RESPONSE_INVALID")
+            responses = [part.get("input") for part in content
                          if part.get("type") == "tool_use" and part.get("name") == "submit_review"]
             if len(responses) != 1:
                 raise Hold("CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE")
             return parse_verdict(responses[0])
-        except (KeyError, TypeError, ValueError):
-            raise Hold("CLAUDE_RESPONSE_INVALID") from None
+        # Fixed provider-defined labels only; never leak body, prompt,
+        # credential or arbitrary text to Actions diagnostic logs.
+        label = reason if type(reason) is str and reason in {
+            "max_tokens", "end_turn", "stop_sequence", "pause_turn", "refusal"
+        } else "UNCLASSIFIED"
+        print("REVIEW_CLAUDE_STOP_REASON:" + label, file=sys.stderr)
+        if reason == "max_tokens":
+            raise Hold("CLAUDE_REVIEW_TRUNCATED")
+        if reason == "refusal":
+            raise Hold("CLAUDE_REVIEW_REFUSED")
+        # Explicit non-truncation stopping and unknown reason fail closed.
+        raise Hold("CLAUDE_REVIEW_INCOMPLETE")
     elif provider == "gemini-generative-api":
         model = (os.getenv("WOW_QA_GEMINI_MODEL") or "gemini-2.5-flash")
         if model not in {"gemini-2.5-flash"}:
