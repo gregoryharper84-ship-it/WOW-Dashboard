@@ -387,6 +387,12 @@ def _pickem_governed_stage(source: dict[str, Any]) -> str:
     stage = classify_stage_status(source)
     if stage != "COMPLETED":
         return stage
+    # Only the global V17 terminal reducer can authorize publication.
+    # A completed numerical scorer or a PASS-labelled NFL side receipt is not
+    # sufficient if the global terminal authority was lost or replaced.
+    if (source.get("global_terminal_authority") != "V17_TERMINAL_REDUCER"
+            or source.get("can_execute") is not False):
+        return "HELD"
 
     qualification = source.get("probability_qualification")
     if qualification is not None and not isinstance(qualification, Mapping):
