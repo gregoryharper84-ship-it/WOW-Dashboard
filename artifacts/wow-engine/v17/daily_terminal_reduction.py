@@ -81,16 +81,26 @@ def classify_stage_status(payload: Any) -> str:
     # Numeric model completion is not publication authority. Downstream wrappers
     # can carry stale approval flags while the controlling NFL certification
     # receipt explicitly imposes MODEL_QUALIFIED_HOLD. Its ceiling always wins.
-    for controlling in (payload, qualification):
+    detail = payload.get("detail")
+    detail = detail if isinstance(detail, dict) else {}
+    qualified_detail = qualification.get("detail")
+    qualified_detail = qualified_detail if isinstance(qualified_detail, dict) else {}
+    # Inspect every supported controlling source, including nested qualified
+    # receipts. A wrapper cannot override a non-PASS NFL certification stage
+    # by flattening the outer publication flags. An explicitly present but
+    # malformed/empty receipt also fails closed; absence of an optional
+    # receipt is not itself a HOLD for unrelated sports.
+    for controlling in (payload, qualification, detail, qualified_detail):
         ceiling = _label(controlling, "terminal_ceiling")
         label = _label(controlling, "terminal_label")
         if ceiling and ceiling != "FINAL_APPROVED":
             return DEFAULT_ROW_STATUS
         if label in {"MODEL_QUALIFIED_HOLD", "REGISTRY_INFRASTRUCTURE_BLOCKED"}:
             return DEFAULT_ROW_STATUS
-    nfl_receipt = payload.get("nfl_stage_receipt")
-    if isinstance(nfl_receipt, dict) and _label(nfl_receipt, "status") != "PASS":
-        return DEFAULT_ROW_STATUS
+        if "nfl_stage_receipt" in controlling:
+            nfl_receipt = controlling["nfl_stage_receipt"]
+            if not isinstance(nfl_receipt, dict) or _label(nfl_receipt, "status") != "PASS":
+                return DEFAULT_ROW_STATUS
 
     publishable = payload.get("probability_publishable") is True
     rank_eligible = (
