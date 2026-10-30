@@ -323,6 +323,13 @@ def call_provider(provider, key, prompt):
                                                "input_schema": REVIEW_SCHEMA}],
                                     "tool_choice": {"type": "tool", "name": "submit_review"}})
         if result.get("stop_reason") != "tool_use":
+            # Only fixed provider-defined labels may enter logs. Never log
+            # the provider body, arbitrary stop reason, prompt, or token.
+            raw_reason = result.get("stop_reason")
+            reason = raw_reason if raw_reason in {
+                "max_tokens", "end_turn", "stop_sequence", "pause_turn", "refusal"
+            } else "UNCLASSIFIED"
+            print("REVIEW_CLAUDE_STOP_REASON:" + reason, file=sys.stderr)
             raise Hold("CLAUDE_REVIEW_INCOMPLETE")
         try:
             responses = [part["input"] for part in result["content"]

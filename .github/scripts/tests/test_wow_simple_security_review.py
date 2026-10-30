@@ -130,6 +130,28 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                           return_value=tool({**good, "findings": [self._finding("critical")]})):
             self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
 
+    def test_claude_non_tool_stop_reason_is_attributed_without_exposure_or_fallback(self):
+        import contextlib
+        import io
+        for raw, expected in (
+            ("max_tokens", "max_tokens"),
+            ("end_turn", "end_turn"),
+            ("secret-redirect?key=SENSITIVE_TOKEN", "UNCLASSIFIED"),
+            (None, "UNCLASSIFIED"),
+        ):
+            with self.subTest(raw=raw):
+                stderr = io.StringIO()
+                provider_payload = {"stop_reason": raw, "content": [
+                    {"type": "text", "text": "PRIVATE_RESPONSE_BODY"}]}
+                with patch.object(m, "request_json", return_value=provider_payload):
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(m.Hold) as error:
+                            m.call_provider("anthropic-claude-api", "TEST_SECRET_KEY", "review")
+                self.assertEqual(str(error.exception), "CLAUDE_REVIEW_INCOMPLETE")
+                self.assertIn("REVIEW_CLAUDE_STOP_REASON:" + expected, stderr.getvalue())
+                for forbidden in ("PRIVATE_RESPONSE_BODY", "TEST_SECRET_KEY", "SENSITIVE_TOKEN"):
+                    self.assertNotIn(forbidden, stderr.getvalue())
+
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
         creds = {p: "scoped-key" for p in m.PROVIDERS}
