@@ -20,8 +20,10 @@ Change classes are the repository's own taxonomy
 - ``S`` semantic / trust-root: reviewer classification, routing, permissions, receipts
 - ``C`` probability-producing, calibrating or threshold-affecting
 
-The distinction that matters operationally is ``requirement``: only
-``ruleset_live`` gates block a merge (ruleset #24907422 pins exactly three).
+The ``requirement`` field records pinned CI, not authorization: ``ruleset_live``
+identifies the three checks observed in ruleset #24907422. Non-pinned semantic
+security review may still be policy-required before protected releases.
+The static model is not permission to merge and cannot prove source independence.
 ``ruleset_proposed`` gates are declared in ``ruleset-main.proposed.json`` but are not
 live, and ``advisory`` gates publish a check without gating the merge. A gate that is
 structurally impossible for a change class is therefore a fact to record, not a
@@ -89,7 +91,7 @@ GATES = (
         workflow=".github/workflows/wow-verify.yml",
         check_context="WOW required-three regression",
         requirement="ruleset_live",
-        required_by="ruleset #24907422, App 15368, strict_required_status_checks_policy=true",
+        required_by="ruleset #24907422, App 15368, strict_required_status_checks_policy=false",
         publisher=".github/workflows/wow-verify.yml job `required-three`",
     ),
     Gate(
@@ -97,7 +99,7 @@ GATES = (
         workflow=".github/workflows/wow-engine-verify.yml",
         check_context="WOW governed probability backend",
         requirement="ruleset_live",
-        required_by="ruleset #24907422, App 15368, strict_required_status_checks_policy=true",
+        required_by="ruleset #24907422, App 15368, strict_required_status_checks_policy=false",
         publisher=".github/workflows/wow-engine-verify.yml job `governed-probability-backend`",
     ),
     Gate(
@@ -105,7 +107,7 @@ GATES = (
         workflow=".github/workflows/wow-verify.yml",
         check_context="WOW additional required regression",
         requirement="ruleset_live",
-        required_by="ruleset #24907422, App 15368, strict_required_status_checks_policy=true",
+        required_by="ruleset #24907422, App 15368, strict_required_status_checks_policy=false",
         publisher=".github/workflows/wow-verify.yml job `additional-required`",
     ),
     Gate(
@@ -266,6 +268,11 @@ def assess(
         "unreachable": unreachable,
         "blocking": blocking,
         "merge_blocked": bool(blocking),
+        "merge_blocked_scope": "STRUCTURAL_PINNED_CI_ONLY",
+        "policy_review_required": change_class in ("S", "C"),
+        "independent_review_status": "UNVERIFIED",
+        "source_independence_status": "UNVERIFIED",
+        "live_ruleset_status": "NOT_QUERIED_THIS_INVOCATION",
         "retryable": retryable,
         "next_action": blocking[0]["action"] if blocking else (
             unreachable[0]["action"] if unreachable else "NONE"
@@ -289,9 +296,13 @@ def render_markdown() -> str:
         "`POLICY_UNREACHABLE` with a named actor, never a retry. Nothing here merges,",
         "dispatches or bypasses: `can_execute=false`.",
         "",
-        "Only `ruleset_live` gates block a merge. `ruleset_proposed` gates are declared in",
-        "`ruleset-main.proposed.json` but are not pinned by the live ruleset, and `advisory`",
-        "gates publish a check without gating the merge.",
+        "Only `ruleset_live` checks are tagged as pinned CI. This static source cannot",
+        "revalidate live GitHub settings on each invocation or prove release authority.",
+        "Protected semantic changes still require independent security evidence under policy.",
+        "`merge_blocked=false` is never merge authorization, and Engineering App copying",
+        "source bytes does not establish independent authorship or independent review.",
+        "Proposed checks appear in `ruleset-main.proposed.json`; other checks",
+        "are advisory unless separately established as policy obligations.",
         "",
         "| Gate | Published check | Requirement | Impossible for | Typed reason | Recovery class | Authorized route |",
         "| --- | --- | --- | --- | --- | --- | --- |",

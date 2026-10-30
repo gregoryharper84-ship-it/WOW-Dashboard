@@ -175,3 +175,16 @@ if __name__ == "__main__":
             else:
                 print(f"ok   {name}")
     raise SystemExit(1 if failures else 0)
+
+
+def test_matrix_does_not_equate_pinned_ci_with_release_authority():
+    for change_class in gcm.CHANGE_CLASSES:
+        report = gcm.assess(change_class=change_class, author_is_owner=True,
+                            touches_trust_root=True)
+        assert report["merge_blocked_scope"] == "STRUCTURAL_PINNED_CI_ONLY"
+        assert report["independent_review_status"] == "UNVERIFIED"
+        assert report["source_independence_status"] == "UNVERIFIED"
+        assert report["live_ruleset_status"] == "NOT_QUERIED_THIS_INVOCATION"
+        assert report["policy_review_required"] == (change_class in ("S", "C"))
+        assert report["can_execute"] is False
+        assert report["grants_merge"] is False

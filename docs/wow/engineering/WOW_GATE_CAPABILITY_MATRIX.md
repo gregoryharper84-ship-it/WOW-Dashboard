@@ -10,9 +10,13 @@ authorized route that resolves it. A structurally impossible gate is
 `POLICY_UNREACHABLE` with a named actor, never a retry. Nothing here merges,
 dispatches or bypasses: `can_execute=false`.
 
-Only `ruleset_live` gates block a merge. `ruleset_proposed` gates are declared in
-`ruleset-main.proposed.json` but are not pinned by the live ruleset, and `advisory`
-gates publish a check without gating the merge.
+Only `ruleset_live` checks are tagged as pinned CI. This static source cannot
+revalidate live GitHub settings on each invocation or prove release authority.
+Protected semantic changes still require independent security evidence under policy.
+`merge_blocked=false` is never merge authorization, and Engineering App copying
+source bytes does not establish independent authorship or independent review.
+Proposed checks appear in `ruleset-main.proposed.json`; other checks
+are advisory unless separately established as policy obligations.
 
 | Gate | Published check | Requirement | Impossible for | Typed reason | Recovery class | Authorized route |
 | --- | --- | --- | --- | --- | --- | --- |

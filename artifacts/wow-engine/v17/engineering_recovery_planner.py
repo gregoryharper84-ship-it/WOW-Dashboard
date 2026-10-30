@@ -19,6 +19,11 @@ import json
 import re
 from typing import Any
 
+try:
+    from . import gate_capability_matrix as _gate_matrix
+except ImportError:  # Direct protected-main CLI invocation
+    import gate_capability_matrix as _gate_matrix
+
 _FINDING_CODE_RE = re.compile(r"`([A-Z][A-Z0-9_]*(?::[^`\r\n]{1,160})?)`")
 
 MAX_REPAIR_ATTEMPTS = 3
@@ -37,6 +42,32 @@ EVIDENCE_PENDING_PREFIXES = (
     "RELEASE_QA_EVIDENCE_MISSING:", "RELEASE_QA_EVIDENCE_INCOMPLETE:",
 )
 EVIDENCE_PENDING_CODES = frozenset({"RELEASE_QA_MISSING", "RELEASE_QA_FAILED"})
+
+
+def _owner_authored_gate_route() -> dict[str, Any]:
+    """Consult the read-only matrix for an exact-head QA authorship HOLD.
+
+    Only the existing adoption worker can re-propose source. Its byte-for-byte
+    App copy is never proof of independent authorship or semantic review.
+    """
+    report = _gate_matrix.assess(
+        change_class="S", author_is_owner=True, touches_trust_root=True
+    )
+    matches = [
+        entry for entry in report["unreachable"]
+        if entry["gate"] == "independent_qa"
+        and entry["reason"] == "QA_TRUST_ROOT_OWNER_AUTHORED"
+    ]
+    if (len(matches) != 1
+            or matches[0]["recovery_class"] != "POLICY_UNREACHABLE"
+            or not matches[0].get("actor")
+            or not matches[0].get("action")
+            or report.get("can_execute") is not False
+            or report.get("grants_merge") is not False
+            or report.get("merge_blocked_scope") != "STRUCTURAL_PINNED_CI_ONLY"
+            or report.get("independent_review_status") != "UNVERIFIED"):
+        raise ValueError("GATE_CAPABILITY_MATRIX_INCOMPLETE_HOLD")
+    return matches[0]
 
 
 def parse_findings_from_summary(summary: str) -> list[str]:
@@ -75,11 +106,14 @@ def plan_recovery(
     # This route is advisory only; source adoption requires an independently
     # authenticated agent and positively reconciled canonical writer lease.
     if not is_wow_engineering_pr and "QA_TRUST_ROOT_OWNER_AUTHORED" in findings:
+        route = _owner_authored_gate_route()
         return {
             "pr_number": pr_number,
             "action": "WAITING_ON_OWNER",
-            "required_actor": "INDEPENDENT_ENGINEERING_AUTHOR",
-            "next_action": "INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE",
+            "required_actor": route["actor"],
+            "next_action": route["action"],
+            "gate_recovery_class": route["recovery_class"],
+            "independent_review_status": "UNVERIFIED",
             # The existing Engineering App adoption worker owns re-entry.
             # Preserve action for durable queue/backward compatibility only.
             "progression_state": "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF",
@@ -114,13 +148,14 @@ def plan_recovery(
         # necessary independent actor without granting write authority or
         # starting a competing repair while the canonical lease is unresolved.
         owner_authored = "QA_TRUST_ROOT_OWNER_AUTHORED" in non_repairable
+        route = _owner_authored_gate_route() if owner_authored else None
         return {
             "pr_number": pr_number,
             "action": "WAITING_ON_OWNER",
-            "required_actor": ("INDEPENDENT_ENGINEERING_AUTHOR" if owner_authored
-                               else "ACTUAL_CODEOWNER"),
-            "next_action": ("INDEPENDENT_SOURCE_ADOPTION_WITH_VERIFIED_WRITER_LEASE"
-                            if owner_authored else "FRESH_EXACT_HEAD_OWNER_APPROVAL"),
+            "required_actor": (route["actor"] if route else "ACTUAL_CODEOWNER"),
+            "next_action": (route["action"] if route else "FRESH_EXACT_HEAD_OWNER_APPROVAL"),
+            "gate_recovery_class": route["recovery_class"] if route else None,
+            "independent_review_status": "UNVERIFIED" if route else "NOT_EVALUATED",
             "progression_state": ("AUTOMATED_INDEPENDENT_SOURCE_HANDOFF" if owner_authored
                                   else "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED"),
             "reentry_trigger": ("EXISTING_HOURLY_ADOPTION_AND_QA_HOLD_WORKER" if owner_authored
