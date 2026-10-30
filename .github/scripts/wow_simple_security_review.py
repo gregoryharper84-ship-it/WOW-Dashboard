@@ -3,18 +3,31 @@
 
 Untrusted PR content is read as data, never checked out or executed. A distinct
 QA App publishes the exact-head result; GitHub's native required checks enforce it.
+
+Incident #2136: fixed-label HTTP/stage diagnostics and truthful provider attempts.
+Semantic REJECT never fails over. Ambiguous infrastructure HOLD is escalated
+for owner attention, never approval. No URL, secret, response body, diff or
+prompt enters the diagnostic receipt or comment.
+Modes: default review; --emit-payload; --publish-attention.
 """
 import hashlib
 import json
 import os
 import re
-from pathlib import Path
 import sys
+import time
+from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 CHECK_NAME = "WOW Independent Security Review"
+INCIDENT = "2136"
+ARTIFACT_NAME = "wow-independent-security-decision.json"
+ATTENTION_MARKER = "wow-review-attention"
+MAX_ATTENTION_PAGES = 3
+ATTENTION_ATTEMPTS = 3
 ALLOWED = {"PASS", "FAIL"}
 PROVIDERS = ("anthropic-claude-api", "gemini-generative-api")
 OWNER_LOGIN = "gregoryharper84-ship-it"
@@ -40,10 +53,136 @@ REVIEW_SCHEMA = {
 }
 MAX_FILES = 50
 MAX_DIFF = 90000
+MAX_ATTEMPT_RECORDS = 4
+MAX_REASON_LEN = 64
+ENDPOINT_LABEL = re.compile(r"^(?:GITHUB_API|ANTHROPIC_API|GEMINI_API|UNKNOWN_API):"
+                            r"(?:GET|POST|PATCH|UNKNOWN):[A-Z_]+$")
+
+ENDPOINT_STAGES = {
+    ("GITHUB_API", "GET", "PR_METADATA"): "github.pr",
+    ("GITHUB_API", "GET", "PR_FILES"): "github.diff_inventory",
+    ("GITHUB_API", "GET", "PR_REVIEWS"): "github.provenance",
+    ("GITHUB_API", "GET", "COMMIT_METADATA"): "github.provenance",
+    ("GITHUB_API", "GET", "CHECK_RUNS_READ"): "github.prior_checks",
+    ("GITHUB_API", "GET", "MAIN_REF"): "github.publish_check",
+    ("GITHUB_API", "POST", "CHECK_RUN_CREATE"): "github.publish_check",
+    ("GITHUB_API", "GET", "ISSUE_COMMENTS"): "github.attention",
+    ("GITHUB_API", "POST", "ISSUE_COMMENTS"): "github.attention",
+    ("GITHUB_API", "PATCH", "ISSUE_COMMENT"): "github.attention",
+}
+CODE_STAGES = (
+    ("DIFF_", "github.diff_inventory"),
+    ("PRIOR_REVIEW_", "github.prior_checks"),
+    ("CHECK_", "github.publish_check"),
+    ("QA_APP_", "github.publish_check"),
+    ("PR_", "github.pr"),
+    ("PROTECTED_", "workflow.identity"),
+    ("READ_TOKEN_", "workflow.identity"),
+    ("REVIEW_", "workflow.identity"),
+    ("EVENT_", "workflow.event"),
+    ("DISPATCH_", "workflow.event"),
+    ("CLAUDE_", "anthropic.messages"),
+    ("GEMINI_", "gemini.generate_content"),
+    ("PROVIDER_", "reviewer.provider"),
+    ("SEMANTIC_", "reviewer.semantic"),
+    ("OWNER_", "owner.fallback"),
+    ("ATTENTION_", "github.attention"),
+    ("NOTIFICATION_", "github.attention"),
+)
+NON_ESCALATING = frozenset({
+    "SEMANTIC_SCHEMA_INVALID", "SEMANTIC_VERDICT_INVALID", "SEMANTIC_FINDINGS_INVALID",
+    "SEMANTIC_RESPONSE_INVALID", "SEMANTIC_RESPONSE_NOT_JSON",
+    "CLAUDE_RESPONSE_INVALID", "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE", "CLAUDE_REVIEW_INCOMPLETE",
+    "GEMINI_RESPONSE_INVALID", "GEMINI_REVIEW_INCOMPLETE",
+    "PREVIOUS_SEMANTIC_REJECT_SAME_SHA",
+    "PR_TARGET_STALE_OR_UNTRUSTED", "PR_HEAD_OR_BASE_MOVED_DURING_REVIEW",
+    "PROTECTED_BASE_MOVED_BEFORE_PUBLICATION",
+    "DIFF_COUNT_UNBOUNDED", "DIFF_INVENTORY_INVALID", "DIFF_INVENTORY_INCOMPLETE",
+    "DIFF_INVENTORY_DUPLICATE", "DIFF_PATCH_MISSING", "DIFF_FILE_IDENTITY_INVALID",
+    "DIFF_CHANGE_COUNTS_INVALID", "DIFF_PATCH_TRUNCATED_OR_INCOMPLETE", "DIFF_SIZE_UNBOUNDED",
+    "REVIEW_ENDPOINT_UNTRUSTED", "EVENT_UNTRUSTED", "PR_EVENT_MISSING", "PR_DISPATCH_INVALID",
+    "PR_NUMBER_INVALID", "DISPATCH_ACTOR_UNAUTHORIZED", "RECEIPT_IDENTITY_INVALID",
+    "PROVIDER_IDENTITY_INVALID", "PROTECTED_MAIN_REQUIRED",
+})
+OWNER_INELIGIBLE_CODES = frozenset({
+    "OWNER_FALLBACK_REQUIRES_ENGINEERING_APP_SOURCE",
+    "OWNER_IS_SOURCE_AUTHOR_OR_IDENTITY_UNVERIFIED",
+    "OWNER_SOURCE_LINEAGE_UNVERIFIED",
+    "OWNER_ADOPTION_COMMIT_PROVENANCE_UNVERIFIED",
+    "OWNER_SOURCE_SHA_OR_FILES_UNVERIFIED",
+    "OWNER_SOURCE_INVENTORY_UNVERIFIED",
+    "OWNER_SOURCE_FILE_UNVERIFIED",
+    "OWNER_SOURCE_BLOBS_DIFFER_FROM_ADOPTED_HEAD",
+    "OWNER_REVIEW_INVENTORY_UNVERIFIED",
+    "OWNER_REVIEW_NOT_EXACT_OR_NOT_AUTHENTICATED",
+})
+NEXT_ACTIONS = {
+    "REVIEW_INFRASTRUCTURE_GITHUB": (
+        "Repair the GitHub read/publish path for the reviewer (permissions, endpoint, installation access) — the failing stage above names it.",
+        "Re-run `wow-v17-simple-security-review.yml` from protected `main` for the same exact PR head after the repair.",
+    ),
+    "REVIEW_INFRASTRUCTURE_PROVIDER": (
+        "Repair the named provider route (endpoint, approved model id, key/scope) in the existing `wow-qa` environment; do not relabel a 404 as quota.",
+        "Re-run the read-only reviewer from protected `main`; no source change is required for a pure infrastructure repair.",
+    ),
+    "CHECK_PUBLICATION_FAILURE": (
+        "Repair QA App `5245832` check-run publication for this head SHA, then re-run the reviewer from protected `main`.",
+        "Do not treat the semantic result as admitted until the QA App check exists at the exact head SHA.",
+    ),
+    "PROVIDER_ROUTE_EXHAUSTED": (
+        "Restore at least one approved provider credential/quota in the `wow-qa` environment, or use the documented eligible owner route below.",
+        "Re-run the read-only reviewer from protected `main` after restoring provider access.",
+    ),
+    "OWNER_FALLBACK_BLOCKED": (
+        "The owner approval route cannot admit this target: source independence is unproven or the source is owner-authored.",
+        "Use root-cause repair plus a genuinely independent authorized review mechanism; do not copy owner source into an App PR to manufacture independence.",
+    ),
+    "REVIEW_WORKFLOW_FAILURE": (
+        "Repair the workflow step named by the stage above (checkout, Python setup, token mint, script start) on protected `main`.",
+        "Re-run the workflow for the exact current PR head; this attention event is updated rather than duplicated.",
+    ),
+    "NOTIFICATION_FAILURE": (
+        "The reviewer result exists but owner attention could not be published; the run summary and artifact retain the receipt.",
+        "Re-run the notifier step (`--publish-attention`) for this run; it updates the same dedupe key.",
+    ),
+    "UNKNOWN_REVIEWER_FAILURE": (
+        "Inspect the retained reviewer artifact and failed run log for the named stage, then repair the cause.",
+        "Re-run the read-only reviewer from protected `main` for the exact current PR head.",
+    ),
+}
 
 
 class Hold(Exception):
     """The security review could not establish an authentic PASS."""
+
+    attempts = ()
+
+    def __init__(self, code, *, endpoint=None, http_status=None, provider=None, show_endpoint=None):
+        self.code = str(code)[:MAX_REASON_LEN]
+        self.endpoint = endpoint if isinstance(endpoint, str) and ENDPOINT_LABEL.match(endpoint) else None
+        self.http_status = http_status if type(http_status) is int else None
+        self.provider = provider if provider in REVIEWER_IDENTITIES else None
+        show = self.code.startswith("HTTP_") if show_endpoint is None else bool(show_endpoint)
+        super().__init__(self.code if self.endpoint is None or not show
+                         else self.code + ":" + self.endpoint)
+
+    @property
+    def stage(self):
+        return stage_for(self.code, self.endpoint)
+
+    def diagnostic(self):
+        detail = {"stage": self.stage, "reason": self.code}
+        if self.endpoint:
+            detail["endpoint"] = self.endpoint
+        if self.http_status is not None:
+            detail["http_status"] = self.http_status
+        if self.provider:
+            detail["provider"] = self.provider
+        return detail
+
+    def with_attempts(self, attempts):
+        self.attempts = tuple(attempts)
+        return self
 
 
 class ProviderUnavailable(Hold):
@@ -51,11 +190,12 @@ class ProviderUnavailable(Hold):
 
 
 class OwnerFallbackRequired(Hold):
-    """Both actual semantic-review providers were unavailable, never rejected."""
+    """A verdict could not be obtained; the owner attention route is required."""
 
-    def __init__(self, attempts):
+    def __init__(self, attempts, cause=None):
         super().__init__("OWNER_REVIEW_REQUIRED")
-        self.attempts = attempts
+        self.attempts = tuple(attempts)
+        self.cause = cause
 
 
 class NoCredentialRedirect(HTTPRedirectHandler):
@@ -68,7 +208,69 @@ class NoCredentialRedirect(HTTPRedirectHandler):
 HTTP_CLIENT = build_opener(NoCredentialRedirect)
 
 
-def request_json(url, *, token=None, data=None, headers=None):
+def stage_for(code, endpoint=None):
+    """Map an outcome to a fixed stage label. Never derived from a response."""
+    if endpoint:
+        api, _, remainder = endpoint.partition(":")
+        method, _, operation = remainder.partition(":")
+        stage = ENDPOINT_STAGES.get((api, method, operation))
+        if stage:
+            return stage
+        if api == "ANTHROPIC_API":
+            return "anthropic.messages"
+        if api == "GEMINI_API":
+            return "gemini.generate_content"
+        if api == "GITHUB_API":
+            return "github.other"
+        return "workflow.identity"
+    for prefix, stage in CODE_STAGES:
+        if code.startswith(prefix):
+            return stage
+    return "reviewer.internal"
+
+
+def safe_http_operation(url, has_body, method=None):
+    """Return only fixed, allowlisted endpoint labels; never emit URLs or responses."""
+    parsed = urlsplit(url)
+    host, path = parsed.hostname, parsed.path
+    verb = method or ("POST" if has_body else "GET")
+    if verb not in ("GET", "POST", "PATCH"):
+        verb = "UNKNOWN"
+    prefix = "/repos/" + REPO + "/"
+    if parsed.scheme == "https" and host == "api.github.com" and path.startswith(prefix):
+        segments = path[len(prefix):].split("/")
+        if len(segments) == 2 and segments[0] == "pulls" and segments[1].isdigit():
+            operation = "PR_METADATA"
+        elif (len(segments) == 3 and segments[0] == "pulls"
+              and segments[1].isdigit() and segments[2] in ("files", "reviews")):
+            operation = "PR_" + segments[2].upper()
+        elif (len(segments) == 3 and segments[0] == "commits"
+              and segments[2] == "check-runs"):
+            operation = "CHECK_RUNS_READ"
+        elif len(segments) == 2 and segments[0] == "commits":
+            operation = "COMMIT_METADATA"
+        elif segments == ["check-runs"]:
+            operation = "CHECK_RUN_CREATE"
+        elif segments == ["git", "ref", "heads", "main"]:
+            operation = "MAIN_REF"
+        elif (len(segments) == 3 and segments[0] == "issues"
+              and segments[1].isdigit() and segments[2] == "comments"):
+            operation = "ISSUE_COMMENTS"
+        elif (len(segments) == 3 and segments[0] == "issues"
+              and segments[1] == "comments" and segments[2].isdigit()):
+            operation = "ISSUE_COMMENT"
+        else:
+            operation = "OTHER_REPO_RESOURCE"
+        return "GITHUB_API:" + verb + ":" + operation
+    if parsed.scheme == "https" and host == "api.anthropic.com" and path == "/v1/messages":
+        return "ANTHROPIC_API:" + verb + ":MESSAGES"
+    if (parsed.scheme == "https" and host == "generativelanguage.googleapis.com"
+            and path.startswith("/v1beta/models/") and path.endswith(":generateContent")):
+        return "GEMINI_API:" + verb + ":GENERATE_CONTENT"
+    return "UNKNOWN_API:" + verb + ":UNCLASSIFIED"
+
+
+def request_json(url, *, token=None, data=None, headers=None, method=None):
     if not (url.startswith("https://api.github.com/repos/" + REPO + "/")
             or url == "https://api.anthropic.com/v1/messages"
             or url.startswith("https://generativelanguage.googleapis.com/v1beta/models/")):
@@ -81,14 +283,18 @@ def request_json(url, *, token=None, data=None, headers=None):
     body = None if data is None else json.dumps(data, separators=(",", ":")).encode()
     if body is not None:
         h["Content-Type"] = "application/json"
+    verb = method or ("POST" if body is not None else "GET")
+    endpoint = safe_http_operation(url, body is not None, verb)
+    is_provider = not url.startswith("https://api.github.com/")
     try:
-        with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=60) as response:
+        with HTTP_CLIENT.open(Request(url, data=body, headers=h, method=verb), timeout=60) as response:
             raw = response.read(250000)
         return json.loads(raw)
     except HTTPError as exc:
-        is_provider = data is not None and not url.startswith("https://api.github.com/")
+        print("REVIEW_HTTP_DIAGNOSTIC:HTTP_" + str(exc.code) + ":" + endpoint, file=sys.stderr)
         if is_provider and exc.code in RETRYABLE_HTTP:
-            raise ProviderUnavailable("PROVIDER_HTTP_" + str(exc.code)) from None
+            raise ProviderUnavailable("PROVIDER_HTTP_" + str(exc.code), endpoint=endpoint,
+                                      http_status=exc.code) from None
         # 400 / 404 are ambiguous. Promote to availability ONLY with an explicit
         # provider-native, structured error indicating exhausted credit or retired model.
         if is_provider and exc.code in (400, 404):
@@ -101,20 +307,46 @@ def request_json(url, *, token=None, data=None, headers=None):
                 message = ""
             words = message.lower()
             if exc.code == 400 and any(x in words for x in CREDIT_ERRORS):
-                raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED") from None
+                raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED", endpoint=endpoint,
+                                          http_status=exc.code) from None
             if exc.code == 404 and any(x in words for x in MODEL_GONE_ERRORS):
-                raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
-        raise Hold("HTTP_" + str(exc.code)) from None
+                raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE", endpoint=endpoint,
+                                          http_status=exc.code) from None
+        raise Hold("HTTP_" + str(exc.code), endpoint=endpoint, http_status=exc.code) from None
     except (URLError, TimeoutError):
-        if not url.startswith("https://api.github.com/"):
-            raise ProviderUnavailable("PROVIDER_TRANSPORT") from None
-        raise Hold("GITHUB_TRANSPORT") from None
+        if is_provider:
+            raise ProviderUnavailable("PROVIDER_TRANSPORT", endpoint=endpoint) from None
+        raise Hold("GITHUB_TRANSPORT", endpoint=endpoint) from None
     except (ValueError, UnicodeError):
-        raise Hold("RESPONSE_JSON_INVALID") from None
+        raise Hold("RESPONSE_JSON_INVALID", endpoint=endpoint) from None
 
 
 def gh(path, token):
     return request_json("https://api.github.com/repos/" + REPO + path, token=token)
+
+
+def attempt_record(provider, index, *, network_attempt, reason, http_status=None, endpoint=None):
+    """Bounded, sanitized record of one reviewer route attempt."""
+    record = {"provider": provider, "attempt_index": int(index),
+              "network_attempt": bool(network_attempt),
+              "result": str(reason)[:MAX_REASON_LEN]}
+    if type(http_status) is int:
+        record["http_status"] = http_status
+    if isinstance(endpoint, str) and ENDPOINT_LABEL.match(endpoint):
+        record["endpoint"] = endpoint
+    return record
+
+
+def not_attempted(provider, index):
+    return attempt_record(provider, index, network_attempt=False, reason="NOT_ATTEMPTED")
+
+
+def provider_infrastructure(exc):
+    """True only when no verdict was obtained because the provider route failed."""
+    endpoint = exc.endpoint or ""
+    if endpoint.startswith(("ANTHROPIC_API:", "GEMINI_API:")):
+        return exc.code.startswith(("HTTP_", "PROVIDER_"))
+    return bool(re.match(r"^HTTP_[0-9]{3}:(?:ANTHROPIC|GEMINI)_API:", exc.code))
 
 
 def event_target(event, kind):
@@ -274,20 +506,37 @@ def call_provider(provider, key, prompt):
 
 
 def semantic_review(target, credentials, invoke=call_provider):
+    """Claude -> Gemini on typed availability only; truthful attempt ledger.
+
+    Every attempt is preserved, including routes never invoked. A valid
+    semantic verdict is terminal. An ambiguous provider failure that prevents a
+    verdict escalates immediately instead of claiming both providers failed.
+    """
     prompt = prompt_for(target)
     attempts = []
-    for provider in PROVIDERS:
+    for index, provider in enumerate(PROVIDERS):
         key = credentials.get(provider)
         if not key:
-            attempts.append({"provider": provider, "result": "CREDENTIAL_UNAVAILABLE"})
+            attempts.append(attempt_record(provider, index, network_attempt=False,
+                                           reason="CREDENTIAL_UNAVAILABLE"))
             continue
         try:
             decision, payload = invoke(provider, key, prompt)
         except ProviderUnavailable as exc:
-            attempts.append({"provider": provider, "result": str(exc)})
+            attempts.append(attempt_record(provider, index, network_attempt=True,
+                                           reason=exc.code, http_status=exc.http_status,
+                                           endpoint=exc.endpoint))
             continue
-        # A semantic REJECT, malformed output or policy denial NEVER fails over.
-        attempts.append({"provider": provider, "result": decision})
+        except Hold as exc:
+            attempts.append(attempt_record(provider, index, network_attempt=True,
+                                           reason=exc.code, http_status=exc.http_status,
+                                           endpoint=exc.endpoint))
+            remaining = [not_attempted(other, other_index)
+                         for other_index, other in enumerate(PROVIDERS) if other_index > index]
+            if provider_infrastructure(exc):
+                raise OwnerFallbackRequired(attempts + remaining, cause=exc)
+            raise exc.with_attempts(attempts + remaining)
+        attempts.append(attempt_record(provider, index, network_attempt=True, reason=decision))
         return decision, payload, provider, attempts
     raise OwnerFallbackRequired(attempts)
 
@@ -371,15 +620,16 @@ def owner_review_instruction(target):
             f"DIFF_SHA256={target['diff_sha256']}")
 
 
-
 def make_receipt(target, *, decision, reviewer, verdict, attempts, run_id, attempt):
     if reviewer not in REVIEWER_IDENTITIES or decision not in ("PASS", "REJECT") or int(run_id) <= 0 or int(attempt) <= 0:
         raise Hold("RECEIPT_IDENTITY_INVALID")
-    return {"schema_version": 1, "repository": REPO, "pr_number": target["pr"],
+    if not isinstance(attempts, (list, tuple)) or len(attempts) > MAX_ATTEMPT_RECORDS:
+        raise Hold("RECEIPT_IDENTITY_INVALID")
+    return {"schema_version": 2, "repository": REPO, "pr_number": target["pr"],
             "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
             "run_id": int(run_id), "run_attempt": int(attempt), "reviewer_identity": reviewer,
             "credential_scope": "wow-qa", "decision": decision, "verdict": verdict,
-            "attempts": attempts, "can_execute": False, "no_live_trading": True}
+            "attempts": [dict(item) for item in attempts], "can_execute": False, "no_live_trading": True}
 
 
 def prior_semantic_reject(sha, read_token):
@@ -414,7 +664,8 @@ def publish_check(head_sha, receipt, token):
     summary = (f"{decision}: independent semantic review. PR #{receipt.get('pr_number')}, SHA {head_sha}, "
                f"provider {receipt.get('reviewer_identity', 'none')}, base {receipt.get('base_sha', 'none')}, diff {receipt.get('diff_sha256', 'none')}, "
                f"run {receipt.get('run_id', 'none')}/{receipt.get('run_attempt', 'none')}. "
-               f"reason {receipt.get('reason', 'none')}. "
+               f"stage {receipt.get('stage', 'none')}. reason {receipt.get('reason', 'none')}. "
+               f"owner attention {('required: ' + str((receipt.get('escalation') or {}).get('failure_class'))) if (receipt.get('escalation') or {}).get('required') else 'not required'}. "
                "No merge/deploy/trading authority; see run artifact for findings.")
     payload = {"name": CHECK_NAME, "head_sha": head_sha, "status": "completed", "conclusion": conclusion,
                "output": {"title": decision + " — independent semantic source review", "summary": summary[:64000]}}
@@ -433,56 +684,401 @@ def require_live_identity(current, target):
         raise Hold("PR_HEAD_OR_BASE_MOVED_DURING_REVIEW")
 
 
-def main():
-    if os.environ.get("GITHUB_REPOSITORY") != REPO or os.environ.get("GITHUB_REF") != "refs/heads/main":
-        raise Hold("PROTECTED_MAIN_REQUIRED")
-    event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-    pr_number, expected_sha = event_target(event, os.environ.get("GITHUB_EVENT_NAME", ""))
-    read_token = os.environ.get("GH_READ_TOKEN", "")
-    if not read_token:
-        raise Hold("READ_TOKEN_MISSING")
-    target = capture(pr_number, expected_sha, read_token)
-    receipt = {"schema_version": 1, "repository": REPO, "pr_number": pr_number,
-               "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
-               "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-               "decision": "HOLD", "reviewer_identity": "none", "can_execute": False}
+def classify_failure(code, stage):
+    stage = stage or ""
+    if code == "OWNER_REVIEW_REQUIRED" or code.startswith("OWNER_"):
+        return "OWNER_FALLBACK_BLOCKED"
+    if code.startswith("NOTIFICATION_"):
+        return "NOTIFICATION_FAILURE"
+    if code.startswith("QA_APP_") or code.startswith("CHECK_"):
+        return "CHECK_PUBLICATION_FAILURE"
+    if code.startswith("PROVIDER_"):
+        return "PROVIDER_ROUTE_EXHAUSTED"
+    if stage.startswith("github."):
+        return "REVIEW_INFRASTRUCTURE_GITHUB"
+    if stage.startswith(("anthropic.", "gemini.")):
+        return "REVIEW_INFRASTRUCTURE_PROVIDER"
+    if stage.startswith("owner."):
+        return "OWNER_FALLBACK_BLOCKED"
+    if stage.startswith(("workflow.", "reviewer.provider")):
+        return "REVIEW_WORKFLOW_FAILURE"
+    return "UNKNOWN_REVIEWER_FAILURE"
+
+
+def owner_eligibility(receipt, code, target):
+    if target is None:
+        return {"eligible": False, "reason": "TARGET_UNVALIDATED"}
+    if target.get("author") == OWNER_LOGIN:
+        return {"eligible": False, "reason": "OWNER_IS_SOURCE_AUTHOR"}
+    if code in OWNER_INELIGIBLE_CODES:
+        return {"eligible": False, "reason": code}
+    if code == "OWNER_REVIEW_REQUIRED":
+        return {"eligible": True, "reason": "AWAITING_EXACT_HEAD_OWNER_REVIEW"}
+    return {"eligible": False, "reason": "NOT_AN_OWNER_APPROVAL_ROUTE"}
+
+
+def escalation_key(receipt, failure_class):
+    material = "|".join(str(value if value is not None else "")
+                        for value in (REPO, INCIDENT, receipt.get("pr_number"),
+                                      receipt.get("head_sha"), receipt.get("base_sha"), failure_class))
+    return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
+def escalation_state(receipt, target):
+    decision = receipt.get("decision")
+    publication = ((receipt.get("check_publication") or {}).get("status")) or "NOT_ATTEMPTED"
+    code = receipt.get("reason") or "UNKNOWN"
+    if decision == "PASS" and publication == "PUBLISHED":
+        return {"required": False, "failure_class": None, "dedupe_key": None,
+                "owner_eligible": None, "owner_reason": "REVIEW_PASS_PUBLISHED",
+                "publication": "NOT_REQUIRED", "next_actions": []}
+    if decision == "REJECT":
+        return {"required": False, "failure_class": "SEMANTIC_REJECT", "dedupe_key": None,
+                "owner_eligible": False, "owner_reason": "SEMANTIC_REJECT_TERMINAL",
+                "publication": "NOT_REQUIRED", "next_actions": []}
+    if decision != "PASS" and code in NON_ESCALATING and publication != "FAILED":
+        return {"required": False, "failure_class": "NON_INFRASTRUCTURE_HOLD", "dedupe_key": None,
+                "owner_eligible": False, "owner_reason": code,
+                "publication": "NOT_REQUIRED", "next_actions": []}
+    failure_class = ("CHECK_PUBLICATION_FAILURE" if decision == "PASS"
+                     else classify_failure(code, receipt.get("stage")))
+    if publication == "FAILED" and failure_class == "UNKNOWN_REVIEWER_FAILURE":
+        failure_class = "CHECK_PUBLICATION_FAILURE"
+    eligibility = owner_eligibility(receipt, code, target)
+    return {"required": True, "failure_class": failure_class,
+            "dedupe_key": escalation_key(receipt, failure_class),
+            "owner_eligible": eligibility["eligible"], "owner_reason": eligibility["reason"],
+            "publication": "PENDING_NOTIFIER",
+            "next_actions": list(NEXT_ACTIONS[failure_class])}
+
+
+def _int_env(name):
+    value = os.environ.get(name, "")
+    return int(value) if value.isdigit() else 0
+
+
+def receipt_base():
+    return {"schema_version": 2, "repository": REPO, "pr_number": None, "head_sha": None,
+            "base_sha": None, "diff_sha256": None,
+            "run_id": _int_env("GITHUB_RUN_ID"), "run_attempt": _int_env("GITHUB_RUN_ATTEMPT"),
+            "reviewer_identity": "none", "credential_scope": "wow-qa",
+            "decision": "HOLD", "stage": "initialization", "reason": "INITIALIZATION_INCOMPLETE",
+            "attempts": [], "check_publication": {"status": "NOT_ATTEMPTED"},
+            "escalation": {"required": False, "failure_class": None, "dedupe_key": None,
+                           "owner_eligible": None, "owner_reason": None,
+                           "publication": "NOT_ATTEMPTED", "next_actions": []},
+            "can_execute": False, "no_live_trading": True}
+
+
+def run_url():
+    server = os.environ.get("GITHUB_SERVER_URL", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    if server != "https://github.com" or not run_id.isdigit():
+        return "unavailable"
+    url = f"https://github.com/{REPO}/actions/runs/{run_id}"
+    return url + (f"/attempts/{attempt}" if attempt.isdigit() else "")
+
+
+def write_artifact(receipt):
     try:
+        Path(ARTIFACT_NAME).write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n",
+                                       encoding="utf-8")
+        return True
+    except OSError:
+        print("REVIEW_ARTIFACT_WRITE_FAILED", file=sys.stderr)
+        return False
+
+
+def read_artifact():
+    path = Path(ARTIFACT_NAME)
+    try:
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def event_pr_number():
+    try:
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    except (KeyError, OSError, ValueError):
+        return None
+    pr = event.get("pull_request")
+    if isinstance(pr, dict) and type(pr.get("number")) is int:
+        return pr["number"]
+    inputs = event.get("inputs")
+    if isinstance(inputs, dict):
+        try:
+            return int(inputs["pr_number"])
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+def workflow_failure_receipt():
+    """Receipt for a failure that prevented the reviewer from producing one."""
+    receipt = receipt_base()
+    receipt["pr_number"] = event_pr_number()
+    receipt["reason"] = "WORKFLOW_STEP_FAILED"
+    receipt["stage"] = "workflow.identity"
+    receipt["check_publication"] = {"status": "NOT_ATTEMPTED", "reason": "WORKFLOW_STEP_FAILED"}
+    return receipt
+
+
+def fallback_receipt():
+    receipt = workflow_failure_receipt()
+    receipt["escalation"] = escalation_state(receipt, None)
+    return receipt
+
+
+def _hex_or(value, fallback):
+    return (f"`{value}`" if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40,64}", value)
+            else fallback)
+
+
+def _attempt_line(item):
+    if not isinstance(item, dict):
+        return "unrecorded attempt"
+    index = item.get("attempt_index")
+    network = "network attempt" if item.get("network_attempt") else "no network attempt"
+    status = item.get("http_status")
+    suffix = f", http {status}" if type(status) is int else ""
+    return (f"`{item.get('provider') or 'unknown'}` #{index} ({network}) → "
+            f"`{item.get('result') or 'UNKNOWN'}`{suffix}")
+
+
+def attention_body(receipt, *, marker, mention, run_url_value):
+    escalation = receipt.get("escalation") or {}
+    pr_number = receipt.get("pr_number")
+    pr_url = (f"https://github.com/{REPO}/pull/{pr_number}"
+              if type(pr_number) is int and pr_number > 0 else "unavailable")
+    publication = (receipt.get("check_publication") or {}).get("status") or "NOT_ATTEMPTED"
+    unverified = "unavailable (capture incomplete; event-derived value unverified)"
+    lines = []
+    if mention:
+        lines.append(f"@{OWNER_LOGIN} — automated security review needs owner attention.")
+        lines.append("")
+    lines.append(f"**WOW automated security review — owner attention request** (incident #{INCIDENT})")
+    lines.append("")
+    lines.append(f"- repository: `{REPO}`")
+    lines.append(f"- pull request: {pr_url}")
+    lines.append("- head SHA: " + _hex_or(receipt.get("head_sha"), unverified))
+    lines.append("- base SHA: " + _hex_or(receipt.get("base_sha"), unverified))
+    lines.append("- diff SHA-256: " + _hex_or(receipt.get("diff_sha256"), "unavailable (capture incomplete)"))
+    lines.append(f"- workflow run: {run_url_value}")
+    lines.append(f"- failed stage: `{receipt.get('stage') or 'unknown'}`")
+    lines.append(f"- sanitized cause: `{receipt.get('reason') or 'unknown'}`")
+    lines.append(f"- security decision: `{receipt.get('decision') or 'HOLD'}` (never a PASS)")
+    lines.append(f"- failure class: `{escalation.get('failure_class') or 'unknown'}`")
+    lines.append(f"- QA App check publication: `{publication}`")
+    owner_fallback = receipt.get("owner_fallback") or {}
+    if owner_fallback:
+        lines.append(f"- owner fallback route: `{owner_fallback.get('reason')}` "
+                     f"(stage `{owner_fallback.get('stage')}`)")
+    attempts = receipt.get("attempts") or []
+    if attempts:
+        lines.append("")
+        lines.append("Attempt ledger:")
+        for item in attempts[:MAX_ATTEMPT_RECORDS]:
+            lines.append("- " + _attempt_line(item))
+    lines.append("")
+    eligible = bool(escalation.get("owner_eligible"))
+    lines.append("**Owner approval eligibility:** " + ("eligible" if eligible else "not eligible") +
+                 f" — `{escalation.get('owner_reason') or 'unknown'}`")
+    instruction = receipt.get("owner_review_instruction")
+    lines.append("")
+    if eligible and instruction:
+        lines.append("Exact-head fallback body for a genuine signed-in GitHub APPROVED review on this PR:")
+        lines.append("")
+        lines.append(f"`{instruction}`")
+    else:
+        lines.append("Do **not** submit `WOW_SECURITY_FALLBACK_PASS`: no owner approval can satisfy "
+                     "source independence for this target and no approval here becomes a security PASS.")
+    lines.append("")
+    lines.append("Next actions:")
+    for action in escalation.get("next_actions") or []:
+        lines.append(f"- {action}")
+    lines.append("")
+    lines.append(f"- repair owner: @{OWNER_LOGIN}")
+    lines.append("- re-entry: fix the named cause, then re-run `wow-v17-simple-security-review.yml` from "
+                 "protected `main` for the exact current PR head. The same head/base/class updates this "
+                 "request; a new head/base or failure class creates one new event.")
+    lines.append("")
+    lines.append("Advisory recovery authority only: no merge, deploy, trading or security-approval authority "
+                 "(`can_execute=false`, `DRY_RUN_ONLY_NO_LIVE_TRADING_NO_MARKET_ORDERS=true`).")
+    lines.append("")
+    lines.append(marker)
+    return "\n".join(lines)
+
+
+def find_attention_comment(pr_number, marker, token):
+    for page in range(1, MAX_ATTENTION_PAGES + 1):
+        batch = gh(f"/issues/{pr_number}/comments?per_page=100&page={page}", token)
+        if not isinstance(batch, list):
+            raise Hold("ATTENTION_COMMENTS_INVALID")
+        for item in batch:
+            if (isinstance(item, dict) and isinstance(item.get("id"), int)
+                    and isinstance(item.get("body"), str) and marker in item["body"]):
+                return item["id"]
+        if len(batch) < 100:
+            return None
+    raise Hold("ATTENTION_COMMENTS_UNBOUNDED")
+
+
+def publish_attention(receipt, token, *, notify_url, sleeper=time.sleep):
+    """Create or update exactly one owner attention request per dedupe key.
+
+    Concurrent runs of this workflow are serialized by the workflow concurrency
+    group per PR, so the read-then-write stays single-writer.
+    """
+    escalation = receipt.get("escalation") or {}
+    if not escalation.get("required"):
+        print("REVIEW_ATTENTION_NOT_REQUIRED")
+        return "NOT_REQUIRED"
+    if not token:
+        raise Hold("NOTIFICATION_TOKEN_MISSING")
+    pr_number = receipt.get("pr_number")
+    if type(pr_number) is not int or pr_number <= 0:
+        raise Hold("NOTIFICATION_TARGET_UNAVAILABLE")
+    key = escalation.get("dedupe_key")
+    if not isinstance(key, str) or len(key) != 32:
+        raise Hold("NOTIFICATION_KEY_INVALID")
+    marker = f"<!-- {ATTENTION_MARKER} key={key} -->"
+    failure = None
+    for attempt in range(1, ATTENTION_ATTEMPTS + 1):
+        try:
+            existing = find_attention_comment(pr_number, marker, token)
+            body = attention_body(receipt, marker=marker, mention=existing is None,
+                                  run_url_value=notify_url)
+            if existing is None:
+                request_json(f"https://api.github.com/repos/{REPO}/issues/{pr_number}/comments",
+                             token=token, data={"body": body})
+            else:
+                request_json(f"https://api.github.com/repos/{REPO}/issues/comments/{existing}",
+                             token=token, data={"body": body}, method="PATCH")
+            print("REVIEW_ATTENTION_PUBLISHED:" + key)
+            return "PUBLISHED"
+        except Hold as exc:
+            failure = exc
+            print("REVIEW_ATTENTION_RETRY:" + str(attempt) + ":" + exc.code, file=sys.stderr)
+            if attempt < ATTENTION_ATTEMPTS:
+                sleeper(2 * attempt)
+    print("REVIEW_ATTENTION_FAILED:" + (failure.code if failure else "UNKNOWN"), file=sys.stderr)
+    return "FAILED"
+
+
+def write_summary(receipt, status):
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    escalation = receipt.get("escalation") or {}
+    lines = ["# WOW owner attention publication", "",
+             f"- status: `{status}`",
+             f"- failure class: `{escalation.get('failure_class') or 'none'}`",
+             f"- stage: `{receipt.get('stage') or 'unknown'}`",
+             f"- cause: `{receipt.get('reason') or 'unknown'}`",
+             f"- security decision: `{receipt.get('decision') or 'HOLD'}`",
+             f"- dedupe key: `{escalation.get('dedupe_key') or 'none'}`",
+             "- can_execute: false"]
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+    except OSError:
+        print("REVIEW_SUMMARY_WRITE_FAILED", file=sys.stderr)
+
+
+def main():
+    """Review one exact PR head. Always writes a bounded diagnostic artifact."""
+    receipt = receipt_base()
+    target = None
+    read_token = ""
+    pr_number = None
+    run_id = receipt["run_id"]
+    run_attempt = receipt["run_attempt"]
+    try:
+        if os.environ.get("GITHUB_REPOSITORY") != REPO or os.environ.get("GITHUB_REF") != "refs/heads/main":
+            raise Hold("PROTECTED_MAIN_REQUIRED")
+        receipt["stage"] = "workflow.event"
+        if run_id <= 0 or run_attempt <= 0:
+            raise Hold("RECEIPT_IDENTITY_INVALID")
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        pr_number, expected_sha = event_target(event, os.environ.get("GITHUB_EVENT_NAME", ""))
+        receipt["pr_number"] = pr_number
+        read_token = os.environ.get("GH_READ_TOKEN", "")
+        if not read_token:
+            raise Hold("READ_TOKEN_MISSING")
+        receipt["stage"] = "github.pr"
+        target = capture(pr_number, expected_sha, read_token)
+        receipt.update({"head_sha": target["head_sha"], "base_sha": target["base_sha"],
+                        "diff_sha256": target["diff_sha256"],
+                        "stage": "github.diff_inventory"})
+        receipt["stage"] = "github.prior_checks"
         if prior_semantic_reject(target["head_sha"], read_token):
             raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        receipt["stage"] = "review.semantic"
         verdict, output, provider, attempts = semantic_review(target, {
             "anthropic-claude-api": os.environ.get("WOW_QA_REVIEW_ANTHROPIC_API_KEY", ""),
             "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY", ""),
         })
-        current = gh(f"/pulls/{pr_number}", read_token)
-        require_live_identity(current, target)
+        require_live_identity(gh(f"/pulls/{pr_number}", read_token), target)
+        receipt["stage"] = "github.prior_checks"
         if prior_semantic_reject(target["head_sha"], read_token):
             raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
         receipt = make_receipt(target, decision=verdict, reviewer=provider, verdict=output,
-                               attempts=attempts, run_id=os.environ["GITHUB_RUN_ID"],
-                               attempt=os.environ["GITHUB_RUN_ATTEMPT"])
-    except OwnerFallbackRequired as exc:
-        receipt["attempts"] = exc.attempts
+                               attempts=attempts, run_id=run_id, attempt=run_attempt)
+        receipt["stage"] = "review.semantic.receipt"
+        if verdict == "REJECT":
+            receipt["reason"] = "SEMANTIC_REJECT"
+    except OwnerFallbackRequired as required:
+        receipt["attempts"] = [dict(item) for item in required.attempts][:MAX_ATTEMPT_RECORDS]
+        if required.cause is not None:
+            receipt["reason"] = required.cause.code
+            receipt["stage"] = required.cause.stage
+        else:
+            receipt["reason"] = "OWNER_REVIEW_REQUIRED"
+            receipt["stage"] = "owner.fallback"
         try:
+            # An ambiguous provider outage permits attention, never an owner PASS.
+            if required.cause is not None:
+                raise Hold("OWNER_INFRASTRUCTURE_HOLD_NOT_APPROVABLE")
+            if target is None:
+                raise Hold("PR_TARGET_STALE_OR_UNTRUSTED")
             owner_evidence = owner_fallback_review(target, read_token)
             require_live_identity(gh(f"/pulls/{pr_number}", read_token), target)
             human_verdict = {"source_review": "PASS", "security_review": "PASS",
                              "probability_integrity_review": "PASS", "findings": []}
             receipt = make_receipt(
                 target, decision="PASS", reviewer=OWNER_REVIEWER,
-                verdict=human_verdict, attempts=exc.attempts,
-                run_id=os.environ["GITHUB_RUN_ID"], attempt=os.environ["GITHUB_RUN_ATTEMPT"])
+                verdict=human_verdict, attempts=list(required.attempts),
+                run_id=run_id, attempt=run_attempt)
             receipt["owner_review_provenance"] = owner_evidence
+            receipt["attempts"] = [dict(item) for item in required.attempts][:MAX_ATTEMPT_RECORDS]
+            receipt["stage"] = "owner.fallback"
         except Hold as owner_hold:
-            receipt["reason"] = str(owner_hold)
-            if str(owner_hold) == "OWNER_REVIEW_REQUIRED":
-                receipt["owner_review_instruction"] = owner_review_instruction(target)
+            receipt["owner_fallback"] = {"stage": owner_hold.stage, "reason": owner_hold.code}
+            if required.cause is None:
+                receipt["reason"] = owner_hold.code
+                receipt["stage"] = owner_hold.stage
+                if owner_hold.code == "OWNER_REVIEW_REQUIRED" and target is not None:
+                    receipt["owner_review_instruction"] = owner_review_instruction(target)
     except Hold as exc:
-        receipt["reason"] = str(exc)
+        receipt["reason"] = exc.code
+        receipt["stage"] = exc.stage
+        if exc.attempts:
+            receipt["attempts"] = [dict(item) for item in exc.attempts][:MAX_ATTEMPT_RECORDS]
+    except Exception as exc:  # noqa: BLE001 - sanitized terminal boundary, never PASS
+        receipt["decision"] = "HOLD"
+        receipt["reason"] = "REVIEWER_UNEXPECTED_FAILURE"
+        receipt["stage"] = "reviewer.internal"
+        receipt["exception_type"] = type(exc).__name__[:64]
     # Last-second guarded acceptance. A moved protected main or a prior QA REJECT
     # must never be overwritten with a success, including the owner fallback path.
     if receipt["decision"] == "PASS":
         try:
-            require_live_identity(gh(f"/pulls/{pr_number}", read_token), target)
+            require_live_identity(gh(f"/pulls/{receipt['pr_number']}", read_token), target)
             live_main = gh("/git/ref/heads/main", read_token)
             if (live_main.get("object") or {}).get("sha") != target["base_sha"]:
                 raise Hold("PROTECTED_BASE_MOVED_BEFORE_PUBLICATION")
@@ -490,21 +1086,91 @@ def main():
                 raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
         except Hold as final_hold:
             receipt["decision"] = "HOLD"
-            receipt["reason"] = str(final_hold)
-    Path("wow-independent-security-decision.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+            receipt["previous_decision"] = "PASS"
+            receipt["reason"] = final_hold.code
+            receipt["stage"] = final_hold.stage
+    receipt["check_publication"] = {"status": "NOT_ATTEMPTED", "reason": "TARGET_UNVALIDATED"}
+    if target is not None and target.get("head_sha"):
+        try:
+            publish_check(target["head_sha"], receipt, os.environ.get("QA_APP_TOKEN", ""))
+            receipt["check_publication"] = {"status": "PUBLISHED"}
+        except Hold as publish_hold:
+            receipt["check_publication"] = {"status": "FAILED", "stage": publish_hold.stage,
+                                            "reason": publish_hold.code}
+        except Exception as exc:  # noqa: BLE001 - publication failure stays observable
+            receipt["check_publication"] = {"status": "FAILED", "stage": "github.publish_check",
+                                            "reason": "REVIEWER_UNEXPECTED_FAILURE",
+                                            "exception_type": type(exc).__name__[:64]}
+    if receipt["decision"] == "PASS" and receipt["check_publication"]["status"] != "PUBLISHED":
+        receipt["reason"] = "CHECK_PUBLICATION_FAILED"
+    receipt["escalation"] = escalation_state(receipt, target)
+    write_artifact(receipt)
     if receipt.get("owner_review_instruction"):
         print("OWNER_SECURITY_REVIEW_REQUIRED: " + receipt["owner_review_instruction"], file=sys.stderr)
         print("After genuine signed-in GitHub review, dispatch this exact PR/SHA from protected main.", file=sys.stderr)
-    publish_check(target["head_sha"], receipt, os.environ.get("QA_APP_TOKEN", ""))
-    if receipt["decision"] != "PASS":
-        print("INDEPENDENT_SECURITY_REVIEW_HOLD: " + receipt.get("reason", receipt["decision"]), file=sys.stderr)
-        raise SystemExit(1)
-    print("INDEPENDENT_SECURITY_REVIEW_PASS: " + target["head_sha"])
+    if receipt["decision"] == "PASS" and receipt["check_publication"]["status"] == "PUBLISHED":
+        print("INDEPENDENT_SECURITY_REVIEW_PASS: " + str(receipt["head_sha"]))
+        return 0
+    print("INDEPENDENT_SECURITY_REVIEW_HOLD: " + str(receipt.get("reason", receipt["decision"])), file=sys.stderr)
+    return 1
+
+
+def emit_payload():
+    """Export the bounded receipt (or a workflow-failure receipt) as a job output."""
+    receipt = read_artifact() or fallback_receipt()
+    if read_artifact() is None:
+        print("REVIEW_RECEIPT_MISSING:WORKFLOW_STEP_OBSERVABLE", file=sys.stderr)
+    payload = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        try:
+            with open(out, "a", encoding="utf-8") as handle:
+                handle.write("payload=" + payload + "\n")
+        except OSError:
+            print("REVIEW_PAYLOAD_EMIT_FAILED", file=sys.stderr)
+            return 1
+    print("REVIEW_ATTENTION_PAYLOAD_EMITTED:" + str(len(payload)))
+    return 0
+
+
+def publish_attention_main():
+    raw = os.environ.get("ATTENTION_PAYLOAD", "")
+    receipt = None
+    if raw.strip():
+        try:
+            receipt = json.loads(raw)
+        except ValueError:
+            raise Hold("NOTIFICATION_PAYLOAD_INVALID") from None
+    if receipt is None:
+        receipt = fallback_receipt()
+    if not isinstance(receipt, dict):
+        raise Hold("NOTIFICATION_PAYLOAD_INVALID")
+    if not isinstance(receipt.get("escalation"), dict):
+        receipt["escalation"] = escalation_state(receipt, None)
+    status = publish_attention(receipt, os.environ.get("GH_NOTIFY_TOKEN", ""),
+                               notify_url=run_url())
+    write_summary(receipt, status)
+    if status == "FAILED":
+        return 1
+    return 0
+
+
+def run(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    try:
+        if "--emit-payload" in args:
+            return emit_payload()
+        if "--publish-attention" in args:
+            return publish_attention_main()
+        return main()
+    except Hold as exc:
+        print("INDEPENDENT_SECURITY_REVIEW_HOLD: " + str(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - sanitized terminal boundary, never PASS
+        print("INDEPENDENT_SECURITY_REVIEW_HOLD: REVIEWER_UNEXPECTED_FAILURE", file=sys.stderr)
+        print("REVIEW_EXCEPTION_TYPE:" + type(exc).__name__[:64], file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Hold as exc:
-        print("INDEPENDENT_SECURITY_REVIEW_HOLD: " + str(exc), file=sys.stderr)
-        raise SystemExit(1)
+    raise SystemExit(run())
