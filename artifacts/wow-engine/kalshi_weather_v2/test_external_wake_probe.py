@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-import external_wake_probe as probe
+from kalshi_weather_v2 import external_wake_probe as probe
 
 HEALTH = {
     "status": "ok",
