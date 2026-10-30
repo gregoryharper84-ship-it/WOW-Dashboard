@@ -327,8 +327,25 @@ _FORWARD_PAGE_KEYS = {
 }
 
 
-def _paginate(db: Any, table: str, columns: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
-    if table not in _FORWARD_PAGE_KEYS or not isinstance(page_size, int) or page_size <= 0:
+# A broken/hostile PostgREST client could otherwise return endlessly full pages.
+# The production default allows 128,000 source rows, well above the normal NFL
+# cohort, but never loops without a finite bound.
+MAX_FORWARD_PAGES = 128
+
+
+def _paginate(
+    db: Any,
+    table: str,
+    columns: str,
+    *,
+    page_size: int = 1000,
+    max_pages: int = MAX_FORWARD_PAGES,
+) -> list[dict[str, Any]]:
+    if (
+        table not in _FORWARD_PAGE_KEYS
+        or type(page_size) is not int or page_size <= 0
+        or type(max_pages) is not int or max_pages <= 0
+    ):
         raise NFLForwardShadowError("NFL_FORWARD_PAGINATION_INVALID:TABLE_OR_PAGE_SIZE")
     key = _FORWARD_PAGE_KEYS[table]
     fields = [part.strip() for part in columns.split(",")]
@@ -342,7 +359,7 @@ def _paginate(db: Any, table: str, columns: str, *, page_size: int = 1000) -> li
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     start = 0
-    while True:
+    for _ in range(max_pages):
         result = (
             db.table(table)
             .select(projection)
@@ -351,17 +368,30 @@ def _paginate(db: Any, table: str, columns: str, *, page_size: int = 1000) -> li
             .execute()
         )
         batch = list(result.data or [])
+        if len(batch) > page_size:
+            raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:PAGE_LENGTH_INVALID")
         for row in batch:
-            if not isinstance(row, Mapping) or not str(row.get(key) or "").strip():
+            if not isinstance(row, Mapping):
                 raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_MISSING")
-            row_id = str(row[key])
-            if row_id in seen:
+            raw_id = row.get(key)
+            if raw_id is None or raw_id == "":
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_MISSING")
+            # PostgREST emits text/UUID primary keys as JSON strings. Do not
+            # stringify integers/bools: mixing ID types can change dedup.
+            if not isinstance(raw_id, str):
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_TYPE_INVALID")
+            if not raw_id.strip():
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_MISSING")
+            if raw_id in seen:
                 raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_DUPLICATED")
-            seen.add(row_id)
+            seen.add(raw_id)
             rows.append(dict(row))
         if len(batch) < page_size:
             return rows
         start += page_size
+    # No grading or health persistence can follow a truncated or never-ending
+    # page stream. A full final page still needs a short subsequent page.
+    raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:PAGE_LIMIT_EXCEEDED")
 
 
 def load_prediction_rows(db: Any) -> list[dict[str, Any]]:
