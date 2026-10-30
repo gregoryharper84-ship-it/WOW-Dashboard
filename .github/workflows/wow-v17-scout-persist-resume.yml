@@ -91,6 +91,31 @@ jobs:
               receipt_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-scout-brain-persistence-${source_id}&per_page=1" \
                 --jq '[.artifacts[] | select(.expired == false)] | length')
               if [ "$receipt_count" -eq 0 ]; then
+                # A cancelled writer is not evidence that upstream discovery ran.
+                # Do not repeatedly replay verification-only workflow_run sources.
+                source_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_id}")
+                source_jobs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_id}/jobs?per_page=100")
+                discovery_state=$(jq -r '
+                  [.jobs[] | select(.name == "Nightly all-sport discovery and governed specialist handoff") | .conclusion]
+                  | if length == 1 then .[0] else "UNKNOWN" end
+                ' <<<"$source_jobs")
+                verification_state=$(jq -r '
+                  [.jobs[] | select(.name == "Verify Multi-Scout contract") | .conclusion]
+                  | if length == 1 then .[0] else "UNKNOWN" end
+                ' <<<"$source_jobs")
+                source_event=$(jq -r '.event // ""' <<<"$source_json")
+                if [ "$discovery_state" = "skipped" ] && [ "$verification_state" = "success" ] &&
+                  { [ "$source_event" = "push" ] || [ "$source_event" = "pull_request" ] || [ "$source_event" = "workflow_run" ]; }; then
+                  echo "SCOUT_DISCOVERY_NOT_APPLICABLE: cancelled writer source ${source_id} was verification-only; skip without redispatch." >> "$GITHUB_STEP_SUMMARY"
+                  continue
+                fi
+                discovery_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${source_id}/artifacts" \
+                  --jq '[.artifacts[] | select(.expired == false and (.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$")))] | length')
+                if [ "$discovery_count" -eq 0 ]; then
+                  echo "SCOUT_DISCOVERY_ARTIFACT_MISSING_HOLD: source ${source_id} cannot be replayed; new authenticated discovery needed." >&2
+                  rm -f "$tmp"
+                  return 2
+                fi
                 printf '%s\n' "$source_id"
                 rm -f "$tmp"
                 return 0
@@ -179,8 +204,14 @@ jobs:
           fi
 
           if [ -z "$source_run_id" ]; then
-            echo "No completed recoverable Multi-Scout run found; fail closed." >&2
-            exit 1
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+              echo "SCOUT_RECOVERY_REQUIRED_SOURCE_UNAVAILABLE_HOLD: manual replay requested without authenticated discovery evidence." >&2
+              exit 1
+            fi
+            echo "SCOUT_RECOVERY_NOT_APPLICABLE: no verified recoverable discovery source; no persistence or replay claimed." >> "$GITHUB_STEP_SUMMARY"
+            echo "run_id=" >> "$GITHUB_OUTPUT"
+            echo "force_replay=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "run_id=$source_run_id" >> "$GITHUB_OUTPUT"
@@ -192,6 +223,7 @@ jobs:
           fi
 
       - name: Verify recoverable discovery artifact exists
+        if: steps.source.outputs.run_id != ''
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -205,6 +237,7 @@ jobs:
           fi
 
       - name: Capture persistence receipt baseline
+        if: steps.source.outputs.run_id != ''
         id: baseline
         shell: bash
         env:
@@ -218,12 +251,12 @@ jobs:
           echo "Persistence receipt baseline for ${SOURCE_RUN_ID}: ${count}." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Allow native workflow_run persistence to win first
-        if: steps.source.outputs.force_replay != 'true'
+        if: steps.source.outputs.run_id != '' && (steps.source.outputs.force_replay != 'true')
         run: sleep 30
 
       - name: Check for existing persistence receipt
         id: existing
-        if: steps.source.outputs.force_replay != 'true'
+        if: steps.source.outputs.run_id != '' && (steps.source.outputs.force_replay != 'true')
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -241,7 +274,7 @@ jobs:
 
       - name: Detect same-source persistence writer state
         id: writer
-        if: steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true'
+        if: steps.source.outputs.run_id != '' && (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true')
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -299,7 +332,7 @@ jobs:
           fi
 
       - name: Park automatic Scout persistence recovery during failure cooldown
-        if: steps.writer.outputs.cooldown == 'true'
+        if: steps.source.outputs.run_id != '' && (steps.writer.outputs.cooldown == 'true')
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
           RECENT_FAILED_RUN_ID: ${{ steps.writer.outputs.recent_failed_run_id }}
@@ -307,7 +340,7 @@ jobs:
           echo "BLOCKED_WITH_EXACT_REASON: SCOUT_PERSISTENCE_RECOVERY_COOLDOWN_ACTIVE source_run_id=${SOURCE_RUN_ID} failed_run_id=${RECENT_FAILED_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Explicitly resume Scout persistence
-        if: (steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true' && steps.writer.outputs.replayed != 'true' && steps.writer.outputs.cooldown != 'true'
+        if: steps.source.outputs.run_id != '' && ((steps.source.outputs.force_replay == 'true' || steps.existing.outputs.present != 'true') && steps.writer.outputs.active != 'true' && steps.writer.outputs.replayed != 'true' && steps.writer.outputs.cooldown != 'true')
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
@@ -317,7 +350,7 @@ jobs:
           echo "Explicitly dispatched governed Scout persistence for source run ${SOURCE_RUN_ID} on current main." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify persistence receipt appears
-        if: steps.writer.outputs.cooldown != 'true'
+        if: steps.source.outputs.run_id != '' && (steps.writer.outputs.cooldown != 'true')
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
