@@ -621,13 +621,34 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(definition["type"], "string")
             self.assertNotIn("minLength", definition)
             self.assertNotIn("maxLength", definition)
+            self.assertEqual(
+                definition["pattern"], rf"^[\s\S]{{1,{m.MAX_FINDING_TEXT}}}$"
+            )
             pattern = re.compile(definition["pattern"])
             self.assertIsNotNone(pattern.fullmatch("X" * 1))
             self.assertIsNotNone(pattern.fullmatch("X" * m.MAX_FINDING_TEXT))
+            self.assertIsNotNone(pattern.fullmatch("\t" * m.MAX_FINDING_TEXT))
+            self.assertIsNotNone(pattern.fullmatch("\n" * m.MAX_FINDING_TEXT))
+            self.assertIsNotNone(pattern.fullmatch("line1\nline2"))
             self.assertIsNone(pattern.fullmatch("X" * (m.MAX_FINDING_TEXT + 1)))
-            self.assertIsNotNone(pattern.fullmatch("line1\\nline2"))
+            self.assertIsNone(pattern.fullmatch("\n" * (m.MAX_FINDING_TEXT + 1)))
         self.assertEqual(props["category"]["enum"], list(m.FINDING_CATEGORIES))
         self.assertEqual(props["severity"]["enum"], list(m.FINDING_SEVERITIES))
+        clone = m._build_claude_strict_schema()
+        self.assertIsNot(clone, m.CLAUDE_STRICT_SCHEMA)
+        self.assertEqual(clone, m.CLAUDE_STRICT_SCHEMA)
+        self.assertEqual(
+            m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS
+        )
+        for field in ("file", "detail", "evidence"):
+            self.assertEqual(
+                m.REVIEW_SCHEMA["properties"]["findings"]["items"]["properties"][field]["maxLength"], 500
+            )
+        with self.assertRaisesRegex(m.Hold, "TOO_MANY"):
+            m.parse_verdict({
+                **self._passing(),
+                "findings": [self._finding("low")] * (m.MAX_FINDINGS + 1),
+            })
         # Parsing is authoritative, not the provider's claimed schema support.
         failing = {**self._passing(), "findings": [{
             **self._finding("low"), "detail": "x" * 501}]}
