@@ -33,6 +33,11 @@ from nflverse_historical_adapter import NFLVerseHistoricalAdapterError, parse_nf
 from v17 import team_event_request_runtime as team_runtime
 from v17.cross_sport_resilience_overlay import model_invocation_limit
 from v17.daily_response_contract import persist_row_detail
+from v17.daily_terminal_reduction import (
+    assert_no_terminal_upgrade,
+    classify_stage_status,
+    reduce_row_terminal,
+)
 from v17.nfl_pickem_pool_optimizer import DECISION_OBJECTIVE, build_pickem_board
 from v17.nfl_team_event_specialist import _load_latest_schedule_snapshot
 from v17.nfl_total_points_tiebreaker_specialist import (
@@ -382,13 +387,24 @@ def _audit_row(source: Mapping[str, Any]) -> dict[str, Any]:
         "home_team": envelope.get("home_team") or source.get("home_team"),
         "away_team": envelope.get("away_team") or source.get("away_team"),
     }
-    completed = source.get("sporting_probability_completed") is True
+    # "sporting_probability_completed" means that the fitted model returned
+    # numbers, not that V17 authorized publication. The persisted row must use
+    # the controlling terminal, including any forward-certification ceiling.
+    scored = dict(source)
+    stage_status = classify_stage_status(scored)
+    reduction = assert_no_terminal_upgrade(reduce_row_terminal([stage_status]))
+    final_terminal = reduction["final_terminal"]
     return {
         "lane": "MONEYLINE",
         "identity": identity,
-        "row_status": "COMPLETED" if completed else "HELD",
-        "probability_publishable": source.get("probability_publishable") is True,
-        "result": dict(source),
+        "row_status": final_terminal,
+        "probability_publishable": bool(
+            final_terminal == "COMPLETED"
+            and scored.get("probability_publishable") is True
+            and scored.get("rank_eligible") is True
+        ),
+        "result": scored,
+        "terminal_reduction": reduction,
         "terminal": True,
         "can_execute": False,
     }
