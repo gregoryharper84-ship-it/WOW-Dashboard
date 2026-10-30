@@ -26,11 +26,12 @@ from __future__ import annotations
 import secrets
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import agent_runtime_api
 import api_prod
-from agent_runtime import idempotency, repository
+from agent_runtime import idempotency, repository, schemas
 from agent_runtime.reconciliation import reconcile_from_ceilings
 from agent_runtime.reducer import RequiredJobResult, reduce_candidate
 from agent_runtime.registry import WORKERS
@@ -180,6 +181,31 @@ def test_authenticated_run_reads_preserve_contract(monkeypatch):
     assert audit.status_code == 200
     assert audit.json()["run_id"] == run_id
     assert audit.json()["can_execute"] is False
+
+
+def test_malformed_candidate_batch_fails_closed_before_database_access(monkeypatch):
+    """HTTP schema and internal direct-call paths both reject bad batches."""
+    def forbidden_db_access():
+        raise AssertionError("malformed admission accessed service-role database")
+
+    monkeypatch.setattr(agent_runtime_api, "get_client", forbidden_db_access)
+    for invalid in (None, 12, {}, "not-a-list", [12]):
+        response = client.post(
+            "/wow/runs",
+            json={**_RUN_PAYLOAD, "candidate_inputs": invalid},
+            headers={"Idempotency-Key": "invalid-batch", **_AUTH_HEADERS},
+        )
+        assert response.status_code == 422, (invalid, response.text)
+
+    # An internal caller using model_construct can bypass Pydantic validation;
+    # the route must still return a typed 422, never a TypeError or DB access.
+    req = schemas.RunCreateRequest.model_construct(
+        **{**_RUN_PAYLOAD, "candidate_inputs": None},
+    )
+    with pytest.raises(HTTPException) as exc:
+        agent_runtime_api.create_run(req, idempotency_key="direct-invalid-batch")
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "RUN_BATCH_LIMIT_EXCEEDED"
 
 
 def test_run_batch_and_key_limits_reject_before_database_access(monkeypatch):
