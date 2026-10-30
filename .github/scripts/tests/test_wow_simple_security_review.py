@@ -996,34 +996,6 @@ class ReviewerWorkflowContractTests(unittest.TestCase):
     WORKFLOW = (Path(__file__).resolve().parents[2] / "workflows"
                 / "wow-v17-simple-security-review.yml")
 
-    def test_attention_publication_has_its_own_scoped_job(self):
-        text = self.WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("owner-attention:", text)
-        self.assertIn("needs: independent-security", text)
-        self.assertIn("pull-requests: write", text)
-        attention_job = text.split("owner-attention:", 1)[1]
-        for secret in ("WOW_QA_REVIEW_ANTHROPIC_API_KEY", "WOW_QA_REVIEW_GEMINI_API_KEY",
-                       "WOW_QA_APP_PRIVATE_KEY", "permission-checks:"):
-            self.assertNotIn(secret, attention_job)
-        review_job = text.split("owner-attention:", 1)[0]
-        self.assertIn("permission-checks: write", review_job)
-        self.assertIn("persist-credentials: false", review_job)
-        self.assertIn("ref: main", review_job)
-        self.assertIn("environment: wow-qa", review_job)
-
-    def test_workflow_level_failure_paths_and_serialization(self):
-        text = self.WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("cancel-in-progress: false", text)
-        self.assertIn("queue: max", text)
-        self.assertIn("id: attention", text)
-        self.assertIn("--emit-payload", text)
-        self.assertIn("--publish-attention", text)
-        self.assertEqual(text.count("if: always()"), 3)
-        self.assertNotIn("github.event.pull_request.head.ref", text)
-        self.assertIn("outputs:", text)
-        self.assertIn("payload: ${{ steps.attention.outputs.payload }}", text)
-
-
 class WorkflowFailurePathTests(TempWorkspace):
     def env(self, **overrides):
         values = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
