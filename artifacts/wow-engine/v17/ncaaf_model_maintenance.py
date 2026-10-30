@@ -218,18 +218,26 @@ def run_ncaaf_model_maintenance(
                 "source_snapshot_persisted_n": persisted_n, "training_games": asdict(games),
             })
 
+    # The rich compiler is not the authority over the independent,
+    # prior-results-only research candidate. Keep its failure visible and
+    # continue to the separate corpus/sample/provenance gates of that trainer.
+    # A successful fallback is NOT a successful maintenance run when rich
+    # feature compilation failed: the top-level status remains BLOCKED.
+    feature_compilation_failed = False
     try:
         feature_report = materialize_complete_training_features(db)
     except Exception as exc:  # noqa: BLE001
-        return _blocked(
-            "NCAAF_FEATURE_COMPILATION_FAILED",
-            stage="FEATURE_COMPILATION",
-            detail={
-                "error_type": type(exc).__name__,
-                "fresh_acquisition_complete": fresh_acquisition_complete,
-                "acquisition_blockers": sorted(acquisition_blockers),
-            },
-        )
+        feature_compilation_failed = True
+        acquisition_blockers.add("NCAAF_FEATURE_COMPILATION_FAILED")
+        feature_report = {
+            "status": "BLOCKED",
+            "code": "NCAAF_FEATURE_COMPILATION_FAILED",
+            "error_type": type(exc).__name__,
+            "complete_feature_rows": 0,
+            "market_features_used": False,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
 
     complete_n = int(feature_report.get("complete_feature_rows") or 0)
     effective_sha = str(training_code_sha or os.getenv("RENDER_GIT_COMMIT") or "").strip()
@@ -257,7 +265,11 @@ def run_ncaaf_model_maintenance(
         except Exception as exc:  # noqa: BLE001
             training_blocker = {"code": "NCAAF_RESULT_FORM_CANDIDATE_TRAINING_FAILED", "stage": "RESULT_FORM_CANDIDATE_TRAINING", "detail": type(exc).__name__}
 
-    status = "CANDIDATE_EVIDENCE_UPDATED" if training and training.get("ok") is True else "BLOCKED"
+    status = (
+        "CANDIDATE_EVIDENCE_UPDATED"
+        if not feature_compilation_failed and training and training.get("ok") is True
+        else "BLOCKED"
+    )
     blockers = sorted(set(acquisition_blockers) | ({str(training_blocker["code"])} if training_blocker else set()))
     lane = development_lane("NCAAF")
     return {
