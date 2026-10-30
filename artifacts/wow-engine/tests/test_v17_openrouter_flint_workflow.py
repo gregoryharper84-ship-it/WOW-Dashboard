@@ -48,7 +48,7 @@ def test_model_secret_is_single_step_and_no_write_actions():
     assert source.count("secrets.OPENROUTER_API_KEY") == 1
     assert "FLINT_ENGINEERING_ENABLED" in source
     assert "--acknowledged" in source
-    assert "upload-artifact@v4" in source
+    assert "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in source
     assert "git push" not in source
     assert "gh pr create" not in source
     assert "gh pr merge" not in source
@@ -65,3 +65,40 @@ def test_exact_canonical_incident_is_verified_independently_of_list_limit():
     assert 'rows.append(exact)' in source
     # No issue body or credentials need to be read for this diagnostic.
     assert '--json number,title,body' not in source
+
+def test_source_candidate_has_pinned_dependencies_and_verified_provenance():
+    source = WORKFLOW.read_text()
+    for full in (
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    ):
+        assert "uses: " + full in source
+    assert "uses: actions/checkout@v" not in source
+    assert "uses: actions/setup-python@v" not in source
+    assert "uses: actions/upload-artifact@v" not in source
+    assert 'git cat-file -e "$GITHUB_SHA:$path"' in source
+    for filename in (
+        "engineering_remote_fallback.py",
+        "engineering_gemini_headless.py",
+        "engineering_openrouter_flint_worker.py",
+        "engineering_openrouter_flint_probe.py",
+        "engineering_dispatch_manifest.json",
+    ):
+        assert filename in source
+    # Staged inert data can never itself install a protected trust-root workflow.
+    assert not (ROOT / ".github/workflows/wow-v17-flint-engineering-worker.yml").exists()
+
+
+def test_untrusted_issue_metadata_and_provider_wallclock_are_bounded():
+    source = WORKFLOW.read_text()
+    assert '"$RUNNER_TEMP/wow-flint/issues.json" "$INCIDENT"' in source
+    assert 'type(exact.get("number")) is not int' in source
+    assert 'str(exact["number"]) != sys.argv[4]' in source
+    assert 'len(title) > 200' in source
+    assert 'chr(0) in title' in source
+    assert 'FLINT_ISSUE_TITLE_INVALID' in source
+    assert 'FLINT_OPEN_ISSUE_EVIDENCE_INVALID' in source
+    assert 'timeout --signal=TERM --kill-after=5s 75s python' in source
+    assert 'FLINT_PROVIDER_WALLCLOCK_BUDGET_EXCEEDED' in source
+    assert 'timeout-minutes: 8' in source

@@ -87,6 +87,32 @@ def test_smoke_rejects_incomplete_or_unattributed_completion():
         assert result["can_execute"] is False
 
 
+def test_secret_header_is_unredirected_and_removed_after_success_or_failure():
+    env = {"WOW_FLINT_PROBE_ENABLED": "true", "OPENROUTER_API_KEY": "synthetic-secret"}
+    captured = []
+    def successful(request, timeout):
+        captured.append(request)
+        assert request.get_header("Authorization") == "Bearer synthetic-secret"
+        assert request.has_header("Authorization")
+        assert "Authorization" in request.unredirected_hdrs
+        assert "Authorization" not in request.headers
+        return FakeResponse(b'{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}')
+    result = probe.smoke(env, opener=successful)
+    assert result["status"] == "SMOKE_PASSED"
+    assert captured[0].get_header("Authorization") is None
+    assert "Authorization" not in captured[0].unredirected_hdrs
+    assert "synthetic-secret" not in repr(captured[0])
+
+    def transport(request, timeout):
+        captured.append(request)
+        assert request.get_header("Authorization") == "Bearer synthetic-secret"
+        raise URLError("UNTRUSTED_SECRET_CONTEXT")
+    result = probe.smoke(env, opener=transport)
+    assert result["status"] == "TRANSPORT_FAILURE"
+    assert captured[-1].get_header("Authorization") is None
+    assert "synthetic-secret" not in str(result)
+
+
 def test_canary_cannot_override_governance():
     for result in (probe.preflight({}), probe.validate_completion({"choices":[{"message":{"content":"ok"}}]})):
         assert result["terminal_authority"] == "V17_TERMINAL_REDUCER"

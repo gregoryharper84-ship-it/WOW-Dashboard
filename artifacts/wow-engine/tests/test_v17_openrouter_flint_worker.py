@@ -15,10 +15,12 @@ def _load(name):
     return module
 
 
-# Script mode loads the companion probe as a module from the same directory.
+# Inject only the explicit sibling module while importing the script. Never
+# prepend an arbitrary source directory to sys.path (module shadowing risk).
 import sys
-sys.path.insert(0, str(BASE))
-worker = _load("engineering_openrouter_flint_worker")
+from unittest.mock import patch
+with patch.dict(sys.modules, {"engineering_openrouter_flint_probe": _load("engineering_openrouter_flint_probe")}):
+    worker = _load("engineering_openrouter_flint_worker")
 
 ENV = {"FLINT_ENGINEERING_ENABLED": "true", "OPENROUTER_API_KEY": "synthetic-secret"}
 SHA = "a" * 40
@@ -169,6 +171,30 @@ def test_no_credentials_or_source_contents_in_provider_payload():
     assert "OPENROUTER_API_KEY" not in str(payload)
     assert "synthetic-secret" not in str(payload)
     assert payload["messages"][1]["role"] == "user"
+
+
+def test_auth_header_is_unredirected_and_cleared_on_all_outcomes():
+    captured = []
+    def accepted(request, timeout):
+        captured.append(request)
+        assert request.get_header("Authorization") == "Bearer synthetic-secret"
+        assert "Authorization" in request.unredirected_hdrs
+        assert "Authorization" not in request.headers
+        return Reply(_payload())
+    receipt, diagnostic = worker.evaluate(SELECTION, ENV, acknowledged=True,
+                                          source_sha=SHA, opener=accepted)
+    assert receipt["status"] == "TRIAGE_CANDIDATE_ONLY" and diagnostic
+    assert captured[0].get_header("Authorization") is None
+    assert "synthetic-secret" not in repr(captured[0])
+
+    def fail(request, timeout):
+        captured.append(request)
+        raise URLError("sensitive context")
+    receipt, diagnostic = worker.evaluate(SELECTION, ENV, acknowledged=True,
+                                          source_sha=SHA, opener=fail)
+    assert receipt["status"] == "TRANSPORT_FAILURE" and diagnostic is None
+    assert captured[-1].get_header("Authorization") is None
+    assert "synthetic-secret" not in str(receipt)
 
 
 def test_candidate_cannot_publish():

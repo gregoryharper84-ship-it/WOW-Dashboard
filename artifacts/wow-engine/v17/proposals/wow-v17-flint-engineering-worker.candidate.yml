@@ -39,14 +39,14 @@ jobs:
     environment: wow-engineering
     steps:
       - name: Checkout trusted main without writer credentials
-        uses: actions/checkout@v6
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: main
           fetch-depth: 1
           persist-credentials: false
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -76,7 +76,13 @@ jobs:
       - name: Fence unresolved remote writers
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
+        run: |
+          set -euo pipefail
+          # All dependencies must exist as tracked blobs in the checked-out main SHA.
+          for path in artifacts/wow-engine/v17/engineering_remote_fallback.py artifacts/wow-engine/v17/engineering_gemini_headless.py artifacts/wow-engine/v17/engineering_openrouter_flint_worker.py artifacts/wow-engine/v17/engineering_openrouter_flint_probe.py artifacts/wow-engine/v17/engineering_dispatch_manifest.json; do
+            git cat-file -e "$GITHUB_SHA:$path" || { echo "::error::FLINT_TRUSTED_DEPENDENCY_MISSING"; exit 1; }
+          done
+          python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
 
       - name: Select one canonical OPEN engineering incident
         shell: bash
@@ -101,14 +107,21 @@ jobs:
             > "$RUNNER_TEMP/wow-flint/exact-issue.json"
           python - "$RUNNER_TEMP/wow-flint/visible-issues.json" \
                    "$RUNNER_TEMP/wow-flint/exact-issue.json" \
-                   "$RUNNER_TEMP/wow-flint/issues.json" <<'PY'
+                   "$RUNNER_TEMP/wow-flint/issues.json" "$INCIDENT" <<'PY'
           import json, pathlib, sys
           recent = json.loads(pathlib.Path(sys.argv[1]).read_text())
           exact = json.loads(pathlib.Path(sys.argv[2]).read_text())
           if not isinstance(recent, list) or not isinstance(exact, dict):
               raise SystemExit("FLINT_OPEN_ISSUE_EVIDENCE_INVALID")
-          if exact.get("state") != "OPEN":
+          if (type(exact.get("number")) is not int or str(exact["number"]) != sys.argv[4]
+                  or exact.get("state") != "OPEN"):
               raise SystemExit("FLINT_EXACT_ISSUE_NOT_OPEN")
+          title = exact.get("title")
+          if (not isinstance(title, str) or not title.strip() or len(title) > 200
+                  or chr(0) in title):
+              raise SystemExit("FLINT_ISSUE_TITLE_INVALID")
+          if any(not isinstance(r, dict) or type(r.get("number")) is not int for r in recent):
+              raise SystemExit("FLINT_OPEN_ISSUE_EVIDENCE_INVALID")
           rows = [r for r in recent if r.get("number") != exact.get("number")]
           rows.append(exact)
           pathlib.Path(sys.argv[3]).write_text(json.dumps(rows))
@@ -133,17 +146,27 @@ jobs:
           FLINT_ENGINEERING_ENABLED: "true"
         run: |
           set -euo pipefail
-          python artifacts/wow-engine/v17/engineering_openrouter_flint_worker.py \
+          # The socket timeout is per operation; a GNU timeout is the independent
+          # hard wallclock cap for slow/dribbling upstream responses.
+          set +e
+          timeout --signal=TERM --kill-after=5s 75s python artifacts/wow-engine/v17/engineering_openrouter_flint_worker.py \
             --selection "$RUNNER_TEMP/wow-flint/selection.json" \
             --source-sha "$(git rev-parse HEAD)" \
             --receipt-file "$RUNNER_TEMP/wow-flint/worker-receipt.json" \
             --diagnostic-file "$RUNNER_TEMP/wow-flint/diagnostic-candidate.json" \
             --acknowledged
+          result=$?
+          set -e
+          if [ "$result" -eq 124 ]; then
+            echo "::error::FLINT_PROVIDER_WALLCLOCK_BUDGET_EXCEEDED"
+            exit 124
+          fi
+          [ "$result" -eq 0 ] || exit "$result"
           echo "Flint produced an untrusted, analysis-only candidate; no source/test change or release evidence." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload typed read-only Flint evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-flint-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: ignore

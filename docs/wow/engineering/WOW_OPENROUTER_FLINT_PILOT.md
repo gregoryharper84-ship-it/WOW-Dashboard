@@ -1,31 +1,20 @@
 # WOW V17 — OpenRouter Recursive Flint: opt-in synthetic canary
 
-Status: source-only adapter/diagnostic worker + inert workflow proposal; **not merged or production-enabled**. Owner-reported Mac smoke receipt: `SMOKE_PASSED` (117 tokens); real GitHub worker run is unverified.
+Status: source-only adapter/diagnostic worker + inert workflow proposal; **not merged or production-enabled**. A historical owner-reported Mac `SMOKE_PASSED` is not an independently authenticated provider receipt or proof that hosted GitHub credentials work. No real GitHub Flint worker run has been verified.
 
 ## Purpose
 
 This pilot tests the OpenRouter-hosted `recursive/flint-v1.0:free` API without downloading Flint to the owner's 18 GB M3 Pro Mac. The canary only sends one fixed public synthetic coding prompt. It does not send repository content, private issues, logs, code, credentials or betting data. It cannot propose a patch, publish probabilities, create a PR, grant a writer lease, dispatch an engineering worker, merge, deploy, or place a wager.
 
-## Owner's minimal setup
+## Hosted setup — no owner-side CLI required
 
-1. Visit https://openrouter.ai/ and sign up or log in. Use the **Free** plan. No paid plan is required to test free Flint.
-2. Open https://openrouter.ai/settings/keys and create a dedicated API key named `WOW-V17-Flint-Pilot`. Choose a conservative spending limit where available. Do **not** paste it into ChatGPT, a GitHub issue, source code, or a PR.
-3. For a one-time Mac test, run the steps below in Terminal while located at the repo root. They use your Mac's current shell memory only; no .env file is created. The key will stay in the shell until explicitly unset.
+Flint is intended to run as a **hosted, manual-only research candidate**. The operator does **not** need to install Flint, run its CLI or expose an API key in a local terminal.
 
-   ```zsh
-   cd ~/WOW-Dashboard
-   read -s OPENROUTER_API_KEY
-   echo
-   export OPENROUTER_API_KEY
-   export WOW_FLINT_PROBE_ENABLED=true
-   python3 artifacts/wow-engine/v17/engineering_openrouter_flint_probe.py preflight
-   python3 artifacts/wow-engine/v17/engineering_openrouter_flint_probe.py smoke
-   unset OPENROUTER_API_KEY WOW_FLINT_PROBE_ENABLED
-   ```
-
-   **Important:** This script must first be obtained from its reviewed experiment branch or subsequently merged repo; it is not on current `main`. If your local checkout has unrelated uncommitted changes, do not switch branches without preserving them.
-4. Inspect only sanitized status, not the full provider response. `SMOKE_PASSED` confirms a single synthetic completion, **not** a running engineering agent or a repaired model.
-5. After approved integration (separate work), store `OPENROUTER_API_KEY` as a GitHub Actions **environment secret** in the existing `wow-engineering` environment. Do not store this credential in Render or Supabase unless a reviewed worker requires it. Keep automatic Flint routing disabled until independent reliability acceptance.
+1. For an approved free-only pilot, use a dedicated OpenRouter API key with an appropriate spending limit. Never paste its value into chat, source, comments, PRs, or logs.
+2. Store the key only as the `OPENROUTER_API_KEY` environment secret for the existing GitHub `wow-engineering` environment, after reviewing its restrictions. Whether the secret is actually readable is **unverified** until a legitimate hosted execution succeeds.
+3. The proposal is inert. An authorized protected-workflow author must separately review the exact promoted file, obtain authentic security/governance authorization, and merge it through the live ruleset before `workflow_dispatch` exists.
+4. Only then, explicitly consent to the one-time transfer of a public issue number/title and lease group and dispatch from protected `main`. Do not transfer issue bodies, repository code, credentials, logs, or betting data.
+5. Require an independently checked one-request receipt and untrusted diagnostic artifact. A model answer or old local smoke report cannot certify a repaired system, probability model or production integration.
 
 ## Free-tier considerations
 
@@ -71,6 +60,18 @@ The **source-only** worker is `artifacts/wow-engine/v17/engineering_openrouter_f
 5. Confirm the run held the existing engineering single-writer concurrency group and passed the unresolved remote-writer guard. A legitimate unresolved writer reservation means HOLD, not bypass.
 6. Inspect the `wow-flint-diagnostic-<run>-<attempt>` artifact. `worker-receipt.json` must contain `status=TRIAGE_CANDIDATE_ONLY`, `can_execute=false`, `writer_lease_granted=false`, `production_routing_changed=false` and `terminal_authority=V17_TERMINAL_REDUCER`. `diagnostic-candidate.json` contains untrusted research notes only; evaluate their correctness before any repair task.
 
-**Boundaries:** exactly one external hosted-model attempt (45s timeout, 700 output tokens; no automatic retry), no shell/tool execution by Flint, no source or test edits, no GitHub writer credential in the model step, no PR authoring, no betting, no live runtime changes, no independent certification. The model's diagnosis is a hypothesis based on **issue title only**, so it cannot be presented as an actual root cause or verified repair. All source/credential data stays out of its prompt.
+**Boundaries:** exactly one external hosted-model attempt (45s socket timeout, a separate 75s GNU process wallclock cap, 8-minute hosted job safety cap, 700 output tokens; no automatic retry), no shell/tool execution by Flint, no source or test edits, no GitHub writer credential in the model step, no PR authoring, no betting, no live runtime changes, no independent certification. The model's diagnosis is a hypothesis based on **issue title only**, so it cannot be presented as an actual root cause or verified repair. All source/credential data stays out of its prompt.
+
+
+## Adversarial security review and staged-only limits
+
+The first authenticated Claude review of Flint head `5a681f9b74d0a5167f7131070bd0378046ce734a` returned **REJECT**. Its receipt is immutable. The ensuing source hardening is proposed for a **new** exact-head review, not a reattempt to overturn that verdict.
+
+- **Action supply chain:** The staged example now uses the exact reviewed SHA pins for checkout, Python setup and artifact upload; it does not authorize installing a workflow.
+- **Credential boundaries:** The worker and synthetic probe attach their bearer header only as an *unredirected* request header and remove it in a `finally` block even after provider transport failures. This is defense in depth, not proof that arbitrary downstream logging cannot leak secrets. Do not log a live Request or key.
+- **Untrusted metadata:** A GitHub read-only exact issue number/state/title is checked against the requested incident, bounded to 200 characters and rejected if malformed, then passed through the canonical manifest selector. The model only sees public issue number, title and lease group as untrusted data.
+- **Provenance:** The candidate requires the trusted checkout SHA to contain all dependent scripts, and the test checks that no installed `.github/workflows/` Flint entry exists. These checks do **not** replace a separately independently reviewed protected-workflow adoption PR.
+- **Timeout and output:** The request has a bounded response byte limit, a socket timeout, and a separate process wallclock cap at the GitHub runner. Missing, filtered, truncated and malformed output remains HOLD. No probability-specialist or live V17 runtime authority is inferred from receipts or documentation.
+- **Review:** Preserve the original signed REJECT and assess every original finding at a newly reviewed source SHA. Run negative, regression and provenance tests before source merge; do not rewrite verdicts, use backup-reviewer shopping, or treat native regression success as semantic PASS.
 
 **Stage 3, requiring separate evidence:** only after one real manual worker run with a validated diagnostic, propose a constrained repair worker and attach trusted source/test fixtures under explicit data-transmission consent. Benchmark against Claude/Gemini and require tests, independent SIRT/QA verification and deployment SHA before any claim of production restoration. No duplicate dispatcher or auto-enable toggle.

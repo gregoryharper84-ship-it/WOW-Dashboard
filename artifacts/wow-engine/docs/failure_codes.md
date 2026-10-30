@@ -508,3 +508,22 @@ All receipts force `agent_activation=false`, `production_routing_changed=false`,
 ### Flint opt-in research worker (manual-only, no production routing)
 
 The separate `engineering_openrouter_flint_worker.py` returns one of these `status` values: `MANUAL_ACK_REQUIRED`, `FLINT_ENGINEERING_DISABLED`, `KEY_MISSING`, `SOURCE_SHA_INVALID` (preflight); `INCIDENT_SELECTION_INVALID` (not an OPEN manifest-verified issue or inadequate identity/lease controls); `AUTH_FAILED`, `PAYMENT_REQUIRED`, `RATE_LIMITED`, `UPSTREAM_FAILURE`, `HTTP_FAILURE`, `FLINT_HTTP_404_UNATTRIBUTED`, `TRANSPORT_FAILURE` (provider/transport); `OUTPUT_INVALID`, `DIAGNOSTIC_INVALID`, `FLINT_MODEL_COMPLETION_INCOMPLETE` (untrusted or unfinished completion); or `TRIAGE_CANDIDATE_ONLY` (one validated structured response, **not** verified root cause, test, code or deployment). All remain `can_execute=false` with no assigned writer lease, no betting-probability authority, and `V17_TERMINAL_REDUCER` final authority. Only manual `workflow_dispatch` may invoke this research candidate; no shared dispatcher changes are included.
+
+### Flint staged manual-workflow admission failure codes
+
+These are **not active production gates** until a separately approved protected workflow is installed. Every denial remains a HOLD; none authorizes a retry, provider fallback, merge or source write.
+
+| Canonical code | Owner / stage | Safe bounded condition | Recovery class | Authorized next action |
+| --- | --- | --- | --- | --- |
+| `FLINT_TRUSTED_MAIN_MANUAL_DISPATCH_REQUIRED` | WOW Engineering / preflight | Not a manual dispatch on protected main | POLICY_UNREACHABLE | Dispatch only after approved workflow installation |
+| `FLINT_EXTERNAL_TITLE_CONSENT_REQUIRED` | Operator / external transfer | Exact one-request title transfer not authorized | AUTH_OR_CONFIGURATION | Obtain explicit consent; do not infer it |
+| `FLINT_SOURCE_SHA_CHANGED_AFTER_DISPATCH` | Release / provenance | Checkout does not match event SHA | EVIDENCE_PENDING | Stop, review exact source identity |
+| `FLINT_TRUSTED_DEPENDENCY_MISSING` | Engineering / provenance | At least one named dependency absent from trusted main commit tree | REPAIRABLE_CODE | Repair on new source PR; revalidate exact SHA |
+| `FLINT_INCIDENT_ID_INVALID` | Engineering / selection | Requested incident is not a positive integer | EVIDENCE_PENDING | Correct typed incident request |
+| `FLINT_OPEN_ISSUE_EVIDENCE_INVALID` | Engineering / selection | Read-only GitHub issue JSON has an invalid shape | EVIDENCE_PENDING | Restore authenticated GitHub evidence; fail closed |
+| `FLINT_EXACT_ISSUE_NOT_OPEN` | Engineering / selection | Exact GitHub issue number/state does not match an OPEN target | EVIDENCE_PENDING | Select a currently open canonical incident |
+| `FLINT_ISSUE_TITLE_INVALID` | Engineering / selection | Title missing, blank, over 200 characters, or has a NUL | EVIDENCE_PENDING | Resolve accurate public issue metadata before consent |
+| `FLINT_CANONICAL_INCIDENT_NOT_SELECTED` | Engineering / selector | Existing manifest and requested lease did not select exact OPEN issue | POLICY_UNREACHABLE | Recheck manifest/lease and authorized task selection |
+| `FLINT_PROVIDER_WALLCLOCK_BUDGET_EXCEEDED` | Engineering / provider request | One-shot request exceeded 75s wallclock budget | EVIDENCE_PENDING | Inspect redacted provider health and timeouts, no automatic replay |
+
+Security posture: the manual candidate uses immutable SHA-pinned trusted Actions and a main-tree dependency check, keeps credentials limited to a single model step, forbids forwarding authorization on redirects, clears request headers after network completion/errors, validates issue number/title before sending any metadata, and enforces an independent process wallclock cap. Only an independently authorized protected workflow PR can make these checks executable; a staged proposal alone proves no production control.

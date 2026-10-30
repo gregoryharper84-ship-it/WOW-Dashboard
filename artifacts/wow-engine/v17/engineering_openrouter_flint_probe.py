@@ -92,12 +92,14 @@ def smoke(env: Mapping[str, str], *, opener: Any = urllib.request.urlopen) -> di
         ENDPOINT,
         data=body,
         headers={
-            "Authorization": "Bearer " + env["OPENROUTER_API_KEY"].strip(),
             "Content-Type": "application/json",
             "X-Title": "WOW V17 Engineering Flint Opt-In Canary",
         },
         method="POST",
     )
+    # Unredirected credentials are not copied to redirect destinations. Clear
+    # the header even if the opener captures Request in a raised exception.
+    request.add_unredirected_header("Authorization", "Bearer " + env["OPENROUTER_API_KEY"].strip())
     try:
         with opener(request, timeout=30) as response:
             data = response.read(65537)
@@ -106,6 +108,8 @@ def smoke(env: Mapping[str, str], *, opener: Any = urllib.request.urlopen) -> di
         return receipt(classify_http_status(exc.code), attempted=True)
     except (urllib.error.URLError, TimeoutError, OSError):
         return receipt("TRANSPORT_FAILURE", attempted=True)
+    finally:
+        request.remove_header("Authorization")
     if len(data) > 65536:
         return receipt("OUTPUT_INVALID", attempted=True)
     try:

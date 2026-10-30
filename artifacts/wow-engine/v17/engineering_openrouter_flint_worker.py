@@ -16,9 +16,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-try:
+if __package__:
     from .engineering_openrouter_flint_probe import ENDPOINT, MODEL, classify_http_status
-except ImportError:
+else:
+    # Script invocation resolves the sibling module; do not swallow ImportError
+    # originating inside that trusted module.
     from engineering_openrouter_flint_probe import ENDPOINT, MODEL, classify_http_status
 
 AUTHORITY = "V17_TERMINAL_REDUCER"
@@ -115,11 +117,12 @@ def evaluate(
     request = urllib.request.Request(
         ENDPOINT, data=body, method="POST",
         headers={
-            "Authorization": "Bearer " + env["OPENROUTER_API_KEY"].strip(),
             "Content-Type": "application/json",
             "X-Title": "WOW V17 Flint Manual Engineering Triage",
         },
     )
+    # Do not forward credentials on redirects; clear Request after success/error.
+    request.add_unredirected_header("Authorization", "Bearer " + env["OPENROUTER_API_KEY"].strip())
     try:
         with opener(request, timeout=45) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
@@ -127,6 +130,8 @@ def evaluate(
         return receipt(classify_http_status(exc.code), attempted=True), None
     except (urllib.error.URLError, TimeoutError, OSError):
         return receipt("TRANSPORT_FAILURE", attempted=True), None
+    finally:
+        request.remove_header("Authorization")
     if len(raw) > MAX_RESPONSE_BYTES:
         return receipt("OUTPUT_INVALID", attempted=True), None
     try:
