@@ -145,11 +145,16 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 stderr = io.StringIO()
                 provider_payload = {"stop_reason": raw, "content": [
                     {"type": "text", "text": "PRIVATE_RESPONSE_BODY"}]}
-                with patch.object(m, "request_json", return_value=provider_payload):
+                with patch.object(m, "request_json", return_value=provider_payload) as request:
                     with contextlib.redirect_stderr(stderr):
                         with self.assertRaises(m.Hold) as error:
                             m.call_provider("anthropic-claude-api", "TEST_SECRET_KEY", "review")
-                self.assertEqual(str(error.exception), "CLAUDE_REVIEW_INCOMPLETE")
+                # Explicit max_tokens is the sole typed incomplete state
+                # eligible for one bounded retry, never for provider failover.
+                self.assertEqual(str(error.exception),
+                                 "CLAUDE_REVIEW_TRUNCATED" if raw == "max_tokens"
+                                 else "CLAUDE_REVIEW_INCOMPLETE")
+                self.assertEqual(request.call_count, 2 if raw == "max_tokens" else 1)
                 self.assertIn("REVIEW_CLAUDE_STOP_REASON:" + expected, stderr.getvalue())
                 for forbidden in ("PRIVATE_RESPONSE_BODY", "TEST_SECRET_KEY", "SENSITIVE_TOKEN"):
                     self.assertNotIn(forbidden, stderr.getvalue())
