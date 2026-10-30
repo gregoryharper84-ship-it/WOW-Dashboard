@@ -181,7 +181,7 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
         "user_timezone": "America/Chicago", "discovery_enabled": False,
         "candidate_inputs": [_candidate()], "can_execute": False,
     }
-    headers = {"Idempotency-Key": "ci-agent-runtime-e2e"}
+    headers = {"Idempotency-Key": "ci-agent-runtime-e2e", "Authorization": "Bearer ci-agent-runtime-key"}
     first = client.post("/wow/runs", json=body, headers=headers)
     assert first.status_code == 202, first.text
     run_id = first.json()["run_id"]
