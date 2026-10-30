@@ -341,6 +341,12 @@ def _paginate(
     page_size: int = 1000,
     max_pages: int = MAX_FORWARD_PAGES,
 ) -> list[dict[str, Any]]:
+    """Read an entire supported source with deterministic ordered bounded pages.
+
+    Page sizes and limits must be exact positive Python integers (not bool,
+    float or string). An empty one-row probe after a full final page proves an
+    exact-length dataset; any extra row fails before grades/health are stored.
+    """
     if (
         table not in _FORWARD_PAGE_KEYS
         or type(page_size) is not int or page_size <= 0
@@ -389,8 +395,20 @@ def _paginate(
         if len(batch) < page_size:
             return rows
         start += page_size
-    # No grading or health persistence can follow a truncated or never-ending
-    # page stream. A full final page still needs a short subsequent page.
+    # A full final page can be the exact dataset boundary. Probe ONE additional
+    # ordered primary-key row, without permitting another data page. This
+    # distinguishes an exact-size valid corpus from truncation, while retaining
+    # the hard query/row bound and a fail-closed response for over-limit sources.
+    probe = (
+        db.table(table)
+        .select(key)
+        .order(key)
+        .range(start, start)
+        .execute()
+    )
+    probe_rows = list(probe.data or [])
+    if len(probe_rows) == 0:
+        return rows
     raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:PAGE_LIMIT_EXCEEDED")
 
 
