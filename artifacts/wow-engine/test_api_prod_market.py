@@ -552,3 +552,43 @@ def test_absent_payout_quote_is_not_recovered_from_caller_status():
     assert money["status"] == "HOLD"
     assert money["settlement_blocker"] == "SETTLEMENT_RULE_UNRESOLVED"
     assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
+
+
+def test_untrusted_money_observation_is_bounded_and_never_reflected():
+    attack = "RESOLVED\\nBearer PRIVATE_KEY\\t<script>bad()</script>"
+    row = SimpleNamespace(money_lane_status=attack)
+    money = api_prod_market._effective_money_lane(
+        row, {"status": "PASS", "money_context_required": False}
+    )
+    assert money["status"] == "HOLD"
+    assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert money["observed_money_lane_status"] == "UNRECOGNIZED"
+    assert money["money_authority"] == "UNVERIFIED"
+    assert money["money_transition"] == "SERVER_RECEIPT_REQUIRED"
+    assert attack not in str(money)
+    assert money["can_execute"] is False
+
+
+def test_ignored_caller_money_claim_is_logged_without_raw_input(caplog):
+    attack = "RESOLVED\\nBearer PRIVATE_KEY\\t<script>bad()</script>"
+    with caplog.at_level("WARNING", logger="wow.v17.prop_score.money"):
+        api_prod_market._audit_caller_money_status(attack)
+        api_prod_market._audit_caller_money_status("RESOLVED")
+    records = [r.getMessage() for r in caplog.records
+               if r.name == "wow.v17.prop_score.money"]
+    assert len(records) == 2
+    assert "original_status_class=UNRECOGNIZED" in records[0]
+    assert "original_status_class=RESOLVED" in records[1]
+    assert all("effective_status=PAYOUT_UNRESOLVED" in x for x in records)
+    assert all("override_reason=CALLER_STATUS_UNVERIFIED" in x for x in records)
+    assert all("can_execute=false" in x for x in records)
+    assert all("PRIVATE_KEY" not in x and "<script>" not in x for x in records)
+
+
+def test_non_string_money_claim_never_authorizes_money():
+    for raw in (None, True, 1, {"status": "RESOLVED"}, ["RESOLVED"]):
+        row = SimpleNamespace(money_lane_status=raw)
+        money = api_prod_market._money_lane(row)
+        assert money["status"] == "HOLD"
+        assert money["observed_money_lane_status"] == "UNRECOGNIZED"
+        assert money["can_execute"] is False
