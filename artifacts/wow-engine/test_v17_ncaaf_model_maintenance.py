@@ -255,6 +255,97 @@ def test_training_code_identity_is_required_for_auditable_candidate(monkeypatch)
     assert result["can_execute"] is False
 
 
+def test_rich_compiler_exception_preserves_fallback_evidence_without_false_green(monkeypatch):
+    """Prior-results candidate can progress, but failed rich compilation is still BLOCKED."""
+    _install_successful_acquisition(monkeypatch, complete_rows=0)
+    called = {"rich": 0, "prior": []}
+
+    def broken_compiler(_db):
+        raise RuntimeError("rich feature table unavailable")
+
+    def rich_trainer(*_args, **_kwargs):
+        called["rich"] += 1
+        raise AssertionError("rich trainer must never run without compiled features")
+
+    def candidate(_db, *, training_code_sha):
+        called["prior"].append(training_code_sha)
+        return {
+            "ok": True, "code": "NCAAF_RESULT_FORM_CANDIDATE_PERSISTED",
+            "lifecycle_state": "CANDIDATE",
+            "automatic_certification": False, "automatic_promotion": False,
+            "probability_publishable": False, "can_execute": False,
+        }
+
+    monkeypatch.setattr(maintenance, "materialize_complete_training_features", broken_compiler)
+    monkeypatch.setattr(maintenance, "train_and_persist_candidate", rich_trainer)
+    monkeypatch.setattr(maintenance, "train_result_form_candidate", candidate)
+    receipt = maintenance.run_ncaaf_model_maintenance(
+        DummyDB(), seasons=[2026], weeks=[1], training_code_sha="f" * 40
+    )
+    assert called["rich"] == 0
+    assert called["prior"] == ["f" * 40]
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["feature_compilation"]["status"] == "BLOCKED"
+    assert receipt["feature_compilation"]["code"] == "NCAAF_FEATURE_COMPILATION_FAILED"
+    assert receipt["feature_compilation"]["error_type"] == "RuntimeError"
+    assert receipt["feature_compilation"]["complete_feature_rows"] == 0
+    assert receipt["candidate_lane"] == "RESULT_FORM_PRIOR_V1"
+    assert receipt["candidate_training"]["lifecycle_state"] == "CANDIDATE"
+    assert "NCAAF_FEATURE_COMPILATION_FAILED" in receipt["blockers"]
+    assert receipt["automatic_certification"] is False
+    assert receipt["automatic_promotion"] is False
+    assert receipt["probability_publishable"] is False
+    assert receipt["can_execute"] is False
+
+
+def test_rich_compiler_and_prior_candidate_failures_preserve_both_codes(monkeypatch):
+    _install_successful_acquisition(monkeypatch, complete_rows=0)
+
+    def broken_compiler(_db):
+        raise ValueError("feature source invalid")
+
+    def broken_prior(*_args, **_kwargs):
+        raise NCAAFResultFormUnavailable("NCAAF_RESULT_FORM_SAMPLE_INSUFFICIENT", "insufficient")
+
+    monkeypatch.setattr(maintenance, "materialize_complete_training_features", broken_compiler)
+    monkeypatch.setattr(maintenance, "train_result_form_candidate", broken_prior)
+    result = maintenance.run_ncaaf_model_maintenance(
+        DummyDB(), seasons=[2026], weeks=[1], training_code_sha="f" * 40
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["candidate_lane"] == "RESULT_FORM_PRIOR_V1"
+    assert result["training_blocker"]["code"] == "NCAAF_RESULT_FORM_SAMPLE_INSUFFICIENT"
+    assert result["feature_compilation"]["error_type"] == "ValueError"
+    assert "NCAAF_FEATURE_COMPILATION_FAILED" in result["blockers"]
+    assert "NCAAF_RESULT_FORM_SAMPLE_INSUFFICIENT" in result["blockers"]
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_rich_compiler_failure_cannot_train_without_source_sha(monkeypatch):
+    _install_successful_acquisition(monkeypatch, complete_rows=0)
+    monkeypatch.setattr(
+        maintenance, "materialize_complete_training_features",
+        lambda _db: (_ for _ in ()).throw(RuntimeError("blocked")),
+    )
+    monkeypatch.setattr(
+        maintenance, "train_result_form_candidate",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("training without SHA")),
+    )
+    monkeypatch.delenv("RENDER_GIT_COMMIT", raising=False)
+    result = maintenance.run_ncaaf_model_maintenance(
+        DummyDB(), seasons=[2026], weeks=[1]
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["candidate_training"] is None
+    assert result["candidate_lane"] is None
+    assert result["training_blocker"]["code"] == "NCAAF_TRAINING_CODE_SHA_UNAVAILABLE"
+    assert "NCAAF_FEATURE_COMPILATION_FAILED" in result["blockers"]
+    assert result["automatic_promotion"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
 def test_ncaaf_live_maintenance_never_runs_on_push():
     repo_root = Path(__file__).resolve().parents[2]
     workflow = (repo_root / ".github" / "workflows" / "wow-v17-ncaaf-model-maintenance.yml").read_text(
