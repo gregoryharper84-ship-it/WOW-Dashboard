@@ -60,6 +60,36 @@ def _truthy(payload: dict[str, Any], qualification: dict[str, Any], key: str) ->
     return payload.get(key) is True or qualification.get(key) is True
 
 
+_MAX_NESTED_CONTROL_DEPTH = 8
+_MAX_CONTROL_SCOPES = 32
+
+
+def _controlling_scopes(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Walk supported nested qualifier/detail scopes with finite work.
+
+    Return None when a cycle, excessive nesting or oversized envelope makes
+    provenance uncertain. The caller must then fail closed rather than trust
+    outer publication flags. Do not scan arbitrary research/context mappings.
+    """
+    scopes = [payload]
+    pending = [(payload, 0)]
+    seen = {id(payload)}
+    while pending:
+        current, depth = pending.pop()
+        for key in ("probability_qualification", "detail"):
+            child = current.get(key)
+            if not isinstance(child, dict):
+                continue
+            if (depth >= _MAX_NESTED_CONTROL_DEPTH
+                    or len(scopes) >= _MAX_CONTROL_SCOPES
+                    or id(child) in seen):
+                return None
+            seen.add(id(child))
+            scopes.append(child)
+            pending.append((child, depth + 1))
+    return scopes
+
+
 def classify_stage_status(payload: Any) -> str:
     """Classify one scored stage into its native Daily terminal.
 
@@ -81,16 +111,16 @@ def classify_stage_status(payload: Any) -> str:
     # Numeric model completion is not publication authority. Downstream wrappers
     # can carry stale approval flags while the controlling NFL certification
     # receipt explicitly imposes MODEL_QUALIFIED_HOLD. Its ceiling always wins.
-    detail = payload.get("detail")
-    detail = detail if isinstance(detail, dict) else {}
-    qualified_detail = qualification.get("detail")
-    qualified_detail = qualified_detail if isinstance(qualified_detail, dict) else {}
-    # Inspect every supported controlling source, including nested qualified
-    # receipts. A wrapper cannot override a non-PASS NFL certification stage
-    # by flattening the outer publication flags. An explicitly present but
-    # malformed/empty receipt also fails closed; absence of an optional
-    # receipt is not itself a HOLD for unrelated sports.
-    for controlling in (payload, qualification, detail, qualified_detail):
+    # The controlling receipt may be nested through multiple qualified/detail
+    # envelopes. Inspect all supported scopes, not an arbitrary fixed pair.
+    # A cycle or excessive depth/size is an unverifiable input and stays HELD.
+    scopes = _controlling_scopes(payload)
+    if scopes is None:
+        return DEFAULT_ROW_STATUS
+    # A wrapper cannot override a non-PASS NFL certification stage by
+    # flattening outer publication flags. Present malformed/empty receipts
+    # fail closed; unrelated sports need not carry an NFL stage receipt.
+    for controlling in scopes:
         ceiling = _label(controlling, "terminal_ceiling")
         label = _label(controlling, "terminal_label")
         if ceiling and ceiling != "FINAL_APPROVED":
