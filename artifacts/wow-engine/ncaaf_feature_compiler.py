@@ -272,13 +272,46 @@ def compile_official_event_feature_row(
     return _compile_feature_row(game, evidence_rows, training_game_id=None)
 
 
+# Stable, unique PostgREST pagination is mandatory for reproducible training.
+# Offset ranges without a total order can overlap/skip rows on multi-page
+# corpora and silently alter the fitted dataset or evidence manifest.
+_PAGED_PRIMARY_KEYS = {
+    "wow_ncaaf_training_games": "training_game_id",
+    "wow_ncaaf_pregame_evidence": "evidence_id",
+    "wow_ncaaf_training_features": "feature_row_id",
+}
+
+
 def _paged(db: Any, table: str, columns: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
+    if table not in _PAGED_PRIMARY_KEYS or page_size <= 0:
+        raise ValueError("Unsupported NCAAF feature pagination table or page size")
+    key = _PAGED_PRIMARY_KEYS[table]
+    projection = {column.strip() for column in columns.split(",")}
+    if key not in projection:
+        columns += "," + key
     rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
     start = 0
     while True:
-        result = db.table(table).select(columns).range(start, start + page_size - 1).execute()
+        # Unique primary-key ordering keeps a total, deterministic sort across
+        # page boundaries. Never admit duplicated/missing identities into a fit.
+        result = (
+            db.table(table).select(columns).order(key)
+            .range(start, start + page_size - 1).execute()
+        )
         batch = list(result.data or [])
-        rows.extend(dict(row) for row in batch)
+        for entry in batch:
+            if not isinstance(entry, Mapping) or not str(entry.get(key) or "").strip():
+                raise NCAAFFeatureCompileBlocked(
+                    "NCAAF_FEATURE_PAGINATION_INVALID", [f"{table}:ROW_ID_MISSING"],
+                )
+            row_id = str(entry[key])
+            if row_id in seen:
+                raise NCAAFFeatureCompileBlocked(
+                    "NCAAF_FEATURE_PAGINATION_INVALID", [f"{table}:ROW_ID_DUPLICATED"],
+                )
+            seen.add(row_id)
+            rows.append(dict(entry))
         if len(batch) < page_size:
             return rows
         start += page_size
