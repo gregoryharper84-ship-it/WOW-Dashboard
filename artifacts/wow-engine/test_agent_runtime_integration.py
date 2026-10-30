@@ -23,6 +23,7 @@ orchestration.
 """
 from __future__ import annotations
 
+import os
 import secrets
 
 import pytest
@@ -49,18 +50,26 @@ def _agent_runtime_auth_config(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://fake-for-test/0")
 
     class FakeAdmissionRedis:
-        count = 0
-        def pipeline(self, transaction=True):
-            return self
-        def incr(self, key):
-            self.count += 1
-            return self
-        def expire(self, key, ttl):
-            return self
-        def execute(self):
-            return [self.count, True]
+        def __init__(self):
+            self.now_ms = 0
+            self.admissions = {}
+
+        def eval(self, script, numkeys, key, limit, window_ms, member):
+            assert numkeys == 1
+            assert "ZREMRANGEBYSCORE" in script and "TIME" in script
+            self.admissions = {
+                k: t for k, t in self.admissions.items()
+                if t > self.now_ms - int(window_ms)
+            }
+            if member in self.admissions:
+                return 2
+            if len(self.admissions) >= int(limit):
+                return 0
+            self.admissions[member] = self.now_ms
+            return 1
 
     fake_rate = FakeAdmissionRedis()
+    agent_runtime_api._admission_redis.cache_clear()
     monkeypatch.setattr("redis.Redis.from_url", lambda *args, **kwargs: fake_rate)
     return {"Authorization": f"Bearer {runtime_key}"}
 
@@ -332,16 +341,42 @@ def test_candidate_depth_limit_rejects_before_db(monkeypatch, auth_headers):
 
 
 def test_existing_redis_global_admission_limit_and_outage_fail_closed(monkeypatch):
-    for _ in range(agent_runtime_api.MAX_RUN_ADMISSIONS_PER_MINUTE):
-        agent_runtime_api._check_admission_rate_limit()
+    rate = agent_runtime_api._admission_redis(os.environ["REDIS_URL"])
+    assert rate is agent_runtime_api._admission_redis(os.environ["REDIS_URL"])
+    for i in range(agent_runtime_api.MAX_RUN_ADMISSIONS_PER_MINUTE):
+        agent_runtime_api._check_admission_rate_limit(
+            idempotency_key=f"unique-{i}", request_hash="same-body",
+        )
+    # Same-key retries are idempotent even at full capacity.
+    agent_runtime_api._check_admission_rate_limit(
+        idempotency_key="unique-0", request_hash="same-body",
+    )
+    assert len(rate.admissions) == agent_runtime_api.MAX_RUN_ADMISSIONS_PER_MINUTE
     with pytest.raises(HTTPException) as exc:
-        agent_runtime_api._check_admission_rate_limit()
+        agent_runtime_api._check_admission_rate_limit(
+            idempotency_key="over-limit", request_hash="same-body",
+        )
     assert exc.value.status_code == 429
     assert exc.value.detail["code"] == "AGENT_RUNTIME_ADMISSION_RATE_LIMITED"
+    # No fixed-minute rollover burst: 59.999 seconds is still in-window.
+    rate.now_ms = 59_999
+    with pytest.raises(HTTPException) as boundary:
+        agent_runtime_api._check_admission_rate_limit(
+            idempotency_key="boundary-new", request_hash="same-body",
+        )
+    assert boundary.value.status_code == 429
+    rate.now_ms = 60_000
+    agent_runtime_api._check_admission_rate_limit(
+        idempotency_key="after-window", request_hash="same-body",
+    )
+    assert len(rate.admissions) == 1
     monkeypatch.delenv("REDIS_URL")
     with pytest.raises(HTTPException) as unavailable:
-        agent_runtime_api._check_admission_rate_limit()
+        agent_runtime_api._check_admission_rate_limit(
+            idempotency_key="unavailable", request_hash="same-body",
+        )
     assert unavailable.value.status_code == 503
+
 
 def test_create_run_rejects_can_execute_true(monkeypatch, auth_headers):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
@@ -383,6 +418,9 @@ def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch, auth_h
     assert first.json()["run_id"] == second.json()["run_id"]
     assert second.json()["reused"] is True
     assert len(fake._store["wow_agent_runs"]) == 1
+    # A genuine idempotent HTTP retry must not consume another rate slot.
+    rate = agent_runtime_api._admission_redis(os.environ["REDIS_URL"])
+    assert len(rate.admissions) == 1
 
 
 def test_get_run_not_found_is_404(monkeypatch, auth_headers):

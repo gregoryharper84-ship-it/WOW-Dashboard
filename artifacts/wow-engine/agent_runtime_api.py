@@ -18,10 +18,11 @@ runner.py::_run_controlling_model.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
-import time
+from functools import lru_cache
 from uuid import UUID
 from typing import Any, Optional
 
@@ -77,25 +78,45 @@ def _candidate_shape_bounded(value: Any) -> bool:
     return True
 
 
-def _check_admission_rate_limit() -> None:
-    """Use the EXISTING Redis broker for a bounded global minute bucket.
-    Fail closed when unavailable; no new service, queue or dispatcher.
-    Atomic Redis transaction prevents unbounded concurrent admissions.
-    """
+_ADMISSION_WINDOW_MS = 60_000
+_ADMISSION_REDIS_KEY = "wow:agent-runtime:admissions:sliding-v1"
+# One atomic Redis operation: use server time, enforce a rolling 60-second
+# window, and count a repeated (idempotency key, request hash) only once.
+# No payload, raw key or bearer is stored in Redis.
+_ADMISSION_LUA = """
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local window = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
+if redis.call('ZSCORE', KEYS[1], ARGV[3]) then return 2 end
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[1]) then return 0 end
+redis.call('ZADD', KEYS[1], now, ARGV[3])
+redis.call('PEXPIRE', KEYS[1], window * 2)
+return 1
+"""
+
+
+@lru_cache(maxsize=1)
+def _admission_redis(redis_url: str) -> Any:
+    """Reuse the existing Redis connection pool across HTTP requests."""
+    import redis
+    return redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
+
+
+def _check_admission_rate_limit(*, idempotency_key: str, request_hash: str) -> None:
+    """Fail-closed global sliding-window admission on the existing Redis."""
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
         raise HTTPException(status_code=503, detail={"code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False})
+    member = hashlib.sha256((idempotency_key + "\\0" + request_hash).encode("utf-8")).hexdigest()
     try:
-        import redis
-        connection = redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
-        bucket = f"wow:agent-runtime:admissions:{int(time.time() // 60)}"
-        pipeline = connection.pipeline(transaction=True)
-        pipeline.incr(bucket)
-        pipeline.expire(bucket, 120)
-        count, _ = pipeline.execute()
+        allowed = _admission_redis(redis_url).eval(
+            _ADMISSION_LUA, 1, _ADMISSION_REDIS_KEY,
+            MAX_RUN_ADMISSIONS_PER_MINUTE, _ADMISSION_WINDOW_MS, member,
+        )
     except Exception as exc:
         raise HTTPException(status_code=503, detail={"code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False}) from exc
-    if int(count) > MAX_RUN_ADMISSIONS_PER_MINUTE:
+    if int(allowed) == 0:
         raise HTTPException(status_code=429, detail={"code": "AGENT_RUNTIME_ADMISSION_RATE_LIMITED", "can_execute": False})
 
 
@@ -234,7 +255,7 @@ def create_run(
         {field: getattr(req, field) for field in _REQUEST_HASH_FIELDS}
     )
 
-    _check_admission_rate_limit()
+    _check_admission_rate_limit(idempotency_key=idempotency_key, request_hash=request_hash)
     client = get_client()
     run_row, reused = repository.create_run(
         client,
