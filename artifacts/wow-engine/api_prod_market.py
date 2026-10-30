@@ -285,9 +285,6 @@ def _money_lane(row: Any) -> dict[str, Any]:
     return {
         "status": "HOLD",
         "money_lane_status": "PAYOUT_UNRESOLVED",
-        "observed_money_lane_status": _money_status_observation(
-            getattr(row, "money_lane_status", None)
-        ),
         "money_authority": "UNVERIFIED",
         "money_transition": "SERVER_RECEIPT_REQUIRED",
         "blocks_model_probability": False,
@@ -851,8 +848,10 @@ def score_prop(
     x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
 ):
     """Governed player-prop scoring with explicit objective separation."""
-    # Bearer-authenticated endpoint; persist no caller status as a money PASS.
-    # Emit a bounded audit event even if later route/evidence checks reject.
+    # FastAPI's mandatory Depends(prod._require_action_api_key) completes
+    # before endpoint code runs; unauthorized requests never reach this log.
+    # Classify only into fixed labels; NEVER include this classification in
+    # the caller response. No raw caller status is persisted or echoed.
     _audit_caller_money_status(req.money_lane_status)
     with _score_stage_timer("route_preflight", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
         model_identity = prod._reject_llp_prop_identity(x_wow_model_identity)
