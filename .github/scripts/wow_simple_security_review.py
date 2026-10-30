@@ -70,13 +70,24 @@ REVIEW_SCHEMA = {
 # while retaining the original REVIEW_SCHEMA for human contract/test readers.
 # The authoritative parse_verdict validator still enforces all three bounds
 # and the max 12 findings, and retains REJECT/HOLD without automatic retries.
-CLAUDE_STRICT_SCHEMA = copy.deepcopy(REVIEW_SCHEMA)
-CLAUDE_STRICT_SCHEMA["properties"]["findings"].pop("maxItems")
-for _field in ("file", "detail", "evidence"):
-    _schema = CLAUDE_STRICT_SCHEMA["properties"]["findings"]["items"]["properties"][_field]
-    _schema.pop("minLength")
-    _schema.pop("maxLength")
-    _schema["pattern"] = rf"^[\\s\\S]{{1,{MAX_FINDING_TEXT}}}$"
+def _build_claude_strict_schema():
+    """Adapt unsupported JSON-Schema length keywords without weakening policy.
+
+    A new isolated object is produced on every call. The provider sees a
+    bounded regex; parse_verdict independently enforces original 500/12 caps.
+    Invalid transport or rejected source always holds/rejects; no retry.
+    """
+    schema = copy.deepcopy(REVIEW_SCHEMA)
+    schema["properties"]["findings"].pop("maxItems")
+    for field in ("file", "detail", "evidence"):
+        text = schema["properties"]["findings"]["items"]["properties"][field]
+        text.pop("minLength")
+        text.pop("maxLength")
+        text["pattern"] = rf"^[\s\S]{{1,{MAX_FINDING_TEXT}}}$"
+    return schema
+
+
+CLAUDE_STRICT_SCHEMA = _build_claude_strict_schema()
 MAX_FILES = 50
 MAX_DIFF = 90000
 
