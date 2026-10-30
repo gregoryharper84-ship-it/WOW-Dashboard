@@ -250,20 +250,46 @@ def _market_lane(row: Any) -> dict[str, Any]:
     }
 
 
-def _money_lane(row: Any) -> dict[str, Any]:
-    """Caller/model row status is an observation, not payout authority.
+_MONEY_AUDIT_LOG = logging.getLogger("wow.v17.prop_score.money")
 
-    No server-owned, independently verified payout/quote provenance is
-    registered on this route yet.  Preserve a typed MONEY HOLD even when an
-    inbound or returned row says RESOLVED.  Sporting probability remains
-    separate and unaffected.  A future positive PASS needs a reviewed,
-    immutable server-side payout receipt, not an optimistic status string.
+
+def _money_status_observation(value: Any) -> str:
+    """Bounded classification only; never echo caller-controlled arbitrary text."""
+    if type(value) is not str:
+        return "UNRECOGNIZED"
+    if value == "RESOLVED":
+        return "RESOLVED"
+    if value == "PAYOUT_UNRESOLVED":
+        return "PAYOUT_UNRESOLVED"
+    return "UNRECOGNIZED"
+
+
+def _audit_caller_money_status(value: Any) -> None:
+    """Audit an ignored caller money claim without logging raw input or secrets."""
+    _MONEY_AUDIT_LOG.warning(
+        "WOW_PROP_MONEY_STATUS_OVERRIDE original_status_class=%s effective_status=PAYOUT_UNRESOLVED "
+        "override_reason=CALLER_STATUS_UNVERIFIED can_execute=false",
+        _money_status_observation(value),
+    )
+
+
+def _money_lane(row: Any) -> dict[str, Any]:
+    """Caller/model status is not payout authority.
+
+    Without a validated server-owned, immutable payout quote and contract,
+    MONEY remains HOLD. A future positive path requires an independently
+    reviewed receipt keyed to exact event, player, line, side, book, price,
+    observation time and payout terms, with replay protection. This guard does
+    not claim that such a source is present or certified.
     """
-    observed = getattr(row, "money_lane_status", None) or "PAYOUT_UNRESOLVED"
     return {
         "status": "HOLD",
         "money_lane_status": "PAYOUT_UNRESOLVED",
-        "observed_money_lane_status": str(observed),
+        "observed_money_lane_status": _money_status_observation(
+            getattr(row, "money_lane_status", None)
+        ),
+        "money_authority": "UNVERIFIED",
+        "money_transition": "SERVER_RECEIPT_REQUIRED",
         "blocks_model_probability": False,
         "can_execute": False,
     }
@@ -825,6 +851,9 @@ def score_prop(
     x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
 ):
     """Governed player-prop scoring with explicit objective separation."""
+    # Bearer-authenticated endpoint; persist no caller status as a money PASS.
+    # Emit a bounded audit event even if later route/evidence checks reject.
+    _audit_caller_money_status(req.money_lane_status)
     with _score_stage_timer("route_preflight", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
         model_identity = prod._reject_llp_prop_identity(x_wow_model_identity)
         lane = prod._runtime_capability(prod.PROP_CAPABILITY_KEY)
