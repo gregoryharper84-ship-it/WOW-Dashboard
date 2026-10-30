@@ -20,7 +20,6 @@ from v17.core_intelligence import (
     LearningObservation,
     build_learning_observation,
     cohort_key,
-    detect_learning_hypotheses,
     summarize_cohort,
 )
 from v17.independent_research_audit import (
