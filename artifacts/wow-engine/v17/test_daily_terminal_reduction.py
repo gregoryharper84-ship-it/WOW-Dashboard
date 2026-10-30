@@ -115,6 +115,36 @@ def test_stage_classification_reads_the_controlling_model_receipt(payload, expec
             "rank_eligible": True,
             "probability_qualification": {"nfl_stage_receipt": "HOLD"},
         },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "probability_qualification": {
+                "nfl_stage_receipt": {
+                    "status": "PASS", "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+                },
+            },
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "nfl_stage_receipt": {
+                "status": "PASS", "probability_publishable": False,
+            },
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "nfl_stage_receipt": {
+                "status": "PASS", "rank_eligible": False,
+            },
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "nfl_stage_receipt": {
+                "status": "PASS", "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+            },
+        },
     ],
 )
 def test_controlling_hold_overrides_stale_wrapper_approval(payload):
@@ -127,6 +157,20 @@ def test_controlling_hold_overrides_stale_wrapper_approval(payload):
 
 
 @pytest.mark.parametrize("blocking", ["HELD", "INVALID", "PURGED"])
+def test_unblocked_nfl_pass_receipt_preserves_real_stage_completion():
+    payload = {
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "nfl_stage_receipt": {
+            "status": "PASS", "blockers": [], "terminal_ceiling": "FINAL_APPROVED",
+        },
+    }
+    assert classify_stage_status(payload) == "COMPLETED"
+    assert assert_no_terminal_upgrade(
+        reduce_row_terminal([classify_stage_status(payload)])
+    )["final_terminal"] == "COMPLETED"
+
+
 def test_approved_stage_cannot_override_an_unresolved_or_invalid_stage(blocking):
     audited = assert_no_terminal_upgrade(reduce_row_terminal(["COMPLETED", blocking]))
     assert audited["stage_terminals"] == ["COMPLETED", blocking]
