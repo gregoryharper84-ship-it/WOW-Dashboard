@@ -100,3 +100,30 @@ def test_unavailable_verified_rows_and_selection_fail_closed():
         assert str(exc)=='SELECTION_MUST_BE_EARLIEST_OR_LATEST'
     else:
         raise AssertionError('expected failure')
+
+
+def test_unknown_settlement_flags_and_bad_lock_time_never_pass():
+    a=row(prediction_id='null-flags')
+    a['void']=None
+    b=row(prediction_id='bad-lock')
+    b['locked_at']='naive/invalid'
+    c=row(prediction_id='no-event')
+    c['event_id']=''
+    audit=audit_mlb_strikeout_forecasts([a,b,c])
+    assert audit['status']=='HOLD'
+    assert audit['rejected_rows']==3
+    assert audit['rejection_reasons']=={
+      'EXACT_IDENTITY_UNVERIFIED':1,'SETTLEMENT_FLAGS_UNVERIFIED':1,'TIMESTAMP_UNVERIFIED':1}
+
+
+def test_different_model_artifacts_and_market_lines_do_not_collapse():
+    a=row(prediction_id='a',line='3.0')
+    b=row(prediction_id='b',line='3',probability=.54)
+    c=row(prediction_id='c',line='3.5')
+    d=row(prediction_id='d',line='3')
+    d['model_artifact_version']='different'
+    audit=audit_mlb_strikeout_forecasts([a,b,c,d])
+    assert audit['eligible_forecast_rows']==4
+    assert audit['canonical_directional_theses']==3
+    assert audit['canonical_base_markets']==3
+    assert audit['certified'] is False and audit['can_execute'] is False
