@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import math
+from types import SimpleNamespace
 
 import pytest
 
 from v17.nfl_forward_shadow import (
     ForwardPrediction,
+    NFLForwardShadowError,
+    _paginate,
     calibration_health,
     grade_forward_predictions,
     select_canonical_forward_predictions,
@@ -177,3 +180,80 @@ def test_overconfident_lower_bound_fails_even_when_point_forecast_is_reasonable(
         select_canonical_forward_predictions([
             _prediction_row(p=0.70, lower=0.75, upper=0.80)
         ])
+
+
+class _ForwardPagedQuery:
+    def __init__(self, db, name):
+        self.db = db
+        self.name = name
+        self.key = None
+        self.start = self.end = None
+
+    def select(self, columns):
+        self.columns = columns
+        self.db.selections.append((self.name, columns))
+        return self
+
+    def order(self, key):
+        self.key = key
+        self.db.orders.append((self.name, key))
+        return self
+
+    def range(self, start, end):
+        self.start = start
+        self.end = end
+        return self
+
+    def execute(self):
+        if not self.key:
+            raise AssertionError("PostgREST forward reads require explicit unique ordering")
+        ordered = sorted(self.db.rows[self.name], key=lambda x: str(x.get(self.key) or ""))
+        return SimpleNamespace(data=ordered[self.start:self.end + 1])
+
+
+class _ForwardPagedDB:
+    def __init__(self, rows):
+        self.rows = rows
+        self.orders = []
+        self.selections = []
+
+    def table(self, name):
+        return _ForwardPagedQuery(self, name)
+
+
+@pytest.mark.parametrize("table,key", [
+    ("wow_nfl_event_predictions", "event_prediction_id"),
+    ("wow_nfl_training_games", "game_id"),
+    ("wow_nfl_forward_shadow_grades", "grade_id"),
+])
+def test_forward_pagination_is_deterministic_across_1000_row_boundary(table, key):
+    data = [{key: f"id{i:04d}"} for i in reversed(range(1002))]
+    db = _ForwardPagedDB({table: data})
+    loaded = _paginate(db, table, "official_event_id", page_size=1000)
+    assert len(loaded) == 1002
+    assert [r[key] for r in loaded] == [f"id{i:04d}" for i in range(1002)]
+    assert db.orders == [(table, key), (table, key)]
+    assert all(key in projection for _, projection in db.selections)
+
+
+@pytest.mark.parametrize("table,key", [
+    ("wow_nfl_event_predictions", "event_prediction_id"),
+    ("wow_nfl_training_games", "game_id"),
+    ("wow_nfl_forward_shadow_grades", "grade_id"),
+])
+def test_forward_pagination_rejects_missing_and_duplicate_source_ids(table, key):
+    for dataset, expected in [
+        ([{key: "a"}, {key: "a"}], "ID_DUPLICATED"),
+        ([{key: "a"}, {"unrelated": "b"}], "ID_MISSING"),
+    ]:
+        db = _ForwardPagedDB({table: dataset})
+        with pytest.raises(NFLForwardShadowError, match=f"NFL_FORWARD_PAGINATION_INVALID:.*:{expected}"):
+            _paginate(db, table, "official_event_id", page_size=1)
+
+
+def test_forward_pagination_rejects_unregistered_tables_and_invalid_page_size():
+    db = _ForwardPagedDB({"wow_nfl_event_predictions": []})
+    with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID"):
+        _paginate(db, "unregistered", "event_prediction_id")
+    with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID"):
+        _paginate(db, "wow_nfl_event_predictions", "event_prediction_id", page_size=0)
