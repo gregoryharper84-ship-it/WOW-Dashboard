@@ -193,7 +193,10 @@ def create_run(
             status_code=422,
             detail={"code": "RUN_BATCH_LIMIT_EXCEEDED", "max_candidates": MAX_RUN_CANDIDATES, "can_execute": False},
         )
-    # Bound nesting before serialization to avoid adversarial recursion.\n    if not _candidate_shape_bounded(req.candidate_inputs):\n        raise HTTPException(status_code=422, detail={"code": "RUN_CANDIDATE_COMPLEXITY_EXCEEDED", "can_execute": False})\n    # Bound each admitted batch as well as its row count. Never send a
+    # Bound nesting before serialization to avoid adversarial recursion.
+    if not _candidate_shape_bounded(req.candidate_inputs):
+        raise HTTPException(status_code=422, detail={"code": "RUN_CANDIDATE_COMPLEXITY_EXCEEDED", "can_execute": False})
+    # Bound each admitted batch as well as its row count. Never send a
     # malformed or oversized candidate payload to the service-role DB/Celery.
     try:
         candidate_bytes = len(json.dumps(
@@ -231,7 +234,9 @@ def create_run(
         {field: getattr(req, field) for field in _REQUEST_HASH_FIELDS}
     )
 
-    _check_admission_rate_limit()\n    client = get_client()\n    run_row, reused = repository.create_run(
+    _check_admission_rate_limit()
+    client = get_client()
+    run_row, reused = repository.create_run(
         client,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
