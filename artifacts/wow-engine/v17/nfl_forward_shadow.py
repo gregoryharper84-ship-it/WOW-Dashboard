@@ -317,17 +317,46 @@ def calibration_health(
     }
 
 
+# Each supported source needs a stable, unique database ordering key. PostgREST
+# ranges without an explicit order are not deterministic once the forward
+# cohort exceeds a page, which can silently change the grading denominator.
+_FORWARD_PAGE_KEYS = {
+    PREDICTION_TABLE: "event_prediction_id",
+    OUTCOME_TABLE: "game_id",
+    GRADE_TABLE: "grade_id",
+}
+
+
 def _paginate(db: Any, table: str, columns: str, *, page_size: int = 1000) -> list[dict[str, Any]]:
+    if table not in _FORWARD_PAGE_KEYS or not isinstance(page_size, int) or page_size <= 0:
+        raise NFLForwardShadowError("NFL_FORWARD_PAGINATION_INVALID:TABLE_OR_PAGE_SIZE")
+    key = _FORWARD_PAGE_KEYS[table]
+    projection = {part.strip() for part in columns.split(",")}
+    if key not in projection:
+        columns += "," + key
     rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
     start = 0
     while True:
-        result = db.table(table).select(columns).range(start, start + page_size - 1).execute()
+        result = (
+            db.table(table)
+            .select(columns)
+            .order(key)
+            .range(start, start + page_size - 1)
+            .execute()
+        )
         batch = list(result.data or [])
-        rows.extend(batch)
+        for row in batch:
+            if not isinstance(row, Mapping) or not str(row.get(key) or "").strip():
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_MISSING")
+            row_id = str(row[key])
+            if row_id in seen:
+                raise NFLForwardShadowError(f"NFL_FORWARD_PAGINATION_INVALID:{table}:ID_DUPLICATED")
+            seen.add(row_id)
+            rows.append(dict(row))
         if len(batch) < page_size:
-            break
+            return rows
         start += page_size
-    return rows
 
 
 def load_prediction_rows(db: Any) -> list[dict[str, Any]]:
