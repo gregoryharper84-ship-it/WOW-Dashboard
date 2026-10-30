@@ -66,11 +66,14 @@ def _cohort(*, n=40, games=1, model="MLB_PITCHER_SO_FAILURE_PATH_NB_V1"):
             "locked_at": (event_start - timedelta(hours=1)).isoformat(),
             "event_start_time": event_start.isoformat(),
         }
+        # A repeated same-game thesis must carry ONE coherent settlement.
+        # Distinct games can legitimately have different realized results.
+        hit = (i % games) < (games // 3)
         outcome = {
             "prediction_id": prediction["prediction_id"],
-            "official_result": "HIT" if i < 12 else "MISS",
-            "hit": i < 12,
-            "actual_stat": 6 if i < 12 else 3,
+            "official_result": "HIT" if hit else "MISS",
+            "hit": hit,
+            "actual_stat": 6 if hit else 3,
             "settlement_source": f"https://statsapi.mlb.com/api/v1.1/game/{event_key}/feed/live",
             "settlement_timestamp": (event_start + timedelta(hours=4)).isoformat(),
         }
