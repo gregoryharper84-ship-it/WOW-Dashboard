@@ -53,7 +53,8 @@ def test_each_supported_league_has_precise_market_record_and_no_authority(
     assert item["provider_match_id"] == "18594"
     assert item["over_odds_display"] == -114 and item["under_odds_display"] == -120
     assert item["l10_avg_display"] == 22.1
-    assert result["source_url"] == f"https://propsmadness.com/{sport.lower()}/props/{market}"
+    actual_slug = "made-threes" if (sport, market) == ("NBA", "threes") else market
+    assert result["source_url"] == f"https://propsmadness.com/{sport.lower()}/props/{actual_slug}"
     assert item["sportsbook"] is None and item["canonical_event_id"] is None
     assert item["canonical_player_id"] is None and item["event_start_utc"] is None
     for label in ("pregame_verified", "historical_line_evidence", "exact_line_market_authority", "can_execute"):
@@ -63,6 +64,34 @@ def test_each_supported_league_has_precise_market_record_and_no_authority(
                   "probability_publishable", "can_execute"):
         assert result[field] is False
     assert "90 percent" not in json.dumps(result)
+
+
+def test_nba_threes_current_slug_candidate_and_public_fetch_reconcile():
+    pages = []
+    body = page("NBA", "player-made-threes", "Threes", "2.5", "BOS", "NYK")
+    result = fetch_public_one_shot(
+        "NBA", "threes", personal_noncommercial_use_confirmed=True,
+        urlopen=stub(b"User-agent: *\\nAllow: /\\n", body, pages),
+    )
+    assert pages == [
+        "https://propsmadness.com/robots.txt",
+        "https://propsmadness.com/nba/props/made-threes",
+    ]
+    assert result["row_count"] == 1
+    assert result["rows"][0]["source_page"] == result["source_url"]
+    assert result["rows"][0]["stat_type"] == "THREE_POINTERS_MADE"
+    assert result["historical_training_authorized"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_unknown_nba_threes_market_alias_remains_unparsed():
+    body = page("NBA", "player-foo", "Threes", "2.5", "BOS", "NYK")
+    result = parse_multisport_public_html(
+        body, sport="NBA", market="threes", fetched_at="2026-10-30T11:00:00Z")
+    assert result["row_count"] == 0
+    assert result["status"] == "PUBLIC_HTML_NO_VERIFIED_ROWS"
+    assert result["can_execute"] is False
 
 
 def test_16_scoped_markets_across_exactly_four_sports():
