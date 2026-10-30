@@ -208,6 +208,7 @@ class _ForwardPagedQuery:
         if not self.key:
             raise AssertionError("PostgREST forward reads require explicit unique ordering")
         ordered = sorted(self.db.rows[self.name], key=lambda x: str(x.get(self.key) or ""))
+        # PostgREST range(start, end) has an inclusive end offset.
         return SimpleNamespace(data=ordered[self.start:self.end + 1])
 
 
@@ -257,3 +258,40 @@ def test_forward_pagination_rejects_unregistered_tables_and_invalid_page_size():
         _paginate(db, "unregistered", "event_prediction_id")
     with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID"):
         _paginate(db, "wow_nfl_event_predictions", "event_prediction_id", page_size=0)
+
+
+@pytest.mark.parametrize("columns", [
+    "",
+    "official_event_id,",
+    "official_event_id,,game_id",
+    "official_event_id),game_id",
+    "official_event_id;select",
+])
+def test_forward_pagination_rejects_malformed_projection(columns):
+    db = _ForwardPagedDB({"wow_nfl_event_predictions": []})
+    with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID:PROJECTION_INVALID"):
+        _paginate(db, "wow_nfl_event_predictions", columns, page_size=2)
+    assert db.orders == []
+    assert db.selections == []
+
+
+def test_late_page_identity_failure_cannot_persist_partial_nfl_grades(monkeypatch):
+    from v17 import nfl_forward_shadow as shadow
+
+    table = "wow_nfl_event_predictions"
+    # Duplicate source IDs materialize in separate pages (1000 + 1).
+    data = [{"event_prediction_id": f"id{i:04d}"} for i in range(1000)]
+    data.append({"event_prediction_id": "id0000"})
+    db = _ForwardPagedDB({table: data})
+    calls = []
+    monkeypatch.setattr(shadow, "load_prediction_rows", lambda client: shadow._paginate(
+        client, table, "event_prediction_id", page_size=1000,
+    ))
+    monkeypatch.setattr(shadow, "persist_new_grades", lambda *_: calls.append("grades"))
+    monkeypatch.setattr(shadow, "persist_health", lambda *_: calls.append("health"))
+    with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID:.*:ID_DUPLICATED"):
+        shadow.run_forward_shadow(
+            db,
+            settlement_refresh_fn=lambda _: {"status": "COMPLETED", "can_execute": False},
+        )
+    assert calls == []
