@@ -22,6 +22,7 @@ cannot, because a fake client never parses or executes real SQL:
 from __future__ import annotations
 
 import os
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -156,7 +157,8 @@ def _candidate() -> dict:
 def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     """Real HTTP -> PostgREST -> Redis/Celery -> reducer/reconciliation E2E."""
     _apply_schema()
-    monkeypatch.setenv("WOW_ACTION_API_KEY", "ci-agent-runtime-key")
+    key = secrets.token_urlsafe(32)
+    monkeypatch.setenv("WOW_ACTION_API_KEY", key)
 
     from fastapi.testclient import TestClient
     import api_ncaaf_acceptance as prod
@@ -181,7 +183,7 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
         "user_timezone": "America/Chicago", "discovery_enabled": False,
         "candidate_inputs": [_candidate()], "can_execute": False,
     }
-    headers = {"Idempotency-Key": "ci-agent-runtime-e2e", "Authorization": "Bearer ci-agent-runtime-key"}
+    headers = {"Idempotency-Key": "ci-agent-runtime-e2e", "Authorization": f"Bearer {key}"}
     first = client.post("/wow/runs", json=body, headers=headers)
     assert first.status_code == 202, first.text
     run_id = first.json()["run_id"]
