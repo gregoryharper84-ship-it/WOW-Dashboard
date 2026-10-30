@@ -2,6 +2,8 @@
 
 Input: already-retained, caller-supplied `wow_mlb_forward_boxscore_snapshots`
 metadata and `raw_body`; no network, DB, files, scorer, model fit or writes.
+A source URL and self-consistent hash are integrity checks, NOT independent
+proof that source bytes came from MLB or have licensed reuse rights.
 
 The official MLBAM response has restrictive use/copyright text. This adapter
 DOES NOT authorize training, redistribution or serving. Every emitted label is
@@ -16,7 +18,7 @@ import re
 from typing import Any, Mapping
 
 SCHEMA = "WOW_MLB_HITS_OFFICIAL_OUTCOME_RESEARCH_V1"
-SOURCE = "MLB_STATS_API_RESEARCH_LICENSE_REVIEW_REQUIRED"
+SOURCE = "CLAIMED_MLB_STATS_API_UNAUTHENTICATED_RESEARCH_ONLY"
 
 
 class MLBHitsResearchHold(ValueError):
@@ -124,6 +126,7 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 "captured_at": fetched.isoformat(),
                 "raw_source_sha256": digest,
                 "source_status": SOURCE,
+                "source_authenticated": False,
                 "candidate_label_status": "UNVERIFIED_FINAL_RESEARCH_ONLY",
                 "pregame_feature_snapshot_id": None,
                 "market_line_verified": False,
@@ -140,6 +143,7 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "player_count": len(seen), "hit_pa_label_count": len(rows), "rows": rows,
         "event_start_time_verified": False,
         "game_final_independently_verified": False,
+        "source_authenticated": False,
         "pregame_features_verified": False,
         "source_rights_verified": False,
         "historical_training_authorized": False,
@@ -147,21 +151,3 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "can_execute": False,
     }
 
-
-def research_matrix(snapshots: list[Mapping[str, Any]]) -> dict[str, Any]:
-    """Single canonical snapshot/game; duplicates and conflicts fail closed."""
-    require(type(snapshots) is list and len(snapshots) <= 5000,
-            "MLB_HITS_RESEARCH_SNAPSHOT_INVALID")
-    seen_game: set[int] = set()
-    all_labels: list[dict[str, Any]] = []
-    for snapshot in snapshots:
-        part = extract_mlb_hits_labels(snapshot)
-        game = part["official_game_pk_claimed"]
-        require(game not in seen_game, "MLB_HITS_RESEARCH_DUPLICATE_GAME")
-        seen_game.add(game)
-        all_labels.extend(part["rows"])
-    return {"schema": SCHEMA, "games": len(seen_game), "candidate_labels": len(all_labels),
-            "rows": all_labels, "research_only": True,
-            "source_rights_verified": False, "pregame_features_verified": False,
-            "historical_training_authorized": False,
-            "probability_publishable": False, "can_execute": False}
