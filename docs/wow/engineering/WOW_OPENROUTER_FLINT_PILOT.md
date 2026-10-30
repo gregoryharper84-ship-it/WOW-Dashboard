@@ -29,7 +29,7 @@ This pilot tests the OpenRouter-hosted `recursive/flint-v1.0:free` API without d
 
 ## Free-tier considerations
 
-OpenRouter Free currently advertises 50 free-model requests/day and 20/minute; limits and model availability may change. A free hosted model is not an uptime or production availability SLA. At most **one** opt-in live request is sent by this script; no retries. Do not automatically switch to a paid model. HTTP 429 and 402 produce diagnostic holds, not provider substitutions.
+OpenRouter Free currently advertises 50 free-model requests/day and 20/minute; limits and model availability may change. A free hosted model is not an uptime or production availability SLA. At most **one** opt-in live request is sent by this script; no retries. Do not automatically switch to a paid model. HTTP 429 and 402 produce diagnostic holds, not provider substitutions. An unattributed 404 is classified `FLINT_HTTP_404_UNATTRIBUTED` (verify endpoint/model/permissions before considering provider availability); a response without `finish_reason=stop` is `FLINT_MODEL_COMPLETION_INCOMPLETE`. Neither counts as a completed diagnostic and neither permits silent fallback.
 
 ## Scope / controls
 

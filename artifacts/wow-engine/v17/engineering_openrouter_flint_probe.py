@@ -54,6 +54,9 @@ def classify_http_status(status: int) -> str:
         return "RATE_LIMITED"
     if status == 402:
         return "PAYMENT_REQUIRED"
+    if status == 404:
+        # Endpoint/model/entitlement cannot be attributed from an untrusted error body.
+        return "FLINT_HTTP_404_UNATTRIBUTED"
     if status >= 500:
         return "UPSTREAM_FAILURE"
     return "HTTP_FAILURE"
@@ -69,6 +72,8 @@ def validate_completion(payload: Any) -> dict[str, Any]:
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str) or not content.strip():
         return receipt("OUTPUT_INVALID", attempted=True)
+    if choices[0].get("finish_reason") != "stop":
+        return receipt("FLINT_MODEL_COMPLETION_INCOMPLETE", attempted=True)
     return receipt("SMOKE_PASSED", attempted=True, usage=payload.get("usage"))
 
 

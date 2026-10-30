@@ -132,6 +132,8 @@ def evaluate(
     try:
         data = json.loads(raw)
         choices = data.get("choices") if isinstance(data, dict) else None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict) and choices[0].get("finish_reason") != "stop":
+            return receipt("FLINT_MODEL_COMPLETION_INCOMPLETE", attempted=True), None
         message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         diagnostic = validate_diagnostic(json.loads(content)) if isinstance(content, str) else None

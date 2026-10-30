@@ -53,9 +53,9 @@ class Reply:
         return self.payload[:n]
 
 
-def _payload(content=None):
+def _payload(content=None, finish_reason="stop"):
     return json.dumps({
-        "choices": [{"message": {"content": json.dumps(DIAGNOSTIC) if content is None else content}}]
+        "choices": [{"finish_reason": finish_reason, "message": {"content": json.dumps(DIAGNOSTIC) if content is None else content}}]
     }).encode()
 
 
@@ -121,7 +121,7 @@ def test_invalid_model_json_is_never_counted_as_success():
 
 def test_http_failure_types_and_no_retry():
     for code, expected in ((401, "AUTH_FAILED"), (429, "RATE_LIMITED"),
-                           (402, "PAYMENT_REQUIRED"), (503, "UPSTREAM_FAILURE")):
+                           (402, "PAYMENT_REQUIRED"), (404, "FLINT_HTTP_404_UNATTRIBUTED"), (503, "UPSTREAM_FAILURE")):
         seen = []
         def reject(*a, **k):
             seen.append(True)
@@ -131,6 +131,18 @@ def test_http_failure_types_and_no_retry():
         assert result["status"] == expected and diag is None
         assert len(seen) == 1
         assert "sensitive" not in str(result)
+
+
+def test_incomplete_or_missing_finish_reason_cannot_publish_diagnostic():
+    for reason in ("length", "content_filter", "tool_calls", None, "unknown"):
+        result, diagnostic = worker.evaluate(
+            SELECTION, ENV, acknowledged=True, source_sha=SHA,
+            opener=lambda *_a, **_kw: Reply(_payload(finish_reason=reason)),
+        )
+        assert result["status"] == "FLINT_MODEL_COMPLETION_INCOMPLETE"
+        assert result["network_attempted"] is True
+        assert result["can_execute"] is False
+        assert diagnostic is None
 
 
 def test_network_failure_and_oversize_response():

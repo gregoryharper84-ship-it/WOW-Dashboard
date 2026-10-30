@@ -45,7 +45,7 @@ def test_one_synthetic_request_and_redacted_receipt():
     calls = []
     def open_once(request, timeout):
         calls.append((request, timeout))
-        return FakeResponse(b'{"choices":[{"message":{"content":"assert even(2) is True"}}],"usage":{"prompt_tokens":15,"completion_tokens":8,"total_tokens":23}}')
+        return FakeResponse(b'{"choices":[{"finish_reason":"stop","message":{"content":"assert even(2) is True"}}],"usage":{"prompt_tokens":15,"completion_tokens":8,"total_tokens":23}}')
     result = probe.smoke({"WOW_FLINT_PROBE_ENABLED": "true", "OPENROUTER_API_KEY": "test-only-secret"}, opener=open_once)
     assert result["status"] == "SMOKE_PASSED" and result["total_tokens"] == 23
     assert len(calls) == 1 and calls[0][1] == 30
@@ -56,7 +56,7 @@ def test_one_synthetic_request_and_redacted_receipt():
 
 
 def test_all_error_codes_are_typed_and_do_not_retry():
-    for status, expected in ((401, "AUTH_FAILED"), (403, "AUTH_FAILED"), (402, "PAYMENT_REQUIRED"), (429, "RATE_LIMITED"), (503, "UPSTREAM_FAILURE"), (400, "HTTP_FAILURE")):
+    for status, expected in ((401, "AUTH_FAILED"), (403, "AUTH_FAILED"), (402, "PAYMENT_REQUIRED"), (429, "RATE_LIMITED"), (503, "UPSTREAM_FAILURE"), (404, "FLINT_HTTP_404_UNATTRIBUTED"), (400, "HTTP_FAILURE")):
         calls = []
         def raise_http(*_args, **_kw):
             calls.append(True)
@@ -76,6 +76,15 @@ def test_transport_and_malformed_response_are_distinct():
         result = probe.smoke(env, opener=lambda *_a, **_kw: FakeResponse(data))
         assert result["status"] == "OUTPUT_INVALID"
         assert result["network_attempted"] is True
+
+
+def test_smoke_rejects_incomplete_or_unattributed_completion():
+    for reason in ("length", "content_filter", "tool_calls", None, "unexpected"):
+        response = {"choices": [{"finish_reason": reason, "message": {"content": "plausible answer"}}]}
+        result = probe.validate_completion(response)
+        assert result["status"] == "FLINT_MODEL_COMPLETION_INCOMPLETE"
+        assert result["network_attempted"] is True
+        assert result["can_execute"] is False
 
 
 def test_canary_cannot_override_governance():
