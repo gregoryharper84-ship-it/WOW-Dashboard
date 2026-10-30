@@ -304,7 +304,7 @@ def test_unexpected_route_actor_or_merge_permission_fails_closed(monkeypatch):
         result = original_assess(**kwargs)
         entries = [dict(row) for row in result["unreachable"]]
         for row in entries:
-            if row["gate"] == "independent_qa":
+            if row["gate"] == "existing_pr_governance":
                 row["actor"] = "OWNER"
                 row["action"] = "MERGE"
         return {**result, "unreachable": entries}
