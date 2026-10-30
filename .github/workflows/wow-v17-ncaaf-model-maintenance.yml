@@ -244,9 +244,38 @@ jobs:
               assert candidate.get("lifecycle_state") == "CANDIDATE"
               assert candidate.get("probability_publishable") is False
               assert candidate.get("can_execute") is False
+          # The compiler already reports typed, event-specific blockers.
+          # Surface its exact counts without logging raw provider payloads.
+          raw_samples = feature.get("blocker_samples")
+          raw_samples = raw_samples if isinstance(raw_samples, list) else []
+          safe_samples = []
+          for sample in raw_samples[:3]:
+              if not isinstance(sample, dict):
+                  continue
+              raw_blockers = sample.get("blockers")
+              safe_samples.append({
+                  "official_event_id": str(sample.get("official_event_id") or "")[:40],
+                  "code": str(sample.get("code") or "")[:100],
+                  "blockers": [
+                      str(value)[:80]
+                      for value in (raw_blockers[:8] if isinstance(raw_blockers, list) else [])
+                  ],
+              })
           print(json.dumps({
               "status": payload.get("status"),
+              "fresh_acquisition_complete": payload.get("fresh_acquisition_complete"),
+              "maintenance_degraded": payload.get("maintenance_degraded"),
+              "source_snapshot_n": payload.get("source_snapshot_n"),
+              "source_snapshot_persisted_n": payload.get("source_snapshot_persisted_n"),
+              "feature_status": feature.get("status"),
+              "games_seen": feature.get("games_seen"),
+              "evidence_rows_seen": feature.get("evidence_rows_seen"),
+              "blocked_games": feature.get("blocked_games"),
+              "features_persisted": feature.get("features_persisted"),
+              "features_existing": feature.get("features_existing"),
               "complete_feature_rows": feature.get("complete_feature_rows"),
+              "feature_blocker_counts": feature.get("blocker_counts"),
+              "feature_blocker_samples": safe_samples,
               "training_blocker": (payload.get("training_blocker") or {}).get("code"),
               "blockers": payload.get("blockers"),
               "can_execute": False,
