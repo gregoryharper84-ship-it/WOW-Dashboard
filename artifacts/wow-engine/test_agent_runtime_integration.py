@@ -122,7 +122,12 @@ def test_health_ready_fails_closed_when_registry_mismatched(monkeypatch):
 
 def test_run_and_cancel_require_existing_bearer_key(monkeypatch):
     fake = FakeSupabaseClient()
-    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    run = _created_run(fake, "cancel-auth-check")
+
+    def forbidden_db_access():
+        raise AssertionError("unauthenticated request accessed service-role database")
+
+    monkeypatch.setattr(agent_runtime_api, "get_client", forbidden_db_access)
 
     anonymous = client.post(
         "/wow/runs", json=_RUN_PAYLOAD,
@@ -134,10 +139,9 @@ def test_run_and_cancel_require_existing_bearer_key(monkeypatch):
         headers={"Idempotency-Key": "invalid-rejected", "Authorization": "Bearer wrong"},
     )
     assert invalid.status_code == 401
-    assert len(fake._store.get("wow_agent_runs", [])) == 0
+    assert len(fake._store.get("wow_agent_runs", [])) == 1
     assert len(fake._store.get("wow_agent_jobs", [])) == 0
 
-    run = _created_run(fake, "cancel-auth-check")
     unauthorized_cancel = client.post(f"/wow/runs/{run['run_id']}/cancel")
     assert unauthorized_cancel.status_code == 401
     assert repository.get_run(fake, run["run_id"])["status"] == "CREATED"
