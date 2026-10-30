@@ -120,7 +120,13 @@ jobs:
           # live head-SHA recheck + cancel-in-progress abort superseded heads
           # within 10s, while allowing active heads up to 15m for wow-verify
           # + QA + Release + certifier completion on pull_request_target.
-          for _ in $(seq 1 90); do
+          # Bounded 15m receipt wait with a small REST request budget.
+          # Previous 90 x (live PR + artifacts) = up to 180 GitHub requests
+          # per PR. Multiple simultaneous PRs could exhaust the installation
+          # hourly quota and fail unrelated independent QA/release gates.
+          # Preserve live-head SHA checks on EVERY attempt; never accept stale
+          # receipts, missing artifacts or 403/quota errors as success.
+          for poll in $(seq 1 19); do
             live_pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}") || {
               echo "GOVERNANCE_LIVE_PR_LOOKUP_FAILED" >&2; exit 1;
             }
@@ -139,7 +145,17 @@ jobs:
             if [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ]; then
               break
             fi
-            sleep 10
+            # 3 fast probes, then adaptive 45s/70s spacing. 18 attempts
+            # produce <=38 API reads over ~15 minutes versus <=180 previously.
+            if [ "$poll" -eq 19 ]; then
+              break
+            elif [ "$poll" -le 3 ]; then
+              sleep 10
+            elif [ "$poll" -le 10 ]; then
+              sleep 45
+            else
+              sleep 70
+            fi
           done
           [ "$(jq 'length' <<<"$artifact_matches")" -eq 1 ] || {
             echo "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE: no unique exact-head artifact for ${head_sha}." >&2
