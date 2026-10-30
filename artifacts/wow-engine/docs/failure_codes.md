@@ -501,4 +501,21 @@ provider outages, retry authorization, or evidence of a fitted probability.
 
 Source/receipt contract: `WOW-AGENT-RUNTIME-V1-PHASE1`; actor:
 `wow.agent-runtime-api`. These limits bound a single admission, **not**
-global request rate. The existing bearer comparison is reused, but sports Agent Runtime now requires\na distinct `WOW_AGENT_RUNTIME_API_KEY` of at least 32 characters; it cannot\nfall back to or equal `WOW_ACTION_API_KEY`. A deployment without this separate\nsecret fails closed with HTTP 401. Configure it securely in the existing Render\nweb service and the authorized live canary caller before attempting a POST.\nThe existing Redis broker enforces a global 60-admissions/minute fixed bucket\nwith atomic increments and fails closed if Redis is unavailable. This is not\na claim of externally verified gateway throttling. Authenticated run reads use\n`api._require_agent_runtime_api_key`; `/health/live` and `/health/ready`\nremain public. No change to `V17_TERMINAL_REDUCER`.
+global request rate. The existing bearer comparison is reused, but sports Agent Runtime now requires
+a distinct `WOW_AGENT_RUNTIME_API_KEY` of at least 32 characters; it cannot
+fall back to or equal `WOW_ACTION_API_KEY`. A deployment without this separate
+secret fails closed with HTTP 401. Configure it securely in the existing Render
+web service and the authorized live canary caller before attempting a POST.
+The existing Redis broker enforces a global 60-admissions/minute fixed bucket
+with atomic increments and fails closed if Redis is unavailable. This is not
+a claim of externally verified gateway throttling. Authenticated run reads use
+`api._require_agent_runtime_api_key`; `/health/live` and `/health/ready`
+remain public. No change to `V17_TERMINAL_REDUCER`.
+
+Security scope: this phase has ONE runtime bearer/principal and an intentionally
+shared deployment-wide 60-admissions-per-rolling-minute resource bound; it
+cannot attribute separate people using the same credential. Do not share the
+credential with unrelated tenants. Redis is volatile: a restart or key eviction
+resets the current window, so this is an abuse bound during normal Redis uptime,
+not a durable cross-restart quota. Connection errors fail closed. A changed
+REDIS_URL creates a new process-local pool; no credential is logged.

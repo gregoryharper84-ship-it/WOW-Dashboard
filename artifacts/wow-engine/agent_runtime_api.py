@@ -41,7 +41,7 @@ MAX_RUN_CANDIDATE_JSON_BYTES = 65536
 MAX_RUN_CANDIDATE_DEPTH = 12
 MAX_RUN_CANDIDATE_NODES = 4096
 MAX_RUN_ADMISSIONS_PER_MINUTE = 60
-_SAFE_IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9._:-]+")
+_SAFE_IDEMPOTENCY_KEY_RE = re.compile(r"\A[A-Za-z0-9._:-]+\Z")
 
 _REQUEST_HASH_FIELDS = (
     "run_type", "as_of", "user_timezone", "lanes", "sports",
@@ -80,6 +80,10 @@ def _candidate_shape_bounded(value: Any) -> bool:
 
 _ADMISSION_WINDOW_MS = 60_000
 _ADMISSION_REDIS_KEY = "wow:agent-runtime:admissions:sliding-v1"
+# Deployment-wide bound for ONE independently authenticated runtime principal.
+# This API does not identify multiple callers behind the same bearer; never
+# claim per-caller isolation. Do not distribute the bearer to unrelated tenants.
+# Redis restart/eviction resets this volatile window; it is not a durable quota.
 # One atomic Redis operation: use server time, enforce a rolling 60-second
 # window, and count a repeated (idempotency key, request hash) only once.
 # No payload, raw key or bearer is stored in Redis.
@@ -98,7 +102,10 @@ return 1
 
 @lru_cache(maxsize=1)
 def _admission_redis(redis_url: str) -> Any:
-    """Reuse the existing Redis connection pool across HTTP requests."""
+    """Reuse a process-local pool keyed by REDIS_URL; rotation changes cache key.
+
+    One deployment/one scoped principal; no cross-tenant pool multiplexing.
+    """
     import redis
     return redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
 
@@ -108,7 +115,7 @@ def _check_admission_rate_limit(*, idempotency_key: str, request_hash: str) -> N
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
         raise HTTPException(status_code=503, detail={"code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False})
-    member = hashlib.sha256((idempotency_key + "\\0" + request_hash).encode("utf-8")).hexdigest()
+    member = hashlib.sha256((idempotency_key + "\x00" + request_hash).encode("utf-8")).hexdigest()
     try:
         allowed = _admission_redis(redis_url).eval(
             _ADMISSION_LUA, 1, _ADMISSION_REDIS_KEY,

@@ -378,6 +378,28 @@ def test_existing_redis_global_admission_limit_and_outage_fail_closed(monkeypatc
     assert unavailable.value.status_code == 503
 
 
+def test_cached_redis_pool_rotates_with_url(monkeypatch):
+    # A changed Redis URL must never return the old process-local connection.
+    import redis
+    made = []
+
+    def factory(url, **kwargs):
+        connection = object()
+        made.append((url, connection))
+        return connection
+
+    monkeypatch.setattr(redis.Redis, "from_url", factory)
+    agent_runtime_api._admission_redis.cache_clear()
+    try:
+        first = agent_runtime_api._admission_redis("redis://first/0")
+        assert first is agent_runtime_api._admission_redis("redis://first/0")
+        second = agent_runtime_api._admission_redis("redis://rotated/0")
+        assert second is not first
+        assert [url for url, _ in made] == ["redis://first/0", "redis://rotated/0"]
+    finally:
+        agent_runtime_api._admission_redis.cache_clear()
+
+
 def test_create_run_rejects_can_execute_true(monkeypatch, auth_headers):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
     response = client.post(

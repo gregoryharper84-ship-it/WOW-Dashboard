@@ -158,7 +158,8 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     """Real HTTP -> PostgREST -> Redis/Celery -> reducer/reconciliation E2E."""
     _apply_schema()
     key = secrets.token_urlsafe(32)
-    monkeypatch.setenv("WOW_ACTION_API_KEY", secrets.token_urlsafe(32))
+    scoring_key = secrets.token_urlsafe(32)
+    monkeypatch.setenv("WOW_ACTION_API_KEY", scoring_key)
     monkeypatch.setenv("WOW_AGENT_RUNTIME_API_KEY", key)
 
     from fastapi.testclient import TestClient
@@ -184,6 +185,12 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
         "user_timezone": "America/Chicago", "discovery_enabled": False,
         "candidate_inputs": [_candidate()], "can_execute": False,
     }
+    # Scope separation must hold in real HTTP/Postgres/Redis integration too.
+    wrong_scope = client.post("/wow/runs", json=body, headers={
+        "Idempotency-Key": "ci-wrong-scoring-scope",
+        "Authorization": f"Bearer {scoring_key}",
+    })
+    assert wrong_scope.status_code == 401
     headers = {"Idempotency-Key": "ci-agent-runtime-e2e", "Authorization": f"Bearer {key}"}
     first = client.post("/wow/runs", json=body, headers=headers)
     assert first.status_code == 202, first.text
@@ -212,6 +219,27 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     with psycopg.connect(_pg_dsn()) as conn, conn.cursor() as cur:
         cur.execute("select count(*) from public.wow_agent_terminal_decisions where run_id = %s", (run_id,))
         assert cur.fetchone()[0] == 1
+
+
+def test_admission_lua_real_redis_ttl_and_duplicate_semantics():
+    """Real broker executes the atomic script; fake clock alone is insufficient."""
+    import redis
+    import agent_runtime_api
+
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url:
+        pytest.skip("real Redis integration requires REDIS_URL")
+    connection = redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
+    key = "wow:agent-runtime:ci-window:" + secrets.token_hex(12)
+    try:
+        lua = agent_runtime_api._ADMISSION_LUA
+        assert connection.eval(lua, 1, key, 2, 60000, "member-a") == 1
+        assert connection.eval(lua, 1, key, 2, 60000, "member-a") == 2
+        assert connection.eval(lua, 1, key, 2, 60000, "member-b") == 1
+        assert connection.eval(lua, 1, key, 2, 60000, "member-c") == 0
+        assert 0 < connection.pttl(key) <= 120000
+    finally:
+        connection.delete(key)
 
 
 # ---------------------------------------------------------------------------

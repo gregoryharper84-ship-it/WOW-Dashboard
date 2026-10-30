@@ -232,6 +232,7 @@ def _require_agent_runtime_api_key(authorization: Optional[str] = Header(default
     configured_key = os.environ.get("WOW_AGENT_RUNTIME_API_KEY")
     scoring_key = os.environ.get("WOW_ACTION_API_KEY")
     if not configured_key or len(configured_key) < 32 or not configured_key.isascii() or (
+        # Byte comparison is defined even for non-ASCII scoring configuration.
         scoring_key and secrets.compare_digest(configured_key.encode('utf-8'), scoring_key.encode('utf-8'))
     ):
         raise HTTPException(status_code=401, detail="Sports runtime credential is not independently configured.")
