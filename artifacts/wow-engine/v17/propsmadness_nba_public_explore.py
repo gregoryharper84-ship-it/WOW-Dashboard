@@ -110,7 +110,8 @@ def _player_link(url: str, market_key: str) -> tuple[str, str] | None:
     permitted_markets = {expected_market}
     if market_key == "threes":
         permitted_markets.add("player-made-threes")
-    if params.get("market") not in ([name] for name in permitted_markets):
+    market_values = params.get("market")
+    if not market_values or len(market_values) != 1 or market_values[0] not in permitted_markets:
         return None
     player, match = params.get("player"), params.get("match")
     if not player or not match or len(player) != 1 or len(match) != 1:
