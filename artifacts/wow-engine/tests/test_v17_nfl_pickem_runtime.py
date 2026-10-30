@@ -164,9 +164,61 @@ def test_week_runtime_uses_canonical_schedule_scores_all_16_in_bounded_batches(m
     assert persisted["run_id"] == out["run_id"]
     assert len(persisted["rows"]) == 16
     assert all(row["lane"] == "MONEYLINE" for row in persisted["rows"])
+    assert sum(row["row_status"] == "HELD" for row in persisted["rows"]) == 1
+    assert sum(row["row_status"] == "COMPLETED" for row in persisted["rows"]) == 15
+    assert all(row["terminal_reduction"]["final_terminal"] == row["row_status"] for row in persisted["rows"])
+    held = next(row for row in persisted["rows"] if row["row_status"] == "HELD")
+    assert held["result"]["sporting_probability_completed"] is True
+    assert held["result"]["terminal_label"] == "MODEL_QUALIFIED_HOLD"
+    assert held["probability_publishable"] is False
+    assert held["terminal_reduction"]["stage_terminals"] == ["HELD"]
     assert out["source_receipt_persistence"]["rows_persisted"] == 16
     assert out["tiebreaker"]["status"] == "UNAVAILABLE"
     assert out["can_execute"] is False
+
+
+
+def test_pickem_row_audit_retains_controlling_forward_hold_with_numeric_model():
+    source = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "calibrated_probability": 0.697,
+        "calibrated_lower_bound": 0.641,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "terminal_label": "MODEL_QUALIFIED_HOLD",
+        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+        "nfl_stage_receipt": {
+            "status": "HOLD",
+            "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+        },
+        "can_execute": False,
+    }
+    row = runtime._audit_row(source)
+    assert row["row_status"] == "HELD"
+    assert row["result"]["sporting_probability_completed"] is True
+    assert row["result"]["nfl_stage_receipt"]["status"] == "HOLD"
+    assert row["probability_publishable"] is False
+    assert row["terminal_reduction"]["stage_terminals"] == ["HELD"]
+    assert row["terminal_reduction"]["lowest_stage_terminal"] == "HELD"
+    assert row["terminal_reduction"]["final_terminal"] == "HELD"
+    assert row["can_execute"] is False
+
+
+def test_pickem_row_audit_does_not_trust_outer_approval_over_controlling_ceiling():
+    source = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+        "nfl_stage_receipt": {"status": "HOLD"},
+        "can_execute": False,
+    }
+    row = runtime._audit_row(source)
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["terminal_reduction"]["final_terminal"] == "HELD"
 
 
 def test_runtime_preserves_typed_scorer_failure_and_marks_board_incomplete(monkeypatch):
