@@ -70,7 +70,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         # never held for a limit it was not told about.
         self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
         for key in ("file", "detail", "evidence"):
-            self.assertEqual(items["properties"][key]["maxLength"], m.MAX_FINDING_TEXT)
+            self.assertEqual(items["properties"][key]["maxLength"], m.FINDING_TEXT_LIMITS[key])
             self.assertEqual(items["properties"][key]["minLength"], 1)
         prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "d"})
@@ -79,6 +79,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("blocks regardless of severity", prompt)
         self.assertIn("at most 12", prompt)
         self.assertIn("at most 500 characters", prompt)
+        self.assertIn("at most 1600 characters", prompt)
         self.assertIn("exactly these five keys and no others", prompt)
 
     def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
@@ -90,6 +91,13 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaises(m.Hold) as err:
             m.parse_verdict({**good, "findings": [over]})
         self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+        detailed = {**at_limit, "detail": "d" * m.MAX_FINDING_DETAIL}
+        self.assertEqual(m.parse_verdict({**good, "findings": [detailed]})[0], "PASS")
+        with self.assertRaises(m.Hold) as long_detail:
+            m.parse_verdict({**good, "findings": [
+                {**detailed, "detail": "d" * (m.MAX_FINDING_DETAIL + 1)}
+            ]})
+        self.assertEqual(str(long_detail.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_DETAIL_TOO_LONG")
 
     def test_finding_text_failures_are_field_specific_and_fail_closed(self):
         good = self._passing()
@@ -97,7 +105,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             for suffix, bad in (
                 ("TYPE", 123),
                 ("EMPTY", "  "),
-                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
+                ("TOO_LONG", "x" * (m.FINDING_TEXT_LIMITS[key] + 1)),
             ):
                 with self.subTest(field=key, error=suffix):
                     malformed = {**self._finding("low"), key: bad}
