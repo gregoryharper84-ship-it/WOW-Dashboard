@@ -424,5 +424,22 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn('prior_semantic_reject(target["head_sha"], read_token)', source)
         self.assertIn('receipt["decision"] = "HOLD"', source)
 
+
+def load_tests(loader, tests, pattern):
+    """Include HTTP-attribution regressions in the existing trusted test entry point.
+
+    Both protected-main security review and required backend CI intentionally
+    select this file by name; a separate test file would otherwise be skipped.
+    """
+    path = Path(__file__).with_name("test_wow_review_http_attribution.py")
+    spec = importlib.util.spec_from_file_location("wow_review_http_attribution", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("HTTP_ATTRIBUTION_TEST_IMPORT_FAILED")
+    extra = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(extra)
+    tests.addTests(loader.loadTestsFromModule(extra))
+    return tests
+
+
 if __name__ == "__main__":
     unittest.main()
