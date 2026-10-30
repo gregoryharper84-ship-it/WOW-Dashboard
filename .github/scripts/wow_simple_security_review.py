@@ -284,12 +284,12 @@ def parse_verdict(value):
         # blank and size, and identifies the field without logging its value.
         # Key names and suffixes are fixed here, never model-controlled.
         for key in ("file", "detail", "evidence"):
-            value = finding[key]
-            if type(value) is not str:
+            field_value = finding[key]
+            if type(field_value) is not str:
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TYPE")
-            if not value.strip():
+            if not field_value.strip():
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_EMPTY")
-            if len(value) > MAX_FINDING_TEXT:
+            if len(field_value) > MAX_FINDING_TEXT:
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TOO_LONG")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
     # Model-provided severity alone cannot downgrade any safety or correctness
