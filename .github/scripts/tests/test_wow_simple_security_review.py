@@ -168,9 +168,11 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             m.semantic_review({"pr": 2301, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "safe"},
                               {p: "key" for p in m.PROVIDERS}, malformed)
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
-        self.assertEqual(called, ["anthropic-claude-api"])
         self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
+        self.assertEqual(err.exception.attempts,
+                         [{"provider": "anthropic-claude-api",
+                           "result": "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT"}])
+        self.assertEqual(called, ["anthropic-claude-api"])
 
     def test_receipt_schema_is_versioned_without_rewriting_prior_verdicts(self):
         target = {"pr": 2301, "head_sha": "a" * 40, "base_sha": "b" * 40,
