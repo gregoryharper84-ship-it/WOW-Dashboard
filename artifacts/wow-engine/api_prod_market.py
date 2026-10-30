@@ -251,10 +251,19 @@ def _market_lane(row: Any) -> dict[str, Any]:
 
 
 def _money_lane(row: Any) -> dict[str, Any]:
-    status = getattr(row, "money_lane_status", None) or "PAYOUT_UNRESOLVED"
+    """Caller/model row status is an observation, not payout authority.
+
+    No server-owned, independently verified payout/quote provenance is
+    registered on this route yet.  Preserve a typed MONEY HOLD even when an
+    inbound or returned row says RESOLVED.  Sporting probability remains
+    separate and unaffected.  A future positive PASS needs a reviewed,
+    immutable server-side payout receipt, not an optimistic status string.
+    """
+    observed = getattr(row, "money_lane_status", None) or "PAYOUT_UNRESOLVED"
     return {
-        "status": "PASS" if status == "RESOLVED" else "HOLD",
-        "money_lane_status": status,
+        "status": "HOLD",
+        "money_lane_status": "PAYOUT_UNRESOLVED",
+        "observed_money_lane_status": str(observed),
         "blocks_model_probability": False,
         "can_execute": False,
     }
@@ -900,7 +909,8 @@ def score_prop(
                 source_snapshot_id=effective_snapshot_id,
                 features=_model_features(evidence),
                 seed=req.seed,
-                money_lane_status=req.money_lane_status,
+                # Caller status cannot enter immutable model/money persistence.
+                money_lane_status="PAYOUT_UNRESOLVED",
                 market_side_a=market_audit.side_a,
                 market_side_b=market_audit.side_b,
             )
