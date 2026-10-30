@@ -77,9 +77,11 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     fetched = captured_time(snapshot.get("captured_at"))
     require(fetched.date() > game_date, "MLB_HITS_RESEARCH_CHRONOLOGY_UNVERIFIED")
     raw = snapshot.get("raw_body")
-    require(isinstance(raw, str) and bool(raw) and len(raw) <= 2_000_000,
+    require(isinstance(raw, str) and bool(raw) and len(raw) <= 256_000,
             "MLB_HITS_RESEARCH_SNAPSHOT_INVALID")
-    digest = sha256(raw.encode("utf-8")).hexdigest()
+    raw_bytes = raw.encode("utf-8")
+    require(len(raw_bytes) <= 256_000, "MLB_HITS_RESEARCH_SNAPSHOT_INVALID")
+    digest = sha256(raw_bytes).hexdigest()
     require(isinstance(snapshot.get("raw_sha256"), str)
             and re.fullmatch(r"[a-f0-9]{64}", snapshot["raw_sha256"]) is not None
             and digest == snapshot["raw_sha256"],
@@ -117,11 +119,12 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 "official_game_pk_claimed": game_pk,
                 "official_player_id_claimed": player_id,
                 "team_side": side, "hits": hits, "plate_appearances": pa,
-                "hit_at_least_one_outcome": hits >= 1,
+                "candidate_hit_at_least_one": hits >= 1,
                 "official_date_claimed": game_date.isoformat(),
                 "captured_at": fetched.isoformat(),
                 "raw_source_sha256": digest,
                 "source_status": SOURCE,
+                "candidate_label_status": "UNVERIFIED_FINAL_RESEARCH_ONLY",
                 "pregame_feature_snapshot_id": None,
                 "market_line_verified": False,
                 "game_final_independently_verified": False,
