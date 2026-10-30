@@ -156,7 +156,6 @@ def test_controlling_hold_overrides_stale_wrapper_approval(payload):
     assert audited["approved_stage_exception_applied"] is False
 
 
-@pytest.mark.parametrize("blocking", ["HELD", "INVALID", "PURGED"])
 def test_unblocked_nfl_pass_receipt_preserves_real_stage_completion():
     payload = {
         "probability_publishable": True,
@@ -171,6 +170,7 @@ def test_unblocked_nfl_pass_receipt_preserves_real_stage_completion():
     )["final_terminal"] == "COMPLETED"
 
 
+@pytest.mark.parametrize("blocking", ["HELD", "INVALID", "PURGED"])
 def test_approved_stage_cannot_override_an_unresolved_or_invalid_stage(blocking):
     audited = assert_no_terminal_upgrade(reduce_row_terminal(["COMPLETED", blocking]))
     assert audited["stage_terminals"] == ["COMPLETED", blocking]
