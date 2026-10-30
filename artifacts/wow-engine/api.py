@@ -196,8 +196,9 @@ def set_persist_fn(fn: Callable[..., dict]) -> None:
 
 
 def _require_action_api_key(authorization: Optional[str] = Header(default=None)) -> None:
-    """FastAPI dependency guarding every route that can mutate the
-    service-role-backed store (/score-prop, /score-event, /settle).
+    """FastAPI dependency guarding service-role-backed scoring mutations
+    (/score-prop, /score-event, /settle) and sports Agent Runtime run
+    admission, status, manifest, audit reads, and cancellation.
     Callers authenticate with ``Authorization: Bearer <WOW_ACTION_API_KEY>``
     — an application-layer credential distinct from, and never exchanged
     for, the Supabase service-role key, which stays backend-only.
@@ -214,6 +215,7 @@ def _require_action_api_key(authorization: Optional[str] = Header(default=None))
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
 
+    # Shared by scoring and sports-run endpoints; never log or echo the bearer.
     supplied_key = authorization[len("Bearer "):]
     if not secrets.compare_digest(supplied_key, configured_key):
         raise HTTPException(status_code=401, detail="Invalid credential.")
