@@ -281,7 +281,7 @@ def test_late_page_identity_failure_cannot_persist_partial_nfl_grades(monkeypatc
     table = "wow_nfl_event_predictions"
     # Duplicate source IDs materialize in separate pages (1000 + 1).
     data = [{"event_prediction_id": f"id{i:04d}"} for i in range(1000)]
-    data.append({"event_prediction_id": "id0000"})
+    data.append({"event_prediction_id": "id0999"})
     db = _ForwardPagedDB({table: data})
     calls = []
     monkeypatch.setattr(shadow, "load_prediction_rows", lambda client: shadow._paginate(
