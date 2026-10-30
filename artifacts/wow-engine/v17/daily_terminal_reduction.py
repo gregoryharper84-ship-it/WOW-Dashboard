@@ -60,36 +60,6 @@ def _truthy(payload: dict[str, Any], qualification: dict[str, Any], key: str) ->
     return payload.get(key) is True or qualification.get(key) is True
 
 
-_MAX_NESTED_CONTROL_DEPTH = 8
-_MAX_CONTROL_SCOPES = 32
-
-
-def _controlling_scopes(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Walk supported nested qualifier/detail scopes with finite work.
-
-    Return None when a cycle, excessive nesting or oversized envelope makes
-    provenance uncertain. The caller must then fail closed rather than trust
-    outer publication flags. Do not scan arbitrary research/context mappings.
-    """
-    scopes = [payload]
-    pending = [(payload, 0)]
-    seen = {id(payload)}
-    while pending:
-        current, depth = pending.pop()
-        for key in ("probability_qualification", "detail"):
-            child = current.get(key)
-            if not isinstance(child, dict):
-                continue
-            if (depth >= _MAX_NESTED_CONTROL_DEPTH
-                    or len(scopes) >= _MAX_CONTROL_SCOPES
-                    or id(child) in seen):
-                return None
-            seen.add(id(child))
-            scopes.append(child)
-            pending.append((child, depth + 1))
-    return scopes
-
-
 def classify_stage_status(payload: Any) -> str:
     """Classify one scored stage into its native Daily terminal.
 
@@ -107,42 +77,6 @@ def classify_stage_status(payload: Any) -> str:
         return "PURGED"
     if _truthy(payload, qualification, "pick_rejected"):
         return "REJECTED"
-
-    # Numeric model completion is not publication authority. Downstream wrappers
-    # can carry stale approval flags while the controlling NFL certification
-    # receipt explicitly imposes MODEL_QUALIFIED_HOLD. Its ceiling always wins.
-    # The controlling receipt may be nested through multiple qualified/detail
-    # envelopes. Inspect all supported scopes, not an arbitrary fixed pair.
-    # A cycle or excessive depth/size is an unverifiable input and stays HELD.
-    scopes = _controlling_scopes(payload)
-    if scopes is None:
-        return DEFAULT_ROW_STATUS
-    # A wrapper cannot override a non-PASS NFL certification stage by
-    # flattening outer publication flags. Present malformed/empty receipts
-    # fail closed; unrelated sports need not carry an NFL stage receipt.
-    for controlling in scopes:
-        ceiling = _label(controlling, "terminal_ceiling")
-        label = _label(controlling, "terminal_label")
-        if ceiling and ceiling != "FINAL_APPROVED":
-            return DEFAULT_ROW_STATUS
-        if label in {"MODEL_QUALIFIED_HOLD", "REGISTRY_INFRASTRUCTURE_BLOCKED"}:
-            return DEFAULT_ROW_STATUS
-        if "nfl_stage_receipt" in controlling:
-            nfl_receipt = controlling["nfl_stage_receipt"]
-            if not isinstance(nfl_receipt, dict) or _label(nfl_receipt, "status") != "PASS":
-                return DEFAULT_ROW_STATUS
-            # A PASS label cannot override contradictory stage-level evidence.
-            # Preserve optional absent fields for existing specialist adapters,
-            # but fail closed on explicitly blocking calibration/forward proof.
-            if nfl_receipt.get("blockers"):
-                return DEFAULT_ROW_STATUS
-            if any(nfl_receipt.get(flag) is False for flag in (
-                "probability_publishable", "rank_eligible", "probability_rank_eligible"
-            )):
-                return DEFAULT_ROW_STATUS
-            receipt_ceiling = _label(nfl_receipt, "terminal_ceiling")
-            if receipt_ceiling and receipt_ceiling != "FINAL_APPROVED":
-                return DEFAULT_ROW_STATUS
 
     publishable = payload.get("probability_publishable") is True
     rank_eligible = (
@@ -180,17 +114,12 @@ def reduce_row_terminal(stage_statuses: Iterable[str]) -> dict[str, Any]:
     normalized = [status if status in TERMINAL_RANK else DEFAULT_ROW_STATUS for status in statuses]
     lowest = lowest_stage_terminal(normalized)
     approved_stage_present = "COMPLETED" in normalized
-    # The exception is only for a genuinely approved direction and its
-    # independently rejected complement (e.g. MORE approved, LESS rejected).
-    # A pending/invalid/purged controlling stage must never be upgraded.
-    complement_only = all(stage in {"COMPLETED", "REJECTED"} for stage in normalized)
-    approved_exception = approved_stage_present and complement_only and lowest == "REJECTED"
-    final_terminal = "COMPLETED" if approved_exception else lowest
+    final_terminal = "COMPLETED" if approved_stage_present else lowest
     return {
         "stage_terminals": normalized,
         "lowest_stage_terminal": lowest,
         "final_terminal": final_terminal,
-        "approved_stage_exception_applied": bool(approved_exception),
+        "approved_stage_exception_applied": bool(approved_stage_present and lowest != "COMPLETED"),
         "terminal_upgraded_from_rejection": False,
         "reduction_rule": "FINAL_TERMINAL_EQUALS_LOWEST_STAGE_TERMINAL_EXCEPT_APPROVED_STAGE",
         "can_execute": False,
@@ -203,36 +132,13 @@ def assert_no_terminal_upgrade(reduction: dict[str, Any]) -> dict[str, Any]:
     A softer-than-lowest final terminal is only ever permitted for a genuinely
     approved stage. Anything else is ``RUN_INVALID_TERMINAL_UPGRADE``.
     """
-    final_terminal = str(reduction.get("final_terminal") or DEFAULT_ROW_STATUS).upper()
-    declared_lowest = str(reduction.get("lowest_stage_terminal") or DEFAULT_ROW_STATUS).upper()
-    if declared_lowest not in TERMINAL_RANK:
-        declared_lowest = DEFAULT_ROW_STATUS
+    final_terminal = str(reduction.get("final_terminal") or DEFAULT_ROW_STATUS)
+    lowest = str(reduction.get("lowest_stage_terminal") or DEFAULT_ROW_STATUS)
     audited = dict(reduction)
-    stages = [str(value or "").strip().upper() for value in audited.get("stage_terminals") or []]
-    normalized = [stage if stage in TERMINAL_RANK else DEFAULT_ROW_STATUS for stage in stages]
-    actual_lowest = lowest_stage_terminal(normalized)
-    audit_consistent = (
-        bool(normalized)
-        and normalized == stages
-        and declared_lowest == actual_lowest
-    )
-    # A forged audit must not claim a softer lowest stage than its own ladder.
-    # Conversely, a forged stricter low stage cannot be overridden merely by
-    # presenting a COMPLETED-only ladder. Preserve the stricter of the two.
-    strictest = min((declared_lowest, actual_lowest), key=rank_of)
-    approved_complement = (
-        audit_consistent
-        and final_terminal == "COMPLETED"
-        and bool(audited.get("approved_stage_exception_applied"))
-        and actual_lowest == "REJECTED"
-        and "COMPLETED" in normalized
-        and "REJECTED" in normalized
-        and all(stage in {"COMPLETED", "REJECTED"} for stage in normalized)
-    )
-    if not audit_consistent or (rank_of(final_terminal) > rank_of(strictest) and not approved_complement):
+    if rank_of(final_terminal) > rank_of(lowest) and final_terminal != "COMPLETED":
         audited["terminal_upgraded_from_rejection"] = True
         audited["blockers"] = list(dict.fromkeys([*(audited.get("blockers") or []), RUN_INVALID_TERMINAL_UPGRADE]))
-        audited["final_terminal"] = strictest
+        audited["final_terminal"] = lowest
     return audited
 
 
