@@ -107,6 +107,32 @@ class ProviderAvailabilityTests(unittest.TestCase):
                 self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
                 self.assertEqual(str(error.exception), expected)
 
+    def test_unstructured_model_not_found_stays_terminal(self):
+        with self.assertRaises(m.Hold) as error:
+            call(ANTHROPIC, 404, {"error": {"message": "model not found"}},
+                 {"model": "claude-sonnet-4-6"})
+        self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
+        self.assertEqual(str(error.exception),
+                         "HTTP_404:ANTHROPIC_API:POST:MESSAGES")
+
+    def test_exact_model_identity_prevents_prefix_and_infix_masking(self):
+        for message in ("model: claude-sonnet-4-6-malicious",
+                        "model: other-claude-sonnet-4-6",
+                        "model: claude-sonnet-4-6 but insufficient permission"):
+            with self.subTest(message=message):
+                with self.assertRaises(m.Hold) as error:
+                    call(ANTHROPIC, 404,
+                         {"error": {"type": "not_found_error", "message": message}},
+                         {"model": "claude-sonnet-4-6"})
+                self.assertNotIsInstance(error.exception, m.ProviderUnavailable)
+        for message in ("models/gemini-2.5-flash-wrong is not found",
+                        "models/gemini-2.5-flash may be found but blocked"):
+            with self.subTest(message=message):
+                with self.assertRaises(m.Hold):
+                    call(GEMINI, 404,
+                         {"error": {"code": 404, "status": "NOT_FOUND", "message": message}},
+                         {})
+
     def test_ambiguous_provider_404_never_advances_to_the_backup(self):
         calls = []
 
