@@ -4,7 +4,7 @@ import asyncio
 import hmac
 import logging
 import os
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -12,8 +12,9 @@ from typing import Callable
 from fastapi import FastAPI, Header, HTTPException
 
 from .bounded_cohort import run_bounded_capture_only_cohort_once
+from .http_client import ReadOnlyJsonClient
 from .operational_cycle import VERIFIED_HOURLY_TARGETS
-from .shadow_cohort import HourlyCohortTarget
+from .shadow_cohort import HourlyCohortTarget, _settle_ready_predictions
 
 
 _logger = logging.getLogger("wow.kalshi_weather_v2.empirical_cohort")
@@ -86,6 +87,10 @@ def _scheduled_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
     enabled = tuple(target for target in _automated_shadow_targets() if target.enabled)
     if not enabled:
         return ()
+    pinned_city = os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_TARGET_CITY", "").strip().lower()
+    if pinned_city:
+        # An unknown explicit target fails closed rather than rotating stations.
+        return tuple(t for t in enabled if t.index_city == pinned_city)[:1]
     try:
         max_targets = int(os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_MAX_TARGETS", "1"))
     except ValueError:
@@ -97,9 +102,37 @@ def _scheduled_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
 
 
 def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
-    return run_bounded_capture_only_cohort_once(
+    # Capture and grading remain separate operations. Settlement can run only
+    # on the explicitly owned singleton and is capped to avoid replay storms.
+    result = run_bounded_capture_only_cohort_once(
         db_client_fn=db_client_fn,
         targets=_scheduled_shadow_targets(),
+    )
+    if (
+        os.getenv("WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER", "0") != "1"
+        or os.getenv("WOW_KALSHI_WEATHER_ISOLATED_SETTLEMENT_ENABLED", "0") != "1"
+    ):
+        return result
+
+    failures: list[str] = []
+    settled = 0
+    http = ReadOnlyJsonClient()
+    try:
+        settled = _settle_ready_predictions(
+            db_client_fn(),
+            http,
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            failures,
+            max_attempts=2,
+        )
+    except Exception as exc:
+        failures.append(f"BOUNDED_SETTLEMENT:{type(exc).__name__}")
+    finally:
+        http.close()
+    return replace(
+        result,
+        predictions_settled=settled,
+        settlement_failures=tuple(failures),
     )
 
 
