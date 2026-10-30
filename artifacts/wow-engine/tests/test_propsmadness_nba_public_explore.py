@@ -99,6 +99,40 @@ def test_threes_fetch_targets_actual_public_slug_only_after_robots():
     assert result["historical_training_authorized"] is False
 
 
+def test_live_style_table_cells_parse_without_hidden_payload_or_authority():
+    player_row = b"""<tr>
+      <td>1<a aria-hidden="true" href="/nba?market=player-made-threes&amp;match=77&amp;player=55"></a></td>
+      <td><a href="/nba?player=55&amp;market=player-made-threes&amp;match=77">A. Sample</a>
+          <span>BOS vs NYK &#183; G</span></td>
+      <td><img alt="FanDuel" src="/logo.webp"><div>2.5</div><button>O-125</button><button>U-104</button></td>
+      <td>graph</td><td>1/4</td><td>2.2</td><td>B+</td>
+    </tr>"""
+    locked = b"""<tr>
+      <td>2</td><td><a href="/nba?player=66&amp;market=player-made-threes&amp;match=77">B. Sample</a>
+      <span>BOS vs NYK &#183; F</span></td><td>UNLOCK</td><td>graph</td><td>0/0</td><td>-</td>
+    </tr>"""
+    html = b"<html><script>model_probability:0.99</script><table>" + player_row + locked + b"</table></html>"
+    result = parse(html, market="threes")
+    assert result["row_count"] == 1
+    row = result["rows"][0]
+    assert (row["provider_player_id"], row["provider_match_id"]) == ("55", "77")
+    assert row["display_name_unverified"] == "A. Sample"
+    assert row["fixture_text"] == "BOS vs NYK"
+    assert row["line"] == 2.5
+    assert row["over_odds_display"] == -125
+    assert row["under_odds_display"] == -104
+    assert row["l10_avg_display"] == 2.2
+    assert row["source_page"].endswith("/nba/props/made-threes")
+    assert row["model_probability"] is None
+    assert result["historical_training_authorized"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+    with pytest.raises(PublicPageHold, match="PM_PUBLIC_DUPLICATE_PLAYER_EVENT_LINE"):
+        parse(b"<table>" + player_row + player_row + b"</table>", market="threes")
+    wrong = player_row.replace(b"player-made-threes", b"player-rebounds")
+    assert parse(b"<table>" + wrong + b"</table>", market="threes")["row_count"] == 0
+
+
 def test_changing_stat_or_third_party_url_is_not_a_valid_prop():
     assert parse(PAGE.replace(b"Points 23.5", b"Rebounds 23.5"))["row_count"] == 1
     assert parse(PAGE.replace(b"market=player-points", b"market=player-rebounds"))["row_count"] == 0
