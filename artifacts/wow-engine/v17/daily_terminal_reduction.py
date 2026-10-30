@@ -78,6 +78,20 @@ def classify_stage_status(payload: Any) -> str:
     if _truthy(payload, qualification, "pick_rejected"):
         return "REJECTED"
 
+    # Numeric model completion is not publication authority. Downstream wrappers
+    # can carry stale approval flags while the controlling NFL certification
+    # receipt explicitly imposes MODEL_QUALIFIED_HOLD. Its ceiling always wins.
+    for controlling in (payload, qualification):
+        ceiling = _label(controlling, "terminal_ceiling")
+        label = _label(controlling, "terminal_label")
+        if ceiling and ceiling != "FINAL_APPROVED":
+            return DEFAULT_ROW_STATUS
+        if label in {"MODEL_QUALIFIED_HOLD", "REGISTRY_INFRASTRUCTURE_BLOCKED"}:
+            return DEFAULT_ROW_STATUS
+    nfl_receipt = payload.get("nfl_stage_receipt")
+    if isinstance(nfl_receipt, dict) and _label(nfl_receipt, "status") != "PASS":
+        return DEFAULT_ROW_STATUS
+
     publishable = payload.get("probability_publishable") is True
     rank_eligible = (
         payload.get("rank_eligible") is True
@@ -114,12 +128,17 @@ def reduce_row_terminal(stage_statuses: Iterable[str]) -> dict[str, Any]:
     normalized = [status if status in TERMINAL_RANK else DEFAULT_ROW_STATUS for status in statuses]
     lowest = lowest_stage_terminal(normalized)
     approved_stage_present = "COMPLETED" in normalized
-    final_terminal = "COMPLETED" if approved_stage_present else lowest
+    # The exception is only for a genuinely approved direction and its
+    # independently rejected complement (e.g. MORE approved, LESS rejected).
+    # A pending/invalid/purged controlling stage must never be upgraded.
+    complement_only = all(stage in {"COMPLETED", "REJECTED"} for stage in normalized)
+    approved_exception = approved_stage_present and complement_only and lowest == "REJECTED"
+    final_terminal = "COMPLETED" if approved_exception else lowest
     return {
         "stage_terminals": normalized,
         "lowest_stage_terminal": lowest,
         "final_terminal": final_terminal,
-        "approved_stage_exception_applied": bool(approved_stage_present and lowest != "COMPLETED"),
+        "approved_stage_exception_applied": bool(approved_exception),
         "terminal_upgraded_from_rejection": False,
         "reduction_rule": "FINAL_TERMINAL_EQUALS_LOWEST_STAGE_TERMINAL_EXCEPT_APPROVED_STAGE",
         "can_execute": False,
@@ -135,7 +154,13 @@ def assert_no_terminal_upgrade(reduction: dict[str, Any]) -> dict[str, Any]:
     final_terminal = str(reduction.get("final_terminal") or DEFAULT_ROW_STATUS)
     lowest = str(reduction.get("lowest_stage_terminal") or DEFAULT_ROW_STATUS)
     audited = dict(reduction)
-    if rank_of(final_terminal) > rank_of(lowest) and final_terminal != "COMPLETED":
+    stages = [str(value or "").upper() for value in audited.get("stage_terminals") or []]
+    approved_complement = (
+        final_terminal == "COMPLETED"
+        and "COMPLETED" in stages
+        and all(stage in {"COMPLETED", "REJECTED"} for stage in stages)
+    )
+    if rank_of(final_terminal) > rank_of(lowest) and not approved_complement:
         audited["terminal_upgraded_from_rejection"] = True
         audited["blockers"] = list(dict.fromkeys([*(audited.get("blockers") or []), RUN_INVALID_TERMINAL_UPGRADE]))
         audited["final_terminal"] = lowest
