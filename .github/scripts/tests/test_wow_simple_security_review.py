@@ -66,11 +66,30 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(items["properties"]["category"]["enum"], list(m.FINDING_CATEGORIES))
         self.assertEqual(m.REVIEW_CONTRACT_VERSION, 2)
         self.assertFalse(items["additionalProperties"])
+        # The enforced bounds are also handed to the model, so a reviewer is
+        # never held for a limit it was not told about.
+        self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
+        for key in ("file", "detail", "evidence"):
+            self.assertEqual(items["properties"][key]["maxLength"], m.MAX_FINDING_TEXT)
+            self.assertEqual(items["properties"][key]["minLength"], 1)
         prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "d"})
         self.assertIn("critical or high", prompt)
         self.assertIn("medium/low", prompt)
         self.assertIn("blocks regardless of severity", prompt)
+        self.assertIn("at most 12", prompt)
+        self.assertIn("at most 500 characters", prompt)
+        self.assertIn("exactly these five keys and no others", prompt)
+
+    def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
+        good = self._passing()
+        at_limit = self._finding("medium")
+        at_limit["evidence"] = "e" * m.MAX_FINDING_TEXT
+        self.assertEqual(m.parse_verdict({**good, "findings": [at_limit]})[0], "PASS")
+        over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
+        with self.assertRaises(m.Hold) as err:
+            m.parse_verdict({**good, "findings": [over]})
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
 
     def test_category_prevents_severity_downgrade_of_real_risks(self):
         good = self._passing()
@@ -185,6 +204,20 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(called, ["anthropic-claude-api"])
         with self.assertRaises(m.Hold):
             m.semantic_review(target, {})
+
+    def test_unusable_verdict_attributes_the_provider_that_produced_it(self):
+        target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "safe"}
+        def unusable(provider, key, prompt):
+            raise m.Hold("SEMANTIC_FINDINGS_INVALID")
+        with self.assertRaises(m.Hold) as err:
+            m.semantic_review(target, {p: "key" for p in m.PROVIDERS}, unusable)
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(err.exception.attempts,
+                         [{"provider": "anthropic-claude-api",
+                           "result": "SEMANTIC_FINDINGS_INVALID"}])
+        # Attribution is recorded, never retried against the other provider.
+        import inspect
+        self.assertIn('receipt["attempts"] = exc.attempts', inspect.getsource(m.main))
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
