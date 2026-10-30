@@ -23,6 +23,7 @@ orchestration.
 """
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 import agent_runtime_api
@@ -34,6 +35,13 @@ from agent_runtime.registry import WORKERS
 from agent_runtime_test_support import FakeSupabaseClient
 
 client = TestClient(api_prod.app)
+
+_AUTH_HEADERS = {"Authorization": "Bearer ci-agent-runtime-key"}
+
+
+@pytest.fixture(autouse=True)
+def _agent_runtime_auth_config(monkeypatch):
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "ci-agent-runtime-key")
 
 _RUN_PAYLOAD = {
     "run_type": "FULL_MODEL",
@@ -112,11 +120,34 @@ def test_health_ready_fails_closed_when_registry_mismatched(monkeypatch):
     assert response.json()["detail"]["worker_registry"] == "mismatch_or_unreachable"
 
 
+def test_run_and_cancel_require_existing_bearer_key(monkeypatch):
+    fake = FakeSupabaseClient()
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+
+    anonymous = client.post(
+        "/wow/runs", json=_RUN_PAYLOAD,
+        headers={"Idempotency-Key": "anonymous-rejected"},
+    )
+    assert anonymous.status_code == 401
+    invalid = client.post(
+        "/wow/runs", json=_RUN_PAYLOAD,
+        headers={"Idempotency-Key": "invalid-rejected", "Authorization": "Bearer wrong"},
+    )
+    assert invalid.status_code == 401
+    assert len(fake._store["wow_agent_runs"]) == 0
+    assert len(fake._store["wow_agent_jobs"]) == 0
+
+    run = _created_run(fake, "cancel-auth-check")
+    unauthorized_cancel = client.post(f"/wow/runs/{run['run_id']}/cancel")
+    assert unauthorized_cancel.status_code == 401
+    assert repository.get_run(fake, run["run_id"])["status"] == "CREATED"
+
+
 def test_create_run_rejects_can_execute_true(monkeypatch):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
     response = client.post(
         "/wow/runs", json={**_RUN_PAYLOAD, "can_execute": True},
-        headers={"Idempotency-Key": "should-not-matter"},
+        headers={"Idempotency-Key": "should-not-matter", **_AUTH_HEADERS},
     )
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "EXECUTION_PROHIBITED"
@@ -124,7 +155,7 @@ def test_create_run_rejects_can_execute_true(monkeypatch):
 
 def test_create_run_requires_idempotency_key_header(monkeypatch):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
-    response = client.post("/wow/runs", json=_RUN_PAYLOAD)
+    response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers=_AUTH_HEADERS)
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
 
@@ -133,7 +164,7 @@ def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     monkeypatch.setattr("ledger.get_client", lambda: fake)
-    response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-happy-1"})
+    response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-happy-1", **_AUTH_HEADERS})
     assert response.status_code == 202
     body = response.json()
     assert body["status"] == "COMPLETED"
@@ -147,8 +178,8 @@ def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     monkeypatch.setattr("ledger.get_client", lambda: fake)
-    first = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1"})
-    second = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1"})
+    first = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1", **_AUTH_HEADERS})
+    second = client.post("/wow/runs", json=_RUN_PAYLOAD, headers={"Idempotency-Key": "run-dup-1", **_AUTH_HEADERS})
     assert first.json()["run_id"] == second.json()["run_id"]
     assert second.json()["reused"] is True
     assert len(fake._store["wow_agent_runs"]) == 1
@@ -178,7 +209,7 @@ def test_cancel_run_transitions_to_canceled(monkeypatch):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     created = _created_run(fake, "run-cancel-1")
 
-    cancel = client.post(f"/wow/runs/{created['run_id']}/cancel")
+    cancel = client.post(f"/wow/runs/{created['run_id']}/cancel", headers=_AUTH_HEADERS)
     assert cancel.status_code == 200
     assert cancel.json() == {"run_id": created["run_id"], "status": "CANCELED", "terminal": True, "can_execute": False}
 
@@ -191,9 +222,9 @@ def test_cancel_already_terminal_run_is_a_no_op(monkeypatch):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     created = _created_run(fake, "run-cancel-2")
-    client.post(f"/wow/runs/{created['run_id']}/cancel")
+    client.post(f"/wow/runs/{created['run_id']}/cancel", headers=_AUTH_HEADERS)
 
-    second_cancel = client.post(f"/wow/runs/{created['run_id']}/cancel")
+    second_cancel = client.post(f"/wow/runs/{created['run_id']}/cancel", headers=_AUTH_HEADERS)
     assert second_cancel.status_code == 200
     assert second_cancel.json()["status"] == "CANCELED"
 
