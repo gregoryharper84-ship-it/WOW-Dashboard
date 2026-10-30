@@ -222,6 +222,30 @@ def test_pickem_row_audit_does_not_trust_outer_approval_over_controlling_ceiling
     assert row["can_execute"] is False
 
 
+def test_pickem_audit_uses_classifier_rank_aliases_consistently():
+    base = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "nfl_stage_receipt": {"status": "PASS", "blockers": []},
+        "can_execute": False,
+    }
+    for rank_key in ("rank_eligible", "probability_rank_eligible"):
+        row = runtime._audit_row({**base, rank_key: True})
+        assert row["row_status"] == "COMPLETED"
+        assert row["probability_publishable"] is True
+        assert row["terminal_reduction"]["final_terminal"] == "COMPLETED"
+        assert row["can_execute"] is False
+
+    qualified = runtime._audit_row({
+        **base,
+        "probability_qualification": {"rank_eligible": True},
+    })
+    assert qualified["row_status"] == "COMPLETED"
+    assert qualified["probability_publishable"] is True
+    assert qualified["can_execute"] is False
+
+
 def test_persisted_pickem_row_nested_hold_wins_over_outer_approved_flags(monkeypatch):
     rows = _schedule_rows()[:2]
     snapshot = {"snapshot_id": "snap", "fetched_at": "2026-09-30T12:00:00+00:00"}
