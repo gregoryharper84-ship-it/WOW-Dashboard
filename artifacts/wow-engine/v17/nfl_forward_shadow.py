@@ -331,16 +331,21 @@ def _paginate(db: Any, table: str, columns: str, *, page_size: int = 1000) -> li
     if table not in _FORWARD_PAGE_KEYS or not isinstance(page_size, int) or page_size <= 0:
         raise NFLForwardShadowError("NFL_FORWARD_PAGINATION_INVALID:TABLE_OR_PAGE_SIZE")
     key = _FORWARD_PAGE_KEYS[table]
-    projection = {part.strip() for part in columns.split(",")}
-    if key not in projection:
-        columns += "," + key
+    fields = [part.strip() for part in columns.split(",")]
+    # Projection names must be plain trusted identifiers. Reject malformed
+    # strings rather than composing accidental PostgREST expressions.
+    if not fields or any(not field.isidentifier() for field in fields):
+        raise NFLForwardShadowError("NFL_FORWARD_PAGINATION_INVALID:PROJECTION_INVALID")
+    if key not in fields:
+        fields.append(key)
+    projection = ",".join(dict.fromkeys(fields))
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     start = 0
     while True:
         result = (
             db.table(table)
-            .select(columns)
+            .select(projection)
             .order(key)
             .range(start, start + page_size - 1)
             .execute()
