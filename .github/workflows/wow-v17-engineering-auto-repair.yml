@@ -14,12 +14,30 @@ name: wow-v17-engineering-auto-repair
 # mutations use the wow-engineering App token. can_execute=false; never merges.
 
 on:
+  # Resume one eligible owner-source adoption as soon as an authenticated
+  # Engineering App integration leaves the bounded review queue. This event
+  # only wakes protected-main read-only discovery; it does not approve/merge.
+  pull_request_target:
+    types: [closed]
+    branches: [main]
   workflow_run:
-    workflows: ["wow-v17-independent-qa-check", "wow-v17-release-authority-check"]
+    # Source-CI completion wakes the existing adoption lane directly. This
+    # breaks QA<->source-adoption bootstrap deadlock if cron is delayed/dropped.
+    # The HOLD discovery job below remains restricted to genuine QA/Release.
+    workflows: ["wow-v17-independent-qa-check", "wow-v17-release-authority-check", "wow-verify", "wow-engine-verify"]
     types: [completed]
   schedule:
     - cron: "23 * * * *"  # Recover dropped workflow_run events without duplicate repair.
-  workflow_dispatch:  # Authorized manual reconciliation; still bound to independent App checks.
+  workflow_dispatch:  # Existing controller; exact-source rescue shares the same App worker.
+    inputs:
+      source_pr:
+        description: "Optional exact owner-source PR number (must pair with source_sha)"
+        required: false
+        type: string
+      source_sha:
+        description: "Optional immutable 40-character lowercase source SHA"
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -36,7 +54,12 @@ jobs:
   discover:
     # Workflow-run HEAD is protected main. Resolve failed independent-App checks
     # against open wow-engineering[bot] PR heads, bounded by upstream run time.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name != 'pull_request_target' &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       (startsWith(github.event.workflow_run.name, 'wow-v17-independent-qa-check') ||
+        startsWith(github.event.workflow_run.name, 'wow-v17-release-authority-check'))))
     runs-on: ubuntu-latest
     timeout-minutes: 8
     outputs:
@@ -229,6 +252,9 @@ jobs:
             | tee "$RUNNER_TEMP/recovery-plan.json"
           echo "action=$(jq -r '.action' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
           echo "new_attempts=$(jq -r '.attempts // 0' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+          echo "progression_state=$(jq -r '.progression_state // "NONE"' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+          echo "required_actor=$(jq -r '.required_actor // "NONE"' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
+          echo "owner_intervention_required=$(jq -r '.owner_intervention_required // false' "$RUNNER_TEMP/recovery-plan.json")" >> "$GITHUB_OUTPUT"
 
       - name: Reserve exact-head recovery before dispatch (fail closed on ambiguous outcome)
         id: reservation
@@ -411,19 +437,133 @@ jobs:
         run: |
           echo "PR #${{ matrix.pr_number }}: incomplete CI/QA evidence; no repair dispatched or retry consumed. Await fresh independent verdict." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Record waiting-on-owner (non-repairable finding)
+      - name: Route non-repairable finding without global Engineering stall
         if: steps.resolve.outputs.eligible == 'true' && steps.plan.outputs.action == 'WAITING_ON_OWNER'
         shell: bash
+        env:
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          PROGRESSION: ${{ steps.plan.outputs.progression_state }}
+          ACTOR: ${{ steps.plan.outputs.required_actor }}
+          OWNER_REQUIRED: ${{ steps.plan.outputs.owner_intervention_required }}
         run: |
-          echo "PR #${{ steps.resolve.outputs.pr_number }}: non-repairable trust-root/owner-approval finding; waiting on owner (see daily digest), not retried." >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          case "$PROGRESSION|$ACTOR|$OWNER_REQUIRED" in
+            "AUTOMATED_INDEPENDENT_SOURCE_HANDOFF|INDEPENDENT_ENGINEERING_AUTHOR|false")
+              echo "PR #$PR_NUMBER: independent Engineering source handoff remains routed to the existing adoption worker; no fake self-approval, no repair attempt spent, unrelated work continues." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            "ACTUAL_CODEOWNER_AUTHORIZATION_REQUIRED|ACTUAL_CODEOWNER|true")
+              echo "PR #$PR_NUMBER: authentic exact-head CODEOWNER decision required for this protected release only; no repair attempt spent, unrelated Engineering work continues." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::RECOVERY_NONREPAIRABLE_ROUTE_INVALID"
+              exit 1
+              ;;
+          esac
+
+  adoption-readonly-preflight:
+    # Read-only inventory/provenance verification runs OUTSIDE the protected
+    # implementation writer lock. Provider leases and code authority untouched.
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      (github.event_name != 'pull_request_target' ||
+       (github.event.pull_request.user.login == 'wow-engineering[bot]' &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        startsWith(github.event.pull_request.head.ref, 'wow-engineering/exact-replay-'))) &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        ((github.event.workflow_run.event == 'pull_request' &&
+          (github.event.workflow_run.name == 'wow-verify' ||
+           github.event.workflow_run.name == 'wow-engine-verify')) ||
+         startsWith(github.event.workflow_run.name, 'wow-v17-independent-qa-check') ||
+         startsWith(github.event.workflow_run.name, 'wow-v17-release-authority-check'))))
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      status: ${{ steps.source.outputs.status }}
+      pr_number: ${{ steps.source.outputs.pr_number }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Checkout protected main for read-only discovery
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          # Exact-source preflight uses git merge-base; shallow checkout is
+          # insufficient and must never become an optimistic allow decision.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Select one independently re-proposable source
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SOURCE_PR: ${{ inputs.source_pr || '' }}
+          TARGET_SOURCE_SHA: ${{ inputs.source_sha || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$TARGET_SOURCE_PR" ] || [ -n "$TARGET_SOURCE_SHA" ]; then
+            # The existing owner-initiated manual rescue may select an exact
+            # immutable source. It does NOT bypass any existing App or review gate.
+            [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+            [ "$GITHUB_REF" = "refs/heads/main" ] &&
+            [ "$GITHUB_ACTOR" = "gregoryharper84-ship-it" ] || {
+              echo "::error::TARGET_ADOPTION_UNAUTHORIZED_DISPATCH"; exit 1;
+            }
+            [[ "$TARGET_SOURCE_PR" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "$TARGET_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::TARGET_ADOPTION_REQUEST_INVALID_HOLD"; exit 1;
+            }
+            PYTHONPATH=artifacts/wow-engine python \
+              artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py \
+              --repo "$GITHUB_REPOSITORY" \
+              --source-pr "$TARGET_SOURCE_PR" --source-sha "$TARGET_SOURCE_SHA" \
+              > "$RUNNER_TEMP/wow-target-admission.json"
+            jq -e '.status == "TARGET_ADMISSION_PASS" and .can_execute == false' \
+              "$RUNNER_TEMP/wow-target-admission.json" >/dev/null
+            # Source CI/PR provenance, main ancestry, file modes and SAME-PATH
+            # main drift are checked read-only before acquiring the writer.
+            python artifacts/wow-engine/v17/engineering_authorized_adoption.py preflight \
+              --repo "$GITHUB_REPOSITORY" \
+              --source-pr "$TARGET_SOURCE_PR" --source-sha "$TARGET_SOURCE_SHA" \
+              > "$RUNNER_TEMP/wow-target-preflight.json"
+            jq -e --arg sha "$TARGET_SOURCE_SHA" \
+              '.status == "ADOPTABLE" and .can_execute == false and .source_sha == $sha' \
+              "$RUNNER_TEMP/wow-target-preflight.json" >/dev/null
+            jq -n --argjson pr "$TARGET_SOURCE_PR" --arg sha "$TARGET_SOURCE_SHA" \
+              '{status:"SOURCE_READY",pr_number:$pr,source_sha:$sha,can_execute:false}' \
+              > "$RUNNER_TEMP/wow-source-adoption.json"
+          else
+            python artifacts/wow-engine/v17/engineering_authorized_adoption.py discover \
+              --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/wow-source-adoption.json"
+          fi
+          jq -e '.can_execute == false and (.status == "SOURCE_READY" or .status == "NO_ELIGIBLE_SOURCE")' \
+            "$RUNNER_TEMP/wow-source-adoption.json" >/dev/null
+          jq -c '{status, pr_number, source_sha, can_execute}' \
+            "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$(jq -r .status "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$(jq -r '.pr_number // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(jq -r '.source_sha // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
+
 
   adopt-reviewed-owner-source:
     # Reuse this existing hourly/QA HOLD controller. This is NOT another queue,
     # scheduler or certification authority. Discover one exact-head source only.
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard'
+    needs: adoption-readonly-preflight
+    if: needs.adoption-readonly-preflight.outputs.status == 'SOURCE_READY'
     concurrency:
+      # Same global writer mutex. queue: max is GitHub's native pending cap
+      # (100), not a second controller or a per-sport writer lane.
       group: wow-v17-engineering-implementation-single-writer
       cancel-in-progress: false
+      queue: max
     environment: wow-engineering
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -458,35 +598,26 @@ jobs:
             exit 1
           }
 
-      - name: Select one independently re-proposable source
-        id: source
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python artifacts/wow-engine/v17/engineering_authorized_adoption.py discover \
-            --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/wow-source-adoption.json"
-          jq -e '.can_execute == false and (.status == "SOURCE_READY" or .status == "NO_ELIGIBLE_SOURCE")' \
-            "$RUNNER_TEMP/wow-source-adoption.json" >/dev/null
-          jq -c '{status, pr_number, source_sha, can_execute}' \
-            "$RUNNER_TEMP/wow-source-adoption.json" >> "$GITHUB_STEP_SUMMARY"
-          echo "status=$(jq -r .status "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$(jq -r '.pr_number // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$(jq -r '.source_sha // empty' "$RUNNER_TEMP/wow-source-adoption.json")" >> "$GITHUB_OUTPUT"
-
       - name: Re-propose immutable source through authenticated Engineering App
-        if: steps.source.outputs.status == 'SOURCE_READY'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           APP_TOKEN: ${{ steps.engineering_app.outputs.token }}
-          SOURCE_PR: ${{ steps.source.outputs.pr_number }}
-          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          SOURCE_PR: ${{ needs.adoption-readonly-preflight.outputs.pr_number }}
+          SOURCE_SHA: ${{ needs.adoption-readonly-preflight.outputs.source_sha }}
           WOW_CAN_EXECUTE: "false"
           WOW_DRY_RUN_ONLY: "true"
         run: |
           set -euo pipefail
+          # Recheck bounded WIP and existing replay INSIDE the original
+          # single-writer lock; read-only admission may now be stale.
+          PYTHONPATH=artifacts/wow-engine python \
+            artifacts/wow-engine/v17/engineering_targeted_adoption_guard.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA" \
+            > "$RUNNER_TEMP/wow-target-writer-recheck.json"
+          jq -e '.status == "TARGET_ADMISSION_PASS" and .can_execute == false' \
+            "$RUNNER_TEMP/wow-target-writer-recheck.json" >/dev/null
           python artifacts/wow-engine/v17/engineering_authorized_adoption.py integrate \
             --repo "$GITHUB_REPOSITORY" \
             --source-pr "$SOURCE_PR" --source-sha "$SOURCE_SHA" \

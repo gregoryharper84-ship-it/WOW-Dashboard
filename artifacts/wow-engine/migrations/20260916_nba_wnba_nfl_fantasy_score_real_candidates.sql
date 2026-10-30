@@ -168,7 +168,12 @@ begin
       coalesce(nullif(a[24],''),'0')::numeric blk,
       coalesce(nullif(a[25],''),'0')::numeric tov
     from parsed
-    where array_length(a,1)=50 and a[3]='2' and a[6]<>'' and a[7]<>''
+    -- Both SHA-256-pinned ESPN NBA/WNBA player-boxscore snapshots contain
+    -- exactly 57 columns (verified against their cached raw CSV headers).
+    -- The legacy 50-column guard rejected every row from both snapshots.
+    -- Keep this strict: a changed source schema must fail closed rather
+    -- than silently shifting points/rebounds/assists column identities.
+    where array_length(a,1)=57 and a[3]='2' and a[6]<>'' and a[7]<>''
       and a[12] ~ '^[0-9]+(\.[0-9]+)?$' and a[12]::numeric > 0
   )
   select lane,a[4],a[1],a[6],a[7],'ALL',pts,reb,ast,stl,blk,tov,0,0,0,0,

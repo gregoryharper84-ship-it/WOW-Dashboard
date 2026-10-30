@@ -303,6 +303,7 @@ gh() {
             "EVENT_NAME": "workflow_run",
             "REVIEW_ACTIVE": "true",
             "SOURCE_RUN_ID": "40062800000",
+            "SOURCE_RUN_ATTEMPT": "1",
             "SOURCE_CONCLUSION": "success",
             "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": []}),
             "CHECK_RUN_ID": "601",
@@ -336,8 +337,8 @@ POLICY_ARTIFACT = {"artifacts": [{"name": "wow-v17-qa-policy-40062800000-1"}]}
     ("overrides", "reason"),
     [
         # Observed in run 40062825503: QA completion while source review is inactive.
-        ({"REVIEW_ACTIVE": ""}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE"),
-        ({"REVIEW_ACTIVE": "false"}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE"),
+        ({"REVIEW_ACTIVE": "", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
+        ({"REVIEW_ACTIVE": "false", "TEST_ARTIFACTS_JSON": json.dumps(POLICY_ARTIFACT)}, "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"),
         ({"SOURCE_CONCLUSION": "failure"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:failure"),
         ({"SOURCE_CONCLUSION": "skipped"}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:skipped"),
         ({"SOURCE_CONCLUSION": ""}, "SOURCE_QA_RUN_NOT_SUCCESSFUL:none"),
@@ -359,6 +360,43 @@ def test_direct_pr_events_are_always_applicable(event, run_route_step):
     assert result.returncode == 0, result.stderr
     assert outputs == {"applicable": "true"}
     assert "UNEXPECTED_GH_INVOCATION" not in result.stderr
+
+
+
+def test_authenticated_exact_attempt_canary_wakes_certifier_global_off(run_route_step):
+    exact = {
+        "name": "wow-v17-independent-source-review-2247-" + "a" * 40 + "-40062800000-1",
+        "expired": False,
+    }
+    expected = {"artifacts": POLICY_ARTIFACT["artifacts"] + [exact]}
+    result, outputs = run_route_step(
+        REVIEW_ACTIVE="false", TEST_ARTIFACTS_JSON=json.dumps(expected),
+    )
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"applicable": "true"}
+
+
+@pytest.mark.parametrize("change", ["expired", "older_attempt", "duplicate"])
+def test_unbound_or_duplicate_canary_remains_neutral(change, run_route_step):
+    exact = {
+        "name": "wow-v17-independent-source-review-2247-" + "a" * 40 + "-40062800000-1",
+        "expired": False,
+    }
+    if change == "expired":
+        exact["expired"] = True
+    elif change == "older_attempt":
+        exact["name"] = exact["name"][:-1] + "0"
+    payload = POLICY_ARTIFACT["artifacts"] + [exact]
+    if change == "duplicate":
+        payload.append(dict(exact))
+    result, outputs = run_route_step(
+        REVIEW_ACTIVE="false", TEST_ARTIFACTS_JSON=json.dumps({"artifacts": payload}),
+    )
+    assert result.returncode == 0, result.stderr
+    assert outputs == {
+        "applicable": "false",
+        "reason": "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY",
+    }
 
 
 def test_targeted_successful_qa_run_is_applicable(run_route_step):
@@ -733,6 +771,7 @@ def automated_review_data(data=None, *, now=NOW):
             "id": 54321,
             "run_attempt": 1,
             "name": source_review.WORKFLOW_NAME,
+            "workflow_id": source_review.WORKFLOW_ID,
             "path": source_review.WORKFLOW_PATH,
             "event": "workflow_dispatch",
             "head_branch": "main",
@@ -1117,6 +1156,7 @@ def release_evidence():
         "owner_login": verifier.OWNER_LOGIN,
         "evidence_errors": [],
         "pr": {
+            "body": "Incident: #2136",
             "state": "open",
             "draft": False,
             "merged": False,
@@ -1368,14 +1408,16 @@ def test_pending_newer_workflow_still_holds_after_bounded_wait(tmp_path):
     assert "EXISTING_PR_REQUIRED_CI_INCOMPLETE_AFTER_BOUNDED_WAIT" in result.stderr
 
 
-def run_receipt_artifact_step(tmp_path, artifacts):
+def run_receipt_artifact_step(tmp_path, artifacts, *, total=None):
+    # Emulate GitHub's exact-name server-filtered artifact inventory, rather
+    # than the old unbounded repository-wide artifact scan.
     workflow = WORKFLOW.read_text(encoding="utf-8")
     step = workflow.split("      - name: Check for an existing exact-head receipt\n", 1)[1]
     script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
     stub = """
 gh() {
   case "$*" in
-    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100&page="*)
+    "api /repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-engineering-governance-${HEAD_SHA}&per_page=100&page=1")
       printf '%s\\n' "$TEST_ARTIFACTS_JSON"
       ;;
     *)
@@ -1391,7 +1433,10 @@ gh() {
         "GITHUB_REPOSITORY": REPOSITORY,
         "GITHUB_OUTPUT": str(output_path),
         "HEAD_SHA": HEAD,
-        "TEST_ARTIFACTS_JSON": json.dumps({"artifacts": artifacts}),
+        "TEST_ARTIFACTS_JSON": json.dumps({
+            "total_count": len(artifacts) if total is None else total,
+            "artifacts": artifacts,
+        }),
     }
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", stub + script],
@@ -1408,7 +1453,7 @@ gh() {
 
 
 def test_existing_governance_receipt_suppresses_duplicate_upload(tmp_path):
-    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    existing = {"id": 13, "name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
     result, output = run_receipt_artifact_step(tmp_path, [existing])
 
     assert result.returncode == 0, result.stderr
@@ -1416,7 +1461,7 @@ def test_existing_governance_receipt_suppresses_duplicate_upload(tmp_path):
 
 
 def test_duplicate_governance_receipts_fail_closed(tmp_path):
-    existing = {"name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
+    existing = {"id": 13, "name": f"wow-v17-engineering-governance-{HEAD}", "expired": False}
     result, _ = run_receipt_artifact_step(tmp_path, [existing, existing])
 
     assert result.returncode == 1
@@ -1424,13 +1469,12 @@ def test_duplicate_governance_receipts_fail_closed(tmp_path):
 
 
 def test_receipt_artifact_inventory_must_finish_within_bound(tmp_path):
-    result, _ = run_receipt_artifact_step(
-        tmp_path,
-        [{"name": f"unrelated-{index}", "expired": False} for index in range(100)],
-    )
+    # More than one bounded page for the exact-name inventory fails closed;
+    # a large set of unrelated repository artifacts no longer blocks progress.
+    result, _ = run_receipt_artifact_step(tmp_path, [], total=101)
 
     assert result.returncode == 1
-    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_LIMIT_EXCEEDED" in result.stderr
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE" in result.stderr
 
 
 @pytest.mark.parametrize("path", [".github/workflows/unsafe.yml", ".agents/skills/unsafe.md", "render.yaml"])
@@ -2035,3 +2079,328 @@ def test_claude_instructions_cannot_use_ordinary_source_receipt(filename, previo
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
                        match='TRUST_ROOT_CHANGE_NOT_CERTIFIABLE'):
         verifier._validate_protected_diff(files, repo_root=REPO_ROOT)
+
+
+def test_exact_name_artifact_inventory_lookup_is_bounded_and_fail_closed(tmp_path):
+    """Do not scan all artifacts; enforce cardinality, identity and expiry."""
+    import shutil
+    if shutil.which("jq") is None:
+        pytest.skip("jq required for protected GitHub runner shell contract")
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    lookup = workflow.split(
+        "      - name: Check for an existing exact-head receipt\n", 1
+    )[1]
+    script = textwrap.dedent(lookup.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    assert "artifacts?name=${artifact_name}&per_page=100&page=1" in script
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE" in script
+    head = "b" * 40
+    name = f"wow-v17-engineering-governance-{head}"
+    stub = r'''
+gh() {
+  [ "$1" = "api" ] || return 1
+  [ "$2" = "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=wow-v17-engineering-governance-${HEAD_SHA}&per_page=100&page=1" ] || return 1
+  printf '%s\n' "$TEST_ARTIFACTS_JSON"
+}
+'''
+    def evaluate(items, *, total=None):
+        payload = {"total_count": len(items) if total is None else total, "artifacts": items}
+        target = tmp_path / "output"
+        target.write_text("", encoding="utf-8")
+        return subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", stub + script],
+            env=os.environ | {
+                "HEAD_SHA": head,
+                "GITHUB_REPOSITORY": REPOSITORY,
+                "GITHUB_OUTPUT": str(target),
+                "TEST_ARTIFACTS_JSON": json.dumps(payload),
+            },
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        ), target.read_text(encoding="utf-8")
+
+    absent, output = evaluate([])
+    assert absent.returncode == 0, absent.stderr
+    assert "exists=false" in output
+
+    expired, output = evaluate([{"id": 13, "name": name, "expired": True}])
+    assert expired.returncode == 0, expired.stderr
+    assert "exists=false" in output
+
+    present, output = evaluate([{"id": 14, "name": name, "expired": False}])
+    assert present.returncode == 0, present.stderr
+    assert "exists=true" in output
+
+    duplicate, _ = evaluate([
+        {"id": 14, "name": name, "expired": False},
+        {"id": 15, "name": name, "expired": False},
+    ])
+    assert duplicate.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE" in duplicate.stderr
+
+    wrong_name, _ = evaluate([{"id": 14, "name": name + "-other", "expired": False}])
+    assert wrong_name.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" in wrong_name.stderr
+
+    malformed, _ = evaluate([{"id": 14, "name": name}])
+    assert malformed.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" in malformed.stderr
+
+    page_mismatch, _ = evaluate([{"id": 14, "name": name, "expired": False}], total=2)
+    assert page_mismatch.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_INVENTORY_INVALID" in page_mismatch.stderr
+
+    overflow, _ = evaluate([], total=101)
+    assert overflow.returncode != 0
+    assert "EXISTING_PR_RECEIPT_ARTIFACT_DUPLICATE" in overflow.stderr
+
+
+# P0 #2136: zero-credit deterministic Class A is a separate reduced-assurance
+# receipt, never a human or adversarial review substitute for model/governance.
+def class_a_evidence():
+    data = evidence(author={"id": verifier.OWNER_ID, "login": verifier.OWNER_LOGIN, "type": "User"})
+    data["reviews"] = []
+    data["changed_files"] = [{
+        "filename": "artifacts/wow-engine/learning/evaluate.py",
+        "previous_filename": None,
+        "status": "modified",
+    }]
+    data["pr"]["changed_files"] = 1
+    for index, (name, app_id) in enumerate(verifier.DETERMINISTIC_CHECKS.items()):
+        data["check_runs"].append({
+            "id": 800 + index,
+            "name": name,
+            "head_sha": HEAD,
+            "app": {"id": app_id},
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": f"2026-10-17T23:{10+index:02d}:00Z",
+            "completed_at": f"2026-10-17T23:{10+index:02d}:01Z",
+            "output": {"summary": (
+                "ZERO-CREDIT DETERMINISTIC QA ONLY; no semantic/adversarial source "
+                "review performed. Exact-head evidence satisfied. No merge/deploy "
+                "authority. can_execute=false."
+            )},
+        })
+    return data
+
+
+def build_class_a(data=None, *, now=NOW):
+    return verifier.build_receipt(
+        data if data is not None else class_a_evidence(),
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        deterministic_class_a=True,
+        now=now,
+    )
+
+
+def verify_class_a(receipt, data=None, *, now=NOW):
+    source = data if data is not None else class_a_evidence()
+    return verifier.verify_receipt(
+        receipt,
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_name=verifier.WORKFLOW_NAME,
+        expected_pr_number=1822,
+        live_reviews=source["reviews"],
+        live_checks=source["check_runs"],
+        now=now,
+    )
+
+
+def test_class_a_deterministic_receipt_is_explicitly_not_semantic():
+    source = class_a_evidence()
+    receipt = build_class_a(source)
+    assert receipt["receipt_schema_version"] == 4
+    assert receipt["certification_mode"] == verifier.DETERMINISTIC_MODE
+    assert receipt["assurance"] == verifier.DETERMINISTIC_ASSURANCE
+    assert receipt["independent_review"] is None
+    assert receipt["trusted_reviewers"] == []
+    assert receipt["evidence_state"] == "CLASS_A_DETERMINISTIC_VERIFIED"
+    assert receipt["can_execute"] is False
+    assert receipt["terminal_authority"] == verifier.TERMINAL_AUTHORITY
+    assert set(verifier.DETERMINISTIC_CHECKS).issubset(receipt["required_checks"])
+    verify_class_a(receipt, source)
+
+
+@pytest.mark.parametrize("path", [
+    ".github/workflows/wow-v17-independent-qa-check.yml",
+    ".agents/skills/wow-nightly-engineering-autopilot/SKILL.md",
+    "artifacts/wow-engine/v17/independent_release_checks.py",
+    "artifacts/wow-engine/v17/engineering_dispatch_manifest.json",
+    "artifacts/flask-scoring-api/models/scorer.py",
+    "render.yaml",
+    "docs/wow/engineering/V17_AUTONOMY_FIRST_GOVERNANCE_DESIGN.md",
+])
+def test_class_a_denies_governance_model_and_nonallowlisted_paths(path):
+    source = class_a_evidence()
+    source["changed_files"][0]["filename"] = path
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_|TRUST_ROOT_"):
+        build_class_a(source)
+
+
+@pytest.mark.parametrize("status,previous", [
+    ("renamed", "artifacts/wow-engine/learning/README.md"),
+    ("copied", "artifacts/wow-engine/learning/README.md"),
+    ("removed", None),
+])
+def test_class_a_denies_renames_copies_and_removals(status, previous):
+    source = class_a_evidence()
+    source["changed_files"][0].update(status=status, previous_filename=previous)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_"):
+        build_class_a(source)
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("head_sha", "b" * 40, "REQUIRED_CHECK_MISSING"),
+    ("conclusion", "failure", "REQUIRED_CHECK_NOT_GREEN"),
+    ("status", "in_progress", "REQUIRED_CHECK_NOT_GREEN"),
+])
+def test_class_a_rejects_stale_or_failed_release_app(field, value, reason):
+    source = class_a_evidence()
+    source["check_runs"][-1][field] = value
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match=reason):
+        build_class_a(source)
+
+
+
+def test_class_a_exact_canonical_training_inventory_not_entire_directory():
+    expected = {
+        "artifacts/wow-engine/learning/AGENT_TRAINING.md",
+        "artifacts/wow-engine/learning/README.md",
+        "artifacts/wow-engine/learning/challenges/reference.py",
+        "artifacts/wow-engine/learning/challenges/run_challenge_tests.py",
+        "artifacts/wow-engine/learning/challenges/starter.py",
+        "artifacts/wow-engine/learning/challenges/test_contracts.py",
+        "artifacts/wow-engine/learning/data/cases.json",
+        "artifacts/wow-engine/learning/evaluate.py",
+        "artifacts/wow-engine/learning/tests/test_evaluate.py",
+        "artifacts/wow-engine/test_v17_triple_d_learning_smoke.py",
+    }
+    assert verifier.CLASS_A_EXACT_PATHS == expected
+    source = class_a_evidence()
+    source["pr"]["changed_files"] = len(expected)
+    source["changed_files"] = [
+        {"filename": path, "status": "added", "previous_filename": None}
+        for path in sorted(expected)
+    ]
+    assert build_class_a(source)["certification_mode"] == verifier.DETERMINISTIC_MODE
+    for unsafe in (
+        "artifacts/wow-engine/learning/new_unreviewed.py",
+        "artifacts/wow-engine/learning/../../v17/independent_release_checks.py",
+    ):
+        source["changed_files"][0]["filename"] = unsafe
+        with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_|DIFF_PATH_INVALID"):
+            build_class_a(source)
+        source["changed_files"][0]["filename"] = sorted(expected)[0]
+
+def test_class_a_rejects_foreign_qa_app_and_false_semantic_label():
+    source = class_a_evidence()
+    source["check_runs"][-2]["app"]["id"] = 15368
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="REQUIRED_CHECK_MISSING"):
+        build_class_a(source)
+    source = class_a_evidence()
+    source["check_runs"][-1]["output"]["summary"] = "All checks passed"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_ASSURANCE_LABEL_MISSING"):
+        build_class_a(source)
+
+
+def test_class_a_rejects_legacy_review_relabel_and_no_live_checks():
+    source = class_a_evidence()
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_CANNOT_IMPERSONATE"):
+        verifier.build_receipt(
+            source,
+            expected_repository=REPOSITORY, expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806", expected_pr_number=1822,
+            expected_incident_id="1806", expected_workflow_run_id="12345",
+            expected_workflow_run_attempt=1, trusted_reviewers=ALLOWLIST,
+            deterministic_class_a=True, now=NOW,
+        )
+    receipt = build_class_a(source)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_LIVE_CHECKS_MISSING"):
+        verifier.verify_receipt(
+            receipt, expected_repository=REPOSITORY, expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806", expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME,
+            expected_pr_number=1822, live_reviews=[], now=NOW,
+        )
+
+
+def test_class_a_replay_detects_newer_failure_and_replaced_checks():
+    source = class_a_evidence()
+    receipt = build_class_a(source)
+    source["check_runs"][-1]["id"] = 911
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_LIVE_CHECK_REPLACED"):
+        verify_class_a(receipt, source)
+    source = class_a_evidence()
+    receipt = build_class_a(source)
+    source["check_runs"][-1]["conclusion"] = "failure"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_LIVE_CHECK_NOT_GREEN"):
+        verify_class_a(receipt, source)
+
+
+def test_class_a_schema_cannot_claim_semantic_review_or_change_assurance():
+    source = class_a_evidence()
+    receipt = build_class_a(source)
+    receipt["independent_review"] = {"type": "AUTOMATED_SOURCE_REVIEW"}
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_MUST_NOT_CLAIM"):
+        verify_class_a(receipt, source)
+    receipt = build_class_a(source)
+    receipt["assurance"] = "INDEPENDENT_SEMANTIC_REVIEW_PASSED"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="CLASS_A_ASSURANCE_IDENTITY_MISMATCH"):
+        verify_class_a(receipt, source)
+
+
+def test_class_a_workflow_and_consumers_require_no_provider_or_human_approval():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "WOW_QA_ZERO_CREDIT_MODE" in workflow
+    assert "--deterministic-class-a" in workflow
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow  # other classes still hold
+    for path in (TRUSTED_GATE, RELEASE_WORKFLOW, MORNING_GREEN_WORKFLOW):
+        source = path.read_text(encoding="utf-8")
+        assert "CLASS_A_DETERMINISTIC" in source or path == TRUSTED_GATE
+        assert "--live-checks-json" in source
+    assert '[ "$receipt_schema" = "4" ]' in TRUSTED_GATE.read_text(encoding="utf-8")
+
+
+def test_class_a_classifier_does_not_capture_other_ordinary_or_protected_prs():
+    eligible = class_a_evidence()["changed_files"]
+    assert verifier.classify_changed_files(
+        eligible, repo_root=REPO_ROOT, expected_count=len(eligible),
+    ) == verifier.DETERMINISTIC_MODE
+
+    mixed = eligible + [{"filename": "src/unrelated.py", "status": "added", "previous_filename": None}]
+    assert verifier.classify_changed_files(
+        mixed, repo_root=REPO_ROOT, expected_count=len(mixed),
+    ) == verifier.ORDINARY_MODE
+
+    new_training = [{"filename": "artifacts/wow-engine/learning/unapproved_new.py",
+                     "status": "added", "previous_filename": None}]
+    assert verifier.classify_changed_files(
+        new_training, repo_root=REPO_ROOT, expected_count=1,
+    ) == verifier.ORDINARY_MODE
+
+    protected = eligible + [{
+        "filename": ".github/workflows/release.yml", "status": "modified", "previous_filename": None,
+    }]
+    assert verifier.classify_changed_files(
+        protected, repo_root=REPO_ROOT, expected_count=len(protected),
+    ) == verifier.BOOTSTRAP_MODE
+
+
+def test_class_a_workflow_does_not_force_deterministic_route_on_nonclass_a():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "TRUST_ROOT_BOOTSTRAP|ORDINARY_ENGINEERING|CLASS_A_DETERMINISTIC" in workflow
+    assert '"$classification" = "CLASS_A_DETERMINISTIC"' in workflow
+    assert "--trusted-reviewers-json" in workflow
+    assert "--source-review-json" in workflow  # reviewed non-Class-A PRs retain their path
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow

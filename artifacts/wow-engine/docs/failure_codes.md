@@ -4,8 +4,19 @@ This file is the repository source of truth for governed typed failure/status co
 
 `can_execute=false` remains invariant. Market/evidence failures never imply a sporting-model capability failure.
 
+Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
+
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
+| `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
+| `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
+| `DISCOVERY_MAIN_SHA_INVALID_HOLD` | Engineering App source discovery | The caller supplied a malformed purported current protected-main SHA; reject before any GitHub source inventory or writer admission. | No |
+| `CLAUDE_REVIEW_TRUNCATED` | independent semantic reviewer / Claude response | A single Anthropic request with a 6144-token output budget returned explicit `max_tokens` without the required structured-tool verdict. No replay of the untrusted diff or same-head reviewer shopping is permitted. `EVIDENCE_PENDING`; QA App publishes HOLD, reviewer operations investigates output length/model health, never fails over, never self-approves or reattempts solely for a friendlier decision. | No |
+| `CLAUDE_REVIEW_REFUSED` | independent semantic reviewer / Claude response | Provider returned an explicit `refusal` stop reason rather than a typed verdict. `EVIDENCE_PENDING` policy HOLD (not a substantive security REJECT): no retry, no fallback and no PASS; escalate genuine provider refusal to an authenticated independent Security/Architect. No response text logged. | No |
+| `CLAUDE_REVIEW_INCOMPLETE` | independent semantic reviewer / Claude response | Provider ended without required authenticated tool output for a non-truncation stop reason (including `end_turn`, `stop_sequence`, `pause_turn`, unknown). `EVIDENCE_PENDING`; QA App HOLD and security owner investigates allowlisted stop-reason metadata. Do not retry or fallback on such ambiguity. | No |
+| `CLAUDE_RESPONSE_INVALID` | independent semantic reviewer / Claude tool transport | Provider message or content is not a valid dict/list container for exact-one `submit_review` tool payload. `REPAIRABLE_CODE` only after source/transport diagnosis, never fallback or PASS. | No |
+| `CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE` | independent semantic reviewer / Claude tool contract | `tool_use` stop reason but not exactly one named `submit_review` result. `EVIDENCE_PENDING`; preserve HOLD and inspect the code-level tool schema, not the raw response. No retry or alternate reviewer shopping. | No |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |
@@ -174,6 +185,7 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_ZERO_CREDIT_POLICY_TARGET_MISMATCH` | QA evidence | Zero-credit policy does not bind the canonical PR, exact head SHA and head ref. | N/A |
 | `RELEASE_INPUT_HEAD_SHA_INVALID` | Release manual dispatch | Optional Release target head SHA is malformed. | N/A |
 | `RELEASE_INPUT_HEAD_SHA_STALE` | Release manual dispatch | Release requested head SHA does not match authenticated producing QA receipt head. | N/A |
+| `QA_CANONICAL_INCIDENT_MISSING_OR_AMBIGUOUS` | required independent QA and Release | Live PR description lacks exactly one standalone canonical `Incident: #positive-integer` field, or contains duplicate/conflicting fields. Required QA fails before merge; Release independently re-derives the prefixed finding. | N/A |
 | `QA_APP_CREDENTIAL_MISSING` | independent QA | `WOW_QA_APP_ID` is not numeric or `WOW_QA_APP_PRIVATE_KEY` is absent; no QA check is published (the required check stays missing, so merges block). | N/A |
 | `QA_REVIEW_PROVIDER_CREDENTIAL_MISSING` | independent QA | Independent-review activation is enabled but the separate `WOW_QA_REVIEW_OPENAI_API_KEY` is absent; no QA decision/check is published. | N/A |
 | `QA_REVIEW_CANARY_NOT_AUTHORIZED_FOR_EXACT_HEAD` | independent QA canary | Dispatch requested a canary but its PR number and head SHA do not exactly match the owner-configured single-PR/SHA admission. | N/A |
@@ -206,9 +218,14 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_EVIDENCE_MISSING` | independent QA | A required exact-head check from `github-actions` (App 15368) has no completed run at the head; same-named checks from other Apps are ignored. Suffixed `:<check>`. | N/A |
 | `QA_EVIDENCE_FAILED` | independent QA | The latest exact-head run of a required check is not `success`; suffixed `:<check>`. | N/A |
 | `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING` | independent QA | The PR changes a trust root (`.github/`, `.agents/`, or a file a governance workflow executes or reads) and the owner's latest review is not APPROVED on this exact head. | N/A |
-| `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; it can never be independently approved (re-propose from the Engineering App). | N/A |
 | `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
 | `RELEASE_PR_NUMBER_INVALID` | release authority | Manual Release re-entry did not provide a valid PR number to bind to its QA receipt. | N/A |
+| `RELEASE_QA_RUN_IDENTITY_INVALID` | Release read-only admission | Producing QA run ID or attempt is missing or malformed before assigning a PR-scoped writer. | N/A |
+| `RELEASE_QA_APPLICABILITY_INVALID` | Release read-only admission | Authenticated upstream QA classifier returned neither neutral nor applicable; no writer allocated. | N/A |
+| `RELEASE_EVENT_NOT_SUPPORTED` | Release read-only admission | An event other than an authenticated QA completion or explicit authorized dispatch attempted Release admission. | N/A |
+| `RELEASE_TARGET_PR_INVALID` | Release manual read-only admission | Requested PR is not a positive integer; no Release writer starts. | N/A |
+| `RELEASE_POLICY_TARGET_INVALID` | Release read-only QA receipt | Authenticated QA policy resolved a missing, malformed or contradictory exact PR/SHA target. | N/A |
+| `RELEASE_POLICY_TARGET_STALE` | Release manual read-only QA receipt | Requested exact SHA differs from the producing QA policy's bound head. | N/A |
 | `RELEASE_QA_REVIEW_POLICY_MISSING` | release authority | Release has no authenticated policy receipt from the exact producing QA workflow run. | N/A |
 | `RELEASE_QA_REVIEW_POLICY_INVALID` | release authority | The producing QA receipt has an unsupported review mode. | N/A |
 | `RELEASE_DECISION_INVARIANT_VIOLATED` | release authority | A Release decision file claimed authority; nothing published. | N/A |
@@ -375,6 +392,95 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
 Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.
+
+
+### Universal Intelligence paired research replay statuses — research only (#2059)
+
+These local codes belong to `v17/universal_intelligence_paired_replay.py`. They describe caller-supplied, **unattested** champion/challenger/settlement research and are not V17 terminal-reducer, sportsbook, fitted-scorer, or production publication codes. Even successful descriptive metrics are not proof of a fitted challenger advantage.
+
+| Code | Owning lane/stage | Meaning | Rank eligible? |
+|---|---|---|---|
+| `PAIR_REPLAY_INPUT_INVALID` | Intelligence shadow replay | Trial input is not a bounded list/tuple | No |
+| `PAIR_REPLAY_MINIMUM_N_INVALID` | Intelligence shadow replay | A caller tries to weaken the minimum descriptive sample | No |
+| `REPLAY_RECORD_INVALID` | Intelligence shadow replay | Nonrecord trial cannot be reconciled | No |
+| `REPLAY_EXACT_IDENTITY_MISMATCH` | Intelligence shadow replay | Sport, event, market, period, selection, exact line or direction differs | No |
+| `REPLAY_DUPLICATE_THESIS` | Intelligence shadow replay | Same exact event/market thesis repeated in one replay | No |
+| `REPLAY_TIME_LEAKAGE_OR_MISMATCH` | Intelligence shadow replay | Forecast/feature timing is post-start, settlement before start, or event start differs | No |
+| `REPLAY_NOT_HOLDOUT` | Intelligence shadow replay | Any input is not labeled HOLDOUT; label itself is not independent proof | No |
+| `REPLAY_MISSING_IMMUTABLE_RECEIPT` | Intelligence shadow replay | A forecast claims no preevent prediction ID | No |
+| `REPLAY_FORECAST_RECEIPTS_NOT_INDEPENDENT` | Intelligence shadow replay | Champion and challenger use the same purported receipt | No |
+| `REPLAY_MODEL_PROVENANCE_MISSING` | Intelligence shadow replay | Missing claimed model-artifact identity | No |
+| `REPLAY_MODEL_ARTIFACT_NOT_DISTINCT` | Intelligence shadow replay | Champion and challenger claim the same artifact | No |
+| `REPLAY_FITTED_CHECKSUM_MISSING_OR_INVALID` | Intelligence shadow replay | Either alleged fitted artifact lacks an exact 64-character lowercase SHA-256 payload checksum; registry labels alone cannot establish independent model bytes | No |
+| `REPLAY_FITTED_ARTIFACT_BYTES_NOT_DISTINCT` | Intelligence shadow replay | Champion and challenger claim the same immutable fitted payload checksum despite distinct artifact IDs, model versions or training-source hashes | No |
+| `REPLAY_TRAINING_CUTOFF_UNVERIFIED` | Intelligence shadow replay | Training cutoff is missing/invalid or later than the forecast timestamp; descriptive historical pairing cannot be accepted | No |
+| `REPLAY_PROBABILITY_PACKAGE_INVALID` | Intelligence shadow replay | Invalid scalar probability/lower-bound ordering | No |
+| `REPLAY_SETTLEMENT_INVALID` | Intelligence shadow replay | Settled result is not a binary WIN/LOSS for the exact thesis | No |
+| `REPLAY_UNSETTLED_OR_VOID` | Intelligence shadow replay | Outcome not final or explicitly void/push | No |
+| `REPLAY_CANDIDATE_UNVERIFIED` | Intelligence shadow replay | Matched descriptive trial, still unauthenticated input | No |
+| `NOT_ENOUGH_EVIDENCE` | Intelligence shadow replay | Too few eligible descriptive pairs; no model-improvement conclusion | No |
+| `DESCRIPTIVE_SHADOW_METRICS_NOT_ATTESTED` | Intelligence shadow replay | Brier/log loss can be described for supplied rows, not independently validated or promotable | No |
+
+Global invariants remain `V17_TERMINAL_REDUCER` sole publisher, `probability_publishable=false`, `can_execute=false`; no source grant, model artifact, or immutable prediction authenticity can be inferred from synthetic inputs.
+
+## PropsMadness authenticated NFL browser-view research statuses
+
+These failures belong only to the offline `propsmadness_nfl_account_view_adapter`. They do not grant account-data extraction, persistence, model-training, market-data, or probability authority.
+
+| Code | Owning lane | Trigger condition | Model unavailable? |
+| --- | --- | --- | --- |
+| `PM_ACCOUNT_VIEW_TIMESTAMP_INVALID` | NFL account-view research | Capture timestamp missing, malformed, or timezone-naive | No |
+| `PM_ACCOUNT_VIEW_SOURCE_INVALID` | NFL account-view research | Non-PropsMadness NFL URL, credential-bearing, malformed or unexpected query fields/aliases | No |
+| `PM_ACCOUNT_VIEW_MARKET_CONFLICT` | NFL account-view research | Unsupported stat or conflicting selected market | No |
+| `PM_ACCOUNT_VIEW_OPERATOR_CONFIRMATION_MISSING` | NFL account-view research | Operator has not asserted that the visible page was a signed-in account view | No |
+| `PM_ACCOUNT_VIEW_INPUT_INVALID` | NFL account-view research | Empty, non-text, or oversized rendered browser view | No |
+| `PM_ACCOUNT_VIEW_IDENTITY_UNRESOLVED` | NFL account-view research | Selected player label absent or malformed | No |
+| `PM_ACCOUNT_VIEW_SECTION_MISSING` | NFL account-view research | No selected NFL player breakdown section | No |
+| `PM_ACCOUNT_VIEW_SELECTED_MARKET_UNRESOLVED` | NFL account-view research | The selected player's visible detail block does not show the declared NFL statistic | No |
+| `PM_ACCOUNT_VIEW_HISTORY_TABLE_INVALID` | NFL account-view research | Missing, ambiguous, malformed or oversized dated outcome table | No |
+| `PM_ACCOUNT_VIEW_ROW_INVALID` | NFL account-view research | Missing fields, invalid dates/results/threshold, mismatched display direction, or result dated after capture | No |
+| `PM_ACCOUNT_VIEW_DUPLICATE_GAME` | NFL account-view research | Same observed date/opponent appears twice in one selected player history | No |
+
+This family is research-only; each failure preserves `probability_publishable=false` and `can_execute=false`. The chart comparison threshold is never a historical closing-line authority.
+
+## PropsMadness NBA, MLB, WNBA account-view research statuses
+
+These typed failures are emitted only by `propsmadness_other_sports_account_view_adapter`, never by governed fitted scorers. The same account-view timestamp validation code `PM_ACCOUNT_VIEW_TIMESTAMP_INVALID` from the NFL parser is reused.
+
+| Code | Owner | Exact cause | Model unavailable? |
+| --- | --- | --- | --- |
+| `PM_MULTISPORT_SPORT_UNSUPPORTED` | Account-view research | Sport is not NBA, MLB or WNBA | No |
+| `PM_MULTISPORT_MARKET_CONFLICT` | Account-view research | Unsupported stat or market URL contradicts requested stat | No |
+| `PM_MULTISPORT_OPERATOR_CONFIRMATION_MISSING` | Account-view research | User-controlled signed-in view confirmation absent | No |
+| `PM_MULTISPORT_INPUT_INVALID` | Account-view research | Missing or oversized rendered-view text | No |
+| `PM_MULTISPORT_PLAYER_UNRESOLVED` | Account-view research | Player label missing or cannot be found near selected chart | No |
+| `PM_MULTISPORT_SOURCE_INVALID` | Account-view research | Unallowlisted URL, duplicate query key, credential component or nonnumeric provider aliases | No |
+| `PM_MULTISPORT_SECTION_MISSING` | Account-view research | Exact selected-sport breakdown section absent | No |
+| `PM_MULTISPORT_HISTORY_TABLE_INVALID` | Account-view research | Chart table missing, duplicate, wrong header, empty or over limit | No |
+| `PM_MULTISPORT_SELECTED_MARKET_UNRESOLVED` | Account-view research | Declared statistic does not match player detail label | No |
+| `PM_MULTISPORT_ROW_INVALID` | Account-view research | Bad date/opponent/value/line, future completed result, or displayed comparison-side mismatch | No |
+| `PM_MULTISPORT_DUPLICATE_GAME` | Account-view research | Duplicate date/opponent row within one player's chart | No |
+
+These are synthetic-layout research contracts until verified against distinct real authenticated NBA, MLB and WNBA pages; none permits storage, training, market claims, probability publication or execution.
+
+## NHL official boxscore player-game history research
+
+These typed errors belong to the offline `nhl_player_box_outcome_research` adapter. They do not imply model capability or replace governing specialist failures.
+
+| Code | Exact research condition | Model unavailable? |
+| --- | --- | --- |
+| `NHL_PLAYER_BOX_SCHEMA_INVALID` | Required official boxscore/side/player array missing | No |
+| `NHL_PLAYER_BOX_IDENTITY_MISMATCH` | Official event ID, team identity or supplied schedule start conflicts | No |
+| `NHL_PLAYER_BOX_NOT_FINAL_REGULAR_SEASON` | No final regular-season game / incorrect NHL season | No |
+| `NHL_PLAYER_BOX_TIMESTAMP_INVALID` | Missing, invalid or timezone-naive source/capture time | No |
+| `NHL_PLAYER_BOX_NOT_POSTGAME` | Source capture precedes claimed game start | No |
+| `NHL_PLAYER_BOX_PLAYER_ID_INVALID` | Official player ID missing or nonpositive | No |
+| `NHL_PLAYER_BOX_DUPLICATE_PLAYER` | A player occurs in more than one boxscore position/side | No |
+| `NHL_PLAYER_BOX_STAT_INVALID` | Missing, negative, non-integer or excessive stat count | No |
+| `NHL_PLAYER_BOX_STAT_CONTRADICTION` | Points differ from goals plus assists or saves exceed shots against | No |
+| `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
+
+This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
 
 ## OpenRouter Flint synthetic engineering pilot statuses (October 26, 2026)
 

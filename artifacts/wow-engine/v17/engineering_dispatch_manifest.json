@@ -193,7 +193,11 @@
         "NBA_PREGAME_FEATURES",
         "NBA_GAME_WIN",
         "NBA_MODEL_CALIBRATION"
-      ]
+      ],
+      "amrt_owned": true,
+      "change_class": "B",
+      "can_execute": false,
+      "amrt_accountable_owner": "gregoryharper84-ship-it"
     },
     {
       "issue_number": 1952,
@@ -206,7 +210,11 @@
         "NHL_CANDIDATE",
         "NHL_PREGAME_FEATURES",
         "NHL_GAME_WIN"
-      ]
+      ],
+      "amrt_owned": true,
+      "change_class": "B",
+      "can_execute": false,
+      "amrt_accountable_owner": "gregoryharper84-ship-it"
     },
     {
       "issue_number": 1951,
@@ -219,7 +227,11 @@
         "NCAAF_TEAM_STATE",
         "NCAAF_GAME_WIN",
         "NCAAF_MODEL_CALIBRATION"
-      ]
+      ],
+      "amrt_owned": true,
+      "change_class": "B",
+      "can_execute": false,
+      "amrt_accountable_owner": "gregoryharper84-ship-it"
     }
   ],
   "acceleration": []

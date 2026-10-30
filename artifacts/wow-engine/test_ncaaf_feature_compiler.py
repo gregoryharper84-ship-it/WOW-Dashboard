@@ -9,6 +9,7 @@ from ncaaf_feature_compiler import (
     NCAAFFeatureCompileBlocked,
     REQUIRED_SCOPED_KEYS,
     compile_training_feature_row,
+    _paged,
 )
 from ncaaf_feature_transform import model_features_from_snapshot
 
@@ -161,3 +162,75 @@ def test_invalid_numeric_payload_is_typed_and_never_persistable():
         compile_training_feature_row(game(), rows)
     assert caught.value.code == "NCAAF_MODEL_FEATURE_PAYLOAD_INVALID"
     assert "QB_CERTAINTY:HOME:OUT_OF_RANGE" in caught.value.blockers
+
+
+class _PagedQuery:
+    def __init__(self, db, table):
+        self.db = db
+        self.table_name = table
+        self.order_key = None
+        self.columns = ""
+        self.start = self.end = 0
+
+    def select(self, columns):
+        self.columns = columns
+        return self
+
+    def order(self, column):
+        self.order_key = column
+        self.db.order_calls.append((self.table_name, column))
+        return self
+
+    def range(self, start, end):
+        self.start, self.end = start, end
+        return self
+
+    def execute(self):
+        from types import SimpleNamespace
+        if self.order_key is None:
+            raise AssertionError("All NCAAF pagination must use an explicit total order")
+        rows = sorted(self.db.rows[self.table_name], key=lambda row: str(row.get(self.order_key) or ""))
+        return SimpleNamespace(data=rows[self.start:self.end + 1])
+
+
+class _PagedDB:
+    def __init__(self, rows):
+        self.rows = rows
+        self.order_calls = []
+
+    def table(self, table):
+        return _PagedQuery(self, table)
+
+
+@pytest.mark.parametrize("table,key", [
+    ("wow_ncaaf_training_games", "training_game_id"),
+    ("wow_ncaaf_pregame_evidence", "evidence_id"),
+    ("wow_ncaaf_training_features", "feature_row_id"),
+])
+def test_feature_source_pages_have_stable_total_order_and_no_omissions(table, key):
+    db = _PagedDB({table: [{key: "c"}, {key: "a"}, {key: "b"}]})
+    rows = _paged(db, table, "value", page_size=2)
+    assert [row[key] for row in rows] == ["a", "b", "c"]
+    assert db.order_calls == [(table, key), (table, key)]
+    assert all(row[key] for row in rows)
+
+
+@pytest.mark.parametrize("rows,reason", [
+    ([{"training_game_id": "a"}, {"training_game_id": "a"}], "ROW_ID_DUPLICATED"),
+    ([{"training_game_id": "a"}, {"bad_key": "b"}], "ROW_ID_MISSING"),
+])
+def test_feature_source_pagination_rejects_duplicate_or_missing_identity(rows, reason):
+    table = "wow_ncaaf_training_games"
+    with pytest.raises(NCAAFFeatureCompileBlocked) as caught:
+        _paged(_PagedDB({table: rows}), table, "training_game_id", page_size=1)
+    assert caught.value.code == "NCAAF_FEATURE_PAGINATION_INVALID"
+    assert f"{table}:{reason}" in caught.value.blockers
+
+
+def test_feature_source_pagination_does_not_accept_unknown_table_or_zero_page_size():
+    table = "wow_ncaaf_training_games"
+    db = _PagedDB({table: []})
+    with pytest.raises(ValueError):
+        _paged(db, "other_table", "training_game_id")
+    with pytest.raises(ValueError):
+        _paged(db, table, "training_game_id", page_size=0)

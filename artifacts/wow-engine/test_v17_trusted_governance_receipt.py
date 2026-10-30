@@ -233,7 +233,7 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert "GOVERNANCE_REWORK" in morning_green
 
 
-def _run_gate_artifact_resolution(tmp_path, *, event, artifacts, run=None, receipt=None, event_head=None):
+def _run_gate_artifact_resolution(tmp_path, *, event, artifacts, run=None, receipt=None, event_head=None, live_head=None):
     workflow = yaml.load(GATE.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     step = next(
         item for item in workflow["jobs"]["trusted-governance"]["steps"]
@@ -285,6 +285,11 @@ def _run_gate_artifact_resolution(tmp_path, *, event, artifacts, run=None, recei
             )
         routes["/repos/owner/repo/actions/artifacts/55/zip"] = {"__file": str(zip_path)}
     else:
+        # New P1 stale-SHA guard always reads live PR identity before trusting
+        # an artifact. The fixture must model that authenticated GitHub source.
+        routes["/repos/owner/repo/pulls/42"] = {
+            "head": {"sha": live_head or env["EVENT_HEAD_SHA"]},
+        }
         routes[
             f"/repos/owner/repo/actions/artifacts?name=wow-v17-engineering-governance-{env['EVENT_HEAD_SHA']}&per_page=20"
         ] = {"artifacts": artifacts}
@@ -360,6 +365,7 @@ def test_trusted_gate_consumes_authenticated_automatic_qa_review_run(tmp_path):
         "id": 456,
         "run_attempt": 2,
         "name": source_review.WORKFLOW_NAME,
+        "workflow_id": source_review.WORKFLOW_ID,
         "path": source_review.WORKFLOW_PATH,
         "event": "workflow_run",
         "head_branch": "main",
@@ -640,6 +646,24 @@ def test_pull_request_target_fallback_selects_only_exact_head_artifact(
         assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in proc.stderr
 
 
+def test_stale_pr_head_aborts_early_without_accepting_existing_artifact(tmp_path):
+    artifacts = [{
+        "id": 55,
+        "name": "wow-v17-engineering-governance-" + "a" * 40,
+        "expired": False,
+        "workflow_run": {"id": 123},
+    }]
+    proc, output = _run_gate_artifact_resolution(
+        tmp_path, event="pull_request_target", artifacts=artifacts,
+        event_head="a" * 40, live_head="b" * 40,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert output.splitlines() == ["applicable=false"]
+    assert "GOVERNANCE_STALE_HEAD_DEFERRED" in proc.stdout
+    assert "artifact_id=" not in output
+    assert "head_sha=" not in output
+
+
 def test_release_verification_requires_trusted_exact_head_governance_and_exact_merge_sha():
     text = RELEASE.read_text(encoding="utf-8")
     assert "startsWith(github.event.pull_request.head.ref" not in text
@@ -666,3 +690,28 @@ def test_release_verification_requires_trusted_exact_head_governance_and_exact_m
     assert '--workflow-run-id "$RUN_ID"' in text
     assert '--workflow-name "$WORKFLOW_NAME"' in text
     assert "trusted_handoff_receipt: VERIFIED" in text
+
+
+
+def test_trusted_governance_stale_pr_artifact_waits_are_bounded_and_cancelled():
+    """P1 regression: don't occupy 30min runners on obsolete exact-head SHAs.
+
+    This does not grant QA/review acceptance, remove artifact hashes, or change
+    the independent workflow_run path. Superseded PR heads are nonapplicable.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    text = (root / ".github/workflows/wow-v17-trusted-governance-gate.yml").read_text()
+    assert "cancel-in-progress: true" in text
+    assert "format('pr-{0}', github.event.pull_request.number)" in text
+    assert "format('run-{0}', github.event.workflow_run.id)" in text
+    assert "github.event.pull_request.head.sha) }}" not in text.split("concurrency:")[1].split("jobs:")[0]
+    assert "for _ in $(seq 1 90); do" in text
+    assert 'gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}"' in text
+    assert 'if [ "$current_head" != "$head_sha" ]; then' in text
+    assert "GOVERNANCE_STALE_HEAD_DEFERRED" in text
+    assert 'echo "applicable=false" >> "$GITHUB_OUTPUT"' in text
+    assert "GOVERNANCE_LIVE_PR_LOOKUP_FAILED" in text
+    assert "GOVERNANCE_RECEIPT_MISSING_OR_DUPLICATE" in text
+    assert "GOVERNANCE_CERTIFIER_RECEIPT_TARGET_MISMATCH" in text

@@ -15,7 +15,9 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-v17-trusted-governance-${{ github.event.workflow_run.id || format('{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) }}
+  # One PR writer group, regardless of SHA. A new exact head cancels obsolete
+  # 30-minute artifact waiters; workflow_run certifiers keep per-run isolation.
+  group: wow-v17-trusted-governance-${{ github.event_name == 'workflow_run' && format('run-{0}', github.event.workflow_run.id) || format('pr-{0}', github.event.pull_request.number) }}
   cancel-in-progress: true
 
 jobs:
@@ -92,7 +94,7 @@ jobs:
             head_ref=$(jq -er '.target.head_ref | select(type == "string")' "$receipt")
             jq -e --arg sha "$sha_from_name" --argjson run_id "$SOURCE_RUN_ID" \
               --arg repo "$GITHUB_REPOSITORY" \
-              '.receipt_schema_version == 2 or .receipt_schema_version == 3' "$receipt" >/dev/null || {
+              '(.receipt_schema_version == 2 or .receipt_schema_version == 3 or .receipt_schema_version == 4)' "$receipt" >/dev/null || {
                 echo "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" >&2; exit 1;
               }
             jq -e --arg sha "$sha_from_name" --argjson run_id "$SOURCE_RUN_ID" \
@@ -113,7 +115,24 @@ jobs:
           artifact_name="wow-v17-engineering-governance-${head_sha}"
           artifact_matches='[]'
 
-          for _ in $(seq 1 180); do
+          # A PR can advance while its earlier artifact is still queued.
+          # Never consume 30 minutes of runner time polling an obsolete SHA:
+          # live head-SHA recheck + cancel-in-progress abort superseded heads
+          # within 10s, while allowing active heads up to 15m for wow-verify
+          # + QA + Release + certifier completion on pull_request_target.
+          for _ in $(seq 1 90); do
+            live_pr=$(gh api "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}") || {
+              echo "GOVERNANCE_LIVE_PR_LOOKUP_FAILED" >&2; exit 1;
+            }
+            current_head=$(jq -r '.head.sha // ""' <<<"$live_pr")
+            [[ "$current_head" =~ ^[a-f0-9]{40}$ ]] || {
+              echo "GOVERNANCE_LIVE_PR_HEAD_INVALID" >&2; exit 1;
+            }
+            if [ "$current_head" != "$head_sha" ]; then
+              echo "applicable=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::GOVERNANCE_STALE_HEAD_DEFERRED: event SHA superseded; no receipt accepted"
+              exit 0
+            fi
             artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=20")
             artifact_matches=$(jq -c --arg name "$artifact_name" \
               '[.artifacts[] | select(.expired == false and .name == $name)]' <<<"$artifacts")
@@ -287,7 +306,7 @@ jobs:
           cert_mode=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")' "$receipt")
           receipt_schema=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("receipt_schema_version") or "")' "$receipt")
           live_checks="$RUNNER_TEMP/wow-live-checks.json"
-          if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+          if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$receipt_schema" = "4" ]; then
             checks='[]'
             for page in $(seq 1 10); do
               response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?per_page=100&page=${page}")
@@ -398,7 +417,7 @@ jobs:
               --head-sha "$source_sha" \
               --head-ref "$source_ref" \
               --attempt "$source_attempt"
-          elif [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" != "2" ]; then
+          elif [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" != "2" ] && [ "$receipt_schema" != "4" ]; then
             echo "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" >&2
             exit 1
           fi
@@ -411,7 +430,7 @@ jobs:
           extra_args=()
           if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
             extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
-            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$receipt_schema" = "4" ]; then
               extra_args+=(--live-checks-json "$live_checks")
             elif [ "$receipt_schema" = "3" ]; then
               extra_args+=(--source-review-run-json "$source_review_run")
