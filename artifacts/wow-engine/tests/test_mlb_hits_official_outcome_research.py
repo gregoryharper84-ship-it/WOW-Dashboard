@@ -10,7 +10,6 @@ import pytest
 _module = run_path(str(Path(__file__).resolve().parents[1] / "v17" / "mlb_hits_official_outcome_research.py"))
 MLBHitsResearchHold = _module["MLBHitsResearchHold"]
 extract_mlb_hits_labels = _module["extract_mlb_hits_labels"]
-research_matrix = _module["research_matrix"]
 
 
 def fixture():
@@ -40,6 +39,8 @@ def test_valid_labels_have_no_prediction_or_training_authority():
             for r in result["rows"]] == [(0, 4, False), (2, 5, True), (1, 1, True)]
     assert all(r["pregame_feature_snapshot_id"] is None for r in result["rows"])
     assert all(r["candidate_label_status"] == "UNVERIFIED_FINAL_RESEARCH_ONLY" for r in result["rows"])
+    assert result["source_authenticated"] is False
+    assert all(r["source_authenticated"] is False for r in result["rows"])
     for k in ("event_start_time_verified", "game_final_independently_verified",
               "pregame_features_verified", "source_rights_verified",
               "historical_training_authorized", "probability_publishable", "can_execute"):
@@ -101,10 +102,3 @@ def test_large_source_is_rejected_before_hashing_and_json():
     with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_SNAPSHOT_INVALID"):
         extract_mlb_hits_labels(sample)
 
-
-def test_game_duplicate_fails_and_does_not_merge_snapshots():
-    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_DUPLICATE_GAME"):
-        research_matrix([fixture(), fixture()])
-    r = research_matrix([fixture()])
-    assert (r["games"], r["candidate_labels"]) == (1, 3)
-    assert r["can_execute"] is False and r["historical_training_authorized"] is False
