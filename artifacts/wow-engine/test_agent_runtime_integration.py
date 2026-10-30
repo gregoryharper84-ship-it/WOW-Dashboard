@@ -226,6 +226,29 @@ def test_run_batch_and_key_limits_reject_before_database_access(monkeypatch):
     assert key.status_code == 422
     assert key.json()["detail"]["code"] == "IDEMPOTENCY_KEY_TOO_LONG"
 
+    unsafe_key = client.post(
+        "/wow/runs", json=_RUN_PAYLOAD,
+        headers={"Idempotency-Key": "key with spaces", **_AUTH_HEADERS},
+    )
+    assert unsafe_key.status_code == 422
+    assert unsafe_key.json()["detail"]["code"] == "IDEMPOTENCY_KEY_INVALID_CHARACTERS"
+
+    large_candidate = client.post(
+        "/wow/runs",
+        json={**_RUN_PAYLOAD, "candidate_inputs": [{"payload": "x" * 65536}]},
+        headers={"Idempotency-Key": "bounded-payload", **_AUTH_HEADERS},
+    )
+    assert large_candidate.status_code == 422
+    assert large_candidate.json()["detail"]["code"] == "RUN_CANDIDATE_PAYLOAD_TOO_LARGE"
+
+    # An internal caller can bypass HTTP header validation. The same
+    # pre-DB guard must reject unsafe idempotency keys without any writes.
+    direct = schemas.RunCreateRequest.model_construct(**_RUN_PAYLOAD)
+    with pytest.raises(HTTPException) as invalid_key:
+        agent_runtime_api.create_run(direct, idempotency_key="control\\ncharacter")
+    assert invalid_key.value.status_code == 422
+    assert invalid_key.value.detail["code"] == "IDEMPOTENCY_KEY_INVALID_CHARACTERS"
+
 
 def test_create_run_rejects_can_execute_true(monkeypatch):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
