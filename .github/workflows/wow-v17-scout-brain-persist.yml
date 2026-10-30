@@ -68,21 +68,58 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           mkdir -p "$RUNNER_TEMP/scout-brain"
-          artifact_name=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" --jq '.artifacts | map(select(.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$"))) | sort_by(.created_at) | last | .name // ""')
-          if [ -n "$artifact_name" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "name=$artifact_name" >> "$GITHUB_OUTPUT"
+          if ! [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "SCOUT_SOURCE_RUN_ID_INVALID" >&2
+            exit 1
+          fi
+          source_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")
+          jobs_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100")
+          artifacts_json=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")
+          if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .name == "wow-v17-nightly-multiscout" and
+            .path == ".github/workflows/wow-v17-nightly-multiscout.yml" and
+            .head_branch == "main" and .status == "completed" and
+            (.head_repository.full_name == $repo) and
+            (.conclusion == "success" or .conclusion == "failure")
+          ' <<<"$source_json" >/dev/null; then
+            echo "SCOUT_SOURCE_PROVENANCE_INVALID_HOLD" >&2
+            exit 1
+          fi
+          discovery_state=$(jq -r '
+            [.jobs[] | select(.name == "Nightly all-sport discovery and governed specialist handoff") | .conclusion]
+            | if length == 1 then .[0] else "UNKNOWN" end
+          ' <<<"$jobs_json")
+          verification_state=$(jq -r '
+            [.jobs[] | select(.name == "Verify Multi-Scout contract") | .conclusion]
+            | if length == 1 then .[0] else "UNKNOWN" end
+          ' <<<"$jobs_json")
+          artifact_name=$(jq -r '
+            [.artifacts[] | select(.expired == false and (.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$")))]
+            | sort_by(.created_at) | last | .name // ""
+          ' <<<"$artifacts_json")
+          source_event=$(jq -r '.event // ""' <<<"$source_json")
+          if [ "$discovery_state" = "skipped" ] && [ "$verification_state" = "success" ] &&
+            { [ "$source_event" = "pull_request" ] || [ "$source_event" = "push" ] || [ "$source_event" = "workflow_run" ]; }; then
+            if [ -n "$artifact_name" ]; then
+              echo "SCOUT_SKIPPED_DISCOVERY_ARTIFACT_CONFLICT_HOLD" >&2
+              exit 1
+            fi
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "SCOUT_DISCOVERY_NOT_APPLICABLE: source run ${SOURCE_RUN_ID} verified source code only; discovery job was skipped. No persistence attempted or claimed." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          echo "present=false" >> "$GITHUB_OUTPUT"
-          source_event=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" --jq '.event // ""')
-          if [ "$source_event" = "pull_request" ] || [ "$source_event" = "push" ]; then
-            echo "Source run ${SOURCE_RUN_ID} is a ${source_event} run; discovery is skipped by design and persistence is not applicable." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+          if [ "$discovery_state" != "success" ]; then
+            echo "SCOUT_DISCOVERY_NOT_SUCCESSFUL_HOLD: source run ${SOURCE_RUN_ID} discovery=${discovery_state}." >&2
+            exit 1
           fi
-          echo "No recoverable Scout discovery artifact exists for source run ${SOURCE_RUN_ID} (event '${source_event:-unknown}'); persistence failed closed rather than reporting success without fabricating a run." >> "$GITHUB_STEP_SUMMARY"
-          exit 1
+          if [ -z "$artifact_name" ]; then
+            echo "SCOUT_DISCOVERY_ARTIFACT_MISSING_HOLD: source run ${SOURCE_RUN_ID} completed discovery without recoverable evidence." >&2
+            exit 1
+          fi
+          echo "present=true" >> "$GITHUB_OUTPUT"
+          echo "name=$artifact_name" >> "$GITHUB_OUTPUT"
       - name: Download recoverable Scout handoff artifact
         if: steps.artifact.outputs.present == 'true'
         shell: bash
