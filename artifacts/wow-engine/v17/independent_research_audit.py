@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
-from math import log, sqrt
+from math import fsum, log, sqrt
 import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
@@ -184,12 +184,15 @@ def audit_mlb_strikeout_forecasts(
         )
         return base_result
     selected = []
-    for rows in groups.values():
+    # Canonical thesis sorting is essential: source-record insertion order
+    # must never change a published historical scientific diagnostic.
+    for thesis in sorted(groups):
+        rows = groups[thesis]
         ordered = sorted(rows, key=lambda r: (r["model_time"], r["created"], r["prediction_id"]))
         selected.append(ordered[-1] if selection == "latest" else ordered[0])
     losses = [(r["probability"] - r["hit"]) ** 2 for r in selected]
-    brier = sum(losses) / len(losses)
-    log_loss = sum(-log(r["probability"] if r["hit"] else 1 - r["probability"]) for r in selected) / len(selected)
+    brier = fsum(losses) / len(losses)
+    log_loss = fsum(-log(r["probability"] if r["hit"] else 1 - r["probability"]) for r in selected) / len(selected)
     gain = 0.25 - brier
     per_game: dict[str, list[float]] = defaultdict(list)
     for r, loss in zip(selected, losses):
