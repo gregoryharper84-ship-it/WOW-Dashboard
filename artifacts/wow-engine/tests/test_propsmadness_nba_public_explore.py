@@ -59,6 +59,46 @@ def test_extracts_visible_player_prop_rows_without_adding_false_market_authority
     assert "0.9" not in json.dumps(r)
 
 
+def test_current_nba_threes_public_url_and_strict_player_market_aliases():
+    # Page URL differs from the internal "threes" market key. Both recognized
+    # player-link shapes must remain discovery-only with no training authority.
+    for player_market in ("player-threes", "player-made-threes"):
+        raw = (f'<html><body><a href="/nba?market={player_market}&amp;match=77&amp;player=55">'
+               'A. Player</a><span>Threes 2.5&#183; BOS vs NYK</span>'
+               '<span>L10 AVG 2.2</span></body></html>').encode()
+        result = parse(raw, market="threes")
+        assert result["row_count"] == 1
+        assert result["source_url"] == "https://propsmadness.com/nba/props/made-threes"
+        row = result["rows"][0]
+        assert row["source_page"] == result["source_url"]
+        assert row["stat_type"] == "THREE_POINTERS_MADE"
+        assert row["canonical_player_id"] is None
+        assert row["canonical_event_id"] is None
+        assert row["historical_line_evidence"] is False
+        assert result["historical_training_authorized"] is False
+        assert result["probability_publishable"] is False
+        assert result["can_execute"] is False
+    bad = raw.replace(b"player-made-threes", b"player-unknown")
+    assert parse(bad, market="threes")["row_count"] == 0
+
+
+def test_threes_fetch_targets_actual_public_slug_only_after_robots():
+    paths = []
+    raw = (b'<html><body><a href="/nba?market=player-made-threes&amp;match=77&amp;player=55">'
+           b'A. Player</a><span>Threes 2.5&#183; BOS vs NYK</span></body></html>')
+    result = fetch_public_explore_once(
+        "threes", personal_noncommercial_use_confirmed=True,
+        urlopen=opener_with(b"User-agent: *\\nAllow: /\\n", raw, paths),
+    )
+    assert result["row_count"] == 1
+    assert paths == [
+        "https://propsmadness.com/robots.txt",
+        "https://propsmadness.com/nba/props/made-threes",
+    ]
+    assert result["history_materialized"] is False
+    assert result["historical_training_authorized"] is False
+
+
 def test_changing_stat_or_third_party_url_is_not_a_valid_prop():
     assert parse(PAGE.replace(b"Points 23.5", b"Rebounds 23.5"))["row_count"] == 1
     assert parse(PAGE.replace(b"market=player-points", b"market=player-rebounds"))["row_count"] == 0
