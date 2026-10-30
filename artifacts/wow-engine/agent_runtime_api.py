@@ -18,7 +18,9 @@ runner.py::_run_controlling_model.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 from typing import Any, Optional
 
 from fastapi import Depends, Header, HTTPException
@@ -32,6 +34,7 @@ from ml_research_readiness import get_ml_research_readiness
 GOVERNANCE_VERSION = "WOW-AGENT-RUNTIME-V1-PHASE1"
 MAX_RUN_CANDIDATES = 32
 MAX_IDEMPOTENCY_KEY_LENGTH = 128
+MAX_RUN_CANDIDATE_JSON_BYTES = 65536
 
 _REQUEST_HASH_FIELDS = (
     "run_type", "as_of", "user_timezone", "lanes", "sports",
@@ -138,6 +141,21 @@ def create_run(
             status_code=422,
             detail={"code": "RUN_BATCH_LIMIT_EXCEEDED", "max_candidates": MAX_RUN_CANDIDATES, "can_execute": False},
         )
+    # Bound each admitted batch as well as its row count. Never send a
+    # malformed or oversized candidate payload to the service-role DB/Celery.
+    try:
+        candidate_bytes = len(json.dumps(
+            req.candidate_inputs, ensure_ascii=False, allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8"))
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        candidate_bytes = MAX_RUN_CANDIDATE_JSON_BYTES + 1
+    if candidate_bytes > MAX_RUN_CANDIDATE_JSON_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RUN_CANDIDATE_PAYLOAD_TOO_LARGE",
+                    "max_bytes": MAX_RUN_CANDIDATE_JSON_BYTES, "can_execute": False},
+        )
     if not idempotency_key or not idempotency_key.strip():
         raise HTTPException(
             status_code=400,
@@ -148,6 +166,13 @@ def create_run(
         raise HTTPException(
             status_code=422,
             detail={"code": "IDEMPOTENCY_KEY_TOO_LONG", "max_length": MAX_IDEMPOTENCY_KEY_LENGTH, "can_execute": False},
+        )
+
+    # Reject control/whitespace and non-ASCII header values before persistence.
+    if re.fullmatch(r"[A-Za-z0-9._:-]+", idempotency_key) is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "IDEMPOTENCY_KEY_INVALID_CHARACTERS", "can_execute": False},
         )
 
     request_hash = idempotency.compute_request_hash(
