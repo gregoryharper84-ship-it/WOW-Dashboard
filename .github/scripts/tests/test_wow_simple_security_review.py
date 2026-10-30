@@ -609,7 +609,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
     def test_strict_tool_grammar_matches_same_fail_closed_500_char_contract(self):
         import re
 
-        schema = m.CLAUDE_STRICT_SCHEMA
+        schema = m._build_claude_strict_schema()
         self.assertIsNot(schema, m.REVIEW_SCHEMA)
         self.assertEqual(schema["required"], m.REVIEW_SCHEMA["required"])
         self.assertFalse(schema["additionalProperties"])
@@ -635,8 +635,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(props["category"]["enum"], list(m.FINDING_CATEGORIES))
         self.assertEqual(props["severity"]["enum"], list(m.FINDING_SEVERITIES))
         clone = m._build_claude_strict_schema()
-        self.assertIsNot(clone, m.CLAUDE_STRICT_SCHEMA)
-        self.assertEqual(clone, m.CLAUDE_STRICT_SCHEMA)
+        self.assertIsNot(clone, schema)
+        self.assertEqual(clone, m._build_claude_strict_schema())
         self.assertEqual(
             m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS
         )
@@ -657,6 +657,16 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         risky = {**self._passing(), "findings": [{
             **self._finding("low"), "category": "probability_integrity"}]}
         self.assertEqual(m.parse_verdict(risky)[0], "REJECT")
+        # Strict regex avoids unsupported lookaheads; whitespace is still
+        # rejected by the unmodified authoritative local validation gate.
+        for field in ("file", "detail", "evidence"):
+            malformed = {
+                **self._passing(),
+                "findings": [{**self._finding("low"), field: "\n" * 500}],
+            }
+            with self.assertRaisesRegex(m.Hold, "TEXT_" + field.upper() + "_EMPTY"):
+                m.parse_verdict(malformed)
+
 
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
@@ -668,7 +678,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(decision, "PASS")
             data = req.call_args.kwargs["data"]
             self.assertEqual(data["tool_choice"]["name"], "submit_review")
-            self.assertEqual(data["tools"][0]["input_schema"], m.CLAUDE_STRICT_SCHEMA)
+            self.assertEqual(data["tools"][0]["input_schema"], m._build_claude_strict_schema())
             self.assertIs(data["tools"][0]["strict"], True)
         with patch.object(m, "request_json", return_value={
             "stop_reason": "end_turn", "content": [{"type": "text", "text": "PASS"}]}):
@@ -693,7 +703,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(sent["max_tokens"], 6144)
         self.assertEqual(sent["messages"], [{"role": "user", "content": "source diff"}])
         self.assertEqual(sent["tool_choice"]["name"], "submit_review")
-        self.assertEqual(sent["tools"][0]["input_schema"], m.CLAUDE_STRICT_SCHEMA)
+        self.assertEqual(sent["tools"][0]["input_schema"], m._build_claude_strict_schema())
         self.assertIs(sent["tools"][0]["strict"], True)
 
     def test_claude_truncation_holds_without_resending_untrusted_diff(self):
