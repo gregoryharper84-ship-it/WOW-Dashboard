@@ -231,14 +231,17 @@ def _require_agent_runtime_api_key(authorization: Optional[str] = Header(default
     """
     configured_key = os.environ.get("WOW_AGENT_RUNTIME_API_KEY")
     scoring_key = os.environ.get("WOW_ACTION_API_KEY")
-    if not configured_key or len(configured_key) < 32 or (
-        scoring_key and secrets.compare_digest(configured_key, scoring_key)
+    if not configured_key or len(configured_key) < 32 or not configured_key.isascii() or (
+        scoring_key and scoring_key.isascii()
+        and secrets.compare_digest(configured_key, scoring_key)
     ):
         raise HTTPException(status_code=401, detail="Sports runtime credential is not independently configured.")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
     supplied_key = authorization[len("Bearer "):]
-    if not secrets.compare_digest(supplied_key, configured_key):
+    # Python compare_digest(str, str) raises TypeError on non-ASCII input;
+    # a malformed bearer must produce 401, never an unhandled 500.
+    if not supplied_key.isascii() or not secrets.compare_digest(supplied_key, configured_key):
         raise HTTPException(status_code=401, detail="Invalid credential.")
 
 

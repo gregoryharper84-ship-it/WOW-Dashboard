@@ -289,6 +289,22 @@ def test_scoped_runtime_key_rejects_scoring_key_and_unconfigured_key(monkeypatch
     assert response.status_code == 401
 
 
+def test_runtime_non_ascii_bearer_and_config_fail_closed(monkeypatch, auth_headers):
+    # The direct FastAPI dependency must not leak a compare_digest TypeError
+    # as HTTP 500 for a raw non-ASCII Authorization header.
+    with pytest.raises(HTTPException) as bad_bearer:
+        agent_runtime_api._require_agent_runtime_api_key("Bearer bad-\u00e9")
+    assert bad_bearer.value.status_code == 401
+    monkeypatch.setenv("WOW_AGENT_RUNTIME_API_KEY", "\u00e9" * 40)
+    with pytest.raises(HTTPException) as bad_config:
+        agent_runtime_api._require_agent_runtime_api_key(auth_headers["Authorization"])
+    assert bad_config.value.status_code == 401
+    # A non-ASCII scoring key cannot crash the independent runtime-key check.
+    monkeypatch.setenv("WOW_AGENT_RUNTIME_API_KEY", auth_headers["Authorization"].split(" ", 1)[1])
+    monkeypatch.setenv("WOW_ACTION_API_KEY", "\u00e9" * 40)
+    agent_runtime_api._require_agent_runtime_api_key(auth_headers["Authorization"])
+
+
 def test_run_id_validation_rejects_before_db(monkeypatch, auth_headers):
     def no_db():
         raise AssertionError("invalid UUID reached DB")
