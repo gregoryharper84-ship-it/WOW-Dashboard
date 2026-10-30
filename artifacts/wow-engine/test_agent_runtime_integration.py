@@ -134,8 +134,8 @@ def test_run_and_cancel_require_existing_bearer_key(monkeypatch):
         headers={"Idempotency-Key": "invalid-rejected", "Authorization": "Bearer wrong"},
     )
     assert invalid.status_code == 401
-    assert len(fake._store["wow_agent_runs"]) == 0
-    assert len(fake._store["wow_agent_jobs"]) == 0
+    assert len(fake._store.get("wow_agent_runs", [])) == 0
+    assert len(fake._store.get("wow_agent_jobs", [])) == 0
 
     run = _created_run(fake, "cancel-auth-check")
     unauthorized_cancel = client.post(f"/wow/runs/{run['run_id']}/cancel")
