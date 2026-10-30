@@ -7,6 +7,7 @@ pytest shard is a separate required-CI gate on the PR head itself.
 from pathlib import Path
 import subprocess
 import sys
+import re
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -23,7 +24,15 @@ def test_source_review_negative_suite_runs_on_pr_head():
         cwd=REPO, capture_output=True, text=True, timeout=30, check=False,
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "Ran 26 tests" in result.stderr, result.stderr
+    match = re.search(r"Ran ([0-9]+) tests", result.stderr)
+    assert match and int(match.group(1)) >= 34, result.stderr
+    for required_case in (
+        "test_github_404_names_the_failing_github_stage",
+        "test_provider_404_stays_a_plain_hold_and_is_attributable",
+        "test_diagnostic_line_is_printed_for_every_http_failure",
+        "test_untrusted_endpoint_is_refused_before_any_request",
+    ):
+        assert required_case in result.stderr, result.stderr
 
 
 def test_protected_main_workflow_and_separate_qa_app_are_required():
