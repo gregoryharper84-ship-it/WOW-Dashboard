@@ -91,6 +91,12 @@ def _governed_result(req, *, hold: bool = False):
         "model_probability_available": True,
         "probability_publishable": not hold,
         "rank_eligible": not hold,
+        "nfl_stage_receipt": {
+            "status": "HOLD" if hold else "PASS",
+            "forward_certification_status": "HOLD" if hold else "PASS",
+            "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"] if hold else [],
+            "can_execute": False,
+        },
         "terminal_label": "MODEL_QUALIFIED_HOLD" if hold else "FINAL_APPROVED",
         "global_terminal_authority": "V17_TERMINAL_REDUCER",
         "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN" if hold else "GOVERNED_PROBABILITY_PUBLISHED",
@@ -227,7 +233,11 @@ def test_pickem_audit_uses_classifier_rank_aliases_consistently():
         "official_event_id": "2026_08_CAR_GB",
         "sporting_probability_completed": True,
         "probability_publishable": True,
-        "nfl_stage_receipt": {"status": "PASS", "blockers": []},
+        "nfl_stage_receipt": {
+            "status": "PASS",
+            "forward_certification_status": "PASS",
+            "blockers": [],
+        },
         "can_execute": False,
     }
     for rank_key in ("rank_eligible", "probability_rank_eligible"):
@@ -244,6 +254,42 @@ def test_pickem_audit_uses_classifier_rank_aliases_consistently():
     assert qualified["row_status"] == "COMPLETED"
     assert qualified["probability_publishable"] is True
     assert qualified["can_execute"] is False
+
+
+def test_pickem_without_actual_fitted_nfl_stage_proof_stays_held():
+    source = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "terminal_label": "FINAL_APPROVED",
+        "can_execute": False,
+    }
+    row = runtime._audit_row(source)
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["terminal_reduction"]["final_terminal"] == "HELD"
+
+
+def test_pickem_stage_pass_with_forward_hold_cannot_publish():
+    source = {
+        "official_event_id": "2026_08_CAR_GB",
+        "sporting_probability_completed": True,
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "terminal_label": "FINAL_APPROVED",
+        "nfl_stage_receipt": {
+            "status": "PASS",
+            "forward_certification_status": "HOLD",
+            "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+        },
+        "can_execute": False,
+    }
+    row = runtime._audit_row(source)
+    assert row["row_status"] == "HELD"
+    assert row["probability_publishable"] is False
+    assert row["result"]["sporting_probability_completed"] is True
+    assert row["terminal_reduction"]["can_execute"] is False
 
 
 def test_persisted_pickem_row_nested_hold_wins_over_outer_approved_flags(monkeypatch):
