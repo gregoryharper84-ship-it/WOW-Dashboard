@@ -279,10 +279,18 @@ def parse_verdict(value):
             raise Hold("SEMANTIC_FINDINGS_INVALID:SEVERITY")
         if type(finding["category"]) is not str or finding["category"] not in FINDING_CATEGORIES:
             raise Hold("SEMANTIC_FINDINGS_INVALID:CATEGORY")
-        if any(type(finding[key]) is not str or not finding[key].strip()
-               or len(finding[key]) > MAX_FINDING_TEXT
-               for key in ("file", "detail", "evidence")):
-            raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
+        # A real malformed provider response must remain HOLD, but the repair
+        # owner needs a safe, allowlisted reason that distinguishes type,
+        # blank and size, and identifies the field without logging its value.
+        # Key names and suffixes are fixed here, never model-controlled.
+        for key in ("file", "detail", "evidence"):
+            value = finding[key]
+            if type(value) is not str:
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TYPE")
+            if not value.strip():
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_EMPTY")
+            if len(value) > MAX_FINDING_TEXT:
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TOO_LONG")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
     # Model-provided severity alone cannot downgrade any safety or correctness
     # concern. Even LOW severity in a risk category remains blocking.
