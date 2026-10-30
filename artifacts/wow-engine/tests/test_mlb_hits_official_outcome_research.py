@@ -3,14 +3,14 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
-import sys
+from runpy import run_path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from v17.mlb_hits_official_outcome_research import (
-    MLBHitsResearchHold, extract_mlb_hits_labels, research_matrix,
-)
+_module = run_path(str(Path(__file__).resolve().parents[1] / "v17" / "mlb_hits_official_outcome_research.py"))
+MLBHitsResearchHold = _module["MLBHitsResearchHold"]
+extract_mlb_hits_labels = _module["extract_mlb_hits_labels"]
+research_matrix = _module["research_matrix"]
 
 
 def fixture():
@@ -36,9 +36,10 @@ def test_valid_labels_have_no_prediction_or_training_authority():
     result = extract_mlb_hits_labels(fixture())
     assert result["player_count"] == 4
     assert result["hit_pa_label_count"] == 3
-    assert [(r["hits"], r["plate_appearances"], r["hit_at_least_one_outcome"])
+    assert [(r["hits"], r["plate_appearances"], r["candidate_hit_at_least_one"])
             for r in result["rows"]] == [(0, 4, False), (2, 5, True), (1, 1, True)]
     assert all(r["pregame_feature_snapshot_id"] is None for r in result["rows"])
+    assert all(r["candidate_label_status"] == "UNVERIFIED_FINAL_RESEARCH_ONLY" for r in result["rows"])
     for k in ("event_start_time_verified", "game_final_independently_verified",
               "pregame_features_verified", "source_rights_verified",
               "historical_training_authorized", "probability_publishable", "can_execute"):
@@ -79,17 +80,26 @@ def test_snapshot_invalid_rejected_with_typed_code(edit, code):
     (lambda b: b["teams"]["home"]["players"]["ID20"]["person"].update({"id": 22}),
      "MLB_HITS_RESEARCH_PLAYER_ID_INVALID"),
     (lambda b: b["teams"].pop("away"), "MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID"),
-    (lambda b: b["teams"]["away"]["players"]["ID10"]["stats"].pop("batting"), ""),
 ])
 def test_schema_corruptions_or_missing_batting(edit, code):
     base = fixture()
     body = json.loads(base["raw_body"])
     edit(body)
-    if code:
-        with pytest.raises(MLBHitsResearchHold, match=code):
-            extract_mlb_hits_labels(from_body(body))
-    else:
-        assert extract_mlb_hits_labels(from_body(body))["hit_pa_label_count"] == 2
+    with pytest.raises(MLBHitsResearchHold, match=code):
+        extract_mlb_hits_labels(from_body(body))
+
+
+def test_missing_batting_explicitly_excluded_not_assumed_zero():
+    body = json.loads(fixture()["raw_body"])
+    body["teams"]["away"]["players"]["ID10"]["stats"].pop("batting")
+    assert extract_mlb_hits_labels(from_body(body))["hit_pa_label_count"] == 2
+
+
+def test_large_source_is_rejected_before_hashing_and_json():
+    sample = fixture()
+    sample["raw_body"] = "A" * 256001
+    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_SNAPSHOT_INVALID"):
+        extract_mlb_hits_labels(sample)
 
 
 def test_game_duplicate_fails_and_does_not_merge_snapshots():
