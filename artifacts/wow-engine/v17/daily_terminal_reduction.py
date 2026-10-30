@@ -153,6 +153,8 @@ def assert_no_terminal_upgrade(reduction: dict[str, Any]) -> dict[str, Any]:
     """
     final_terminal = str(reduction.get("final_terminal") or DEFAULT_ROW_STATUS).upper()
     declared_lowest = str(reduction.get("lowest_stage_terminal") or DEFAULT_ROW_STATUS).upper()
+    if declared_lowest not in TERMINAL_RANK:
+        declared_lowest = DEFAULT_ROW_STATUS
     audited = dict(reduction)
     stages = [str(value or "").strip().upper() for value in audited.get("stage_terminals") or []]
     normalized = [stage if stage in TERMINAL_RANK else DEFAULT_ROW_STATUS for stage in stages]
