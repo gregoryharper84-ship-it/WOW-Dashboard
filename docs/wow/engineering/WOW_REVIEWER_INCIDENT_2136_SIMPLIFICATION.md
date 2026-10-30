@@ -1,3 +1,5 @@
+> **HISTORICAL INCIDENT PROPOSAL.** After authorized adoption of [WOW Governance V3 — Single Owner](../../WOW_GOVERNANCE_V3_SINGLE_OWNER.md), use that newer single-owner release policy rather than the Class D/S authorization rules recorded here. Existing provider HOLD and substantive REJECT receipts remain historically accurate.
+
 # Reviewer incident #2136 — collapse to one evidence requirement and two change classes
 
 Status: proposed governance decision. It grants no merge and changes no workflow,
