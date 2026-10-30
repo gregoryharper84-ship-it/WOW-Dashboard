@@ -377,6 +377,56 @@ def _score_event(
     return out
 
 
+def _pickem_governed_stage(source: dict[str, Any]) -> str:
+    """Classify canonical NFL producer proof before global terminal reduction.
+
+    The fitted producer in nfl_daily_stage_receipts.py emits nfl_stage_receipt
+    at the result root; publication wrappers may provide qualified/detail
+    scopes. Arbitrary nested research JSON is not certification authority.
+    """
+    stage = classify_stage_status(source)
+    if stage != "COMPLETED":
+        return stage
+
+    qualification = source.get("probability_qualification")
+    if qualification is not None and not isinstance(qualification, Mapping):
+        return "HELD"
+    scopes = [source]
+    if isinstance(qualification, Mapping):
+        scopes.append(qualification)
+    for parent in (source, qualification):
+        if isinstance(parent, Mapping) and isinstance(parent.get("detail"), Mapping):
+            scopes.append(parent["detail"])
+
+    # NFL needs canonical fitted certification, not contradictory wrapper
+    # booleans, market projections or numerical completion by themselves.
+    found_stage = False
+    for item in scopes:
+        ceiling = str(item.get("terminal_ceiling") or "").strip().upper()
+        label = str(item.get("terminal_label") or "").strip().upper()
+        if ceiling and ceiling != "FINAL_APPROVED":
+            return "HELD"
+        if label and label != "FINAL_APPROVED":
+            return "HELD"
+        if "nfl_stage_receipt" not in item:
+            continue
+        found_stage = True
+        receipt = item["nfl_stage_receipt"]
+        if not isinstance(receipt, Mapping):
+            return "HELD"
+        if str(receipt.get("status") or "").strip().upper() != "PASS":
+            return "HELD"
+        if receipt.get("blockers"):
+            return "HELD"
+        if str(receipt.get("forward_certification_status") or "").strip().upper() != "PASS":
+            return "HELD"
+        if any(receipt.get(flag) is False for flag in (
+            "probability_publishable", "rank_eligible", "probability_rank_eligible"
+        )):
+            return "HELD"
+    return "COMPLETED" if found_stage else "HELD"
+
+
 def _audit_row(source: Mapping[str, Any]) -> dict[str, Any]:
     envelope = source.get("candidate_envelope")
     envelope = envelope if isinstance(envelope, Mapping) else {}
@@ -391,7 +441,7 @@ def _audit_row(source: Mapping[str, Any]) -> dict[str, Any]:
     # numbers, not that V17 authorized publication. The persisted row must use
     # the controlling terminal, including any forward-certification ceiling.
     scored = dict(source)
-    stage_status = classify_stage_status(scored)
+    stage_status = _pickem_governed_stage(scored)
     reduction = assert_no_terminal_upgrade(reduce_row_terminal([stage_status]))
     final_terminal = reduction["final_terminal"]
     return {
