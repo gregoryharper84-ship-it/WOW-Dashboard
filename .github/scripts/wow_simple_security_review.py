@@ -4,27 +4,11 @@
 Untrusted PR content is read as data, never checked out or executed. A distinct
 QA App publishes the exact-head result; GitHub's native required checks enforce it.
 
-Recovery and attribution contract (incident #2136):
-
-* every operational failure carries a stable problem-class/stage/reason code and,
-  when a network call happened, a fixed allowlisted endpoint label. Raw URLs,
-  query strings, tokens, provider bodies, prompts and diffs never enter a
-  failure summary, receipt or log line;
-* each provider keeps a truthful attempt record, including providers that were
-  never attempted (``NOT_ATTEMPTED``) and missing credentials (no fictitious
-  HTTP attempt);
-* a semantic REJECT is terminal: it is never failed over to another provider
-  and never traded for an owner attention response;
-* an ambiguous provider/infrastructure HOLD escalates to the owner immediately,
-  without pretending that both providers were attempted;
-* owner attention is a separate, deduplicated, observable publication step. It
-  is advisory recovery authority only: it is never a security PASS and never an
-  owner approval on the owner's behalf.
-
-Modes (see ``run``):
-  * default       -> review the exact PR target and publish the QA App check
-  * --emit-payload      -> export the bounded receipt for the notifier job
-  * --publish-attention -> publish/update one durable owner attention request
+Incident #2136: fixed-label HTTP/stage diagnostics and truthful provider attempts.
+Semantic REJECT never fails over. Ambiguous infrastructure HOLD is escalated
+for owner attention, never approval. No URL, secret, response body, diff or
+prompt enters the diagnostic receipt or comment.
+Modes: default review; --emit-payload; --publish-attention.
 """
 import hashlib
 import json
@@ -74,7 +58,6 @@ MAX_REASON_LEN = 64
 ENDPOINT_LABEL = re.compile(r"^(?:GITHUB_API|ANTHROPIC_API|GEMINI_API|UNKNOWN_API):"
                             r"(?:GET|POST|PATCH|UNKNOWN):[A-Z_]+$")
 
-# Fixed stage vocabulary. Stage strings are never derived from responses.
 ENDPOINT_STAGES = {
     ("GITHUB_API", "GET", "PR_METADATA"): "github.pr",
     ("GITHUB_API", "GET", "PR_FILES"): "github.diff_inventory",
@@ -106,8 +89,6 @@ CODE_STAGES = (
     ("ATTENTION_", "github.attention"),
     ("NOTIFICATION_", "github.attention"),
 )
-# Closed set: holds that describe a definite, non-infrastructure outcome. Any
-# code outside this set is treated as infrastructure and escalates to the owner.
 NON_ESCALATING = frozenset({
     "SEMANTIC_SCHEMA_INVALID", "SEMANTIC_VERDICT_INVALID", "SEMANTIC_FINDINGS_INVALID",
     "SEMANTIC_RESPONSE_INVALID", "SEMANTIC_RESPONSE_NOT_JSON",
@@ -181,9 +162,6 @@ class Hold(Exception):
         self.endpoint = endpoint if isinstance(endpoint, str) and ENDPOINT_LABEL.match(endpoint) else None
         self.http_status = http_status if type(http_status) is int else None
         self.provider = provider if provider in REVIEWER_IDENTITIES else None
-        # Ambiguous HTTP holds keep the route label in the reason string so a
-        # failure log is self-attributing. Typed codes stay stable/unchanged and
-        # carry the route label in the structured endpoint field instead.
         show = self.code.startswith("HTTP_") if show_endpoint is None else bool(show_endpoint)
         super().__init__(self.code if self.endpoint is None or not show
                          else self.code + ":" + self.endpoint)
@@ -313,8 +291,6 @@ def request_json(url, *, token=None, data=None, headers=None, method=None):
             raw = response.read(250000)
         return json.loads(raw)
     except HTTPError as exc:
-        # Preserve only an allowlisted route label; no URLs, tokens, model
-        # identifiers or upstream response bodies in logs or check receipts.
         print("REVIEW_HTTP_DIAGNOSTIC:HTTP_" + str(exc.code) + ":" + endpoint, file=sys.stderr)
         if is_provider and exc.code in RETRYABLE_HTTP:
             raise ProviderUnavailable("PROVIDER_HTTP_" + str(exc.code), endpoint=endpoint,
@@ -370,7 +346,6 @@ def provider_infrastructure(exc):
     endpoint = exc.endpoint or ""
     if endpoint.startswith(("ANTHROPIC_API:", "GEMINI_API:")):
         return exc.code.startswith(("HTTP_", "PROVIDER_"))
-    # Tolerate a pre-structured code that still names a provider route.
     return bool(re.match(r"^HTTP_[0-9]{3}:(?:ANTHROPIC|GEMINI)_API:", exc.code))
 
 
@@ -559,11 +534,7 @@ def semantic_review(target, credentials, invoke=call_provider):
             remaining = [not_attempted(other, other_index)
                          for other_index, other in enumerate(PROVIDERS) if other_index > index]
             if provider_infrastructure(exc):
-                # No verdict was obtainable from this route. Escalate now; the
-                # alternate provider is recorded as never attempted.
                 raise OwnerFallbackRequired(attempts + remaining, cause=exc)
-            # A malformed/incomplete verdict or policy-neutral reviewer failure
-            # is terminal: never fail over, never shop for a better verdict.
             raise exc.with_attempts(attempts + remaining)
         attempts.append(attempt_record(provider, index, network_attempt=True, reason=decision))
         return decision, payload, provider, attempts
@@ -1063,8 +1034,6 @@ def main():
             receipt["reason"] = "SEMANTIC_REJECT"
     except OwnerFallbackRequired as required:
         receipt["attempts"] = [dict(item) for item in required.attempts][:MAX_ATTEMPT_RECORDS]
-        # Retain the material infrastructure cause; the owner must repair that,
-        # not merely re-read a generic owner-required code.
         if required.cause is not None:
             receipt["reason"] = required.cause.code
             receipt["stage"] = required.cause.stage
@@ -1090,9 +1059,6 @@ def main():
             if required.cause is None:
                 receipt["reason"] = owner_hold.code
                 receipt["stage"] = owner_hold.stage
-                # Only the documented both-providers-exhausted route may present
-                # an exact-head owner approval body. Never advertise it for
-                # owner-authored source or an unresolved infrastructure fault.
                 if owner_hold.code == "OWNER_REVIEW_REQUIRED" and target is not None:
                     receipt["owner_review_instruction"] = owner_review_instruction(target)
     except Hold as exc:
@@ -1122,7 +1088,6 @@ def main():
             receipt["stage"] = final_hold.stage
     receipt["check_publication"] = {"status": "NOT_ATTEMPTED", "reason": "TARGET_UNVALIDATED"}
     if target is not None and target.get("head_sha"):
-        # A check is published only for a fully validated target identity.
         try:
             publish_check(target["head_sha"], receipt, os.environ.get("QA_APP_TOKEN", ""))
             receipt["check_publication"] = {"status": "PUBLISHED"}
