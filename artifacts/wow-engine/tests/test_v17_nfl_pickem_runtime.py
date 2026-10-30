@@ -219,6 +219,66 @@ def test_pickem_row_audit_does_not_trust_outer_approval_over_controlling_ceiling
     assert row["row_status"] == "HELD"
     assert row["probability_publishable"] is False
     assert row["terminal_reduction"]["final_terminal"] == "HELD"
+    assert row["can_execute"] is False
+
+
+def test_persisted_pickem_row_nested_hold_wins_over_outer_approved_flags(monkeypatch):
+    rows = _schedule_rows()[:2]
+    snapshot = {"snapshot_id": "snap", "fetched_at": "2026-09-30T12:00:00+00:00"}
+    monkeypatch.setattr(runtime, "_load_latest_schedule_snapshot", lambda db: (snapshot, rows))
+    monkeypatch.setattr(runtime, "model_invocation_limit", lambda: 12)
+
+    def scorer(req, *, event_api, canonical_hydration_required=False):
+        scored = _governed_result(req)
+        if str(req.official_event_id) == rows[0]["game_id"]:
+            scored["probability_qualification"] = {
+                "nfl_stage_receipt": {
+                    "status": "HOLD",
+                    "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"],
+                },
+            }
+            # Deliberately contradictory wrapper flags: a real final
+            # certification HOLD cannot become a persisted COMPLETED row.
+            assert scored["sporting_probability_completed"] is True
+            assert scored["probability_publishable"] is True
+            assert scored["rank_eligible"] is True
+        return scored
+
+    monkeypatch.setattr(runtime.team_runtime, "score_team_event_request", scorer)
+    saved = {}
+
+    def persist(db, *, run_id, rows):
+        saved["run_id"] = run_id
+        saved["rows"] = rows
+        return {
+            "status": "PERSISTED",
+            "detail_available": True,
+            "rows_persisted": len(rows),
+            "blockers": [],
+            "can_execute": False,
+        }
+
+    monkeypatch.setattr(runtime, "persist_row_detail", persist)
+    out = runtime.run_nfl_pickem_board(
+        runtime.NFLPickemBoardRequest(
+            requested_slate_dates=["2026-10-01", "2026-10-04"],
+            expected_game_count=2,
+        ),
+        db_client_fn=lambda: object(),
+        event_api=object(),
+    )
+    assert saved["run_id"] == out["run_id"]
+    held = next(r for r in saved["rows"]
+                if r["identity"]["official_event_id"] == rows[0]["game_id"])
+    assert held["result"]["sporting_probability_completed"] is True
+    assert held["result"]["probability_publishable"] is True
+    assert held["result"]["probability_qualification"]["nfl_stage_receipt"]["status"] == "HOLD"
+    assert held["row_status"] == "HELD"
+    assert held["probability_publishable"] is False
+    assert held["terminal_reduction"]["lowest_stage_terminal"] == "HELD"
+    assert held["terminal_reduction"]["final_terminal"] == "HELD"
+    assert held["can_execute"] is False
+    assert all(row["can_execute"] is False for row in saved["rows"])
 
 
 def test_runtime_preserves_typed_scorer_failure_and_marks_board_incomplete(monkeypatch):
