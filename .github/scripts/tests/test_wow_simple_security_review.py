@@ -19,16 +19,63 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaises(m.Hold):
             m.event_target({"inputs": {"pr_number": "invalid"}}, "workflow_dispatch")
 
-    def test_pass_requires_every_dimension_and_no_findings(self):
-        good = {"source_review": "PASS", "security_review": "PASS",
+    def _finding(self, severity, detail="note"):
+        return {"severity": severity, "file": "src.py", "detail": detail, "evidence": "observed"}
+
+    def _passing(self):
+        return {"source_review": "PASS", "security_review": "PASS",
                 "probability_integrity_review": "PASS", "findings": []}
+
+    def test_findings_block_only_at_critical_or_high(self):
+        good = self._passing()
         self.assertEqual(m.parse_verdict(good)[0], "PASS")
+        for severity in ("low", "medium"):
+            with self.subTest(advisory=severity):
+                decision, payload = m.parse_verdict({**good, "findings": [self._finding(severity)]})
+                self.assertEqual(decision, "PASS")
+                self.assertEqual(payload["findings"][0]["severity"], severity)
+        for severity in ("high", "critical"):
+            with self.subTest(blocking=severity):
+                self.assertEqual(m.parse_verdict(
+                    {**good, "findings": [self._finding(severity)]})[0], "REJECT")
         self.assertEqual(m.parse_verdict({**good, "security_review": "FAIL"})[0], "REJECT")
-        self.assertEqual(m.parse_verdict({**good, "findings": ["Issue found"]})[0], "REJECT")
-        for bad in ({}, {**good, "source_review": "UNKNOWN"},
-                    {**good, "source_review": []}, {**good, "findings": [0]}, {**good, "extra": True}):
+
+    def test_unclassifiable_findings_fail_closed(self):
+        good = self._passing()
+        incomplete = self._finding("medium")
+        del incomplete["evidence"]
+        for bad in ({}, {**good, "source_review": "UNKNOWN"}, {**good, "source_review": []},
+                    {**good, "extra": True}, {**good, "findings": ["Issue found"]},
+                    {**good, "findings": [{**self._finding("medium"), "extra": 1}]},
+                    {**good, "findings": [{**self._finding("medium"), "detail": "  "}]},
+                    {**good, "findings": [{**self._finding("medium"), "severity": "blocker"}]},
+                    {**good, "findings": [incomplete]},
+                    {**good, "findings": [self._finding("low")] * 13},
+                    {**good, "findings": [0]}):
             with self.assertRaises(m.Hold):
                 m.parse_verdict(bad)
+
+    def test_review_schema_and_prompt_pin_the_severity_contract(self):
+        items = m.REVIEW_SCHEMA["properties"]["findings"]["items"]
+        self.assertEqual(items["properties"]["severity"]["enum"], list(m.FINDING_SEVERITIES))
+        self.assertEqual(sorted(items["required"]), ["detail", "evidence", "file", "severity"])
+        self.assertFalse(items["additionalProperties"])
+        prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
+                               "diff_sha256": "b" * 64, "diff": "d"})
+        self.assertIn("critical or high", prompt)
+        self.assertIn("medium or low", prompt)
+
+    def test_claude_advisory_findings_keep_pass_but_high_rejects(self):
+        good = self._passing()
+        def tool(verdict):
+            return {"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review", "input": verdict}]}
+        with patch.object(m, "request_json",
+                          return_value=tool({**good, "findings": [self._finding("medium")]})):
+            self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "PASS")
+        with patch.object(m, "request_json",
+                          return_value=tool({**good, "findings": [self._finding("critical")]})):
+            self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
 
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
