@@ -295,3 +295,43 @@ def test_late_page_identity_failure_cannot_persist_partial_nfl_grades(monkeypatc
             settlement_refresh_fn=lambda _: {"status": "COMPLETED", "can_execute": False},
         )
     assert calls == []
+
+
+
+class _AlwaysFullPageQuery(_ForwardPagedQuery):
+    def execute(self):
+        if not self.key:
+            raise AssertionError("Expected ordered PostgREST query")
+        return SimpleNamespace(data=[
+            {self.key: f"id{i:04d}"} for i in range(self.start, self.end + 1)
+        ])
+
+
+class _AlwaysFullPageDB(_ForwardPagedDB):
+    def table(self, name):
+        return _AlwaysFullPageQuery(self, name)
+
+
+def test_forward_pagination_rejects_never_ending_full_page_source():
+    table = "wow_nfl_event_predictions"
+    db = _AlwaysFullPageDB({})
+    with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID:.*:PAGE_LIMIT_EXCEEDED"):
+        _paginate(db, table, "event_prediction_id", page_size=2, max_pages=3)
+    assert db.orders == [(table, "event_prediction_id")] * 3
+
+
+@pytest.mark.parametrize("raw_id", [1, 1.0, True, ["a"], {"a": 1}])
+def test_forward_pagination_rejects_non_string_primary_keys(raw_id):
+    table = "wow_nfl_event_predictions"
+    db = _ForwardPagedDB({table: [{"event_prediction_id": raw_id}]})
+    with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID:.*:ID_TYPE_INVALID"):
+        _paginate(db, table, "event_prediction_id")
+
+
+@pytest.mark.parametrize("max_pages", [0, -1, True, 1.5])
+def test_forward_pagination_rejects_invalid_page_limit(max_pages):
+    table = "wow_nfl_event_predictions"
+    db = _ForwardPagedDB({table: []})
+    with pytest.raises(NFLForwardShadowError, match="NFL_FORWARD_PAGINATION_INVALID"):
+        _paginate(db, table, "event_prediction_id", max_pages=max_pages)
+    assert db.orders == []
