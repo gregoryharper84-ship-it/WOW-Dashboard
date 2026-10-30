@@ -117,6 +117,7 @@ def _rundown_acceptance() -> dict[str, Any]:
             capability="events",
             sport_id=3,
             market_ids=sources.rundown_winner_market_ids() or None,
+            affiliate_ids=sources.rundown_evidence_affiliate_ids(),
             main_line=True,
             hide_closed=True,
         )

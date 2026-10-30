@@ -298,6 +298,7 @@ def _resolve_rundown_market_context_impl(req: Any, *, opener: Any = None) -> dic
         capability="events",
         opener=opener,
         market_ids=sources.rundown_winner_market_ids() or None,
+        affiliate_ids=sources.rundown_evidence_affiliate_ids(),
         main_line=True,
         hide_closed=True,
         paid_call_stage=source_policy.STAGE_INITIAL_ENRICHMENT,
