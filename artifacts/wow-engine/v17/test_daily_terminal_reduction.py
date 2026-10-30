@@ -58,6 +58,72 @@ def test_stage_classification_reads_the_controlling_model_receipt(payload, expec
     assert classify_stage_status(payload) == expected
 
 
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "terminal_label": "MODEL_QUALIFIED_HOLD",
+            "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+            "sporting_probability_completed": True,
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+            "nfl_stage_receipt": {"status": "HOLD", "blockers": ["NFL_FORWARD_CERTIFICATION_UNPROVEN"]},
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "nfl_stage_receipt": {"status": "HOLD"},
+        },
+        {
+            "probability_publishable": True,
+            "rank_eligible": True,
+            "probability_qualification": {"terminal_ceiling": "MODEL_QUALIFIED_HOLD"},
+        },
+    ],
+)
+def test_controlling_hold_overrides_stale_wrapper_approval(payload):
+    assert classify_stage_status(payload) == "HELD"
+    audited = assert_no_terminal_upgrade(reduce_row_terminal([classify_stage_status(payload)]))
+    assert audited["stage_terminals"] == ["HELD"]
+    assert audited["lowest_stage_terminal"] == "HELD"
+    assert audited["final_terminal"] == "HELD"
+    assert audited["approved_stage_exception_applied"] is False
+
+
+@pytest.mark.parametrize("blocking", ["HELD", "INVALID", "PURGED"])
+def test_approved_stage_cannot_override_an_unresolved_or_invalid_stage(blocking):
+    audited = assert_no_terminal_upgrade(reduce_row_terminal(["COMPLETED", blocking]))
+    assert audited["stage_terminals"] == ["COMPLETED", blocking]
+    assert audited["lowest_stage_terminal"] == blocking
+    assert audited["final_terminal"] == blocking
+    assert audited["approved_stage_exception_applied"] is False
+
+
+def test_approved_complementary_prop_direction_stays_completed():
+    audited = assert_no_terminal_upgrade(reduce_row_terminal(["REJECTED", "COMPLETED"]))
+    assert audited["stage_terminals"] == ["REJECTED", "COMPLETED"]
+    assert audited["lowest_stage_terminal"] == "REJECTED"
+    assert audited["final_terminal"] == "COMPLETED"
+    assert audited["approved_stage_exception_applied"] is True
+
+
+def test_invalid_audit_upgrade_to_completed_fails_closed():
+    upgraded = assert_no_terminal_upgrade({
+        "stage_terminals": ["COMPLETED", "HELD"],
+        "lowest_stage_terminal": "HELD",
+        "final_terminal": "COMPLETED",
+    })
+    assert upgraded["final_terminal"] == "HELD"
+    assert upgraded["terminal_upgraded_from_rejection"] is True
+    assert RUN_INVALID_TERMINAL_UPGRADE in upgraded["blockers"]
+
+
 def test_a_softened_terminal_is_caught_and_reverted():
     upgraded = assert_no_terminal_upgrade(
         {"lowest_stage_terminal": "REJECTED", "final_terminal": "HELD", "stage_terminals": ["REJECTED"]}
