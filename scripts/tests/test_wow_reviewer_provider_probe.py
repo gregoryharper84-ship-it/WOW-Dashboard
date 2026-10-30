@@ -52,7 +52,7 @@ class ProbeTests(unittest.TestCase):
         self.assertNotIn("  ", output)
 
     def test_whitespace_is_not_trimmed_into_a_false_healthy_result(self):
-        for key in (" sk-test", "sk-test\\n", "\\tsk-test"):
+        for key in (" sk-test", "sk-test" + chr(10), chr(9) + "sk-test"):
             with self.subTest(secret=repr(key[:1])):
                 ok, code, output, calls = self.execute("anthropic", key)
                 self.assertFalse(ok)
