@@ -30,6 +30,23 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             with self.assertRaises(m.Hold):
                 m.parse_verdict(bad)
 
+    def test_prompt_only_allows_unresolved_risk_findings(self):
+        target = {"pr": 2296, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "sample"}
+        prompt = m.prompt_for(target)
+        self.assertIn("All three PASS requires findings=[]", prompt)
+        self.assertIn("even if low severity", prompt)
+        self.assertIn("Exclude praise", prompt)
+        self.assertIn("Every finding requires FAIL",
+                      m.REVIEW_SCHEMA["properties"]["findings"]["description"])
+        good = {"source_review": "PASS", "security_review": "PASS",
+                "probability_integrity_review": "PASS", "findings": []}
+        self.assertEqual(m.parse_verdict(good)[0], "PASS")
+        self.assertEqual(m.parse_verdict({**good, "findings": ["positive note"]})[0],
+                         "REJECT")
+        self.assertEqual(m.parse_verdict({**good, "security_review": "FAIL",
+                                          "findings": ["real low risk"]})[0], "REJECT")
+
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
         creds = {p: "scoped-key" for p in m.PROVIDERS}
