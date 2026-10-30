@@ -25,7 +25,7 @@ def test_source_review_negative_suite_runs_on_pr_head():
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
     match = re.search(r"Ran ([0-9]+) tests", result.stderr)
-    assert match and int(match.group(1)) >= 59, result.stderr
+    assert match and int(match.group(1)) >= 60, result.stderr
     for name in ("test_ambiguous_claude_404_escalates_and_gemini_is_not_attempted",
                  "test_attention_publishes_once_then_updates_without_repeating_mention"):
         assert name in result.stderr, result.stderr
