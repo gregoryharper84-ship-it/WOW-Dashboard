@@ -812,6 +812,26 @@ class ReviewerRecoveryOrchestrationTests(TempWorkspace):
                          ["PROVIDER_HTTP_503", "PROVIDER_HTTP_503"])
         self.assertFalse(receipt["escalation"]["required"])
 
+    def test_ambiguous_provider_hold_cannot_consume_existing_owner_approval(self):
+        api = FakeReviewAPI(
+            author="wow-engineering[bot]",
+            anthropic=m.Hold("HTTP_404", endpoint="ANTHROPIC_API:POST:MESSAGES",
+                             http_status=404))
+        with patch.object(m, "owner_fallback_review",
+                          return_value={"review_id": 77}) as owner:
+            code, receipt = self.review(api)
+        owner.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reason"], "HTTP_404")
+        self.assertEqual(receipt["owner_fallback"]["reason"],
+                         "OWNER_INFRASTRUCTURE_HOLD_NOT_APPROVABLE")
+        self.assertEqual([a["result"] for a in receipt["attempts"]],
+                         ["HTTP_404", "NOT_ATTEMPTED"])
+        self.assertFalse(receipt["escalation"]["owner_eligible"])
+        self.assertEqual(api.provider_calls, ["anthropic-claude-api"])
+        self.assertNotEqual(api.check_posts[0]["conclusion"], "success")
+
     def test_stale_base_move_prevents_stale_pass(self):
         api = FakeReviewAPI(anthropic=claude_message(PASS_VERDICT), main_sha="c" * 40)
         code, receipt = self.review(api)
