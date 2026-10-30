@@ -21,9 +21,9 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
-from api import app, get_client
+from api import _require_action_api_key, app, get_client
 from agent_runtime import idempotency, repository, schemas
 from agent_runtime.orchestrator import Orchestrator
 from agent_runtime.state_machine import RUN_TERMINAL_STATES
@@ -119,7 +119,7 @@ def ml_research_readiness_for_sport(sport: str) -> dict[str, Any]:
         )
 
 
-@app.post("/wow/runs", status_code=202)
+@app.post("/wow/runs", status_code=202, dependencies=[Depends(_require_action_api_key)])
 def create_run(
     req: schemas.RunCreateRequest,
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
@@ -260,7 +260,7 @@ def get_audit(run_id: str) -> dict[str, Any]:
     return {"run_id": run_id, "events": result.data or [], "can_execute": False}
 
 
-@app.post("/wow/runs/{run_id}/cancel")
+@app.post("/wow/runs/{run_id}/cancel", dependencies=[Depends(_require_action_api_key)])
 def cancel_run(run_id: str) -> dict[str, Any]:
     """Administrative dry-run cancellation only (packet section 9)."""
     client = get_client()
