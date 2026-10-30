@@ -132,6 +132,7 @@ def test_invalid_audit_upgrade_to_completed_fails_closed():
         (["COMPLETED", "HELD"], "REJECTED", "COMPLETED", True, "REJECTED"),
         (["COMPLETED", "REJECTED"], "REJECTED", "COMPLETED", False, "REJECTED"),
         (["COMPLETED", "MYSTERY"], "HELD", "COMPLETED", True, "HELD"),
+        (["COMPLETED"], "MYSTERY", "COMPLETED", True, "HELD"),
     ],
 )
 def test_forged_reduction_audit_never_softens_terminal(
