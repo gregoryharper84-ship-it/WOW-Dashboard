@@ -32,7 +32,7 @@ def read_json(path: str) -> dict[str, Any]:
         headers={"Accept": "application/json", "User-Agent": "wow-weather-external-wake/1"},
         method="GET",
     )
-    with urlopen(req, timeout=80) as response:
+    with urlopen(req, timeout=65) as response:
         if response.status != 200:
             raise ProbeError("PROBE_HTTP_STATUS_UNEXPECTED")
         payload = response.read(READ_LIMIT_BYTES + 1)
