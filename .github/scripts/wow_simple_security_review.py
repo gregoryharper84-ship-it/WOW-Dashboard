@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 import sys
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
@@ -45,6 +46,13 @@ MAX_DIFF = 90000
 class Hold(Exception):
     """The security review could not establish an authentic PASS."""
 
+    def __init__(self, code, endpoint=None):
+        self.code = str(code)
+        self.endpoint = endpoint
+        detail = self.code if endpoint is None or not self.code.startswith("HTTP_") \
+            else self.code + ":" + endpoint
+        super().__init__(detail)
+
 
 class ProviderUnavailable(Hold):
     """Only typed provider availability failures permit fallback."""
@@ -68,6 +76,41 @@ class NoCredentialRedirect(HTTPRedirectHandler):
 HTTP_CLIENT = build_opener(NoCredentialRedirect)
 
 
+def safe_label(url, has_body):
+    """Fixed, allowlisted endpoint label; never a URL, query string or response."""
+    parsed = urlsplit(url)
+    host, path = parsed.hostname, parsed.path
+    verb = "POST" if has_body else "GET"
+    prefix = "/repos/" + REPO + "/"
+    if parsed.scheme == "https" and host == "api.github.com" and path.startswith(prefix):
+        segments = path[len(prefix):].split("/")
+        if len(segments) == 2 and segments[0] == "pulls" and segments[1].isdigit():
+            operation = "PR_METADATA"
+        elif (len(segments) == 3 and segments[0] == "pulls"
+              and segments[1].isdigit() and segments[2] in ("files", "reviews")):
+            operation = "PR_" + segments[2].upper()
+        elif len(segments) == 3 and segments[0] == "commits" and segments[2] == "check-runs":
+            operation = "CHECK_RUNS_READ"
+        elif len(segments) == 2 and segments[0] == "commits":
+            operation = "COMMIT_METADATA"
+        elif segments == ["check-runs"]:
+            operation = "CHECK_RUN_CREATE"
+        elif segments == ["git", "ref", "heads", "main"]:
+            operation = "MAIN_REF"
+        elif (len(segments) == 3 and segments[0] == "issues"
+              and segments[1].isdigit() and segments[2] == "comments"):
+            operation = "ISSUE_COMMENTS"
+        else:
+            operation = "OTHER_REPO_RESOURCE"
+        return "GITHUB_API:" + verb + ":" + operation
+    if parsed.scheme == "https" and host == "api.anthropic.com" and path == "/v1/messages":
+        return "ANTHROPIC_API:" + verb + ":MESSAGES"
+    if (parsed.scheme == "https" and host == "generativelanguage.googleapis.com"
+            and path.startswith("/v1beta/models/") and path.endswith(":generateContent")):
+        return "GEMINI_API:" + verb + ":GENERATE_CONTENT"
+    return "UNKNOWN_API:" + verb + ":UNCLASSIFIED"
+
+
 def request_json(url, *, token=None, data=None, headers=None):
     if not (url.startswith("https://api.github.com/repos/" + REPO + "/")
             or url == "https://api.anthropic.com/v1/messages"
@@ -81,11 +124,15 @@ def request_json(url, *, token=None, data=None, headers=None):
     body = None if data is None else json.dumps(data, separators=(",", ":")).encode()
     if body is not None:
         h["Content-Type"] = "application/json"
+    # Bounded attribution only: the label is fixed and carries no request data.
+    endpoint = safe_label(url, data is not None)
     try:
         with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=60) as response:
             raw = response.read(250000)
         return json.loads(raw)
     except HTTPError as exc:
+        print("REVIEW_HTTP_DIAGNOSTIC:HTTP_" + str(exc.code) + ":" + endpoint,
+              file=sys.stderr)
         is_provider = data is not None and not url.startswith("https://api.github.com/")
         if is_provider and exc.code in RETRYABLE_HTTP:
             raise ProviderUnavailable("PROVIDER_HTTP_" + str(exc.code)) from None
@@ -104,13 +151,13 @@ def request_json(url, *, token=None, data=None, headers=None):
                 raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED") from None
             if exc.code == 404 and any(x in words for x in MODEL_GONE_ERRORS):
                 raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
-        raise Hold("HTTP_" + str(exc.code)) from None
+        raise Hold("HTTP_" + str(exc.code), endpoint=endpoint) from None
     except (URLError, TimeoutError):
         if not url.startswith("https://api.github.com/"):
             raise ProviderUnavailable("PROVIDER_TRANSPORT") from None
-        raise Hold("GITHUB_TRANSPORT") from None
+        raise Hold("GITHUB_TRANSPORT", endpoint=endpoint) from None
     except (ValueError, UnicodeError):
-        raise Hold("RESPONSE_JSON_INVALID") from None
+        raise Hold("RESPONSE_JSON_INVALID", endpoint=endpoint) from None
 
 
 def gh(path, token):
