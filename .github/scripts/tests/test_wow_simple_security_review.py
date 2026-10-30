@@ -306,7 +306,6 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             (529, {}, "PROVIDER_HTTP_529"),
             (400, {"error": {"type": "invalid_request_error",
                               "message": "Your credit balance is too low"}}, "PROVIDER_CREDIT_EXHAUSTED"),
-            (404, {"error": {"message": "model not found"}}, "PROVIDER_MODEL_UNAVAILABLE"),
         ):
             with self.subTest(code=code):
                 with self.assertRaises(m.ProviderUnavailable) as cm:
@@ -314,7 +313,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 self.assertEqual(str(cm.exception), expected)
         for code, body in ((400, {"error": {"message": "invalid request schema"}}),
                            (403, {"error": {"message": "policy denied"}}),
-                           (404, {"error": {"message": "endpoint inaccessible"}})):
+                           (404, {"error": {"message": "endpoint inaccessible"}}),
+                           (404, {"error": {"message": "model not found"}})):
             with self.subTest(denied=code):
                 with self.assertRaises(m.Hold) as cm:
                     reject(code, body)
