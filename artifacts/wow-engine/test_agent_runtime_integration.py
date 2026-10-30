@@ -152,6 +152,55 @@ def test_run_and_cancel_require_existing_bearer_key(monkeypatch):
     assert repository.get_run(fake, run["run_id"])["status"] == "CREATED"
 
 
+def test_run_reads_require_existing_bearer_before_database_access(monkeypatch):
+    def forbidden_db_access():
+        raise AssertionError("unauthorized GET accessed service-role database")
+
+    monkeypatch.setattr(agent_runtime_api, "get_client", forbidden_db_access)
+    run_id = "00000000-0000-0000-0000-000000000000"
+    for path in (f"/wow/runs/{run_id}", f"/wow/runs/{run_id}/manifest", f"/wow/runs/{run_id}/audit"):
+        for headers in ({}, {"Authorization": "Bearer invalid"}):
+            response = client.get(path, headers=headers)
+            assert response.status_code == 401, (path, response.text)
+
+
+def test_authenticated_run_reads_preserve_contract(monkeypatch):
+    fake = FakeSupabaseClient()
+    created = _created_run(fake, "read-auth-contract")
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    run_id = created["run_id"]
+    state = client.get(f"/wow/runs/{run_id}", headers=_AUTH_HEADERS)
+    assert state.status_code == 200
+    assert state.json()["run_id"] == run_id
+    assert state.json()["can_execute"] is False
+    manifest = client.get(f"/wow/runs/{run_id}/manifest", headers=_AUTH_HEADERS)
+    assert manifest.status_code == 200
+    assert manifest.json()["terminal"] is False
+    audit = client.get(f"/wow/runs/{run_id}/audit", headers=_AUTH_HEADERS)
+    assert audit.status_code == 200
+    assert audit.json()["run_id"] == run_id
+    assert audit.json()["can_execute"] is False
+
+
+def test_run_batch_and_key_limits_reject_before_database_access(monkeypatch):
+    def forbidden_db_access():
+        raise AssertionError("oversized admission accessed service-role database")
+
+    monkeypatch.setattr(agent_runtime_api, "get_client", forbidden_db_access)
+    batch = client.post(
+        "/wow/runs", json={**_RUN_PAYLOAD, "candidate_inputs": [{}] * 33},
+        headers={"Idempotency-Key": "batch-limit", **_AUTH_HEADERS},
+    )
+    assert batch.status_code == 422
+    assert batch.json()["detail"]["code"] == "RUN_BATCH_LIMIT_EXCEEDED"
+    key = client.post(
+        "/wow/runs", json=_RUN_PAYLOAD,
+        headers={"Idempotency-Key": "x" * 129, **_AUTH_HEADERS},
+    )
+    assert key.status_code == 422
+    assert key.json()["detail"]["code"] == "IDEMPOTENCY_KEY_TOO_LONG"
+
+
 def test_create_run_rejects_can_execute_true(monkeypatch):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
     response = client.post(
@@ -196,7 +245,7 @@ def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch):
 
 def test_get_run_not_found_is_404(monkeypatch):
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
-    response = client.get("/wow/runs/00000000-0000-0000-0000-000000000000")
+    response = client.get("/wow/runs/00000000-0000-0000-0000-000000000000", headers=_AUTH_HEADERS)
     assert response.status_code == 404
 
 
@@ -205,7 +254,7 @@ def test_nonterminal_manifest_is_never_reported_as_zero_picks_means_no_play(monk
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
     created = _created_run(fake, "run-nonterminal-1")
 
-    manifest = client.get(f"/wow/runs/{created['run_id']}/manifest")
+    manifest = client.get(f"/wow/runs/{created['run_id']}/manifest", headers=_AUTH_HEADERS)
     assert manifest.status_code == 200
     body = manifest.json()
     assert body["terminal"] is False
@@ -222,7 +271,7 @@ def test_cancel_run_transitions_to_canceled(monkeypatch):
     assert cancel.status_code == 200
     assert cancel.json() == {"run_id": created["run_id"], "status": "CANCELED", "terminal": True, "can_execute": False}
 
-    manifest = client.get(f"/wow/runs/{created['run_id']}/manifest")
+    manifest = client.get(f"/wow/runs/{created['run_id']}/manifest", headers=_AUTH_HEADERS)
     assert manifest.json()["status"] == "CANCELED"
     assert manifest.json()["terminal"] is True
 
@@ -342,7 +391,7 @@ def test_synchronous_fake_worker_fixture_completes_with_balanced_reconciliation(
     )
     assert final.applied is True
 
-    manifest = client.get(f"/wow/runs/{run_id}/manifest")
+    manifest = client.get(f"/wow/runs/{run_id}/manifest", headers=_AUTH_HEADERS)
     assert manifest.status_code == 200
     body = manifest.json()
     assert body["terminal"] is True
