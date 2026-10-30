@@ -4,6 +4,8 @@ This file is the repository source of truth for governed typed failure/status co
 
 `can_execute=false` remains invariant. Market/evidence failures never imply a sporting-model capability failure.
 
+| `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
+
 Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
