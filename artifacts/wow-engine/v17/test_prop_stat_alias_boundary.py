@@ -65,3 +65,33 @@ def test_final_score_prop_boundary_rewrites_alias_before_captured_route():
         "can_execute": False,
     }
     assert payload["can_execute"] is False
+
+
+def test_wnba_provider_labels_map_to_exact_registered_fitted_artifact_stats():
+    assert subject.canonical_stat_type("WNBA", "PLAYER_ASSISTS") == "ASSISTS"
+    assert subject.canonical_stat_type("WNBA", "PLAYER_POINTS") == "POINTS"
+    assert subject.canonical_stat_type("WNBA", "PLAYER_REBOUNDS") == "REBOUNDS"
+    assert subject.canonical_stat_type("WNBA", "PLAYER_MADE_THREES") == "THREE_POINTERS_MADE"
+    # Unknown/new stat labels must not be coerced into a certified route.
+    assert subject.canonical_stat_type("WNBA", "PLAYER_BLOCKS") == "PLAYER_BLOCKS"
+    assert subject.canonical_stat_type("NBA", "PLAYER_ASSISTS") == "PLAYER_ASSISTS"
+
+
+def test_wnba_direct_prop_boundary_canonicalizes_only_identity_and_stays_dry_run():
+    app = FastAPI()
+    observed = []
+
+    @app.post("/score-prop", operation_id="scoreWowProp")
+    def score_prop(req: _Request):
+        observed.append((req.sport, req.stat_type))
+        return {"probability_publishable": False, "rank_eligible": False, "can_execute": False}
+
+    assert subject.install_score_prop_alias_boundary(app, market_api=_Market()) is True
+    with TestClient(app) as client:
+        response = client.post("/score-prop", json={"sport": "WNBA", "stat_type": "PLAYER_ASSISTS"})
+    assert response.status_code == 200
+    assert observed == [("WNBA", "ASSISTS")]
+    assert response.json()["stat_type_resolution"]["rewritten"] is True
+    assert response.json()["probability_publishable"] is False
+    assert response.json()["rank_eligible"] is False
+    assert response.json()["can_execute"] is False

@@ -63,6 +63,13 @@ PROP_STAT_ALIASES: dict[tuple[str, str], str] = {
     ("MLB", "FIRST_INNING_PITCHES"): MLB_1IP_STAT_TYPE,
     ("MLB", "FIRST_INNING_PITCH_COUNT"): MLB_1IP_STAT_TYPE,
     ("MLB", "FIRST_INNING_PITCHES_THROWN"): MLB_1IP_STAT_TYPE,
+    # Provider discovery uses PLAYER_ names while governed WNBA fitted-artifact
+    # registration uses the canonical single-stat settlement labels. This is
+    # identity normalization only, never model registration/certification.
+    ("WNBA", "PLAYER_POINTS"): "POINTS",
+    ("WNBA", "PLAYER_REBOUNDS"): "REBOUNDS",
+    ("WNBA", "PLAYER_ASSISTS"): "ASSISTS",
+    ("WNBA", "PLAYER_MADE_THREES"): "THREE_POINTERS_MADE",
     ("NFL", "PASS_YARDS"): "PASSING_YARDS",
     ("NFL", "PASSING_YARDS"): "PASSING_YARDS",
     ("NFL", "RUSH_YARDS"): "RUSHING_YARDS",
