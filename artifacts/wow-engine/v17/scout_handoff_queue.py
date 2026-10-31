@@ -616,27 +616,30 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
     """
     events: list[dict[str, Any]] = []
     last_id = 0
-    for _ in range(51):
+    max_events = 50000
+    for _ in range(100):
         result = (
             db.table("wow_scout_handoff_state_events")
             .select("event_id,candidate_id,target_lane,state,code,can_execute,created_at")
             .eq("source_run_id", source_run_id)
             .gt("event_id", last_id)
             .order("event_id")
-            .limit(1000)
+            .limit(min(1000, max_events - len(events) + 1))
             .execute()
         )
         batch = [dict(row) for row in (getattr(result, "data", None) or [])]
         if not batch:
             return events
+        # A full ledger may make one final 1-row existence probe. Never
+        # append or allocate an oversized page beyond the bounded budget.
+        if len(events) + len(batch) > max_events:
+            raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
         for row in batch:
             event_id = row.get("event_id")
             if type(event_id) is not int or event_id <= last_id:
                 raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
             last_id = event_id
             events.append(row)
-        if len(events) > 50000:
-            raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
     raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
 
 
