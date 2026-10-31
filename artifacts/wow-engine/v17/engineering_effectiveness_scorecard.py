@@ -11,6 +11,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from v17.learning_integrity_audit import audit_engineering_incidents
 from typing import Any
 
 FOLLOWUP_PATTERNS = (
@@ -46,6 +47,7 @@ def summarize(
     now: datetime | None = None,
     window_hours: int = 72,
     stale_hours: int = 72,
+    incident_ledger: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     window_start = now - timedelta(hours=window_hours)
@@ -78,6 +80,7 @@ def summarize(
         "stale_open_prs": [int(pr["number"]) for pr in stale_open],
         "followup_prs": [int(pr["number"]) for pr in followups],
         "metric_note": "first_pass_proxy is a conservative process proxy based on explicit/recognizable linked follow-up metadata; product acceptance remains separately authoritative",
+        "engineering_learning_audit": audit_engineering_incidents(incident_ledger) if incident_ledger is not None else None,
         "can_execute": False,
     }
 
@@ -95,12 +98,14 @@ def main() -> None:
     parser.add_argument("--open-json", required=True)
     parser.add_argument("--window-hours", type=int, default=72)
     parser.add_argument("--stale-hours", type=int, default=72)
+    parser.add_argument("--incident-ledger-json", default=None)
     args = parser.parse_args()
     result = summarize(
         _load(args.merged_json),
         _load(args.open_json),
         window_hours=args.window_hours,
         stale_hours=args.stale_hours,
+        incident_ledger=json.loads(Path(args.incident_ledger_json).read_text()) if args.incident_ledger_json else None,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
 
