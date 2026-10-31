@@ -290,9 +290,24 @@ def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> 
     selected = str(outcome.get("selected_team") or "").strip() or None
     if selected is None:
         blockers.append("CARD_ADMISSION:SELECTION_MISSING")
+    # Preserve the established probability-ledger meaning of rank_eligible:
+    # sporting-only, never market/card admission. The explicit scope and
+    # independent card audit prevent consumers from mistaking it for a
+    # market-approved order or a completed card admission.
     outcome["rank_eligible"] = sporting_rank_eligible
+    outcome["rank_eligibility_scope"] = "SPORTING_PROBABILITY"
     outcome["card_admission_eligible"] = not blockers
     outcome["card_admission_blockers"] = blockers
+    outcome["card_admission_audit"] = {
+        "scope": "CARD_ADMISSION",
+        "terminal_status": outcome.get("terminal_status"),
+        "sporting_rank_eligible": sporting_rank_eligible,
+        "objective_rank_eligible": objective_rank_eligible,
+        "probability_publishable": probability_publishable,
+        "admission_eligible": not blockers,
+        "blockers": list(blockers),
+        "can_execute": False,
+    }
     outcome["card_admission_receipt"] = {
         "event_prediction_id": prediction_id,
         "official_event_id": row.event_key,
@@ -303,6 +318,7 @@ def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> 
         # deliberately conservative (both lanes), unlike the top-level
         # sporting-only rank. Consumers can inspect either native lane.
         "rank_eligible": sporting_rank_eligible and objective_rank_eligible,
+        "rank_eligibility_scope": "CARD_ADMISSION",
         "sporting_rank_eligible": sporting_rank_eligible,
         "objective_rank_eligible": objective_rank_eligible,
         "card_admission_eligible": not blockers,
@@ -423,6 +439,10 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
     blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
     # Missing fitted-model eligibility is not affirmative certification.
     probability_rank_eligible = scored.get("rank_eligible") is True
+    rank_evidence_status = (
+        "EXPLICIT_FITTED_FLAG" if "rank_eligible" in scored
+        else "MISSING_FITTED_FLAG_FAIL_CLOSED"
+    )
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key, "objective_lane": row.objective_lane,
         "terminal_status": "COMPLETED", "code": "SPORTING_PROBABILITY_COMPLETED", "selected_team": selected,
@@ -433,6 +453,7 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
         "score_snapshot_id": scored.get("score_snapshot_id"), "event_prediction_id": scored.get("event_prediction_id"),
         "probability_publishable": True,
         "probability_rank_eligible": probability_rank_eligible,
+        "rank_eligibility_evidence_status": rank_evidence_status,
         "objective_rank_eligible": _objective_rank_eligible(row, probability_rank_eligible, scored),
         **_probability_separation_fields(market_needed=market_needed),
         "can_execute": False,
