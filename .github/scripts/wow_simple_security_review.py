@@ -116,7 +116,8 @@ def _valid_changed_path(value):
     return (type(value) is str and 0 < len(value) <= MAX_FINDING_PATH
             and not value.startswith("/") and "\\" not in value
             and all(part not in ("", ".", "..") for part in value.split("/"))
-            and not any(ord(char) < 32 or ord(char) == 127 or\n                        unicodedata.category(char) == "Cf" for char in value))
+            and not any(ord(char) < 32 or ord(char) == 127 or
+                        unicodedata.category(char) == "Cf" for char in value))
 
 
 class Hold(Exception):
