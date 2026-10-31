@@ -807,6 +807,46 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             {"provider": "anthropic-claude-api", "result": "SEMANTIC_RECEIPT_BYTES_EXCEEDED"}
         ])
 
+    def test_global_v3_preserves_long_authenticated_risk_findings_end_to_end(self):
+        """Regression for historic TEXT_DETAIL_TOO_LONG: no lost security finding."""
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "changed source",
+                  "file_blobs": {"src.py": "d" * 40}}
+        # The V2 500-character cliff turned this valid complete independent
+        # security REJECT into an unusable HOLD across unrelated product PRs.
+        detail, evidence = "S" * 701, "E" * 721
+        verdict = {**self._passing(), "findings": [
+            {**self._finding("medium", detail=detail, category="security"),
+             "evidence": evidence}
+        ]}
+        claude = {"stop_reason": "tool_use", "content": [
+            {"type": "tool_use", "name": "submit_review", "input": verdict}]}
+        gemini = {"candidates": [{"finishReason": "STOP",
+                   "content": {"parts": [{"text": m.json.dumps(verdict)}]}}]}
+        for provider, response in (("anthropic-claude-api", claude),
+                                   ("gemini-generative-api", gemini)):
+            with self.subTest(provider=provider):
+                with patch.object(m, "request_json", return_value=response) as req:
+                    decision, payload, actual_provider, attempts = m.semantic_review(
+                        target, {provider: "private"},
+                        invoke=m.call_provider)
+                self.assertEqual(req.call_count, 1)
+                self.assertEqual(decision, "REJECT")
+                self.assertEqual(actual_provider, provider)
+                self.assertEqual(attempts[-1], {"provider": provider, "result": "REJECT"})
+                self.assertEqual(payload["findings"][0]["detail"], detail)
+                self.assertEqual(payload["findings"][0]["evidence"], evidence)
+                receipt = m.make_receipt(
+                    target, decision=decision, reviewer=actual_provider,
+                    verdict=payload, attempts=attempts, run_id=33, attempt=1)
+                persisted = m.json.loads(m._serialize_receipt(receipt))
+                self.assertEqual(persisted["decision"], "REJECT")
+                self.assertEqual(persisted["schema_version"], m.REVIEW_CONTRACT_VERSION)
+                self.assertEqual(persisted["verdict"]["findings"][0]["detail"], detail)
+                self.assertEqual(persisted["verdict"]["findings"][0]["evidence"], evidence)
+                self.assertFalse(persisted["can_execute"])
+                self.assertTrue(persisted["no_live_trading"])
+
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
                    "probability_integrity_review": "PASS", "findings": []}
