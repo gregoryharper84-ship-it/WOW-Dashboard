@@ -20,6 +20,35 @@ from typing import Any, Mapping
 SCHEMA = "WOW_MLB_HITS_OFFICIAL_OUTCOME_RESEARCH_V1"
 SOURCE = "CLAIMED_MLB_STATS_API_UNAUTHENTICATED_RESEARCH_ONLY"
 
+MAX_JSON_DEPTH = 64
+
+
+def _json_depth_bounded(raw: str) -> bool:
+    """Reject excessive JSON structure before invoking the recursive decoder."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "{[":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif char in "}]":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0 and not in_string
+
+
 
 class MLBHitsResearchHold(ValueError):
     """Canonical bounded error; never include untrusted source body."""
@@ -91,6 +120,11 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             and re.fullmatch(r"[a-f0-9]{64}", snapshot["raw_sha256"]) is not None
             and digest == snapshot["raw_sha256"],
             "MLB_HITS_RESEARCH_SOURCE_HASH_MISMATCH")
+    # A bounded lexical nesting scan runs BEFORE the C JSON decoder. Catching
+    # RecursionError alone is not a reliable process-level depth budget when
+    # runtime recursion limits change. Brackets inside escaped JSON strings
+    # are not structural; json.loads remains the syntax authority.
+    require(_json_depth_bounded(raw), "MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID")
     try:
         body = json.loads(raw)
     except (ValueError, TypeError, RecursionError) as ex:
