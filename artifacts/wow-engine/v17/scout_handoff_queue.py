@@ -604,6 +604,42 @@ def read_run_status(db: Any, source_run_id: str) -> dict[str, Any]:
     }
 
 
+def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
+    """Read the complete state ledger, not just PostgREST's first 1,000 rows.
+
+    event_id is the immutable BIGINT primary key. Keyset pagination prevents
+    the first-page truncation that falsely reported no specialist-worker events
+    for the 2026-10-31 Scout source run (2,499 event rows). Always request the
+    next page until empty: a server-side row cap can be lower than our limit.
+    Reject missing, repeated or non-monotone IDs rather than certify an
+    incomplete terminal receipt. No model scoring or execution occurs here.
+    """
+    events: list[dict[str, Any]] = []
+    last_id = 0
+    for _ in range(51):
+        result = (
+            db.table("wow_scout_handoff_state_events")
+            .select("event_id,candidate_id,target_lane,state,code,can_execute,created_at")
+            .eq("source_run_id", source_run_id)
+            .gt("event_id", last_id)
+            .order("event_id")
+            .limit(1000)
+            .execute()
+        )
+        batch = [dict(row) for row in (getattr(result, "data", None) or [])]
+        if not batch:
+            return events
+        for row in batch:
+            event_id = row.get("event_id")
+            if type(event_id) is not int or event_id <= last_id:
+                raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+            last_id = event_id
+            events.append(row)
+        if len(events) > 50000:
+            raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+    raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+
+
 def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = False) -> dict[str, Any]:
     result = (
         db.table("wow_scout_handoff_jobs")
@@ -613,14 +649,7 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         .execute()
     )
     rows = [dict(row) for row in (getattr(result, "data", None) or [])]
-    event_result = (
-        db.table("wow_scout_handoff_state_events")
-        .select("candidate_id,target_lane,state,code,can_execute,created_at")
-        .eq("source_run_id", source_run_id)
-        .order("created_at")
-        .execute()
-    )
-    events = [dict(row) for row in (getattr(event_result, "data", None) or [])]
+    events = _read_all_state_events(db, source_run_id)
 
     counts: dict[str, int] = {}
     lane_counts: dict[str, dict[str, int]] = {}
