@@ -135,7 +135,7 @@ def audit_engineering_incidents(ledger: Mapping[str, Any]) -> dict[str, Any]:
         domain = str(record.get("domain") or "UNCLASSIFIED_DOMAIN").strip().upper()
         learning = record.get("learning") if isinstance(record.get("learning"), Mapping) else {}
         key = str(record.get("root_cause_key") or learning.get("failure_category") or "").strip().upper()
-        if key and str(record.get("root_cause_status") or "CONFIRMED").upper() == "CONFIRMED":
+        if key and str(record.get("root_cause_status") or "").upper() == "CONFIRMED":
             classified[(domain, key)].append(pid)
             by_domain[domain]["classified_incidents"] += 1
         else:
