@@ -635,6 +635,20 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(props["severity"]["enum"], list(m.FINDING_SEVERITIES))
         self.assertEqual(m._build_claude_strict_schema(), schema)
         self.assertIsNot(m._build_claude_strict_schema(), schema)
+        self.assertEqual(m._build_review_schema(), m.REVIEW_SCHEMA)
+        # Mutating the cached local schema cannot alter the provider contract.
+        with patch.object(m, "REVIEW_SCHEMA", {"untrusted_mutation": True}):
+            self.assertEqual(m._build_claude_strict_schema(), schema)
+        def assert_no_unsupported(node):
+            if isinstance(node, dict):
+                for key in ("minLength", "maxLength", "maxItems", "pattern"):
+                    self.assertNotIn(key, node)
+                for value in node.values():
+                    assert_no_unsupported(value)
+            elif isinstance(node, list):
+                for value in node:
+                    assert_no_unsupported(value)
+        assert_no_unsupported(schema)
         self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
         for field in ("file", "detail", "evidence"):
             self.assertEqual(
