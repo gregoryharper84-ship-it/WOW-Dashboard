@@ -148,13 +148,19 @@ def run_continuous_intelligence_cycle(
     if complete:
         candidates = sum(int(stage.get("candidate_n") or 0) for stage in stages[:2])
         constructed = sum(int(stage.get("observation_n") or 0) for stage in stages[:2])
+        skipped = sum(int(stage.get("skipped_n") or 0) for stage in stages[:2])
         persisted = int(stages[2].get("observation_n") or 0)
         if constructed > 0 and persisted == 0:
             evidence_status = "READBACK_FAILED"
             evidence_failure = "LEARNING_PERSISTENCE_READBACK_EMPTY"
-        elif candidates > 0 and constructed == 0 and persisted == 0:
+        elif candidates > 0 and constructed == 0:
+            # Historical ledger rows never excuse zero new matched candidates.
             evidence_status = "SOURCE_JOIN_UNRESOLVED"
             evidence_failure = "LEARNING_SETTLED_SOURCE_JOIN_UNRESOLVED"
+        elif skipped > 0:
+            # Good independent rows may persist, but the refresh was incomplete.
+            evidence_status = "CAPTURE_INCOMPLETE"
+            evidence_failure = "LEARNING_CAPTURE_INCOMPLETE"
         elif candidates == 0 and persisted == 0:
             evidence_status = "NO_SOURCE_EVIDENCE"
         elif persisted == 0:
