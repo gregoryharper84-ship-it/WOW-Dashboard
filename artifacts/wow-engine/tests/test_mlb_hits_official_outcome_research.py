@@ -158,6 +158,32 @@ def test_nonstandard_json_numeric_constants_fail_closed(literal):
         extract_mlb_hits_labels(sample)
 
 
+@pytest.mark.parametrize("literal", ["1e9999", "-1e9999"])
+def test_json_exponent_overflow_fails_closed(literal):
+    # Standard JSON exponent syntax can still overflow Python float to inf.
+    # Reject even when the field is unused and the raw hash matches.
+    sample = fixture()
+    raw = sample["raw_body"][:-1] + ', "unused_overflow": ' + literal + "}"
+    assert json.loads(raw)["unused_overflow"] in (float("inf"), float("-inf"))
+    sample["raw_body"] = raw
+    sample["raw_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID"):
+        extract_mlb_hits_labels(sample)
+
+
+def test_finite_json_float_in_unused_field_preserves_research_hold_flags():
+    sample = fixture()
+    raw = sample["raw_body"][:-1] + ', "unused_finite": 1.25}'
+    sample["raw_body"] = raw
+    sample["raw_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+    result = extract_mlb_hits_labels(sample)
+    assert result["hit_pa_label_count"] == 3
+    assert result["source_authenticated"] is False
+    assert result["historical_training_authorized"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
 def test_unbounded_claimed_game_pk_fails_with_typed_hold():
     # Python can construct an integer too large to stringify under the
     # interpreter's digit safety limit; never leak that ValueError.
