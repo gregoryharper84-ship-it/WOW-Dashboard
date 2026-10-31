@@ -68,6 +68,11 @@ def _unique_json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _reject_nonfinite_json_constant(_value: str) -> None:
+    """Non-standard NaN/Infinity must not become trusted research labels."""
+    raise MLBHitsResearchHold("MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID")
+
+
 def require(condition: bool, code: str) -> None:
     if not condition:
         raise MLBHitsResearchHold(code)
@@ -136,7 +141,11 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     # are not structural; json.loads remains the syntax authority.
     require(_json_depth_bounded(raw), "MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID")
     try:
-        body = json.loads(raw, object_pairs_hook=_unique_json_object_pairs)
+        body = json.loads(
+            raw,
+            object_pairs_hook=_unique_json_object_pairs,
+            parse_constant=_reject_nonfinite_json_constant,
+        )
     except (ValueError, TypeError, RecursionError) as ex:
         raise MLBHitsResearchHold("MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID") from ex
     require(isinstance(body, dict) and isinstance(body.get("teams"), dict),

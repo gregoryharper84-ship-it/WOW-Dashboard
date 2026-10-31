@@ -144,3 +144,15 @@ def test_brackets_and_escaped_quotes_inside_json_string_are_not_nesting():
     result = extract_mlb_hits_labels(from_body(body))
     assert result["hit_pa_label_count"] == 3
     assert result["historical_training_authorized"] is False
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_nonstandard_json_numeric_constants_fail_closed(literal):
+    # Python's default json.loads accepts these non-JSON tokens, including
+    # when they occur in otherwise unused fields of a SHA-matched snapshot.
+    sample = fixture()
+    raw = sample["raw_body"][:-1] + ', "unused_nonfinite": ' + literal + "}"
+    sample["raw_body"] = raw
+    sample["raw_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID"):
+        extract_mlb_hits_labels(sample)
