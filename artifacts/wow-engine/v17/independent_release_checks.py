@@ -192,11 +192,9 @@ def _native_workflow_evidence(
                      key=lambda run: run["id"], default=None)
         if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
             continue
-        jobs = _paged_exact(
-            fetch,
-            f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
-            "jobs", errors, "NATIVE_WORKFLOW_JOBS",
-        )
+        # The immutable GitHub run identity and active state, not a job name,
+        # establish whether the exact-head workflow is still producing its
+        # required aggregate. Jobs may not exist during runner scheduling.
         evidence.append({
             key: latest.get(key)
             for key in (
@@ -204,11 +202,6 @@ def _native_workflow_evidence(
                 "head_branch", "created_at", "status", "repository",
                 "head_repository", "pull_requests",
             )
-        } | {
-            "jobs": [
-                {"name": job.get("name"), "status": job.get("status")}
-                for job in jobs if isinstance(job, dict)
-            ],
         })
     return evidence
 
@@ -562,6 +555,26 @@ def pending_required_regressions(ev: dict) -> list[str]:
     native_runs = ev.get("native_workflow_runs")
     if not isinstance(native_runs, list):
         return pending
+    # One authenticated active workflow can produce several required checks.
+    # Do not infer authority from mutable/free-form GitHub job names: the
+    # exact workflow ID/path, repo, PR, head, attempt and active-age bound are
+    # the evidence. A pending state never creates a successful check.
+    required_for_workflow = {
+        NATIVE_REGRESSION_WORKFLOW_ID: (
+            "WOW required-three regression", "WOW additional required regression",
+        ),
+        NATIVE_ENGINE_WORKFLOW_ID: ("WOW governed probability backend",),
+        NATIVE_CHANGE_IMPACT_WORKFLOW_ID: (CHANGE_IMPACT_CHECK,),
+    }
+    def completed(name: str) -> bool:
+        return any(
+            isinstance(check, dict)
+            and check.get("name") == name
+            and check.get("head_sha") == head
+            and str(check.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
+            and check.get("status") == "completed"
+            for check in runs
+        )
     for run in native_runs:
         if (
             not isinstance(run, dict)
@@ -573,57 +586,12 @@ def pending_required_regressions(ev: dict) -> list[str]:
                 head_ref=str(pr.get("head_ref") or ""),
             )
             or run.get("status") not in ACTIVE_WORK_STATUSES
+            or not _recent_active_timestamp(run.get("created_at"))
         ):
             continue
-        if not _recent_active_timestamp(run.get("created_at")):
-            continue
-        jobs = run.get("jobs")
-        if not isinstance(jobs, list):
-            continue
-        # A completed native shard can temporarily be the only published job
-        # before GitHub creates the next shard. The enclosing trusted workflow
-        # is still active, so job identity (not job status) proves readiness
-        # must defer until its aggregate check is published.
-        job_names = {
-            str(job.get("name"))
-            for job in jobs if isinstance(job, dict)
-        }
-        # A trusted workflow can be active before GitHub publishes its first
-        # job/check record. Missing aggregates in that bounded startup window
-        # are PENDING, never a premature QA/Release failure or a synthetic PASS.
-        def completed(name: str) -> bool:
-            return any(
-                isinstance(check, dict)
-                and check.get("name") == name
-                and check.get("head_sha") == head
-                and str(check.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
-                and check.get("status") == "completed"
-                for check in runs
-            )
-
-        if run.get("workflow_id") == NATIVE_REGRESSION_WORKFLOW_ID:
-            # Unrelated active jobs are not evidence of a pending required
-            # regression. An empty job list IS the authenticated startup race.
-            relevant = (not jobs or any(
-                name.startswith("WOW required-three") or name.startswith("WOW additional")
-                for name in job_names
-            ))
-            if relevant:
-                for name in ("WOW required-three regression", "WOW additional required regression"):
-                    if not completed(name):
-                        pending.append(name)
-        elif run.get("workflow_id") == NATIVE_ENGINE_WORKFLOW_ID:
-            relevant = (not jobs or any(
-                name.startswith("WOW governed backend")
-                or name == "WOW governed probability backend"
-                for name in job_names
-            ))
-            if relevant and not completed("WOW governed probability backend"):
-                pending.append("WOW governed probability backend")
-        elif run.get("workflow_id") == NATIVE_CHANGE_IMPACT_WORKFLOW_ID:
-            relevant = not jobs or CHANGE_IMPACT_CHECK in job_names
-            if relevant and not completed(CHANGE_IMPACT_CHECK):
-                pending.append(CHANGE_IMPACT_CHECK)
+        for name in required_for_workflow.get(run["workflow_id"], ()):
+            if not completed(name):
+                pending.append(name)
     return list(dict.fromkeys(pending))
 
 
