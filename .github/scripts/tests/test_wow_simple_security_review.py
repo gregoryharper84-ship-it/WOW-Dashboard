@@ -613,66 +613,52 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     reject(code, body)
                 self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
 
-    def test_strict_tool_grammar_matches_same_fail_closed_500_char_contract(self):
-        import re
-
+    def test_strict_tool_shape_uses_supported_features_with_local_fail_closed_bounds(self):
         schema = m._build_claude_strict_schema()
         self.assertIsNot(schema, m.REVIEW_SCHEMA)
         self.assertEqual(schema["required"], m.REVIEW_SCHEMA["required"])
         self.assertFalse(schema["additionalProperties"])
         tool_findings = schema["properties"]["findings"]
         self.assertNotIn("maxItems", tool_findings)
+        self.assertFalse(tool_findings["items"]["additionalProperties"])
         props = tool_findings["items"]["properties"]
         for field in ("file", "detail", "evidence"):
             definition = props[field]
             self.assertEqual(definition["type"], "string")
             self.assertNotIn("minLength", definition)
             self.assertNotIn("maxLength", definition)
-            self.assertEqual(
-                definition["pattern"], rf"^[\s\S]{{1,{m.MAX_FINDING_TEXT}}}$"
-            )
-            pattern = re.compile(definition["pattern"])
-            self.assertIsNotNone(pattern.fullmatch("X" * 1))
-            self.assertIsNotNone(pattern.fullmatch("X" * m.MAX_FINDING_TEXT))
-            self.assertIsNotNone(pattern.fullmatch("\t" * m.MAX_FINDING_TEXT))
-            self.assertIsNotNone(pattern.fullmatch("\n" * m.MAX_FINDING_TEXT))
-            self.assertIsNotNone(pattern.fullmatch("line1\nline2"))
-            self.assertIsNone(pattern.fullmatch("X" * (m.MAX_FINDING_TEXT + 1)))
-            self.assertIsNone(pattern.fullmatch("\n" * (m.MAX_FINDING_TEXT + 1)))
+            self.assertNotIn("pattern", definition)
+            self.assertIn("at most 500 characters", definition["description"])
+        for nested in (schema, tool_findings["items"]):
+            self.assertFalse(nested["additionalProperties"])
         self.assertEqual(props["category"]["enum"], list(m.FINDING_CATEGORIES))
         self.assertEqual(props["severity"]["enum"], list(m.FINDING_SEVERITIES))
-        clone = m._build_claude_strict_schema()
-        self.assertIsNot(clone, schema)
-        self.assertEqual(clone, m._build_claude_strict_schema())
-        self.assertEqual(
-            m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS
-        )
+        self.assertEqual(m._build_claude_strict_schema(), schema)
+        self.assertIsNot(m._build_claude_strict_schema(), schema)
+        self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
         for field in ("file", "detail", "evidence"):
             self.assertEqual(
                 m.REVIEW_SCHEMA["properties"]["findings"]["items"]["properties"][field]["maxLength"], 500
             )
+            for bad in (" " * 3, "\\n" * 500):
+                malformed = {**self._passing(), "findings": [
+                    {**self._finding("low"), field: bad}
+                ]}
+                with self.assertRaisesRegex(m.Hold, "TEXT_" + field.upper() + "_EMPTY"):
+                    m.parse_verdict(malformed)
+            excessive = {**self._passing(), "findings": [
+                {**self._finding("low"), field: "x" * (m.MAX_FINDING_TEXT + 1)}
+            ]}
+            with self.assertRaisesRegex(m.Hold, "TEXT_" + field.upper() + "_TOO_LONG"):
+                m.parse_verdict(excessive)
         with self.assertRaisesRegex(m.Hold, "TOO_MANY"):
-            m.parse_verdict({
-                **self._passing(),
-                "findings": [self._finding("low")] * (m.MAX_FINDINGS + 1),
-            })
-        # Parsing is authoritative, not the provider's claimed schema support.
-        failing = {**self._passing(), "findings": [{
-            **self._finding("low"), "detail": "x" * 501}]}
-        with self.assertRaisesRegex(m.Hold, "TEXT_DETAIL_TOO_LONG"):
-            m.parse_verdict(failing)
-        risky = {**self._passing(), "findings": [{
-            **self._finding("low"), "category": "probability_integrity"}]}
-        self.assertEqual(m.parse_verdict(risky)[0], "REJECT")
-        # Strict regex avoids unsupported lookaheads; whitespace is still
-        # rejected by the unmodified authoritative local validation gate.
-        for field in ("file", "detail", "evidence"):
-            malformed = {
-                **self._passing(),
-                "findings": [{**self._finding("low"), field: "\n" * 500}],
-            }
-            with self.assertRaisesRegex(m.Hold, "TEXT_" + field.upper() + "_EMPTY"):
-                m.parse_verdict(malformed)
+            m.parse_verdict({**self._passing(), "findings": [
+                self._finding("low")] * (m.MAX_FINDINGS + 1)})
+        for category in m.BLOCKING_CATEGORIES:
+            risk = {**self._passing(), "findings": [
+                self._finding("low", category=category)]}
+            self.assertEqual(m.parse_verdict(risk)[0], "REJECT")
+        self.assertEqual(m.parse_verdict(self._passing())[0], "PASS")
 
 
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
