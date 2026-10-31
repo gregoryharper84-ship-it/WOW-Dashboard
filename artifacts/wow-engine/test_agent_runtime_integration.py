@@ -527,7 +527,8 @@ def test_broker_dispatch_failure_terminalizes_queued_run_and_reuses_failed_id(mo
     run = fake._store["wow_agent_runs"][0]
     assert run["status"] == "FAILED"
     assert run["stage"] == "DISCOVERY_QUEUE_FAILED"
-    assert not fake._store["wow_agent_jobs"]
+    # The fake creates table lists lazily; no queue_worker means no jobs table.
+    assert not fake._store.get("wow_agent_jobs", [])
 
     second = client.post("/wow/runs", json=_RUN_PAYLOAD, headers=headers)
     assert second.status_code == 202
