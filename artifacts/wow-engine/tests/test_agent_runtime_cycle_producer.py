@@ -66,10 +66,14 @@ def test_unresolved_identity_and_bad_timestamps_cannot_be_promoted():
         {**moneyline_row(), "detail": {"result": {}}},
         {**moneyline_row(), "identity": {"sport": "NFL"}},
         {**moneyline_row(), "lane": "PROPS"},
+        {**moneyline_row(), "run_id": "bad\ncontrol"},
     ]
     candidates, skipped = select_current_daily_candidates(cases, now=NOW)
     assert not candidates
     assert sum(skipped.values()) == len(cases)
+    assert skipped["NOT_CURRENT_PREGAME"] == 1
+    assert skipped["STALE_SOURCE"] == 1
+    assert skipped["SOURCE_RUN_ID_INVALID"] == 1
 
 
 def test_bound_enforced_without_creating_unscored_filler():
