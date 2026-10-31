@@ -379,6 +379,14 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
                         m.capture(2247, "a" * 40, "read")
             file["sha"] = "b" * 40
+            for bad_path in ("../escape.py", "/abs.py", "src//file.py",
+                             "src/./file.py", "bad\nname.py", "bad\x00name.py",
+                             "a\\b.py", "x" * 256):
+                with self.subTest(path=repr(bad_path)):
+                    file["filename"] = bad_path
+                    with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
+                        m.capture(2247, "a" * 40, "read")
+            file["filename"] = "a.py"
 
     def test_untrusted_reviewer_and_missing_result_never_pass(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "c" * 64, "diff": "safe"}
@@ -712,7 +720,11 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             return ("PASS", self._passing())
         for blob_map in ({"src.py": "d" * 39}, {"src.py": "D" * 40},
                          {"src.py": "z" * 40}, {"src.py": None},
-                         {"src.py": 0}, {"": "d" * 40}, {42: "d" * 40}):
+                         {"src.py": 0}, {"": "d" * 40}, {42: "d" * 40},
+                         {"../escape.py": "d" * 40}, {"/abs.py": "d" * 40},
+                         {"src//file.py": "d" * 40}, {"src/./file.py": "d" * 40},
+                         {"bad\nname.py": "d" * 40}, {"bad\x00name.py": "d" * 40},
+                         {"a\\b.py": "d" * 40}, {"x" * 256: "d" * 40}):
             with self.subTest(blob_map=blob_map):
                 with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
                     m.semantic_review({**target, "file_blobs": blob_map},
