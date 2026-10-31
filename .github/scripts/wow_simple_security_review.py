@@ -42,9 +42,9 @@ BLOCKING_CATEGORIES = frozenset(FINDING_CATEGORIES) - {"informational"}
 # generated from these, so a reviewer can never be held for a limit it was not
 # told about while the fail-closed validation itself stays unchanged.
 MAX_FINDINGS = 12
-MAX_FINDING_TEXT = 500
-FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_TEXT}
-REVIEW_CONTRACT_VERSION = 2
+MAX_FINDING_PATH = 255
+MAX_REVIEW_PAYLOAD_BYTES = 60000  # UTF-8 bytes of the serialized verdict AND receipt
+REVIEW_CONTRACT_VERSION = 3
 
 
 def _build_review_schema(*, provider_strict=False):
@@ -55,10 +55,16 @@ def _build_review_schema(*, provider_strict=False):
     keys and enums in the provider request. Both contracts are fresh objects,
     never mutable copies of a module-global schema.
     """
-    string_field = (
-        {"type": "string", "description": "Nonblank meaningful text, at most 500 characters."}
-        if provider_strict else dict(FINDING_TEXT_SCHEMA)
-    )
+    def text_schema(field):
+        if provider_strict:
+            description = ("Changed repository-relative path, nonblank, at most 255 characters."
+                           if field == "file" else
+                           "Complete nonblank finding text; do not truncate. Total serialized UTF-8 verdict must fit 60,000 bytes.")
+            return {"type": "string", "description": description}
+        schema = {"type": "string", "minLength": 1}
+        if field == "file":
+            schema["maxLength"] = MAX_FINDING_PATH
+        return schema
     findings = {
         "type": "array",
         "items": {
@@ -66,9 +72,9 @@ def _build_review_schema(*, provider_strict=False):
             "properties": {
                 "severity": {"type": "string", "enum": list(FINDING_SEVERITIES)},
                 "category": {"type": "string", "enum": list(FINDING_CATEGORIES)},
-                "file": dict(string_field),
-                "detail": dict(string_field),
-                "evidence": dict(string_field),
+                "file": text_schema("file"),
+                "detail": text_schema("detail"),
+                "evidence": text_schema("evidence"),
             },
             "required": ["severity", "category", "file", "detail", "evidence"],
             "additionalProperties": False,
@@ -167,7 +173,7 @@ def request_json(url, *, token=None, data=None, headers=None):
             or url == "https://api.anthropic.com/v1/messages"
             or url.startswith("https://generativelanguage.googleapis.com/v1beta/models/")):
         raise Hold("REVIEW_ENDPOINT_UNTRUSTED")
-    h = {"Accept": "application/vnd.github+json", "User-Agent": "wow-independent-review-v2"}
+    h = {"Accept": "application/vnd.github+json", "User-Agent": "wow-independent-review-v3"}
     if headers:
         h.update(headers)
     if token:
@@ -179,7 +185,9 @@ def request_json(url, *, token=None, data=None, headers=None):
     endpoint = safe_label(url, data is not None)
     try:
         with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=60) as response:
-            raw = response.read(250000)
+            raw = response.read(250001)
+        if len(raw) > 250000:
+            raise Hold("REVIEW_RESPONSE_BYTES_EXCEEDED")
         return json.loads(raw)
     except HTTPError as exc:
         print("REVIEW_HTTP_DIAGNOSTIC:HTTP_" + str(exc.code) + ":" + endpoint,
@@ -322,9 +330,25 @@ def parse_verdict(value):
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TYPE")
             if not field_value.strip():
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_EMPTY")
-            if len(field_value) > MAX_FINDING_TEXT:
-                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TOO_LONG")
+            if key == "file":
+                if len(field_value) > MAX_FINDING_PATH:
+                    raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_FILE_TOO_LONG")
+                # Path identity is data, not arbitrary prose or an absolute/traversal path.
+                if (field_value.startswith("/") or "\\" in field_value
+                        or any(part in ("", ".", "..") for part in field_value.split("/"))
+                        or any(ord(char) < 32 or ord(char) == 127 for char in field_value)):
+                    raise Hold("SEMANTIC_FINDINGS_INVALID:FILE_PATH_INVALID")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
+    # No accepted verdict may exceed the explicit UTF-8 serialized payload budget.
+    # This includes multibyte characters and JSON escaping; never truncate a finding.
+    try:
+        encoded = json.dumps({**{key: value[key] for key in keys}, "findings": normalized},
+                             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                             allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError):
+        raise Hold("SEMANTIC_FINDINGS_INVALID:PAYLOAD_ENCODING") from None
+    if len(encoded) > MAX_REVIEW_PAYLOAD_BYTES:
+        raise Hold("SEMANTIC_FINDINGS_INVALID:PAYLOAD_BYTES_EXCEEDED")
     # Model-provided severity alone cannot downgrade any safety or correctness
     # concern. Even LOW severity in a risk category remains blocking.
     blocking = any(finding["severity"] in BLOCKING_SEVERITIES
@@ -355,11 +379,13 @@ def prompt_for(target):
             "objects; empty array when none). Each finding object has exactly these five keys and no "
             "others: severity in critical|high|medium|low, category in security|probability_integrity|"
             "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
-            "evidence are non-empty strings of at most 500 characters each, so quote only the shortest "
-            "decisive excerpt as evidence. Never return whitespace-only file, detail, or evidence. "
+            "evidence are non-empty strings; file is a changed repository-relative path of at most 255 "
+            "characters. Preserve complete detail and evidence verbatim, with the entire serialized "
+            "verdict at most 60,000 UTF-8 bytes. Never truncate, drop or split a material risk to fit "
+            "a per-field limit. Never return whitespace-only file, detail, or evidence. "
             "For a cross-cutting concern, cite the most relevant changed repository-relative file path, never blank. "
             "Prefer 100-200 characters in detail and 30-150 in evidence. Split complex concerns into separate "
-            "short findings rather than producing an oversized string; preserve every material risk. "
+            "findings when independently justified; preserve every material risk without loss. "
             f"Repository: {REPO}. PR: {target['pr']}; SHA: {target['head_sha']}; base SHA: {target.get('base_sha', 'unknown')}; "
             f"diff digest: {target['diff_sha256']}.\nBEGIN_UNTRUSTED_DIFF\n" +
             target["diff"] +
@@ -461,6 +487,19 @@ def semantic_review(target, credentials, invoke=call_provider):
             # malformed or policy-denied review does not fail over.
             exc.attempts = attempts + [{"provider": provider, "result": str(exc)}]
             raise
+        # The cited path must be an actual changed-file identity, not invented prose.
+        # capture() always supplies this SHA-pinned inventory for real reviews.
+        if "file_blobs" in target:
+            changed = target["file_blobs"]
+            reason = None
+            if type(changed) is not dict or not changed:
+                reason = "SEMANTIC_FINDINGS_INVALID:FILE_INVENTORY_MISSING"
+            elif any(finding["file"] not in changed for finding in payload["findings"]):
+                reason = "SEMANTIC_FINDINGS_INVALID:FILE_NOT_CHANGED"
+            if reason:
+                exc = Hold(reason)
+                exc.attempts = attempts + [{"provider": provider, "result": reason}]
+                raise exc
         # A semantic REJECT, malformed output or policy denial NEVER fails over.
         attempts.append({"provider": provider, "result": decision})
         return decision, payload, provider, attempts
@@ -550,11 +589,26 @@ def owner_review_instruction(target):
 def make_receipt(target, *, decision, reviewer, verdict, attempts, run_id, attempt):
     if reviewer not in REVIEWER_IDENTITIES or decision not in ("PASS", "REJECT") or int(run_id) <= 0 or int(attempt) <= 0:
         raise Hold("RECEIPT_IDENTITY_INVALID")
-    return {"schema_version": REVIEW_CONTRACT_VERSION, "repository": REPO, "pr_number": target["pr"],
+    receipt = {"schema_version": REVIEW_CONTRACT_VERSION, "repository": REPO, "pr_number": target["pr"],
             "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
             "run_id": int(run_id), "run_attempt": int(attempt), "reviewer_identity": reviewer,
             "credential_scope": "wow-qa", "decision": decision, "verdict": verdict,
             "attempts": attempts, "can_execute": False, "no_live_trading": True}
+    _serialize_receipt(receipt)
+    return receipt
+
+
+def _serialize_receipt(receipt):
+    """V3: bound the actual UTF-8 bytes that will be persisted, not character count."""
+    try:
+        data = json.dumps(receipt, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"), allow_nan=False)
+        size = len(data.encode("utf-8"))
+    except (TypeError, ValueError, UnicodeError):
+        raise Hold("SEMANTIC_RECEIPT_ENCODING_INVALID") from None
+    if size > MAX_REVIEW_PAYLOAD_BYTES:
+        raise Hold("SEMANTIC_RECEIPT_BYTES_EXCEEDED")
+    return data
 
 
 def prior_semantic_reject(sha, read_token):
@@ -672,7 +726,21 @@ def main():
         except Hold as final_hold:
             receipt["decision"] = "HOLD"
             receipt["reason"] = str(final_hold)
-    Path("wow-independent-security-decision.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+    # A too-large receipt is never published as PASS. Preserve identity and a
+    # typed HOLD instead of truncating or selectively dropping risk findings.
+    try:
+        receipt_text = _serialize_receipt(receipt)
+    except Hold as oversized:
+        receipt = {key: receipt[key] for key in (
+            "schema_version", "repository", "pr_number", "head_sha", "base_sha",
+            "diff_sha256", "run_id", "run_attempt", "reviewer_identity",
+            "can_execute", "no_live_trading") if key in receipt}
+        receipt.update({"decision": "HOLD", "reason": str(oversized),
+                        "attempts": [{"provider": receipt.get("reviewer_identity", "none"),
+                                      "result": str(oversized)}],
+                        "can_execute": False, "no_live_trading": True})
+        receipt_text = _serialize_receipt(receipt)
+    Path("wow-independent-security-decision.json").write_text(receipt_text + "\n", encoding="utf-8")
     if receipt.get("owner_review_instruction"):
         print("OWNER_SECURITY_REVIEW_REQUIRED: " + receipt["owner_review_instruction"], file=sys.stderr)
         print("After genuine signed-in GitHub review, dispatch this exact PR/SHA from protected main.", file=sys.stderr)

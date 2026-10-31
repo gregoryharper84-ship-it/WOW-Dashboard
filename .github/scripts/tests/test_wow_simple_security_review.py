@@ -64,13 +64,14 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(items["properties"]["severity"]["enum"], list(m.FINDING_SEVERITIES))
         self.assertEqual(sorted(items["required"]), ["category", "detail", "evidence", "file", "severity"])
         self.assertEqual(items["properties"]["category"]["enum"], list(m.FINDING_CATEGORIES))
-        self.assertEqual(m.REVIEW_CONTRACT_VERSION, 2)
+        self.assertEqual(m.REVIEW_CONTRACT_VERSION, 3)
         self.assertFalse(items["additionalProperties"])
         # The enforced bounds are also handed to the model, so a reviewer is
         # never held for a limit it was not told about.
         self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
-        for key in ("file", "detail", "evidence"):
-            self.assertEqual(items["properties"][key]["maxLength"], m.MAX_FINDING_TEXT)
+        self.assertEqual(items["properties"]["file"]["maxLength"], m.MAX_FINDING_PATH)
+        for key in ("detail", "evidence"):
+            self.assertNotIn("maxLength", items["properties"][key])
             self.assertEqual(items["properties"][key]["minLength"], 1)
         prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "d"})
@@ -78,7 +79,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("medium/low", prompt)
         self.assertIn("blocks regardless of severity", prompt)
         self.assertIn("at most 12", prompt)
-        self.assertIn("at most 500 characters", prompt)
+        self.assertIn("60,000 UTF-8 bytes", prompt)
         self.assertIn("exactly these five keys and no others", prompt)
         self.assertIn("Never return whitespace-only", prompt)
         self.assertIn("cross-cutting concern", prompt)
@@ -95,36 +96,43 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
         good = self._passing()
-        at_limit = self._finding("medium")
-        at_limit["evidence"] = "e" * m.MAX_FINDING_TEXT
-        self.assertEqual(m.parse_verdict({**good, "findings": [at_limit]})[0], "PASS")
-        over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
-        with self.assertRaises(m.Hold) as err:
-            m.parse_verdict({**good, "findings": [over]})
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+        finding = self._finding("medium", detail="D" * 5000)
+        finding["evidence"] = "E" * 3000
+        decision, verdict = m.parse_verdict({**good, "findings": [finding]})
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(verdict["findings"][0]["detail"], "D" * 5000)
+        self.assertEqual(verdict["findings"][0]["evidence"], "E" * 3000)
+        with self.assertRaisesRegex(m.Hold, "PAYLOAD_BYTES_EXCEEDED"):
+            m.parse_verdict({**good, "findings": [
+                {**finding, "detail": "\U0001f984" * 16000}
+            ]})
+        with self.assertRaisesRegex(m.Hold, "PAYLOAD_ENCODING"):
+            m.parse_verdict({**good, "findings": [
+                {**finding, "detail": "\ud800"}
+            ]})
 
     def test_finding_text_failures_are_field_specific_and_fail_closed(self):
         good = self._passing()
         for key in ("file", "detail", "evidence"):
-            for suffix, bad in (
-                ("TYPE", 123),
-                ("EMPTY", "  "),
-                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
-            ):
+            for suffix, bad in (("TYPE", 123), ("EMPTY", "  ")):
                 with self.subTest(field=key, error=suffix):
                     malformed = {**self._finding("low"), key: bad}
                     with self.assertRaises(m.Hold) as hold:
                         m.parse_verdict({**good, "findings": [malformed]})
-                    self.assertEqual(
-                        str(hold.exception),
-                        "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix,
-                    )
-        # The new codes are diagnostics, not permission to retry malformed
-        # model output or to discard genuine risk-category findings.
-        decision, _ = m.parse_verdict({
-            **good, "findings": [self._finding("low", category="security")]
-        })
-        self.assertEqual(decision, "REJECT")
+                    self.assertEqual(str(hold.exception),
+                                     "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix)
+        for bad in ("../escape.py", "/etc/passwd", "src\\\\evil.py", "src/./evil.py", "src/evil\n.py"):
+            with self.assertRaisesRegex(m.Hold, "FILE_PATH_INVALID"):
+                m.parse_verdict({**good, "findings": [
+                    {**self._finding("low"), "file": bad}
+                ]})
+        with self.assertRaisesRegex(m.Hold, "TEXT_FILE_TOO_LONG"):
+            m.parse_verdict({**good, "findings": [
+                {**self._finding("low"), "file": "x" * 256}
+            ]})
+        self.assertEqual(m.parse_verdict({**good, "findings": [
+            self._finding("low", category="security")
+        ]})[0], "REJECT")
 
     def test_finding_rejections_have_allowlisted_typed_reasons(self):
         good = self._passing()
@@ -143,11 +151,6 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 with self.assertRaises(m.Hold) as error:
                     m.parse_verdict({**good, "findings": malformed})
                 self.assertEqual(str(error.exception), "SEMANTIC_FINDINGS_INVALID:" + suffix)
-        # The schema's upper bound is also enforced at the parser boundary.
-        with self.assertRaises(m.Hold) as too_long:
-            m.parse_verdict({**good, "findings": [{**finding,
-                "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
-        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
 
     def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
         target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,
@@ -217,7 +220,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                                  reviewer="anthropic-claude-api", verdict=output,
                                  attempts=[{"provider": "anthropic-claude-api", "result": "PASS"}],
                                  run_id=33, attempt=2)
-        self.assertEqual(receipt["schema_version"], 2)
+        self.assertEqual(receipt["schema_version"], 3)
         self.assertEqual(receipt["verdict"], output)
         self.assertEqual(receipt["head_sha"], target["head_sha"])
         self.assertEqual(receipt["base_sha"], target["base_sha"])
@@ -585,6 +588,13 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
 
 
+    def test_provider_response_byte_cap_is_fail_closed(self):
+        import io
+        with patch.object(m.HTTP_CLIENT, "open", return_value=io.BytesIO(b"x" * 250001)):
+            with self.assertRaisesRegex(m.Hold, "REVIEW_RESPONSE_BYTES_EXCEEDED"):
+                m.request_json("https://api.anthropic.com/v1/messages", data={},
+                               headers={"x-api-key": "test"})
+
     def test_typed_provider_error_retry_mapping(self):
         import io
         import json
@@ -625,18 +635,17 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         for field in ("file", "detail", "evidence"):
             definition = props[field]
             self.assertEqual(definition["type"], "string")
-            self.assertNotIn("minLength", definition)
-            self.assertNotIn("maxLength", definition)
-            self.assertNotIn("pattern", definition)
-            self.assertIn("at most 500 characters", definition["description"])
-        for nested in (schema, tool_findings["items"]):
-            self.assertFalse(nested["additionalProperties"])
+            for unsupported in ("minLength", "maxLength", "pattern"):
+                self.assertNotIn(unsupported, definition)
+            if field == "file":
+                self.assertIn("255 characters", definition["description"])
+            else:
+                self.assertIn("60,000 bytes", definition["description"])
         self.assertEqual(props["category"]["enum"], list(m.FINDING_CATEGORIES))
         self.assertEqual(props["severity"]["enum"], list(m.FINDING_SEVERITIES))
         self.assertEqual(m._build_claude_strict_schema(), schema)
         self.assertIsNot(m._build_claude_strict_schema(), schema)
         self.assertEqual(m._build_review_schema(), m.REVIEW_SCHEMA)
-        # Mutating the cached local schema cannot alter the provider contract.
         with patch.object(m, "REVIEW_SCHEMA", {"untrusted_mutation": True}):
             self.assertEqual(m._build_claude_strict_schema(), schema)
         def assert_no_unsupported(node):
@@ -650,30 +659,38 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     assert_no_unsupported(value)
         assert_no_unsupported(schema)
         self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
-        for field in ("file", "detail", "evidence"):
-            self.assertEqual(
-                m.REVIEW_SCHEMA["properties"]["findings"]["items"]["properties"][field]["maxLength"], 500
-            )
-            for bad in (" " * 3, chr(10) * 500):
-                malformed = {**self._passing(), "findings": [
-                    {**self._finding("low"), field: bad}
-                ]}
-                with self.assertRaisesRegex(m.Hold, "TEXT_" + field.upper() + "_EMPTY"):
-                    m.parse_verdict(malformed)
-            excessive = {**self._passing(), "findings": [
-                {**self._finding("low"), field: "x" * (m.MAX_FINDING_TEXT + 1)}
-            ]}
-            with self.assertRaisesRegex(m.Hold, "TEXT_" + field.upper() + "_TOO_LONG"):
-                m.parse_verdict(excessive)
+        self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["items"]["properties"]["file"]["maxLength"], 255)
+        for field in ("detail", "evidence"):
+            self.assertNotIn("maxLength", m.REVIEW_SCHEMA["properties"]["findings"]["items"]["properties"][field])
+        for category in m.BLOCKING_CATEGORIES:
+            risk = {**self._passing(), "findings": [self._finding("low", category=category)]}
+            self.assertEqual(m.parse_verdict(risk)[0], "REJECT")
         with self.assertRaisesRegex(m.Hold, "TOO_MANY"):
             m.parse_verdict({**self._passing(), "findings": [
                 self._finding("low")] * (m.MAX_FINDINGS + 1)})
-        for category in m.BLOCKING_CATEGORIES:
-            risk = {**self._passing(), "findings": [
-                self._finding("low", category=category)]}
-            self.assertEqual(m.parse_verdict(risk)[0], "REJECT")
-        self.assertEqual(m.parse_verdict(self._passing())[0], "PASS")
 
+    def test_changed_file_identity_is_sha_pinned_and_fail_closed(self):
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "safe diff",
+                  "file_blobs": {"src.py": "d" * 40}}
+        forged = {**self._passing(), "findings": [
+            {**self._finding("low", category="security"), "file": "other.py"}
+        ]}
+        with self.assertRaisesRegex(m.Hold, "FILE_NOT_CHANGED"):
+            m.semantic_review(target, {"anthropic-claude-api": "test"},
+                              invoke=lambda *_: ("REJECT", forged))
+        real = {**forged, "findings": [self._finding("low", category="security")]}
+        self.assertEqual(m.semantic_review(target, {"anthropic-claude-api": "test"},
+                                           invoke=lambda *_: ("REJECT", real))[0], "REJECT")
+
+    def test_receipt_v3_uses_utf8_bytes_and_never_truncates(self):
+        receipt = {"schema_version": 3, "decision": "REJECT",
+                   "verdict": {"findings": [{"detail": "D" * 5000, "evidence": "E" * 3000}]}}
+        serialized = m._serialize_receipt(receipt)
+        self.assertEqual(m.json.loads(serialized), receipt)
+        self.assertLess(len(serialized.encode("utf-8")), m.MAX_REVIEW_PAYLOAD_BYTES)
+        with self.assertRaisesRegex(m.Hold, "SEMANTIC_RECEIPT_BYTES_EXCEEDED"):
+            m._serialize_receipt({"schema_version": 3, "detail": "\U0001f984" * 16000})
 
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
