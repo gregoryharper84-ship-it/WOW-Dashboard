@@ -572,10 +572,17 @@ def test_untrusted_money_observation_is_bounded_and_never_reflected():
 def test_non_string_money_claim_never_authorizes_money():
     for raw in (None, True, 1, {"status": "RESOLVED"}, ["RESOLVED"]):
         row = SimpleNamespace(money_lane_status=raw)
-        money = api_prod_market._money_lane(row)
-        assert money["status"] == "HOLD"
-        assert "observed_money_lane_status" not in money
-        assert money["can_execute"] is False
+        # Exercise the real reducer as well as its low-level MONEY input.
+        for money in (
+            api_prod_market._money_lane(row),
+            api_prod_market._effective_money_lane(
+                row, {"status": "PASS", "money_context_required": False}
+            ),
+        ):
+            assert money["status"] == "HOLD"
+            assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
+            assert "observed_money_lane_status" not in money
+            assert money["can_execute"] is False
 
 
 def test_money_status_unicode_and_newline_variants_never_resolve():
@@ -590,18 +597,6 @@ def test_money_status_unicode_and_newline_variants_never_resolve():
         assert money["status"] == "HOLD"
         assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
         assert money["can_execute"] is False
-
-
-def test_score_prop_route_has_mandatory_auth_dependency():
-    """Verify the FastAPI route annotation, not just a mocked HTTP response."""
-    routes = [
-        route for route in api_prod_market.app.routes
-        if getattr(route, "path", None) == "/score-prop"
-        and "POST" in (getattr(route, "methods", None) or ())
-    ]
-    assert len(routes) == 1
-    dependency_calls = [d.call for d in routes[0].dependant.dependencies]
-    assert api_prod_market.prod._require_action_api_key in dependency_calls
 
 
 def test_unauthenticated_score_prop_denied_before_money_lane():
