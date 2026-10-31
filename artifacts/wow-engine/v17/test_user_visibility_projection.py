@@ -51,6 +51,20 @@ class VisibilityTests(unittest.TestCase):
         bad = {**scored()["result"]["prediction"], "calibrated_probability_lower_bound": .70}
         self.assertEqual(len(project_pick_visibility([scored(result={"prediction": bad})])["withheld_rows"]), 1)
 
+    def test_probability_endpoints_are_withheld_in_every_bound(self):
+        base = scored()
+        for field in ("calibrated_probability", "calibrated_probability_lower_bound",
+                      "calibrated_probability_upper_bound"):
+            for endpoint in (0.0, 1.0):
+                with self.subTest(field=field, endpoint=endpoint):
+                    prediction = {**base["result"]["prediction"], field: endpoint}
+                    row = scored(result={"prediction": prediction})
+                    visibility = project_pick_visibility([row])
+                    self.assertEqual(len(visibility["withheld_rows"]), 1)
+                    self.assertFalse(visibility["model_approved_picks"])
+                    self.assertFalse(visibility["model_analysis_not_approved"])
+                    self.assertNotIn("calibrated_probability", visibility["withheld_rows"][0])
+
     def test_approved_pick_only_from_complete_backend_receipt(self):
         row = scored(
             terminal_status="COMPLETED", terminal_label="FINAL_APPROVED",
