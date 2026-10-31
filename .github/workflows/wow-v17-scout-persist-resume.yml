@@ -145,7 +145,7 @@ jobs:
             done < <(printf '%s' "$runs_json" | jq -r '
               .workflow_runs[]
               | select(.name == "wow-v17-nightly-multiscout")
-              | select(.status == "completed" and .conclusion != "cancelled")
+              | select(.status == "completed" and .conclusion == "success")
               | select(.event != "pull_request")
               | .id
             ')
@@ -229,6 +229,12 @@ jobs:
           SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
         run: |
           set -euo pipefail
+          # Only the numeric run identifier selected by the trusted source
+          # resolver may reach an authenticated GitHub artifact endpoint.
+          if ! [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "SCOUT_SOURCE_RUN_ID_INVALID" >&2
+            exit 1
+          fi
           discovery_count=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts" \
             --jq '[.artifacts[] | select(.expired == false and (.name | test("^wow-v17-multiscout-wow-scout-.*-discovery$")))] | length')
           if [ "$discovery_count" -lt 1 ]; then
