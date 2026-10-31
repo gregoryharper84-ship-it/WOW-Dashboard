@@ -107,6 +107,14 @@ MAX_FILES = 50
 MAX_DIFF = 90000
 
 
+def _valid_changed_path(value):
+    """A reviewer must be able to cite every trusted changed-file identity."""
+    return (type(value) is str and 0 < len(value) <= MAX_FINDING_PATH
+            and not value.startswith("/") and "\\" not in value
+            and all(part not in ("", ".", "..") for part in value.split("/"))
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value))
+
+
 class Hold(Exception):
     """The security review could not establish an authentic PASS."""
 
@@ -277,7 +285,7 @@ def capture(pr_number, expected_sha, token):
     for file in files:
         if not isinstance(file, dict) or not isinstance(file.get("patch"), str) or not file["patch"]:
             raise Hold("DIFF_PATCH_MISSING")
-        if (not isinstance(file.get("filename"), str)
+        if (not _valid_changed_path(file.get("filename"))
                 or not isinstance(file.get("sha"), str)
                 or re.fullmatch(r"[0-9a-f]{40}", file["sha"]) is None):
             raise Hold("DIFF_FILE_IDENTITY_INVALID")
@@ -480,7 +488,7 @@ def semantic_review(target, credentials, invoke=call_provider):
     # The caller is trusted capture() using exact-PR GitHub files and a
     # post-capture head readback. Still reject malformed blob identities in
     # this reusable entrypoint before any source reaches a review provider.
-    if any(type(name) is not str or not name or type(blob) is not str
+    if any(not _valid_changed_path(name) or type(blob) is not str
            or re.fullmatch(r"[0-9a-f]{40}", blob) is None
            for name, blob in changed.items()):
         raise Hold("DIFF_FILE_IDENTITY_INVALID")
