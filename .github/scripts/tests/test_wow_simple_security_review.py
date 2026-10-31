@@ -692,6 +692,20 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(m.Hold, "SEMANTIC_RECEIPT_BYTES_EXCEEDED"):
             m._serialize_receipt({"schema_version": 3, "detail": "\U0001f984" * 16000})
 
+    def test_receipt_metadata_overflow_holds_with_provider_attribution(self):
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64}
+        verdict = {**self._passing(), "findings": [
+            self._finding("low", detail="d" * 59500, category="security")
+        ]}
+        self.assertEqual(m.parse_verdict(verdict)[0], "REJECT")
+        with self.assertRaisesRegex(m.Hold, "SEMANTIC_RECEIPT_BYTES_EXCEEDED") as error:
+            m.make_receipt(target, decision="REJECT", reviewer="anthropic-claude-api",
+                           verdict=verdict, attempts=[], run_id=33, attempt=1)
+        self.assertEqual(error.exception.attempts, [
+            {"provider": "anthropic-claude-api", "result": "SEMANTIC_RECEIPT_BYTES_EXCEEDED"}
+        ])
+
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
                    "probability_integrity_review": "PASS", "findings": []}

@@ -594,7 +594,13 @@ def make_receipt(target, *, decision, reviewer, verdict, attempts, run_id, attem
             "run_id": int(run_id), "run_attempt": int(attempt), "reviewer_identity": reviewer,
             "credential_scope": "wow-qa", "decision": decision, "verdict": verdict,
             "attempts": attempts, "can_execute": False, "no_live_trading": True}
-    _serialize_receipt(receipt)
+    try:
+        _serialize_receipt(receipt)
+    except Hold as exc:
+        # The provider identity survives even if receipt metadata pushes an
+        # otherwise valid complete verdict beyond the serialization budget.
+        exc.attempts = attempts + [{"provider": reviewer, "result": str(exc)}]
+        raise
     return receipt
 
 
