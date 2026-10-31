@@ -577,10 +577,13 @@ def pending_required_regressions(ev: dict) -> list[str]:
         jobs = run.get("jobs")
         if not isinstance(jobs, list):
             continue
-        active_jobs = {
+        # A completed native shard can temporarily be the only published job
+        # before GitHub creates the next shard. The enclosing trusted workflow
+        # is still active, so job identity (not job status) proves readiness
+        # must defer until its aggregate check is published.
+        job_names = {
             str(job.get("name"))
-            for job in jobs
-            if isinstance(job, dict) and job.get("status") in ACTIVE_WORK_STATUSES
+            for job in jobs if isinstance(job, dict)
         }
         # A trusted workflow can be active before GitHub publishes its first
         # job/check record. Missing aggregates in that bounded startup window
@@ -600,7 +603,7 @@ def pending_required_regressions(ev: dict) -> list[str]:
             # regression. An empty job list IS the authenticated startup race.
             relevant = (not jobs or any(
                 name.startswith("WOW required-three") or name.startswith("WOW additional")
-                for name in active_jobs
+                for name in job_names
             ))
             if relevant:
                 for name in ("WOW required-three regression", "WOW additional required regression"):
@@ -610,7 +613,7 @@ def pending_required_regressions(ev: dict) -> list[str]:
             relevant = (not jobs or any(
                 name.startswith("WOW governed backend")
                 or name == "WOW governed probability backend"
-                for name in active_jobs
+                for name in job_names
             ))
             if relevant and not completed("WOW governed probability backend"):
                 pending.append("WOW governed probability backend")
