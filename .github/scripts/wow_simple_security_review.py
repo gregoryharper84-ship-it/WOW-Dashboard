@@ -312,7 +312,12 @@ def capture_source_context(files, token):
         if blob["size"] > MAX_CONTEXT_BLOB_BYTES:
             continue
         try:
-            # GitHub wraps Base64 blob content in CR/LF lines; strip only those\n            # transport separators, then require canonical Base64 characters.\n            encoded = blob["content"]\n            if not isinstance(encoded, str):\n                raise Hold("CONTEXT_BLOB_ENCODING_INVALID")\n            raw = base64.b64decode(encoded.replace("\\n", "").replace("\\r", ""), validate=True)
+            # GitHub wraps Base64 blob content in CR/LF lines; strip only those
+            # transport separators, then require valid Base64 characters.
+            encoded = blob["content"]
+            if not isinstance(encoded, str):
+                raise Hold("CONTEXT_BLOB_ENCODING_INVALID")
+            raw = base64.b64decode(encoded.replace("\n", "").replace("\r", ""), validate=True)
         except (binascii.Error, ValueError, KeyError, TypeError):
             raise Hold("CONTEXT_BLOB_ENCODING_INVALID") from None
         fingerprint = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
