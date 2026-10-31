@@ -46,8 +46,11 @@ def test_market_edge_cannot_clobber_a_completed_sporting_probability():
     assert value["card_admission_eligible"] is False
     assert "CARD_ADMISSION:RANK_INELIGIBLE" in value["card_admission_blockers"]
     assert value["can_execute"] is False
-    assert value["card_admission_receipt"]["rank_eligible"] is True
+    assert value["card_admission_receipt"]["rank_eligible"] is False
+    assert value["card_admission_receipt"]["sporting_rank_eligible"] is True
     assert value["card_admission_receipt"]["objective_rank_eligible"] is False
+    assert value["card_admission_receipt"]["card_admission_eligible"] is False
+    assert "CARD_ADMISSION:RANK_INELIGIBLE" in value["card_admission_receipt"]["card_admission_blockers"]
 
 
 def test_both_lanes_and_identified_prediction_required_for_card():
@@ -59,6 +62,23 @@ def test_both_lanes_and_identified_prediction_required_for_card():
     assert value["card_admission_blockers"] == []
     assert value["can_execute"] is False
     assert value["card_admission_receipt"]["can_execute"] is False
+    assert value["card_admission_receipt"]["rank_eligible"] is True
+    assert value["card_admission_receipt"]["sporting_rank_eligible"] is True
+    assert value["card_admission_receipt"]["objective_rank_eligible"] is True
+
+
+def test_legacy_outcome_without_objective_flag_cannot_admit_card():
+    row = _row()
+    value = _outcome()
+    del value["objective_rank_eligible"]
+    runtime._apply_card_admission(row, value)
+    assert value["rank_eligible"] is True
+    assert value["card_admission_eligible"] is False
+    assert value["card_admission_receipt"]["rank_eligible"] is False
+    assert value["card_admission_receipt"]["sporting_rank_eligible"] is True
+    assert value["card_admission_receipt"]["objective_rank_eligible"] is False
+    assert "CARD_ADMISSION:RANK_INELIGIBLE" in value["card_admission_blockers"]
+    assert value["can_execute"] is False
 
 
 def test_missing_sporting_flag_fails_closed_even_if_objective_flag_true():
