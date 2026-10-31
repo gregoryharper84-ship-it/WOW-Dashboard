@@ -250,29 +250,6 @@ def _market_lane(row: Any) -> dict[str, Any]:
     }
 
 
-_MONEY_AUDIT_LOG = logging.getLogger("wow.v17.prop_score.money")
-
-
-def _money_status_observation(value: Any) -> str:
-    """Bounded classification only; never echo caller-controlled arbitrary text."""
-    if type(value) is not str:
-        return "UNRECOGNIZED"
-    if value == "RESOLVED":
-        return "RESOLVED"
-    if value == "PAYOUT_UNRESOLVED":
-        return "PAYOUT_UNRESOLVED"
-    return "UNRECOGNIZED"
-
-
-def _audit_caller_money_status(value: Any) -> None:
-    """Audit an ignored caller money claim without logging raw input or secrets."""
-    _MONEY_AUDIT_LOG.warning(
-        "WOW_PROP_MONEY_STATUS_OVERRIDE original_status_class=%s effective_status=PAYOUT_UNRESOLVED "
-        "override_reason=CALLER_STATUS_UNVERIFIED can_execute=false",
-        _money_status_observation(value),
-    )
-
-
 def _money_lane(row: Any) -> dict[str, Any]:
     """Caller/model status is not payout authority.
 
@@ -848,11 +825,6 @@ def score_prop(
     x_wow_model_identity: Optional[str] = Header(default=None, alias="X-WOW-Model-Identity"),
 ):
     """Governed player-prop scoring with explicit objective separation."""
-    # FastAPI's mandatory Depends(prod._require_action_api_key) completes
-    # before endpoint code runs; unauthorized requests never reach this log.
-    # Classify only into fixed labels; NEVER include this classification in
-    # the caller response. No raw caller status is persisted or echoed.
-    _audit_caller_money_status(req.money_lane_status)
     with _score_stage_timer("route_preflight", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
         model_identity = prod._reject_llp_prop_identity(x_wow_model_identity)
         lane = prod._runtime_capability(prod.PROP_CAPABILITY_KEY)
