@@ -103,6 +103,19 @@ def test_large_source_is_rejected_before_hashing_and_json():
         extract_mlb_hits_labels(sample)
 
 
+def test_duplicate_json_members_fail_closed_instead_of_overwriting_hits():
+    # Python's default json.loads silently keeps the final duplicate value.
+    # Even research-only labels must reject ambiguous source bytes.
+    sample = fixture()
+    raw = sample["raw_body"]
+    assert '"hits": 0' in raw
+    raw = raw.replace('"hits": 0', '"hits": 0, "hits": 2', 1)
+    sample["raw_body"] = raw
+    sample["raw_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID"):
+        extract_mlb_hits_labels(sample)
+
+
 def test_unpaired_surrogate_raw_body_fails_closed_with_typed_hold():
     # Malformed Python Unicode must not escape the research-only hold contract.
     sample = fixture()
