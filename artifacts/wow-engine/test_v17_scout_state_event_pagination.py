@@ -19,7 +19,9 @@ class _Query:
         self.page_limit = 1000
         self.source = None
 
-    def select(self, _columns):
+    def select(self, columns):
+        if self.name == "wow_scout_handoff_state_events":
+            assert columns == "event_id,candidate_id,target_lane,state,code,can_execute,created_at"
         return self
 
     def eq(self, name, value):
@@ -114,6 +116,52 @@ def test_large_terminal_scout_run_recovers_all_416_worker_events():
     assert summary["reconciliation_pass"] is True
     assert summary["rows_completed"] == 0
     assert summary["can_execute"] is False
+
+
+def test_small_server_page_cap_still_completes_full_ledger():
+    """A provider cap well below 500 rows must not trigger an early HOLD."""
+    client = _realistic_run()
+    original_table = client.table
+
+    def patched_table(name):
+        query = original_table(name)
+        original_execute = query.execute
+
+        def capped():
+            if name != "wow_scout_handoff_state_events":
+                return original_execute()
+            assert query.source == "wow-scout-20261031"
+            client.event_pages += 1
+            rows = [row for row in client.events if row["event_id"] > query.after]
+            return SimpleNamespace(data=rows[:min(query.page_limit, 75)])
+        query.execute = capped
+        return query
+
+    client.table = patched_table
+    events = _read_all_state_events(client, "wow-scout-20261031")
+    assert len(events) == 2499
+    assert client.event_pages > 30
+
+
+def test_ambiguous_none_db_response_never_certifies_completion():
+    class BadResponse:
+        def table(self, _name):
+            return self
+        def select(self, _columns):
+            return self
+        def eq(self, *_args):
+            return self
+        def gt(self, *_args):
+            return self
+        def order(self, *_args):
+            return self
+        def limit(self, *_args):
+            return self
+        def execute(self):
+            return SimpleNamespace(data=None)
+
+    with pytest.raises(RuntimeError, match="SCOUT_STATE_EVENT_PAGINATION_INVALID"):
+        _read_all_state_events(BadResponse(), "wow-scout-20261031")
 
 
 def test_full_paginated_receipt_has_unique_monotonic_event_ids():
