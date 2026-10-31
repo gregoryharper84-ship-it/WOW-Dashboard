@@ -70,9 +70,13 @@ def _run_discovery(env: WorkerEnvelope) -> WorkerOutput:
                 get_client(), now=datetime.now(timezone.utc),
             )
             discovery_source = "WOW_V17_DAILY_SNAPSHOT"
-        except Exception:
+        except Exception as exc:
+            # A fault stays a typed BLOCKED result, not a successful empty run.
+            # Preserve bounded failure class for repair without exposing raw
+            # PostgREST responses, ledger fields or service credentials.
             return _blocked(env, "DISCOVERY_PROVIDER_UNAVAILABLE", output={
                 "candidate_count": 0, "discovery_source": "WOW_V17_DAILY_SNAPSHOT",
+                "failure_class": type(exc).__name__[:80],
                 "probability_publishable": False, "can_execute": False,
             })
     merged = merge_discovery(rows)
