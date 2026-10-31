@@ -557,7 +557,6 @@ def test_missing_aggregate_defers_only_for_authentic_active_native_job():
     {"pull_requests": [{"number": 8, "head": {"sha": HEAD, "ref": "fix/issue-1830"}}]},
     {"status": "completed"},
     {"created_at": "invalid"},
-    {"jobs": [{"name": "unrelated job", "status": "in_progress"}]},
 ])
 def test_missing_aggregate_does_not_defer_for_untrusted_or_unrelated_native_run(run_changes):
     ev = evidence()
@@ -567,6 +566,32 @@ def test_missing_aggregate_does_not_defer_for_untrusted_or_unrelated_native_run(
     ]
     ev["native_workflow_runs"] = [_native_verify_run(**run_changes)]
 
+    assert m.pending_required_regressions(ev) == []
+
+
+def test_native_workflow_deferral_ignores_forged_job_names_but_expires():
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] not in m.REQUIRED_REGRESSION_CHECKS
+    ]
+    active = _native_verify_run(jobs=[
+        {"name": "WOW required-three forged", "status": "in_progress"},
+        {"name": "unrelated renamed shard", "status": "completed"},
+    ])
+    ev["native_workflow_runs"] = [active]
+    # No job-name prefix can be used as an approval or trusted identity.
+    # Official exact-workflow identity + active status yields a *bounded*
+    # pending state for its two missing required checks only.
+    assert m.pending_required_regressions(ev) == [
+        "WOW required-three regression", "WOW additional required regression"
+    ]
+    ev["native_workflow_runs"] = [{**active, "status": "completed"}]
+    assert m.pending_required_regressions(ev) == []
+    ev["native_workflow_runs"] = [{
+        **active,
+        "created_at": (datetime.now(timezone.utc) - m.MAX_NATIVE_RUN_AGE).isoformat(),
+    }]
     assert m.pending_required_regressions(ev) == []
 
 
@@ -638,7 +663,6 @@ def test_change_impact_native_workflow_startup_defers_without_qa_approval():
         {**change, "status": "completed"},
         {**change, "path": ".github/workflows/other.yml"},
         {**change, "head_sha": OLD},
-        {**change, "jobs": [{"name": "unrelated", "status": "in_progress"}]},
     ):
         ev["native_workflow_runs"] = [different]
         assert m.pending_required_regressions(ev) == []
@@ -661,7 +685,9 @@ def test_governed_native_workflow_pending_only_with_trusted_exact_identity():
     ev["native_workflow_runs"] = [
         {**engine_run, "jobs": [{"name": "unrelated job", "status": "in_progress"}]}
     ]
-    assert m.pending_required_regressions(ev) == []
+    # The trusted native workflow's active identity controls deferral; a
+    # renamed or adversarial job cannot create a fake PASS or permanent HOLD.
+    assert m.pending_required_regressions(ev) == ["WOW governed probability backend"]
 
 
 def test_missing_aggregate_does_not_defer_after_native_run_exceeds_pending_bound():
