@@ -617,12 +617,13 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     last_id = 0
     max_events = 50000
-    # Progress itself is the query bound: every successful nonempty page
-    # advances last_id and adds at least one row; the 50,000-event budget
-    # therefore limits the loop to at most 50,001 page requests even if the
-    # server caps a response to one row. No separate hard-coded page count
-    # may discard valid evidence from a smaller server-side response cap.
-    while len(events) <= max_events:
+    # A slow or adversarial backend must not force tens of thousands of
+    # network round trips. Stop after a bounded number of pages and fail
+    # closed; this is a read-budget, NOT an acceptance or model threshold.
+    # The observed 2,499-event production cohort needs 4 reads at a 1,000
+    # row cap, or 34 reads at a 75-row cap.
+    max_page_requests = 128
+    for _ in range(max_page_requests):
         # +1 requests a single overflow witness at the 50,000-event
         # boundary; the pre-append guard rejects it, never certifying it.
         result = (
@@ -665,7 +666,10 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
         .order("created_at")
         .execute()
     )
-    rows = [dict(row) for row in (getattr(result, "data", None) or [])]
+    raw_jobs = getattr(result, "data", None)
+    if not isinstance(raw_jobs, list) or any(not isinstance(row, dict) for row in raw_jobs):
+        raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+    rows = [dict(row) for row in raw_jobs]
     events = _read_all_state_events(db, source_run_id)
 
     counts: dict[str, int] = {}
