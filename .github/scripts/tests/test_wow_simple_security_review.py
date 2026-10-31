@@ -372,7 +372,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             file["patch"] = None
             with self.assertRaises(m.Hold):
                 m.capture(2247, "a" * 40, "read")
-            file["patch"] = "@@ -1 +1 @@\\n-old\\n+new".replace("\\\\n", "\\n")
+            file["patch"] = "@@ -1 +1 @@\n-old\n+new"
             for bad_blob in ("d" * 39, "D" * 40, "z" * 40, 42):
                 with self.subTest(blob=bad_blob):
                     file["sha"] = bad_blob
