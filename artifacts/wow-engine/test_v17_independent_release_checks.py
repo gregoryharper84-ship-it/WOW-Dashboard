@@ -584,7 +584,10 @@ def test_global_qa_and_release_defer_before_native_jobs_exist():
     ev["native_workflow_runs"] = [
         _native_verify_run(jobs=[]), engine_run,
     ]
-    expected = list(m.REQUIRED_REGRESSION_CHECKS)
+    expected = [
+        "WOW required-three regression", "WOW additional required regression",
+        "WOW governed probability backend",
+    ]
     assert m.pending_required_regressions(ev) == expected
     # The readiness classifier is shared by the QA and Release workflows;
     # their original decisions remain fail closed while a run is incomplete.
