@@ -30,6 +30,10 @@ CAN_EXECUTE = False
 WORKER_VERSION = "V17_SCOUT_DURABLE_HANDOFF_V1"
 LEASE_SECONDS = 900
 POLL_SECONDS = 2.0
+# Bounded evidence reads are not a probability/qualification threshold.
+# A source exceeding the budget retains a typed noncertified terminal state.
+SCOUT_HANDOFF_MAX_EVENT_ROWS = 50_000
+SCOUT_HANDOFF_MAX_EVENT_PAGES = 128
 
 def _release_process_memory() -> None:
     """Best-effort RSS reclamation after an in-process specialist job.
@@ -616,13 +620,13 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
     """
     events: list[dict[str, Any]] = []
     last_id = 0
-    max_events = 50000
+    max_events = SCOUT_HANDOFF_MAX_EVENT_ROWS
     # A slow or adversarial backend must not force tens of thousands of
     # network round trips. Stop after a bounded number of pages and fail
     # closed; this is a read-budget, NOT an acceptance or model threshold.
     # The observed 2,499-event production cohort needs 4 reads at a 1,000
     # row cap, or 34 reads at a 75-row cap.
-    max_page_requests = 128
+    max_page_requests = SCOUT_HANDOFF_MAX_EVENT_PAGES
     for _ in range(max_page_requests):
         # At capacity, query one more row only to prove no overflow exists.
         # Before capacity, request no more than the remaining admissible rows.
@@ -644,6 +648,12 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
             raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
         if any(not isinstance(row, dict) for row in raw_data):
             raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+        if remaining == 0:
+            # This is an existence-only overflow probe. Never append its
+            # witness to any returned evidence: a nonempty result is a HOLD.
+            if raw_data:
+                raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+            return events
         # Only the declared columns may leave this reader. Do not propagate
         # unrelated backend metadata or arbitrary injected keys downstream.
         fields = ("event_id", "candidate_id", "target_lane", "state",
