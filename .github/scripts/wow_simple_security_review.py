@@ -4,7 +4,6 @@
 Untrusted PR content is read as data, never checked out or executed. A distinct
 QA App publishes the exact-head result; GitHub's native required checks enforce it.
 """
-import copy
 import hashlib
 import json
 import os
@@ -46,40 +45,56 @@ MAX_FINDINGS = 12
 MAX_FINDING_TEXT = 500
 FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_TEXT}
 REVIEW_CONTRACT_VERSION = 2
-REVIEW_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "source_review": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "security_review": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "probability_integrity_review": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "findings": {"type": "array", "maxItems": MAX_FINDINGS, "items": {
+
+
+def _build_review_schema(*, provider_strict=False):
+    """One source of shape truth; only the trusted parser enforces local bounds.
+
+    Anthropic strict tools cannot grammar-enforce maxItems/minLength/maxLength,
+    and may reject large regex repetitions. Use only supported types, required
+    keys and enums in the provider request. Both contracts are fresh objects,
+    never mutable copies of a module-global schema.
+    """
+    string_field = (
+        {"type": "string", "description": "Nonblank meaningful text, at most 500 characters."}
+        if provider_strict else dict(FINDING_TEXT_SCHEMA)
+    )
+    findings = {
+        "type": "array",
+        "items": {
             "type": "object",
-            "properties": {"severity": {"type": "string", "enum": list(FINDING_SEVERITIES)},
-                           "category": {"type": "string", "enum": list(FINDING_CATEGORIES)},
-                           "file": dict(FINDING_TEXT_SCHEMA),
-                           "detail": dict(FINDING_TEXT_SCHEMA),
-                           "evidence": dict(FINDING_TEXT_SCHEMA)},
+            "properties": {
+                "severity": {"type": "string", "enum": list(FINDING_SEVERITIES)},
+                "category": {"type": "string", "enum": list(FINDING_CATEGORIES)},
+                "file": dict(string_field),
+                "detail": dict(string_field),
+                "evidence": dict(string_field),
+            },
             "required": ["severity", "category", "file", "detail", "evidence"],
-            "additionalProperties": False}},
-    },
-    "required": ["source_review", "security_review", "probability_integrity_review", "findings"],
-    "additionalProperties": False,
-}
-# Strict tool use constrains object shape, required keys and enums. Claude's
-# grammar does NOT support minLength/maxLength/maxItems; a large {1,500} regex
-# can also fail grammar compilation. Never claim those limits are provider-
-# enforced. The unchanged local parse_verdict is the final authority on size,
-# whitespace, finding count, categories and fail-closed HOLD/REJECT.
+            "additionalProperties": False,
+        },
+    }
+    if not provider_strict:
+        findings["maxItems"] = MAX_FINDINGS
+    return {
+        "type": "object",
+        "properties": {
+            "source_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+            "security_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+            "probability_integrity_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+            "findings": findings,
+        },
+        "required": ["source_review", "security_review", "probability_integrity_review", "findings"],
+        "additionalProperties": False,
+    }
+
+
+REVIEW_SCHEMA = _build_review_schema()
+
+
 def _build_claude_strict_schema():
-    """Copy only the supported shape contract; preserve all local validation."""
-    schema = copy.deepcopy(REVIEW_SCHEMA)
-    schema["properties"]["findings"].pop("maxItems")
-    for field in ("file", "detail", "evidence"):
-        item = schema["properties"]["findings"]["items"]["properties"][field]
-        item.pop("minLength")
-        item.pop("maxLength")
-        item["description"] = "Nonblank meaningful text, at most 500 characters."
-    return schema
+    """Provider shape only; local parse_verdict remains fail-closed authority."""
+    return _build_review_schema(provider_strict=True)
 
 
 MAX_FILES = 50
