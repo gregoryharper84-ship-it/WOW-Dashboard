@@ -38,6 +38,15 @@ class ScoutGateTest(unittest.TestCase):
         self.assertIn("present=false",out)
         self.assertIn("SCOUT_DISCOVERY_NOT_APPLICABLE",summary)
 
+    def test_failed_upstream_cannot_admit_discovery_artifact(self):
+        """A failed source run is not trusted even if it left an artifact."""
+        status, out, err, _ = self.verify(
+            discovery="success", artifact=True, source_conclusion="failure"
+        )
+        self.assertNotEqual(status, 0)
+        self.assertIn("SCOUT_SOURCE_PROVENANCE_INVALID_HOLD", err)
+        self.assertNotIn("present=true", out)
+
     def test_genuine_discovery_missing_artifact_is_hold(self):
         status,out,err,_=self.verify(discovery="success",artifact=False)
         self.assertNotEqual(status,0)
