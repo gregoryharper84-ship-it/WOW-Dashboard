@@ -713,6 +713,21 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(sent["tools"][0]["input_schema"], m._build_claude_strict_schema())
         self.assertIs(sent["tools"][0]["strict"], True)
 
+    def test_provider_too_many_findings_holds_before_downstream_verdict(self):
+        """Provider cannot use unsupported maxItems to bypass local validation."""
+        limit_plus_one = [self._finding("low") for _ in range(m.MAX_FINDINGS + 1)]
+        provider_response = {"stop_reason": "tool_use", "content": [{
+            "type": "tool_use", "name": "submit_review",
+            "input": {**self._passing(), "findings": limit_plus_one},
+        }]}
+        with patch.object(m, "request_json", return_value=provider_response) as request:
+            with self.assertRaises(m.Hold) as failure:
+                m.call_provider("anthropic-claude-api", "fake", "bounded untrusted source")
+        self.assertEqual(str(failure.exception), "SEMANTIC_FINDINGS_INVALID:TOO_MANY")
+        self.assertEqual(request.call_count, 1)
+        # Even if every dimension says PASS, the entry point cannot yield
+        # a reviewer decision or send an oversized array to consumers.
+
     def test_claude_truncation_holds_without_resending_untrusted_diff(self):
         truncated = {"stop_reason": "max_tokens", "content": [
             {"type": "text", "text": "partial output, untrusted"}]}
