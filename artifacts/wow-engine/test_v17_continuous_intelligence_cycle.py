@@ -158,7 +158,8 @@ def test_empty_prop_outcomes_keep_authority_and_do_not_block_learning():
          patch(BASE + "intelligence_summary", return_value=payload(observation_n=0, cohort_n=0, hypothesis_n=0)), \
          patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=0, challenger_proposal_n=0)):
         result = run_continuous_intelligence_cycle(object())
-    assert result["status"] == "PASS"
+    assert result["status"] == "NO_LEARNING_EVIDENCE"
+    assert result["learning_evidence_status"] == "NO_SOURCE_EVIDENCE"
     assert result["completed_stages"] == 4
     assert result["stages"][0]["observation_n"] == 0
     assert result["stages"][1]["observation_n"] == 0
@@ -176,3 +177,63 @@ def test_compounding_failure_preserves_summary_but_marks_cycle_partial():
     assert result["stages"][2]["status"] == "PASS"
     assert result["stages"][3]["error_type"] == "ConnectionError"
     assert "hidden database secret" not in str(result)
+
+
+
+def test_nonempty_capture_requires_actual_database_readback():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=2, observation_n=2)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=0, cohort_n=0, hypothesis_n=0)), \
+         patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=0, challenger_proposal_n=0)):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["status"] == "PARTIAL_FAILURE"
+    assert result["learning_evidence_status"] == "READBACK_FAILED"
+    assert result["learning_evidence_failure"] == "LEARNING_PERSISTENCE_READBACK_EMPTY"
+    assert result["can_execute"] is False
+
+
+def test_settled_outcomes_without_matching_predictions_cannot_pass_as_complete():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=4, observation_n=0, skipped_n=4)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=0, cohort_n=0, hypothesis_n=0)), \
+         patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=0, challenger_proposal_n=0)):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["status"] == "PARTIAL_FAILURE"
+    assert result["learning_evidence_status"] == "SOURCE_JOIN_UNRESOLVED"
+    assert result["learning_evidence_failure"] == "LEARNING_SETTLED_SOURCE_JOIN_UNRESOLVED"
+
+
+def test_existing_immutable_observations_permit_empty_new_settlement_window():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=11, cohort_n=1, hypothesis_n=0)), \
+         patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=11, challenger_proposal_n=0)):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["status"] == "PASS"
+    assert result["learning_evidence_status"] == "LEARNING_EVIDENCE_PRESENT"
+
+
+def test_old_learning_observations_cannot_mask_zero_new_source_joins():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=4, observation_n=0, skipped_n=4)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=15, cohort_n=2, hypothesis_n=0)), \
+         patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=15, challenger_proposal_n=0)):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["status"] == "PARTIAL_FAILURE"
+    assert result["learning_evidence_status"] == "SOURCE_JOIN_UNRESOLVED"
+    assert result["learning_evidence_failure"] == "LEARNING_SETTLED_SOURCE_JOIN_UNRESOLVED"
+
+
+def test_partially_skipped_settlements_do_not_erase_valid_rows_or_claim_full_refresh():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=4, observation_n=2, skipped_n=2)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=20, cohort_n=1, hypothesis_n=0)), \
+         patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=20, challenger_proposal_n=0)):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["stages"][0]["observation_n"] == 2
+    assert result["stages"][0]["skipped_n"] == 2
+    assert result["status"] == "PARTIAL_FAILURE"
+    assert result["learning_evidence_status"] == "CAPTURE_INCOMPLETE"
+    assert result["learning_evidence_failure"] == "LEARNING_CAPTURE_INCOMPLETE"
+    assert result["automatic_promotion_allowed"] is False
+    assert result["can_execute"] is False

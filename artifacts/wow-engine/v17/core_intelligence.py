@@ -50,7 +50,8 @@ def _outcome_target(official_result: Any, hit: Any = None) -> int | None:
         return 1
     if result in _NEGATIVE_RESULTS:
         return 0
-    if result in _NON_BINARY_RESULTS:
+    if result in _NON_BINARY_RESULTS or result.startswith("VOID_"):
+        # Exact governed void reason codes are non-binary, never a MISS.
         return None
     if isinstance(hit, bool):
         return int(hit)

@@ -58,8 +58,13 @@ def _home_result(source: dict[str, Any], outcome: dict[str, Any]) -> str | None:
     # equality is intentionally conservative; an unresolved alias is skipped.
     home_team = str(source.get("home_team") or "").strip()
     winner = str(outcome.get("official_winner") or "").strip()
-    if home_team and winner and home_team.casefold() == winner.casefold():
+    away_team = str(source.get("away_team") or "").strip()
+    if not (home_team and away_team and winner) or home_team.casefold() == away_team.casefold():
+        return None
+    if winner.casefold() == home_team.casefold():
         return "WIN"
+    if winner.casefold() == away_team.casefold():
+        return "LOSS"
     return None
 
 

@@ -19,6 +19,7 @@ import json
 import math
 import uuid
 from collections import defaultdict
+from v17.learning_integrity_audit import margin_class_diagnostics
 from datetime import date
 from typing import Any, Callable, Optional
 
@@ -509,6 +510,7 @@ def build_postmortem_payload(
         "retrospective_count": retrospective,
         "calibration_eligible_count": calib,
         "lane_summary": lane_summary,
+        "margin_class_diagnostics": margin_class_diagnostics(normalized_legs),
         "retro_principle": "PRESERVE_REFINE_REGRESSION_CHECK",
         "probability_backfill_allowed": False,
         "global_tightening_applied": False,

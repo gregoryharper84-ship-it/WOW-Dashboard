@@ -62,6 +62,7 @@ jobs:
             --merged-json "$RUNNER_TEMP/merged-prs.json" \
             --open-json "$RUNNER_TEMP/open-prs.json" \
             --window-hours 72 --stale-hours 72 \
+            --incident-ledger-json artifacts/wow-engine/v17/incident-ledger.json \
             | tee "$RUNNER_TEMP/effectiveness-scorecard.json"
 
           merged=$(jq -r '.merged_prs' "$RUNNER_TEMP/effectiveness-scorecard.json")
@@ -74,6 +75,9 @@ jobs:
             echo "- recognizable follow-up or replacement PRs / 72h: $followups"
             echo "- first-pass proxy: $proxy"
             echo "- stale open PRs >=72h: $stale"
+            echo "- explicitly classified incident causes: $(jq -r '.engineering_learning_audit.explicitly_classified_n // 0' "$RUNNER_TEMP/effectiveness-scorecard.json")"
+            echo "- legacy verified-closure evidence gaps: $(jq -r '.engineering_learning_audit.closure_evidence_gap_n // 0' "$RUNNER_TEMP/effectiveness-scorecard.json")"
+            echo "- recurrence measured by exact typed cause, not PR counts or loosely matching domains"
             echo "- metric rule: product acceptance remains authoritative; this scorecard is an engineering-process proxy"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"

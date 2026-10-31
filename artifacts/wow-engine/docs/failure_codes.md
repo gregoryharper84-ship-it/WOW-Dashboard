@@ -482,3 +482,26 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## V17 two-sided learning and engineering integrity audit statuses
+
+Read-only advisory diagnostic codes in `v17/learning_integrity_audit.py`; research findings and incomplete evidence do not change model coefficients, production disposition or engineering release state. Unclassified legacy incident records do not enter recurrence denominators.
+
+| Code | Owner | Meaning | Rank eligible? |
+| --- | --- | --- | --- |
+| `SIGNAL_BUCKET_IDENTITY_CONFLICT` | V17 learning integrity audit | One immutable prediction is associated with two different buckets of the same pregame signal; reject ambiguous two-sided diagnostics. | No |
+| `INCIDENT_LEDGER_SCHEMA_INVALID` | V17 learning integrity audit | Incident ledger records field has incorrect type. | No |
+| `INCIDENT_LEDGER_RECORD_INVALID` | V17 learning integrity audit | An incident record is not a mapping. | No |
+| `INCIDENT_LEDGER_DUPLICATE_OR_MISSING_ID` | V17 learning integrity audit | An incident has no postmortem ID or duplicates a prior postmortem ID. | No |
+| `INCIDENT_FIXES_SCHEMA_INVALID` | V17 learning integrity audit | Incident engineering_fixes field is not a mapping. | No |
+| `REFINE_ITEM_NOT_TYPED_ENGINEERING_EVIDENCE` | V17 learning integrity audit | Unstructured refine text or incomplete root-cause/guard-test/evidence metadata cannot enter engineering proposal queue. | No |
+
+## V17 continuous learning receipt integrity
+
+The authenticated advisory refresh is not considered complete merely because four stage functions returned `PASS`. These codes identify incomplete settlement coverage or missing persisted readback, not a failure of the fitted sporting model. Historical observations do not suppress current-run source failures.
+
+| Code | Owner | Meaning | Model unavailable? |
+| --- | --- | --- | --- |
+| `LEARNING_PERSISTENCE_READBACK_EMPTY` | V17 continuous intelligence | Capture constructed observations but fresh postcapture ledger query found zero persisted observations. | No |
+| `LEARNING_SETTLED_SOURCE_JOIN_UNRESOLVED` | V17 continuous intelligence | Current settled candidates could not produce any matched observations; older observations do not hide this. | No |
+| `LEARNING_CAPTURE_INCOMPLETE` | V17 continuous intelligence | At least one settled candidate was skipped even if other matched observations persisted. | No |

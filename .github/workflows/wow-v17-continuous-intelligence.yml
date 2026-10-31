@@ -10,6 +10,12 @@ on:
       - "artifacts/wow-engine/v17/continuous_intelligence_cycle.py"
       - "artifacts/wow-engine/v17/core_intelligence_compounding_routes.py"
       - "artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py"
+      - "artifacts/wow-engine/test_v17_learning_integrity_audit.py"
+      - "artifacts/wow-engine/v17/learning_integrity_audit.py"
+      - "artifacts/wow-engine/v17/core_intelligence.py"
+      - "artifacts/wow-engine/v17/core_intelligence_event_runtime.py"
+      - "artifacts/wow-engine/v17/core_intelligence_compounding_runtime.py"
+      - "artifacts/wow-engine/v17/postmortem_engine.py"
 permissions:
   contents: read
 concurrency:
@@ -32,7 +38,7 @@ jobs:
       - name: Test learning contracts
         env:
           PYTHONPATH: artifacts/wow-engine
-        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py
+        run: python -m pytest -q artifacts/wow-engine/test_v17_continuous_intelligence_cycle.py artifacts/wow-engine/test_v17_learning_integrity_audit.py
   learn:
     name: Refresh settled forecasts and advisory hypotheses
     needs: verify
@@ -78,6 +84,8 @@ jobs:
           valid = (
               result.get("schema_version") == "WOW17_CONTINUOUS_INTELLIGENCE_V1"
               and result.get("status") == "PASS"
+              and result.get("learning_evidence_status") == "LEARNING_EVIDENCE_PRESENT"
+              and result.get("learning_evidence_failure") is None
               and result.get("can_execute") is False
               and result.get("automatic_promotion_allowed") is False
               and result.get("model_parameters_changed") is False
@@ -89,6 +97,8 @@ jobs:
           )
           safe = {
               "status": result.get("status"),
+              "learning_evidence_status": result.get("learning_evidence_status"),
+              "learning_evidence_failure": result.get("learning_evidence_failure"),
               "stages": [
                   {key: stage.get(key) for key in (
                       "stage", "status", "candidate_n", "observation_n",

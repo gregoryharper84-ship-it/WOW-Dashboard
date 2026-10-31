@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 from fastapi import Depends, FastAPI, Query
 
+from v17.learning_integrity_audit import signal_polarity_diagnostics
 from v17.core_intelligence import LearningHypothesis
 from v17.core_intelligence_compounding import (
     AUTHORITY,
@@ -251,6 +252,7 @@ def run_compounding_memory_cycle(
     specialist_scorecards = summarize_specialists(
         specialist_inputs, market_rows, min_samples=min_samples
     )
+    two_sided_diagnostics = signal_polarity_diagnostics(signal_rows, min_samples=min_samples)
 
     summary = base_summary or intelligence_summary(
         db,
@@ -308,6 +310,9 @@ def run_compounding_memory_cycle(
         "market_scorecard_n": len(market_scorecards),
         "signal_scorecard_n": len(signal_scorecards),
         "specialist_scorecard_n": len(specialist_scorecards),
+        "two_sided_signal_diagnostic_n": len(two_sided_diagnostics),
+        "two_sided_signal_diagnostics": two_sided_diagnostics,
+        "two_sided_diagnostic_authority": "PREGAME_SIGNAL_ASSOCIATION_ONLY",
         "challenger_proposal_n": len(proposals),
         "promotion_review_n": len(promotion_reviews),
         "promotion_eligible_n": sum(1 for row in promotion_reviews if row.eligible_for_governed_review),

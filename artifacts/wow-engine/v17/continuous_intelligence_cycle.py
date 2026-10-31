@@ -140,9 +140,42 @@ def run_continuous_intelligence_cycle(
     )
     assert tuple(stage["stage"] for stage in stages) == STAGE_ORDER
     complete = all(stage["status"] == "PASS" for stage in stages)
+
+    # Stage success is not proof that a settled prediction entered the ledger.
+    # The summary is a fresh DB read after captures, not a prediction of writes.
+    evidence_status = "UPSTREAM_FAILURE" if not complete else "LEARNING_EVIDENCE_PRESENT"
+    evidence_failure = None
+    if complete:
+        candidates = sum(int(stage.get("candidate_n") or 0) for stage in stages[:2])
+        constructed = sum(int(stage.get("observation_n") or 0) for stage in stages[:2])
+        skipped = sum(int(stage.get("skipped_n") or 0) for stage in stages[:2])
+        persisted = int(stages[2].get("observation_n") or 0)
+        if constructed > 0 and persisted == 0:
+            evidence_status = "READBACK_FAILED"
+            evidence_failure = "LEARNING_PERSISTENCE_READBACK_EMPTY"
+        elif candidates > 0 and constructed == 0:
+            # Historical ledger rows never excuse zero new matched candidates.
+            evidence_status = "SOURCE_JOIN_UNRESOLVED"
+            evidence_failure = "LEARNING_SETTLED_SOURCE_JOIN_UNRESOLVED"
+        elif skipped > 0:
+            # Good independent rows may persist, but the refresh was incomplete.
+            evidence_status = "CAPTURE_INCOMPLETE"
+            evidence_failure = "LEARNING_CAPTURE_INCOMPLETE"
+        elif candidates == 0 and persisted == 0:
+            evidence_status = "NO_SOURCE_EVIDENCE"
+        elif persisted == 0:
+            evidence_status = "NO_PERSISTED_LEARNING_EVIDENCE"
+
     return {
         "schema_version": "WOW17_CONTINUOUS_INTELLIGENCE_V1",
-        "status": "PASS" if complete else "PARTIAL_FAILURE",
+        "status": (
+            "PARTIAL_FAILURE" if not complete or evidence_failure is not None
+            else "NO_LEARNING_EVIDENCE" if evidence_status in
+                ("NO_SOURCE_EVIDENCE", "NO_PERSISTED_LEARNING_EVIDENCE")
+            else "PASS"
+        ),
+        "learning_evidence_status": evidence_status,
+        "learning_evidence_failure": evidence_failure,
         "stages": list(stages),
         "completed_stages": sum(stage["status"] == "PASS" for stage in stages),
         "total_stages": len(stages),
