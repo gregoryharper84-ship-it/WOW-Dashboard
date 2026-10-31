@@ -45,6 +45,14 @@ MAX_PAGES = 10
 PER_PAGE = 100
 NATIVE_REGRESSION_WORKFLOW_ID = 338954264
 NATIVE_REGRESSION_WORKFLOW_PATH = ".github/workflows/wow-verify.yml"
+# The other required native aggregate starts separately from wow-verify; QA
+# must not publish a premature missing-evidence check before its jobs appear.
+NATIVE_ENGINE_WORKFLOW_ID = 343452862
+NATIVE_ENGINE_WORKFLOW_PATH = ".github/workflows/wow-engine-verify.yml"
+NATIVE_WORKFLOWS = {
+    NATIVE_REGRESSION_WORKFLOW_ID: NATIVE_REGRESSION_WORKFLOW_PATH,
+    NATIVE_ENGINE_WORKFLOW_ID: NATIVE_ENGINE_WORKFLOW_PATH,
+}
 MAX_NATIVE_RUN_AGE = timedelta(hours=2)
 ACTIVE_WORK_STATUSES = frozenset({"queued", "in_progress", "pending", "waiting"})
 
@@ -132,8 +140,8 @@ def _native_workflow_run_matches(
         and isinstance(run.get("run_attempt"), int)
         and not isinstance(run.get("run_attempt"), bool)
         and run["run_attempt"] > 0
-        and run.get("workflow_id") == NATIVE_REGRESSION_WORKFLOW_ID
-        and run.get("path") == NATIVE_REGRESSION_WORKFLOW_PATH
+        and run.get("workflow_id") in NATIVE_WORKFLOWS
+        and run.get("path") == NATIVE_WORKFLOWS[run["workflow_id"]]
         and run.get("event") == "pull_request"
         and run.get("head_sha") == head
         and run.get("head_branch") == head_ref
@@ -173,30 +181,33 @@ def _native_workflow_evidence(
             head_ref=str(pr.get("head_ref") or ""),
         )
     ]
-    latest = max(matching, key=lambda run: run["id"], default=None)
-    if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
-        return []
-
-    jobs = _paged_exact(
-        fetch,
-        f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
-        "jobs",
-        errors,
-        "NATIVE_WORKFLOW_JOBS",
-    )
-    return [{
-        key: latest.get(key)
-        for key in (
-            "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
-            "head_branch", "created_at", "status", "repository",
-            "head_repository", "pull_requests",
+    evidence = []
+    for workflow_id in NATIVE_WORKFLOWS:
+        # Keep the newest run of each independently authenticated workflow;
+        # a different workflow's newer run cannot hide its active sibling.
+        latest = max((run for run in matching if run["workflow_id"] == workflow_id),
+                     key=lambda run: run["id"], default=None)
+        if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
+            continue
+        jobs = _paged_exact(
+            fetch,
+            f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
+            "jobs", errors, "NATIVE_WORKFLOW_JOBS",
         )
-    } | {
-        "jobs": [
-            {"name": job.get("name"), "status": job.get("status")}
-            for job in jobs if isinstance(job, dict)
-        ],
-    }]
+        evidence.append({
+            key: latest.get(key)
+            for key in (
+                "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
+                "head_branch", "created_at", "status", "repository",
+                "head_repository", "pull_requests",
+            )
+        } | {
+            "jobs": [
+                {"name": job.get("name"), "status": job.get("status")}
+                for job in jobs if isinstance(job, dict)
+            ],
+        })
+    return evidence
 
 
 def _recent_active_timestamp(value: Any, *, now: datetime | None = None) -> bool:
@@ -571,17 +582,26 @@ def pending_required_regressions(ev: dict) -> list[str]:
             for job in jobs
             if isinstance(job, dict) and job.get("status") in ACTIVE_WORK_STATUSES
         }
-        if (
-            "WOW required-three regression" in active_jobs
-            or "WOW required-three collection contract" in active_jobs
-            or any(name.startswith("WOW required-three shard / ") for name in active_jobs)
-        ):
-            pending.append("WOW required-three regression")
-        if (
-            "WOW additional required regression" in active_jobs
-            or any(name.startswith("WOW additional shard / ") for name in active_jobs)
-        ):
-            pending.append("WOW additional required regression")
+        # A trusted workflow can be active before GitHub publishes its first
+        # job/check record. Missing aggregates in that bounded startup window
+        # are PENDING, never a premature QA/Release failure or a synthetic PASS.
+        def completed(name: str) -> bool:
+            return any(
+                isinstance(check, dict)
+                and check.get("name") == name
+                and check.get("head_sha") == head
+                and str(check.get("app_id")) == str(GITHUB_ACTIONS_APP_ID)
+                and check.get("status") == "completed"
+                for check in runs
+            )
+
+        if run.get("workflow_id") == NATIVE_REGRESSION_WORKFLOW_ID:
+            for name in ("WOW required-three regression", "WOW additional required regression"):
+                if not completed(name):
+                    pending.append(name)
+        elif run.get("workflow_id") == NATIVE_ENGINE_WORKFLOW_ID:
+            if not completed("WOW governed probability backend"):
+                pending.append("WOW governed probability backend")
     return list(dict.fromkeys(pending))
 
 
