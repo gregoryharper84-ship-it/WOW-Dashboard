@@ -110,7 +110,7 @@ def test_unpaired_surrogate_raw_body_fails_closed_with_typed_hold():
     with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_SNAPSHOT_INVALID"):
         extract_mlb_hits_labels(sample)
 
-def test_deeply_nested_json_fails_with_typed_hold():
+def test_deeply_nested_json_fails_with_typed_hold(monkeypatch):
     # A small, SHA-consistent payload can exhaust JSON decoder recursion.
     # Reject with the canonical research HOLD, not an unhandled 500.
     sample = fixture()
@@ -119,5 +119,15 @@ def test_deeply_nested_json_fails_with_typed_hold():
     assert len(raw.encode("utf-8")) < 256_000
     sample["raw_body"] = raw
     sample["raw_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+    # A depth guard must reject BEFORE json.loads, not just catch its recursion error.
+    monkeypatch.setattr(json, "loads", lambda _: pytest.fail("decoder invoked on excessive depth"))
     with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID"):
         extract_mlb_hits_labels(sample)
+
+
+def test_brackets_and_escaped_quotes_inside_json_string_are_not_nesting():
+    body = json.loads(fixture()["raw_body"])
+    body["teams"]["away"]["players"]["ID10"]["note"] = "[" * 1000 + 'quote " slash \\'
+    result = extract_mlb_hits_labels(from_body(body))
+    assert result["hit_pa_label_count"] == 3
+    assert result["historical_training_authorized"] is False
