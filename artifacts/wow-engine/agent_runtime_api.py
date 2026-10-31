@@ -38,6 +38,7 @@ GOVERNANCE_VERSION = "WOW-AGENT-RUNTIME-V1-PHASE1"
 MAX_RUN_CANDIDATES = 32
 MAX_IDEMPOTENCY_KEY_LENGTH = 128
 MAX_RUN_CANDIDATE_JSON_BYTES = 65536
+MAX_RUN_METADATA_JSON_BYTES = 8192
 MAX_RUN_CANDIDATE_DEPTH = 12
 MAX_RUN_CANDIDATE_NODES = 4096
 MAX_RUN_ADMISSIONS_PER_MINUTE = 60
@@ -261,6 +262,25 @@ def create_run(
         raise HTTPException(
             status_code=422,
             detail={"code": "IDEMPOTENCY_KEY_INVALID_CHARACTERS", "can_execute": False},
+        )
+
+    # Candidate bytes are separately bounded above. Unbounded run metadata
+    # (lanes, sports, timestamps, timezone) must not reach hashing, Redis,
+    # the service-role database, or Celery without an independent byte budget.
+    # This also protects internal model_construct callers with malformed text.
+    try:
+        metadata_bytes = len(json.dumps(
+            {field: getattr(req, field) for field in _REQUEST_HASH_FIELDS
+             if field != "candidate_inputs"},
+            ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+        ).encode("utf-8"))
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+        metadata_bytes = MAX_RUN_METADATA_JSON_BYTES + 1
+    if metadata_bytes > MAX_RUN_METADATA_JSON_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "RUN_METADATA_PAYLOAD_TOO_LARGE",
+                    "max_bytes": MAX_RUN_METADATA_JSON_BYTES, "can_execute": False},
         )
 
     request_hash = idempotency.compute_request_hash(
