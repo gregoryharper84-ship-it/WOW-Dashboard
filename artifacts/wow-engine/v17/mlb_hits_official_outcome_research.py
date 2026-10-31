@@ -81,7 +81,10 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     raw = snapshot.get("raw_body")
     require(isinstance(raw, str) and bool(raw) and len(raw) <= 256_000,
             "MLB_HITS_RESEARCH_SNAPSHOT_INVALID")
-    raw_bytes = raw.encode("utf-8")
+    try:
+        raw_bytes = raw.encode("utf-8")
+    except UnicodeEncodeError as ex:
+        raise MLBHitsResearchHold("MLB_HITS_RESEARCH_SNAPSHOT_INVALID") from ex
     require(len(raw_bytes) <= 256_000, "MLB_HITS_RESEARCH_SNAPSHOT_INVALID")
     digest = sha256(raw_bytes).hexdigest()
     require(isinstance(snapshot.get("raw_sha256"), str)
