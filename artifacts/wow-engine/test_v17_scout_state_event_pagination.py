@@ -45,7 +45,7 @@ class _Query:
         return self
 
     def execute(self):
-        assert isinstance(self.source, str) and self.source
+        assert self.source == self.client.expected_source_run_id
         if self.name == "wow_scout_handoff_state_events":
             self.client.event_pages += 1
             rows = [r for r in self.client.events if r["event_id"] > self.after]
@@ -61,6 +61,7 @@ class _Client:
         self.events = []
         self.jobs = []
         self.event_pages = 0
+        self.expected_source_run_id = "wow-scout-20261031"
 
     def table(self, name):
         return _Query(self, name)
@@ -108,6 +109,13 @@ def _realistic_run():
             })
     assert len(client.events) == 2499
     return client
+
+
+def test_handoff_jobs_cannot_be_read_for_a_different_source():
+    client = _realistic_run()
+    with pytest.raises(AssertionError):
+        read_run_summary(client, "other-scout-source")
+    assert client.event_pages == 0
 
 
 def test_large_terminal_scout_run_recovers_all_416_worker_events():
