@@ -294,13 +294,25 @@ def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> 
     # sporting-only, never market/card admission. The explicit scope and
     # independent card audit prevent consumers from mistaking it for a
     # market-approved order or a completed card admission.
+    previous_rank = outcome.get("rank_eligible")
+    if "rank_eligible" not in outcome:
+        rank_transition = "INITIALIZED_FROM_SPORTING_LANE"
+    elif type(previous_rank) is not bool:
+        rank_transition = "INVALID_PREVIOUS_RANK_TYPE_CORRECTED"
+    elif previous_rank != sporting_rank_eligible:
+        rank_transition = "PREVIOUS_RANK_CONTRADICTED_SPORTING_LANE"
+    else:
+        rank_transition = "ALREADY_MATCHES_SPORTING_LANE"
     outcome["rank_eligible"] = sporting_rank_eligible
     outcome["rank_eligibility_scope"] = "SPORTING_PROBABILITY"
+    outcome["rank_eligibility_transition"] = rank_transition
     outcome["card_admission_eligible"] = not blockers
     outcome["card_admission_blockers"] = blockers
     outcome["card_admission_audit"] = {
         "scope": "CARD_ADMISSION",
         "terminal_status": outcome.get("terminal_status"),
+        "receipt_available": outcome.get("terminal_status") == "COMPLETED",
+        "rank_eligibility_transition": rank_transition,
         "sporting_rank_eligible": sporting_rank_eligible,
         "objective_rank_eligible": objective_rank_eligible,
         "probability_publishable": probability_publishable,
@@ -439,10 +451,12 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
     blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
     # Missing fitted-model eligibility is not affirmative certification.
     probability_rank_eligible = scored.get("rank_eligible") is True
-    rank_evidence_status = (
-        "EXPLICIT_FITTED_FLAG" if "rank_eligible" in scored
-        else "MISSING_FITTED_FLAG_FAIL_CLOSED"
-    )
+    if "rank_eligible" not in scored:
+        rank_evidence_status = "MISSING_FITTED_FLAG_FAIL_CLOSED"
+    elif type(scored.get("rank_eligible")) is not bool:
+        rank_evidence_status = "INVALID_FITTED_FLAG_TYPE_FAIL_CLOSED"
+    else:
+        rank_evidence_status = "EXPLICIT_FITTED_FLAG"
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key, "objective_lane": row.objective_lane,
         "terminal_status": "COMPLETED", "code": "SPORTING_PROBABILITY_COMPLETED", "selected_team": selected,
