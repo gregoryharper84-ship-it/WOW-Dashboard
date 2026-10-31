@@ -113,9 +113,16 @@ class Orchestrator:
             return {"run": latest, "job": job, "started": True, "can_execute": False}
         except Exception:
             latest = repository.get_run(self.client, run_id)
-            if latest and latest.get("status") == "VALIDATING_REQUEST":
+            # Dispatch may fail AFTER the run has reached DISCOVERY_QUEUED
+            # (for example, when the Celery broker refuses apply_async).
+            # Terminalize only if the run is still in an admission state.
+            # A worker that already advanced to DISCOVERY_RUNNING owns it.
+            if latest and latest.get("status") in ("VALIDATING_REQUEST", "DISCOVERY_QUEUED"):
                 try:
-                    repository.transition_run(self.client, run_id, expected_status="VALIDATING_REQUEST", next_status="FAILED", stage="DISCOVERY_QUEUE_FAILED")
+                    repository.transition_run(
+                        self.client, run_id, expected_status=latest["status"],
+                        next_status="FAILED", stage="DISCOVERY_QUEUE_FAILED",
+                    )
                 except Exception:
                     pass
             raise

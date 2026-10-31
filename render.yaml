@@ -30,6 +30,13 @@ services:
         sync: false
       - key: WOW_ACTION_API_KEY
         sync: false
+      - key: WOW_AGENT_RUNTIME_API_KEY
+        # Scoped credential for /wow/runs admission, run reads and cancellation.
+        # Must be >=32 characters and deliberately distinct from
+        # WOW_ACTION_API_KEY (scoring / Custom GPT Actions) so one leaked static
+        # credential cannot do both. While unset, the run routes fail closed
+        # with "Sports runtime credential is not independently configured."
+        sync: false
       - key: balldontlie
         sync: false
       - key: CLAUDE_CODE_OAUTH_TOKEN

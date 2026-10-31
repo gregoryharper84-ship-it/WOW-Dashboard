@@ -22,6 +22,7 @@ cannot, because a fake client never parses or executes real SQL:
 from __future__ import annotations
 
 import os
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -156,7 +157,10 @@ def _candidate() -> dict:
 def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     """Real HTTP -> PostgREST -> Redis/Celery -> reducer/reconciliation E2E."""
     _apply_schema()
-    monkeypatch.setenv("WOW_ACTION_API_KEY", "ci-agent-runtime-key")
+    key = secrets.token_urlsafe(32)
+    scoring_key = secrets.token_urlsafe(32)
+    monkeypatch.setenv("WOW_ACTION_API_KEY", scoring_key)
+    monkeypatch.setenv("WOW_AGENT_RUNTIME_API_KEY", key)
 
     from fastapi.testclient import TestClient
     import api_ncaaf_acceptance as prod
@@ -181,7 +185,13 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
         "user_timezone": "America/Chicago", "discovery_enabled": False,
         "candidate_inputs": [_candidate()], "can_execute": False,
     }
-    headers = {"Idempotency-Key": "ci-agent-runtime-e2e"}
+    # Scope separation must hold in real HTTP/Postgres/Redis integration too.
+    wrong_scope = client.post("/wow/runs", json=body, headers={
+        "Idempotency-Key": "ci-wrong-scoring-scope",
+        "Authorization": f"Bearer {scoring_key}",
+    })
+    assert wrong_scope.status_code == 401
+    headers = {"Idempotency-Key": "ci-agent-runtime-e2e", "Authorization": f"Bearer {key}"}
     first = client.post("/wow/runs", json=body, headers=headers)
     assert first.status_code == 202, first.text
     run_id = first.json()["run_id"]
@@ -192,13 +202,13 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
 
     terminal = None
     for _ in range(100):
-        response = client.get(f"/wow/runs/{run_id}/manifest")
+        response = client.get(f"/wow/runs/{run_id}/manifest", headers=headers)
         assert response.status_code == 200, response.text
         manifest = response.json()
         if manifest["terminal"]:
             terminal = manifest
             break
-        time.sleep(0.2)
+        time.sleep(0.2)  # bounded 20-second poll, not a CPU busy-wait
 
     assert terminal is not None, "run did not terminalize within the polling window"
     assert terminal["status"] == "COMPLETED_WITH_BLOCKERS"
@@ -209,6 +219,27 @@ def test_durable_api_to_worker_to_terminal_reconciliation(monkeypatch):
     with psycopg.connect(_pg_dsn()) as conn, conn.cursor() as cur:
         cur.execute("select count(*) from public.wow_agent_terminal_decisions where run_id = %s", (run_id,))
         assert cur.fetchone()[0] == 1
+
+
+def test_admission_lua_real_redis_ttl_and_duplicate_semantics():
+    """Real broker executes the atomic script; fake clock alone is insufficient."""
+    import redis
+    import agent_runtime_api
+
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url:
+        pytest.skip("real Redis integration requires REDIS_URL")
+    connection = redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
+    key = "wow:agent-runtime:ci-window:" + secrets.token_hex(12)
+    try:
+        lua = agent_runtime_api._ADMISSION_LUA
+        assert connection.eval(lua, 1, key, 2, 60000, "member-a") == 1
+        assert connection.eval(lua, 1, key, 2, 60000, "member-a") == 2
+        assert connection.eval(lua, 1, key, 2, 60000, "member-b") == 1
+        assert connection.eval(lua, 1, key, 2, 60000, "member-c") == 0
+        assert 0 < connection.pttl(key) <= 120000
+    finally:
+        connection.delete(key)
 
 
 # ---------------------------------------------------------------------------
