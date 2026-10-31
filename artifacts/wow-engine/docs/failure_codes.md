@@ -494,6 +494,7 @@ provider outages, retry authorization, or evidence of a fitted probability.
 | `IDEMPOTENCY_KEY_TOO_LONG` | `INVALID_REQUEST` | Caller-supplied Idempotency-Key exceeds 128 characters | Supply a bounded unique key; preserve the original request identity and `can_execute=false` |
 | `IDEMPOTENCY_KEY_INVALID_CHARACTERS` | `INVALID_REQUEST` | Key contains whitespace, control, non-ASCII or characters outside `[A-Za-z0-9._:-]` | Use a safe unique ASCII key; never coerce an unsafe key silently |
 | `RUN_CANDIDATE_PAYLOAD_TOO_LARGE` | `INVALID_REQUEST` | Candidate JSON batch exceeds 65536 UTF-8 bytes or cannot serialize safely | Reduce the genuine candidate payload without fabricating evidence |
+| `RUN_METADATA_PAYLOAD_TOO_LARGE` | `INVALID_REQUEST` | Noncandidate run metadata exceeds 8192 UTF-8 bytes or cannot serialize safely | Reduce genuine run metadata; preserve the same request identity and `can_execute=false` |
 | `RUN_CANDIDATE_COMPLEXITY_EXCEEDED` | `INVALID_REQUEST` | Candidate exceeds 12 nesting levels or 4096 traversed nodes | Reduce genuine candidate complexity |
 | `RUN_ID_INVALID` | `INVALID_REQUEST` | Run identifier is not a UUID | Supply the authentic persisted UUID |
 | `AGENT_RUNTIME_ADMISSION_RATE_LIMITED` | `RATE_LIMITED` | Existing Redis minute bucket exceeds 60 admitted calls | Retry later with the same authentic idempotency key; no synthetic jobs |
