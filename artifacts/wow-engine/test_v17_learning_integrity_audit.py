@@ -148,3 +148,14 @@ def test_unstructured_or_mutated_incident_source_fails_closed():
         audit_engineering_incidents({"records": [incident(1), incident(1)]})
     with pytest.raises(ValueError, match="INCIDENT_LEDGER_SCHEMA_INVALID"):
         audit_engineering_incidents({"records": "not a list"})
+
+
+def test_official_void_reason_never_becomes_loss_even_with_hit_false():
+    from v17.core_intelligence import build_learning_observation
+
+    prediction = {"prediction_id": "pred-1", "sport": "MLB", "calibrated_probability": 0.64}
+    outcome = {"official_result": "VOID_PLAYER_DNP", "hit": False, "settlement_source": "official"}
+    observation = build_learning_observation(prediction, outcome)
+    assert observation.outcome_target is None
+    assert observation.brier_score is None
+    assert observation.log_loss is None
