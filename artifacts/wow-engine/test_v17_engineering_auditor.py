@@ -561,6 +561,9 @@ def test_failed_code_health_persists_packet_in_finding_and_existing_backlog():
     retained = json.loads(backlog[0]["evidence_notes"])
     assert retained["blocker_context"] == packet
     assert retained["blocker_context"]["dispatch_authorized"] is False
+    assert backlog[0]["source"] == "ENGINEERING_AUDITOR"  # excluded from worker dispatch intake
+    assert retained["blocker_context"]["evidence_sink"] == "ENGINEERING_AUDITOR_BACKLOG"
+    assert "advisory_only" not in retained["blocker_context"]
     assert any(name == "wow_engineering_auditor_runtime" for name, _ in db.writes)
 
     # Existing backlog write must fail closed rather than claim persistence.
@@ -587,7 +590,36 @@ def test_failed_code_health_persists_packet_in_finding_and_existing_backlog():
     evidence_text = json.dumps(hostile_finding["evidence"])
     backlog_text = next(payload["evidence_notes"] for name, payload in hostile_db.writes
                         if name == "wow_engineering_backlog")
+    # GitHub identity comparison uses canonical lowercase; input was uppercase A*40.
     assert hostile_finding["evidence"]["head_sha"] == "a" * 40
     for secret in ("PRIVATE_TOKEN", "DB_PASSWORD", "never-copy", "secret://LEAK", "example.com"):
         assert secret not in evidence_text
         assert secret not in backlog_text
+
+
+def test_blocker_packet_uses_existing_workflow_identity_source_not_second_registry():
+    from v17.engineering_auditor_github import CODE_HEALTH_WORKFLOW_NAMES
+    from types import SimpleNamespace
+    # The recognized list is owned by the existing GitHub reconciler. Audit
+    # doesn't carry a second literal list that can drift.
+    import inspect
+    source = inspect.getsource(EngineeringAuditStore.ingest_code_health)
+    assert "from v17.engineering_auditor_github import CODE_HEALTH_WORKFLOW_NAMES" in source
+    assert "known = {" not in source
+    assert "wow-engine-verify" in CODE_HEALTH_WORKFLOW_NAMES
+
+
+def test_blocker_packet_has_no_advisory_execution_grant():
+    event = AuditEvent(
+        event_name="github_actions_reconcile", action="completed",
+        repository="owner/repo", source_kind="CODE_HEALTH_RUN",
+        source_ref="123", title="CI", state="COMPLETED",
+        head_sha="a" * 40, conclusion="failure",
+    )
+    packet = code_health_blocker_packet(event)
+    assert packet["evidence_sink"] == "ENGINEERING_AUDITOR_BACKLOG"
+    assert packet["dispatch_authorized"] is False
+    assert packet["merge_authorized"] is False
+    assert packet["deploy_authorized"] is False
+    assert packet["can_execute"] is False
+    assert "advisory_only" not in packet
