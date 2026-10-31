@@ -170,7 +170,7 @@ def test_runtime_credential_rejects_header_injection_without_network():
         with pytest.raises(ValueError, match="PRODUCER_CREDENTIAL_INVALID"):
             admit_cycle(
                 now=NOW, origin="https://wow-governed-probability-engine.onrender.com",
-                runtime_key="A" * 40 + "\\r\\nInjected: yes",
+                runtime_key="A" * 40 + "\r\nInjected: yes",
             )
         network.assert_not_called()
 
