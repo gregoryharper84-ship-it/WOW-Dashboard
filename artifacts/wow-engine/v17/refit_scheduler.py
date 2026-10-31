@@ -172,7 +172,23 @@ def build_recalibration_candidate(
         "target": r["target"],
     } for r in sorted(by_id.values(), key=lambda r: r["prediction_id"])]
     dataset_sha = sha256(dumps(frozen, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    candidate_id = sha256(f"{SCHEMA_VERSION}|{pid}|{target_key}|{dataset_sha}".encode()).hexdigest()
+    # The identity must distinguish candidates fit on different chronological
+    # partitions of the same immutable dataset (including caller-selected floors).
+    split_config = {
+        "min_fit_events": min_fit_events,
+        "min_diagnostic_events": min_diagnostic_events,
+        "effective_diagnostic_events": diagnostic_count,
+        "diagnostic_begin_utc": split_at.isoformat(),
+        "fit_event_n": fit_event_n,
+        "diagnostic_event_n": diagnostic_event_n,
+    }
+    candidate_id = sha256(dumps({
+        "schema_version": SCHEMA_VERSION,
+        "proposal_id": pid,
+        "target_key": target_key,
+        "dataset_sha256": dataset_sha,
+        "split_config": split_config,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "RETROSPECTIVE_DIAGNOSTIC_ONLY",
@@ -180,6 +196,7 @@ def build_recalibration_candidate(
         "proposal_id": pid,
         "target_key": target_key,
         "source_snapshot_sha256": dataset_sha,
+        "split_config": split_config,
         "method": "LOGIT_INTERCEPT_ONLY_L2_REGULARIZED_V1",
         "fitted_intercept": intercept,
         "fit_prediction_n": len(fit),
