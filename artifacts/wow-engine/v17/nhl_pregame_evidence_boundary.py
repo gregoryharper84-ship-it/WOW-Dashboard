@@ -15,7 +15,7 @@ REQUIRED = (
     "home_pp_pct", "away_pk_pct", "calibration_artifact",
 )
 FULL_GAME_SETTLEMENT = "HOME_AWAY_INCLUDING_OT_SO"
-BAD_GOALIE_STATUSES = frozenset({"OUT", "SCRATCHED", "CHANGED", "UNKNOWN", "UNCONFIRMED"})
+VERIFIED_GOALIE_STATUSES = frozenset({"CONFIRMED"})
 
 
 def _time(value: Any) -> datetime | None:
@@ -35,7 +35,7 @@ def validate_nhl_pregame_evidence(
     """Return typed blockers. PASS means only source completeness, not model readiness."""
     if as_of_utc.tzinfo is None:
         raise ValueError("as_of_utc must be timezone-aware")
-    missing = [k for k in REQUIRED if evidence.get(k) is None or evidence.get(k) == ""]
+    missing = [k for k in REQUIRED if evidence.get(k) is None or (isinstance(evidence.get(k), str) and not evidence.get(k).strip())]
     reasons: list[str] = []
     if missing:
         reasons.append("MODEL_INPUTS_INSUFFICIENT")
@@ -43,7 +43,7 @@ def validate_nhl_pregame_evidence(
         reasons.append("NHL_DUPLICATE_OPPONENT_IDENTITY")
     if evidence.get("settlement_basis") != FULL_GAME_SETTLEMENT:
         reasons.append("NHL_SETTLEMENT_BASIS_UNVERIFIED")
-    if str(evidence.get("goalie_status", "")).upper() in BAD_GOALIE_STATUSES:
+    if str(evidence.get("goalie_status", "")).strip().upper() not in VERIFIED_GOALIE_STATUSES:
         reasons.append("NHL_GOALIE_STATUS_UNVERIFIED")
     status_at = _time(evidence.get("goalie_status_observed_at"))
     start_at = _time(evidence.get("event_start_time_utc"))
@@ -56,6 +56,13 @@ def validate_nhl_pregame_evidence(
         try:
             n = float(evidence[key])
             if not 0 <= n <= 1:
+                reasons.append("NHL_NUMERIC_FEATURE_INVALID")
+        except (KeyError, ValueError, TypeError):
+            reasons.append("NHL_NUMERIC_FEATURE_INVALID")
+    for key in ("home_elo", "away_elo"):
+        try:
+            from math import isfinite
+            if isinstance(evidence[key], bool) or not isfinite(float(evidence[key])):
                 reasons.append("NHL_NUMERIC_FEATURE_INVALID")
         except (KeyError, ValueError, TypeError):
             reasons.append("NHL_NUMERIC_FEATURE_INVALID")
