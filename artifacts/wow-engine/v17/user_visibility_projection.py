@@ -10,7 +10,7 @@ def _probability(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     value = float(value)
-    return value if math.isfinite(value) and 0.0 <= value <= 1.0 else None
+    return value if math.isfinite(value) and 0.0 < value < 1.0 else None
 
 def _codes(outcome: Mapping[str, Any], result: Mapping[str, Any]) -> list[str]:
     qual = result.get("probability_qualification")
