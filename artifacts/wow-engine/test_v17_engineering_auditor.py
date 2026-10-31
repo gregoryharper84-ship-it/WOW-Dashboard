@@ -8,6 +8,7 @@ import yaml
 
 from v17.engineering_auditor import (
     AuditEvent,
+    EngineeringAuditStore,
     code_health_blocker_packet,
     finding_fingerprint,
     is_code_health_failure,
@@ -491,3 +492,70 @@ def test_blocker_packet_rejects_non_ci_sources():
             event_name="issues", action="opened", repository="owner/repo",
             source_kind="GITHUB_ISSUE", source_ref="12", title="issue", state="OPEN",
         ))
+
+
+def test_failed_code_health_persists_packet_in_finding_and_existing_backlog():
+    import json
+    from types import SimpleNamespace
+
+    class FakeDB:
+        def __init__(self):
+            self.rows = {}
+            self.writes = []
+
+        def table(self, name):
+            return FakeTable(self, name)
+
+    class FakeTable:
+        def __init__(self, db, name):
+            self.db, self.name = db, name
+            self.payload = None
+
+        def select(self, *_args):
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def upsert(self, payload, **_kwargs):
+            self.payload = payload
+            return self
+
+        def insert(self, payload):
+            self.payload = payload
+            return self
+
+        def execute(self):
+            if self.payload is None:
+                return SimpleNamespace(data=[])
+            self.db.writes.append((self.name, dict(self.payload)))
+            return SimpleNamespace(data=[dict(self.payload)])
+
+    db = FakeDB()
+    event = AuditEvent(
+        event_name="github_actions_reconcile",
+        action="completed",
+        repository="gregoryharper84-ship-it/WOW-Dashboard",
+        source_kind="CODE_HEALTH_RUN",
+        source_ref="41247454667",
+        title="Failed CI",
+        state="COMPLETED",
+        head_sha="b" * 40,
+        conclusion="failure",
+        details={"check_name": "wow-verify"},
+    )
+    finding = EngineeringAuditStore(db).ingest_event(event, now=datetime(
+        2026, 10, 31, 22, 0, tzinfo=timezone.utc
+    ))
+    packet = finding["evidence"]["blocker_context"]
+    assert packet["workflow_run_id"] == "41247454667"
+    assert packet["next_action"] == "READ_EXACT_RUN_LOGS_AND_IDENTIFY_CAUSE"
+    backlog = [payload for name, payload in db.writes if name == "wow_engineering_backlog"]
+    assert len(backlog) == 1
+    retained = json.loads(backlog[0]["evidence_notes"])
+    assert retained["blocker_context"] == packet
+    assert retained["blocker_context"]["dispatch_authorized"] is False
+    assert any(name == "wow_engineering_auditor_runtime" for name, _ in db.writes)
