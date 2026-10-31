@@ -469,6 +469,12 @@ def call_provider(provider, key, prompt):
 
 
 def semantic_review(target, credentials, invoke=call_provider):
+    # A SHA-pinned changed-file inventory is mandatory before any external
+    # reviewer receives the diff. A missing/empty inventory is not permission
+    # to skip path-identity validation, even for a findings-free PASS.
+    changed = target.get("file_blobs")
+    if type(changed) is not dict or not changed:
+        raise Hold("SEMANTIC_FINDINGS_INVALID:FILE_INVENTORY_MISSING")
     prompt = prompt_for(target)
     attempts = []
     for provider in PROVIDERS:
@@ -487,19 +493,13 @@ def semantic_review(target, credentials, invoke=call_provider):
             # malformed or policy-denied review does not fail over.
             exc.attempts = attempts + [{"provider": provider, "result": str(exc)}]
             raise
-        # The cited path must be an actual changed-file identity, not invented prose.
-        # capture() always supplies this SHA-pinned inventory for real reviews.
-        if "file_blobs" in target:
-            changed = target["file_blobs"]
-            reason = None
-            if type(changed) is not dict or not changed:
-                reason = "SEMANTIC_FINDINGS_INVALID:FILE_INVENTORY_MISSING"
-            elif any(finding["file"] not in changed for finding in payload["findings"]):
-                reason = "SEMANTIC_FINDINGS_INVALID:FILE_NOT_CHANGED"
-            if reason:
-                exc = Hold(reason)
-                exc.attempts = attempts + [{"provider": provider, "result": reason}]
-                raise exc
+        # The cited path must be an actual SHA-pinned changed-file identity.
+        # A forged citation is a policy HOLD, never an advisory or PASS.
+        if any(finding["file"] not in changed for finding in payload["findings"]):
+            reason = "SEMANTIC_FINDINGS_INVALID:FILE_NOT_CHANGED"
+            exc = Hold(reason)
+            exc.attempts = attempts + [{"provider": provider, "result": reason}]
+            raise exc
         # A semantic REJECT, malformed output or policy denial NEVER fails over.
         attempts.append({"provider": provider, "result": decision})
         return decision, payload, provider, attempts
