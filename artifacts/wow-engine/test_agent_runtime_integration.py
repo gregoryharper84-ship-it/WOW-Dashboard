@@ -504,6 +504,66 @@ def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch, auth
     assert body["poll_url"] == f"/wow/runs/{body['run_id']}/manifest"
 
 
+def test_broker_dispatch_failure_terminalizes_queued_run_and_reuses_failed_id(monkeypatch, auth_headers):
+    # start_run transitions to DISCOVERY_QUEUED before calling queue_worker.
+    # If Celery rejects dispatch, a run must not remain forever QUEUED with
+    # no broker task. The same HTTP idempotency key must not create a new run.
+    from agent_runtime.orchestrator import Orchestrator
+
+    fake = FakeSupabaseClient()
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+
+    def unavailable_broker(self, **kwargs):
+        raise RuntimeError("synthetic broker dispatch unavailable")
+
+    monkeypatch.setattr(Orchestrator, "queue_worker", unavailable_broker)
+    headers = {"Idempotency-Key": "broker-dispatch-failed-once", **auth_headers}
+    first = client.post("/wow/runs", json=_RUN_PAYLOAD, headers=headers)
+    assert first.status_code == 503
+    assert first.json()["detail"]["code"] == "AGENT_RUNTIME_START_FAILED"
+    assert first.json()["detail"]["status"] == "FAILED"
+    assert first.json()["detail"]["can_execute"] is False
+    assert len(fake._store["wow_agent_runs"]) == 1
+    run = fake._store["wow_agent_runs"][0]
+    assert run["status"] == "FAILED"
+    assert run["stage"] == "DISCOVERY_QUEUE_FAILED"
+    assert not fake._store["wow_agent_jobs"]
+
+    second = client.post("/wow/runs", json=_RUN_PAYLOAD, headers=headers)
+    assert second.status_code == 202
+    assert second.json()["run_id"] == run["run_id"]
+    assert second.json()["status"] == "FAILED"
+    assert second.json()["reused"] is True
+    assert len(fake._store["wow_agent_runs"]) == 1
+
+
+def test_dispatch_error_does_not_fail_run_already_claimed_by_worker(monkeypatch, auth_headers):
+    # A broker exception can race with an already-accepted worker delivery.
+    # Never clobber a worker-owned DISCOVERY_RUNNING state with FAILED.
+    from agent_runtime.orchestrator import Orchestrator
+
+    fake = FakeSupabaseClient()
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+
+    def accepted_then_transport_error(self, *, run_id, **kwargs):
+        claimed = repository.transition_run(
+            fake, run_id, expected_status="DISCOVERY_QUEUED",
+            next_status="DISCOVERY_RUNNING", stage="DISCOVERY_RUNNING",
+        )
+        assert claimed.applied
+        raise RuntimeError("synthetic ambiguous broker acknowledgement")
+
+    monkeypatch.setattr(Orchestrator, "queue_worker", accepted_then_transport_error)
+    response = client.post(
+        "/wow/runs", json=_RUN_PAYLOAD,
+        headers={"Idempotency-Key": "broker-ack-race", **auth_headers},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["status"] == "DISCOVERY_RUNNING"
+    assert fake._store["wow_agent_runs"][0]["status"] == "DISCOVERY_RUNNING"
+    assert fake._store["wow_agent_runs"][0]["can_execute"] is False
+
+
 def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch, auth_headers):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
