@@ -48,22 +48,28 @@ jobs:
     timeout-minutes: 5
     env:
       WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
-      # Dedicated runtime key; never reuse the ordinary scoring Action key.
-      WOW_AGENT_RUNTIME_API_KEY: ${{ secrets.WOW_AGENT_RUNTIME_API_KEY }}
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # verified v4
-      - name: Fail closed unless using a distinct configured runtime credential
+      - name: Verify exact protected-main checkout before introducing any credential
         shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$GITHUB_REF" = "refs/heads/main"
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
+      - name: Admit real, idempotent sports research run
+        env:
+          # Never expose the runtime bearer to checkout or earlier steps.
+          WOW_AGENT_RUNTIME_API_KEY: ${{ secrets.WOW_AGENT_RUNTIME_API_KEY }}
+          PYTHONPATH: artifacts/wow-engine
+        shell: bash
+        run: |
           test "${#WOW_AGENT_RUNTIME_API_KEY}" -ge 32 || {
             echo "PRODUCER_AUTH_OR_ORIGIN_UNAVAILABLE" >&2
             exit 1
           }
-      - name: Admit real, idempotent sports research run
-        env:
-          PYTHONPATH: artifacts/wow-engine
-        run: python -m v17.agent_runtime_cycle_producer
+          python -m v17.agent_runtime_cycle_producer
