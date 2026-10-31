@@ -555,7 +555,7 @@ def test_absent_payout_quote_is_not_recovered_from_caller_status():
 
 
 def test_untrusted_money_observation_is_bounded_and_never_reflected():
-    attack = "RESOLVED\\nBearer PRIVATE_KEY\\t<script>bad()</script>"
+    attack = "RESOLVED\nBearer PRIVATE_KEY\t<script>bad()</script>"
     row = SimpleNamespace(money_lane_status=attack)
     money = api_prod_market._effective_money_lane(
         row, {"status": "PASS", "money_context_required": False}
@@ -570,7 +570,7 @@ def test_untrusted_money_observation_is_bounded_and_never_reflected():
 
 
 def test_ignored_caller_money_claim_is_logged_without_raw_input(caplog):
-    attack = "RESOLVED\\nBearer PRIVATE_KEY\\t<script>bad()</script>"
+    attack = "RESOLVED\nBearer PRIVATE_KEY\t<script>bad()</script>"
     with caplog.at_level("WARNING", logger="wow.v17.prop_score.money"):
         api_prod_market._audit_caller_money_status(attack)
         api_prod_market._audit_caller_money_status("RESOLVED")
@@ -592,6 +592,33 @@ def test_non_string_money_claim_never_authorizes_money():
         assert money["status"] == "HOLD"
         assert "observed_money_lane_status" not in money
         assert money["can_execute"] is False
+
+
+def test_money_status_unicode_and_newline_variants_never_resolve():
+    """No normalization or Unicode spoofing upgrades caller payout authority."""
+    variants = ("resolved", "ReSoLvEd", "ＲＥＳＯＬＶＥＤ", "RESOLVED\n",
+                "RESOLVED\t", "RESOLVED\u200d", "RESOLVED\0", " Résolved ")
+    for value in variants:
+        assert api_prod_market._money_status_observation(value) == "UNRECOGNIZED"
+        money = api_prod_market._effective_money_lane(
+            SimpleNamespace(money_lane_status=value),
+            {"status": "PASS", "money_context_required": False},
+        )
+        assert money["status"] == "HOLD"
+        assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
+        assert money["can_execute"] is False
+
+
+def test_score_prop_route_has_mandatory_auth_dependency():
+    """Verify the FastAPI route annotation, not just a mocked HTTP response."""
+    routes = [
+        route for route in api_prod_market.app.routes
+        if getattr(route, "path", None) == "/score-prop"
+        and "POST" in (getattr(route, "methods", None) or ())
+    ]
+    assert len(routes) == 1
+    dependency_calls = [d.call for d in routes[0].dependant.dependencies]
+    assert api_prod_market.prod._require_action_api_key in dependency_calls
 
 
 def test_unauthenticated_score_prop_cannot_emit_money_override_audit(caplog):
