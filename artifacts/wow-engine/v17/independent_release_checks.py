@@ -596,11 +596,23 @@ def pending_required_regressions(ev: dict) -> list[str]:
             )
 
         if run.get("workflow_id") == NATIVE_REGRESSION_WORKFLOW_ID:
-            for name in ("WOW required-three regression", "WOW additional required regression"):
-                if not completed(name):
-                    pending.append(name)
+            # Unrelated active jobs are not evidence of a pending required
+            # regression. An empty job list IS the authenticated startup race.
+            relevant = (not jobs or any(
+                name.startswith("WOW required-three") or name.startswith("WOW additional")
+                for name in active_jobs
+            ))
+            if relevant:
+                for name in ("WOW required-three regression", "WOW additional required regression"):
+                    if not completed(name):
+                        pending.append(name)
         elif run.get("workflow_id") == NATIVE_ENGINE_WORKFLOW_ID:
-            if not completed("WOW governed probability backend"):
+            relevant = (not jobs or any(
+                name.startswith("WOW governed backend")
+                or name == "WOW governed probability backend"
+                for name in active_jobs
+            ))
+            if relevant and not completed("WOW governed probability backend"):
                 pending.append("WOW governed probability backend")
     return list(dict.fromkeys(pending))
 
