@@ -65,27 +65,20 @@ REVIEW_SCHEMA = {
     "required": ["source_review", "security_review", "probability_integrity_review", "findings"],
     "additionalProperties": False,
 }
-# Claude strict tool schemas do not support minLength/maxLength/maxItems.
-# Compile the exact, unchanged 1..500-character bound into a supported regex
-# while retaining the original REVIEW_SCHEMA for human contract/test readers.
-# The authoritative parse_verdict validator still enforces all three bounds
-# and the max 12 findings, and retains REJECT/HOLD without automatic retries.
+# Strict tool use constrains object shape, required keys and enums. Claude's
+# grammar does NOT support minLength/maxLength/maxItems; a large {1,500} regex
+# can also fail grammar compilation. Never claim those limits are provider-
+# enforced. The unchanged local parse_verdict is the final authority on size,
+# whitespace, finding count, categories and fail-closed HOLD/REJECT.
 def _build_claude_strict_schema():
-    """Adapt unsupported JSON-Schema length keywords without weakening policy.
-
-    A new isolated object is produced for each provider request, so there is
-    no cached schema that could drift from REVIEW_SCHEMA. The provider sees a
-    bounded regex; parse_verdict separately rejects whitespace-only values,
-    oversized fields, >12 findings, and blocking security risk categories.
-    Invalid transport or rejected source always holds/rejects; no retry.
-    """
+    """Copy only the supported shape contract; preserve all local validation."""
     schema = copy.deepcopy(REVIEW_SCHEMA)
     schema["properties"]["findings"].pop("maxItems")
     for field in ("file", "detail", "evidence"):
-        text = schema["properties"]["findings"]["items"]["properties"][field]
-        text.pop("minLength")
-        text.pop("maxLength")
-        text["pattern"] = rf"^[\s\S]{{1,{MAX_FINDING_TEXT}}}$"
+        item = schema["properties"]["findings"]["items"]["properties"][field]
+        item.pop("minLength")
+        item.pop("maxLength")
+        item["description"] = "Nonblank meaningful text, at most 500 characters."
     return schema
 
 
