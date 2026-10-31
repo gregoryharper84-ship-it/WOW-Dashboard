@@ -97,7 +97,12 @@ def select_current_daily_candidates(
             "market_family": "OUTRIGHT_WINNER",
             "period": "FULL_GAME",
             "event_start_utc": start.isoformat(),
-            "event_status": "PREGAME",
+            # The last snapshot was pregame; current status and settlement
+            # still require fresh specialist verification. Never smuggle a
+            # cached status into the V17 final-refresh/publication gate.
+            "source_event_status_at_capture": "PREGAME",
+            "event_status": "CURRENT_STATUS_UNVERIFIED",
+            "settlement_identity_verified": False,
             "discovery_source": "WOW_V17_DAILY_SNAPSHOT",
             "discovery_authority": "RESEARCH_INTEREST",
             "sources": [{
