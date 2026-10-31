@@ -816,6 +816,24 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                                            {"anthropic-claude-api": "test"}, invoke=forbidden)[0], "PASS")
         self.assertEqual(len(calls), 1)
 
+    def test_unicode_format_control_path_fails_before_provider(self):
+        # U+202E reverses displayed text and U+200D hides a character.
+        # GitHub-supplied filenames must remain unambiguous to reviewers.
+        self.assertTrue(m._valid_changed_path("src/caf\\u00e9.py"))
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "bounded"}
+        calls = []
+        def forbidden(*args):
+            calls.append(args)
+            return ("PASS", self._passing())
+        for path in ("src/evil\\u202etxt.py", "src/hidden\\u200d.py"):
+            with self.subTest(path=repr(path)):
+                self.assertFalse(m._valid_changed_path(path))
+                with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
+                    m.semantic_review({**target, "file_blobs": {path: "d" * 40}},
+                                      {"anthropic-claude-api": "test"}, invoke=forbidden)
+        self.assertEqual(calls, [])
+
     def test_changed_file_identity_is_sha_pinned_and_fail_closed(self):
         target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
                   "diff_sha256": "c" * 64, "diff": "safe diff",
