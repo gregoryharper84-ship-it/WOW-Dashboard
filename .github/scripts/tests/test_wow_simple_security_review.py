@@ -204,7 +204,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             return m.parse_verdict({**good, "findings": ["legacy string finding"]}) + (provider, [])
         with self.assertRaises(m.Hold) as err:
             m.semantic_review({"pr": 2301, "head_sha": "a" * 40,
-                               "diff_sha256": "b" * 64, "diff": "safe"},
+                               "diff_sha256": "b" * 64, "diff": "safe",
+                                "file_blobs": {"src.py": "d" * 40}},
                               {p: "key" for p in m.PROVIDERS}, malformed)
         self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
         self.assertEqual(err.exception.attempts,
@@ -269,12 +270,14 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     self.assertNotIn(forbidden, stderr.getvalue())
 
     def test_failover_only_on_provider_unavailability(self):
-        target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
+        target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64,
+                  "diff": "sample", "file_blobs": {"src.py": "d" * 40}}
         creds = {p: "scoped-key" for p in m.PROVIDERS}
         called = []
         def rejected(provider, key, prompt):
             called.append(provider)
-            return ("REJECT", {"findings": ["vulnerability"]})
+            return ("REJECT", {**self._passing(), "findings": [
+                self._finding("high", category="security")]})
         self.assertEqual(m.semantic_review(target, creds, rejected)[0], "REJECT")
         self.assertEqual(called, ["anthropic-claude-api"])
         called.clear()
@@ -282,7 +285,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             called.append(provider)
             if provider == "anthropic-claude-api":
                 raise m.ProviderUnavailable("PROVIDER_HTTP_429")
-            return ("PASS", {"findings": []})
+            return ("PASS", self._passing())
         self.assertEqual(m.semantic_review(target, creds, transient)[0], "PASS")
         self.assertEqual(called, list(m.PROVIDERS))
         called.clear()
@@ -296,7 +299,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             m.semantic_review(target, {})
 
     def test_unusable_verdict_attributes_the_provider_that_produced_it(self):
-        target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "safe"}
+        target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64,
+                  "diff": "safe", "file_blobs": {"src.py": "d" * 40}}
         called = []
         def unusable(provider, key, prompt):
             called.append(provider)
@@ -478,7 +482,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_both_providers_unavailable_requires_owner_review(self):
         target = {"pr": 2254, "head_sha": "a" * 40, "base_sha": "b" * 40,
-                  "diff_sha256": "c" * 64, "diff": "safe"}
+                  "diff_sha256": "c" * 64, "diff": "safe",
+                   "file_blobs": {"src.py": "d" * 40}}
         creds = {provider: "key" for provider in m.PROVIDERS}
         def unavailable(provider, key, prompt):
             raise m.ProviderUnavailable("PROVIDER_HTTP_429")
@@ -668,6 +673,28 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(m.Hold, "TOO_MANY"):
             m.parse_verdict({**self._passing(), "findings": [
                 self._finding("low")] * (m.MAX_FINDINGS + 1)})
+
+    def test_changed_file_inventory_required_before_any_provider_call(self):
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "safe diff"}
+        calls = []
+        def forbidden(*args):
+            calls.append(args)
+            return ("PASS", self._passing())
+        for missing in (target, {**target, "file_blobs": {}},
+                        {**target, "file_blobs": []},
+                        {**target, "file_blobs": None}):
+            with self.subTest(inventory=missing.get("file_blobs", "absent")):
+                with self.assertRaisesRegex(m.Hold, "FILE_INVENTORY_MISSING"):
+                    m.semantic_review(missing, {"anthropic-claude-api": "test"},
+                                      invoke=forbidden)
+        self.assertEqual(calls, [])
+        # A valid trusted inventory allows a findings-free PASS, while a
+        # forged cited path still yields a typed HOLD in the existing test.
+        valid = {**target, "file_blobs": {"src.py": "d" * 40}}
+        self.assertEqual(m.semantic_review(valid, {"anthropic-claude-api": "test"},
+                                           invoke=forbidden)[0], "PASS")
+        self.assertEqual(len(calls), 1)
 
     def test_changed_file_identity_is_sha_pinned_and_fail_closed(self):
         target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
