@@ -49,9 +49,12 @@ NATIVE_REGRESSION_WORKFLOW_PATH = ".github/workflows/wow-verify.yml"
 # must not publish a premature missing-evidence check before its jobs appear.
 NATIVE_ENGINE_WORKFLOW_ID = 343452862
 NATIVE_ENGINE_WORKFLOW_PATH = ".github/workflows/wow-engine-verify.yml"
+NATIVE_CHANGE_IMPACT_WORKFLOW_ID = 366263833
+NATIVE_CHANGE_IMPACT_WORKFLOW_PATH = ".github/workflows/wow-v17-change-impact-gate.yml"
 NATIVE_WORKFLOWS = {
     NATIVE_REGRESSION_WORKFLOW_ID: NATIVE_REGRESSION_WORKFLOW_PATH,
     NATIVE_ENGINE_WORKFLOW_ID: NATIVE_ENGINE_WORKFLOW_PATH,
+    NATIVE_CHANGE_IMPACT_WORKFLOW_ID: NATIVE_CHANGE_IMPACT_WORKFLOW_PATH,
 }
 MAX_NATIVE_RUN_AGE = timedelta(hours=2)
 ACTIVE_WORK_STATUSES = frozenset({"queued", "in_progress", "pending", "waiting"})
@@ -617,6 +620,10 @@ def pending_required_regressions(ev: dict) -> list[str]:
             ))
             if relevant and not completed("WOW governed probability backend"):
                 pending.append("WOW governed probability backend")
+        elif run.get("workflow_id") == NATIVE_CHANGE_IMPACT_WORKFLOW_ID:
+            relevant = not jobs or CHANGE_IMPACT_CHECK in job_names
+            if relevant and not completed(CHANGE_IMPACT_CHECK):
+                pending.append(CHANGE_IMPACT_CHECK)
     return list(dict.fromkeys(pending))
 
 
