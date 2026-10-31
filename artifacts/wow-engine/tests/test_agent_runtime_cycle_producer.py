@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from agent_runtime.source_discovery import select_current_daily_candidates
+from agent_runtime.runner import execute_envelope
+from agent_runtime.schemas import WorkerJobEnvelope
 from v17.agent_runtime_cycle_producer import admission_for_hour, admit_cycle
 
 NOW = datetime(2026, 10, 31, 13, 19, tzinfo=timezone.utc)
@@ -181,3 +183,26 @@ def test_producer_origin_cannot_be_redirected_to_attacker_host():
             admit_cycle(now=NOW, origin="https://wow.example",
                         runtime_key="x" * 40)
         network.assert_not_called()
+
+
+def test_snapshot_candidate_cannot_reach_model_without_live_status_and_settlement():
+    candidates, _ = select_current_daily_candidates([moneyline_row()], now=NOW)
+    candidate = candidates[0]
+    env = WorkerJobEnvelope(
+        run_id="r1", job_id="j1", candidate_id="c1",
+        worker_id="wow.slate-integrity-expert", worker_version="1.0.0",
+        as_of=NOW.isoformat(), input_hash="h", payload={"candidate": candidate},
+    )
+    held = execute_envelope(env)
+    assert held.status == "BLOCKED"
+    assert "SLATE_IDENTITY_INCOMPLETE" in held.blockers
+    assert held.output["model_invocation_allowed"] is False
+    assert held.output["missing_fields"] == [
+        "fresh_event_status", "verified_settlement_identity",
+    ]
+    candidate["event_status"] = "PREGAME"
+    candidate["settlement_identity_verified"] = True
+    env.payload["candidate"] = candidate
+    passed = execute_envelope(env)
+    assert passed.status == "SUCCEEDED"
+    assert passed.ceiling == "IDENTITY_VERIFIED"
