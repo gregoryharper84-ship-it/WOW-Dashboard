@@ -103,6 +103,13 @@ def test_large_source_is_rejected_before_hashing_and_json():
         extract_mlb_hits_labels(sample)
 
 
+def test_unpaired_surrogate_raw_body_fails_closed_with_typed_hold():
+    # Malformed Python Unicode must not escape the research-only hold contract.
+    sample = fixture()
+    sample["raw_body"] = "\ud800"
+    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_SNAPSHOT_INVALID"):
+        extract_mlb_hits_labels(sample)
+
 def test_deeply_nested_json_fails_with_typed_hold():
     # A small, SHA-consistent payload can exhaust JSON decoder recursion.
     # Reject with the canonical research HOLD, not an unhandled 500.
