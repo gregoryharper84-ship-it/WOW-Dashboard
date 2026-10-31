@@ -280,6 +280,40 @@ def test_run_batch_and_key_limits_reject_before_database_access(monkeypatch, aut
 
 
 
+
+def test_unbounded_run_metadata_fails_closed_before_redis_or_database(monkeypatch, auth_headers):
+    """Noncandidate fields must not bypass the candidate-only 64 KiB budget."""
+    def forbidden_io(*args, **kwargs):
+        raise AssertionError("oversized metadata reached Redis or service-role DB")
+
+    monkeypatch.setattr(agent_runtime_api, "get_client", forbidden_io)
+    monkeypatch.setattr(agent_runtime_api, "_check_admission_rate_limit", forbidden_io)
+
+    for field, value in (
+        ("lanes", ["x" * agent_runtime_api.MAX_RUN_METADATA_JSON_BYTES]),
+        ("sports", ["MLB"] * 3000),
+        ("user_timezone", "Z" * agent_runtime_api.MAX_RUN_METADATA_JSON_BYTES),
+    ):
+        response = client.post(
+            "/wow/runs", json={**_RUN_PAYLOAD, field: value},
+            headers={**auth_headers, "Idempotency-Key": "metadata-bound"},
+        )
+        assert response.status_code == 422, (field, response.text)
+        assert response.json()["detail"]["code"] == "RUN_METADATA_PAYLOAD_TOO_LARGE"
+        assert response.json()["detail"]["can_execute"] is False
+
+    # Internal callers may bypass Pydantic with model_construct; malformed
+    # Unicode must be a typed 422, not an uncaught encoding error.
+    direct = schemas.RunCreateRequest.model_construct(
+        **{**_RUN_PAYLOAD, "user_timezone": "\\ud800"},
+    )
+    with pytest.raises(HTTPException) as invalid_unicode:
+        agent_runtime_api.create_run(direct, idempotency_key="metadata-unicode")
+    assert invalid_unicode.value.status_code == 422
+    assert invalid_unicode.value.detail["code"] == "RUN_METADATA_PAYLOAD_TOO_LARGE"
+
+
+
 def test_scoped_runtime_key_rejects_scoring_key_and_unconfigured_key(monkeypatch, auth_headers):
     def no_db():
         raise AssertionError("bad scoped auth accessed DB")
