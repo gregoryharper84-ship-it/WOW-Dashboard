@@ -126,7 +126,9 @@ def test_producer_posts_scoped_token_and_reconciles_202_run_receipt():
     assert network.call_count == 2
     probe_request = network.call_args_list[0].args[0]
     assert probe_request.get_header("Authorization") is None
-    assert json.loads(probe_request.data)["can_execute"] is True
+    assert probe_request.get_method() == "GET"
+    assert probe_request.data is None
+    assert probe_request.full_url.endswith("/wow/runs/not-a-valid-uuid")
     request = network.call_args_list[1].args[0]
     assert request.get_method() == "POST"
     assert request.full_url == "https://wow-governed-probability-engine.onrender.com/wow/runs"
@@ -161,6 +163,16 @@ def test_old_unsecured_runtime_422_fails_closed_before_real_post():
             admit_cycle(now=NOW, origin="https://wow-governed-probability-engine.onrender.com",
                         runtime_key="x" * 40)
         network.assert_called_once()
+
+
+def test_runtime_credential_rejects_header_injection_without_network():
+    with patch("urllib.request.urlopen") as network:
+        with pytest.raises(ValueError, match="PRODUCER_CREDENTIAL_INVALID"):
+            admit_cycle(
+                now=NOW, origin="https://wow-governed-probability-engine.onrender.com",
+                runtime_key="A" * 40 + "\\r\\nInjected: yes",
+            )
+        network.assert_not_called()
 
 
 def test_producer_origin_cannot_be_redirected_to_attacker_host():
