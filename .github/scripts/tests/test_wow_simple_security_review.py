@@ -842,6 +842,11 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with patch.object(m, "gh", return_value=blob) as github:
             context = m.capture_source_context([changed], "read-only")
         github.assert_called_once_with("/git/blobs/" + sha, "read-only")
+        # GitHub's blob API inserts CR/LF separators into Base64 responses.
+        wrapped = "\r\n".join(blob["content"][n:n + 24]
+                              for n in range(0, len(blob["content"]), 24))
+        with patch.object(m, "gh", return_value={**blob, "content": wrapped}):
+            self.assertEqual(m.capture_source_context([changed], "read-only"), context)
         windows = json.loads(context)
         self.assertEqual(len(windows), 1)
         self.assertEqual(windows[0]["blob_sha"], sha)
