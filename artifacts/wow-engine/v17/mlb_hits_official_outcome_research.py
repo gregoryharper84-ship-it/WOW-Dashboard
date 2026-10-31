@@ -58,6 +58,16 @@ class MLBHitsResearchHold(ValueError):
         super().__init__(code)
 
 
+def _unique_json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous duplicate JSON members instead of silently using last."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise MLBHitsResearchHold("MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID")
+        result[key] = value
+    return result
+
+
 def require(condition: bool, code: str) -> None:
     if not condition:
         raise MLBHitsResearchHold(code)
@@ -126,7 +136,7 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     # are not structural; json.loads remains the syntax authority.
     require(_json_depth_bounded(raw), "MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID")
     try:
-        body = json.loads(raw)
+        body = json.loads(raw, object_pairs_hook=_unique_json_object_pairs)
     except (ValueError, TypeError, RecursionError) as ex:
         raise MLBHitsResearchHold("MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID") from ex
     require(isinstance(body, dict) and isinstance(body.get("teams"), dict),
