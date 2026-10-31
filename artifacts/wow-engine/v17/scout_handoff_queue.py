@@ -624,15 +624,17 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
     # row cap, or 34 reads at a 75-row cap.
     max_page_requests = 128
     for _ in range(max_page_requests):
-        # +1 requests a single overflow witness at the 50,000-event
-        # boundary; the pre-append guard rejects it, never certifying it.
+        # At capacity, query one more row only to prove no overflow exists.
+        # Before capacity, request no more than the remaining admissible rows.
+        remaining = max_events - len(events)
+        requested = min(1000, remaining) if remaining else 1
         result = (
             db.table("wow_scout_handoff_state_events")
             .select("event_id,candidate_id,target_lane,state,code,can_execute,created_at")
             .eq("source_run_id", source_run_id)
             .gt("event_id", last_id)
             .order("event_id")
-            .limit(min(1000, max_events - len(events) + 1))
+            .limit(requested)
             .execute()
         )
         # data=None is NOT an empty page; it could be a database or schema
@@ -642,7 +644,11 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
             raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
         if any(not isinstance(row, dict) for row in raw_data):
             raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
-        batch = [dict(row) for row in raw_data]
+        # Only the declared columns may leave this reader. Do not propagate
+        # unrelated backend metadata or arbitrary injected keys downstream.
+        fields = ("event_id", "candidate_id", "target_lane", "state",
+                  "code", "can_execute", "created_at")
+        batch = [{field: row.get(field) for field in fields} for row in raw_data]
         if not batch:
             return events
         # A full ledger may make one final 1-row existence probe. Never
@@ -655,7 +661,9 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
                 raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
             last_id = event_id
             events.append(row)
-    raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+    # This is a resource budget, not evidence that the worker did not run.
+    # Distinguish it from corrupt IDs and incomplete DB responses.
+    raise RuntimeError("SCOUT_STATE_EVENT_READ_BUDGET_EXCEEDED")
 
 
 def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = False) -> dict[str, Any]:
@@ -668,7 +676,7 @@ def read_run_summary(db: Any, source_run_id: str, *, include_receipts: bool = Fa
     )
     raw_jobs = getattr(result, "data", None)
     if not isinstance(raw_jobs, list) or any(not isinstance(row, dict) for row in raw_jobs):
-        raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+        raise RuntimeError("SCOUT_HANDOFF_JOBS_READ_INVALID")
     rows = [dict(row) for row in raw_jobs]
     events = _read_all_state_events(db, source_run_id)
 
