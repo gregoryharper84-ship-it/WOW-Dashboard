@@ -112,8 +112,12 @@ def test_health_ready_fails_closed_when_registry_mismatched(monkeypatch):
     assert response.json()["detail"]["worker_registry"] == "mismatch_or_unreachable"
 
 
+def _db_must_not_be_called():
+    raise AssertionError("database must not be accessed for a rejected request")
+
+
 def test_create_run_rejects_can_execute_true(monkeypatch):
-    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
+    monkeypatch.setattr(agent_runtime_api, "get_client", _db_must_not_be_called)
     response = client.post(
         "/wow/runs", json={**_RUN_PAYLOAD, "can_execute": True},
         headers={"Idempotency-Key": "should-not-matter"},
@@ -123,7 +127,7 @@ def test_create_run_rejects_can_execute_true(monkeypatch):
 
 
 def test_create_run_requires_idempotency_key_header(monkeypatch):
-    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: FakeSupabaseClient())
+    monkeypatch.setattr(agent_runtime_api, "get_client", _db_must_not_be_called)
     response = client.post("/wow/runs", json=_RUN_PAYLOAD)
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
