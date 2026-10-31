@@ -90,7 +90,7 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             "MLB_HITS_RESEARCH_SOURCE_HASH_MISMATCH")
     try:
         body = json.loads(raw)
-    except (ValueError, TypeError) as ex:
+    except (ValueError, TypeError, RecursionError) as ex:
         raise MLBHitsResearchHold("MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID") from ex
     require(isinstance(body, dict) and isinstance(body.get("teams"), dict),
             "MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID")
