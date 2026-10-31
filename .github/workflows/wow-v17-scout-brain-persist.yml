@@ -82,7 +82,7 @@ jobs:
             .path == ".github/workflows/wow-v17-nightly-multiscout.yml" and
             .head_branch == "main" and .status == "completed" and
             (.head_repository.full_name == $repo) and
-            (.conclusion == "success" or .conclusion == "failure")
+            .conclusion == "success"
           ' <<<"$source_json" >/dev/null; then
             echo "SCOUT_SOURCE_PROVENANCE_INVALID_HOLD" >&2
             exit 1
