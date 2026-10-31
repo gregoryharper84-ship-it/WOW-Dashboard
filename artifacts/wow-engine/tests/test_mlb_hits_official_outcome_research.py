@@ -199,3 +199,19 @@ def test_oversized_claimed_player_id_fails_with_typed_hold():
     body["teams"]["away"]["players"]["ID10"]["person"]["id"] = 10 ** 300
     with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_PLAYER_ID_INVALID"):
         extract_mlb_hits_labels(from_body(body))
+
+
+def test_json_unicode_escaped_quote_does_not_confuse_depth_guard():
+    # A JSON \u0022 escape decodes to a quote *inside* a string. The lexical
+    # depth guard must not treat it as a delimiter or count brackets after it.
+    # This directly guards the signed review's speculative escape-path claim.
+    sample = fixture()
+    raw = sample["raw_body"][:-1] + ', "unused_escaped": "\\u0022[[{[}]"}'
+    assert json.loads(raw)["unused_escaped"] == '"[[{[}]'
+    sample["raw_body"] = raw
+    sample["raw_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+    result = extract_mlb_hits_labels(sample)
+    assert result["hit_pa_label_count"] == 3
+    assert result["historical_training_authorized"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
