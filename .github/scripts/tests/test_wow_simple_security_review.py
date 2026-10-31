@@ -372,6 +372,13 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             file["patch"] = None
             with self.assertRaises(m.Hold):
                 m.capture(2247, "a" * 40, "read")
+            file["patch"] = "@@ -1 +1 @@\\n-old\\n+new".replace("\\\\n", "\\n")
+            for bad_blob in ("d" * 39, "D" * 40, "z" * 40, 42):
+                with self.subTest(blob=bad_blob):
+                    file["sha"] = bad_blob
+                    with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
+                        m.capture(2247, "a" * 40, "read")
+            file["sha"] = "b" * 40
 
     def test_untrusted_reviewer_and_missing_result_never_pass(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "c" * 64, "diff": "safe"}
@@ -694,6 +701,25 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         valid = {**target, "file_blobs": {"src.py": "d" * 40}}
         self.assertEqual(m.semantic_review(valid, {"anthropic-claude-api": "test"},
                                            invoke=forbidden)[0], "PASS")
+        self.assertEqual(len(calls), 1)
+
+    def test_malformed_blob_identity_never_contacts_external_reviewer(self):
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "bounded source"}
+        calls = []
+        def forbidden(*args):
+            calls.append(args)
+            return ("PASS", self._passing())
+        for blob_map in ({"src.py": "d" * 39}, {"src.py": "D" * 40},
+                         {"src.py": "z" * 40}, {"src.py": None},
+                         {"src.py": 0}, {"": "d" * 40}, {42: "d" * 40}):
+            with self.subTest(blob_map=blob_map):
+                with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
+                    m.semantic_review({**target, "file_blobs": blob_map},
+                                      {"anthropic-claude-api": "test"}, invoke=forbidden)
+        self.assertEqual(calls, [])
+        self.assertEqual(m.semantic_review({**target, "file_blobs": {"src.py": "d" * 40}},
+                                           {"anthropic-claude-api": "test"}, invoke=forbidden)[0], "PASS")
         self.assertEqual(len(calls), 1)
 
     def test_changed_file_identity_is_sha_pinned_and_fail_closed(self):
