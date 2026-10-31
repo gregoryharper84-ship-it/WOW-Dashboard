@@ -56,3 +56,31 @@ def test_missing_snapshot_never_passes():
     d = valid()
     d.pop("source_snapshot_id")
     assert "NHL_SOURCE_SNAPSHOT_MISSING" in validate_nhl_pregame_evidence(d, as_of_utc=NOW)["blockers"]
+
+
+def test_unrecognized_goalie_status_fails_closed():
+    d = valid()
+    d["goalie_status"] = "verified"
+    r = validate_nhl_pregame_evidence(d, as_of_utc=NOW)
+    assert r["status"] == "HELD"
+    assert "NHL_GOALIE_STATUS_UNVERIFIED" in r["blockers"]
+
+
+def test_invalid_elo_and_whitespace_input_fail_closed():
+    d = valid()
+    d["home_elo"] = float("nan")
+    d["away_elo"] = "not-a-number"
+    d["injury_report"] = "  "
+    r = validate_nhl_pregame_evidence(d, as_of_utc=NOW)
+    assert r["status"] == "HELD"
+    assert "NHL_NUMERIC_FEATURE_INVALID" in r["blockers"]
+    assert "injury_report" in r["missing_fields"]
+
+
+def test_invalid_goalie_timestamp_and_missing_identity_fail_closed():
+    d = valid()
+    d["goalie_status_observed_at"] = "bad-timestamp"
+    d.pop("goalie_identity_snapshot_id")
+    r = validate_nhl_pregame_evidence(d, as_of_utc=NOW)
+    assert "NHL_GOALIE_STATUS_STALE" in r["blockers"]
+    assert "NHL_GOALIE_IDENTITY_UNVERIFIED" in r["blockers"]
