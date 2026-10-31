@@ -431,6 +431,42 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
 
 
+    def test_gemini_v3_preserves_complete_findings_above_old_9000_char_ceiling(self):
+        # A legitimate 12K-character finding is well inside v3's 60K-byte
+        # serialized-verdict budget; the former Gemini 9K raw-text cap lost it.
+        detail = "D" * 12000
+        verdict = {**self._passing(), "findings": [
+            self._finding("low", detail=detail)
+        ]}
+        response = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": m.json.dumps(verdict)}]}}]}
+        with patch.object(m, "request_json", return_value=response) as request:
+            decision, parsed = m.call_provider("gemini-generative-api", "test", "diff")
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(parsed["findings"][0]["detail"], detail)
+        self.assertEqual(request.call_count, 1)
+
+        # Removing the obsolete 9K cliff must never remove the v3 byte cap.
+        too_large = {**self._passing(), "findings": [
+            self._finding("low", detail="D" * 60000, category="security")
+        ]}
+        response["candidates"][0]["content"]["parts"][0]["text"] = m.json.dumps(too_large)
+        with patch.object(m, "request_json", return_value=response) as request:
+            with self.assertRaisesRegex(m.Hold, "PAYLOAD_BYTES_EXCEEDED"):
+                m.call_provider("gemini-generative-api", "test", "diff")
+        self.assertEqual(request.call_count, 1)
+
+    def test_gemini_malformed_provider_envelopes_fail_as_typed_hold(self):
+        for invalid in ([], {"candidates": "wrong"}, {"candidates": [None]},
+                        {"candidates": [{"finishReason": "STOP", "content": None}]},
+                        {"candidates": [{"finishReason": "STOP",
+                                         "content": {"parts": [None]}}]}):
+            with self.subTest(envelope=invalid):
+                with patch.object(m, "request_json", return_value=invalid) as request:
+                    with self.assertRaises(m.Hold):
+                        m.call_provider("gemini-generative-api", "test", "diff")
+                self.assertEqual(request.call_count, 1)
+
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
               "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
