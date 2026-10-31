@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -144,6 +145,46 @@ def is_code_health_failure(conclusion: str | None) -> bool:
     return str(conclusion or "").lower() not in {"success", "neutral", "skipped"}
 
 
+def code_health_blocker_packet(event: AuditEvent) -> dict[str, Any]:
+    """Safe triage instructions for the *existing* backlog and worker.
+
+    Details, stderr, environment values and exception bodies are untrusted and
+    must not become agent instructions or a secret-bearing context dump.
+    """
+    if event.source_kind != "CODE_HEALTH_RUN":
+        raise ValueError("BLOCKER_PACKET_SOURCE_INVALID")
+    conclusion = str(event.conclusion or "").lower()
+    failure_class = {
+        "failure": "CI_SEMANTIC_OR_INFRA_FAILURE",
+        "timed_out": "CI_TIMEOUT",
+        "cancelled": "CI_CANCELLED",
+    }.get(conclusion, "CI_RESULT_UNVERIFIED")
+    sha = str(event.head_sha or "")
+    verified_sha = sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+    # Only allow numeric, canonical run identifiers, not user-authored URLs.
+    run_ref = str(event.source_ref or "")
+    verified_run = run_ref if re.fullmatch(r"[1-9][0-9]{0,19}", run_ref) else None
+    next_action = (
+        "READ_EXACT_RUN_LOGS_AND_IDENTIFY_CAUSE"
+        if verified_run and verified_sha
+        else "RECONCILE_AUTHORITATIVE_RUN_AND_HEAD_IDENTITY"
+    )
+    return {
+        "schema_version": "WOW_ENGINEERING_BLOCKER_PACKET_V1",
+        "failure_class": failure_class,
+        "head_sha": verified_sha,
+        "workflow_run_id": verified_run,
+        "next_action": next_action,
+        "recovery_path": "EXISTING_ENGINEERING_BACKLOG_AND_PROTECTED_WORKER",
+        "advisory_only": True,
+        "dispatch_authorized": False,
+        "merge_authorized": False,
+        "deploy_authorized": False,
+        "can_execute": False,
+        "terminal_authority": TERMINAL_AUTHORITY,
+    }
+
+
 def _rows(response: Any) -> list[dict[str, Any]]:
     data = getattr(response, "data", None)
     return list(data) if isinstance(data, list) else []
@@ -247,6 +288,7 @@ class EngineeringAuditStore:
                 "run_ref": event.source_ref,
                 "head_sha": event.head_sha,
                 "conclusion": event.conclusion or "unknown",
+                "blocker_context": code_health_blocker_packet(event),
                 "event_name": event.event_name,
                 "details": event.details or {},
                 "can_execute": False,
