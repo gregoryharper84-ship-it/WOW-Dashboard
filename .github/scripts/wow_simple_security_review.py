@@ -479,7 +479,10 @@ def call_provider(provider, key, prompt):
         raise Hold("SEMANTIC_RESPONSE_INVALID")
     try:
         return parse_verdict(json.loads(raw))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
+        # Deeply nested untrusted JSON can exhaust the Python decoder's
+        # recursion limit even under the existing 250,000-byte transport cap.
+        # Convert it to the same typed non-approving HOLD, never a raw traceback.
         raise Hold("SEMANTIC_RESPONSE_NOT_JSON") from None
 
 
