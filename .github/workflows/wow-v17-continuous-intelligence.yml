@@ -13,6 +13,7 @@ on:
       - "artifacts/wow-engine/test_v17_learning_integrity_audit.py"
       - "artifacts/wow-engine/v17/learning_integrity_audit.py"
       - "artifacts/wow-engine/v17/core_intelligence.py"
+      - "artifacts/wow-engine/v17/core_intelligence_event_runtime.py"
       - "artifacts/wow-engine/v17/core_intelligence_compounding_runtime.py"
       - "artifacts/wow-engine/v17/postmortem_engine.py"
 permissions:
