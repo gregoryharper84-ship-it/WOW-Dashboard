@@ -617,17 +617,31 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     last_id = 0
     max_events = 50000
-    for _ in range(100):
+    # Progress itself is the query bound: every successful nonempty page
+    # advances last_id and adds at least one row; the 50,000-event budget
+    # therefore limits the loop to at most 50,001 page requests even if the
+    # server caps a response to one row. No separate hard-coded page count
+    # may discard valid evidence from a smaller server-side response cap.
+    while len(events) <= max_events:
         result = (
             db.table("wow_scout_handoff_state_events")
             .select("event_id,candidate_id,target_lane,state,code,can_execute,created_at")
             .eq("source_run_id", source_run_id)
             .gt("event_id", last_id)
             .order("event_id")
-            .limit(min(1000, max_events - len(events) + 1))
+            # +1 requests a single overflow witness at the 50,000-event
+        # boundary; the pre-append guard rejects it and never certifies it.
+        .limit(min(1000, max_events - len(events) + 1))
             .execute()
         )
-        batch = [dict(row) for row in (getattr(result, "data", None) or [])]
+        # data=None is NOT an empty page; it could be a database or schema
+        # failure. Never claim a complete ledger on an ambiguous response.
+        raw_data = getattr(result, "data", None)
+        if not isinstance(raw_data, list):
+            raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+        if any(not isinstance(row, dict) for row in raw_data):
+            raise RuntimeError("SCOUT_STATE_EVENT_PAGINATION_INVALID")
+        batch = [dict(row) for row in raw_data]
         if not batch:
             return events
         # A full ledger may make one final 1-row existence probe. Never
