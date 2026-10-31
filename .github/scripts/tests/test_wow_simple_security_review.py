@@ -675,6 +675,28 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 m.request_json("https://api.anthropic.com/v1/messages", data={},
                                headers={"x-api-key": "test"})
 
+    def test_deep_http_json_is_typed_attributed_hold_without_provider_fallback(self):
+        # A 24 KB transport response is below the 250 KB cap but can still
+        # exceed the JSON decoder recursion limit before provider parsing.
+        # No traceback, retry, alternate reviewer, or forged PASS is allowed.
+        import io
+        nested = b"[" * 12000 + b"0" + b"]" * 12000
+        target = {
+            "pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+            "diff_sha256": "c" * 64, "diff": "safe changed-file patch",
+            "file_blobs": {"reviewer.py": "d" * 40},
+        }
+        with patch.object(m.HTTP_CLIENT, "open", return_value=io.BytesIO(nested)) as opened:
+            with self.assertRaisesRegex(m.Hold, "^RESPONSE_JSON_INVALID$") as failure:
+                m.semantic_review(target, {
+                    "anthropic-claude-api": "synthetic",
+                    "gemini-generative-api": "synthetic",
+                }, invoke=m.call_provider)
+        self.assertEqual(opened.call_count, 1)
+        self.assertEqual(failure.exception.attempts, [
+            {"provider": "anthropic-claude-api", "result": "RESPONSE_JSON_INVALID"},
+        ])
+
     def test_typed_provider_error_retry_mapping(self):
         import io
         import json
