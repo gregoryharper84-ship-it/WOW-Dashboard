@@ -293,6 +293,25 @@ def intelligence_summary(
     for observation in observations:
         grouped[cohort_key(observation)].append(observation)
 
+    # Validate shared official game/player/stat settlements BEFORE artifact and
+    # calibrator cohorts split. An individual cohort can otherwise score a
+    # contradictory official outcome undetected.
+    research_keys = [key for key, rows in grouped.items() if all(
+        row.source_prediction_kind == "PROP"
+        and (row.sport or "").upper() == "MLB"
+        and (row.stat_type or "").upper() == "PITCHER_STRIKEOUTS"
+        and row.model_family == RESEARCH_MLB_SO_MODEL
+        for row in rows
+    )]
+    global_research = None
+    if len(research_keys) > 1:
+        shared_rows = [row for key in research_keys for row in grouped[key]]
+        global_research = _retrospective_research_for_cohort(db, shared_rows)
+    cross_cohort_conflict = (
+        global_research is not None
+        and global_research.get("blocker") == "OFFICIAL_SETTLEMENT_CONFLICT"
+    )
+
     cohort_rows: list[dict[str, Any]] = []
     hypothesis_rows: list[dict[str, Any]] = []
     for key in sorted(grouped):
@@ -304,9 +323,22 @@ def intelligence_summary(
         # original as-of/holdout identity. Row count cannot authorize learning.
         result["ready_for_hypothesis"] = False
         result["hypothesis_blocker"] = "CANONICAL_EFFECTIVE_SAMPLE_AND_HOLDOUT_UNVERIFIED"
-        research = _retrospective_research_for_cohort(db, grouped[key])
-        if research is not None:
-            result["retrospective_research_audit"] = research
+        if cross_cohort_conflict and key in research_keys:
+            # Never emit individually scored research metrics when official
+            # settlements disagree elsewhere in the same game/player/stat.
+            result["retrospective_research_audit"] = {
+                "status": "HOLD",
+                "blocker": "OFFICIAL_SETTLEMENT_CONFLICT",
+                "authority": "ADVISORY_ONLY",
+                "certified": False,
+                "can_execute": False,
+                "cross_cohort_conflicting_game_player_stats":
+                    global_research["conflicting_game_player_stats"],
+            }
+        else:
+            research = _retrospective_research_for_cohort(db, grouped[key])
+            if research is not None:
+                result["retrospective_research_audit"] = research
         cohort_rows.append(result)
 
     # Do not persist review hypotheses from dependent raw observation rows.
