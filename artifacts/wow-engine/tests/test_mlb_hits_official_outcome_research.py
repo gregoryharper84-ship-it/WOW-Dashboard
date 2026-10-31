@@ -47,6 +47,29 @@ def test_valid_labels_have_no_prediction_or_training_authority():
         assert result[k] is False
 
 
+
+def test_hit_at_least_one_research_flag_never_claims_exact_market_line_outcome():
+    # The retained weekly cohort includes 1.5, 2.5 and 3.5 PLAYER_HITS lines.
+    # A one-hit and a two-hit batter both satisfy >=1, but do not have the
+    # same OVER 1.5 result. This adapter has no verified market line, player
+    # crosswalk, pregame features, or source rights; it must not emit a pick.
+    result = extract_mlb_hits_labels(fixture())
+    one_hit = next(r for r in result["rows"] if r["hits"] == 1)
+    two_hits = next(r for r in result["rows"] if r["hits"] == 2)
+    assert one_hit["candidate_hit_at_least_one"] is True
+    assert two_hits["candidate_hit_at_least_one"] is True
+    assert one_hit["hits"] < 1.5 < two_hits["hits"]
+    assert result["market_line_verified"] is False
+    assert result["market_line_outcome"] is None
+    for row in result["rows"]:
+        assert row["market_line_verified"] is False
+        assert row["market_line_outcome"] is None
+        assert row["probability_publishable"] is False
+        assert row["historical_training_authorized"] is False
+
+
+
+
 @pytest.mark.parametrize("edit,code", [
     (lambda x: x.update({"research_only": False}), "MLB_HITS_RESEARCH_SOURCE_NOT_ELIGIBLE"),
     (lambda x: x.update({"can_execute": True}), "MLB_HITS_RESEARCH_SOURCE_NOT_ELIGIBLE"),
