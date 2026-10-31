@@ -305,7 +305,7 @@ def test_unbounded_run_metadata_fails_closed_before_redis_or_database(monkeypatc
     # Internal callers may bypass Pydantic with model_construct; malformed
     # Unicode must be a typed 422, not an uncaught encoding error.
     direct = schemas.RunCreateRequest.model_construct(
-        **{**_RUN_PAYLOAD, "user_timezone": "\\ud800"},
+        **{**_RUN_PAYLOAD, "user_timezone": "\ud800"},
     )
     with pytest.raises(HTTPException) as invalid_unicode:
         agent_runtime_api.create_run(direct, idempotency_key="metadata-unicode")
