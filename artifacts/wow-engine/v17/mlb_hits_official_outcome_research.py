@@ -200,6 +200,9 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 "candidate_label_status": "UNVERIFIED_FINAL_RESEARCH_ONLY",
                 "pregame_feature_snapshot_id": None,
                 "market_line_verified": False,
+                # A >=1 hit research flag is NOT a result for 1.5/2.5/3.5 lines.
+                # No caller-supplied market identity or exact line is certified.
+                "market_line_outcome": None,
                 "game_final_independently_verified": False,
                 "source_rights_verified": False,
                 "historical_training_authorized": False,
@@ -216,6 +219,8 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "source_authenticated": False,
         "pregame_features_verified": False,
         "source_rights_verified": False,
+        "market_line_verified": False,
+        "market_line_outcome": None,
         "historical_training_authorized": False,
         "probability_publishable": False,
         "can_execute": False,
