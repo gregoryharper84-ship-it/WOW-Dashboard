@@ -79,7 +79,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("medium/low", prompt)
         self.assertIn("blocks regardless of severity", prompt)
         self.assertIn("at most 12", prompt)
-        self.assertIn("60,000 UTF-8 bytes", prompt)
+        self.assertIn("57,952 UTF-8 bytes", prompt)
         self.assertIn("exactly these five keys and no others", prompt)
         self.assertIn("Never return whitespace-only", prompt)
         self.assertIn("cross-cutting concern", prompt)
@@ -839,19 +839,38 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaisesRegex(m.Hold, "SEMANTIC_RECEIPT_BYTES_EXCEEDED"):
             m._serialize_receipt({"schema_version": 3, "detail": "\U0001f984" * 16000})
 
-    def test_receipt_metadata_overflow_holds_with_provider_attribution(self):
+    def test_verdict_headroom_preserves_complete_reject_in_receipt(self):
         target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
                   "diff_sha256": "c" * 64}
-        verdict = {**self._passing(), "findings": [
+        self.assertEqual(m.MAX_VERDICT_BYTES, m.MAX_REVIEW_PAYLOAD_BYTES - 2048)
+        # The old parser accepted this 59.5K security REJECT but the receipt
+        # could not fit, turning an actionable verdict into an avoidable HOLD.
+        over_headroom = {**self._passing(), "findings": [
             self._finding("low", detail="d" * 59500, category="security")
         ]}
-        self.assertEqual(m.parse_verdict(verdict)[0], "REJECT")
+        with self.assertRaisesRegex(m.Hold, "PAYLOAD_BYTES_EXCEEDED"):
+            m.parse_verdict(over_headroom)
+        # A complete near-budget REJECT now remains intact when metadata is
+        # attached and signed. Risk categories and byte bounds are unchanged.
+        verdict = {**self._passing(), "findings": [
+            self._finding("low", detail="d" * 57500, category="security")
+        ]}
+        decision, parsed = m.parse_verdict(verdict)
+        self.assertEqual(decision, "REJECT")
+        receipt = m.make_receipt(target, decision=decision, reviewer="anthropic-claude-api",
+                                 verdict=parsed, attempts=[], run_id=33, attempt=1)
+        encoded = m._serialize_receipt(receipt)
+        self.assertLessEqual(len(encoded.encode("utf-8")), m.MAX_REVIEW_PAYLOAD_BYTES)
+        self.assertEqual(m.json.loads(encoded)["verdict"]["findings"][0]["detail"], "d" * 57500)
+        # Oversized external attempt metadata still fails closed with the
+        # authentic provider attribution; never convert an oversize to PASS.
         with self.assertRaisesRegex(m.Hold, "SEMANTIC_RECEIPT_BYTES_EXCEEDED") as error:
-            m.make_receipt(target, decision="REJECT", reviewer="anthropic-claude-api",
-                           verdict=verdict, attempts=[], run_id=33, attempt=1)
-        self.assertEqual(error.exception.attempts, [
-            {"provider": "anthropic-claude-api", "result": "SEMANTIC_RECEIPT_BYTES_EXCEEDED"}
-        ])
+            m.make_receipt(target, decision=decision, reviewer="anthropic-claude-api",
+                           verdict=parsed,
+                           attempts=[{"provider": "anthropic-claude-api", "result": "x" * 5000}],
+                           run_id=33, attempt=1)
+        self.assertEqual(error.exception.attempts[-1], {
+            "provider": "anthropic-claude-api", "result": "SEMANTIC_RECEIPT_BYTES_EXCEEDED"})
 
     def test_global_v3_preserves_long_authenticated_risk_findings_end_to_end(self):
         """Regression for historic TEXT_DETAIL_TOO_LONG: no lost security finding."""
