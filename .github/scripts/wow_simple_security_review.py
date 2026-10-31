@@ -462,15 +462,20 @@ def call_provider(provider, key, prompt):
                               data={"contents": [{"parts": [{"text": prompt}]}],
                                     "systemInstruction": {"parts": [{"text": SYSTEM_ROLE}]},
                                     "generationConfig": {"responseMimeType": "application/json"}})
-        if not result.get("candidates") or result["candidates"][0].get("finishReason") != "STOP":
+        if (type(result) is not dict or type(result.get("candidates")) is not list
+                or not result["candidates"] or type(result["candidates"][0]) is not dict
+                or result["candidates"][0].get("finishReason") != "STOP"):
             raise Hold("GEMINI_REVIEW_INCOMPLETE")
         try:
             raw = result["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, TypeError, IndexError):
+        except (KeyError, TypeError, IndexError, AttributeError):
             raise Hold("GEMINI_RESPONSE_INVALID") from None
     else:
         raise Hold("PROVIDER_IDENTITY_INVALID")
-    if type(raw) is not str or len(raw) > 9000:
+    # request_json already caps the entire provider response at 250,000 bytes.
+    # V3 bounds the complete parsed verdict at 60,000 UTF-8 bytes; an older
+    # 9,000-character raw-response ceiling would discard valid complete findings.
+    if type(raw) is not str:
         raise Hold("SEMANTIC_RESPONSE_INVALID")
     try:
         return parse_verdict(json.loads(raw))
