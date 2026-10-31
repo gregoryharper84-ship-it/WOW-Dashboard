@@ -299,8 +299,14 @@ def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> 
         "event_key": row.event_key,
         "selection": selected,
         "market_family": "OUTRIGHT_WINNER",
-        "rank_eligible": sporting_rank_eligible,
+        # This is a card-specific receipt: the legacy rank field is
+        # deliberately conservative (both lanes), unlike the top-level
+        # sporting-only rank. Consumers can inspect either native lane.
+        "rank_eligible": sporting_rank_eligible and objective_rank_eligible,
+        "sporting_rank_eligible": sporting_rank_eligible,
         "objective_rank_eligible": objective_rank_eligible,
+        "card_admission_eligible": not blockers,
+        "card_admission_blockers": list(blockers),
         "probability_publishable": probability_publishable,
         "can_execute": False,
     } if outcome.get("terminal_status") == "COMPLETED" else None
