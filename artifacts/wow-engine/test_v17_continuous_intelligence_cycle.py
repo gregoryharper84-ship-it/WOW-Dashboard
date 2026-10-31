@@ -211,3 +211,29 @@ def test_existing_immutable_observations_permit_empty_new_settlement_window():
         result = run_continuous_intelligence_cycle(object())
     assert result["status"] == "PASS"
     assert result["learning_evidence_status"] == "LEARNING_EVIDENCE_PRESENT"
+
+
+def test_old_learning_observations_cannot_mask_zero_new_source_joins():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=4, observation_n=0, skipped_n=4)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=15, cohort_n=2, hypothesis_n=0)), \
+         patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=15, challenger_proposal_n=0)):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["status"] == "PARTIAL_FAILURE"
+    assert result["learning_evidence_status"] == "SOURCE_JOIN_UNRESOLVED"
+    assert result["learning_evidence_failure"] == "LEARNING_SETTLED_SOURCE_JOIN_UNRESOLVED"
+
+
+def test_partially_skipped_settlements_do_not_erase_valid_rows_or_claim_full_refresh():
+    with patch(BASE + "capture_settled_prop_observations", return_value=payload(candidate_n=4, observation_n=2, skipped_n=2)), \
+         patch(BASE + "capture_settled_event_observations", return_value=payload(candidate_n=0, observation_n=0)), \
+         patch(BASE + "intelligence_summary", return_value=payload(observation_n=20, cohort_n=1, hypothesis_n=0)), \
+         patch(BASE + "run_compounding_memory_cycle", return_value=payload(observation_n=20, challenger_proposal_n=0)):
+        result = run_continuous_intelligence_cycle(object())
+    assert result["stages"][0]["observation_n"] == 2
+    assert result["stages"][0]["skipped_n"] == 2
+    assert result["status"] == "PARTIAL_FAILURE"
+    assert result["learning_evidence_status"] == "CAPTURE_INCOMPLETE"
+    assert result["learning_evidence_failure"] == "LEARNING_CAPTURE_INCOMPLETE"
+    assert result["automatic_promotion_allowed"] is False
+    assert result["can_execute"] is False
