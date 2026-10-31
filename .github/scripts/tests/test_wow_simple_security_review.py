@@ -85,6 +85,13 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("100-200 characters in detail", prompt)
         self.assertIn("30-150 in evidence", prompt)
         self.assertIn("preserve every material risk", prompt)
+        # A low/medium risk-category finding still blocks, but the model must
+        # distinguish a proven code path from assumptions about deployment.
+        self.assertIn("concrete reachable failure path", prompt)
+        self.assertIn("conditional assumptions", prompt)
+        self.assertIn("Do not claim an unobserved", prompt)
+        self.assertIn("mark the affected review dimension FAIL", prompt)
+        self.assertIn("turn uncertainty into PASS", prompt)
 
     def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
         good = self._passing()
