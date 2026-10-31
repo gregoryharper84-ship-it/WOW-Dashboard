@@ -10,6 +10,7 @@ import os
 import re
 from pathlib import Path
 import sys
+import unicodedata
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
@@ -115,7 +116,7 @@ def _valid_changed_path(value):
     return (type(value) is str and 0 < len(value) <= MAX_FINDING_PATH
             and not value.startswith("/") and "\\" not in value
             and all(part not in ("", ".", "..") for part in value.split("/"))
-            and not any(ord(char) < 32 or ord(char) == 127 for char in value))
+            and not any(ord(char) < 32 or ord(char) == 127 or\n                        unicodedata.category(char) == "Cf" for char in value))
 
 
 class Hold(Exception):
