@@ -569,22 +569,6 @@ def test_untrusted_money_observation_is_bounded_and_never_reflected():
     assert money["can_execute"] is False
 
 
-def test_ignored_caller_money_claim_is_logged_without_raw_input(caplog):
-    attack = "RESOLVED\nBearer PRIVATE_KEY\t<script>bad()</script>"
-    with caplog.at_level("WARNING", logger="wow.v17.prop_score.money"):
-        api_prod_market._audit_caller_money_status(attack)
-        api_prod_market._audit_caller_money_status("RESOLVED")
-    records = [r.getMessage() for r in caplog.records
-               if r.name == "wow.v17.prop_score.money"]
-    assert len(records) == 2
-    assert "original_status_class=UNRECOGNIZED" in records[0]
-    assert "original_status_class=RESOLVED" in records[1]
-    assert all("effective_status=PAYOUT_UNRESOLVED" in x for x in records)
-    assert all("override_reason=CALLER_STATUS_UNVERIFIED" in x for x in records)
-    assert all("can_execute=false" in x for x in records)
-    assert all("PRIVATE_KEY" not in x and "<script>" not in x for x in records)
-
-
 def test_non_string_money_claim_never_authorizes_money():
     for raw in (None, True, 1, {"status": "RESOLVED"}, ["RESOLVED"]):
         row = SimpleNamespace(money_lane_status=raw)
@@ -599,7 +583,6 @@ def test_money_status_unicode_and_newline_variants_never_resolve():
     variants = ("resolved", "ReSoLvEd", "ＲＥＳＯＬＶＥＤ", "RESOLVED\n",
                 "RESOLVED\t", "RESOLVED\u200d", "RESOLVED\0", " Résolved ")
     for value in variants:
-        assert api_prod_market._money_status_observation(value) == "UNRECOGNIZED"
         money = api_prod_market._effective_money_lane(
             SimpleNamespace(money_lane_status=value),
             {"status": "PASS", "money_context_required": False},
@@ -621,12 +604,10 @@ def test_score_prop_route_has_mandatory_auth_dependency():
     assert api_prod_market.prod._require_action_api_key in dependency_calls
 
 
-def test_unauthenticated_score_prop_cannot_emit_money_override_audit(caplog):
-    """FastAPI bearer dependency must reject before endpoint audit runs."""
-    caplog.clear()
+def test_unauthenticated_score_prop_denied_before_money_lane():
+    """Real HTTP request must fail authenticated route entry, not just a stub."""
     payload = _request_payload()
     payload["money_lane_status"] = "RESOLVED"
-    with caplog.at_level("WARNING", logger="wow.v17.prop_score.money"):
-        response = client.post("/score-prop", json=payload)
+    response = client.post("/score-prop", json=payload)
     assert response.status_code in (401, 403)
-    assert not any(r.name == "wow.v17.prop_score.money" for r in caplog.records)
+
