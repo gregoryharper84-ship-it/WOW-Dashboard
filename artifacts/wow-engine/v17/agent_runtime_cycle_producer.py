@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import urllib.parse
 import urllib.error
@@ -30,16 +31,15 @@ def _verified_origin(origin: str) -> str:
 
 
 def _require_deployed_runtime_auth(origin: str, context: ssl.SSLContext) -> None:
-    """Safe negative preflight: proves anonymous requests are rejected first.
+    """Read-only negative auth preflight with no run-admission side effects.
 
-    The forbidden can_execute=true payload cannot create a run on the older
-    vulnerable endpoint (it returned 422). The #2318 endpoint returns 401
-    before body validation. We never send a valid anonymous creation request.
+    A missing or malformed UUID must be rejected by auth before request
+    validation by the repaired #2318 route. This is a necessary negative
+    signal, not independently sufficient proof of production code identity;
+    deployment SHA evidence remains a separate release acceptance criterion.
     """
     probe = urllib.request.Request(
-        origin + "/wow/runs", method="POST",
-        data=b'{"run_type":"FULL_MODEL","as_of":"2000-01-01T00:00:00Z","user_timezone":"America/Chicago","can_execute":true}',
-        headers={"Content-Type": "application/json"},
+        origin + "/wow/runs/not-a-valid-uuid", method="GET",
     )
     try:
         with urllib.request.urlopen(probe, timeout=10, context=context):
@@ -73,7 +73,7 @@ def admission_for_hour(now: datetime) -> tuple[str, dict]:
 def admit_cycle(*, now: datetime, origin: str, runtime_key: str) -> dict:
     if not runtime_key or len(runtime_key) < 32:
         raise ValueError("PRODUCER_AUTH_OR_ORIGIN_UNAVAILABLE")
-    if not runtime_key.isascii():
+    if re.fullmatch(r"[A-Za-z0-9_-]{32,256}", runtime_key) is None:
         raise ValueError("PRODUCER_CREDENTIAL_INVALID")
     origin = _verified_origin(origin)
     context = ssl.create_default_context()
