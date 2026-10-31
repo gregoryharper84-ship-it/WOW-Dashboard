@@ -73,5 +73,61 @@ class ScoutGateTest(unittest.TestCase):
             section=data[start:next_step if next_step>=0 else None]
             self.assertIn("steps.source.outputs.run_id != ''",section)
 
+
+    def test_cancelled_verification_only_source_skips_without_deadlock(self):
+        """Reproduce the real 39974206880 selection loop, then find genuine evidence.
+
+        No persistence receipt may be claimed for the skipped discovery. The
+        controller must advance to a newer authenticated source rather than
+        failing every 15 minutes on the same non-existent artifact.
+        """
+        lines = RESUME.read_text().splitlines()
+        start = next(i for i, x in enumerate(lines)
+                     if x.strip() == "- name: Resolve completed Multi-Scout source run")
+        run = next(i for i in range(start + 1, len(lines))
+                   if lines[i] == "        run: |")
+        stop = next((i for i in range(run + 1, len(lines))
+                     if lines[i].startswith("      - name: ")), len(lines))
+        command = "\n".join(x[10:] for x in lines[run + 1:stop]
+                            if x.startswith("          "))
+        fake_gh = r'''
+gh() {
+    case "$2" in
+        */actions/workflows/wow-v17-scout-brain-persist.yml/runs?*)
+            printf '%s' '{"workflow_runs":[{"created_at":"2026-10-23T14:58:23Z","display_title":"wow-v17-scout-brain-persist source=39974206880"}]}' ;;
+        */actions/artifacts?name=wow-v17-scout-brain-persistence-39974206880*)
+            printf '0\n' ;;
+        */actions/runs/39974206880/jobs?*)
+            printf '%s' '{"jobs":[{"name":"Verify Multi-Scout contract","conclusion":"success"},{"name":"Nightly all-sport discovery and governed specialist handoff","conclusion":"skipped"}]}' ;;
+        */actions/runs/39974206880)
+            printf '%s' '{"event":"workflow_run"}' ;;
+        */actions/workflows/wow-v17-nightly-multiscout.yml/runs?*)
+            printf '%s' '{"workflow_runs":[{"id":41111111111,"name":"wow-v17-nightly-multiscout","status":"completed","conclusion":"success","event":"schedule"}]}' ;;
+        */actions/runs/41111111111/artifacts)
+            printf '1\n' ;;
+        *)
+            echo "unexpected API path: $2" >&2
+            return 77 ;;
+    esac
+}
+'''
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d) / "output"
+            summary = Path(d) / "summary"
+            env = dict(os.environ, GITHUB_REPOSITORY="testowner/testrepo",
+                       GITHUB_EVENT_NAME="schedule", TARGET_SHA="",
+                       GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary),
+                       SCOUT_PERSIST_RECOVERY_MAX_PAGES="20",
+                       SCOUT_PERSIST_LOSSLESS_RECOVERY_EPOCH="2026-10-03T04:44:53Z")
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", fake_gh + command],
+                env=env, capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("run_id=41111111111", output.read_text())
+            self.assertIn("force_replay=false", output.read_text())
+            self.assertIn("SCOUT_DISCOVERY_NOT_APPLICABLE", summary.read_text())
+            self.assertNotIn("run_id=39974206880", output.read_text())
+
 if __name__ == "__main__":
     unittest.main()
