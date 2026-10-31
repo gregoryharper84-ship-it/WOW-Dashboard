@@ -93,6 +93,18 @@ def _run_identity(env: WorkerEnvelope) -> WorkerOutput:
     row = env.payload.get("candidate")
     if not isinstance(row, dict):
         return _blocked(env, "CANDIDATE_IDENTITY_MISSING")
+    # Daily snapshots are only evidence at capture time. Without a
+    # separately refreshed official status and settlement proof, the agent
+    # runtime must stop BEFORE evidence/model/calibration, not rely on
+    # metadata warnings or treat a cached pregame label as current.
+    if row.get("discovery_source") == "WOW_V17_DAILY_SNAPSHOT" and (
+        row.get("event_status") != "PREGAME"
+        or row.get("settlement_identity_verified") is not True
+    ):
+        return _blocked(env, "SLATE_IDENTITY_INCOMPLETE", output={
+            "missing_fields": ["fresh_event_status", "verified_settlement_identity"],
+            "model_invocation_allowed": False, "can_execute": False,
+        })
     required = ["sport", "official_event_id", "participant", "market_family", "period"]
     if str(row.get("market_family") or "").upper() == "PLAYER_PROP":
         required += ["stat_family", "exact_line", "side"]
