@@ -223,7 +223,9 @@ def request_json(url, *, token=None, data=None, headers=None):
         if not url.startswith("https://api.github.com/"):
             raise ProviderUnavailable("PROVIDER_TRANSPORT") from None
         raise Hold("GITHUB_TRANSPORT") from None
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
+        # A bounded HTTP response can still contain JSON nested deeply enough
+        # to exhaust the decoder. Convert it to a typed non-approving HOLD.
         raise Hold("RESPONSE_JSON_INVALID") from None
 
 
