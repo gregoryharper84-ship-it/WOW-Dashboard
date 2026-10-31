@@ -819,14 +819,14 @@ class SimpleSecurityReviewTests(unittest.TestCase):
     def test_unicode_format_control_path_fails_before_provider(self):
         # U+202E reverses displayed text and U+200D hides a character.
         # GitHub-supplied filenames must remain unambiguous to reviewers.
-        self.assertTrue(m._valid_changed_path("src/caf\\u00e9.py"))
+        self.assertTrue(m._valid_changed_path("src/caf\u00e9.py"))
         target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
                   "diff_sha256": "c" * 64, "diff": "bounded"}
         calls = []
         def forbidden(*args):
             calls.append(args)
             return ("PASS", self._passing())
-        for path in ("src/evil\\u202etxt.py", "src/hidden\\u200d.py"):
+        for path in ("src/evil\u202etxt.py", "src/hidden\u200d.py"):
             with self.subTest(path=repr(path)):
                 self.assertFalse(m._valid_changed_path(path))
                 with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
