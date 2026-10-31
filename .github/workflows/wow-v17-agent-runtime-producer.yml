@@ -1,12 +1,12 @@
 name: wow-v17-agent-runtime-producer
 
 # Only the already-authorized Agent Runtime can admit this dry-run cycle.
+# No workflow_dispatch: scheduled protected-main admission only.
 # This workflow does not deploy, certify a model, modify a bet or authorize
 # production until P0 #2318's distinct runtime bearer is verified in Render.
 on:
   schedule:
     - cron: "19 * * * *"
-  workflow_dispatch:
   pull_request:
     paths:
       - ".github/workflows/wow-v17-agent-runtime-producer.yml"
@@ -28,8 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # verified v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # verified v5
         with:
           python-version: "3.11"
           cache: pip
@@ -43,7 +43,7 @@ jobs:
   admit:
     name: Admit one authenticated research cycle
     needs: verify
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -53,7 +53,7 @@ jobs:
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # verified v4
       - name: Fail closed unless using a distinct configured runtime credential
         shell: bash
         run: |
