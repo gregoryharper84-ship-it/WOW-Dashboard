@@ -623,15 +623,15 @@ def _read_all_state_events(db: Any, source_run_id: str) -> list[dict[str, Any]]:
     # server caps a response to one row. No separate hard-coded page count
     # may discard valid evidence from a smaller server-side response cap.
     while len(events) <= max_events:
+        # +1 requests a single overflow witness at the 50,000-event
+        # boundary; the pre-append guard rejects it, never certifying it.
         result = (
             db.table("wow_scout_handoff_state_events")
             .select("event_id,candidate_id,target_lane,state,code,can_execute,created_at")
             .eq("source_run_id", source_run_id)
             .gt("event_id", last_id)
             .order("event_id")
-            # +1 requests a single overflow witness at the 50,000-event
-        # boundary; the pre-append guard rejects it and never certifies it.
-        .limit(min(1000, max_events - len(events) + 1))
+            .limit(min(1000, max_events - len(events) + 1))
             .execute()
         )
         # data=None is NOT an empty page; it could be a database or schema
