@@ -74,8 +74,33 @@ class WakeProbeTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertNotIn("secrets", stderr.getvalue())
 
+    def test_redirect_handler_refuses_all_locations_without_followup_get(self):
+        from urllib.request import Request
+        request = Request(probe.BASE_URL + "/health", method="GET")
+        handler = probe._RejectRedirects()
+        for destination in (
+            "https://example.org/collector/readiness",
+            probe.BASE_URL + "/unapproved",
+            probe.BASE_URL + "/collector/readiness",
+        ):
+            with self.subTest(destination=destination):
+                self.assertIsNone(handler.redirect_request(
+                    request, None, 302, "Found", {"Location": destination}, destination
+                ))
+
+    def test_proxy_url_mismatch_is_rejected_even_on_same_host(self):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = b"{}"
+        response.geturl.return_value = probe.BASE_URL + "/unapproved"
+        with patch.object(probe.HTTP_CLIENT, "open", return_value=response):
+            with self.assertRaisesRegex(probe.ProbeError, "PROBE_RESPONSE_ORIGIN_CHANGED"):
+                probe.read_json("/health")
+
     def test_reject_unexpected_path_without_network(self):
-        with self.assertRaises(probe.ProbeError), patch.object(probe, "urlopen") as fn:
+        with self.assertRaises(probe.ProbeError), patch.object(probe.HTTP_CLIENT, "open") as fn:
             probe.read_json("/internal/kalshi-weather/v17/empirical-cohort/cron-run")
         fn.assert_not_called()
 
