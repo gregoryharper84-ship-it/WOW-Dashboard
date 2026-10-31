@@ -181,3 +181,49 @@ def test_canonical_home_result_rejects_identity_ambiguity_and_void():
         {"home_team": "A", "away_team": "B"},
         {"official_winner": "B", "void": True},
     ) == "VOID"
+
+
+@pytest.mark.parametrize("malformed", [{}, "", 0, None])
+def test_explicitly_malformed_incident_records_are_not_silently_dropped(malformed):
+    with pytest.raises(ValueError, match="INCIDENT_LEDGER_SCHEMA_INVALID"):
+        audit_engineering_incidents({"records": malformed})
+
+
+@pytest.mark.parametrize("malformed", [[], "", 0, None])
+def test_explicitly_malformed_incident_fixes_are_not_silently_dropped(malformed):
+    row = incident(1)
+    row["engineering_fixes"] = malformed
+    with pytest.raises(ValueError, match="INCIDENT_FIXES_SCHEMA_INVALID"):
+        audit_engineering_incidents({"records": [row]})
+
+
+def test_missing_incident_fields_are_allowed_without_fabricating_records():
+    assert audit_engineering_incidents({})["incident_n"] == 0
+    row = incident(1)
+    del row["engineering_fixes"]
+    assert audit_engineering_incidents({"records": [row]})["incident_n"] == 1
+
+
+@pytest.mark.parametrize("invalid_preserve", [7, "avoid loss", ["good", 7], [" "], None, {"x": "y"}])
+def test_invalid_preserve_entries_are_blocked_without_crashing_other_proposals(invalid_preserve):
+    valid = {
+        "domain": "CI",
+        "root_cause_key": "REGRESSION",
+        "proposed_change": "Run guard",
+        "evidence_refs": ["ISSUE-1"],
+        "guard_test_path": "tests/test_regression.py",
+        "preserve": ["signed independent security review"],
+    }
+    malformed = {**valid, "preserve": invalid_preserve}
+    result = compile_engineering_refinements(
+        [malformed, valid], postmortem_id="PM-2026-10-31-999"
+    )
+    assert result["input_n"] == 2
+    assert result["blocked"] == [{
+        "source_index": 0, "reason": "REFINE_ITEM_NOT_TYPED_ENGINEERING_EVIDENCE"
+    }]
+    assert len(result["proposals"]) == 1
+    assert result["proposals"][0]["recipe"]["preserve"] == [
+        "signed independent security review"
+    ]
+    assert result["automatic_queue_admission"] is False
