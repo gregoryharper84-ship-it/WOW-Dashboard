@@ -164,10 +164,13 @@ def code_health_blocker_packet(event: AuditEvent) -> dict[str, Any]:
     # Numeric GitHub run IDs with bounded 20-digit future headroom; never URLs.
     run_ref = str(event.source_ref or "")
     verified_run = run_ref if re.fullmatch(r"[1-9][0-9]{0,19}", run_ref) else None
+    # Unknown GitHub states must not look like an ordinary scored failure.
     next_action = (
-        "READ_EXACT_RUN_LOGS_AND_IDENTIFY_CAUSE"
-        if verified_run and verified_sha
-        else "RECONCILE_AUTHORITATIVE_RUN_AND_HEAD_IDENTITY"
+        "RECONCILE_UNRECOGNIZED_CI_CONCLUSION"
+        if conclusion not in {"failure", "timed_out", "cancelled"}
+        else ("READ_EXACT_RUN_LOGS_AND_IDENTIFY_CAUSE"
+              if verified_run and verified_sha
+              else "RECONCILE_AUTHORITATIVE_RUN_AND_HEAD_IDENTITY")
     )
     return {
         "schema_version": "WOW_ENGINEERING_BLOCKER_PACKET_V1",
@@ -182,7 +185,6 @@ def code_health_blocker_packet(event: AuditEvent) -> dict[str, Any]:
         "merge_authorized": False,
         "deploy_authorized": False,
         "can_execute": False,
-        "terminal_authority": TERMINAL_AUTHORITY,
     }
 
 
@@ -286,12 +288,14 @@ class EngineeringAuditStore:
         # The upstream `details` dict (URLs, stderr, environment, arbitrary
         # provider text) is never persisted as a context-injection surface.
         raw_name = (event.details or {}).get("check_name")
-        # Reuse the reconciler's one existing source of workflow identity.
-        # Import locally to avoid an import cycle: that module imports this store.
-        from v17.engineering_auditor_github import CODE_HEALTH_WORKFLOW_NAMES
+        # Accept a bounded GitHub-style workflow name only when it matches
+        # the event title; unknown sources remain visibly unverified, not
+        # silently assigned to a trusted workflow.
         check_name = (
-            raw_name if isinstance(raw_name, str) and raw_name in CODE_HEALTH_WORKFLOW_NAMES
-            else "V17_ENGINEERING_CODE_HEALTH"
+            raw_name
+            if isinstance(raw_name, str) and raw_name == event.title
+            and re.fullmatch(r"wow-[a-z0-9-]{2,96}", raw_name)
+            else "V17_ENGINEERING_CODE_HEALTH_UNVERIFIED"
         )
         component = f"{event.repository}:{check_name}"
         if is_code_health_failure(event.conclusion):
