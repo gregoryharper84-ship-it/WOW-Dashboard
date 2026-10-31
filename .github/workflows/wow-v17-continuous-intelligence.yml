@@ -84,6 +84,8 @@ jobs:
           valid = (
               result.get("schema_version") == "WOW17_CONTINUOUS_INTELLIGENCE_V1"
               and result.get("status") == "PASS"
+              and result.get("learning_evidence_status") == "LEARNING_EVIDENCE_PRESENT"
+              and result.get("learning_evidence_failure") is None
               and result.get("can_execute") is False
               and result.get("automatic_promotion_allowed") is False
               and result.get("model_parameters_changed") is False
@@ -95,6 +97,8 @@ jobs:
           )
           safe = {
               "status": result.get("status"),
+              "learning_evidence_status": result.get("learning_evidence_status"),
+              "learning_evidence_failure": result.get("learning_evidence_failure"),
               "stages": [
                   {key: stage.get(key) for key in (
                       "stage", "status", "candidate_n", "observation_n",
