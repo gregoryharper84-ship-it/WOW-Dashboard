@@ -395,6 +395,28 @@ def test_existing_redis_global_admission_limit_and_outage_fail_closed(monkeypatc
     assert unavailable.value.status_code == 503
 
 
+@pytest.mark.parametrize("bad_reply", [None, False, True, 3, -1, b"1", "1"])
+def test_unexpected_redis_admission_reply_fails_closed_before_database(monkeypatch, auth_headers, bad_reply):
+    """Only exact integer Lua statuses 0, 1, 2 are valid; never coerce a reply."""
+    class UnexpectedRedis:
+        def eval(self, *args, **kwargs):
+            return bad_reply
+
+    monkeypatch.setattr(agent_runtime_api, "_admission_redis", lambda url: UnexpectedRedis())
+    monkeypatch.setattr(
+        agent_runtime_api, "get_client",
+        lambda: pytest.fail("unexpected Redis reply reached service-role DB"),
+    )
+    response = client.post(
+        "/wow/runs", json=_RUN_PAYLOAD,
+        headers={"Idempotency-Key": "bad-redis-reply", **auth_headers},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == {
+        "code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False,
+    }
+
+
 def test_cached_redis_pool_rotates_with_url(monkeypatch):
     # A changed Redis URL must never return the old process-local connection.
     import redis
