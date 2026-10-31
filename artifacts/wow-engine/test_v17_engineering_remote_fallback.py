@@ -359,6 +359,43 @@ class RemoteFallbackTests(unittest.TestCase):
         self.assertLess(claude.index("engineering_remote_fallback.py guard"),
                         claude.index("git switch --detach"))
 
+    def test_reconcilable_cursor_reservation_id_identifies_failed_launch_and_enqueued_runs(self):
+        failed = remote.receipt(
+            "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id="2136",
+            main_sha=MAIN, hold=True, pr_number="2326",
+            pr_sha="3940506a482403335dcc7b999423a2c67efba6d8",
+            cursor_agent_id="bc-b5a33d9c-34ff-540d-a011-9671917dc14a",
+            cursor_run_id=None, worker_id="github-actions:41233280933:1",
+        )
+        comments = [{"id": 6547956599, "body": remote._body(failed)}]
+        self.assertEqual(
+            remote.reconcilable_cursor_reservation_id(
+                comments,
+                get_run=lambda rid: {
+                    "id": rid, "run_attempt": 1, "status": "completed",
+                    "conclusion": "failure",
+                    "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+                },
+            ),
+            6547956599,
+        )
+        # While origin run is still in_progress, do not prematurely reconcile.
+        self.assertIsNone(
+            remote.reconcilable_cursor_reservation_id(
+                comments,
+                get_run=lambda rid: {
+                    "id": rid, "run_attempt": 1, "status": "in_progress",
+                    "conclusion": None,
+                    "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+                },
+            )
+        )
+        observed = remote.reconcile(self.api, comments, "2136")
+        self.assertEqual(
+            observed[0]["status"],
+            "CURSOR_FAILED_LAUNCH_REQUIRES_NEGATIVE_PROOF_AND_RELEASE",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

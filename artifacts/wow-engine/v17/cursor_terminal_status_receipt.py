@@ -9,6 +9,11 @@ from pathlib import Path
 import sys
 from urllib import error, parse, request
 
+try:
+    from .cursor_cloud_handoff import agent_id as deterministic_agent_id
+except ImportError:
+    from cursor_cloud_handoff import agent_id as deterministic_agent_id
+
 
 REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
 PR_NUMBER = 2090
@@ -137,6 +142,21 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     source_sha = entry.get("pr_sha")
     main_sha = entry.get("main_sha")
     worker_id = entry.get("worker_id")
+    status = entry.get("status")
+    valid_enqueued = (
+        status in (None, "CURSOR_AGENT_ENQUEUED")
+        and isinstance(run_id, str)
+        and re.fullmatch(r"run-[0-9a-f-]{36}", run_id) is not None
+    )
+    valid_failed_launch = (
+        status == "CURSOR_LAUNCH_RESERVED"
+        and run_id is None
+        and isinstance(number, str)
+        and re.fullmatch(r"[1-9][0-9]*", number) is not None
+        and isinstance(source_sha, str)
+        and re.fullmatch(r"[0-9a-f]{40}", source_sha) is not None
+        and agent_id == deterministic_agent_id(REPOSITORY, int(number), source_sha)
+    )
     if (marker != f"<!-- WOW_REMOTE_REPAIR_ATTEMPT:{incident} -->"
             or entry.get("provider") != "cursor"
             or entry.get("hold") is not True
@@ -148,7 +168,7 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or entry.get("lease_group") != f"PR_{number}"
             or not isinstance(agent_id, str)
             or not re.fullmatch(r"bc-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", agent_id)
-            or not isinstance(run_id, str) or not re.fullmatch(r"run-[0-9a-f-]{36}", run_id)
+            or not (valid_enqueued or valid_failed_launch)
             or not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
             or not isinstance(main_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha)
             or not isinstance(worker_id, str)):
@@ -160,6 +180,7 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
         api(f"{GITHUB_API}/repos/{REPOSITORY}/actions/runs/{match.group(1)}",
             token=github_token), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED",
     )
+    expected_conclusion = "failure" if valid_failed_launch else "success"
     if (origin.get("id") != int(match.group(1))
             or origin.get("run_attempt") != int(match.group(2))
             or origin.get("path") != ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
@@ -167,7 +188,7 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or origin.get("head_sha") != main_sha
             or origin.get("head_branch") != "main"
             or origin.get("status") != "completed"
-            or origin.get("conclusion") != "success"
+            or origin.get("conclusion") != expected_conclusion
             or not isinstance(origin.get("repository"), dict)
             or origin["repository"].get("full_name") != REPOSITORY
             or not isinstance(origin.get("head_repository"), dict)
@@ -176,6 +197,7 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     return {
         "reservation_comment_id": comment_id,
         "reservation_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "reservation_status": status or "CURSOR_AGENT_ENQUEUED",
         "incident_id": incident, "pr_number": int(number),
         "original_head_sha": source_sha, "agent_id": agent_id, "run_id": run_id,
         "worker_id": worker_id, "source_workflow_run_id": origin["id"],
@@ -234,6 +256,69 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
     return sorted(names)
 
 
+def _verify_negative_inventories(
+    cursor_token: str, *, agent_id: str, pr_number: int, api,
+) -> dict:
+    """Prove via complete archived inventories that no Cursor agent exists or is active."""
+    pr_url = f"https://github.com/{REPOSITORY}/pull/{pr_number}"
+
+    def _scan_inventory(base_params: dict[str, object], *, unverified_code: str, active_code: str) -> tuple[int, int]:
+        seen_ids: set[str] = set()
+        seen_cursors: set[str] = set()
+        next_cursor: str | None = None
+        pages = 0
+        for _ in range(20):
+            params = dict(base_params)
+            if next_cursor is not None:
+                params["cursor"] = next_cursor
+            query = parse.urlencode(params)
+            page = api(f"{CURSOR_API}/agents?{query}", token=cursor_token, basic=True)
+            if not isinstance(page, dict):
+                raise ReceiptBlocked(unverified_code)
+            items = page.get("items")
+            if not isinstance(items, list):
+                raise ReceiptBlocked(unverified_code)
+            pages += 1
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ReceiptBlocked(unverified_code)
+                item_id = item.get("id")
+                if not isinstance(item_id, str) or not item_id.strip():
+                    raise ReceiptBlocked(unverified_code)
+                if item_id in seen_ids:
+                    raise ReceiptBlocked(unverified_code)
+                seen_ids.add(item_id)
+                if item_id == agent_id:
+                    raise ReceiptBlocked("CURSOR_AGENT_INVENTORY_CONTRADICTION")
+                if item.get("status") == "ACTIVE":
+                    raise ReceiptBlocked(active_code)
+            raw_next = page.get("nextCursor")
+            if raw_next in (None, ""):
+                return pages, len(seen_ids)
+            if not isinstance(raw_next, str) or not items or raw_next in seen_cursors:
+                raise ReceiptBlocked(unverified_code)
+            seen_cursors.add(raw_next)
+            next_cursor = raw_next
+        raise ReceiptBlocked(unverified_code)
+
+    global_pages, global_count = _scan_inventory(
+        {"limit": 100, "includeArchived": "true"},
+        unverified_code="CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED",
+        active_code="CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS",
+    )
+    pr_pages, pr_count = _scan_inventory(
+        {"prUrl": pr_url, "limit": 100, "includeArchived": "true"},
+        unverified_code="CURSOR_AGENT_INVENTORY_UNVERIFIED",
+        active_code="CURSOR_ACTIVE_PR_AGENT_EXISTS",
+    )
+    return {
+        "global_pages": global_pages,
+        "global_agents_checked": global_count,
+        "pr_pages": pr_pages,
+        "pr_agents_checked": pr_count,
+    }
+
+
 def collect_receipt(
     cursor_token: str, github_token: str, api=api_json, *,
     reservation_comment_id: int | None = None,
@@ -250,6 +335,49 @@ def collect_receipt(
     pr_number = target["pr_number"] if target else PR_NUMBER
 
     agent_url = f"{CURSOR_API}/agents/{parse.quote(agent_id, safe='')}"
+    if target is not None and run_id is None:
+        try:
+            existing = api(agent_url, token=cursor_token, basic=True)
+        except ReceiptBlocked as exc:
+            if exc.code != "STATUS_API_HTTP_404":
+                raise
+        else:
+            if isinstance(existing, dict) and existing.get("status") == "ACTIVE":
+                raise ReceiptBlocked("CURSOR_AGENT_STILL_ACTIVE")
+            raise ReceiptBlocked("CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION")
+
+        negative_proof = _verify_negative_inventories(
+            cursor_token, agent_id=agent_id, pr_number=pr_number, api=api,
+        )
+        pr_url = f"{GITHUB_API}/repos/{REPOSITORY}/pulls/{pr_number}"
+        pr = _require_object(
+            api(pr_url, token=github_token),
+            "SOURCE_PR_IDENTITY_UNVERIFIED",
+        )
+        changed_files = _verify_dynamic_pr(pr, target, github_token, api)
+        return {
+            "status": "CURSOR_TERMINAL_STATUS_VERIFIED",
+            "agent_id": agent_id,
+            "agent_status": "NEVER_CREATED",
+            "run_id": None,
+            "latest_run_id": None,
+            "terminal_status": "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN",
+            "run_result_field_present": False,
+            "negative_launch_proof": negative_proof,
+            "repository": REPOSITORY,
+            "pr_number": pr_number,
+            "pr_state": pr["state"],
+            "base_ref": pr["base"]["ref"],
+            "head_sha": pr["head"]["sha"],
+            "changed_files": changed_files,
+            "release_authorized": False,
+            "lease_released": False,
+            "can_execute": False,
+            "production_verified": False,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+            "reservation": target,
+        }
+
     run_url = (
         f"{CURSOR_API}/agents/{parse.quote(agent_id, safe='')}/runs/"
         f"{parse.quote(run_id, safe='')}"

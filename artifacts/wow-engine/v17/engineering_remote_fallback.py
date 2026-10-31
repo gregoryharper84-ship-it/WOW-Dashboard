@@ -119,6 +119,55 @@ def assert_no_remote_writer(comments, get_run=None):
         raise ProviderUnavailable("REMOTE_WRITER_RECONCILIATION_REQUIRED")
 
 
+def reconcilable_cursor_reservation_id(comments, get_run=None) -> int | None:
+    """Identify a single held Cursor reservation eligible for serialized reconciliation."""
+    try:
+        from .engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    except ImportError:
+        from engineering_remote_writer_release import ReleaseBlocked, verified_released_ids
+    attempts = reservations(comments)
+    try:
+        released = verified_released_ids(comments, attempts, get_run=get_run)
+    except ReleaseBlocked:
+        return None
+    held = [(cid, row) for cid, row in attempts if row["hold"] and cid not in released]
+    if len(held) != 1:
+        return None
+    cid, row = held[0]
+    if row.get("provider") != "cursor" or type(cid) is not int or cid <= 0:
+        return None
+    status = row.get("status")
+    run_id = row.get("cursor_run_id")
+    is_failed_launch = status == "CURSOR_LAUNCH_RESERVED" and run_id is None
+    is_enqueued = (
+        status in (None, "CURSOR_AGENT_ENQUEUED")
+        and isinstance(run_id, str)
+        and run_id.startswith("run-")
+    )
+    if not (is_failed_launch or is_enqueued):
+        return None
+    if get_run is not None:
+        match = re.fullmatch(
+            r"github-actions:([1-9][0-9]*):([1-9][0-9]*)",
+            str(row.get("worker_id", "")),
+        )
+        if not match:
+            return None
+        try:
+            origin = get_run(int(match.group(1)))
+        except Exception:
+            return None
+        expected_conclusion = "failure" if is_failed_launch else "success"
+        if (not isinstance(origin, dict)
+                or origin.get("id") != int(match.group(1))
+                or origin.get("run_attempt") != int(match.group(2))
+                or origin.get("path") != ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
+                or origin.get("status") != "completed"
+                or origin.get("conclusion") != expected_conclusion):
+            return None
+    return cid
+
+
 def assert_no_local_writer(comments):
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     for comment in comments:
@@ -264,7 +313,11 @@ def reconcile(api, comments, incident=""):
         elif old["provider"] == "cursor":
             # A stale observation must never mutate the digest of the held
             # record or invalidate a pending append-only release proof.
-            result["status"] = "CURSOR_LEASE_REQUIRES_TERMINATION_AND_REVIEW"
+            result["status"] = (
+                "CURSOR_FAILED_LAUNCH_REQUIRES_NEGATIVE_PROOF_AND_RELEASE"
+                if old.get("status") == "CURSOR_LAUNCH_RESERVED" and old.get("cursor_run_id") is None
+                else "CURSOR_LEASE_REQUIRES_TERMINATION_AND_REVIEW"
+            )
         else:
             pr = _source_pr(api, issue, old["main_sha"])
             result["status"] = ("SOURCE_PR_AWAITING_INDEPENDENT_REVIEW"
@@ -389,7 +442,10 @@ def fallback(env, api, assignment_api, manifest, main_sha):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["guard", "fallback", "finalize-cursor"])
+    parser.add_argument(
+        "command",
+        choices=["guard", "fallback", "finalize-cursor", "reconcile-target"],
+    )
     parser.add_argument("--reservation-comment-id", type=int)
     parser.add_argument("--output")
     args = parser.parse_args()
@@ -399,6 +455,15 @@ def main():
         assert_no_remote_writer(
             api.pages(LEDGER), get_run=lambda run_id: api.request(
                 f"/repos/{REPOSITORY}/actions/runs/{run_id}"))
+        return
+    if args.command == "reconcile-target":
+        target_cid = reconcilable_cursor_reservation_id(
+            api.pages(LEDGER),
+            get_run=lambda run_id: api.request(
+                f"/repos/{REPOSITORY}/actions/runs/{run_id}"),
+        )
+        if target_cid is not None:
+            print(target_cid)
         return
     if args.command == "finalize-cursor":
         try:

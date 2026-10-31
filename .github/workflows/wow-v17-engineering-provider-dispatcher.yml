@@ -578,9 +578,22 @@ jobs:
         id: remote_fence
         if: steps.route.outputs.action != 'NO_ACTION'
         continue-on-error: true
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python artifacts/wow-engine/v17/engineering_remote_fallback.py guard
+        run: |
+          set -euo pipefail
+          if python artifacts/wow-engine/v17/engineering_remote_fallback.py guard; then
+            exit 0
+          fi
+          target_cid="$(python artifacts/wow-engine/v17/engineering_remote_fallback.py reconcile-target 2>/dev/null || true)"
+          if [[ "$target_cid" =~ ^[1-9][0-9]*$ ]]; then
+            gh workflow run wow-v17-remote-writer-finalize.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              -f reservation_comment_id="$target_cid" || true
+          fi
+          exit 1
 
       - name: Dispatch OpenAI primary worker
         id: dispatch_openai

@@ -25,7 +25,10 @@ from urllib.parse import parse_qs, urlparse
 from v17.engineering_dispatch_queue import _validate_manifest
 from v17.amrt_operational_lanes import dispatch_preflight
 from v17.engineering_provider_failover import resident_provider_admission
-from v17.engineering_remote_fallback import assert_no_remote_writer
+from v17.engineering_remote_fallback import (
+    assert_no_remote_writer,
+    reconcilable_cursor_reservation_id,
+)
 
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
@@ -33,6 +36,7 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 # against GET /repos/{owner}/{repo}. Never accept a different numeric ID.
 REPO_ID = 1240256887
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
+FINALIZE_WORKFLOW = "wow-v17-remote-writer-finalize.yml"
 # Only the three registered engineering workflows can own the implementation
 # writer. Unrelated CI run churn must never corrupt this busy check.
 ACTIVE_WORKFLOW_FILES = (
@@ -101,8 +105,20 @@ class GitHubTransport:
                 break
         else:
             raise ValueError("REMOTE_RESERVATION_INVALID")
-        assert_no_remote_writer(
-            comments, get_run=lambda run_id: self.get(f"actions/runs/{run_id}"))
+        try:
+            assert_no_remote_writer(
+                comments, get_run=lambda run_id: self.get(f"actions/runs/{run_id}"))
+        except Exception:
+            try:
+                target_cid = reconcilable_cursor_reservation_id(
+                    comments,
+                    get_run=lambda run_id: self.get(f"actions/runs/{run_id}"),
+                )
+                if target_cid is not None:
+                    self.reconcile_cursor_writer(target_cid)
+            except Exception:
+                pass
+            raise
         now = datetime.now(timezone.utc)
         for comment in comments:
             body = comment.get("body") or ""
@@ -113,6 +129,31 @@ class GitHubTransport:
                 stamp = datetime.fromisoformat(expiry[1].replace("Z", "+00:00"))
                 if stamp > now:
                     return False
+        return True
+
+    def reconcile_cursor_writer(self, reservation_comment_id: int) -> bool:
+        if type(reservation_comment_id) is not int or reservation_comment_id <= 0:
+            return False
+        for state in ("queued", "in_progress", "waiting", "requested"):
+            active = self.get(
+                f"actions/workflows/{FINALIZE_WORKFLOW}/runs?status={state}&per_page=100"
+            )
+            if not isinstance(active, dict):
+                return False
+            runs = active.get("workflow_runs")
+            total = active.get("total_count")
+            if (isinstance(total, bool) or not isinstance(total, int)
+                    or total < 0 or not isinstance(runs, list)):
+                return False
+            if total > 0 or runs:
+                return False
+        self.call(
+            f"/repos/{self.repo}/actions/workflows/{FINALIZE_WORKFLOW}/dispatches",
+            {
+                "ref": "main",
+                "inputs": {"reservation_comment_id": str(reservation_comment_id)},
+            },
+        )
         return True
 
     def provider_admission(self) -> str:
@@ -146,7 +187,13 @@ class GitHubTransport:
         # A later successful protected worker proves recovery; a later failed
         # or unclassified worker invalidates an older positive route receipt.
         latest_success = False
-        for workflow in ("wow-v17-chatgpt-engineering-worker.yml", "wow-v17-claude-engineering-worker.yml"):
+        worker_workflows = [
+            "wow-v17-chatgpt-engineering-worker.yml",
+            "wow-v17-claude-engineering-worker.yml",
+        ]
+        if route.get("provider") == "cursor" or route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED":
+            worker_workflows.append(FINALIZE_WORKFLOW)
+        for workflow in worker_workflows:
             workers = self.get(f"actions/workflows/{workflow}/runs?branch=main&status=completed&per_page=1")
             items = workers.get("workflow_runs")
             if not isinstance(items, list):
