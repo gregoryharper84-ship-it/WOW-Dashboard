@@ -156,3 +156,20 @@ def test_nonstandard_json_numeric_constants_fail_closed(literal):
     sample["raw_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
     with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID"):
         extract_mlb_hits_labels(sample)
+
+
+def test_unbounded_claimed_game_pk_fails_with_typed_hold():
+    # Python can construct an integer too large to stringify under the
+    # interpreter's digit safety limit; never leak that ValueError.
+    sample = fixture()
+    sample["game_pk"] = 10 ** 5000
+    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_GAME_ID_INVALID"):
+        extract_mlb_hits_labels(sample)
+
+
+def test_oversized_claimed_player_id_fails_with_typed_hold():
+    # Still JSON-encodable, but not a plausible bounded official identifier.
+    body = json.loads(fixture()["raw_body"])
+    body["teams"]["away"]["players"]["ID10"]["person"]["id"] = 10 ** 300
+    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_PLAYER_ID_INVALID"):
+        extract_mlb_hits_labels(from_body(body))
