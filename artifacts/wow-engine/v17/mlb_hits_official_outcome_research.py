@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import json
+import math
 import re
 from typing import Any, Mapping
 
@@ -71,6 +72,14 @@ def _unique_json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def _reject_nonfinite_json_constant(_value: str) -> None:
     """Non-standard NaN/Infinity must not become trusted research labels."""
     raise MLBHitsResearchHold("MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID")
+
+
+def _parse_finite_json_float(value: str) -> float:
+    """Do not let valid JSON exponent syntax overflow to Python infinity."""
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise MLBHitsResearchHold("MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID")
+    return parsed
 
 
 def require(condition: bool, code: str) -> None:
@@ -149,6 +158,7 @@ def extract_mlb_hits_labels(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             raw,
             object_pairs_hook=_unique_json_object_pairs,
             parse_constant=_reject_nonfinite_json_constant,
+            parse_float=_parse_finite_json_float,
         )
     except (ValueError, TypeError, RecursionError) as ex:
         raise MLBHitsResearchHold("MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID") from ex
