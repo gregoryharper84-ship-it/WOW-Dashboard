@@ -589,6 +589,15 @@ def test_global_qa_and_release_defer_before_native_jobs_exist():
         "WOW governed probability backend",
     ]
     assert m.pending_required_regressions(ev) == expected
+    # The aggregate may not yet exist even after an earlier native shard
+    # completes; native workflow status, not shard status, controls deferral.
+    ev["native_workflow_runs"] = [
+        _native_verify_run(jobs=[
+            {"name": "WOW required-three collection contract", "status": "completed"}]),
+        {**engine_run, "jobs": [
+            {"name": "WOW governed backend shard / 0", "status": "completed"}]},
+    ]
+    assert m.pending_required_regressions(ev) == expected
     # The readiness classifier is shared by the QA and Release workflows;
     # their original decisions remain fail closed while a run is incomplete.
     assert all(f"QA_EVIDENCE_MISSING:{name}" in m.qa_findings(ev)
