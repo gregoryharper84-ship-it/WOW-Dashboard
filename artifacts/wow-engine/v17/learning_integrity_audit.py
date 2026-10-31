@@ -152,7 +152,8 @@ def audit_engineering_incidents(ledger: Mapping[str, Any]) -> dict[str, Any]:
             if not fix.get("merge_commit"):
                 issues.append("MERGE_COMMIT_MISSING")
             if change_scope in ("OFFLINE_RESEARCH", "DOCS_ONLY", "TEST_ONLY"):
-                if str(fix.get("qa_status") or record.get("qa", {}).get("status") or "") != "PASS":
+                qa = record.get("qa") if isinstance(record.get("qa"), Mapping) else {}
+                if str(fix.get("qa_status") or qa.get("status") or "") != "PASS":
                     issues.append("NONPRODUCTION_VERIFICATION_MISSING")
             else:
                 if not (fix.get("production_deploy") or release.get("deployment_id")):
@@ -222,7 +223,11 @@ def compile_engineering_refinements(
         "evidence_refs", "guard_test_path",
     )
     for i, item in enumerate(items):
-        if not isinstance(item, Mapping) or any(not item.get(k) for k in required):
+        if (not isinstance(item, Mapping)
+            or any(not item.get(k) for k in required)
+            or not isinstance(item.get("evidence_refs"), (list, tuple))
+            or not all(isinstance(ref, str) and ref.strip() for ref in item["evidence_refs"])
+            or not str(item.get("guard_test_path")).endswith(".py")):
             blocked.append({"source_index": i, "reason": "REFINE_ITEM_NOT_TYPED_ENGINEERING_EVIDENCE"})
             continue
         fingerprint = sha256(dumps({
