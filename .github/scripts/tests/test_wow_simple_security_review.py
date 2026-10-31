@@ -121,11 +121,15 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                         m.parse_verdict({**good, "findings": [malformed]})
                     self.assertEqual(str(hold.exception),
                                      "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix)
-        for bad in ("../escape.py", "/etc/passwd", "src\\\\evil.py", "src/./evil.py", "src/evil\n.py"):
+        for bad in ("../escape.py", "/etc/passwd", "src\\\\evil.py", "src/./evil.py", "src/evil\n.py", "src/evil\u202etxt.py", "src/evil\u200d.py"):
             with self.assertRaisesRegex(m.Hold, "FILE_PATH_INVALID"):
                 m.parse_verdict({**good, "findings": [
                     {**self._finding("low"), "file": bad}
                 ]})
+        # Valid non-ASCII filename identity is not rejected by the shared validator.
+        self.assertEqual(m.parse_verdict({**good, "findings": [
+            {**self._finding("low"), "file": "src/caf\u00e9.py"}
+        ]})[0], "PASS")
         with self.assertRaisesRegex(m.Hold, "TEXT_FILE_TOO_LONG"):
             m.parse_verdict({**good, "findings": [
                 {**self._finding("low"), "file": "x" * 256}

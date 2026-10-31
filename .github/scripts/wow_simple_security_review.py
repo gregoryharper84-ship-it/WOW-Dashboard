@@ -351,9 +351,7 @@ def parse_verdict(value):
                 if len(field_value) > MAX_FINDING_PATH:
                     raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_FILE_TOO_LONG")
                 # Path identity is data, not arbitrary prose or an absolute/traversal path.
-                if (field_value.startswith("/") or "\\" in field_value
-                        or any(part in ("", ".", "..") for part in field_value.split("/"))
-                        or any(ord(char) < 32 or ord(char) == 127 for char in field_value)):
+                if not _valid_changed_path(field_value):
                     raise Hold("SEMANTIC_FINDINGS_INVALID:FILE_PATH_INVALID")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
     # No accepted verdict may exceed the explicit UTF-8 serialized payload budget.
