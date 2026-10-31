@@ -146,6 +146,41 @@ def test_malformed_event_identity_fails_closed(bad_id):
         _read_all_state_events(Broken(), "wow-scout-20261031")
 
 
+def test_over_budget_stream_is_rejected_before_appending_a_new_page():
+    """At 50,000 events query only one overflow witness, then HOLD."""
+    class Infinite:
+        def __init__(self):
+            self.after = 0
+            self.page_limit = 1000
+            self.last_requested_limit = None
+
+        def table(self, _name):
+            return self
+        def select(self, _columns):
+            return self
+        def eq(self, *_args):
+            return self
+        def gt(self, _field, after):
+            self.after = after
+            return self
+        def order(self, _field):
+            return self
+        def limit(self, n):
+            self.page_limit = n
+            self.last_requested_limit = n
+            return self
+        def execute(self):
+            return SimpleNamespace(data=[
+                {"event_id": n, "state": "SPECIALIST_PROCESSING"}
+                for n in range(self.after + 1, self.after + self.page_limit + 1)
+            ])
+
+    infinite = Infinite()
+    with pytest.raises(RuntimeError, match="SCOUT_STATE_EVENT_PAGINATION_INVALID"):
+        _read_all_state_events(infinite, "wow-scout-20261031")
+    assert infinite.last_requested_limit == 1
+
+
 def test_stale_repeated_page_fails_closed_not_infinite_loop():
     class Stale:
         def table(self, _name):
