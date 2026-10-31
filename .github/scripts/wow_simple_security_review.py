@@ -43,7 +43,10 @@ BLOCKING_CATEGORIES = frozenset(FINDING_CATEGORIES) - {"informational"}
 # told about while the fail-closed validation itself stays unchanged.
 MAX_FINDINGS = 12
 MAX_FINDING_PATH = 255
-MAX_REVIEW_PAYLOAD_BYTES = 60000  # UTF-8 bytes of the serialized verdict AND receipt
+MAX_REVIEW_PAYLOAD_BYTES = 60000  # UTF-8 bytes of the persisted receipt
+# Reserve bounded provenance/metadata space; never accept a parsed verdict that
+# cannot fit into the signed receipt under normal exact-head GitHub identities.
+MAX_VERDICT_BYTES = MAX_REVIEW_PAYLOAD_BYTES - 2048
 REVIEW_CONTRACT_VERSION = 3
 
 
@@ -359,7 +362,7 @@ def parse_verdict(value):
                              allow_nan=False).encode("utf-8")
     except (TypeError, ValueError, UnicodeError):
         raise Hold("SEMANTIC_FINDINGS_INVALID:PAYLOAD_ENCODING") from None
-    if len(encoded) > MAX_REVIEW_PAYLOAD_BYTES:
+    if len(encoded) > MAX_VERDICT_BYTES:
         raise Hold("SEMANTIC_FINDINGS_INVALID:PAYLOAD_BYTES_EXCEEDED")
     # Model-provided severity alone cannot downgrade any safety or correctness
     # concern. Even LOW severity in a risk category remains blocking.
@@ -393,7 +396,7 @@ def prompt_for(target):
             "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
             "evidence are non-empty strings; file is a changed repository-relative path of at most 255 "
             "characters. Preserve complete detail and evidence verbatim, with the entire serialized "
-            "verdict at most 60,000 UTF-8 bytes. Never truncate, drop or split a material risk to fit "
+            "verdict at most 57,952 UTF-8 bytes (60,000-byte receipt with reserved metadata). Never truncate, drop or split a material risk to fit "
             "a per-field limit. Never return whitespace-only file, detail, or evidence. "
             "For a cross-cutting concern, cite the most relevant changed repository-relative file path, never blank. "
             "Prefer 100-200 characters in detail and 30-150 in evidence. Split complex concerns into separate "
@@ -475,7 +478,7 @@ def call_provider(provider, key, prompt):
     else:
         raise Hold("PROVIDER_IDENTITY_INVALID")
     # request_json already caps the entire provider response at 250,000 bytes.
-    # V3 bounds the complete parsed verdict at 60,000 UTF-8 bytes; an older
+    # V3 bounds the complete parsed verdict at 57,952 UTF-8 bytes; an older
     # 9,000-character raw-response ceiling would discard valid complete findings.
     if type(raw) is not str:
         raise Hold("SEMANTIC_RESPONSE_INVALID")
