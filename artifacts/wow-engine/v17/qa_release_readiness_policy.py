@@ -220,7 +220,7 @@ def advise_reentry(
     if provider_state != "available":
         return Reentry("HOLD", "REVIEW_PROVIDER_IDENTITY_OR_STATE_INVALID")
     if previous is not None and previous.state == "READY_FOR_INDEPENDENT_REVIEW":
-        provider_recovered = role == "qa" and previous_provider_state in ("quota_exceeded", "timeout")
+        provider_recovered = previous_provider_state in ("quota_exceeded", "timeout")
         qa_evidence_arrived = (role == "release" and qa_receipt_verified is True
                                and previous_qa_receipt_verified is not True)
         if not (provider_recovered or qa_evidence_arrived):
