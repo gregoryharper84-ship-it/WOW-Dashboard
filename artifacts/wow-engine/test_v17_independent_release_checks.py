@@ -570,6 +570,59 @@ def test_missing_aggregate_does_not_defer_for_untrusted_or_unrelated_native_run(
     assert m.pending_required_regressions(ev) == []
 
 
+def test_global_qa_and_release_defer_before_native_jobs_exist():
+    """Both App checks must not publish a spurious red while real CI starts."""
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] not in m.REQUIRED_REGRESSION_CHECKS
+    ]
+    engine_run = _native_verify_run(
+        id=7002, workflow_id=m.NATIVE_ENGINE_WORKFLOW_ID,
+        path=m.NATIVE_ENGINE_WORKFLOW_PATH, jobs=[],
+    )
+    ev["native_workflow_runs"] = [
+        _native_verify_run(jobs=[]), engine_run,
+    ]
+    expected = list(m.REQUIRED_REGRESSION_CHECKS)
+    assert m.pending_required_regressions(ev) == expected
+    # The readiness classifier is shared by the QA and Release workflows;
+    # their original decisions remain fail closed while a run is incomplete.
+    assert all(f"QA_EVIDENCE_MISSING:{name}" in m.qa_findings(ev)
+               for name in expected)
+    # Completed or stale native runs cannot defer a truly absent check.
+    ev["native_workflow_runs"] = [
+        _native_verify_run(jobs=[], status="completed"),
+        {**engine_run, "status": "completed"},
+    ]
+    assert m.pending_required_regressions(ev) == []
+    ev["native_workflow_runs"] = [
+        _native_verify_run(jobs=[], head_sha=OLD),
+        {**engine_run, "path": ".github/workflows/foreign.yml"},
+    ]
+    assert m.pending_required_regressions(ev) == []
+
+
+def test_governed_native_workflow_pending_only_with_trusted_exact_identity():
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] != "WOW governed probability backend"
+    ]
+    engine_run = _native_verify_run(
+        id=7002, workflow_id=m.NATIVE_ENGINE_WORKFLOW_ID,
+        path=m.NATIVE_ENGINE_WORKFLOW_PATH, jobs=[],
+    )
+    ev["native_workflow_runs"] = [engine_run]
+    assert m.pending_required_regressions(ev) == ["WOW governed probability backend"]
+    ev["native_workflow_runs"] = [{**engine_run, "status": "completed"}]
+    assert m.pending_required_regressions(ev) == []
+    ev["native_workflow_runs"] = [
+        {**engine_run, "jobs": [{"name": "unrelated job", "status": "in_progress"}]}
+    ]
+    assert m.pending_required_regressions(ev) == []
+
+
 def test_missing_aggregate_does_not_defer_after_native_run_exceeds_pending_bound():
     ev = evidence()
     ev["check_runs"] = [
