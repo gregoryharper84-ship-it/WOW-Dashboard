@@ -6,7 +6,15 @@ or provider fixtures. Card admission remains non-executable.
 
 from types import SimpleNamespace
 
+from pathlib import Path
+
 import team_event_request_runtime as runtime
+
+
+def test_import_resolves_to_this_repositorys_real_runtime():
+    assert Path(runtime.__file__).resolve() == (
+        Path(__file__).resolve().with_name("team_event_request_runtime.py")
+    )
 
 
 def _row(objective_lane="OUTRIGHT_WIN_PROBABILITY", price_required=False):
@@ -50,6 +58,12 @@ def test_market_edge_cannot_clobber_a_completed_sporting_probability():
     assert value["card_admission_receipt"]["sporting_rank_eligible"] is True
     assert value["card_admission_receipt"]["objective_rank_eligible"] is False
     assert value["card_admission_receipt"]["card_admission_eligible"] is False
+    assert value["rank_eligibility_scope"] == "SPORTING_PROBABILITY"
+    assert value["card_admission_receipt"]["rank_eligibility_scope"] == "CARD_ADMISSION"
+    assert value["card_admission_audit"]["scope"] == "CARD_ADMISSION"
+    assert value["card_admission_audit"]["sporting_rank_eligible"] is True
+    assert value["card_admission_audit"]["objective_rank_eligible"] is False
+    assert value["card_admission_audit"]["admission_eligible"] is False
     assert "CARD_ADMISSION:RANK_INELIGIBLE" in value["card_admission_receipt"]["card_admission_blockers"]
 
 
@@ -97,6 +111,10 @@ def test_held_scoring_row_cannot_be_admitted_from_both_positive_flags():
     runtime._apply_card_admission(row, value)
     assert value["card_admission_eligible"] is False
     assert "CARD_ADMISSION:TERMINAL_NOT_COMPLETED" in value["card_admission_blockers"]
+    assert value["card_admission_receipt"] is None
+    assert value["card_admission_audit"]["terminal_status"] == "HELD"
+    assert value["card_admission_audit"]["admission_eligible"] is False
+    assert "CARD_ADMISSION:TERMINAL_NOT_COMPLETED" in value["card_admission_audit"]["blockers"]
     assert value["can_execute"] is False
 
 
@@ -115,6 +133,7 @@ def test_missing_nfl_fitted_rank_flag_does_not_default_to_eligible():
     result = runtime._completed_nfl(row, scored)
     assert result["terminal_status"] == "COMPLETED"
     assert result["probability_rank_eligible"] is False
+    assert result["rank_eligibility_evidence_status"] == "MISSING_FITTED_FLAG_FAIL_CLOSED"
     assert result["objective_rank_eligible"] is False
     runtime._apply_card_admission(row, result)
     assert result["rank_eligible"] is False
@@ -138,6 +157,7 @@ def test_nfl_explicit_eligible_flag_does_not_authorize_market_card():
     result = runtime._completed_nfl(row, scored)
     runtime._apply_card_admission(row, result)
     assert result["probability_rank_eligible"] is True
+    assert result["rank_eligibility_evidence_status"] == "EXPLICIT_FITTED_FLAG"
     assert result["rank_eligible"] is True
     assert result["objective_rank_eligible"] is False
     assert result["card_admission_eligible"] is False
