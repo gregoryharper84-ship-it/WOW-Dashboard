@@ -123,7 +123,11 @@ def _check_admission_rate_limit(*, idempotency_key: str, request_hash: str) -> N
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail={"code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False}) from exc
-    if int(allowed) == 0:
+    # Redis Lua returns only integer 0 (denied), 1 (new), or 2 (retry).
+    # Unexpected, boolean, or coerced replies must never grant admission.
+    if type(allowed) is not int or allowed not in (0, 1, 2):
+        raise HTTPException(status_code=503, detail={"code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False})
+    if allowed == 0:
         raise HTTPException(status_code=429, detail={"code": "AGENT_RUNTIME_ADMISSION_RATE_LIMITED", "can_execute": False})
 
 
