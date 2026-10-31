@@ -159,3 +159,25 @@ def test_official_void_reason_never_becomes_loss_even_with_hit_false():
     assert observation.outcome_target is None
     assert observation.brier_score is None
     assert observation.log_loss is None
+
+
+@pytest.mark.parametrize("winner,result", [
+    ("Texas Rangers", "WIN"),
+    ("Seattle Mariners", "LOSS"),
+    ("Different Team", None),
+])
+def test_canonical_home_result_uses_both_exact_team_names_in_legacy_scoreless_settlement(winner, result):
+    from v17.core_intelligence_event_runtime import _home_result
+    source = {"home_team": "Texas Rangers", "away_team": "Seattle Mariners"}
+    outcome = {"official_winner": winner, "home_score": None, "away_score": None, "void": False}
+    assert _home_result(source, outcome) == result
+
+
+def test_canonical_home_result_rejects_identity_ambiguity_and_void():
+    from v17.core_intelligence_event_runtime import _home_result
+    duplicated_names = {"home_team": "A", "away_team": "A"}
+    assert _home_result(duplicated_names, {"official_winner": "A"}) is None
+    assert _home_result(
+        {"home_team": "A", "away_team": "B"},
+        {"official_winner": "B", "void": True},
+    ) == "VOID"
