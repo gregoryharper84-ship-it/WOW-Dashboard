@@ -55,10 +55,34 @@ def _run_discovery(env: WorkerEnvelope) -> WorkerOutput:
     rows = env.payload.get("rows")
     if not isinstance(rows, list):
         return _blocked(env, "DISCOVERY_INPUT_MISSING")
+    source_skips: dict[str, int] = {}
+    discovery_source = "CALLER_SUPPLIED"
     if not rows and env.payload.get("discovery_enabled") is True:
-        return _blocked(env, "DISCOVERY_PROVIDER_UNAVAILABLE", output={"candidate_count": 0})
+        # Empty caller input with autonomous discovery enabled must invoke a
+        # real server-owned candidate source. Do not manufacture candidates or
+        # turn a missing provider into a successful empty search.
+        try:
+            from datetime import datetime, timezone
+            from ledger import get_client
+            from agent_runtime.source_discovery import discover_from_daily_ledger
+
+            rows, source_skips = discover_from_daily_ledger(
+                get_client(), now=datetime.now(timezone.utc),
+            )
+            discovery_source = "WOW_V17_DAILY_SNAPSHOT"
+        except Exception:
+            return _blocked(env, "DISCOVERY_PROVIDER_UNAVAILABLE", output={
+                "candidate_count": 0, "discovery_source": "WOW_V17_DAILY_SNAPSHOT",
+                "probability_publishable": False, "can_execute": False,
+            })
     merged = merge_discovery(rows)
-    return _succeeded(env, "RESEARCH_INTEREST", {"candidates": merged, "candidate_count": len(merged), "source_family_dedupe": True})
+    return _succeeded(env, "RESEARCH_INTEREST", {
+        "candidates": merged, "candidate_count": len(merged),
+        "source_family_dedupe": True, "discovery_source": discovery_source,
+        "source_skip_counts": source_skips,
+        "discovery_status": "CANDIDATES_FOUND" if merged else "NO_CURRENT_CANDIDATES",
+        "probability_authority": False, "can_execute": False,
+    })
 
 
 def _run_identity(env: WorkerEnvelope) -> WorkerOutput:
