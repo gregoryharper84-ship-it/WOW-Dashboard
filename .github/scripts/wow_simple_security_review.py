@@ -28,9 +28,9 @@ CREDIT_ERRORS = ("credit balance is too low", "insufficient credits", "quota exc
                  "billing quota exceeded", "quota exhausted")
 MODEL_GONE_ERRORS = ("model not found", "model does not exist", "model is deprecated",
                      "model has been retired")
-# Only critical/high block a PASS. This matches independent_source_review_receipt.py,
-# which rejects on a critical/high finding or an explicit FAIL dimension, and keeps
-# medium/low notes from turning a passing review into a REJECT.
+# Critical/high findings block, and risk-category findings block regardless of
+# severity. An informational medium/low observation alone is nonblocking.
+# The risk-category rule is intentionally stricter than severity alone.
 FINDING_SEVERITIES = ("critical", "high", "medium", "low")
 BLOCKING_SEVERITIES = frozenset({"critical", "high"})
 # The category is independently checked, not just the model-supplied severity.
@@ -42,30 +42,77 @@ BLOCKING_CATEGORIES = frozenset(FINDING_CATEGORIES) - {"informational"}
 # generated from these, so a reviewer can never be held for a limit it was not
 # told about while the fail-closed validation itself stays unchanged.
 MAX_FINDINGS = 12
-MAX_FINDING_TEXT = 500
-FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_TEXT}
-REVIEW_CONTRACT_VERSION = 2
-REVIEW_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "source_review": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "security_review": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "probability_integrity_review": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "findings": {"type": "array", "maxItems": MAX_FINDINGS, "items": {
+MAX_FINDING_PATH = 255
+MAX_REVIEW_PAYLOAD_BYTES = 60000  # UTF-8 bytes of the serialized verdict AND receipt
+REVIEW_CONTRACT_VERSION = 3
+
+
+def _build_review_schema(*, provider_strict=False):
+    """One source of shape truth; only the trusted parser enforces local bounds.
+
+    Anthropic strict tools cannot grammar-enforce maxItems/minLength/maxLength,
+    and may reject large regex repetitions. Use only supported types, required
+    keys and enums in the provider request. Both contracts are fresh objects,
+    never mutable copies of a module-global schema.
+    """
+    def text_schema(field):
+        if provider_strict:
+            description = ("Changed repository-relative path, nonblank, at most 255 characters."
+                           if field == "file" else
+                           "Complete nonblank finding text; do not truncate. Total serialized UTF-8 verdict must fit 60,000 bytes.")
+            return {"type": "string", "description": description}
+        schema = {"type": "string", "minLength": 1}
+        if field == "file":
+            schema["maxLength"] = MAX_FINDING_PATH
+        return schema
+    findings = {
+        "type": "array",
+        "items": {
             "type": "object",
-            "properties": {"severity": {"type": "string", "enum": list(FINDING_SEVERITIES)},
-                           "category": {"type": "string", "enum": list(FINDING_CATEGORIES)},
-                           "file": dict(FINDING_TEXT_SCHEMA),
-                           "detail": dict(FINDING_TEXT_SCHEMA),
-                           "evidence": dict(FINDING_TEXT_SCHEMA)},
+            "properties": {
+                "severity": {"type": "string", "enum": list(FINDING_SEVERITIES)},
+                "category": {"type": "string", "enum": list(FINDING_CATEGORIES)},
+                "file": text_schema("file"),
+                "detail": text_schema("detail"),
+                "evidence": text_schema("evidence"),
+            },
             "required": ["severity", "category", "file", "detail", "evidence"],
-            "additionalProperties": False}},
-    },
-    "required": ["source_review", "security_review", "probability_integrity_review", "findings"],
-    "additionalProperties": False,
-}
+            "additionalProperties": False,
+        },
+    }
+    if not provider_strict:
+        findings["maxItems"] = MAX_FINDINGS
+    return {
+        "type": "object",
+        "properties": {
+            "source_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+            "security_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+            "probability_integrity_review": {"type": "string", "enum": ["PASS", "FAIL"]},
+            "findings": findings,
+        },
+        "required": ["source_review", "security_review", "probability_integrity_review", "findings"],
+        "additionalProperties": False,
+    }
+
+
+REVIEW_SCHEMA = _build_review_schema()
+
+
+def _build_claude_strict_schema():
+    """Provider shape only; local parse_verdict remains fail-closed authority."""
+    return _build_review_schema(provider_strict=True)
+
+
 MAX_FILES = 50
 MAX_DIFF = 90000
+
+
+def _valid_changed_path(value):
+    """A reviewer must be able to cite every trusted changed-file identity."""
+    return (type(value) is str and 0 < len(value) <= MAX_FINDING_PATH
+            and not value.startswith("/") and "\\" not in value
+            and all(part not in ("", ".", "..") for part in value.split("/"))
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value))
 
 
 class Hold(Exception):
@@ -134,7 +181,7 @@ def request_json(url, *, token=None, data=None, headers=None):
             or url == "https://api.anthropic.com/v1/messages"
             or url.startswith("https://generativelanguage.googleapis.com/v1beta/models/")):
         raise Hold("REVIEW_ENDPOINT_UNTRUSTED")
-    h = {"Accept": "application/vnd.github+json", "User-Agent": "wow-independent-review-v2"}
+    h = {"Accept": "application/vnd.github+json", "User-Agent": "wow-independent-review-v3"}
     if headers:
         h.update(headers)
     if token:
@@ -146,7 +193,9 @@ def request_json(url, *, token=None, data=None, headers=None):
     endpoint = safe_label(url, data is not None)
     try:
         with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=60) as response:
-            raw = response.read(250000)
+            raw = response.read(250001)
+        if len(raw) > 250000:
+            raise Hold("REVIEW_RESPONSE_BYTES_EXCEEDED")
         return json.loads(raw)
     except HTTPError as exc:
         print("REVIEW_HTTP_DIAGNOSTIC:HTTP_" + str(exc.code) + ":" + endpoint,
@@ -236,7 +285,9 @@ def capture(pr_number, expected_sha, token):
     for file in files:
         if not isinstance(file, dict) or not isinstance(file.get("patch"), str) or not file["patch"]:
             raise Hold("DIFF_PATCH_MISSING")
-        if not isinstance(file.get("filename"), str) or not isinstance(file.get("sha"), str):
+        if (not _valid_changed_path(file.get("filename"))
+                or not isinstance(file.get("sha"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", file["sha"]) is None):
             raise Hold("DIFF_FILE_IDENTITY_INVALID")
         added, deleted = file.get("additions"), file.get("deletions")
         if (type(added) is not int or type(deleted) is not int
@@ -289,9 +340,25 @@ def parse_verdict(value):
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TYPE")
             if not field_value.strip():
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_EMPTY")
-            if len(field_value) > MAX_FINDING_TEXT:
-                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TOO_LONG")
+            if key == "file":
+                if len(field_value) > MAX_FINDING_PATH:
+                    raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_FILE_TOO_LONG")
+                # Path identity is data, not arbitrary prose or an absolute/traversal path.
+                if (field_value.startswith("/") or "\\" in field_value
+                        or any(part in ("", ".", "..") for part in field_value.split("/"))
+                        or any(ord(char) < 32 or ord(char) == 127 for char in field_value)):
+                    raise Hold("SEMANTIC_FINDINGS_INVALID:FILE_PATH_INVALID")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
+    # No accepted verdict may exceed the explicit UTF-8 serialized payload budget.
+    # This includes multibyte characters and JSON escaping; never truncate a finding.
+    try:
+        encoded = json.dumps({**{key: value[key] for key in keys}, "findings": normalized},
+                             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                             allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError):
+        raise Hold("SEMANTIC_FINDINGS_INVALID:PAYLOAD_ENCODING") from None
+    if len(encoded) > MAX_REVIEW_PAYLOAD_BYTES:
+        raise Hold("SEMANTIC_FINDINGS_INVALID:PAYLOAD_BYTES_EXCEEDED")
     # Model-provided severity alone cannot downgrade any safety or correctness
     # concern. Even LOW severity in a risk category remains blocking.
     blocking = any(finding["severity"] in BLOCKING_SEVERITIES
@@ -311,16 +378,24 @@ def prompt_for(target):
             "MUST have its corresponding risk category and blocks regardless of severity. Only harmless "
             "non-risk observations may use category informational with medium/low severity and PASS domains. "
             "Do not disguise an actual concern as informational; report FAIL for uncertain risk. "
+            "For every blocking claim, identify the concrete reachable failure path and exact source "
+            "evidence. Distinguish demonstrated behavior from conditional assumptions about "
+            "configuration, identities, scope or unseen dependencies. Do not claim an unobserved "
+            "precondition as fact. If essential context is absent, identify that missing evidence "
+            "specifically, mark the affected review dimension FAIL and retain the risk; do not "
+            "invent a vulnerability, silently discard a real concern or turn uncertainty into PASS. "
             "Return ONLY a JSON object with exactly four fields: source_review, "
             "security_review, probability_integrity_review (each PASS or FAIL), findings (at most 12 "
             "objects; empty array when none). Each finding object has exactly these five keys and no "
             "others: severity in critical|high|medium|low, category in security|probability_integrity|"
             "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
-            "evidence are non-empty strings of at most 500 characters each, so quote only the shortest "
-            "decisive excerpt as evidence. Never return whitespace-only file, detail, or evidence. "
+            "evidence are non-empty strings; file is a changed repository-relative path of at most 255 "
+            "characters. Preserve complete detail and evidence verbatim, with the entire serialized "
+            "verdict at most 60,000 UTF-8 bytes. Never truncate, drop or split a material risk to fit "
+            "a per-field limit. Never return whitespace-only file, detail, or evidence. "
             "For a cross-cutting concern, cite the most relevant changed repository-relative file path, never blank. "
             "Prefer 100-200 characters in detail and 30-150 in evidence. Split complex concerns into separate "
-            "short findings rather than producing an oversized string; preserve every material risk. "
+            "findings when independently justified; preserve every material risk without loss. "
             f"Repository: {REPO}. PR: {target['pr']}; SHA: {target['head_sha']}; base SHA: {target.get('base_sha', 'unknown')}; "
             f"diff digest: {target['diff_sha256']}.\nBEGIN_UNTRUSTED_DIFF\n" +
             target["diff"] +
@@ -351,7 +426,8 @@ def call_provider(provider, key, prompt):
                   "messages": [{"role": "user", "content": prompt}],
                   "tools": [{"name": "submit_review",
                              "description": "Return a strict security review verdict.",
-                             "input_schema": REVIEW_SCHEMA}],
+                             "strict": True,
+                             "input_schema": _build_claude_strict_schema()}],
                   "tool_choice": {"type": "tool", "name": "submit_review"}})
         if type(result) is not dict:
             raise Hold("CLAUDE_RESPONSE_INVALID")
@@ -386,15 +462,20 @@ def call_provider(provider, key, prompt):
                               data={"contents": [{"parts": [{"text": prompt}]}],
                                     "systemInstruction": {"parts": [{"text": SYSTEM_ROLE}]},
                                     "generationConfig": {"responseMimeType": "application/json"}})
-        if not result.get("candidates") or result["candidates"][0].get("finishReason") != "STOP":
+        if (type(result) is not dict or type(result.get("candidates")) is not list
+                or not result["candidates"] or type(result["candidates"][0]) is not dict
+                or result["candidates"][0].get("finishReason") != "STOP"):
             raise Hold("GEMINI_REVIEW_INCOMPLETE")
         try:
             raw = result["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, TypeError, IndexError):
+        except (KeyError, TypeError, IndexError, AttributeError):
             raise Hold("GEMINI_RESPONSE_INVALID") from None
     else:
         raise Hold("PROVIDER_IDENTITY_INVALID")
-    if type(raw) is not str or len(raw) > 9000:
+    # request_json already caps the entire provider response at 250,000 bytes.
+    # V3 bounds the complete parsed verdict at 60,000 UTF-8 bytes; an older
+    # 9,000-character raw-response ceiling would discard valid complete findings.
+    if type(raw) is not str:
         raise Hold("SEMANTIC_RESPONSE_INVALID")
     try:
         return parse_verdict(json.loads(raw))
@@ -403,6 +484,19 @@ def call_provider(provider, key, prompt):
 
 
 def semantic_review(target, credentials, invoke=call_provider):
+    # A SHA-pinned changed-file inventory is mandatory before any external
+    # reviewer receives the diff. A missing/empty inventory is not permission
+    # to skip path-identity validation, even for a findings-free PASS.
+    changed = target.get("file_blobs")
+    if type(changed) is not dict or not changed:
+        raise Hold("SEMANTIC_FINDINGS_INVALID:FILE_INVENTORY_MISSING")
+    # The caller is trusted capture() using exact-PR GitHub files and a
+    # post-capture head readback. Still reject malformed blob identities in
+    # this reusable entrypoint before any source reaches a review provider.
+    if any(not _valid_changed_path(name) or type(blob) is not str
+           or re.fullmatch(r"[0-9a-f]{40}", blob) is None
+           for name, blob in changed.items()):
+        raise Hold("DIFF_FILE_IDENTITY_INVALID")
     prompt = prompt_for(target)
     attempts = []
     for provider in PROVIDERS:
@@ -421,6 +515,13 @@ def semantic_review(target, credentials, invoke=call_provider):
             # malformed or policy-denied review does not fail over.
             exc.attempts = attempts + [{"provider": provider, "result": str(exc)}]
             raise
+        # The cited path must be an actual SHA-pinned changed-file identity.
+        # A forged citation is a policy HOLD, never an advisory or PASS.
+        if any(finding["file"] not in changed for finding in payload["findings"]):
+            reason = "SEMANTIC_FINDINGS_INVALID:FILE_NOT_CHANGED"
+            exc = Hold(reason)
+            exc.attempts = attempts + [{"provider": provider, "result": reason}]
+            raise exc
         # A semantic REJECT, malformed output or policy denial NEVER fails over.
         attempts.append({"provider": provider, "result": decision})
         return decision, payload, provider, attempts
@@ -510,11 +611,32 @@ def owner_review_instruction(target):
 def make_receipt(target, *, decision, reviewer, verdict, attempts, run_id, attempt):
     if reviewer not in REVIEWER_IDENTITIES or decision not in ("PASS", "REJECT") or int(run_id) <= 0 or int(attempt) <= 0:
         raise Hold("RECEIPT_IDENTITY_INVALID")
-    return {"schema_version": REVIEW_CONTRACT_VERSION, "repository": REPO, "pr_number": target["pr"],
+    receipt = {"schema_version": REVIEW_CONTRACT_VERSION, "repository": REPO, "pr_number": target["pr"],
             "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
             "run_id": int(run_id), "run_attempt": int(attempt), "reviewer_identity": reviewer,
             "credential_scope": "wow-qa", "decision": decision, "verdict": verdict,
             "attempts": attempts, "can_execute": False, "no_live_trading": True}
+    try:
+        _serialize_receipt(receipt)
+    except Hold as exc:
+        # The provider identity survives even if receipt metadata pushes an
+        # otherwise valid complete verdict beyond the serialization budget.
+        exc.attempts = attempts + [{"provider": reviewer, "result": str(exc)}]
+        raise
+    return receipt
+
+
+def _serialize_receipt(receipt):
+    """V3: bound the actual UTF-8 bytes that will be persisted, not character count."""
+    try:
+        data = json.dumps(receipt, sort_keys=True, ensure_ascii=False,
+                          separators=(",", ":"), allow_nan=False)
+        size = len(data.encode("utf-8"))
+    except (TypeError, ValueError, UnicodeError):
+        raise Hold("SEMANTIC_RECEIPT_ENCODING_INVALID") from None
+    if size > MAX_REVIEW_PAYLOAD_BYTES:
+        raise Hold("SEMANTIC_RECEIPT_BYTES_EXCEEDED")
+    return data
 
 
 def prior_semantic_reject(sha, read_token):
@@ -632,7 +754,21 @@ def main():
         except Hold as final_hold:
             receipt["decision"] = "HOLD"
             receipt["reason"] = str(final_hold)
-    Path("wow-independent-security-decision.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+    # A too-large receipt is never published as PASS. Preserve identity and a
+    # typed HOLD instead of truncating or selectively dropping risk findings.
+    try:
+        receipt_text = _serialize_receipt(receipt)
+    except Hold as oversized:
+        receipt = {key: receipt[key] for key in (
+            "schema_version", "repository", "pr_number", "head_sha", "base_sha",
+            "diff_sha256", "run_id", "run_attempt", "reviewer_identity",
+            "can_execute", "no_live_trading") if key in receipt}
+        receipt.update({"decision": "HOLD", "reason": str(oversized),
+                        "attempts": [{"provider": receipt.get("reviewer_identity", "none"),
+                                      "result": str(oversized)}],
+                        "can_execute": False, "no_live_trading": True})
+        receipt_text = _serialize_receipt(receipt)
+    Path("wow-independent-security-decision.json").write_text(receipt_text + "\n", encoding="utf-8")
     if receipt.get("owner_review_instruction"):
         print("OWNER_SECURITY_REVIEW_REQUIRED: " + receipt["owner_review_instruction"], file=sys.stderr)
         print("After genuine signed-in GitHub review, dispatch this exact PR/SHA from protected main.", file=sys.stderr)

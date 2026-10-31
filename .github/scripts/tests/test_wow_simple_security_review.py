@@ -64,13 +64,14 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(items["properties"]["severity"]["enum"], list(m.FINDING_SEVERITIES))
         self.assertEqual(sorted(items["required"]), ["category", "detail", "evidence", "file", "severity"])
         self.assertEqual(items["properties"]["category"]["enum"], list(m.FINDING_CATEGORIES))
-        self.assertEqual(m.REVIEW_CONTRACT_VERSION, 2)
+        self.assertEqual(m.REVIEW_CONTRACT_VERSION, 3)
         self.assertFalse(items["additionalProperties"])
         # The enforced bounds are also handed to the model, so a reviewer is
         # never held for a limit it was not told about.
         self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
-        for key in ("file", "detail", "evidence"):
-            self.assertEqual(items["properties"][key]["maxLength"], m.MAX_FINDING_TEXT)
+        self.assertEqual(items["properties"]["file"]["maxLength"], m.MAX_FINDING_PATH)
+        for key in ("detail", "evidence"):
+            self.assertNotIn("maxLength", items["properties"][key])
             self.assertEqual(items["properties"][key]["minLength"], 1)
         prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "d"})
@@ -78,46 +79,60 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("medium/low", prompt)
         self.assertIn("blocks regardless of severity", prompt)
         self.assertIn("at most 12", prompt)
-        self.assertIn("at most 500 characters", prompt)
+        self.assertIn("60,000 UTF-8 bytes", prompt)
         self.assertIn("exactly these five keys and no others", prompt)
         self.assertIn("Never return whitespace-only", prompt)
         self.assertIn("cross-cutting concern", prompt)
         self.assertIn("100-200 characters in detail", prompt)
         self.assertIn("30-150 in evidence", prompt)
         self.assertIn("preserve every material risk", prompt)
+        # A low/medium risk-category finding still blocks, but the model must
+        # distinguish a proven code path from assumptions about deployment.
+        self.assertIn("concrete reachable failure path", prompt)
+        self.assertIn("conditional assumptions", prompt)
+        self.assertIn("Do not claim an unobserved", prompt)
+        self.assertIn("mark the affected review dimension FAIL", prompt)
+        self.assertIn("turn uncertainty into PASS", prompt)
 
     def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
         good = self._passing()
-        at_limit = self._finding("medium")
-        at_limit["evidence"] = "e" * m.MAX_FINDING_TEXT
-        self.assertEqual(m.parse_verdict({**good, "findings": [at_limit]})[0], "PASS")
-        over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
-        with self.assertRaises(m.Hold) as err:
-            m.parse_verdict({**good, "findings": [over]})
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+        finding = self._finding("medium", detail="D" * 5000)
+        finding["evidence"] = "E" * 3000
+        decision, verdict = m.parse_verdict({**good, "findings": [finding]})
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(verdict["findings"][0]["detail"], "D" * 5000)
+        self.assertEqual(verdict["findings"][0]["evidence"], "E" * 3000)
+        with self.assertRaisesRegex(m.Hold, "PAYLOAD_BYTES_EXCEEDED"):
+            m.parse_verdict({**good, "findings": [
+                {**finding, "detail": "\U0001f984" * 16000}
+            ]})
+        with self.assertRaisesRegex(m.Hold, "PAYLOAD_ENCODING"):
+            m.parse_verdict({**good, "findings": [
+                {**finding, "detail": "\ud800"}
+            ]})
 
     def test_finding_text_failures_are_field_specific_and_fail_closed(self):
         good = self._passing()
         for key in ("file", "detail", "evidence"):
-            for suffix, bad in (
-                ("TYPE", 123),
-                ("EMPTY", "  "),
-                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
-            ):
+            for suffix, bad in (("TYPE", 123), ("EMPTY", "  ")):
                 with self.subTest(field=key, error=suffix):
                     malformed = {**self._finding("low"), key: bad}
                     with self.assertRaises(m.Hold) as hold:
                         m.parse_verdict({**good, "findings": [malformed]})
-                    self.assertEqual(
-                        str(hold.exception),
-                        "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix,
-                    )
-        # The new codes are diagnostics, not permission to retry malformed
-        # model output or to discard genuine risk-category findings.
-        decision, _ = m.parse_verdict({
-            **good, "findings": [self._finding("low", category="security")]
-        })
-        self.assertEqual(decision, "REJECT")
+                    self.assertEqual(str(hold.exception),
+                                     "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix)
+        for bad in ("../escape.py", "/etc/passwd", "src\\\\evil.py", "src/./evil.py", "src/evil\n.py"):
+            with self.assertRaisesRegex(m.Hold, "FILE_PATH_INVALID"):
+                m.parse_verdict({**good, "findings": [
+                    {**self._finding("low"), "file": bad}
+                ]})
+        with self.assertRaisesRegex(m.Hold, "TEXT_FILE_TOO_LONG"):
+            m.parse_verdict({**good, "findings": [
+                {**self._finding("low"), "file": "x" * 256}
+            ]})
+        self.assertEqual(m.parse_verdict({**good, "findings": [
+            self._finding("low", category="security")
+        ]})[0], "REJECT")
 
     def test_finding_rejections_have_allowlisted_typed_reasons(self):
         good = self._passing()
@@ -136,11 +151,6 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 with self.assertRaises(m.Hold) as error:
                     m.parse_verdict({**good, "findings": malformed})
                 self.assertEqual(str(error.exception), "SEMANTIC_FINDINGS_INVALID:" + suffix)
-        # The schema's upper bound is also enforced at the parser boundary.
-        with self.assertRaises(m.Hold) as too_long:
-            m.parse_verdict({**good, "findings": [{**finding,
-                "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
-        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
 
     def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
         target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,
@@ -194,7 +204,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             return m.parse_verdict({**good, "findings": ["legacy string finding"]}) + (provider, [])
         with self.assertRaises(m.Hold) as err:
             m.semantic_review({"pr": 2301, "head_sha": "a" * 40,
-                               "diff_sha256": "b" * 64, "diff": "safe"},
+                               "diff_sha256": "b" * 64, "diff": "safe",
+                                "file_blobs": {"src.py": "d" * 40}},
                               {p: "key" for p in m.PROVIDERS}, malformed)
         self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
         self.assertEqual(err.exception.attempts,
@@ -210,7 +221,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                                  reviewer="anthropic-claude-api", verdict=output,
                                  attempts=[{"provider": "anthropic-claude-api", "result": "PASS"}],
                                  run_id=33, attempt=2)
-        self.assertEqual(receipt["schema_version"], 2)
+        self.assertEqual(receipt["schema_version"], 3)
         self.assertEqual(receipt["verdict"], output)
         self.assertEqual(receipt["head_sha"], target["head_sha"])
         self.assertEqual(receipt["base_sha"], target["base_sha"])
@@ -259,12 +270,14 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     self.assertNotIn(forbidden, stderr.getvalue())
 
     def test_failover_only_on_provider_unavailability(self):
-        target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
+        target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64,
+                  "diff": "sample", "file_blobs": {"src.py": "d" * 40}}
         creds = {p: "scoped-key" for p in m.PROVIDERS}
         called = []
         def rejected(provider, key, prompt):
             called.append(provider)
-            return ("REJECT", {"findings": ["vulnerability"]})
+            return ("REJECT", {**self._passing(), "findings": [
+                self._finding("high", category="security")]})
         self.assertEqual(m.semantic_review(target, creds, rejected)[0], "REJECT")
         self.assertEqual(called, ["anthropic-claude-api"])
         called.clear()
@@ -272,7 +285,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             called.append(provider)
             if provider == "anthropic-claude-api":
                 raise m.ProviderUnavailable("PROVIDER_HTTP_429")
-            return ("PASS", {"findings": []})
+            return ("PASS", self._passing())
         self.assertEqual(m.semantic_review(target, creds, transient)[0], "PASS")
         self.assertEqual(called, list(m.PROVIDERS))
         called.clear()
@@ -286,7 +299,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             m.semantic_review(target, {})
 
     def test_unusable_verdict_attributes_the_provider_that_produced_it(self):
-        target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "safe"}
+        target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64,
+                  "diff": "safe", "file_blobs": {"src.py": "d" * 40}}
         called = []
         def unusable(provider, key, prompt):
             called.append(provider)
@@ -358,6 +372,21 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             file["patch"] = None
             with self.assertRaises(m.Hold):
                 m.capture(2247, "a" * 40, "read")
+            file["patch"] = "@@ -1 +1 @@\n-old\n+new"
+            for bad_blob in ("d" * 39, "D" * 40, "z" * 40, 42):
+                with self.subTest(blob=bad_blob):
+                    file["sha"] = bad_blob
+                    with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
+                        m.capture(2247, "a" * 40, "read")
+            file["sha"] = "b" * 40
+            for bad_path in ("../escape.py", "/abs.py", "src//file.py",
+                             "src/./file.py", "bad\nname.py", "bad\x00name.py",
+                             "a\\b.py", "x" * 256):
+                with self.subTest(path=repr(bad_path)):
+                    file["filename"] = bad_path
+                    with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
+                        m.capture(2247, "a" * 40, "read")
+            file["filename"] = "a.py"
 
     def test_untrusted_reviewer_and_missing_result_never_pass(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "c" * 64, "diff": "safe"}
@@ -401,6 +430,42 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(str(cm.exception), "GEMINI_MODEL_INVALID")
 
 
+
+    def test_gemini_v3_preserves_complete_findings_above_old_9000_char_ceiling(self):
+        # A legitimate 12K-character finding is well inside v3's 60K-byte
+        # serialized-verdict budget; the former Gemini 9K raw-text cap lost it.
+        detail = "D" * 12000
+        verdict = {**self._passing(), "findings": [
+            self._finding("low", detail=detail)
+        ]}
+        response = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": m.json.dumps(verdict)}]}}]}
+        with patch.object(m, "request_json", return_value=response) as request:
+            decision, parsed = m.call_provider("gemini-generative-api", "test", "diff")
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(parsed["findings"][0]["detail"], detail)
+        self.assertEqual(request.call_count, 1)
+
+        # Removing the obsolete 9K cliff must never remove the v3 byte cap.
+        too_large = {**self._passing(), "findings": [
+            self._finding("low", detail="D" * 60000, category="security")
+        ]}
+        response["candidates"][0]["content"]["parts"][0]["text"] = m.json.dumps(too_large)
+        with patch.object(m, "request_json", return_value=response) as request:
+            with self.assertRaisesRegex(m.Hold, "PAYLOAD_BYTES_EXCEEDED"):
+                m.call_provider("gemini-generative-api", "test", "diff")
+        self.assertEqual(request.call_count, 1)
+
+    def test_gemini_malformed_provider_envelopes_fail_as_typed_hold(self):
+        for invalid in ([], {"candidates": "wrong"}, {"candidates": [None]},
+                        {"candidates": [{"finishReason": "STOP", "content": None}]},
+                        {"candidates": [{"finishReason": "STOP",
+                                         "content": {"parts": [None]}}]}):
+            with self.subTest(envelope=invalid):
+                with patch.object(m, "request_json", return_value=invalid) as request:
+                    with self.assertRaises(m.Hold):
+                        m.call_provider("gemini-generative-api", "test", "diff")
+                self.assertEqual(request.call_count, 1)
 
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
@@ -468,7 +533,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
     def test_both_providers_unavailable_requires_owner_review(self):
         target = {"pr": 2254, "head_sha": "a" * 40, "base_sha": "b" * 40,
-                  "diff_sha256": "c" * 64, "diff": "safe"}
+                  "diff_sha256": "c" * 64, "diff": "safe",
+                   "file_blobs": {"src.py": "d" * 40}}
         creds = {provider: "key" for provider in m.PROVIDERS}
         def unavailable(provider, key, prompt):
             raise m.ProviderUnavailable("PROVIDER_HTTP_429")
@@ -578,6 +644,13 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
 
 
+    def test_provider_response_byte_cap_is_fail_closed(self):
+        import io
+        with patch.object(m.HTTP_CLIENT, "open", return_value=io.BytesIO(b"x" * 250001)):
+            with self.assertRaisesRegex(m.Hold, "REVIEW_RESPONSE_BYTES_EXCEEDED"):
+                m.request_json("https://api.anthropic.com/v1/messages", data={},
+                               headers={"x-api-key": "test"})
+
     def test_typed_provider_error_retry_mapping(self):
         import io
         import json
@@ -606,6 +679,134 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     reject(code, body)
                 self.assertNotIsInstance(cm.exception, m.ProviderUnavailable)
 
+    def test_strict_tool_shape_uses_supported_features_with_local_fail_closed_bounds(self):
+        schema = m._build_claude_strict_schema()
+        self.assertIsNot(schema, m.REVIEW_SCHEMA)
+        self.assertEqual(schema["required"], m.REVIEW_SCHEMA["required"])
+        self.assertFalse(schema["additionalProperties"])
+        tool_findings = schema["properties"]["findings"]
+        self.assertNotIn("maxItems", tool_findings)
+        self.assertFalse(tool_findings["items"]["additionalProperties"])
+        props = tool_findings["items"]["properties"]
+        for field in ("file", "detail", "evidence"):
+            definition = props[field]
+            self.assertEqual(definition["type"], "string")
+            for unsupported in ("minLength", "maxLength", "pattern"):
+                self.assertNotIn(unsupported, definition)
+            if field == "file":
+                self.assertIn("255 characters", definition["description"])
+            else:
+                self.assertIn("60,000 bytes", definition["description"])
+        self.assertEqual(props["category"]["enum"], list(m.FINDING_CATEGORIES))
+        self.assertEqual(props["severity"]["enum"], list(m.FINDING_SEVERITIES))
+        self.assertEqual(m._build_claude_strict_schema(), schema)
+        self.assertIsNot(m._build_claude_strict_schema(), schema)
+        self.assertEqual(m._build_review_schema(), m.REVIEW_SCHEMA)
+        with patch.object(m, "REVIEW_SCHEMA", {"untrusted_mutation": True}):
+            self.assertEqual(m._build_claude_strict_schema(), schema)
+        def assert_no_unsupported(node):
+            if isinstance(node, dict):
+                for key in ("minLength", "maxLength", "maxItems", "pattern"):
+                    self.assertNotIn(key, node)
+                for value in node.values():
+                    assert_no_unsupported(value)
+            elif isinstance(node, list):
+                for value in node:
+                    assert_no_unsupported(value)
+        assert_no_unsupported(schema)
+        self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
+        self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["items"]["properties"]["file"]["maxLength"], 255)
+        for field in ("detail", "evidence"):
+            self.assertNotIn("maxLength", m.REVIEW_SCHEMA["properties"]["findings"]["items"]["properties"][field])
+        for category in m.BLOCKING_CATEGORIES:
+            risk = {**self._passing(), "findings": [self._finding("low", category=category)]}
+            self.assertEqual(m.parse_verdict(risk)[0], "REJECT")
+        with self.assertRaisesRegex(m.Hold, "TOO_MANY"):
+            m.parse_verdict({**self._passing(), "findings": [
+                self._finding("low")] * (m.MAX_FINDINGS + 1)})
+
+    def test_changed_file_inventory_required_before_any_provider_call(self):
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "safe diff"}
+        calls = []
+        def forbidden(*args):
+            calls.append(args)
+            return ("PASS", self._passing())
+        for missing in (target, {**target, "file_blobs": {}},
+                        {**target, "file_blobs": []},
+                        {**target, "file_blobs": None}):
+            with self.subTest(inventory=missing.get("file_blobs", "absent")):
+                with self.assertRaisesRegex(m.Hold, "FILE_INVENTORY_MISSING"):
+                    m.semantic_review(missing, {"anthropic-claude-api": "test"},
+                                      invoke=forbidden)
+        self.assertEqual(calls, [])
+        # A valid trusted inventory allows a findings-free PASS, while a
+        # forged cited path still yields a typed HOLD in the existing test.
+        valid = {**target, "file_blobs": {"src.py": "d" * 40}}
+        self.assertEqual(m.semantic_review(valid, {"anthropic-claude-api": "test"},
+                                           invoke=forbidden)[0], "PASS")
+        self.assertEqual(len(calls), 1)
+
+    def test_malformed_blob_identity_never_contacts_external_reviewer(self):
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "bounded source"}
+        calls = []
+        def forbidden(*args):
+            calls.append(args)
+            return ("PASS", self._passing())
+        for blob_map in ({"src.py": "d" * 39}, {"src.py": "D" * 40},
+                         {"src.py": "z" * 40}, {"src.py": None},
+                         {"src.py": 0}, {"": "d" * 40}, {42: "d" * 40},
+                         {"../escape.py": "d" * 40}, {"/abs.py": "d" * 40},
+                         {"src//file.py": "d" * 40}, {"src/./file.py": "d" * 40},
+                         {"bad\nname.py": "d" * 40}, {"bad\x00name.py": "d" * 40},
+                         {"a\\b.py": "d" * 40}, {"x" * 256: "d" * 40}):
+            with self.subTest(blob_map=blob_map):
+                with self.assertRaisesRegex(m.Hold, "DIFF_FILE_IDENTITY_INVALID"):
+                    m.semantic_review({**target, "file_blobs": blob_map},
+                                      {"anthropic-claude-api": "test"}, invoke=forbidden)
+        self.assertEqual(calls, [])
+        self.assertEqual(m.semantic_review({**target, "file_blobs": {"src.py": "d" * 40}},
+                                           {"anthropic-claude-api": "test"}, invoke=forbidden)[0], "PASS")
+        self.assertEqual(len(calls), 1)
+
+    def test_changed_file_identity_is_sha_pinned_and_fail_closed(self):
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "safe diff",
+                  "file_blobs": {"src.py": "d" * 40}}
+        forged = {**self._passing(), "findings": [
+            {**self._finding("low", category="security"), "file": "other.py"}
+        ]}
+        with self.assertRaisesRegex(m.Hold, "FILE_NOT_CHANGED"):
+            m.semantic_review(target, {"anthropic-claude-api": "test"},
+                              invoke=lambda *_: ("REJECT", forged))
+        real = {**forged, "findings": [self._finding("low", category="security")]}
+        self.assertEqual(m.semantic_review(target, {"anthropic-claude-api": "test"},
+                                           invoke=lambda *_: ("REJECT", real))[0], "REJECT")
+
+    def test_receipt_v3_uses_utf8_bytes_and_never_truncates(self):
+        receipt = {"schema_version": 3, "decision": "REJECT",
+                   "verdict": {"findings": [{"detail": "D" * 5000, "evidence": "E" * 3000}]}}
+        serialized = m._serialize_receipt(receipt)
+        self.assertEqual(m.json.loads(serialized), receipt)
+        self.assertLess(len(serialized.encode("utf-8")), m.MAX_REVIEW_PAYLOAD_BYTES)
+        with self.assertRaisesRegex(m.Hold, "SEMANTIC_RECEIPT_BYTES_EXCEEDED"):
+            m._serialize_receipt({"schema_version": 3, "detail": "\U0001f984" * 16000})
+
+    def test_receipt_metadata_overflow_holds_with_provider_attribution(self):
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64}
+        verdict = {**self._passing(), "findings": [
+            self._finding("low", detail="d" * 59500, category="security")
+        ]}
+        self.assertEqual(m.parse_verdict(verdict)[0], "REJECT")
+        with self.assertRaisesRegex(m.Hold, "SEMANTIC_RECEIPT_BYTES_EXCEEDED") as error:
+            m.make_receipt(target, decision="REJECT", reviewer="anthropic-claude-api",
+                           verdict=verdict, attempts=[], run_id=33, attempt=1)
+        self.assertEqual(error.exception.attempts, [
+            {"provider": "anthropic-claude-api", "result": "SEMANTIC_RECEIPT_BYTES_EXCEEDED"}
+        ])
+
     def test_claude_forced_tool_verdict_and_malformed_hold(self):
         verdict = {"source_review": "PASS", "security_review": "PASS",
                    "probability_integrity_review": "PASS", "findings": []}
@@ -616,7 +817,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(decision, "PASS")
             data = req.call_args.kwargs["data"]
             self.assertEqual(data["tool_choice"]["name"], "submit_review")
-            self.assertEqual(data["tools"][0]["input_schema"], m.REVIEW_SCHEMA)
+            self.assertEqual(data["tools"][0]["input_schema"], m._build_claude_strict_schema())
+            self.assertIs(data["tools"][0]["strict"], True)
         with patch.object(m, "request_json", return_value={
             "stop_reason": "end_turn", "content": [{"type": "text", "text": "PASS"}]}):
             with self.assertRaises(m.Hold):
@@ -640,7 +842,23 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(sent["max_tokens"], 6144)
         self.assertEqual(sent["messages"], [{"role": "user", "content": "source diff"}])
         self.assertEqual(sent["tool_choice"]["name"], "submit_review")
-        self.assertEqual(sent["tools"][0]["input_schema"], m.REVIEW_SCHEMA)
+        self.assertEqual(sent["tools"][0]["input_schema"], m._build_claude_strict_schema())
+        self.assertIs(sent["tools"][0]["strict"], True)
+
+    def test_provider_too_many_findings_holds_before_downstream_verdict(self):
+        """Provider cannot use unsupported maxItems to bypass local validation."""
+        limit_plus_one = [self._finding("low") for _ in range(m.MAX_FINDINGS + 1)]
+        provider_response = {"stop_reason": "tool_use", "content": [{
+            "type": "tool_use", "name": "submit_review",
+            "input": {**self._passing(), "findings": limit_plus_one},
+        }]}
+        with patch.object(m, "request_json", return_value=provider_response) as request:
+            with self.assertRaises(m.Hold) as failure:
+                m.call_provider("anthropic-claude-api", "fake", "bounded untrusted source")
+        self.assertEqual(str(failure.exception), "SEMANTIC_FINDINGS_INVALID:TOO_MANY")
+        self.assertEqual(request.call_count, 1)
+        # Even if every dimension says PASS, the entry point cannot yield
+        # a reviewer decision or send an oversized array to consumers.
 
     def test_claude_truncation_holds_without_resending_untrusted_diff(self):
         truncated = {"stop_reason": "max_tokens", "content": [
