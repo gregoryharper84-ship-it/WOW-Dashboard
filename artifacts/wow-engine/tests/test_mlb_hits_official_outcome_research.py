@@ -102,3 +102,15 @@ def test_large_source_is_rejected_before_hashing_and_json():
     with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_SNAPSHOT_INVALID"):
         extract_mlb_hits_labels(sample)
 
+
+def test_deeply_nested_json_fails_with_typed_hold():
+    # A small, SHA-consistent payload can exhaust JSON decoder recursion.
+    # Reject with the canonical research HOLD, not an unhandled 500.
+    sample = fixture()
+    raw = (sample["raw_body"][:-1] + ',"unused":'
+           + "[" * 12000 + "0" + "]" * 12000 + "}")
+    assert len(raw.encode("utf-8")) < 256_000
+    sample["raw_body"] = raw
+    sample["raw_sha256"] = sha256(raw.encode("utf-8")).hexdigest()
+    with pytest.raises(MLBHitsResearchHold, match="MLB_HITS_RESEARCH_BOX_SCHEMA_INVALID"):
+        extract_mlb_hits_labels(sample)
