@@ -86,6 +86,33 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("30-150 in evidence", prompt)
         self.assertIn("preserve every material risk", prompt)
 
+    def test_prompt_requires_real_failure_path_and_keeps_risk_veto(self):
+        target = {"pr": 2300, "head_sha": "a" * 40,
+                  "base_sha": "b" * 40, "diff_sha256": "c" * 64,
+                  "diff": "untrusted source"}
+        prompt = m.prompt_for(target)
+        schema = m.REVIEW_SCHEMA["properties"]["findings"]["description"]
+        self.assertIn("concrete input and observable failure", prompt)
+        self.assertIn("Do not invent speculative issues", prompt)
+        self.assertIn("already fail closed", m.SYSTEM_ROLE)
+        self.assertIn("unresolved, actionable source risks", schema)
+        self.assertIn("all real risk categories block regardless", prompt)
+        # Instructions are advisory to the independent model only; the
+        # fail-closed parser and existing security veto are unchanged.
+        good = self._passing()
+        low_real_risk = self._finding("low", "unmitigated leak", "security")
+        harmless_note = self._finding("low", "cosmetic only", "informational")
+        self.assertEqual(m.parse_verdict({**good, "findings": [low_real_risk]})[0],
+                         "REJECT")
+        self.assertEqual(m.parse_verdict({**good, "findings": [harmless_note]})[0],
+                         "PASS")
+        self.assertEqual(m.parse_verdict({**good, "security_review": "FAIL",
+                                          "findings": [harmless_note]})[0],
+                         "REJECT")
+        self.assertEqual(m.parse_verdict({**good, "findings": [
+            self._finding("critical", "critical finding", "informational")
+        ]})[0], "REJECT")
+
     def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
         good = self._passing()
         at_limit = self._finding("medium")
