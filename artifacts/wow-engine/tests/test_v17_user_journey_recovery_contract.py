@@ -69,7 +69,12 @@ def test_merge_sha_without_scout_run_reuses_recoverable_source_without_forcing_r
     assert "resolve_completed_with_discovery_artifact" in workflow
     assert "^wow-v17-multiscout-wow-scout-.*-discovery$" in workflow
     assert 'discovery_count" -gt 0' in workflow
-    assert "No completed recoverable Multi-Scout run found; fail closed." in workflow
+    # Empty verification-only inventory means no persistence attempt, not an
+    # invented receipt. A deliberate manual replay without evidence still HOLDS.
+    assert "SCOUT_RECOVERY_NOT_APPLICABLE" in workflow
+    assert "SCOUT_RECOVERY_REQUIRED_SOURCE_UNAVAILABLE_HOLD" in workflow
+    assert "SCOUT_DISCOVERY_ARTIFACT_MISSING_HOLD" in workflow
+    assert "steps.source.outputs.run_id != ''" in workflow
 
 
 def test_user_journey_health_remains_fail_closed_until_full_path_canary():
