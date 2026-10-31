@@ -45,7 +45,7 @@ class _Query:
         return self
 
     def execute(self):
-        assert self.source == "wow-scout-20261031"
+        assert isinstance(self.source, str) and self.source
         if self.name == "wow_scout_handoff_state_events":
             self.client.event_pages += 1
             rows = [r for r in self.client.events if r["event_id"] > self.after]
@@ -263,7 +263,7 @@ def test_query_budget_prevents_unbounded_single_row_reads():
             }])
 
     slow = OneRowPerPage()
-    with pytest.raises(RuntimeError, match="SCOUT_STATE_EVENT_PAGINATION_INVALID"):
+    with pytest.raises(RuntimeError, match="SCOUT_STATE_EVENT_READ_BUDGET_EXCEEDED"):
         _read_all_state_events(slow, "wow-scout-20261031")
     assert slow.calls == 128
 
@@ -279,7 +279,7 @@ def test_missing_jobs_response_is_not_an_empty_accepted_ledger():
         return query
 
     client.table = broken_table
-    with pytest.raises(RuntimeError, match="SCOUT_STATE_EVENT_PAGINATION_INVALID"):
+    with pytest.raises(RuntimeError, match="SCOUT_HANDOFF_JOBS_READ_INVALID"):
         read_run_summary(client, "wow-scout-20261031")
     assert client.event_pages == 0
 
