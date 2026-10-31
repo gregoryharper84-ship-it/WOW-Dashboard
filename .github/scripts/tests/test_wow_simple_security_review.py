@@ -19,33 +19,244 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         with self.assertRaises(m.Hold):
             m.event_target({"inputs": {"pr_number": "invalid"}}, "workflow_dispatch")
 
-    def test_pass_requires_every_dimension_and_no_findings(self):
-        good = {"source_review": "PASS", "security_review": "PASS",
+    def _finding(self, severity, detail="note", category="informational"):
+        return {"severity": severity, "category": category, "file": "src.py",
+                "detail": detail, "evidence": "observed"}
+
+    def _passing(self):
+        return {"source_review": "PASS", "security_review": "PASS",
                 "probability_integrity_review": "PASS", "findings": []}
+
+    def test_findings_block_only_at_critical_or_high(self):
+        good = self._passing()
         self.assertEqual(m.parse_verdict(good)[0], "PASS")
+        for severity in ("low", "medium"):
+            with self.subTest(advisory=severity):
+                decision, payload = m.parse_verdict({**good, "findings": [self._finding(severity)]})
+                self.assertEqual(decision, "PASS")
+                self.assertEqual(payload["findings"][0]["severity"], severity)
+        for severity in ("high", "critical"):
+            with self.subTest(blocking=severity):
+                self.assertEqual(m.parse_verdict(
+                    {**good, "findings": [self._finding(severity)]})[0], "REJECT")
         self.assertEqual(m.parse_verdict({**good, "security_review": "FAIL"})[0], "REJECT")
-        self.assertEqual(m.parse_verdict({**good, "findings": ["Issue found"]})[0], "REJECT")
-        for bad in ({}, {**good, "source_review": "UNKNOWN"},
-                    {**good, "source_review": []}, {**good, "findings": [0]}, {**good, "extra": True}):
+
+    def test_unclassifiable_findings_fail_closed(self):
+        good = self._passing()
+        incomplete = self._finding("medium")
+        del incomplete["evidence"]
+        for bad in ({}, {**good, "source_review": "UNKNOWN"}, {**good, "source_review": []},
+                    {**good, "extra": True}, {**good, "findings": ["Issue found"]},
+                    {**good, "findings": [{**self._finding("medium"), "extra": 1}]},
+                    {**good, "findings": [{**self._finding("medium"), "detail": "  "}]},
+                    {**good, "findings": [{**self._finding("medium"), "severity": "blocker"}]},
+                    {**good, "findings": [{**self._finding("low"), "category": "unknown"}]},
+                    {**good, "findings": [{key: value for key, value in self._finding("low").items()
+                                           if key != "category"}]},
+                    {**good, "findings": [incomplete]},
+                    {**good, "findings": [self._finding("low")] * 13},
+                    {**good, "findings": [0]}):
             with self.assertRaises(m.Hold):
                 m.parse_verdict(bad)
 
-    def test_prompt_only_allows_unresolved_risk_findings(self):
-        target = {"pr": 2296, "head_sha": "a" * 40, "base_sha": "b" * 40,
-                  "diff_sha256": "c" * 64, "diff": "sample"}
-        prompt = m.prompt_for(target)
-        self.assertIn("All three PASS requires findings=[]", prompt)
-        self.assertIn("even if low severity", prompt)
-        self.assertIn("Exclude praise", prompt)
-        self.assertIn("Every finding requires FAIL",
-                      m.REVIEW_SCHEMA["properties"]["findings"]["description"])
-        good = {"source_review": "PASS", "security_review": "PASS",
-                "probability_integrity_review": "PASS", "findings": []}
-        self.assertEqual(m.parse_verdict(good)[0], "PASS")
-        self.assertEqual(m.parse_verdict({**good, "findings": ["positive note"]})[0],
-                         "REJECT")
+    def test_review_schema_and_prompt_pin_the_severity_contract(self):
+        items = m.REVIEW_SCHEMA["properties"]["findings"]["items"]
+        self.assertEqual(items["properties"]["severity"]["enum"], list(m.FINDING_SEVERITIES))
+        self.assertEqual(sorted(items["required"]), ["category", "detail", "evidence", "file", "severity"])
+        self.assertEqual(items["properties"]["category"]["enum"], list(m.FINDING_CATEGORIES))
+        self.assertEqual(m.REVIEW_CONTRACT_VERSION, 2)
+        self.assertFalse(items["additionalProperties"])
+        # The enforced bounds are also handed to the model, so a reviewer is
+        # never held for a limit it was not told about.
+        self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
+        for key in ("file", "detail", "evidence"):
+            self.assertEqual(items["properties"][key]["maxLength"], m.MAX_FINDING_TEXT)
+            self.assertEqual(items["properties"][key]["minLength"], 1)
+        prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
+                               "diff_sha256": "b" * 64, "diff": "d"})
+        self.assertIn("critical or high", prompt)
+        self.assertIn("medium/low", prompt)
+        self.assertIn("blocks regardless of severity", prompt)
+        self.assertIn("at most 12", prompt)
+        self.assertIn("at most 500 characters", prompt)
+        self.assertIn("exactly these five keys and no others", prompt)
+        self.assertIn("Never return whitespace-only", prompt)
+        self.assertIn("cross-cutting concern", prompt)
+        self.assertIn("100-200 characters in detail", prompt)
+        self.assertIn("30-150 in evidence", prompt)
+        self.assertIn("preserve every material risk", prompt)
+
+    def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
+        good = self._passing()
+        at_limit = self._finding("medium")
+        at_limit["evidence"] = "e" * m.MAX_FINDING_TEXT
+        self.assertEqual(m.parse_verdict({**good, "findings": [at_limit]})[0], "PASS")
+        over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
+        with self.assertRaises(m.Hold) as err:
+            m.parse_verdict({**good, "findings": [over]})
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_finding_text_failures_are_field_specific_and_fail_closed(self):
+        good = self._passing()
+        for key in ("file", "detail", "evidence"):
+            for suffix, bad in (
+                ("TYPE", 123),
+                ("EMPTY", "  "),
+                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
+            ):
+                with self.subTest(field=key, error=suffix):
+                    malformed = {**self._finding("low"), key: bad}
+                    with self.assertRaises(m.Hold) as hold:
+                        m.parse_verdict({**good, "findings": [malformed]})
+                    self.assertEqual(
+                        str(hold.exception),
+                        "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix,
+                    )
+        # The new codes are diagnostics, not permission to retry malformed
+        # model output or to discard genuine risk-category findings.
+        decision, _ = m.parse_verdict({
+            **good, "findings": [self._finding("low", category="security")]
+        })
+        self.assertEqual(decision, "REJECT")
+
+    def test_finding_rejections_have_allowlisted_typed_reasons(self):
+        good = self._passing()
+        finding = self._finding("low")
+        samples = (
+            ("NOT_LIST", "invalid"),
+            ("TOO_MANY", [finding] * (m.MAX_FINDINGS + 1)),
+            ("NOT_OBJECT", ["legacy free text"]),
+            ("FIELD_SET", [{**finding, "extra": True}]),
+            ("SEVERITY", [{**finding, "severity": "unknown"}]),
+            ("CATEGORY", [{**finding, "category": "unknown"}]),
+            ("TEXT_EVIDENCE_EMPTY", [{**finding, "evidence": " " * 3}]),
+        )
+        for suffix, malformed in samples:
+            with self.subTest(reason=suffix):
+                with self.assertRaises(m.Hold) as error:
+                    m.parse_verdict({**good, "findings": malformed})
+                self.assertEqual(str(error.exception), "SEMANTIC_FINDINGS_INVALID:" + suffix)
+        # The schema's upper bound is also enforced at the parser boundary.
+        with self.assertRaises(m.Hold) as too_long:
+            m.parse_verdict({**good, "findings": [{**finding,
+                "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
+        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
+        target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64}
+        event = {"pull_request": {"number": 2320, "head": {"sha": target["head_sha"]}}}
+        env = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+               "GITHUB_EVENT_PATH": "/mock/event.json", "GITHUB_EVENT_NAME": "pull_request_target",
+               "GH_READ_TOKEN": "fake-read-token", "GITHUB_RUN_ID": "33",
+               "GITHUB_RUN_ATTEMPT": "1", "QA_APP_TOKEN": "fake-check-token"}
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+             patch.object(m.Path, "write_text", autospec=True) as save, \
+             patch.object(m, "capture", return_value=target), \
+             patch.object(m, "prior_semantic_reject", side_effect=m.Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")), \
+             patch.object(m, "semantic_review") as forbidden_review, \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaises(SystemExit) as exiting:
+                m.main()
+        self.assertEqual(exiting.exception.code, 1)
+        forbidden_review.assert_not_called()
+        saved = m.json.loads(save.call_args.args[1])
+        self.assertEqual(saved["decision"], "HOLD")
+        self.assertEqual(saved["reason"], "PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        self.assertEqual(saved["attempts"], [])
+        self.assertNotIn("recovery_class", saved)
+        publish.assert_called_once()
+
+    def test_category_prevents_severity_downgrade_of_real_risks(self):
+        good = self._passing()
+        for category in m.BLOCKING_CATEGORIES:
+            for severity in ("low", "medium", "high", "critical"):
+                with self.subTest(category=category, severity=severity):
+                    result = m.parse_verdict({**good, "findings": [
+                        self._finding(severity, "unresolved concern", category)]})[0]
+                    self.assertEqual(result, "REJECT")
+        # Even an informational label cannot waive a high-severity finding
+        # or a FAIL dimension.
+        self.assertEqual(m.parse_verdict({**good, "findings": [
+            self._finding("critical", category="informational")]})[0], "REJECT")
         self.assertEqual(m.parse_verdict({**good, "security_review": "FAIL",
-                                          "findings": ["real low risk"]})[0], "REJECT")
+            "findings": [self._finding("low", category="informational")]})[0], "REJECT")
+
+    def test_legacy_free_text_findings_are_terminal_not_provider_fallback(self):
+        good = self._passing()
+        with self.assertRaises(m.Hold) as err:
+            m.parse_verdict({**good, "findings": ["legacy string finding"]})
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
+        called = []
+        def malformed(provider, key, prompt):
+            called.append(provider)
+            return m.parse_verdict({**good, "findings": ["legacy string finding"]}) + (provider, [])
+        with self.assertRaises(m.Hold) as err:
+            m.semantic_review({"pr": 2301, "head_sha": "a" * 40,
+                               "diff_sha256": "b" * 64, "diff": "safe"},
+                              {p: "key" for p in m.PROVIDERS}, malformed)
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
+        self.assertEqual(err.exception.attempts,
+                         [{"provider": "anthropic-claude-api",
+                           "result": "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT"}])
+        self.assertEqual(called, ["anthropic-claude-api"])
+
+    def test_receipt_schema_is_versioned_without_rewriting_prior_verdicts(self):
+        target = {"pr": 2301, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64}
+        output = self._passing()
+        receipt = m.make_receipt(target, decision="PASS",
+                                 reviewer="anthropic-claude-api", verdict=output,
+                                 attempts=[{"provider": "anthropic-claude-api", "result": "PASS"}],
+                                 run_id=33, attempt=2)
+        self.assertEqual(receipt["schema_version"], 2)
+        self.assertEqual(receipt["verdict"], output)
+        self.assertEqual(receipt["head_sha"], target["head_sha"])
+        self.assertEqual(receipt["base_sha"], target["base_sha"])
+        self.assertEqual(receipt["diff_sha256"], target["diff_sha256"])
+        self.assertNotIn("owner_review_provenance", receipt)
+
+    def test_claude_advisory_findings_keep_pass_but_high_rejects(self):
+        good = self._passing()
+        def tool(verdict):
+            return {"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review", "input": verdict}]}
+        with patch.object(m, "request_json",
+                          return_value=tool({**good, "findings": [self._finding("medium")]})):
+            self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "PASS")
+        with patch.object(m, "request_json",
+                          return_value=tool({**good, "findings": [self._finding("critical")]})):
+            self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
+
+    def test_claude_non_tool_stop_reason_is_attributed_without_exposure_or_fallback(self):
+        import contextlib
+        import io
+        for raw, expected in (
+            ("max_tokens", "max_tokens"),
+            ("end_turn", "end_turn"),
+            ("secret-redirect?key=SENSITIVE_TOKEN", "UNCLASSIFIED"),
+            (None, "UNCLASSIFIED"),
+            (["max_tokens"], "UNCLASSIFIED"),
+            ({"stop": "max_tokens"}, "UNCLASSIFIED"),
+        ):
+            with self.subTest(raw=raw):
+                stderr = io.StringIO()
+                provider_payload = {"stop_reason": raw, "content": [
+                    {"type": "text", "text": "PRIVATE_RESPONSE_BODY"}]}
+                with patch.object(m, "request_json", return_value=provider_payload) as request:
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(m.Hold) as error:
+                            m.call_provider("anthropic-claude-api", "TEST_SECRET_KEY", "review")
+                # Even a truncated untrusted diff is never re-sent just
+                # to obtain a more favorable security decision.
+                self.assertEqual(str(error.exception),
+                                 "CLAUDE_REVIEW_TRUNCATED" if raw == "max_tokens"
+                                 else "CLAUDE_REVIEW_INCOMPLETE")
+                self.assertEqual(request.call_count, 1)
+                self.assertIn("REVIEW_CLAUDE_STOP_REASON:" + expected, stderr.getvalue())
+                for forbidden in ("PRIVATE_RESPONSE_BODY", "TEST_SECRET_KEY", "SENSITIVE_TOKEN"):
+                    self.assertNotIn(forbidden, stderr.getvalue())
 
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
@@ -73,6 +284,64 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(called, ["anthropic-claude-api"])
         with self.assertRaises(m.Hold):
             m.semantic_review(target, {})
+
+    def test_unusable_verdict_attributes_the_provider_that_produced_it(self):
+        target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "safe"}
+        called = []
+        def unusable(provider, key, prompt):
+            called.append(provider)
+            raise m.Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
+        with self.assertRaises(m.Hold) as err:
+            m.semantic_review(target, {p: "key" for p in m.PROVIDERS}, unusable)
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(err.exception.attempts,
+                         [{"provider": "anthropic-claude-api",
+                           "result": "SEMANTIC_FINDINGS_INVALID:TEXT"}])
+        self.assertEqual(called, ["anthropic-claude-api"])
+        # Exercise the HOLD path in main(): searching its source text would
+        # also match the owner-fallback handler and miss lost attribution.
+        target_with_base = {**target, "base_sha": "c" * 40}
+        event = {"pull_request": {"number": target["pr"], "head": {"sha": target["head_sha"]}}}
+        env = {
+            "GITHUB_REPOSITORY": m.REPO,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_PATH": "/mock/event.json",
+            "GITHUB_EVENT_NAME": "pull_request_target",
+            "GH_READ_TOKEN": "fake-read-token",
+            "GITHUB_RUN_ID": "33",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "WOW_QA_REVIEW_ANTHROPIC_API_KEY": "fake-claude-token",
+            "WOW_QA_REVIEW_GEMINI_API_KEY": "fake-gemini-token",
+            "QA_APP_TOKEN": "fake-check-token",
+        }
+        original_semantic_review = m.semantic_review
+
+        def review_with_unusable_verdict(captured, credentials):
+            return original_semantic_review(captured, credentials, unusable)
+
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+             patch.object(m.Path, "write_text", autospec=True) as save, \
+             patch.object(m, "capture", return_value=target_with_base) as capture, \
+             patch.object(m, "prior_semantic_reject", return_value=False), \
+             patch.object(m, "semantic_review", side_effect=review_with_unusable_verdict), \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaises(SystemExit) as exiting:
+                m.main()
+
+        self.assertEqual(exiting.exception.code, 1)
+        capture.assert_called_once_with(target["pr"], target["head_sha"], "fake-read-token")
+        save.assert_called_once()
+        self.assertEqual(str(save.call_args.args[0]), "wow-independent-security-decision.json")
+        receipt = m.json.loads(save.call_args.args[1])
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reason"], "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(receipt["reviewer_identity"], "none")
+        self.assertEqual(receipt["attempts"], err.exception.attempts)
+        self.assertEqual(receipt["recovery_class"], "EVIDENCE_PENDING")
+        self.assertEqual(receipt["next_action"], "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD")
+        self.assertEqual(called, ["anthropic-claude-api", "anthropic-claude-api"])
+        publish.assert_called_once_with(target["head_sha"], receipt, "fake-check-token")
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
@@ -357,6 +626,73 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 {"type": "tool_use", "name": "submit_review",
                  "input": {**verdict, "security_review": "FAIL"}}]}):
             self.assertEqual(m.call_provider("anthropic-claude-api", "fake", "review")[0], "REJECT")
+
+    def test_claude_high_budget_uses_one_strict_tool_request(self):
+        verdict = self._passing()
+        successful = {"stop_reason": "tool_use", "content": [
+            {"type": "tool_use", "name": "submit_review", "input": verdict}]}
+        with patch.object(m, "request_json", return_value=successful) as req:
+            decision, payload = m.call_provider("anthropic-claude-api", "private", "source diff")
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(payload, verdict)
+        self.assertEqual(req.call_count, 1)
+        sent = req.call_args.kwargs["data"]
+        self.assertEqual(sent["max_tokens"], 6144)
+        self.assertEqual(sent["messages"], [{"role": "user", "content": "source diff"}])
+        self.assertEqual(sent["tool_choice"]["name"], "submit_review")
+        self.assertEqual(sent["tools"][0]["input_schema"], m.REVIEW_SCHEMA)
+
+    def test_claude_truncation_holds_without_resending_untrusted_diff(self):
+        truncated = {"stop_reason": "max_tokens", "content": [
+            {"type": "text", "text": "partial output, untrusted"}]}
+        with patch.object(m, "request_json", return_value=truncated) as req:
+            with self.assertRaises(m.Hold) as err:
+                m.call_provider("anthropic-claude-api", "private", "source diff")
+        self.assertEqual(str(err.exception), "CLAUDE_REVIEW_TRUNCATED")
+        self.assertNotIsInstance(err.exception, m.ProviderUnavailable)
+        self.assertEqual(req.call_count, 1)
+
+    def test_claude_refusal_and_nontruncation_do_not_retry(self):
+        for reason, expected in (
+            ("refusal", "CLAUDE_REVIEW_REFUSED"),
+            ("end_turn", "CLAUDE_REVIEW_INCOMPLETE"),
+            ("pause_turn", "CLAUDE_REVIEW_INCOMPLETE"),
+            ("not-a-provider-stop", "CLAUDE_REVIEW_INCOMPLETE"),
+        ):
+            with self.subTest(reason=reason):
+                with patch.object(m, "request_json", return_value={
+                    "stop_reason": reason, "content": [{"type": "text", "text": "refuse"}]
+                }) as req:
+                    with self.assertRaises(m.Hold) as err:
+                        m.call_provider("anthropic-claude-api", "private", "source diff")
+                self.assertEqual(str(err.exception), expected)
+                self.assertEqual(req.call_count, 1)
+
+    def test_claude_security_reject_and_malformed_tool_never_retry(self):
+        real_reject = {**self._passing(), "security_review": "FAIL"}
+        for result, expected in (
+            ({"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review", "input": real_reject}]}, None),
+            ({"stop_reason": "tool_use", "content": [
+                {"type": "tool_use", "name": "submit_review",
+                 "input": {**self._passing(), "findings": ["unsafe"]}}]},
+             "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT"),
+            ({"stop_reason": "tool_use", "content": []},
+             "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE"),
+            ({"stop_reason": "tool_use", "content": [{"type": "text", "text": "PASS"}]},
+             "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE"),
+            ({"stop_reason": "tool_use", "content": "invalid"},
+             "CLAUDE_RESPONSE_INVALID"),
+        ):
+            with self.subTest(result=result):
+                with patch.object(m, "request_json", return_value=result) as req:
+                    if expected is None:
+                        self.assertEqual(m.call_provider("anthropic-claude-api", "private", "diff")[0], "REJECT")
+                    else:
+                        with self.assertRaises(m.Hold) as err:
+                            m.call_provider("anthropic-claude-api", "private", "diff")
+                        self.assertEqual(str(err.exception), expected)
+                self.assertEqual(req.call_count, 1)
 
     def test_sticky_reject_exact_sha_and_app_only(self):
         qa_reject = {"name": m.CHECK_NAME, "conclusion": "failure",

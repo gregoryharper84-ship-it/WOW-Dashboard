@@ -101,21 +101,37 @@ def _persistence() -> KalshiWeatherPersistence:
 
 @app.get("/health", operation_id="kalshiWeatherHealth")
 def health():
+    """Typed, secret-free database-readiness signal for isolated operations.
+
+    A public 200 means the API process is available, NOT that the ledger is
+    accessible. Never echo URL, service key, query data or exception text.
+    """
     capability_status = "UNAVAILABLE"
     database_status = "UNAVAILABLE"
-    try:
-        capability = _persistence().load_runtime_capability()
-        capability_status = str(capability.get("capability_status") or "UNAVAILABLE")
-        database_status = "AVAILABLE"
-    except Exception:
-        pass
+    missing = tuple(
+        name for name in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY")
+        if not os.environ.get(name)
+    )
+    if missing:
+        database_diagnostic = "DATABASE_CONFIGURATION_INCOMPLETE"
+    else:
+        try:
+            capability = _persistence().load_runtime_capability()
+            capability_status = str(capability.get("capability_status") or "UNAVAILABLE")
+            database_status = "AVAILABLE"
+            database_diagnostic = "DATABASE_READ_VERIFIED"
+        except KalshiWeatherPersistenceError:
+            database_diagnostic = "DATABASE_CAPABILITY_READ_FAILED"
+        except Exception:
+            database_diagnostic = "DATABASE_CLIENT_OR_READ_FAILED"
     return {
         "status": "ok",
         "service": "KALSHI_WEATHER_V2",
         "mode": "SHADOW",
         "database_status": database_status,
+        "database_diagnostic": database_diagnostic,
         "governed_probability_capability": capability_status,
-        "probability_publishable": capability_status == "AVAILABLE",
+        "probability_publishable": False,  # health/readiness is never publication authority
         "can_execute": False,
     }
 

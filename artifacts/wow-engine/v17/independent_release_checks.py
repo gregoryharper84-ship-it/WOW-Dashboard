@@ -726,14 +726,12 @@ def qa_findings(ev: dict, *, governance_files: frozenset[str] | None = None) -> 
         elif run.get("conclusion") != "success":
             findings.append(f"QA_EVIDENCE_FAILED:{name}")
     if trust_root_change:
-        # Trust roots: .github/, .agents/ and every file a governance workflow executes
-        # or reads (including this module). Never autonomous: the sole owner's approval
-        # of this exact head is required, and an owner-authored PR can never be
-        # self-approved. Receipt minting for this class is the trust-root bootstrap
-        # path; this QA decision stays independent of that receipt.
-        if pr.get("author") == ev.get("owner_login"):
-            findings.append("QA_TRUST_ROOT_OWNER_AUTHORED")
-        elif not _owner_approved_at_head(ev, head):
+        # V3 single-owner policy: the authenticated repository owner can author a
+        # protected change. GitHub's required CI and the subsequent authorized
+        # merge are still separate gates; QA does NOT claim independent review.
+        # Non-owner-authored changes still require the owner's exact-head
+        # APPROVED review, preserving an attributable human authorization.
+        if pr.get("author") != ev.get("owner_login") and not _owner_approved_at_head(ev, head):
             findings.append("QA_TRUST_ROOT_OWNER_APPROVAL_MISSING")
     return sorted(set(findings))
 
