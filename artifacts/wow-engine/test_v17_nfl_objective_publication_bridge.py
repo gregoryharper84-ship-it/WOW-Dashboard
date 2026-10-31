@@ -70,6 +70,23 @@ def test_nfl_objective_dispatch_calls_governed_publication(monkeypatch):
             "calibrated_away_upper_bound": 0.668,
             "llp_probability_audit_result": "PASS_PROBABILITY_AUDIT",
             "llp_event_decision": "PASS",
+            "global_terminal_authority": "V17_TERMINAL_REDUCER",
+            "event_mutex_status": "PASS",
+            "selected_calibrated_probability": 0.612,
+            "selected_calibrated_lower_bound": 0.556,
+            # Positive publication test fixture must satisfy the full governed
+            # contract; explicit rank=true alone cannot authorize publication.
+            "llp_governance": {
+                "probability_publishable": True,
+                "rank_eligible": True,
+                "global_terminal_reducer": "V17_TERMINAL_REDUCER",
+                "can_execute": False,
+                "probability_audit_result": "PASS_PROBABILITY_AUDIT",
+                "event_mutex_status": "PASS",
+                "postmodel_gates_status": "PASS",
+                "final_gates_status": "PASS",
+                "terminal_label": "FINAL_APPROVED",
+            },
             "score_snapshot_id": "00000000-0000-0000-0000-000000000001",
             "event_prediction_id": "00000000-0000-0000-0000-000000000002",
             "probability_publishable": True,
@@ -116,7 +133,7 @@ def test_nfl_objective_dispatch_calls_governed_publication(monkeypatch):
     }])
     response = app.handler(batch)
 
-    assert response["run_status"] == "COMPLETE"
+    assert response["run_status"] == "COMPLETE", response
     assert response["rows_completed"] == 1
     assert response["can_execute"] is False
     row = response["rows"][0]
