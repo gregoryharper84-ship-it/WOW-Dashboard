@@ -8,6 +8,7 @@ import yaml
 
 from v17.engineering_auditor import (
     AuditEvent,
+    code_health_blocker_packet,
     finding_fingerprint,
     is_code_health_failure,
     is_terminal_source_state,
@@ -437,3 +438,56 @@ def test_lifecycle_audit_reads_live_exact_head_metadata_not_stale_event():
     assert 'git diff --name-only HEAD^1 HEAD^2' in text
     assert 'pull_request:' in text
     assert 'permission-checks: write' not in text
+
+
+def test_blocker_packet_binds_verified_run_sha_without_new_execution_authority():
+    event = AuditEvent(
+        event_name="workflow_run",
+        action="completed",
+        repository="owner/repo",
+        source_kind="CODE_HEALTH_RUN",
+        source_ref="41247454667",
+        title="Failed CI",
+        state="OPEN",
+        head_sha="a" * 40,
+        conclusion="failure",
+        details={"env": "SECRET=value", "stderr": "token=hidden", "check_name": "test"},
+    )
+    packet = code_health_blocker_packet(event)
+    assert packet["failure_class"] == "CI_SEMANTIC_OR_INFRA_FAILURE"
+    assert packet["workflow_run_id"] == "41247454667"
+    assert packet["head_sha"] == "a" * 40
+    assert packet["next_action"] == "READ_EXACT_RUN_LOGS_AND_IDENTIFY_CAUSE"
+    assert packet["dispatch_authorized"] is False
+    assert packet["merge_authorized"] is False
+    assert packet["deploy_authorized"] is False
+    assert packet["can_execute"] is False
+    assert "SECRET" not in str(packet)
+    assert "token" not in str(packet)
+
+
+def test_blocker_packet_refuses_untrusted_identity_and_distinguishes_timeout():
+    event = AuditEvent(
+        event_name="workflow_run",
+        action="completed",
+        repository="owner/repo",
+        source_kind="CODE_HEALTH_RUN",
+        source_ref="https://not-our-host.invalid/run?secret=x",
+        title="Timeout",
+        state="OPEN",
+        head_sha="unsafe",
+        conclusion="timed_out",
+    )
+    packet = code_health_blocker_packet(event)
+    assert packet["workflow_run_id"] is None
+    assert packet["head_sha"] is None
+    assert packet["failure_class"] == "CI_TIMEOUT"
+    assert packet["next_action"] == "RECONCILE_AUTHORITATIVE_RUN_AND_HEAD_IDENTITY"
+
+
+def test_blocker_packet_rejects_non_ci_sources():
+    with pytest.raises(ValueError, match="BLOCKER_PACKET_SOURCE_INVALID"):
+        code_health_blocker_packet(AuditEvent(
+            event_name="issues", action="opened", repository="owner/repo",
+            source_kind="GITHUB_ISSUE", source_ref="12", title="issue", state="OPEN",
+        ))
