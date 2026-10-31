@@ -327,6 +327,23 @@ def test_run_id_validation_rejects_before_db(monkeypatch, auth_headers):
     assert response.status_code == 422
 
 
+def test_unpaired_unicode_candidate_fails_closed_before_redis_or_database(monkeypatch):
+    """An internal model_construct caller can carry invalid Unicode."""
+    def forbidden_io(*args, **kwargs):
+        raise AssertionError("invalid candidate reached Redis or service-role DB")
+
+    monkeypatch.setattr(agent_runtime_api, "get_client", forbidden_io)
+    monkeypatch.setattr(agent_runtime_api, "_check_admission_rate_limit", forbidden_io)
+    req = schemas.RunCreateRequest.model_construct(
+        **{**_RUN_PAYLOAD, "candidate_inputs": [{"value": "\ud800"}]},
+    )
+    with pytest.raises(HTTPException) as exc:
+        agent_runtime_api.create_run(req, idempotency_key="invalid-unicode")
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "RUN_CANDIDATE_PAYLOAD_TOO_LARGE"
+    assert exc.value.detail["can_execute"] is False
+
+
 def test_candidate_depth_limit_rejects_before_db(monkeypatch, auth_headers):
     def no_db():
         raise AssertionError("deep payload reached DB")
