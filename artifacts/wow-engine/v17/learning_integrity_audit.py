@@ -116,7 +116,7 @@ def audit_engineering_incidents(ledger: Mapping[str, Any]) -> dict[str, Any]:
     A legacy VERIFIED_CLOSED record missing a production receipt is an evidence
     gap; this audit must not rewrite a historic closure or deploy anything.
     """
-    records = ledger.get("records") or []
+    records = ledger.get("records", [])
     if not isinstance(records, list):
         raise ValueError("INCIDENT_LEDGER_SCHEMA_INVALID")
     unique: set[str] = set()
@@ -140,7 +140,7 @@ def audit_engineering_incidents(ledger: Mapping[str, Any]) -> dict[str, Any]:
             by_domain[domain]["classified_incidents"] += 1
         else:
             by_domain[domain]["unclassified"] += 1
-        fixes = record.get("engineering_fixes") or {}
+        fixes = record.get("engineering_fixes", {})
         if not isinstance(fixes, Mapping):
             raise ValueError("INCIDENT_FIXES_SCHEMA_INVALID")
         for fid, fix in fixes.items():
@@ -223,10 +223,13 @@ def compile_engineering_refinements(
         "evidence_refs", "guard_test_path",
     )
     for i, item in enumerate(items):
+        preserve = item.get("preserve", []) if isinstance(item, Mapping) else None
         if (not isinstance(item, Mapping)
             or any(not item.get(k) for k in required)
             or not isinstance(item.get("evidence_refs"), (list, tuple))
             or not all(isinstance(ref, str) and ref.strip() for ref in item["evidence_refs"])
+            or not isinstance(preserve, (list, tuple))
+            or not all(isinstance(value, str) and value.strip() for value in preserve)
             or not str(item.get("guard_test_path")).endswith(".py")):
             blocked.append({"source_index": i, "reason": "REFINE_ITEM_NOT_TYPED_ENGINEERING_EVIDENCE"})
             continue
@@ -247,7 +250,7 @@ def compile_engineering_refinements(
             "recipe": {
                 "minimal_change": str(item["proposed_change"]),
                 "guard_test_path": str(item["guard_test_path"]),
-                "preserve": list(item.get("preserve") or []),
+                "preserve": list(preserve),
                 "evidence_refs": list(item["evidence_refs"]),
                 "required_validation": [
                     "ROOT_CAUSE_REPRODUCED",
