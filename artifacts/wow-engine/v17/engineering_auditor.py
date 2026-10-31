@@ -161,7 +161,7 @@ def code_health_blocker_packet(event: AuditEvent) -> dict[str, Any]:
     }.get(conclusion, "CI_RESULT_UNVERIFIED")
     sha = str(event.head_sha or "")
     verified_sha = sha.lower() if re.fullmatch(r"[0-9a-fA-F]{40}", sha) else None
-    # Only allow numeric, canonical run identifiers, not user-authored URLs.
+    # Numeric GitHub run IDs with bounded 20-digit future headroom; never URLs.
     run_ref = str(event.source_ref or "")
     verified_run = run_ref if re.fullmatch(r"[1-9][0-9]{0,19}", run_ref) else None
     next_action = (
@@ -175,8 +175,9 @@ def code_health_blocker_packet(event: AuditEvent) -> dict[str, Any]:
         "head_sha": verified_sha,
         "workflow_run_id": verified_run,
         "next_action": next_action,
-        "recovery_path": "EXISTING_ENGINEERING_BACKLOG_AND_PROTECTED_WORKER",
-        "advisory_only": True,
+        # A diagnostic packet is persisted by the auditor, not read as an
+        # execution grant. Dispatch is separately enforced by the trusted worker.
+        "evidence_sink": "ENGINEERING_AUDITOR_BACKLOG",
         "dispatch_authorized": False,
         "merge_authorized": False,
         "deploy_authorized": False,
@@ -285,12 +286,13 @@ class EngineeringAuditStore:
         # The upstream `details` dict (URLs, stderr, environment, arbitrary
         # provider text) is never persisted as a context-injection surface.
         raw_name = (event.details or {}).get("check_name")
-        known = {
-            "wow-v17-engineering-auditor-code-health",
-            "wow-engine-verify",
-            "wow-v17-change-impact-gate",
-        }
-        check_name = raw_name if isinstance(raw_name, str) and raw_name in known else "V17_ENGINEERING_CODE_HEALTH"
+        # Reuse the reconciler's one existing source of workflow identity.
+        # Import locally to avoid an import cycle: that module imports this store.
+        from v17.engineering_auditor_github import CODE_HEALTH_WORKFLOW_NAMES
+        check_name = (
+            raw_name if isinstance(raw_name, str) and raw_name in CODE_HEALTH_WORKFLOW_NAMES
+            else "V17_ENGINEERING_CODE_HEALTH"
+        )
         component = f"{event.repository}:{check_name}"
         if is_code_health_failure(event.conclusion):
             packet = code_health_blocker_packet(event)
