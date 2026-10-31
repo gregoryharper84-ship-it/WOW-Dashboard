@@ -7,6 +7,7 @@ Only the existing agent registry/model/reducer may progress a candidate.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
 
 MAX_DISCOVERY_ROWS = 256
@@ -55,7 +56,7 @@ def select_current_daily_candidates(
             skip("NON_MONEYLINE_SOURCE")
             continue
         captured = _aware(row.get("captured_at"))
-        if captured is None or not now - FRESHNESS <= captured <= now + timedelta(minutes=5):
+        if captured is None or not now - FRESHNESS <= captured <= now:
             skip("STALE_SOURCE")
             continue
         identity = row.get("identity")
@@ -79,6 +80,11 @@ def select_current_daily_candidates(
             continue
         if start is None or not now + timedelta(minutes=2) < start <= now + FUTURE_HORIZON:
             skip("NOT_CURRENT_PREGAME")
+            continue
+        source_run_id = row.get("run_id")
+        if (not isinstance(source_run_id, str)
+                or re.fullmatch(r"[A-Za-z0-9._:-]{1,100}", source_run_id) is None):
+            skip("SOURCE_RUN_ID_INVALID")
             continue
         key = (sport, event_id)
         if key in seen:
@@ -109,7 +115,7 @@ def select_current_daily_candidates(
                 "source_family": "WOW_V17_DAILY_SNAPSHOT",
                 "name": "wow_v17_daily_run_row_detail",
                 "captured_at": captured.isoformat(),
-                "run_id": str(row.get("run_id") or ""),
+                "run_id": source_run_id,
             }],
             "can_execute": False,
         })
@@ -121,6 +127,9 @@ def discover_from_daily_ledger(client: Any, *, now: datetime) -> tuple[list[dict
     if now.tzinfo is None:
         raise ValueError("DISCOVERY_CLOCK_NOT_AWARE")
     cutoff = (now.astimezone(timezone.utc) - FRESHNESS).isoformat()
+    # The existing durable Celery entrypoint enforces the registered worker
+    # soft/hard task time limits (30/35 seconds). Keep one bounded DB page and
+    # no source-side retries; do not create an unbounded polling loop here.
     response = (
         client.table("wow_v17_daily_run_row_detail")
         .select("run_id,row_index,lane,row_status,identity,detail,captured_at")
