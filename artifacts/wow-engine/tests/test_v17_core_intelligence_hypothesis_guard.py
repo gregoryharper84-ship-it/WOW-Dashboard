@@ -116,6 +116,33 @@ def test_even_40_separate_games_without_certification_do_not_authorize_learning(
     assert result["hypothesis_n"] == 0
 
 
+def test_conflicting_official_results_across_artifact_cohorts_hold_all(monkeypatch):
+    observations, sources = _cohort(n=2, games=1)
+    sources[1]["model_artifact_version"] = "fixed-model-v2"
+    sources[1]["calibration_version"] = "phase-b"
+    observations[1] = build_learning_observation(sources[1], {
+        "prediction_id": sources[1]["prediction_id"],
+        "official_result": "HIT",
+        "hit": True,
+        "actual_stat": 6,
+        "settlement_source": "https://statsapi.mlb.com/api/v1.1/game/823333/feed/live",
+        "settlement_timestamp": "2026-09-21T00:00:00+00:00",
+    })
+    for ordering in (observations, list(reversed(observations))):
+        monkeypatch.setattr(runtime, "load_observations", lambda _db, **kw: ordering)
+        result = runtime.intelligence_summary(_ReadOnlyDB(sources))
+        assert result["cohort_n"] == 2
+        for cohort in result["cohorts"]:
+            report = cohort["retrospective_research_audit"]
+            assert report["status"] == "HOLD"
+            assert report["blocker"] == "OFFICIAL_SETTLEMENT_CONFLICT"
+            assert report["cross_cohort_conflicting_game_player_stats"] == 1
+            assert "brier_score" not in report
+            assert "log_loss" not in report
+            assert report["can_execute"] is False
+        assert result["hypotheses"] == []
+
+
 def test_other_models_do_not_get_proxy_official_game_identity(monkeypatch):
     rows, sources = _cohort(n=40, model="OTHER_MODEL")
     monkeypatch.setattr(runtime, "load_observations", lambda _db, **kw: rows)
