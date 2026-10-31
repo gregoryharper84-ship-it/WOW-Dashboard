@@ -48,6 +48,8 @@ def test_only_current_verified_events_are_discovered():
     assert one["market_family"] == "OUTRIGHT_WINNER"
     assert one["discovery_authority"] == "RESEARCH_INTEREST"
     assert one["can_execute"] is False
+    assert one["event_status"] == "CURRENT_STATUS_UNVERIFIED"
+    assert one["settlement_identity_verified"] is False
     assert "model_probability" not in one and "calibrated_lower_bound" not in one
     assert skipped["DUPLICATE_SOURCE_INSTANCE"] == 1
     assert skipped["NOT_CURRENT_PREGAME"] == 1
