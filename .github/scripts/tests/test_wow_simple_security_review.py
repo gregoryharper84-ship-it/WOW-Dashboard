@@ -640,7 +640,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(
                 m.REVIEW_SCHEMA["properties"]["findings"]["items"]["properties"][field]["maxLength"], 500
             )
-            for bad in (" " * 3, "\\n" * 500):
+            for bad in (" " * 3, chr(10) * 500):
                 malformed = {**self._passing(), "findings": [
                     {**self._finding("low"), field: bad}
                 ]}
