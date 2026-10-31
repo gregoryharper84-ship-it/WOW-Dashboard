@@ -29,9 +29,9 @@ CREDIT_ERRORS = ("credit balance is too low", "insufficient credits", "quota exc
                  "billing quota exceeded", "quota exhausted")
 MODEL_GONE_ERRORS = ("model not found", "model does not exist", "model is deprecated",
                      "model has been retired")
-# Only critical/high block a PASS. This matches independent_source_review_receipt.py,
-# which rejects on a critical/high finding or an explicit FAIL dimension, and keeps
-# medium/low notes from turning a passing review into a REJECT.
+# Critical/high findings block, and risk-category findings block regardless of
+# severity. An informational medium/low observation alone is nonblocking.
+# The risk-category rule is intentionally stricter than severity alone.
 FINDING_SEVERITIES = ("critical", "high", "medium", "low")
 BLOCKING_SEVERITIES = frozenset({"critical", "high"})
 # The category is independently checked, not just the model-supplied severity.
@@ -336,6 +336,12 @@ def prompt_for(target):
             "MUST have its corresponding risk category and blocks regardless of severity. Only harmless "
             "non-risk observations may use category informational with medium/low severity and PASS domains. "
             "Do not disguise an actual concern as informational; report FAIL for uncertain risk. "
+            "For every blocking claim, identify the concrete reachable failure path and exact source "
+            "evidence. Distinguish demonstrated behavior from conditional assumptions about "
+            "configuration, identities, scope or unseen dependencies. Do not claim an unobserved "
+            "precondition as fact. If essential context is absent, identify that missing evidence "
+            "specifically, mark the affected review dimension FAIL and retain the risk; do not "
+            "invent a vulnerability, silently discard a real concern or turn uncertainty into PASS. "
             "Return ONLY a JSON object with exactly four fields: source_review, "
             "security_review, probability_integrity_review (each PASS or FAIL), findings (at most 12 "
             "objects; empty array when none). Each finding object has exactly these five keys and no "
