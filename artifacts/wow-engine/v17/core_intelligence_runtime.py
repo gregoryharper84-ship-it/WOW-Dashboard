@@ -20,8 +20,11 @@ from v17.core_intelligence import (
     LearningObservation,
     build_learning_observation,
     cohort_key,
-    detect_learning_hypotheses,
     summarize_cohort,
+)
+from v17.independent_research_audit import (
+    MODEL_FAMILY as RESEARCH_MLB_SO_MODEL,
+    audit_mlb_strikeout_forecasts,
 )
 from v17.llp_v17_1_shadow_internal_routes import install_llp_v17_1_shadow_internal_routes
 from v17.postmortem_learning_ledger import signed_distance_to_threshold
@@ -204,6 +207,80 @@ def load_observations(
     return [_observation_from_row(row) for row in rows]
 
 
+def _retrospective_research_for_cohort(
+    db: Any,
+    observations: list[LearningObservation],
+) -> dict[str, Any] | None:
+    """Read-only official-game diagnostic; never certifies independent evidence.
+
+    Historic observations omit event/player/line/as-of identity. Re-fetch the
+    frozen prediction sources; never create identity by inference.
+    """
+    if not observations or not all(
+        row.source_prediction_kind == "PROP"
+        and (row.sport or "").upper() == "MLB"
+        and (row.stat_type or "").upper() == "PITCHER_STRIKEOUTS"
+        and row.model_family == RESEARCH_MLB_SO_MODEL
+        for row in observations
+    ):
+        return None
+
+    ids = sorted({row.source_prediction_id for row in observations})
+    source_by_id: dict[str, dict[str, Any]] = {}
+    fields = (
+        "prediction_id,event_id,event_start_time,created_at,model_timestamp,locked_at,"
+        "sport,player,stat_type,line,direction,model_family,model_artifact_version,"
+        "calibration_version,calibration_status,calibrated_probability,"
+        "probability_publishable"
+    )
+    for chunk in _chunks(ids):
+        records = _db_call(
+            "wow_predictions.select_core_intelligence_research_identity",
+            lambda chunk=chunk: db.table("wow_predictions")
+            .select(fields).in_("prediction_id", chunk)
+            .execute().data or [],
+        )
+        for source in records:
+            pid = str(source.get("prediction_id") or "")
+            if pid:
+                source_by_id[pid] = dict(source)
+
+    verified_inputs: list[dict[str, Any]] = []
+    missing_n = 0
+    probability_conflicts_n = 0
+    calibration_states: dict[str, int] = defaultdict(int)
+    for row in observations:
+        source = source_by_id.get(row.source_prediction_id)
+        if source is None:
+            missing_n += 1
+            continue
+        original_probability = _as_float(source.get("calibrated_probability"))
+        if (
+            row.probability is None or original_probability is None
+            or abs(original_probability - row.probability) > 1e-10
+        ):
+            probability_conflicts_n += 1
+            continue
+        calibration_states[str(source.get("calibration_status") or "MISSING")] += 1
+        record = dict(source)
+        record.update({
+            "hit": None if row.outcome_target is None else bool(row.outcome_target),
+            "push": row.official_result in {"PUSH", "TIE"},
+            "void": row.official_result in {"VOID", "REFUND", "VOID_NOT_STARTER"},
+            "settlement_source": row.settlement_source,
+            "settlement_timestamp": row.settlement_timestamp,
+            "actual_stat": row.actual_value,
+        })
+        verified_inputs.append(record)
+    result = audit_mlb_strikeout_forecasts(verified_inputs)
+    result["source_prediction_missing_n"] = missing_n
+    result["observation_source_probability_conflict_n"] = probability_conflicts_n
+    result["calibration_status_counts"] = dict(sorted(calibration_states.items()))
+    result["hypothesis_authority"] = "NO_GOVERNED_HYPOTHESIS_AUTHORITY"
+    result["can_execute"] = False
+    return result
+
+
 def intelligence_summary(
     db: Any,
     *,
@@ -216,16 +293,56 @@ def intelligence_summary(
     for observation in observations:
         grouped[cohort_key(observation)].append(observation)
 
+    # Validate shared official game/player/stat settlements BEFORE artifact and
+    # calibrator cohorts split. An individual cohort can otherwise score a
+    # contradictory official outcome undetected.
+    research_keys = [key for key, rows in grouped.items() if all(
+        row.source_prediction_kind == "PROP"
+        and (row.sport or "").upper() == "MLB"
+        and (row.stat_type or "").upper() == "PITCHER_STRIKEOUTS"
+        and row.model_family == RESEARCH_MLB_SO_MODEL
+        for row in rows
+    )]
+    global_research = None
+    if len(research_keys) > 1:
+        shared_rows = [row for key in research_keys for row in grouped[key]]
+        global_research = _retrospective_research_for_cohort(db, shared_rows)
+    cross_cohort_conflict = (
+        global_research is not None
+        and global_research.get("blocker") == "OFFICIAL_SETTLEMENT_CONFLICT"
+    )
+
     cohort_rows: list[dict[str, Any]] = []
     hypothesis_rows: list[dict[str, Any]] = []
     for key in sorted(grouped):
         summary = summarize_cohort(grouped[key], min_samples=min_samples)
-        cohort_rows.append(summary.as_dict())
-        hypothesis_rows.extend(
-            hypothesis.as_dict()
-            for hypothesis in detect_learning_hypotheses(summary)
-        )
+        result = summary.as_dict()
+        result["raw_observation_hypothesis_threshold_met"] = summary.ready_for_hypothesis
+        result["metric_population"] = "RAW_OBSERVATIONS_DIAGNOSTIC_ONLY"
+        # Source observations lack certified official player/line/market and
+        # original as-of/holdout identity. Row count cannot authorize learning.
+        result["ready_for_hypothesis"] = False
+        result["hypothesis_blocker"] = "CANONICAL_EFFECTIVE_SAMPLE_AND_HOLDOUT_UNVERIFIED"
+        if cross_cohort_conflict and key in research_keys:
+            # Never emit individually scored research metrics when official
+            # settlements disagree elsewhere in the same game/player/stat.
+            result["retrospective_research_audit"] = {
+                "status": "HOLD",
+                "blocker": "OFFICIAL_SETTLEMENT_CONFLICT",
+                "authority": "ADVISORY_ONLY",
+                "certified": False,
+                "can_execute": False,
+                "cross_cohort_conflicting_game_player_stats":
+                    global_research["conflicting_game_player_stats"],
+            }
+        else:
+            research = _retrospective_research_for_cohort(db, grouped[key])
+            if research is not None:
+                result["retrospective_research_audit"] = research
+        cohort_rows.append(result)
 
+    # Do not persist review hypotheses from dependent raw observation rows.
+    # The separate governed effective-N + holdout policy remains fail-closed.
     if persist_hypotheses and hypothesis_rows:
         _db_call(
             "wow_intelligence_hypotheses.insert",
