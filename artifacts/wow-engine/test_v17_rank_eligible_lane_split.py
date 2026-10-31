@@ -59,6 +59,7 @@ def test_market_edge_cannot_clobber_a_completed_sporting_probability():
     assert value["card_admission_receipt"]["objective_rank_eligible"] is False
     assert value["card_admission_receipt"]["card_admission_eligible"] is False
     assert value["rank_eligibility_scope"] == "SPORTING_PROBABILITY"
+    assert value["rank_eligibility_transition"] == "ALREADY_MATCHES_SPORTING_LANE"
     assert value["card_admission_receipt"]["rank_eligibility_scope"] == "CARD_ADMISSION"
     assert value["card_admission_audit"]["scope"] == "CARD_ADMISSION"
     assert value["card_admission_audit"]["sporting_rank_eligible"] is True
@@ -113,8 +114,29 @@ def test_held_scoring_row_cannot_be_admitted_from_both_positive_flags():
     assert "CARD_ADMISSION:TERMINAL_NOT_COMPLETED" in value["card_admission_blockers"]
     assert value["card_admission_receipt"] is None
     assert value["card_admission_audit"]["terminal_status"] == "HELD"
+    assert value["card_admission_audit"]["receipt_available"] is False
     assert value["card_admission_audit"]["admission_eligible"] is False
     assert "CARD_ADMISSION:TERMINAL_NOT_COMPLETED" in value["card_admission_audit"]["blockers"]
+    assert value["can_execute"] is False
+
+
+def test_card_audit_records_legacy_contradictory_rank_transition():
+    row = _row()
+    outcome = _outcome(rank_eligible=False)
+    runtime._apply_card_admission(row, outcome)
+    assert outcome["rank_eligible"] is True
+    assert outcome["rank_eligibility_transition"] == "PREVIOUS_RANK_CONTRADICTED_SPORTING_LANE"
+    assert outcome["card_admission_audit"]["rank_eligibility_transition"] == "PREVIOUS_RANK_CONTRADICTED_SPORTING_LANE"
+    assert outcome["card_admission_audit"]["receipt_available"] is True
+    assert outcome["card_admission_eligible"] is True
+    assert outcome["can_execute"] is False
+
+
+def test_rank_field_with_invalid_previous_type_is_corrected_and_audited():
+    value = _outcome(rank_eligible="True")
+    runtime._apply_card_admission(_row(), value)
+    assert value["rank_eligible"] is True
+    assert value["rank_eligibility_transition"] == "INVALID_PREVIOUS_RANK_TYPE_CORRECTED"
     assert value["can_execute"] is False
 
 
@@ -139,6 +161,27 @@ def test_missing_nfl_fitted_rank_flag_does_not_default_to_eligible():
     assert result["rank_eligible"] is False
     assert result["card_admission_eligible"] is False
     assert result["can_execute"] is False
+
+
+def test_malformed_nfl_rank_type_fails_closed_with_explicit_diagnostic():
+    row = _row()
+    scored = {
+        "terminal_label": "FINAL_APPROVED",
+        "probability_publishable": True,
+        "rank_eligible": "True",
+        "selected_participant": "Home Team",
+        "calibrated_selection_probability": 0.63,
+        "rank_calibrated_lower_bound": 0.55,
+        "calibrated_home_upper_bound": 0.70,
+        "event_prediction_id": "00000000-0000-0000-0000-000000000099",
+        "can_execute": False,
+    }
+    outcome = runtime._completed_nfl(row, scored)
+    assert outcome["probability_rank_eligible"] is False
+    assert outcome["rank_eligibility_evidence_status"] == "INVALID_FITTED_FLAG_TYPE_FAIL_CLOSED"
+    runtime._apply_card_admission(row, outcome)
+    assert outcome["card_admission_eligible"] is False
+    assert outcome["can_execute"] is False
 
 
 def test_nfl_explicit_eligible_flag_does_not_authorize_market_card():
