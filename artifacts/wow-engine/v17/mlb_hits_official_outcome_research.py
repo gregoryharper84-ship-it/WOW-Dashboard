@@ -99,7 +99,11 @@ def official_date(value: Any) -> date:
 
 
 def integer(value: Any, code: str, *, positive: bool = False) -> int:
-    # Official numeric identifiers must be bounded before formatting into keys/URLs.\n    # A caller-supplied 5,000-digit Python int otherwise raises an untyped\n    # ValueError during str() conversion, escaping the research HOLD contract.\n    require(type(value) is int and\n            (0 < value <= (1 << 63) - 1 if positive else 0 <= value <= 100), code)
+    # Official numeric identifiers must be bounded before formatting into keys/URLs.
+    # A caller-supplied 5,000-digit Python int otherwise raises an untyped
+    # ValueError during str() conversion, escaping the research HOLD contract.
+    require(type(value) is int and
+            (0 < value <= (1 << 63) - 1 if positive else 0 <= value <= 100), code)
     return value
 
 
