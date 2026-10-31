@@ -615,6 +615,35 @@ def test_global_qa_and_release_defer_before_native_jobs_exist():
     assert m.pending_required_regressions(ev) == []
 
 
+def test_change_impact_native_workflow_startup_defers_without_qa_approval():
+    ev = evidence()
+    ev["check_runs"] = [
+        check for check in ev["check_runs"]
+        if check["name"] != m.CHANGE_IMPACT_CHECK
+    ]
+    change = _native_verify_run(
+        id=7003, workflow_id=m.NATIVE_CHANGE_IMPACT_WORKFLOW_ID,
+        path=m.NATIVE_CHANGE_IMPACT_WORKFLOW_PATH, jobs=[],
+    )
+    ev["native_workflow_runs"] = [change]
+    assert m.pending_required_regressions(ev) == [m.CHANGE_IMPACT_CHECK]
+    # A completed relevant job before aggregate publication still defers.
+    ev["native_workflow_runs"] = [{
+        **change, "jobs": [{"name": m.CHANGE_IMPACT_CHECK, "status": "completed"}],
+    }]
+    assert m.pending_required_regressions(ev) == [m.CHANGE_IMPACT_CHECK]
+    assert f"QA_EVIDENCE_MISSING:{m.CHANGE_IMPACT_CHECK}" in m.qa_findings(ev)
+    # A completed, stale or forged workflow cannot hold the gate open.
+    for different in (
+        {**change, "status": "completed"},
+        {**change, "path": ".github/workflows/other.yml"},
+        {**change, "head_sha": OLD},
+        {**change, "jobs": [{"name": "unrelated", "status": "in_progress"}]},
+    ):
+        ev["native_workflow_runs"] = [different]
+        assert m.pending_required_regressions(ev) == []
+
+
 def test_governed_native_workflow_pending_only_with_trusted_exact_identity():
     ev = evidence()
     ev["check_runs"] = [
