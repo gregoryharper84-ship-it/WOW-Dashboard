@@ -231,7 +231,8 @@ def create_run(
             req.candidate_inputs, ensure_ascii=False, allow_nan=False,
             separators=(",", ":"),
         ).encode("utf-8"))
-    except (TypeError, ValueError, OverflowError, RecursionError):
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError):
+        # Ill-formed Unicode must fail closed before Redis, DB, or Celery.
         candidate_bytes = MAX_RUN_CANDIDATE_JSON_BYTES + 1
     if candidate_bytes > MAX_RUN_CANDIDATE_JSON_BYTES:
         raise HTTPException(
