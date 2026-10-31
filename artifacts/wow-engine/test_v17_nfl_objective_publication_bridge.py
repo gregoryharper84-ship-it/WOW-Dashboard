@@ -73,6 +73,7 @@ def test_nfl_objective_dispatch_calls_governed_publication(monkeypatch):
             "score_snapshot_id": "00000000-0000-0000-0000-000000000001",
             "event_prediction_id": "00000000-0000-0000-0000-000000000002",
             "probability_publishable": True,
+            "rank_eligible": True,
             "can_execute": False,
         }
 
@@ -127,6 +128,8 @@ def test_nfl_objective_dispatch_calls_governed_publication(monkeypatch):
     assert row["calibrated_lower_bound"] == 0.556
     assert row["calibrated_upper_bound"] == 0.668
     assert row["probability_publishable"] is True
+    assert row["rank_eligible"] is True
+    assert row["card_admission_eligible"] is True
     assert row["can_execute"] is False
 
     assert len(calls) == 1
@@ -169,3 +172,57 @@ def test_nfl_governance_hold_does_not_publish():
     assert result["terminal_status"] == "HELD"
     assert result["probability_publishable"] is False
     assert result["can_execute"] is False
+
+
+def _nfl_governed_row(objective="OUTRIGHT_WIN_PROBABILITY"):
+    return request_runtime.TeamEventRequestRow(
+        research_run_id="nfl-rank-contract",
+        objective_lane=objective,
+        sport="NFL", league="NFL", event_key="NFL:2026_01_DAL_NYG",
+        event_state="PREGAME", event_date="2026-09-13",
+        timezone="America/Chicago", price_required_for_objective=(objective != "OUTRIGHT_WIN_PROBABILITY"),
+        event_start_time_utc="2026-09-14T00:20:00Z", home_team="NYG", away_team="DAL",
+    )
+
+
+def _nfl_governed_scored():
+    return {
+        "code": "GOVERNED_PROBABILITY_PUBLISHED",
+        "terminal_label": "FINAL_APPROVED",
+        "selected_participant": "DAL",
+        "calibrated_selection_probability": 0.612,
+        "rank_calibrated_lower_bound": 0.556,
+        "calibrated_away_upper_bound": 0.668,
+        "event_prediction_id": "00000000-0000-4000-8000-000000000002",
+        "probability_publishable": True,
+        "rank_eligible": True,
+        "can_execute": False,
+    }
+
+
+def test_nfl_absent_rank_flag_never_defaults_to_eligible():
+    row = _nfl_governed_row()
+    scored = _nfl_governed_scored()
+    del scored["rank_eligible"]
+    outcome = request_runtime._completed_nfl(row, scored)
+    request_runtime._apply_card_admission(row, outcome)
+    assert outcome["terminal_status"] == "COMPLETED"
+    assert outcome["rank_eligible"] is False
+    assert outcome["probability_rank_eligible"] is False
+    assert outcome["objective_rank_eligible"] is False
+    assert outcome["card_admission_eligible"] is False
+    assert "CARD_ADMISSION:RANK_INELIGIBLE" in outcome["card_admission_blockers"]
+    assert outcome["can_execute"] is False
+
+
+def test_nfl_market_edge_hold_preserves_authorized_sporting_rank():
+    row = _nfl_governed_row("MARKET_EDGE")
+    outcome = request_runtime._completed_nfl(row, _nfl_governed_scored())
+    request_runtime._apply_card_admission(row, outcome)
+    assert outcome["rank_eligible"] is True
+    assert outcome["probability_rank_eligible"] is True
+    assert outcome["objective_rank_eligible"] is False
+    assert outcome["card_admission_eligible"] is False
+    assert outcome["card_admission_receipt"]["rank_eligible"] is True
+    assert outcome["card_admission_receipt"]["objective_rank_eligible"] is False
+    assert outcome["can_execute"] is False
