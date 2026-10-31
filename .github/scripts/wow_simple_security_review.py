@@ -277,7 +277,9 @@ def capture(pr_number, expected_sha, token):
     for file in files:
         if not isinstance(file, dict) or not isinstance(file.get("patch"), str) or not file["patch"]:
             raise Hold("DIFF_PATCH_MISSING")
-        if not isinstance(file.get("filename"), str) or not isinstance(file.get("sha"), str):
+        if (not isinstance(file.get("filename"), str)
+                or not isinstance(file.get("sha"), str)
+                or re.fullmatch(r"[0-9a-f]{40}", file["sha"]) is None):
             raise Hold("DIFF_FILE_IDENTITY_INVALID")
         added, deleted = file.get("additions"), file.get("deletions")
         if (type(added) is not int or type(deleted) is not int
@@ -475,6 +477,13 @@ def semantic_review(target, credentials, invoke=call_provider):
     changed = target.get("file_blobs")
     if type(changed) is not dict or not changed:
         raise Hold("SEMANTIC_FINDINGS_INVALID:FILE_INVENTORY_MISSING")
+    # The caller is trusted capture() using exact-PR GitHub files and a
+    # post-capture head readback. Still reject malformed blob identities in
+    # this reusable entrypoint before any source reaches a review provider.
+    if any(type(name) is not str or not name or type(blob) is not str
+           or re.fullmatch(r"[0-9a-f]{40}", blob) is None
+           for name, blob in changed.items()):
+        raise Hold("DIFF_FILE_IDENTITY_INVALID")
     prompt = prompt_for(target)
     attempts = []
     for provider in PROVIDERS:
