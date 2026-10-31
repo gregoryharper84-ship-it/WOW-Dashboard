@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -111,11 +112,20 @@ def test_producer_posts_scoped_token_and_reconciles_202_run_receipt():
         "ok": True, "run_id": RUN_ID, "status": "DISCOVERY_QUEUED",
         "reused": False, "can_execute": False,
     }).encode()
-    with patch("urllib.request.urlopen", return_value=Response(body)) as network:
-        receipt = admit_cycle(now=NOW, origin="https://wow.example", runtime_key="x" * 40)
-    request = network.call_args.args[0]
+    auth_reject = urllib.error.HTTPError("https://wow-governed-probability-engine.onrender.com/wow/runs",
+                                         401, "Unauthorized", {}, None)
+    with patch("urllib.request.urlopen", side_effect=[auth_reject, Response(body)]) as network:
+        receipt = admit_cycle(
+            now=NOW, origin="https://wow-governed-probability-engine.onrender.com",
+            runtime_key="x" * 40,
+        )
+    assert network.call_count == 2
+    probe_request = network.call_args_list[0].args[0]
+    assert probe_request.get_header("Authorization") is None
+    assert json.loads(probe_request.data)["can_execute"] is True
+    request = network.call_args_list[1].args[0]
     assert request.get_method() == "POST"
-    assert request.full_url == "https://wow.example/wow/runs"
+    assert request.full_url == "https://wow-governed-probability-engine.onrender.com/wow/runs"
     assert request.get_header("Idempotency-key") == "wow-agent-prod-2026103113"
     assert request.get_header("Authorization") == "Bearer " + "x" * 40
     posted = json.loads(request.data)
@@ -129,6 +139,29 @@ def test_producer_cannot_treat_an_untrusted_response_as_admission():
     bad = json.dumps({
         "ok": True, "run_id": RUN_ID, "can_execute": True,
     }).encode()
-    with patch("urllib.request.urlopen", return_value=Response(bad)):
+    auth_reject = urllib.error.HTTPError("https://wow-governed-probability-engine.onrender.com/wow/runs",
+                                         401, "Unauthorized", {}, None)
+    with patch("urllib.request.urlopen", side_effect=[auth_reject, Response(bad)]):
         with pytest.raises(RuntimeError, match="PRODUCER_RUN_RECEIPT_INVALID"):
-            admit_cycle(now=NOW, origin="https://wow.example", runtime_key="x" * 40)
+            admit_cycle(now=NOW, origin="https://wow-governed-probability-engine.onrender.com",
+                        runtime_key="x" * 40)
+
+
+def test_old_unsecured_runtime_422_fails_closed_before_real_post():
+    old_response = urllib.error.HTTPError(
+        "https://wow-governed-probability-engine.onrender.com/wow/runs",
+        422, "EXECUTION_PROHIBITED", {}, None,
+    )
+    with patch("urllib.request.urlopen", side_effect=old_response) as network:
+        with pytest.raises(RuntimeError, match="PRODUCER_AUTH_PRECONDITION_NOT_DEPLOYED"):
+            admit_cycle(now=NOW, origin="https://wow-governed-probability-engine.onrender.com",
+                        runtime_key="x" * 40)
+        network.assert_called_once()
+
+
+def test_producer_origin_cannot_be_redirected_to_attacker_host():
+    with patch("urllib.request.urlopen") as network:
+        with pytest.raises(ValueError, match="PRODUCER_ORIGIN_NOT_APPROVED"):
+            admit_cycle(now=NOW, origin="https://wow.example",
+                        runtime_key="x" * 40)
+        network.assert_not_called()
