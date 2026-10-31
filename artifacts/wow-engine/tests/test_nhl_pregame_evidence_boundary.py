@@ -13,6 +13,7 @@ def valid():
         goalie_status="CONFIRMED", goalie_status_observed_at=NOW.isoformat(),
         goalie_identity_snapshot_id="starter-source-1", source_snapshot_id="source-1",
         settlement_basis=FULL_GAME_SETTLEMENT,
+        home_elo=1510.0, away_elo=1490.0,
         home_goalie_sv_pct=.91, away_goalie_sv_pct=.92,
         home_pp_pct=.21, away_pk_pct=.80,
     )
