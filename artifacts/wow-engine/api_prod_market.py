@@ -251,10 +251,19 @@ def _market_lane(row: Any) -> dict[str, Any]:
 
 
 def _money_lane(row: Any) -> dict[str, Any]:
-    status = getattr(row, "money_lane_status", None) or "PAYOUT_UNRESOLVED"
+    """Caller/model status is not payout authority.
+
+    Without a validated server-owned, immutable payout quote and contract,
+    MONEY remains HOLD. A future positive path requires an independently
+    reviewed receipt keyed to exact event, player, line, side, book, price,
+    observation time and payout terms, with replay protection. This guard does
+    not claim that such a source is present or certified.
+    """
     return {
-        "status": "PASS" if status == "RESOLVED" else "HOLD",
-        "money_lane_status": status,
+        "status": "HOLD",
+        "money_lane_status": "PAYOUT_UNRESOLVED",
+        "money_authority": "UNVERIFIED",
+        "money_transition": "SERVER_RECEIPT_REQUIRED",
         "blocks_model_probability": False,
         "can_execute": False,
     }
@@ -900,7 +909,8 @@ def score_prop(
                 source_snapshot_id=effective_snapshot_id,
                 features=_model_features(evidence),
                 seed=req.seed,
-                money_lane_status=req.money_lane_status,
+                # Caller status cannot enter immutable model/money persistence.
+                money_lane_status="PAYOUT_UNRESOLVED",
                 market_side_a=market_audit.side_a,
                 market_side_b=market_audit.side_b,
             )
