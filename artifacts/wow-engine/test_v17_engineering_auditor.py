@@ -502,6 +502,7 @@ def test_failed_code_health_persists_packet_in_finding_and_existing_backlog():
         def __init__(self):
             self.rows = {}
             self.writes = []
+            self.fail_on_table = None
 
         def table(self, name):
             return FakeTable(self, name)
@@ -531,6 +532,8 @@ def test_failed_code_health_persists_packet_in_finding_and_existing_backlog():
         def execute(self):
             if self.payload is None:
                 return SimpleNamespace(data=[])
+            if self.name == self.db.fail_on_table:
+                raise RuntimeError("DB_WRITE_REJECTED")
             self.db.writes.append((self.name, dict(self.payload)))
             return SimpleNamespace(data=[dict(self.payload)])
 
@@ -559,3 +562,32 @@ def test_failed_code_health_persists_packet_in_finding_and_existing_backlog():
     assert retained["blocker_context"] == packet
     assert retained["blocker_context"]["dispatch_authorized"] is False
     assert any(name == "wow_engineering_auditor_runtime" for name, _ in db.writes)
+
+    # Existing backlog write must fail closed rather than claim persistence.
+    failing_db = FakeDB()
+    failing_db.fail_on_table = "wow_engineering_backlog"
+    with pytest.raises(RuntimeError, match="DB_WRITE_REJECTED"):
+        EngineeringAuditStore(failing_db).ingest_event(event, now=datetime(
+            2026, 10, 31, 22, 0, tzinfo=timezone.utc
+        ))
+    assert not any(name == "wow_engineering_backlog" for name, _ in failing_db.writes)
+
+    # Untrusted payload never reaches either persisted evidence surface.
+    hostile_db = FakeDB()
+    hostile_event = AuditEvent(
+        event_name="github_actions_reconcile", action="completed",
+        repository="gregoryharper84-ship-it/WOW-Dashboard",
+        source_kind="CODE_HEALTH_RUN", source_ref="41247454668",
+        title="untrusted", state="COMPLETED", head_sha="A" * 40,
+        conclusion="failure",
+        details={"check_name": "secret://LEAK", "stderr": "PRIVATE_TOKEN=hidden",
+                 "env": {"DB_PASSWORD": "never-copy"}, "html_url": "https://example.com/?key=hidden"},
+    )
+    hostile_finding = EngineeringAuditStore(hostile_db).ingest_event(hostile_event)
+    evidence_text = json.dumps(hostile_finding["evidence"])
+    backlog_text = next(payload["evidence_notes"] for name, payload in hostile_db.writes
+                        if name == "wow_engineering_backlog")
+    assert hostile_finding["evidence"]["head_sha"] == "a" * 40
+    for secret in ("PRIVATE_TOKEN", "DB_PASSWORD", "never-copy", "secret://LEAK", "example.com"):
+        assert secret not in evidence_text
+        assert secret not in backlog_text
