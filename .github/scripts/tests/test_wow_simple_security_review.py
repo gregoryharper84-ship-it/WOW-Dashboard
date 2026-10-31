@@ -467,6 +467,30 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                         m.call_provider("gemini-generative-api", "test", "diff")
                 self.assertEqual(request.call_count, 1)
 
+    def test_deeply_nested_gemini_json_fails_with_attributed_typed_hold(self):
+        # 3 KB of deeply nested JSON is still below request_json's 250 KB
+        # byte budget but json.loads raises RecursionError. Never leak an
+        # uncaught provider exception or automatically switch reviewers.
+        nested = "[" * 1500 + "0" + "]" * 1500
+        response = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": nested}]}}]}
+        with patch.object(m, "request_json", return_value=response) as req:
+            with self.assertRaisesRegex(m.Hold, "SEMANTIC_RESPONSE_NOT_JSON"):
+                m.call_provider("gemini-generative-api", "private", "untrusted")
+        self.assertEqual(req.call_count, 1)
+        # Once attributed by the global review entrypoint, the same malformed
+        # provider output cannot fall through to a fake semantic PASS.
+        target = {"pr": 2326, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64, "diff": "safe diff",
+                  "file_blobs": {"src.py": "d" * 40}}
+        with patch.object(m, "request_json", return_value=response) as req:
+            with self.assertRaisesRegex(m.Hold, "SEMANTIC_RESPONSE_NOT_JSON") as err:
+                m.semantic_review(target, {"gemini-generative-api": "private"},
+                                  invoke=m.call_provider)
+        self.assertEqual(err.exception.attempts[-1], {
+            "provider": "gemini-generative-api", "result": "SEMANTIC_RESPONSE_NOT_JSON"})
+        self.assertEqual(req.call_count, 1)
+
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
               "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
