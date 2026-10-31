@@ -223,6 +223,26 @@ def test_provider_quota_recovery_can_reenter_without_ci_state_change():
     assert not later.dispatch_authorized
 
 
+def test_release_provider_recovery_reenters_without_new_ci_or_qa_transition():
+    ready = decision()
+    for state in ("quota_exceeded", "timeout"):
+        blocked = advise_reentry(
+            previous=ready, current=ready, role="release", active_lease=False,
+            provider_state=state, qa_receipt_verified=True,
+            previous_qa_receipt_verified=True,
+        )
+        assert blocked.state == "WAIT"
+        recovered = advise_reentry(
+            previous=ready, current=ready, role="release", active_lease=False,
+            previous_provider_state=state, provider_state="available",
+            qa_receipt_verified=True, previous_qa_receipt_verified=True,
+        )
+        assert recovered.state == "READY_FOR_EXTERNAL_DISPATCH"
+        assert recovered.lease_key.endswith(":release")
+        assert not recovered.dispatch_authorized
+        assert not recovered.can_publish_check
+
+
 def test_qa_artifact_arrival_can_reenter_release_after_ci_already_ready():
     ready = decision()
     before = advise_reentry(previous=ready, current=ready, role="release",
