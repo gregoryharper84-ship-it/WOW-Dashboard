@@ -517,10 +517,15 @@ def test_forged_money_resolved_is_not_persisted_or_approved(monkeypatch):
 
     _install_common(monkeypatch, fake_score)
     payload = _request_payload()
-    payload["money_lane_status"] = "RESOLVED"
+    # Exercise the actual serialized HTTP response, not only str(dict).
+    # Caller-controlled status must not leak a credential-shaped payload.
+    attack = "RESOLVED\nBearer TEST_PRIVATE_VALUE\t<script>bad()</script>"
+    payload["money_lane_status"] = attack
     response = client.post("/score-prop", json=payload, headers=AUTH)
 
     assert response.status_code == 200
+    assert attack not in response.text
+    assert "TEST_PRIVATE_VALUE" not in response.text
     body = response.json()
     assert recorded["money_lane_status"] == "PAYOUT_UNRESOLVED"
     assert body["objective_lanes"]["MONEY"]["status"] == "HOLD"
@@ -599,10 +604,17 @@ def test_money_status_unicode_and_newline_variants_never_resolve():
         assert money["can_execute"] is False
 
 
-def test_unauthenticated_score_prop_denied_before_money_lane():
-    """Real HTTP request must fail authenticated route entry, not just a stub."""
+def test_unauthenticated_score_prop_denied_before_money_lane(monkeypatch):
+    """Exact 401 before capability, database or model access, not just a stub."""
+    def forbidden_backend(*_args, **_kwargs):
+        raise AssertionError("unauthenticated request reached backend")
+
+    monkeypatch.setattr(api_prod_market.prod, "_runtime_capability", forbidden_backend)
+    monkeypatch.setattr(api_prod_market.prod, "get_client", forbidden_backend)
+    monkeypatch.setattr(api_prod_market, "score_discrete_prop_end_to_end", forbidden_backend)
     payload = _request_payload()
     payload["money_lane_status"] = "RESOLVED"
     response = client.post("/score-prop", json=payload)
-    assert response.status_code in (401, 403)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing or malformed Authorization header."
 
