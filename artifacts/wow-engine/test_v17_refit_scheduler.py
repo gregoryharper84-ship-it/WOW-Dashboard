@@ -107,3 +107,27 @@ def test_proposal_safety_flags_are_mandatory():
     p = proposal()
     p["automatic_promotion"] = True
     assert_code("REFIT_PROPOSAL_SAFETY_INVALID", lambda: build_recalibration_candidate(p, rows()))
+
+
+def test_candidate_identity_changes_when_chronological_split_settings_change():
+    frozen = rows(160)
+    base = build_recalibration_candidate(proposal(), frozen, min_diagnostic_events=30)
+    altered = build_recalibration_candidate(proposal(), frozen, min_diagnostic_events=60)
+    assert base["source_snapshot_sha256"] == altered["source_snapshot_sha256"]
+    assert base["proposal_id"] == altered["proposal_id"]
+    assert base["candidate_id"] != altered["candidate_id"]
+    assert base["split_config"]["effective_diagnostic_events"] == 40
+    assert altered["split_config"]["effective_diagnostic_events"] == 60
+    assert base["fit_event_n"] != altered["fit_event_n"]
+    assert base["diagnostic_event_n"] != altered["diagnostic_event_n"]
+    assert base["diagnostic_begin_utc"] != altered["diagnostic_begin_utc"]
+    assert base["can_execute"] is altered["can_execute"] is False
+
+
+def test_candidate_identity_records_fit_floor_even_if_partition_unchanged():
+    frozen = rows(160)
+    base = build_recalibration_candidate(proposal(), frozen, min_fit_events=50)
+    altered = build_recalibration_candidate(proposal(), frozen, min_fit_events=70)
+    assert base["fit_event_n"] == altered["fit_event_n"]
+    assert base["candidate_id"] != altered["candidate_id"]
+    assert altered["split_config"]["min_fit_events"] == 70
