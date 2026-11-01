@@ -42,6 +42,22 @@ def pr():
     }
 
 
+def verify_draft(packet_data, snapshot, files, *, repository, current_main_sha):
+    """Existing test vectors become complete GitHub-style file records.
+
+    Production requires structured status and previous_filename provenance;
+    the helper is test-only and cannot validate a filename-only API response.
+    """
+    structured = [
+        {"filename": item, "status": "modified"} if isinstance(item, str) else item
+        for item in files
+    ] if isinstance(files, list) else files
+    return contract.verify_draft_pr(
+        packet_data, snapshot, structured,
+        repository=repository, current_main_sha=current_main_sha,
+    )
+
+
 class HandoffContractTests(unittest.TestCase):
     def check(self, item, expected="HOLD", sha=MAIN):
         actual = contract.validate_handoff(item, repository=REPO, current_main_sha=sha)
@@ -135,7 +151,7 @@ class HandoffContractTests(unittest.TestCase):
         self.assertIn("REPOSITORY_MISMATCH", self.check(data)["reasons"])
 
     def test_no_code_pr_is_not_verified_closure(self):
-        result = contract.verify_draft_pr(packet(), pr(),
+        result = verify_draft(packet(), pr(),
             ["artifacts/wow-engine/test_v17_copilot_issue_pilot.py"],
             repository=REPO, current_main_sha=MAIN)
         self.assertEqual("PR_CREATED_UNVERIFIED", result["decision"])
@@ -145,7 +161,7 @@ class HandoffContractTests(unittest.TestCase):
     def test_wrong_pr_author_does_not_spoof_copilot(self):
         snapshot = pr()
         snapshot["user"]["login"] = "gregoryharper84-ship-it"
-        result = contract.verify_draft_pr(packet(), snapshot, packet()["allowed_paths"],
+        result = verify_draft(packet(), snapshot, packet()["allowed_paths"],
                                            repository=REPO, current_main_sha=MAIN)
         self.assertIn("PR_AUTHOR_NOT_COPILOT", result["reasons"])
 
@@ -154,7 +170,7 @@ class HandoffContractTests(unittest.TestCase):
             snapshot = pr()
             snapshot["user"]["login"] = login
             with self.subTest(login=login):
-                result = contract.verify_draft_pr(
+                result = verify_draft(
                     packet(), snapshot, packet()["allowed_paths"],
                     repository=REPO, current_main_sha=MAIN)
                 self.assertEqual("HOLD", result["decision"])
@@ -165,21 +181,21 @@ class HandoffContractTests(unittest.TestCase):
             snapshot = pr()
             snapshot["base"][key] = value
             with self.subTest(key=key):
-                result = contract.verify_draft_pr(packet(), snapshot, packet()["allowed_paths"],
+                result = verify_draft(packet(), snapshot, packet()["allowed_paths"],
                                                    repository=REPO, current_main_sha=MAIN)
                 self.assertIn("PR_BASE_SHA_UNBOUND", result["reasons"])
 
     def test_expanded_pr_scope_rejected(self):
         for changes in ([], [".github/workflows/unsafe.yml"],
                         packet()["allowed_paths"] + ["README.md"]):
-            result = contract.verify_draft_pr(packet(), pr(), changes,
+            result = verify_draft(packet(), pr(), changes,
                                                repository=REPO, current_main_sha=MAIN)
             self.assertEqual("HOLD", result["decision"])
 
     def test_pr_without_issue_binding_rejected(self):
         snapshot = pr()
         snapshot["body"] = "No original incident link"
-        result = contract.verify_draft_pr(packet(), snapshot, packet()["allowed_paths"],
+        result = verify_draft(packet(), snapshot, packet()["allowed_paths"],
                                            repository=REPO, current_main_sha=MAIN)
         self.assertIn("PR_INCIDENT_LINK_MISSING", result["reasons"])
 
@@ -234,7 +250,7 @@ class HandoffContractTests(unittest.TestCase):
             else:
                 snapshot["base"]["repo"] = repo_binding
             with self.subTest(binding=repo_binding):
-                result = contract.verify_draft_pr(
+                result = verify_draft(
                     packet(), snapshot, packet()["allowed_paths"],
                     repository=REPO, current_main_sha=MAIN)
                 self.assertIn("PR_BASE_REPOSITORY_MISMATCH", result["reasons"])
@@ -256,7 +272,7 @@ class HandoffContractTests(unittest.TestCase):
             snapshot = pr()
             snapshot["body"] = "Fixes " + link
             with self.subTest(valid=link):
-                result = contract.verify_draft_pr(
+                result = verify_draft(
                     packet(), snapshot, packet()["allowed_paths"],
                     repository=REPO, current_main_sha=MAIN)
                 self.assertEqual("PR_CREATED_UNVERIFIED", result["decision"])
@@ -264,7 +280,7 @@ class HandoffContractTests(unittest.TestCase):
             snapshot = pr()
             snapshot["body"] = "Fixes " + link
             with self.subTest(invalid=link):
-                result = contract.verify_draft_pr(
+                result = verify_draft(
                     packet(), snapshot, packet()["allowed_paths"],
                     repository=REPO, current_main_sha=MAIN)
                 self.assertIn("PR_INCIDENT_LINK_MISSING", result["reasons"])
@@ -278,7 +294,7 @@ class HandoffContractTests(unittest.TestCase):
             snapshot = pr()
             snapshot["changed_files"] = count
             with self.subTest(count=count, files=files):
-                result = contract.verify_draft_pr(
+                result = verify_draft(
                     packet(), snapshot, files,
                     repository=REPO, current_main_sha=MAIN)
                 self.assertEqual("HOLD", result["decision"])
@@ -286,7 +302,7 @@ class HandoffContractTests(unittest.TestCase):
     def test_missing_changed_file_inventory_count(self):
         snapshot = pr()
         snapshot.pop("changed_files")
-        result = contract.verify_draft_pr(
+        result = verify_draft(
             packet(), snapshot, packet()["allowed_paths"],
             repository=REPO, current_main_sha=MAIN)
         self.assertIn("PR_CHANGED_FILE_COUNT_INVALID", result["reasons"])
@@ -294,7 +310,7 @@ class HandoffContractTests(unittest.TestCase):
     def test_non_mapping_snapshot_is_hold(self):
         for snapshot in (None, [], "invalid"):
             with self.subTest(snapshot=snapshot):
-                result = contract.verify_draft_pr(
+                result = verify_draft(
                     packet(), snapshot, packet()["allowed_paths"],
                     repository=REPO, current_main_sha=MAIN)
                 self.assertEqual("HOLD", result["decision"])
@@ -302,9 +318,90 @@ class HandoffContractTests(unittest.TestCase):
     def test_non_draft_is_not_accepted(self):
         snapshot = pr()
         snapshot["draft"] = False
-        result = contract.verify_draft_pr(packet(), snapshot, packet()["allowed_paths"],
+        result = verify_draft(packet(), snapshot, packet()["allowed_paths"],
                                            repository=REPO, current_main_sha=MAIN)
         self.assertIn("PR_NOT_OPEN_DRAFT", result["reasons"])
+
+
+    def test_agent_instructions_and_codex_config_are_protected(self):
+        for path in ("AGENTS.md", "artifacts/wow-engine/AGENTS.md",
+                     "nested/AGENTS.md", ".codex/config.toml",
+                     ".codex/agents/repair.toml", "CLAUDE.md", "nested/CLAUDE.md"):
+            data = packet()
+            data["allowed_paths"] = [path]
+            with self.subTest(path=path):
+                self.assertIn(
+                    "PROTECTED_PATH_REQUIRES_GOVERNED_REVIEW",
+                    self.check(data)["reasons"],
+                )
+
+    def test_foreign_repo_incident_boundaries_cannot_spoof_local_issue(self):
+        for bogus in (
+            "other/repo-#1763",
+            "other/repo.#1763",
+            "prefix-" + REPO + "#1763",
+            "prefix." + REPO + "#1763",
+            "prefix-https://github.com/" + REPO + "/issues/1763",
+        ):
+            snapshot = pr()
+            snapshot["body"] = "See " + bogus
+            with self.subTest(bogus=bogus):
+                result = verify_draft(
+                    packet(), snapshot, packet()["allowed_paths"],
+                    repository=REPO, current_main_sha=MAIN,
+                )
+                self.assertIn("PR_INCIDENT_LINK_MISSING", result["reasons"])
+
+    def test_filename_only_inventory_is_not_complete_rename_evidence(self):
+        result = contract.verify_draft_pr(
+            packet(), pr(), packet()["allowed_paths"],
+            repository=REPO, current_main_sha=MAIN,
+        )
+        self.assertEqual("HOLD", result["decision"])
+        self.assertIn("PR_FILE_INVENTORY_UNSTRUCTURED", result["reasons"])
+
+    def test_protected_rename_origin_cannot_hide_behind_allowed_destination(self):
+        dest = packet()["allowed_paths"][0]
+        for record in (
+            {"filename": dest, "status": "renamed",
+             "previous_filename": ".github/workflows/wow-verify.yml"},
+            {"filename": dest, "status": "copied",
+             "previous_filename": "AGENTS.md"},
+        ):
+            with self.subTest(record=record):
+                result = contract.verify_draft_pr(
+                    packet(), pr(), [record],
+                    repository=REPO, current_main_sha=MAIN,
+                )
+                self.assertEqual("HOLD", result["decision"])
+                self.assertIn("PR_SCOPE_VIOLATION", result["reasons"])
+
+    def test_missing_rename_or_copy_origin_fails_closed(self):
+        destination = packet()["allowed_paths"][0]
+        for status in ("renamed", "copied"):
+            for previous in (None, "", "../escape", destination):
+                record = {"filename": destination, "status": status}
+                if previous is not None:
+                    record["previous_filename"] = previous
+                with self.subTest(status=status, previous=previous):
+                    result = contract.verify_draft_pr(
+                        packet(), pr(), [record],
+                        repository=REPO, current_main_sha=MAIN,
+                    )
+                    self.assertIn("PR_RENAME_ORIGIN_UNVERIFIED", result["reasons"])
+
+    def test_allowed_rename_requires_both_endpoints_in_the_packet(self):
+        data = packet()
+        source = "artifacts/wow-engine/test_v17_copilot_origin.py"
+        data["allowed_paths"].append(source)
+        result = contract.verify_draft_pr(
+            data, pr(),
+            [{"filename": data["allowed_paths"][0], "status": "renamed",
+              "previous_filename": source}],
+            repository=REPO, current_main_sha=MAIN,
+        )
+        self.assertEqual("PR_CREATED_UNVERIFIED", result["decision"])
+
 
 
 if __name__ == "__main__":
