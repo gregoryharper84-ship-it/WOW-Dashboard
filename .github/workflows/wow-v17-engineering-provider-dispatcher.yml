@@ -189,17 +189,61 @@ jobs:
           # failures. They follow the same credit-aware admission as cron.
           secondary_usable() {
             { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; } || return 1
-            local recent conclusion
+            local recent conclusion run_id run_meta jobs
             if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
                 --workflow wow-v17-claude-engineering-worker.yml \
-                --status completed --limit 1 \
-                --json databaseId,conclusion 2>/dev/null); then
+                --branch main --status completed --limit 1 \
+                --json databaseId,conclusion 2>/dev/null) \
+                || ! jq -e 'type == "array" and length <= 1 and
+                    (length == 0 or ((.[0].databaseId | type) == "number"
+                    and .[0].databaseId > 0 and .[0].databaseId == (.[0].databaseId | floor)))' \
+                    <<<"$recent" >/dev/null 2>&1; then
               return 1
             fi
+            [ "$(jq 'length' <<<"$recent")" = "0" ] && return 0
             conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
-            # Account/structured-output failures require an explicit recovery
-            # probe, never hourly repetition. No prior run permits one probe.
-            [ "$conclusion" != "failure" ] && [ "$conclusion" != "cancelled" ]
+            case "$conclusion" in
+              success) return 0 ;;
+              failure)
+                # GitHub's native step outcomes distinguish a task-level
+                # refusal from a provider outage. No untrusted logs or worker
+                # artifacts can authorize a future provider admission.
+                [[ "${target_incident:-}" =~ ^[1-9][0-9]*$ ]] || return 1
+                run_id=$(jq -r '.[0].databaseId' <<<"$recent") || return 1
+                run_meta=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" 2>/dev/null) || return 1
+                jq -e --argjson id "$run_id" --arg repo "$GITHUB_REPOSITORY" '
+                  .id == $id and .repository.full_name == $repo
+                  and .path == ".github/workflows/wow-v17-claude-engineering-worker.yml"
+                  and .head_branch == "main" and .event == "workflow_dispatch"
+                  and .status == "completed" and .conclusion == "failure"
+                  and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
+                  and (.run_attempt | type == "number" and . > 0 and . == floor)
+                ' <<<"$run_meta" >/dev/null 2>&1 || return 1
+                jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" 2>/dev/null) || return 1
+                jq -e --argjson id "$run_id" '
+                  . as $root | .total_count == 1 and (.jobs | type == "array" and length == 1)
+                  and .jobs[0].run_id == $id
+                  and .jobs[0].name == "WOW V17 Claude fallback engineering team"
+                  and .jobs[0].status == "completed" and .jobs[0].conclusion == "failure"
+                  and (.jobs[0].steps | type == "array")
+                  and ([
+                    ["Verify Anthropic authentication", "success"],
+                    ["Engineering Lead agent", "success"],
+                    ["Research / Root-Cause Triage agent", "success"],
+                    ["Normalize Triage packet", "success"],
+                    ["Specialist diagnostic subagent", "success"],
+                    ["Normalize specialist packet", "success"],
+                    ["Implementation agent", "skipped"],
+                    ["Enforce mutation safety gate", "skipped"],
+                    ["Enforce actionable repair delivery", "failure"]
+                  ] | all(. as $expected |
+                    ([$root.jobs[0].steps[] | select(.name == $expected[0]
+                      and .status == "completed"
+                      and .conclusion == $expected[1])] | length) == 1))
+                ' <<<"$jobs" >/dev/null 2>&1
+                ;;
+              *) return 1 ;;
+            esac
           }
 
           gemini_child_held() {
