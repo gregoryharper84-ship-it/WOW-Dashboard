@@ -11,7 +11,7 @@ import numpy as np
 
 from nfl_event_features_p2 import FEATURE_ORDER, FEATURE_SCHEMA_VERSION
 from nfl_event_model_v17 import score_feature_row
-from test_v17_nfl_daily_stage_receipts import _fixture, _prove
+from test_v17_nfl_daily_stage_receipts import MODEL, _fixture, _prove
 
 
 def _scorer_output():
@@ -177,6 +177,7 @@ class _Query:
     def __init__(self, rows, *, filter_field=None):
         self.rows = rows
         self.filter_field = filter_field
+        self.window = None
 
     def select(self, *_a):
         return self
@@ -192,15 +193,39 @@ class _Query:
     def limit(self, *_a):
         return self
 
+    def range(self, first, last):
+        self.window = (first, last)
+        return self
+
     def execute(self):
-        return SimpleNamespace(data=self.rows)
+        data = self.rows
+        if self.window is not None:
+            first, last = self.window
+            data = data[first:last + 1]
+        return SimpleNamespace(data=data)
 
 
 class _CertifiedDb:
-    def __init__(self, approved, graded, status="PASS", grade_version=None, unique_games=None):
+    def __init__(self, approved, graded, status="PASS", grade_version=None,
+                 unique_games=None, overconfident=False, post_kickoff=False,
+                 certified=True, registry_version=None, registry_sha=None):
         self.model = {
             "active": True, "promoted": True,
+            "artifact_checksum": "a" * 64,
+            "model_artifact_version": "NFL_EVENT_LOGREG_PLATT_V1",
             "probability_publishable": approved,
+        }
+        self.registry = {
+            "ok": certified,
+            "certification_id": "certified-fixture-only" if certified else None,
+            "sport": "NFL", "league_scope": "NFL",
+            "model_version": registry_version or "NFL_EVENT_LOGREG_PLATT_V1",
+            "artifact_id": MODEL,
+            "artifact_sha256": registry_sha or "a" * 64,
+            "certification_status": "CERTIFIED" if certified else "REVOKED",
+            "independent_verification_status": "PASS" if certified else "FAIL",
+            "probability_publishable": certified,
+            "can_execute": False,
         }
         self.health = {
             "graded_n": graded, "minimum_forward_required": 100,
@@ -213,9 +238,23 @@ class _CertifiedDb:
             {
                 "official_event_id": f"nfl-game-{i}",
                 "model_version": grade_version or "NFL_EVENT_LOGREG_PLATT_V1",
+                "event_start_time_utc": "2026-10-01T00:00:00+00:00",
+                "prediction_created_at": (
+                    "2026-10-01T00:00:00+00:00" if (post_kickoff and i == 0)
+                    else "2026-09-30T00:00:00+00:00"
+                ),
+                "calibrated_probability": 0.8 if overconfident else 0.7,
+                "calibrated_lower_bound": 0.75 if overconfident else 0.6,
+                "outcome": 0 if overconfident else int(i % 10 < 7),
+                "can_execute": False,
             }
             for i in range(count)
         ]
+
+    def rpc(self, name, params):
+        assert name == "wow_v17_active_team_event_certification"
+        assert params == {"p_sport": "NFL", "p_league_scope": "NFL"}
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=self.registry))
 
     def table(self, name):
         if name == "wow_nfl_event_fitted_model_artifacts":
@@ -231,17 +270,60 @@ def test_forward_cohort_and_explicit_champion_authorization_are_both_required():
     from v17.nfl_daily_stage_receipts import _forward_certification_proven
 
     _, row, _ = _bound_evidence()
-    # Honest 53/100 forward cohort cannot become certified by setting a flag.
     assert _forward_certification_proven(_CertifiedDb(True, 53), row) is False
-    # Even a fully graded healthy cohort cannot silently promote a champion.
     assert _forward_certification_proven(_CertifiedDb(False, 100), row) is False
     assert _forward_certification_proven(_CertifiedDb(True, 100, "FAIL"), row) is False
     assert _forward_certification_proven(_CertifiedDb(True, 100), row) is True
-    # Never borrow a global PASS from another fitted model's settled events.
     assert _forward_certification_proven(
         _CertifiedDb(True, 100, grade_version="NFL_OTHER_MODEL_VERSION"), row
     ) is False
-    # A cohort can report 100 yet have too few distinct exact-version grades.
     assert _forward_certification_proven(
         _CertifiedDb(True, 100, unique_games=53), row
+    ) is False
+
+
+def test_global_health_pass_cannot_certify_poor_exact_version():
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+
+    _, row, _ = _bound_evidence()
+    # Global snapshot says PASS and has 100 rows, but this version is badly
+    # overconfident. Recompute actual exact-version metrics and reject.
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, overconfident=True), row
+    ) is False
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, post_kickoff=True), row
+    ) is False
+
+
+def test_exact_model_certification_requires_all_pages_not_first_hundred():
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+
+    _, row, _ = _bound_evidence()
+    assert _forward_certification_proven(_CertifiedDb(True, 600), row) is True
+    db = _CertifiedDb(True, 600)
+    # A late page of poor grades must defeat an earlier good page.
+    for grade in db.grades[500:]:
+        grade["outcome"] = 0
+    assert _forward_certification_proven(db, row) is False
+
+
+def test_nfl_publication_requires_immutable_independent_certificate():
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+    _, row, _ = _bound_evidence()
+    # Even all 100 quality-passing authentic grades and a global PASS cannot
+    # substitute for the separate, nonowner, immutable fitted certification.
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, certified=False), row
+    ) is False
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, registry_version="NFL_DIFFERENT_MODEL"), row
+    ) is False
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, registry_sha="b" * 64), row
+    ) is False
+    # A record for this model and exact artifact remains only a necessary
+    # condition; the actual quality gates are separately recomputed.
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, overconfident=True), row
     ) is False

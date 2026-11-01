@@ -15,9 +15,9 @@ def test_refresh_rebuilds_only_requested_seasons_with_shared_builder():
     def builder(g, s):
         assert g is games and s == ["summ"]
         return [
-            {"game_id": "a", "season": 2025, "target_outcome": "HOME_WIN"},
-            {"game_id": "b", "season": 2026, "target_outcome": "AWAY_WIN"},
-            {"game_id": "c", "season": 2026, "target_outcome": None},
+            {"game_id": "a", "season": 2025, "gameday": "2025-11-02", "target_outcome": "HOME_WIN"},
+            {"game_id": "b", "season": 2026, "gameday": "2026-10-25", "target_outcome": "AWAY_WIN"},
+            {"game_id": "c", "season": 2026, "gameday": "2026-11-02", "target_outcome": None},
         ]
 
     def upsert(db, table, rows, conflict):
@@ -32,6 +32,7 @@ def test_refresh_rebuilds_only_requested_seasons_with_shared_builder():
     assert calls["summary"] == [2026]
     assert calls["upsert"] == ("wow_nfl_pregame_feature_rows", ["b", "c"], "game_id")
     assert out["feature_rows_built"] == 2 and out["feature_rows_labeled"] == 1
+    assert out["latest_labeled_gameday"] == "2026-10-25"
     assert out["can_execute"] is False
 
 
