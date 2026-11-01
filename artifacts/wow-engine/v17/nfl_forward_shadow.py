@@ -261,6 +261,22 @@ def calibration_health(
             "status": "INSUFFICIENT_FORWARD_EVIDENCE",
             "certification_recommendation": "DO_NOT_CERTIFY_YET",
             "blockers": [f"FORWARD_GRADED_N_0_LT_{int(min_forward)}"],
+            "provisional_quality_failures": [],
+            "research_diagnostic_only": True,
+        }
+
+    # An aggregate across multiple fitted model versions cannot certify any
+    # one of them. Preserve all grades but HOLD until same-version evidence is
+    # assessed separately; do not mix outcomes into a faux passing cohort.
+    versions = {str(row.model_version) for row in grades}
+    if len(versions) != 1 or not next(iter(versions)):
+        return {
+            **base,
+            "status": "MIXED_MODEL_VERSION_HOLD",
+            "certification_recommendation": "DO_NOT_CERTIFY_YET",
+            "blockers": ["FORWARD_MIXED_MODEL_VERSION_COHORT"],
+            "provisional_quality_failures": ["FORWARD_MIXED_MODEL_VERSION_COHORT"],
+            "research_diagnostic_only": True,
         }
 
     mean_p = sum(row.calibrated_probability for row in grades) / n
@@ -282,6 +298,19 @@ def calibration_health(
         "mean_calibrated_lower_bound": float(mean_lower),
         "lower_bound_reliability_gap": float(lower_gap),
     }
+    # Evaluate the real thresholds even below n=100, but keep these
+    # diagnostics non-authoritative; sample-size and terminal authority remain.
+    provisional: list[str] = []
+    if not brier < 0.25:
+        provisional.append("FORWARD_BRIER_NOT_BELOW_0_25")
+    if not log_loss < math.log(2):
+        provisional.append("FORWARD_LOG_LOSS_NOT_BELOW_LOG2")
+    if not ece <= 0.12:
+        provisional.append("FORWARD_ECE_ABOVE_0_12")
+    if not abs(bias) <= 0.08:
+        provisional.append("FORWARD_CALIBRATION_BIAS_ABOVE_0_08")
+    if lower_gap < -0.03:
+        provisional.append("FORWARD_LOWER_BOUND_RELIABILITY_FAILED")
     if n < int(min_forward):
         return {
             **base,
@@ -289,6 +318,8 @@ def calibration_health(
             "status": "INSUFFICIENT_FORWARD_EVIDENCE",
             "certification_recommendation": "DO_NOT_CERTIFY_YET",
             "blockers": [f"FORWARD_GRADED_N_{n}_LT_{int(min_forward)}"],
+            "provisional_quality_failures": provisional,
+            "research_diagnostic_only": True,
         }
 
     blockers: list[str] = []
@@ -309,6 +340,8 @@ def calibration_health(
     return {
         **base,
         **metrics,
+        "provisional_quality_failures": provisional,
+        "research_diagnostic_only": True,
         "status": "PASS" if not blockers else "FAIL",
         "certification_recommendation": (
             "FORWARD_EVIDENCE_PASS" if not blockers else "DO_NOT_CERTIFY_YET"
