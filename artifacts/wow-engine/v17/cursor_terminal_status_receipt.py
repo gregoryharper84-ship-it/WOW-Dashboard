@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,11 @@ CURSOR_API = "https://api.cursor.com/v1"
 GITHUB_API = "https://api.github.com"
 TERMINAL_RUN_STATES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
 PROTECTED_BRANCHES = frozenset({"main", "master"})
-# Merge time of the change that first required a recorded branch.
+# Legacy-reservation compatibility window (incident #2136, issue #1021).
+# #2343 merged at this instant and first required a recorded `branch`.
+# Reservation #6547956599 on #1138 predates it. The window is closed and
+# finite: no reservation created on or after this instant can use it, and the
+# legacy branch in _verified_reservation is the only code that reads it.
 BRANCH_REQUIREMENT_EFFECTIVE_UTC = "2026-11-01T01:44:02Z"
 MAX_NEGATIVE_INVENTORY_PAGES = 20
 INVENTORY_PAGE_SIZE = 100
@@ -43,6 +48,20 @@ class ReceiptBlocked(Exception):
     def __init__(self, code: str):
         self.code = code
         super().__init__(code)
+
+
+def _utc(value: object) -> datetime | None:
+    """Strictly parse a calendar-valid `YYYY-MM-DDTHH:MM:SSZ` UTC instant."""
+    if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+BRANCH_REQUIREMENT_EFFECTIVE = _utc(BRANCH_REQUIREMENT_EFFECTIVE_UTC)
 
 
 def api_json(url: str, *, token: str, basic: bool = False) -> dict | list:
@@ -157,15 +176,18 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
         if "branch" not in entry:
             # Immutable reservations written before the branch requirement
-            # never recorded one. Accept only a never-edited comment created
-            # before that requirement took effect; the branch is then
-            # recovered from the authenticated live source PR in
+            # never recorded one. The comment timestamps are only a first
+            # filter (GitHub sets them server-side, and only the verified
+            # github-actions bot may author the comment); eligibility is
+            # additionally bound below to the independently authenticated
+            # dispatcher workflow run that wrote the reservation. The branch
+            # is recovered from the authenticated live source PR in
             # _verify_dynamic_pr, never from caller input.
-            created, updated = comment.get("created_at"), comment.get("updated_at")
-            if (not isinstance(created, str) or not isinstance(updated, str)
-                    or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", created)
-                    or updated != created
-                    or created >= BRANCH_REQUIREMENT_EFFECTIVE_UTC):
+            created = _utc(comment.get("created_at"))
+            updated = _utc(comment.get("updated_at"))
+            if created is None or updated is None:
+                raise ReceiptBlocked("CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED")
+            if updated != created or created >= BRANCH_REQUIREMENT_EFFECTIVE:
                 raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
             legacy_branchless = True
         elif (not isinstance(branch, str) or not branch.strip()
@@ -217,6 +239,14 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or not isinstance(origin.get("head_repository"), dict)
             or origin["head_repository"].get("full_name") != REPOSITORY):
         raise ReceiptBlocked("CURSOR_RESERVATION_WORKFLOW_UNVERIFIED")
+    if legacy_branchless:
+        # Independent of the mutable comment: the authenticated dispatcher
+        # run that wrote this reservation must itself predate the window.
+        run_created = _utc(origin.get("created_at"))
+        if run_created is None:
+            raise ReceiptBlocked("CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED")
+        if run_created >= BRANCH_REQUIREMENT_EFFECTIVE:
+            raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
     return {
         "reservation_comment_id": comment_id,
         "reservation_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
@@ -249,7 +279,7 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
     live_ref = head.get("ref")
     if failed_launch:
         if (not isinstance(live_ref, str) or not live_ref.strip()
-                or live_ref in PROTECTED_BRANCHES):
+                or live_ref in PROTECTED_BRANCHES or live_ref == base.get("ref")):
             raise ReceiptBlocked("CURSOR_SOURCE_PR_IDENTITY_INVALID")
         if (target.get("reservation_branch") is not None
                 and target["reservation_branch"] != live_ref):
