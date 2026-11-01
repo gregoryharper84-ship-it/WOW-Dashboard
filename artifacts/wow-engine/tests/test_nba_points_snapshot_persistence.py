@@ -120,6 +120,7 @@ def test_same_id_changed_exact_line_is_not_updated():
     persist_validated_nba_points_snapshot(db, receipt, now=NOW)
     changed = deepcopy(receipt)
     changed["snapshot"]["line"] = 21.5
+    changed["snapshot"]["opportunity_ledger"]["literal_threshold"] = "21.5"
     fail("NBA_POINTS_IMMUTABLE_SNAPSHOT_CONFLICT", changed, db=db)
     assert db.write_count == 1
 
