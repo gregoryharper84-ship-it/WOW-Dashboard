@@ -127,8 +127,7 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
             quote_by_ticker[ticker] = quote
 
     rows: list[dict[str, Any]] = []
-    seen_targets: set[tuple[str, str, str, str]] = set()
-    residuals: list[float] = []
+    unique_target_residuals: dict[tuple[str, str, str], tuple[datetime, float]] = {}
     settled_count = 0
     newest_forecast_time = None
     for prediction in predictions:
@@ -162,15 +161,20 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
         ]
         if outcome:
             settled_count += 1
+        # One independent error per index location, observation hour and lead
+        # bucket, even across model versions or threshold siblings. Use the
+        # earliest decision timestamp, never a later best-looking revision.
         sample_key = (STATION, str(contract.get("observation_window") or ""),
-                      str(payload.get("lead_time_bucket") or ""), str(prediction.get("model_version") or ""))
-        if (outcome and sample_key not in seen_targets and forecast is not None and
-                actual is not None and _timestamp(decision_time) and
-                _timestamp(outcome.get("settled_at")) and
-                _timestamp(decision_time) < _timestamp(outcome.get("settled_at")) and
+                      str(payload.get("lead_time_bucket") or ""))
+        decision_stamp = _timestamp(decision_time)
+        settlement_stamp = _timestamp(outcome.get("settled_at"))
+        if (outcome and forecast is not None and actual is not None and
+                decision_stamp and settlement_stamp and
+                decision_stamp < settlement_stamp and
                 sample_key[1].startswith("POINT_IN_TIME:")):
-            residuals.append(forecast - actual)
-            seen_targets.add(sample_key)
+            earlier = unique_target_residuals.get(sample_key)
+            if earlier is None or decision_stamp < earlier[0]:
+                unique_target_residuals[sample_key] = (decision_stamp, forecast - actual)
 
         blockers = prediction.get("blockers")
         blockers = blockers if isinstance(blockers, list) else []
@@ -211,6 +215,7 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
             "can_execute": False,
         })
 
+    residuals = [value for _, value in unique_target_residuals.values()]
     sample_n = len(residuals)
     forecast_age = _age_minutes(newest_forecast_time, clock)
     return {
