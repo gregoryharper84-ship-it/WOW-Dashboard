@@ -42,6 +42,7 @@ MAX_RUN_METADATA_JSON_BYTES = 8192
 MAX_RUN_CANDIDATE_DEPTH = 12
 MAX_RUN_CANDIDATE_NODES = 4096
 MAX_RUN_ADMISSIONS_PER_MINUTE = 60
+MAX_IDEMPOTENT_RETRIES_PER_WINDOW = 5
 _SAFE_IDEMPOTENCY_KEY_RE = re.compile(r"\A[A-Za-z0-9._:-]+\Z")
 
 _REQUEST_HASH_FIELDS = (
@@ -105,16 +106,25 @@ def _admission_bucket_key() -> str:
 # This API does not identify multiple callers behind the same bearer; never
 # claim per-caller isolation. Do not distribute the bearer to unrelated tenants.
 # Redis restart/eviction resets this volatile window; it is not a durable quota.
-# One atomic Redis operation: use server time, enforce a rolling 60-second
-# window, and count a repeated (idempotency key, request hash) only once.
-# No payload, raw key or bearer is stored in Redis.
+# One atomic Redis operation: server time, 60 unique admissions per rolling
+# minute, and at most 5 same-key retries in that window. Retry accounting is
+# bounded and expired in lockstep with admitted ZSET members. A retry must
+# never provide an unlimited Redis/DB read path. No raw keys or payloads stored.
 _ADMISSION_LUA = """
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local window = tonumber(ARGV[2])
+local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now - window)
+if #expired > 0 then redis.call('HDEL', KEYS[2], unpack(expired)) end
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
-if redis.call('ZSCORE', KEYS[1], ARGV[3]) then return 2 end
+if redis.call('ZSCORE', KEYS[1], ARGV[3]) then
+    local retries = redis.call('HINCRBY', KEYS[2], ARGV[3], 1)
+    redis.call('PEXPIRE', KEYS[2], window * 2)
+    if retries > tonumber(ARGV[4]) then return 0 end
+    return 2
+end
 if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[1]) then return 0 end
+redis.call('HDEL', KEYS[2], ARGV[3])
 redis.call('ZADD', KEYS[1], now, ARGV[3])
 redis.call('PEXPIRE', KEYS[1], window * 2)
 return 1
@@ -142,8 +152,9 @@ def _check_admission_rate_limit(*, idempotency_key: str, request_hash: str) -> N
     member = hashlib.sha256((idempotency_key + "\x00" + request_hash).encode("utf-8")).hexdigest()
     try:
         allowed = _admission_redis(redis_url).eval(
-            _ADMISSION_LUA, 1, bucket_key,
+            _ADMISSION_LUA, 2, bucket_key, bucket_key + ":replays",
             MAX_RUN_ADMISSIONS_PER_MINUTE, _ADMISSION_WINDOW_MS, member,
+            MAX_IDEMPOTENT_RETRIES_PER_WINDOW,
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail={"code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False}) from exc
