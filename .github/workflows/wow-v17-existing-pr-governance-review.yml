@@ -303,20 +303,30 @@ jobs:
           # Parse exactly one Location, HTTPS only, without logging its signed
           # short-lived query string. This output stays in a shell variable.
           redirect_url=$(python - "$headers_tmp" <<'PY'
-          import ipaddress, pathlib, sys
+          import ipaddress, pathlib, re, sys
           from urllib.parse import urlsplit
           lines = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
           urls = [s.split(":", 1)[1].strip() for s in lines if s.lower().startswith("location:")]
           if len(urls) != 1:
               raise SystemExit("SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID")
+          # A signed URL is data, never shell syntax. Reject unencoded control
+          # or whitespace bytes even though the Bash argument is already quoted.
+          if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7f for ch in urls[0]):
+              raise SystemExit("SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID")
           u = urlsplit(urls[0])
+          host = (u.hostname or "").lower()
+          # GitHub Actions artifact downloads use GitHub or signed Azure
+          # productionresultssa storage; any other host fails closed.
+          allowed_host = (host == "objects.githubusercontent.com"
+              or bool(re.fullmatch(r"productionresultssa[0-9]+\.blob\.core\.windows\.net", host))
+              or host.endswith(".actions.githubusercontent.com"))
           try:
               ipaddress.ip_address(u.hostname or "")
           except ValueError:
               ip_host = False
           else:
               ip_host = True
-          if u.scheme != "https" or not u.hostname or ip_host or u.username or u.password or u.fragment or u.port not in (None, 443):
+          if u.scheme != "https" or not u.hostname or ip_host or u.username or u.password or u.fragment or u.port not in (None, 443) or not allowed_host:
               raise SystemExit("SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID")
           print(urls[0])
           PY
