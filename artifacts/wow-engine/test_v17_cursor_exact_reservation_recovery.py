@@ -560,3 +560,135 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     bad_comments[-1]["body"] = f"{release.RELEASE_MARKER}{FAILED_INCIDENT} -->\n" + json.dumps(bad_doc, sort_keys=True)
     with pytest.raises(ledger.ProviderUnavailable, match="REMOTE_RELEASE_RECEIPT_UNVERIFIED"):
         ledger.assert_no_remote_writer(bad_comments, get_run=lambda _: run())
+
+
+def test_auto_finalizer_resolves_exactly_one_immutable_failed_launch():
+    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments
+    fixture = FailedLaunchFixture()
+    no_hold = _FakeAPI(released_comments())
+    assert release.auto_failed_launch_target(no_hold) is None
+
+    api = _FakeAPI(released_comments() + [fixture.comment])
+    assert release.auto_failed_launch_target(api) == FAILED_CID
+    assert api.puts == 0
+    # A stale reservation cannot be read as already released.
+    with pytest.raises(ledger.ProviderUnavailable, match="REMOTE_WRITER_RECONCILIATION_REQUIRED"):
+        ledger.assert_no_remote_writer(api.comments, get_run=lambda _: {
+            "path": release.WORKFLOW, "event": "workflow_dispatch",
+            "head_branch": "main", "head_sha": "a" * 40,
+            "status": "completed", "conclusion": "success",
+            "run_attempt": 1, "repository": {"full_name": release.REPOSITORY},
+        })
+
+
+@pytest.mark.parametrize("change,code", [
+    ("other_hold", "REMOTE_AUTO_RELEASE_MULTIPLE_HELD_WRITERS"),
+    ("enqueued", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
+    ("wrong_author", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
+    ("wrong_issue", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
+    ("run_id", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
+    ("invalid_authority", "REMOTE_RESERVATION_INVALID"),
+])
+def test_auto_finalizer_never_guesses_or_accepts_incomplete_reservation(change, code):
+    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments
+    fixture = FailedLaunchFixture()
+    active = copy.deepcopy(fixture.comment)
+    if change == "other_hold":
+        another = copy.deepcopy(active)
+        another["id"] = FAILED_CID + 1
+        payload = json.loads(another["body"].split("\n", 1)[1])
+        payload["incident_id"] = "102"
+        another["body"] = ledger._body(payload)
+        rows = released_comments() + [active, another]
+    else:
+        rows = released_comments() + [active]
+        if change == "wrong_author":
+            active["user"]["login"] = "owner"
+        elif change == "wrong_issue":
+            active["issue_url"] = "https://api.github.com/repos/other/repo/issues/1138"
+        else:
+            header, encoded = active["body"].split("\n", 1)
+            payload = json.loads(encoded)
+            if change == "enqueued":
+                payload["status"] = "CURSOR_AGENT_ENQUEUED"
+                payload["cursor_run_id"] = "run-made-up"
+            elif change == "run_id":
+                payload["cursor_run_id"] = "run-made-up"
+            elif change == "invalid_authority":
+                payload["can_execute"] = True
+            active["body"] = header + "\n" + json.dumps(payload, sort_keys=True)
+    api = _FakeAPI(rows)
+    with pytest.raises((release.ReleaseBlocked, ledger.ProviderUnavailable), match=code):
+        release.auto_failed_launch_target(api)
+    assert api.puts == 0
+
+
+def test_scheduled_negative_proof_release_receipt_is_authenticated_but_other_events_hold():
+    from test_v17_engineering_remote_writer_release import released_comments, run
+    fixture = FailedLaunchFixture()
+    doc = {
+        "status": "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS",
+        "incident_id": FAILED_INCIDENT,
+        "original_comment_id": FAILED_CID,
+        "original_digest": release._original_digest(fixture.comment),
+        "provider": "cursor",
+        "agent_id": FAILED_AGENT,
+        "cursor_run_id": None,
+        "pr_sha": FAILED_ORIGINAL_HEAD,
+        "main_sha": FAILED_MAIN,
+        "worker_id": FAILED_WORKER,
+        "pr_number": FAILED_PR,
+        "terminal_status": "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN",
+        "agent_status": "NEVER_CREATED",
+        "workflow_run_id": 99099,
+        "run_attempt": 1,
+        "source_sha": "a" * 40,
+        "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    release_comment = {
+        "id": 9100000000,
+        "user": {"login": "github-actions[bot]"},
+        "body": f"{release.RELEASE_MARKER}{FAILED_INCIDENT} -->\n" + json.dumps(doc, sort_keys=True),
+    }
+    comments = released_comments() + [fixture.comment, release_comment]
+    def get_run(rid, **overrides):
+        return run(event="schedule", **overrides) if rid == 99099 else run()
+    attempts = ledger.reservations(comments)
+    assert release.verified_released_ids(
+        comments, attempts, get_run=get_run,
+    ) == {release.EXPECTED_COMMENT_ID, FAILED_CID}
+    ledger.assert_no_remote_writer(comments, get_run=get_run)
+    assert release.auto_failed_launch_target(
+        __import__("test_v17_engineering_remote_writer_release", fromlist=["_FakeAPI"])._FakeAPI(comments),
+    ) is None
+
+    for bad_run in ({"conclusion": "failure"}, {"status": "in_progress"},
+                    {"head_sha": "c" * 40}, {"path": "not-finalizer.yml"},
+                    {"event": "workflow_run"}):
+        with pytest.raises(release.ReleaseBlocked):
+            release.verified_released_ids(
+                comments, attempts, get_run=lambda rid: get_run(rid, **bad_run),
+            )
+    # A scheduled receipt cannot certify an ordinary completed-agent release.
+    with pytest.raises(release.ReleaseBlocked):
+        release.verified_released_ids(
+            released_comments(),
+            ledger.reservations(released_comments()),
+            get_run=lambda _: run(event="schedule"),
+        )
+
+
+def test_scheduled_recovery_reuses_exact_mutex_and_manual_dispatch_is_unchanged():
+    root = Path(__file__).resolve().parents[2]
+    wf = (root / ".github/workflows/wow-v17-remote-writer-finalize.yml").read_text()
+    assert 'cron: "37 * * * *"' in wf
+    assert "workflow_dispatch:" in wf
+    assert "reservation_comment_id:" in wf
+    assert "required: true" in wf
+    assert "group: wow-v17-engineering-implementation-single-writer" in wf
+    assert "cancel-in-progress: false" in wf
+    assert "github.ref == 'refs/heads/main'" in wf
+    assert "--reservation-comment-id" in wf
+    assert "CURSOR_API_KEY" in wf
+    assert "issues: write" in wf
