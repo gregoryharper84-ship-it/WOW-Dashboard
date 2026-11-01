@@ -85,5 +85,4 @@ jobs:
           # original writer mutex the existing finalizer authenticates source,
           # performs two fresh provider inventory probes, re-reads the PR,
           # checks the immutable ledger and rechecks protected main before POST.
-          PYTHONPATH=artifacts/wow-engine python -m v17.engineering_remote_fallback \
-            finalize-cursor --reservation-comment-id "$RESERVATION_COMMENT_ID"
+          PYTHONPATH=artifacts/wow-engine python -m v17.engineering_remote_fallback finalize-cursor --reservation-comment-id "$RESERVATION_COMMENT_ID"
