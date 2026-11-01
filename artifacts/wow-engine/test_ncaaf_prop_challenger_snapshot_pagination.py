@@ -1,6 +1,7 @@
 """Research-only CFBD historical pagination: exact-once, no silent row loss."""
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,11 @@ def _row(number: int) -> dict:
         "blocker_codes": ["NCAAF_SOURCE_EMPTY"],
         "can_execute": False,
     }
+
+
+def _timestamp(value):
+    # Simulate PostgreSQL's timestamptz ordering, not textual ISO ordering.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 class _Query:
@@ -84,7 +90,7 @@ class _Query:
         if self.fence:
             ordered = sorted(
                 (r for r in self.db.rows if isinstance(r, dict) and "created_at" in r),
-                key=lambda r: r["created_at"],
+                key=lambda r: _timestamp(r["created_at"]),
                 reverse=True,
             )
             fence_rows = (
@@ -99,14 +105,14 @@ class _Query:
             rows = self.db.rows
             if self.cutoff is not None:
                 rows = [r for r in rows if isinstance(r, dict)
-                        and r.get("created_at", "") <= self.cutoff]
+                        and _timestamp(r["created_at"]) <= _timestamp(self.cutoff)]
             self.db.count_reads += 1
             return SimpleNamespace(count=len(rows), data=[])
         self.db.calls.append((self.after, self.page_limit))
         rows = self.db.rows
         if self.cutoff is not None:
             rows = [r for r in rows if not isinstance(r, dict)
-                    or r.get("created_at", "") <= self.cutoff]
+                    or _timestamp(r["created_at"]) <= _timestamp(self.cutoff)]
         if self.after is not None and not self.db.repeat_previous_page:
             rows = [r for r in rows if r["source_snapshot_id"] > self.after]
         returned = rows[: self.page_limit]
@@ -143,6 +149,14 @@ def test_keyset_pagination_is_exact_once_across_three_pages():
     assert db.count_reads == 2
     assert CAN_EXECUTE is False
     assert all(x.can_execute is False for x in output)
+
+
+def test_timestamptz_offsets_do_not_change_frozen_membership():
+    rows = [_row(n) for n in range(1, 4)]
+    rows[1]["created_at"] = "2026-10-29T10:00:02-05:00"
+    db = _Db(rows)
+    output = load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
+    assert [r.week for r in output] == [1, 2, 3]
 
 
 def test_new_source_snapshot_during_paging_is_outside_frozen_corpus():
