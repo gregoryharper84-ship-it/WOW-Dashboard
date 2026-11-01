@@ -38,8 +38,8 @@ class ResearchReadError(RuntimeError):
 
 
 def require_browser_key(credentials: HTTPBasicCredentials | None = Depends(_basic)) -> None:
-    """Reuse isolated weather API key through HTTPS Basic; never put it in a URL."""
-    configured = os.getenv("WOW_KALSHI_WEATHER_API_KEY", "")
+    """Use the isolated read-only research credential, not the weather writer key."""
+    configured = os.getenv("WOW_KALSHI_WEATHER_RESEARCH_KEY", "")
     if not configured:
         raise HTTPException(status_code=503, detail="RESEARCH_AUTH_NOT_CONFIGURED")
     supplied = credentials.password if credentials else ""
