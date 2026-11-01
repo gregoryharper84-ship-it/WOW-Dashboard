@@ -2436,3 +2436,110 @@ def test_class_a_workflow_does_not_force_deterministic_route_on_nonclass_a():
     assert "--trusted-reviewers-json" in workflow
     assert "--source-review-json" in workflow  # reviewed non-Class-A PRs retain their path
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
+
+
+def test_authenticated_reject_cannot_mint_or_replay_success_receipt():
+    """An authentic REJECT is an audit record, not release permission."""
+    rejected = automated_review_data()
+    rejected["review"]["decision"] = "REJECT"
+    rejected["review"]["assessment"]["security_review"] = "FAIL"
+    # Provenance-only artifact validation accepts an authentic rejection.
+    source_review.verify_artifact(
+        rejected,
+        run=SOURCE_REVIEW_RUN,
+        expected_repository=REPOSITORY,
+        expected_pr_number=1822,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        now=NOW,
+    )
+    kwargs = dict(
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        source_review_run=SOURCE_REVIEW_RUN,
+        source_review_artifact_id=555,
+        now=NOW,
+    )
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="SOURCE_REVIEW_DECISION_NOT_PASS"):
+        verifier.build_receipt(evidence(), automated_review=rejected, **kwargs)
+
+    accepted = verifier.build_receipt(
+        evidence(), automated_review=automated_review_data(), **kwargs
+    )
+    accepted["independent_review"]["artifact"] = rejected
+    canonical = (json.dumps(rejected, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    accepted["independent_review"]["artifact_sha256"] = verifier.hashlib.sha256(canonical).hexdigest()
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="SOURCE_REVIEW_DECISION_NOT_PASS"):
+        verifier.verify_receipt(
+            accepted,
+            expected_repository=REPOSITORY,
+            expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806",
+            expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME,
+            expected_pr_number=1822,
+            live_reviews=[],
+            source_review_run=SOURCE_REVIEW_RUN,
+            now=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    ("classification", "reviewers", "artifact_id", "payloads", "zero_credit", "expected", "exit_code"),
+    [
+        ("ORDINARY_ENGINEERING", '["reviewer"]', "555", True, False, "--source-review-json", 0),
+        ("ORDINARY_ENGINEERING", '["reviewer"]', "", False, False, "--trusted-reviewers-json", 0),
+        ("ORDINARY_ENGINEERING", '["reviewer"]', "555", False, False,
+         "SOURCE_REVIEW_SELECTED_ARTIFACT_PAYLOAD_MISSING", 1),
+        ("ORDINARY_ENGINEERING", "", "", False, False, "INDEPENDENT_REVIEW_EVIDENCE_MISSING", 1),
+        ("CLASS_A_DETERMINISTIC", "", "", False, True, "--deterministic-class-a", 0),
+        ("TRUST_ROOT_BOOTSTRAP", "", "", False, False, "--bootstrap", 0),
+    ],
+)
+def test_governance_review_route_selection_is_deterministic_and_fail_closed(
+    tmp_path, classification, reviewers, artifact_id, payloads, zero_credit, expected, exit_code
+):
+    """Exercise routing only; real verifier tests establish authenticity and PASS."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    step = workflow.split("      - name: Build and verify review-evidence receipt\n", 1)[1]
+    begin = '          if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then\n'
+    end = step.index('          sha256sum "$receipt"')
+    # The same classification check also occurs earlier during bootstrap
+    # evidence collection. Exercise the final credential-route selector only.
+    start = step.rfind(begin, 0, end)
+    assert start >= 0
+    selector = step[start:end]
+    if payloads:
+        folder = tmp_path / "source-review"
+        folder.mkdir()
+        (folder / "decision.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "source-review-run.json").write_text("{}", encoding="utf-8")
+    route_log = tmp_path / "route.log"
+    bash = (
+        'set -euo pipefail\n'
+        'common=(--evidence stub)\n'
+        'python() { printf "%s\n" "$*" >> "$ROUTE_LOG"; }\n'.replace('"%s\n"', '"%s\\n"')
+        + textwrap.dedent(selector)
+    )
+    result = subprocess.run(
+        ["bash", "-c", bash],
+        env=os.environ | {
+            "classification": classification,
+            "TRUSTED_REVIEWERS_JSON": reviewers,
+            "SOURCE_REVIEW_ARTIFACT_ID": artifact_id,
+            "ZERO_CREDIT_MODE": "true" if zero_credit else "false",
+            "RUNNER_TEMP": str(tmp_path),
+            "ROUTE_LOG": str(route_log),
+        },
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == exit_code, result.stdout + result.stderr
+    observed = route_log.read_text(encoding="utf-8") if route_log.exists() else result.stderr
+    assert expected in observed
+    if artifact_id and not payloads:
+        assert not route_log.exists(), "Missing selected artifact must never fall back to human route"
