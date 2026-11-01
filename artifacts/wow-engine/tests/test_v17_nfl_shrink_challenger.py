@@ -1,4 +1,5 @@
 import math
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -21,14 +22,23 @@ def test_transform_matches_replay_formula_and_shrinks_toward_base():
     assert ch.challenger_home_probability(0.541301) == pytest.approx(0.541301)
 
 
-def _pred(pid, home, away, sel, *, version="NFL_EVENT_LOGREG_PLATT_V1_fixture"):
-    return SimpleNamespace(event_prediction_id=pid, home_team=home, away_team=away,
-                           selected_participant=sel, model_version=version)
+def _pred(pid, home, away, sel, *, version="NFL_EVENT_LOGREG_PLATT_V1_fixture",
+          kickoff="2026-10-12T17:00:00+00:00"):
+    return SimpleNamespace(
+        event_prediction_id=pid, home_team=home, away_team=away,
+        selected_participant=sel, model_version=version,
+        event_start_time_utc=kickoff,
+    )
 
 
-def _grade(pid, p, y, *, version="NFL_EVENT_LOGREG_PLATT_V1_fixture"):
-    return SimpleNamespace(event_prediction_id=pid, calibrated_probability=p,
-                           outcome=y, model_version=version)
+def _grade(pid, p, y, *, version="NFL_EVENT_LOGREG_PLATT_V1_fixture",
+           kickoff="2026-10-12T17:00:00+00:00",
+           predicted_at="2026-10-12T14:00:00+00:00"):
+    return SimpleNamespace(
+        event_prediction_id=pid, calibrated_probability=p,
+        outcome=y, model_version=version, event_start_time_utc=kickoff,
+        prediction_created_at=predicted_at,
+    )
 
 
 def test_evaluate_orients_home_and_away_selections_correctly():
@@ -292,3 +302,48 @@ def test_research_duplicate_grades_fail_closed():
         ch.evaluate([pred], [g, g])
     with pytest.raises(ValueError, match="DUPLICATE_PREDICTION_ID"):
         ch.evaluate([pred, pred], [g])
+
+
+def test_challenger_only_evaluates_genuine_post_registration_games():
+    # One September settled game, plus Oct 9's kickoff (intraday freeze
+    # unknown), must NEVER enter post-registration holdout metrics.
+    pre = _pred("pre", "H", "A", "H", kickoff="2026-09-27T17:00:00Z")
+    on_day = _pred("on-day", "H", "A", "H", kickoff="2026-10-09T00:15:00Z")
+    post = _pred("post", "H", "A", "H")
+    grade_pre = _grade("pre", 0.99, 0, kickoff="2026-09-27T17:00:00Z",
+                      predicted_at="2026-09-27T14:00:00Z")
+    grade_on = _grade("on-day", 0.99, 0, kickoff="2026-10-09T00:15:00Z",
+                     predicted_at="2026-10-08T22:00:00Z")
+    grade_post = _grade("post", 0.7, 1)
+    output = ch.evaluate([pre, on_day, post], [grade_pre, grade_on, grade_post])
+    assert output["n"] == 1
+    assert output["excluded_before_prospective_cutoff_n"] == 2
+    assert output["prospective_start_utc"] == "2026-10-10T00:00:00+00:00"
+    assert output["champion_brier"] == pytest.approx(0.09)
+    assert output["eligible_for_review"] is False
+    db = _DB()
+    assert ch.persist(db, output) is True
+    assert db.rows[0]["holdout_n"] == 1
+    assert db.rows[0]["cohort_key"] == output["cohort_key"]
+
+
+def test_challenger_pre_registration_only_cohort_not_evaluated_or_persisted():
+    pred = _pred("old", "H", "A", "H", kickoff="2026-09-27T17:00:00Z")
+    grade = _grade("old", 0.8, 0, kickoff="2026-09-27T17:00:00Z",
+                   predicted_at="2026-09-27T14:00:00Z")
+    output = ch.evaluate([pred], [grade])
+    assert output["status"] == "NO_GRADED_GAMES"
+    assert output["n"] == 0
+    assert output["excluded_before_prospective_cutoff_n"] == 1
+    assert ch.persist(_DB(), output) is False
+
+
+def test_challenger_missing_timestamp_or_post_kickoff_prediction_fails_closed():
+    pred = _pred("x", "H", "A", "H")
+    missing = _grade("x", 0.7, 1)
+    del missing.event_start_time_utc
+    with pytest.raises((ValueError, TypeError)):
+        ch.evaluate([pred], [missing])
+    postkick = _grade("x", 0.7, 1, predicted_at="2026-10-12T17:00:00Z")
+    with pytest.raises(ValueError, match="CHRONOLOGY_INVALID"):
+        ch.evaluate([pred], [postkick])
