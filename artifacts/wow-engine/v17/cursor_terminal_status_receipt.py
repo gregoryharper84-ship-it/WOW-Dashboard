@@ -205,12 +205,14 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     }
 
 
-def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[str]:
-    """Permit reviewed PR head advancement, never an unrelated branch or force push."""
+def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api, *,
+                       allow_closed_negative_launch: bool = False) -> list[str]:
+    """Require exact identity; closed PRs are allowed only for proved never-created agents."""
     import re
 
+    allowed_states = ("open", "closed") if allow_closed_negative_launch else ("open",)
     head, base = pr.get("head"), pr.get("base")
-    if (pr.get("number") != target["pr_number"] or pr.get("state") != "open"
+    if (pr.get("number") != target["pr_number"] or pr.get("state") not in allowed_states
             or not isinstance(head, dict) or not isinstance(base, dict)
             or not isinstance(head.get("repo"), dict)
             or not isinstance(base.get("repo"), dict)
@@ -245,7 +247,7 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
     again = _require_object(api(url, token=github_token),
                             "CURSOR_SOURCE_PR_RECHECK_FAILED")
     if (again.get("number") != target["pr_number"]
-            or again.get("state") != "open"
+            or again.get("state") != pr.get("state")
             or not isinstance(again.get("head"), dict)
             or again["head"].get("sha") != latest
             or not isinstance(again["head"].get("repo"), dict)
@@ -354,7 +356,9 @@ def collect_receipt(
             api(pr_url, token=github_token),
             "SOURCE_PR_IDENTITY_UNVERIFIED",
         )
-        changed_files = _verify_dynamic_pr(pr, target, github_token, api)
+        changed_files = _verify_dynamic_pr(
+            pr, target, github_token, api, allow_closed_negative_launch=True,
+        )
         return {
             "status": "CURSOR_TERMINAL_STATUS_VERIFIED",
             "agent_id": agent_id,
