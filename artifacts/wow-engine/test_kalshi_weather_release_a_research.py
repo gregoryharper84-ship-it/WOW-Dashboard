@@ -100,7 +100,8 @@ def test_release_a_research_deduplicates_and_does_not_publish_probabilities():
     )
     assert data["loaded_forecasts"] == 2
     assert data["calibration"]["eligible_unique_settled_samples"] == 1
-    assert data["calibration"]["remaining_to_candidate"] == 29
+    assert data["calibration"]["remaining_to_candidate"] is None
+    assert data["calibration"]["by_lead_bucket"]["H0"]["remaining_to_candidate"] == 29
     assert data["calibration"]["historical_mae_f"] == 2.5
     assert data["safety"]["can_execute"] is False
     row = data["predictions"][0]
@@ -182,6 +183,60 @@ def test_release_a_stale_forecasts_are_not_labeled_fresh():
     )
     assert data["collection_fresh"] is False
     assert data["predictions"][0]["forecast_fresh"] is False
+    assert data["predictions"][0]["source_forecast_freshness"] == "UNVERIFIED"
     assert data["predictions"][0]["quote_fresh"] is False
     assert data["predictions"][0]["last_recorded_yes_ask"] == 0.65
     assert data["predictions"][0]["model_p_no"] is None
+
+
+def test_release_a_recent_analysis_never_certifies_old_provider_forecast():
+    """A new decision timestamp proves nothing about issue-age of input forecasts."""
+    data = build_research_snapshot(
+        client=FakeClient(), now=datetime(2026, 11, 1, 3, 0, tzinfo=timezone.utc),
+    )
+    entry = data["predictions"][0]
+    assert entry["analysis_recent"] is True
+    assert entry["analysis_age_minutes"] == 20.0
+    assert entry["forecast_age_minutes"] is None
+    assert entry["forecast_as_of"] is None
+    assert entry["forecast_fresh"] is False
+    assert entry["source_forecast_freshness"] == "UNVERIFIED"
+    assert data["latest_forecast_age_minutes"] is None
+    assert data["latest_forecast_as_of"] is None
+    assert data["collection_fresh"] is False
+    from kalshi_weather_v2.research_release_a import render_research_html
+    page = render_research_html(data)
+    assert "Fresh forecast" not in page
+    assert "Provider forecast issue time unknown" in page
+    assert "source freshness unverified" in page
+
+
+def test_release_a_candidate_samples_are_not_pooled_across_lead_buckets():
+    """15 H0 + 15 H1 is zero independently qualified lead buckets, not 30."""
+    import copy
+    forecasts = []
+    settlements = []
+    for bucket in ("H0", "H1"):
+        for index in range(15):
+            item = copy.deepcopy(PRED)
+            item["prediction_id"] = f"{bucket}-{index}"
+            item["decision_time"] = "2026-11-01T02:40:00Z"
+            item["model_payload"]["lead_time_bucket"] = bucket
+            item["model_payload"]["contract"]["observation_window"] = (
+                f"POINT_IN_TIME:2026-11-01T{index:02}:00:00Z"
+            )
+            forecasts.append(item)
+            settlements.append({**OUTCOME, "prediction_id": item["prediction_id"]})
+    data = build_research_snapshot(
+        client=FakeClient(predictions=forecasts, outcomes=settlements),
+        now=datetime(2026, 11, 1, 3, 15, tzinfo=timezone.utc),
+    )
+    progress = data["calibration"]
+    assert progress["eligible_unique_settled_samples"] == 30
+    assert progress["remaining_to_candidate"] is None
+    assert progress["readiness_scope"] == "PER_LEAD_BUCKET_NOT_POOLED"
+    assert set(progress["by_lead_bucket"]) == {"H0", "H1"}
+    for bucket in ("H0", "H1"):
+        assert progress["by_lead_bucket"][bucket]["eligible_unique_settled_samples"] == 15
+        assert progress["by_lead_bucket"][bucket]["remaining_to_candidate"] == 15
+        assert progress["by_lead_bucket"][bucket]["candidate_sample_count_met"] is False
