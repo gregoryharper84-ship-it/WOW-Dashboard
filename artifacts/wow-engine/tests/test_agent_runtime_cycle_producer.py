@@ -251,3 +251,19 @@ def test_snapshot_candidate_cannot_reach_model_without_live_status_and_settlemen
     passed = execute_envelope(env)
     assert passed.status == "SUCCEEDED"
     assert passed.ceiling == "IDENTITY_VERIFIED"
+
+
+def test_protected_producer_compares_both_real_secrets_in_isolated_preflight():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/wow-v17-agent-runtime-producer.yml").read_text()
+    preflight = workflow.split(
+        "- name: Fail closed unless runtime bearer is distinct from scoring bearer", 1
+    )[1].split("- name: Admit real, idempotent sports research run", 1)[0]
+    admission = workflow.split("- name: Admit real, idempotent sports research run", 1)[1]
+    assert "secrets.WOW_ACTION_API_KEY" in preflight
+    assert "secrets.WOW_AGENT_RUNTIME_API_KEY" in preflight
+    assert '"' + "${WOW_ACTION_API_KEY}" + '" == "' + "${WOW_AGENT_RUNTIME_API_KEY}" + '"' in preflight
+    assert "PRODUCER_DISTINCT_CREDENTIAL_NOT_VERIFIED" in preflight
+    assert "secrets.WOW_ACTION_API_KEY" not in admission
+    assert "secrets.WOW_AGENT_RUNTIME_API_KEY" in admission
