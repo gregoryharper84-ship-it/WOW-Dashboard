@@ -134,18 +134,20 @@ class WakeProbeTests(unittest.TestCase):
 
     def test_workflow_timeout_covers_complete_bounded_retry_budget(self):
         """A final valid retry must not be truncated by the job wall clock."""
-        import re
         workflow = (
             Path(__file__).resolve().parents[3]
             / ".github/workflows/kalshi-weather-external-wake.yml"
         ).read_text(encoding="utf-8")
         heartbeat = workflow.split("  heartbeat:", 1)[1]
-        timeout = re.search(r"timeout-minutes:\\s*(\\d+)", heartbeat)
-        self.assertIsNotNone(timeout)
+        timeout = next(
+            int(line.split(":", 1)[1].strip())
+            for line in heartbeat.splitlines()
+            if line.strip().startswith("timeout-minutes:")
+        )
         # Default: three attempts, two independent HTTP requests each, one
         # 65s upper bound per request, 8s backoff twice, 30s runner margin.
         seconds = 3 * 2 * 65 + 2 * 8 + 30
-        self.assertGreaterEqual(int(timeout.group(1)) * 60, seconds)
+        self.assertGreaterEqual(timeout * 60, seconds)
 
     def test_reject_unexpected_path_without_network(self):
         with self.assertRaises(probe.ProbeError), patch.object(probe.HTTP_CLIENT, "open") as fn:
