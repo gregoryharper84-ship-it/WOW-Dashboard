@@ -140,7 +140,7 @@ def test_release_a_filters_different_cities_and_fails_closed_when_empty():
 
 
 def test_research_browser_requires_configured_basic_auth(monkeypatch):
-    monkeypatch.setenv("WOW_KALSHI_WEATHER_API_KEY", "research-secret")
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_RESEARCH_KEY", "research-secret")
     monkeypatch.setattr(api, "get_client", lambda: FakeClient())
     client = TestClient(api.app)
     without = client.get("/research")
@@ -150,12 +150,12 @@ def test_research_browser_requires_configured_basic_auth(monkeypatch):
     assert wrong.status_code == 401
     assert client.get("/research", headers=_auth()).status_code == 200
     assert client.get("/research.json", headers=_auth()).status_code == 200
-    monkeypatch.delenv("WOW_KALSHI_WEATHER_API_KEY", raising=False)
+    monkeypatch.delenv("WOW_KALSHI_WEATHER_RESEARCH_KEY", raising=False)
     assert client.get("/research", headers=_auth()).status_code == 503
 
 
 def test_release_a_html_escapes_untrusted_market_title_and_no_secrets(monkeypatch):
-    monkeypatch.setenv("WOW_KALSHI_WEATHER_API_KEY", "research-secret")
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_RESEARCH_KEY", "research-secret")
     monkeypatch.setattr(api, "get_client", lambda: FakeClient())
     response = TestClient(api.app).get("/research", headers=_auth())
     assert response.status_code == 200
@@ -168,7 +168,7 @@ def test_release_a_html_escapes_untrusted_market_title_and_no_secrets(monkeypatc
 
 
 def test_release_a_data_error_does_not_expose_db_detail(monkeypatch):
-    monkeypatch.setenv("WOW_KALSHI_WEATHER_API_KEY", "research-secret")
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_RESEARCH_KEY", "research-secret")
     monkeypatch.setattr(api, "get_client", lambda: FakeClient(broken=True))
     response = TestClient(api.app).get("/research.json", headers=_auth())
     assert response.status_code == 503
