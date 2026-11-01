@@ -71,6 +71,40 @@ def load_source_snapshots(
         "source_snapshot_id,provider,endpoint,season,week,requested_at,retrieved_at,request_params,"
         "response_rows,response_row_count,payload_sha256,acquisition_status,blocker_codes,can_execute"
     )
+    # Freeze a DB-side created_at high-water mark before collecting pages.
+    # New append-only source snapshots acquired during this scan are excluded
+    # even if their random UUID sorts before or after our keyset cursor.
+    # A staging-source update to preexisting immutable rows remains subject
+    # to the separate source-hash and lineage validation downstream.
+    try:
+        fence = (
+            db.table("wow_ncaaf_source_snapshots")
+            .select("created_at")
+            .eq("provider", "CFBD")
+            .eq("endpoint", endpoint)
+            .in_("season", list(season_values))
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_FAILED", endpoint
+        ) from exc
+    fence_rows = getattr(fence, "data", None)
+    if not isinstance(fence_rows, list):
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "FENCE_RESPONSE_INVALID"
+        )
+    if not fence_rows:
+        return []
+    if (not isinstance(fence_rows[0], Mapping)
+            or not isinstance(fence_rows[0].get("created_at"), str)
+            or not fence_rows[0]["created_at"].strip()):
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "FENCE_TIMESTAMP_INVALID"
+        )
+    source_cutoff = fence_rows[0]["created_at"]
     snapshots: list[SourceSnapshot] = []
     last_id = ""
     while True:
@@ -81,10 +115,11 @@ def load_source_snapshots(
                 .eq("provider", "CFBD")
                 .eq("endpoint", endpoint)
                 .in_("season", list(season_values))
+                .lte("created_at", source_cutoff)
                 .order("source_snapshot_id", desc=False)
             )
-            # Keyset paging prevents concurrent inserts/deletes in earlier
-            # pages from shifting the remaining rows of an offset-based scan.
+            # PK keyset paging avoids offset drift while the timestamp fence
+            # keeps newly acquired source rows out of this replay's corpus.
             if last_id:
                 query = query.gt("source_snapshot_id", last_id)
             result = query.range(0, page_size - 1).execute()
