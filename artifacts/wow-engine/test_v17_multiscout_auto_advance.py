@@ -373,3 +373,38 @@ def test_provider_bookmaker_timestamp_used_without_scout_timestamp_substitution(
     assert row["money_lane_status"] == "PAYOUT_UNRESOLVED"
     assert "price" not in row
     assert dispatch["governance"]["scout_probability_authority"] is False
+
+
+def test_invalid_market_timestamp_uses_valid_same_provider_bookmaker_observation():
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["prop_candidates"][0]
+    handoff["model_handoff"]["prop_candidates"] = [{
+        **candidate,
+        "market_evidence": {
+            **candidate["market_evidence"],
+            "market_last_update": "2026-09-07T14:00:00",  # naive is not observed time
+            "bookmaker_last_update": "2026-09-07T14:00:14Z",
+        },
+    }]
+    dispatch = build_dispatch(handoff)
+    assert dispatch["mapping"]["mapped_prop_rows"] == 1
+    assert dispatch["mapping"]["rejected_prop_rows"] == []
+    row = dispatch["prop_batches"][0]["rows"][0]
+    assert row["source_capture_timestamp"] == "2026-09-07T14:00:14Z"
+    assert row["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert "price" not in row
+
+
+def test_timezone_aware_quote_formats_reach_mapping_without_fabricated_time():
+    for observed in ("2026-09-07T14:00:00Z", "2026-09-07T14:00:00+00:00", "2026-09-07T09:00:00-05:00"):
+        handoff = _handoff()
+        candidate = handoff["model_handoff"]["prop_candidates"][0]
+        handoff["model_handoff"]["prop_candidates"] = [{
+            **candidate,
+            "market_evidence": {**candidate["market_evidence"], "market_last_update": observed},
+        }]
+        dispatch = build_dispatch(handoff)
+        assert dispatch["mapping"]["mapped_prop_rows"] == 1
+        assert dispatch["prop_batches"][0]["rows"][0]["source_capture_timestamp"] == observed
+        assert dispatch["prop_batches"][0]["rows"][0]["money_lane_status"] == "PAYOUT_UNRESOLVED"
+        assert dispatch["governance"]["scout_probability_authority"] is False

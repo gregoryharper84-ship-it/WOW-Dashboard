@@ -82,13 +82,20 @@ def _direction(value: Any) -> str | None:
 
 
 def _aware(value: Any) -> datetime | None:
+    """Return UTC only for an explicit, valid offset-aware provider timestamp.
+
+    This also validates event time but never substitutes a handoff creation
+    timestamp for an absent sportsbook quote observation.
+    """
+    if value is None or isinstance(value, bool):
+        return None
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except Exception:
+        if parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
         return None
-    if parsed.utcoffset() is None:
-        return None
-    return parsed.astimezone(timezone.utc)
 
 
 def _event_date(value: Any, timezone_name: str = USER_TIMEZONE) -> str | None:
@@ -128,8 +135,15 @@ def _prop_row(candidate: dict[str, Any], *, generated_at: str, index: int) -> tu
     # A Scout run timestamp is not a source quote observation. Missing or
     # timezone-naive quote timestamps stay a typed evidence HOLD; do not
     # relabel them as fresh merely because the handoff was generated now.
-    captured_at = evidence.get("market_last_update") or evidence.get("bookmaker_last_update")
-    if _aware(captured_at) is None:
+    captured_at = None
+    # Prefer an authenticated provider market timestamp when parseable;
+    # otherwise fall back to that same source's bookmaker observation.
+    # Neither timestamp is a certified payout quote or MODEL input.
+    for observed_at in (evidence.get("market_last_update"), evidence.get("bookmaker_last_update")):
+        if _aware(observed_at) is not None:
+            captured_at = observed_at
+            break
+    if captured_at is None:
         return None, "PROP_QUOTE_TIMESTAMP_UNVERIFIED"
     return {
         "row_key": f"scout-prop-{index}",
