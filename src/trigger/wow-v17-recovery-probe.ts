@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 /**
  * WOW V17 runtime sentinel: read-only signals, not a fitted-model or Action probe.
  * No incident mutation, GitHub dispatch, release action, or wagering authority.
