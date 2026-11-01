@@ -2368,6 +2368,25 @@ def test_class_a_workflow_does_not_force_deterministic_route_on_nonclass_a():
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
 
 
+
+def test_authenticated_pass_with_failed_assessment_is_never_accepted():
+    """The source verifier checks all three assessments before decision reuse."""
+    for assessment in ("source_review", "security_review", "probability_integrity_review"):
+        altered = automated_review_data()
+        altered["review"]["assessment"][assessment] = "FAIL"
+        with pytest.raises(source_review.SourceReviewError, match="SOURCE_REVIEW_ASSESSMENT_FAILED"):
+            source_review.verify_artifact(
+                altered,
+                run=SOURCE_REVIEW_RUN,
+                expected_repository=REPOSITORY,
+                expected_pr_number=1822,
+                expected_head_sha=HEAD,
+                expected_head_ref="fix/issue-1806",
+                now=NOW,
+            )
+
+
+
 def test_authenticated_reject_cannot_mint_or_replay_success_receipt():
     """An authentic REJECT is an audit record, not release permission."""
     rejected = automated_review_data()
