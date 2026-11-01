@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .incident_regression_evidence import verify_authenticated_regression
     from .nightly_engineering_team_contract import (
         CLOSURE_RELEASE_STATUSES,
         REPRODUCTION_STATUSES,
@@ -27,6 +28,14 @@ try:
         validate_team_record,
     )
 except ImportError:  # direct-script/spec loader compatibility
+    import importlib.util as _importlib_util
+    _evidence_path = Path(__file__).with_name("incident_regression_evidence.py")
+    _evidence_spec = _importlib_util.spec_from_file_location("incident_regression_evidence", _evidence_path)
+    if _evidence_spec is None or _evidence_spec.loader is None:
+        raise ImportError("incident_regression_evidence module specification unavailable")
+    _evidence_module = _importlib_util.module_from_spec(_evidence_spec)
+    _evidence_spec.loader.exec_module(_evidence_module)
+    verify_authenticated_regression = _evidence_module.verify_authenticated_regression
     from nightly_engineering_team_contract import (
         CLOSURE_RELEASE_STATUSES,
         REPRODUCTION_STATUSES,
@@ -157,9 +166,14 @@ def create_postmortem(
     reported_by: str = "operator",
     subsystem: str | None = None,
 ) -> RecordPaths:
+    severity = severity.strip().upper()
+    if severity not in {"P0", "P1", "P2", "P3"}:
+        raise ValueError(f"invalid incident severity: {severity!r}")
     ledger = _load_ledger()
     if state not in ALLOWED_STATES:
         raise ValueError(f"invalid state: {state}")
+    if state == "VERIFIED_CLOSED" and severity in {"P0", "P1"}:
+        raise ValueError("new P0/P1 cannot be created VERIFIED_CLOSED; use Reporter closure")
     date = _today()
     pm_id = _next_id("PM", date, ledger["records"])
     path = POSTMORTEMS / f"{pm_id}__{_slug(title)}.md"
@@ -177,6 +191,7 @@ def create_postmortem(
         "engineering_fix_ids": [],
         "created_utc": created,
         "updated_utc": created,
+        "learning_contract_version": "1",
         **team,
     }
     ledger["records"].append(row)
@@ -444,7 +459,8 @@ def mark_release(
     _save_ledger(ledger)
 
 
-def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str | None = None) -> None:
+def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str | None = None,
+                   learning_receipt: dict[str, Any] | None = None) -> None:
     ledger = _load_ledger()
     row = _find_record(ledger, postmortem_id)
     if row.get("workflow_stage") != "REPORTER_CLOSURE":
@@ -454,8 +470,16 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
         "evidence": evidence,
         "closed_utc": _utc_now(),
     }
+    if learning_receipt is not None:
+        if not isinstance(learning_receipt, dict):
+            raise ValueError("learning receipt must be a JSON object")
+        row.setdefault("learning", {}).update(learning_receipt)
     if preventive_control:
         row.setdefault("learning", {})["preventive_control"] = preventive_control
+    if row.get("root_cause_status") == "CONFIRMED":
+        code = (row.get("learning") or {}).get("root_cause_code")
+        if isinstance(code, str) and code:
+            row["confirmed_root_cause_id"] = code
     row["state"] = "VERIFIED_CLOSED"
     latest_fix = _latest_fix_id(row)
     if latest_fix:
@@ -464,6 +488,12 @@ def close_verified(*, postmortem_id: str, evidence: str, preventive_control: str
     errors = validate_team_record(row, enforce_closure=True)
     if errors:
         raise ValueError("closure blocked: " + "; ".join(errors))
+    if row.get("learning_contract_version") == "1" and row.get("severity") in {"P0", "P1"}:
+        release = row.get("release") or {}
+        release_sha = release.get("deployed_commit") or release.get("merge_commit")
+        row["learning"]["regression_evidence_verified"] = verify_authenticated_regression(
+            row["learning"], expected_sha=release_sha
+        )
     row["updated_utc"] = _utc_now()
     _save_ledger(ledger)
 
@@ -568,6 +598,7 @@ def main() -> None:
     close.add_argument("--postmortem-id", required=True)
     close.add_argument("--evidence", required=True)
     close.add_argument("--preventive-control")
+    close.add_argument("--learning-json-file", help="P0/P1 closure learning receipt JSON file")
 
     args = parser.parse_args()
     if args.command == "validate":
@@ -634,6 +665,8 @@ def main() -> None:
             postmortem_id=args.postmortem_id,
             evidence=args.evidence,
             preventive_control=args.preventive_control,
+            learning_receipt=(json.loads(Path(args.learning_json_file).read_text(encoding="utf-8"))
+                              if args.learning_json_file else None),
         )
         print(args.postmortem_id)
 

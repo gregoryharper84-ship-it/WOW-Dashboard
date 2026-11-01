@@ -1,0 +1,212 @@
+"""Read-only authenticated GitHub Actions proof for incident closure regression tests.
+
+This is a Reporter-closure acceptance check, NOT a GitHub merge/release gate.
+Fail closed on incomplete SHA, CI outcome, test-case or source provenance.
+"""
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+
+
+_REPO = "gregoryharper84-ship-it/WOW-Dashboard"
+_JOB_URL = re.compile(
+    r"https://github\.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/([1-9][0-9]*)/job/([1-9][0-9]*)\Z"
+)
+_PYTEST_ID = re.compile(
+    r"(?:[a-zA-Z0-9_-]+/)*test_[a-zA-Z0-9_-]+\.py"
+    r"(?:::[a-zA-Z0-9_]+)*::test_[a-zA-Z0-9_]+"
+    r"(?:\[[^\r\n]{0,256}\])?\Z"
+)
+_JS_ID = re.compile(
+    r"(artifacts/mcp-server/test/v17_[a-zA-Z0-9_-]+\.test\.js)"
+    r"::([^\x00-\x1f\x7f]{1,300})\Z"
+)
+_SHA = re.compile(r"[a-f0-9]{40}\Z")
+_TRUSTED_WORKFLOWS = {
+    "pytest": frozenset({"wow-verify", "wow-engine-verify", "wow-v17-rapid-repair"}),
+    "node": frozenset({"v17-mcp-plugin-migration"}),
+}
+_NODE_JOB_NAME = "V17 MCP contract and transport"
+_MAX_LOG_BYTES = 12 * 1024 * 1024
+
+
+def _trusted_job_url(value: object) -> tuple[int, int]:
+    match = _JOB_URL.fullmatch(value) if isinstance(value, str) else None
+    if not match:
+        raise ValueError("learning receipt requires authentic regression GitHub Actions job evidence URL")
+    return int(match.group(1)), int(match.group(2))
+
+
+def validate_regression_fields(receipt: dict) -> list[str]:
+    """Side-effect-free shape checks used by the common closure contract."""
+    errors = []
+    try:
+        _trusted_job_url(receipt.get("regression_test_evidence_ref"))
+    except ValueError as exc:
+        errors.append(str(exc))
+    test_id = receipt.get("regression_test_added")
+    if not isinstance(test_id, str) or len(test_id) > 512 or not (
+        _PYTEST_ID.fullmatch(test_id) or _JS_ID.fullmatch(test_id)
+    ):
+        errors.append("learning receipt regression_test_added must identify a supported pytest or native JavaScript test case")
+    if not _SHA.fullmatch(str(receipt.get("regression_test_sha") or "")):
+        errors.append("learning receipt regression_test_sha invalid")
+    return errors
+
+
+def _job_json(job_id: int, token: str) -> dict:
+    request = Request(
+        f"https://api.github.com/repos/{_REPO}/actions/jobs/{job_id}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "wow-incident-regression-verifier",
+        },
+    )
+    with urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _job_log(job_id: int, token: str) -> str:
+    """Get GitHub-generated, expiring signed log URL without forwarding credentials."""
+    request = Request(
+        f"https://api.github.com/repos/{_REPO}/actions/jobs/{job_id}/logs",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "wow-incident-regression-verifier",
+        },
+    )
+    try:
+        build_opener(_NoRedirect()).open(request, timeout=20)
+    except HTTPError as exc:
+        if exc.code not in (302, 303, 307):
+            raise ValueError("regression evidence GitHub log unavailable") from exc
+        signed = exc.headers.get("Location", "")
+    else:
+        raise ValueError("regression evidence missing authenticated GitHub log redirect")
+    parsed = urlsplit(signed)
+    host = (parsed.hostname or "").lower()
+    if (parsed.scheme != "https" or not (
+        host.endswith(".blob.core.windows.net")
+        or host.endswith(".actions.githubusercontent.com")
+        or host == "objects.githubusercontent.com"
+        or host.endswith(".s3.amazonaws.com")
+    )):
+        raise ValueError("regression evidence untrusted log redirect host")
+    with urlopen(Request(signed, headers={"User-Agent": "wow-incident-regression-verifier"}), timeout=20) as response:
+        raw = response.read(_MAX_LOG_BYTES + 1)
+    if len(raw) > _MAX_LOG_BYTES:
+        raise ValueError("regression evidence job log exceeds verification limit")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _native_test_exists_at_sha(path: str, test_name: str, sha: str, token: str) -> bool:
+    """Bind native TAP test name to a real source file at the exact tested SHA."""
+    from urllib.parse import quote
+    request = Request(
+        f"https://api.github.com/repos/{_REPO}/contents/{quote(path, safe='/')}?ref={sha}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "wow-incident-regression-verifier",
+        },
+    )
+    with urlopen(request, timeout=20) as response:
+        payload = json.load(response)
+    if (not isinstance(payload, dict) or payload.get("type") != "file"
+            or payload.get("encoding") != "base64"):
+        raise ValueError("regression evidence native source not a GitHub file")
+    source = base64.b64decode(payload.get("content", ""), validate=False).decode("utf-8")
+    # This source-backed lane intentionally accepts literal node:test() names
+    # only. Computed/dynamic names are not attested as an exact test identity.
+    return bool(re.search(
+        r"\btest\(\s*(['\"])" + re.escape(test_name) + r"\1\s*,",
+        source,
+    ))
+
+
+def _native_tap_pass(log: str, name: str) -> bool:
+    """Check native node --test TAP subtest and its adjacent successful result."""
+    lines = []
+    for line in log.splitlines():
+        line = re.sub(r"^\d{4}-\d{2}-\d{2}T[^\s]+Z\s+", "", line).strip()
+        lines.append(line)
+    for i, line in enumerate(lines):
+        if line != f"# Subtest: {name}":
+            continue
+        if i + 1 >= len(lines):
+            continue
+        if re.fullmatch(r"ok [1-9][0-9]* - " + re.escape(name), lines[i + 1]):
+            return True
+    return False
+
+
+def verify_authenticated_regression(receipt: dict, *, expected_sha: str) -> dict:
+    """Require one named native JS or pytest PASS in a successful exact-SHA CI job.
+
+    The job and log are fetched from GitHub using read-only authentication.
+    String assertions or job URLs supplied by the incident author alone never pass.
+    """
+    errors = validate_regression_fields(receipt)
+    if errors:
+        raise ValueError("; ".join(errors))
+    if not _SHA.fullmatch(str(expected_sha or "")) or receipt["regression_test_sha"] != expected_sha:
+        raise ValueError("regression evidence SHA does not match verified release")
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise ValueError("regression evidence GitHub read credential unavailable")
+    run_id, job_id = _trusted_job_url(receipt["regression_test_evidence_ref"])
+    test_id = receipt["regression_test_added"]
+    node_match = _JS_ID.fullmatch(test_id)
+    kind = "node" if node_match else "pytest"
+    try:
+        job = _job_json(job_id, token)
+        if not isinstance(job, dict):
+            raise ValueError("regression evidence job metadata invalid")
+        if (job.get("id") != job_id or job.get("run_id") != run_id or
+                job.get("head_sha") != expected_sha or
+                job.get("status") != "completed" or job.get("conclusion") != "success" or
+                job.get("workflow_name") not in _TRUSTED_WORKFLOWS[kind] or
+                (kind == "node" and job.get("name") != _NODE_JOB_NAME)):
+            raise ValueError("regression evidence job failed, mismatched or untrusted")
+        log = _job_log(job_id, token)
+        if node_match:
+            native_path, native_name = node_match.groups()
+            if not _native_test_exists_at_sha(native_path, native_name, expected_sha, token):
+                raise ValueError("regression evidence native test absent from exact-SHA source")
+            if not _native_tap_pass(log, native_name):
+                raise ValueError("regression evidence native named test has no authenticated TAP PASS")
+        else:
+            candidates = [test_id]
+            engine_prefix = "artifacts/wow-engine/"
+            if test_id.startswith(engine_prefix):
+                candidates.append(test_id[len(engine_prefix):])
+            prefix = r"(?m)^(?:\d{4}-\d{2}-\d{2}T[^\s]+Z\s+)?[.sxX]{0,120}WOW_INCIDENT_REGRESSION_PASSED\s+"
+            if not any(re.search(prefix + re.escape(nodeid) + r"\s+PASSED(?:\s|$)", log)
+                       for nodeid in candidates):
+                raise ValueError("regression evidence named test has no authenticated PASS log")
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError, UnicodeError) as exc:
+        raise ValueError("regression evidence GitHub verification unavailable") from exc
+    return {
+        "source": "GITHUB_ACTIONS_AUTHENTICATED_JOB_LOG",
+        "job_id": job_id,
+        "run_id": run_id,
+        "tested_sha": expected_sha,
+        "test": test_id,
+        "workflow": job["workflow_name"],
+        "result": "PASS",
+        "test_kind": kind,
+    }
