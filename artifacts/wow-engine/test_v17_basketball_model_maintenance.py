@@ -145,3 +145,121 @@ def test_live_basketball_maintenance_never_runs_on_push():
     assert "(github.event_name == 'push' && github.ref == 'refs/heads/main')" not in workflow
     assert 'WOW_CAN_EXECUTE: "false"' in workflow
     assert 'WOW_DRY_RUN_ONLY: "true"' in workflow
+
+
+def test_replay_success_cannot_disguise_stale_basketball_source(monkeypatch):
+    monkeypatch.setattr(
+        maintenance, "hydrate",
+        lambda *_args, **_kwargs: {
+            "sport": "NBA", "settled_rows": 0,
+            "fresh_acquisition_new_settled_games": 0,
+            "latest_game_date_before": "2026-06-13",
+            "latest_game_date_after": "2026-06-13",
+            "recent_supplement_status": {2026: "NO_NEW_SETTLEMENT"},
+            "can_execute": False,
+        },
+    )
+    monkeypatch.setattr(
+        maintenance, "run_training_replay",
+        lambda *_args, **_kwargs: {
+            "sport": "NBA", "persisted_status": "SHADOW",
+            "promotion_attempted": False, "can_execute": False,
+        },
+    )
+    result = maintenance.run_basketball_model_maintenance(object(), sports=("NBA",), seasons=(2026,))
+    assert result["status"] == "COMPLETE"  # Existing corpus was replayed, not hydrated
+    assert result["rows_updated"] == 1
+    assert result["rows_no_new_settlements"] == 1
+    assert result["rows_fresh_acquisition_degraded"] == 0
+    assert result["rows"][0]["hydration_status"] == "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS"
+    assert result["rows"][0]["status"] == "SHADOW_EVIDENCE_UPDATED"
+    assert result["automatic_promotion"] is False
+    assert result["probability_publishable"] is False
+
+
+def test_provider_blocked_after_successful_csv_is_counted_as_degraded(monkeypatch):
+    monkeypatch.setattr(
+        maintenance, "hydrate",
+        lambda *_args, **_kwargs: {
+            "sport": "NBA",
+            "settled_rows": 0, "fresh_acquisition_new_settled_games": 0,
+            "recent_supplement_status": {2026: "SOURCE_BLOCKED:ESPN_RECENT_SOURCE_HTTP_403"},
+            "can_execute": False,
+        },
+    )
+    monkeypatch.setattr(
+        maintenance, "run_training_replay",
+        lambda *_args, **_kwargs: {"persisted_status": "SHADOW", "can_execute": False},
+    )
+    out = maintenance.run_basketball_model_maintenance(object(), sports=("NBA",), seasons=(2026,))
+    assert out["status"] == "COMPLETE"  # Replay result independent of provider network
+    assert out["rows_fresh_acquisition_degraded"] == 1
+    assert out["rows"][0]["hydration_status"] == "FRESH_ACQUISITION_PARTIAL_SOURCE_BLOCKED_USING_PERSISTED_CORPUS"
+    assert out["rows_no_new_settlements"] == 0
+    assert out["probability_publishable"] is False
+    assert out["can_execute"] is False
+
+
+def test_missing_fresh_acquisition_counter_is_unverified_not_updated(monkeypatch):
+    monkeypatch.setattr(
+        maintenance, "hydrate",
+        lambda *_args, **_kwargs: {"sport": "NBA", "can_execute": False},
+    )
+    monkeypatch.setattr(
+        maintenance, "run_training_replay",
+        lambda *_args, **_kwargs: {"persisted_status": "SHADOW", "can_execute": False},
+    )
+    out = maintenance.run_basketball_model_maintenance(object(), sports=("NBA",), seasons=(2026,))
+    assert out["rows"][0]["hydration_status"] == "FRESH_ACQUISITION_NOT_VERIFIED"
+    assert out["rows_fresh_acquisition_unverified"] == 1
+    assert out["automatic_certification"] is False
+
+
+def test_opening_ramp_uses_trusted_2027_espn_nba_release_but_2026_wnba(monkeypatch):
+    calls = []
+    def fake_hydrate(sport, seasons, client=None):
+        calls.append((sport, tuple(seasons)))
+        return {
+            "sport": sport, "settled_rows": 1,
+            "fresh_acquisition_new_settled_games": 1,
+            "can_execute": False,
+        }
+    monkeypatch.setattr(maintenance, "hydrate", fake_hydrate)
+    monkeypatch.setattr(
+        maintenance, "run_training_replay",
+        lambda sport, client=None: {
+            "persisted_status": "SHADOW", "can_execute": False,
+        },
+    )
+    outcome = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA", "WNBA"),
+        now=datetime(2026, 10, 23, 17, tzinfo=timezone.utc),
+    )
+    assert calls == [
+        ("NBA", (2024, 2025, 2026, 2027)),
+        ("WNBA", (2023, 2024, 2025, 2026)),
+    ]
+    assert outcome["seasons_by_sport"] == {
+        "NBA": [2024, 2025, 2026, 2027],
+        "WNBA": [2023, 2024, 2025, 2026],
+    }
+    assert outcome["rows_updated"] == 2
+    assert outcome["automatic_certification"] is False
+    assert outcome["automatic_promotion"] is False
+    assert outcome["probability_publishable"] is False
+    assert outcome["can_execute"] is False
+
+
+def test_nba_release_year_rotates_only_after_october_opening():
+    assert maintenance.default_seasons(
+        datetime(2026, 9, 30, tzinfo=timezone.utc), sport="NBA",
+    ) == (2023, 2024, 2025, 2026)
+    assert maintenance.default_seasons(
+        datetime(2026, 10, 1, tzinfo=timezone.utc), sport="NBA",
+    ) == (2024, 2025, 2026, 2027)
+    assert maintenance.default_seasons(
+        datetime(2026, 10, 23, tzinfo=timezone.utc), sport="WNBA",
+    ) == (2023, 2024, 2025, 2026)
+    assert maintenance.default_seasons(
+        datetime(2027, 1, 1, tzinfo=timezone.utc), sport="NBA",
+    ) == (2024, 2025, 2026, 2027)
