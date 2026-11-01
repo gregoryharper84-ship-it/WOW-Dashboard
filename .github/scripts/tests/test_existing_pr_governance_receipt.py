@@ -2466,10 +2466,14 @@ def test_governance_review_route_contract_is_fail_closed_without_shell_execution
 def test_selected_source_download_retries_transient_only_without_downgrade():
     """Read one authenticated exact-ID artifact; validate before publishing ZIP."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    start = workflow.index('          artifact_zip="$RUNNER_TEMP/source-review/decision.zip"')
+    start = workflow.index('          [ "$GITHUB_REPOSITORY" = "gregoryharper84-ship-it/WOW-Dashboard" ]')
     end = workflow.index('          unzip -p "$RUNNER_TEMP/source-review/decision.zip"', start)
     block = workflow[start:end]
     assert block.count('/actions/artifacts/${artifact_id}/zip') == 1
+    assert '[ "$GITHUB_REPOSITORY" = "gregoryharper84-ship-it/WOW-Dashboard" ]' in block
+    assert '[[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]' in block
+    assert 'SOURCE_REVIEW_REPOSITORY_MISMATCH' in block
+    assert 'SOURCE_REVIEW_ARTIFACT_ID_INVALID' in block
     assert '--fail --silent --show-error --location' in block
     assert '--max-redirs 1 --proto-redir =https' in block
     assert '--oauth2-bearer "$GH_TOKEN"' in block
@@ -2479,7 +2483,7 @@ def test_selected_source_download_retries_transient_only_without_downgrade():
     assert '--retry-all-errors' not in block
     assert '--max-time 15' in block
     assert 'mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX"' in block
-    assert "trap 'rm -f \"$artifact_tmp\"' EXIT" in block
+    assert "trap 'rm -f \"$artifact_tmp\" \"$artifact_zip\"' EXIT" in block
     assert 'unzip -tqq "$artifact_tmp"' in block
     assert 'mv -- "$artifact_tmp" "$artifact_zip"' in block
     assert 'SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE' in block
