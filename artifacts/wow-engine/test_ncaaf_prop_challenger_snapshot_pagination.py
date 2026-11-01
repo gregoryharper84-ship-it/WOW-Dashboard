@@ -39,10 +39,13 @@ class _Query:
         self.page_limit = None
         self.fence = False
         self.cutoff = None
+        self.count_query = False
 
-    def select(self, fields):
+    def select(self, fields, count=None):
         assert fields == "created_at" or "source_snapshot_id" in fields
+        assert count in (None, "exact")
         self.fence = fields == "created_at"
+        self.count_query = count == "exact"
         return self
 
     def eq(self, field, value):
@@ -59,7 +62,7 @@ class _Query:
         return self
 
     def limit(self, count):
-        assert self.fence and count == 1
+        assert (self.fence or self.count_query) and count == 1
         return self
 
     def lte(self, field, value):
@@ -92,6 +95,13 @@ class _Query:
                 self.db.rows.append(self.db.new_row_after_fence)
                 self.db.new_row_after_fence = None
             return SimpleNamespace(data=fence_rows)
+        if self.count_query:
+            rows = self.db.rows
+            if self.cutoff is not None:
+                rows = [r for r in rows if isinstance(r, dict)
+                        and r.get("created_at", "") <= self.cutoff]
+            self.db.count_reads += 1
+            return SimpleNamespace(count=len(rows), data=[])
         self.db.calls.append((self.after, self.page_limit))
         rows = self.db.rows
         if self.cutoff is not None:
@@ -99,15 +109,21 @@ class _Query:
                     or r.get("created_at", "") <= self.cutoff]
         if self.after is not None and not self.db.repeat_previous_page:
             rows = [r for r in rows if r["source_snapshot_id"] > self.after]
-        return SimpleNamespace(data=rows[: self.page_limit])
+        returned = rows[: self.page_limit]
+        if self.db.remove_after_first_page and len(self.db.calls) == 1:
+            self.db.rows = self.db.rows[1:]
+        return SimpleNamespace(data=returned)
 
 
 class _Db:
-    def __init__(self, rows, new_row_after_fence=None, repeat_previous_page=False):
+    def __init__(self, rows, new_row_after_fence=None, repeat_previous_page=False,
+                 remove_after_first_page=False):
         self.rows = rows
         self.calls = []
+        self.count_reads = 0
         self.new_row_after_fence = new_row_after_fence
         self.repeat_previous_page = repeat_previous_page
+        self.remove_after_first_page = remove_after_first_page
 
     def table(self, name):
         assert name == "wow_ncaaf_source_snapshots"
@@ -124,6 +140,7 @@ def test_keyset_pagination_is_exact_once_across_three_pages():
         (_row(2)["source_snapshot_id"], 2),
         (_row(4)["source_snapshot_id"], 2),
     ]
+    assert db.count_reads == 2
     assert CAN_EXECUTE is False
     assert all(x.can_execute is False for x in output)
 
@@ -137,6 +154,25 @@ def test_new_source_snapshot_during_paging_is_outside_frozen_corpus():
     assert [r.week for r in output] == [1, 2, 3, 4, 5]
     assert len(db.rows) == 6  # a concurrent insert was simulated
     assert len(output) == 5    # frozen source corpus is unchanged
+
+
+def test_mutation_of_frozen_source_set_fails_closed():
+    db = _Db([_row(n) for n in range(1, 6)], remove_after_first_page=True)
+    with pytest.raises(NCAAFPropChallengerRunnerError) as err:
+        load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
+    assert (err.value.code, err.value.detail) == (
+        "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
+    )
+
+
+@pytest.mark.parametrize("invalid_seasons", [["2025"], [2025.0], [True], [1900], None])
+def test_season_scope_rejects_coercion(invalid_seasons):
+    with pytest.raises(NCAAFPropChallengerRunnerError) as err:
+        load_source_snapshots(_Db([_row(1)]), endpoint="/games/players",
+                              seasons=invalid_seasons, page_size=2)
+    assert (err.value.code, err.value.detail) == (
+        "NCAAF_PROP_SOURCE_READ_INVALID", "SEASONS_INVALID"
+    )
 
 
 def test_replayed_second_page_is_rejected_by_cursor_guard():
