@@ -173,6 +173,7 @@ jobs:
               "graded_events": payload.get("graded_events"),
               "new_grades_persisted": payload.get("new_grades_persisted"),
               "forward_health": health.get("status"),
+              "provisional_quality_failures": health.get("provisional_quality_failures"),
               "certification_recommendation": health.get("certification_recommendation"),
               "can_execute": False,
           }, sort_keys=True))
