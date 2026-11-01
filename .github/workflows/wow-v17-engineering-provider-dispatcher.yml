@@ -500,9 +500,13 @@ jobs:
               provider=openai
               reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
             elif [ "$force" = "cursor" ]; then
-              action=DISPATCH
-              provider=cursor
-              reason="${MANUAL_REASON:-OWNER_CURSOR_PR_HANDOFF}"
+              # Owner-disabled provider: NO_ACTION is not a fallback and must
+              # never dispatch an independent worker or reserve a writer.
+              # Keep the historical authenticated release finalizer only.
+              action=NO_ACTION
+              provider=none
+              reason=CURSOR_HANDOFF_DISABLED
+              echo "::notice::CURSOR_HANDOFF_DISABLED: no provider or fallback dispatched"
             elif [ "$force" = "gemini" ]; then
               if [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
                  [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ]; then
