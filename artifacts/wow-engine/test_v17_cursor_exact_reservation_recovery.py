@@ -532,6 +532,16 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     ), patch(
         "v17.cursor_terminal_status_receipt.api_json", side_effect=fixture.api,
     ):
+        # After the first negative proof, a branch rename with unchanged SHA
+        # must not pass the finalizer's fresh PR readback.
+        fixture.pr["head"]["ref"] = "fix/unrelated-ref"
+        with pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_PR_MOVED_AFTER_PROBE"):
+            release.append_terminal_release(
+                api, cursor_token="fixture", run_id=99010, run_attempt=1,
+                source_sha="a" * 40, reservation_comment_id=FAILED_CID,
+            )
+        fixture.pr["head"]["ref"] = "fix/synthetic-101"
+        assert api.puts == 0
         with pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED"):
             release.append_terminal_release(
                 api, cursor_token="fixture", run_id=99010, run_attempt=1,
