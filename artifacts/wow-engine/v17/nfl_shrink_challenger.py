@@ -53,8 +53,14 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
         prediction = by_id.get(str(grade.event_prediction_id))
         if prediction is None:
             continue
+        if prediction.selected_participant not in (prediction.home_team, prediction.away_team):
+            raise ValueError("NFL_SHADOW_CHALLENGER_INVALID_SELECTED_TEAM")
+        if int(grade.outcome) not in (0, 1):
+            raise ValueError("NFL_SHADOW_CHALLENGER_INVALID_BINARY_OUTCOME")
         selected_home = prediction.selected_participant == prediction.home_team
         p_sel = float(grade.calibrated_probability)
+        if not (math.isfinite(p_sel) and 0.0 < p_sel < 1.0):
+            raise ValueError("NFL_SHADOW_CHALLENGER_INVALID_PROBABILITY")
         p_home = p_sel if selected_home else 1.0 - p_sel
         ch_home = challenger_home_probability(p_home)
         ch_sel = ch_home if selected_home else 1.0 - ch_home
@@ -66,6 +72,36 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
     ch_brier = sum((c - y) ** 2 for _p, c, y in rows) / n
     champ_ll = sum(_log_loss(p, y) for p, _c, y in rows) / n
     ch_ll = sum(_log_loss(c, y) for _p, c, y in rows) / n
+    observed = sum(y for _p, _c, y in rows) / n
+    champion_mean = sum(p for p, _c, _y in rows) / n
+    challenger_mean = sum(c for _p, c, _y in rows) / n
+
+    def _ece_for(index: int) -> float:
+        total = 0.0
+        for bin_i in range(10):
+            lo, hi = bin_i / 10.0, (bin_i + 1) / 10.0
+            items = [r for r in rows if lo <= r[index] < hi or (bin_i == 9 and r[index] == 1)]
+            if items:
+                total += len(items) / n * abs(sum(r[index] - r[2] for r in items) / len(items))
+        return total
+
+    challenger_ece = _ece_for(1)
+    challenger_bias = challenger_mean - observed
+    # Diagnostic failures are reported even before the 100-game minimum.
+    # These are *not* an early certificate, a validated lower bound, or
+    # permission for a consumer to use the transformed probability.
+    provisional_failures = []
+    if not ch_brier < 0.25:
+        provisional_failures.append("FORWARD_BRIER_NOT_BELOW_0_25")
+    if not ch_ll < math.log(2):
+        provisional_failures.append("FORWARD_LOG_LOSS_NOT_BELOW_LOG2")
+    if not challenger_ece <= 0.12:
+        provisional_failures.append("FORWARD_ECE_ABOVE_0_12")
+    if not abs(challenger_bias) <= 0.08:
+        provisional_failures.append("FORWARD_CALIBRATION_BIAS_ABOVE_0_08")
+    provisional_failures.append("CHALLENGER_LOWER_BOUND_NOT_INDEPENDENTLY_VALIDATED")
+    if n < MIN_REVIEW_N:
+        provisional_failures.insert(0, f"FORWARD_GRADED_N_{n}_LT_{MIN_REVIEW_N}")
     return {
         "challenger_id": CHALLENGER_ID,
         "status": "EVALUATED",
@@ -75,9 +111,16 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
         "brier_improvement": champ_brier - ch_brier,
         "champion_log_loss": champ_ll,
         "challenger_log_loss": ch_ll,
-        "mean_champion_selected_probability": sum(p for p, _c, _y in rows) / n,
-        "mean_challenger_selected_probability": sum(c for _p, c, _y in rows) / n,
-        "selected_hit_rate": sum(y for _p, _c, y in rows) / n,
+        "mean_champion_selected_probability": champion_mean,
+        "mean_challenger_selected_probability": challenger_mean,
+        "selected_hit_rate": observed,
+        "champion_ece_10": _ece_for(0),
+        "challenger_ece_10": challenger_ece,
+        "champion_calibration_bias": champion_mean - observed,
+        "challenger_calibration_bias": challenger_bias,
+        "provisional_certification_failures": provisional_failures,
+        "challenger_lower_bound_certified": False,
+        "certification_recommendation": "DO_NOT_CERTIFY_YET",
         "eligible_for_review": n >= MIN_REVIEW_N,
         "probability_publishable": False,
         "automatic_promotion_allowed": False,
