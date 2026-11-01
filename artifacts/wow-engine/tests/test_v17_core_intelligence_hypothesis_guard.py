@@ -133,6 +133,8 @@ def test_conflicting_official_results_across_artifact_cohorts_hold_all(monkeypat
         monkeypatch.setattr(runtime, "load_observations", lambda _db, **kw: ordering)
         result = runtime.intelligence_summary(_ReadOnlyDB(sources))
         assert result["cohort_n"] == 2
+        assert result["status"] == "HOLD"
+        assert result["retrospective_research_hold_reasons"] == ["OFFICIAL_SETTLEMENT_CONFLICT"]
         for cohort in result["cohorts"]:
             report = cohort["retrospective_research_audit"]
             assert report["status"] == "HOLD"
@@ -162,6 +164,8 @@ def test_corrupt_prediction_probability_cannot_be_used_as_verified_research(monk
     result = runtime.intelligence_summary(_ReadOnlyDB(sources))
     research = result["cohorts"][0]["retrospective_research_audit"]
     assert research["status"] == "HOLD"
+    assert result["status"] == "HOLD"
+    assert result["retrospective_research_hold_reasons"] == ["NO_VERIFIED_ROWS"]
     assert research["blocker"] == "NO_VERIFIED_ROWS"
     assert research["observation_source_probability_conflict_n"] == 1
     assert result["hypothesis_n"] == 0
