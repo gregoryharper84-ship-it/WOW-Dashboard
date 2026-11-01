@@ -157,6 +157,19 @@ def test_small_server_page_cap_still_completes_full_ledger():
     assert client.event_pages > 30
 
 
+def test_36000_valid_events_with_700_row_backend_cap_are_accepted():
+    """Greptile regression: 52 full/partial pages plus empty termination page."""
+    client = _Client()
+    client.events = [{"event_id": i, "state": "MODEL_EVALUATED",
+                      "candidate_id": f"c-{i}", "can_execute": False}
+                     for i in range(1, 36_001)]
+    result = _read_all_state_events(client, "wow-scout-20261031")
+    assert len(result) == 36_000
+    assert result[0]["event_id"] == 1
+    assert result[-1]["event_id"] == 36_000
+    assert client.event_pages == 53
+
+
 def test_ambiguous_none_db_response_never_certifies_completion():
     class BadResponse:
         def table(self, _name):
