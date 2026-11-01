@@ -53,19 +53,23 @@ def _agent_runtime_auth_config(monkeypatch):
         def __init__(self):
             self.now_ms = 0
             self.admissions = {}
+            self.retries = {}
 
-        def eval(self, script, numkeys, key, limit, window_ms, member):
-            assert numkeys == 1
-            assert "ZREMRANGEBYSCORE" in script and "TIME" in script
+        def eval(self, script, numkeys, key, replay_key, limit, window_ms, member, retry_limit):
+            assert numkeys == 2 and replay_key == key + ":replays"
+            assert "HINCRBY" in script and "ZREMRANGEBYSCORE" in script and "TIME" in script
             self.admissions = {
                 k: t for k, t in self.admissions.items()
                 if t > self.now_ms - int(window_ms)
             }
+            self.retries = {k: v for k, v in self.retries.items() if k in self.admissions}
             if member in self.admissions:
-                return 2
+                self.retries[member] = self.retries.get(member, 0) + 1
+                return 2 if self.retries[member] <= int(retry_limit) else 0
             if len(self.admissions) >= int(limit):
                 return 0
             self.admissions[member] = self.now_ms
+            self.retries.pop(member, None)
             return 1
 
     fake_rate = FakeAdmissionRedis()
@@ -430,8 +434,10 @@ def test_admission_bucket_isolated_per_render_service_and_shared_by_instances(mo
     seen = []
 
     class RecordingRedis:
-        def eval(self, script, nkeys, bucket, limit, window, member):
-            assert nkeys == 1
+        def eval(self, script, nkeys, bucket, replay_bucket, limit, window, member, retry_limit):
+            assert nkeys == 2
+            assert replay_bucket == bucket + ":replays"
+            assert retry_limit == agent_runtime_api.MAX_IDEMPOTENT_RETRIES_PER_WINDOW
             seen.append(bucket)
             return 1
 
@@ -475,10 +481,17 @@ def test_existing_redis_global_admission_limit_and_outage_fail_closed(monkeypatc
         agent_runtime_api._check_admission_rate_limit(
             idempotency_key=f"unique-{i}", request_hash="same-body",
         )
-    # Same-key retries are idempotent even at full capacity.
-    agent_runtime_api._check_admission_rate_limit(
-        idempotency_key="unique-0", request_hash="same-body",
-    )
+    # Bound actual same-key retries even at full unique-admission capacity.
+    for _ in range(agent_runtime_api.MAX_IDEMPOTENT_RETRIES_PER_WINDOW):
+        agent_runtime_api._check_admission_rate_limit(
+            idempotency_key="unique-0", request_hash="same-body",
+        )
+    with pytest.raises(HTTPException) as replay_limit:
+        agent_runtime_api._check_admission_rate_limit(
+            idempotency_key="unique-0", request_hash="same-body",
+        )
+    assert replay_limit.value.status_code == 429
+    assert replay_limit.value.detail["code"] == "AGENT_RUNTIME_ADMISSION_RATE_LIMITED"
     assert len(rate.admissions) == agent_runtime_api.MAX_RUN_ADMISSIONS_PER_MINUTE
     with pytest.raises(HTTPException) as exc:
         agent_runtime_api._check_admission_rate_limit(
