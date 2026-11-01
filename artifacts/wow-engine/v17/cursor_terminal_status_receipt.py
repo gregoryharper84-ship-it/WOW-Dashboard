@@ -25,6 +25,23 @@ CURSOR_API = "https://api.cursor.com/v1"
 GITHUB_API = "https://api.github.com"
 TERMINAL_RUN_STATES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
 PROTECTED_BRANCHES = frozenset({"main", "master"})
+# One immutable post-cutover reservation was written by the broken producer.
+# A separately reviewed Class P source attestation binds only this exact
+# bot-authored comment/digest and authenticated dispatcher to its PR branch.
+# This NEVER substitutes for the live PR, Cursor 404, archived inventories,
+# fresh second probe, or the protected successful finalizer receipt.
+EXACT_POST_CUTOVER_BRANCH_WITNESS = {
+    "comment_id": 6553867635,
+    "digest": "e5ee1bfd536f4ee7d25747ee10b14d0eb819d4dc11e569752425843cb015af62",
+    "incident": "1988",
+    "pr_number": "2211",
+    "source_sha": "27e1a86262d80e032ca2e8c8fb64430c137b6a9a",
+    "main_sha": "8857e4882f85f01dc47c78ee94a5318398289179",
+    "worker_id": "github-actions:41276607293:1",
+    "agent_id": "bc-df9cd4ca-0f45-5d5d-ac25-d500977be83e",
+    "branch": "fix/nba-exact-official-player-settlement-20261028",
+}
+
 MAX_NEGATIVE_INVENTORY_PAGES = 20
 INVENTORY_PAGE_SIZE = 100
 NEXT_CURSOR_RE = re.compile(r"^[A-Za-z0-9_.:=-]{1,256}$")
@@ -149,7 +166,23 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     worker_id = entry.get("worker_id")
     status = entry.get("status")
     branch = entry.get("branch")
+    exact_witness = False
     if status == "CURSOR_LAUNCH_RESERVED":
+        if "branch" not in entry:
+            witness = EXACT_POST_CUTOVER_BRANCH_WITNESS
+            # No time-window fallback: all other branchless reservations HOLD.
+            if (comment_id != witness["comment_id"]
+                    or hashlib.sha256(body.encode("utf-8")).hexdigest() != witness["digest"]
+                    or incident != witness["incident"]
+                    or number != witness["pr_number"]
+                    or source_sha != witness["source_sha"]
+                    or main_sha != witness["main_sha"]
+                    or worker_id != witness["worker_id"]
+                    or agent_id != witness["agent_id"]
+                    or entry.get("source_pr") != int(witness["pr_number"])):
+                raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+            branch = witness["branch"]
+            exact_witness = True
         if (run_id is not None or not isinstance(branch, str)
                 or not branch.strip() or branch in PROTECTED_BRANCHES):
             raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
@@ -201,6 +234,7 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
         raise ReceiptBlocked("CURSOR_RESERVATION_WORKFLOW_UNVERIFIED")
     return {
         "reservation_comment_id": comment_id,
+        "exact_branchless_witness": exact_witness,
         "reservation_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "reservation_status": status or "CURSOR_AGENT_ENQUEUED",
         "reservation_branch": branch if isinstance(branch, str) else None,
@@ -235,6 +269,9 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
         if target.get("reservation_branch") != live_ref:
             raise ReceiptBlocked("CURSOR_RESERVATION_BRANCH_MISMATCH")
     original, latest = target["original_head_sha"], head["sha"]
+    # The single post-cutover attestation cannot follow a changed PR head.
+    if target.get("exact_branchless_witness") and latest != original:
+        raise ReceiptBlocked("CURSOR_EXACT_WITNESS_PR_MOVED")
     if original != latest:
         comparison = _require_object(
             api(f"{GITHUB_API}/repos/{REPOSITORY}/compare/{original}...{latest}",
