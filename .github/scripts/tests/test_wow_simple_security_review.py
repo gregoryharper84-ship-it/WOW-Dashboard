@@ -429,6 +429,32 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
 
 
+    def test_gemini_fallback_pins_current_stable_model_and_denies_restricted_legacy(self):
+        # An actual provider call stays mocked: this is an endpoint/allowlist
+        # contract, not permission to invoke a paid or unverified reviewer.
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}):
+            with patch.object(m, "request_json", return_value={"candidates": []}) as request:
+                with self.assertRaises(m.Hold) as incomplete:
+                    m.call_provider("gemini-generative-api", "test-only-key", "review")
+                self.assertEqual(str(incomplete.exception), "GEMINI_REVIEW_INCOMPLETE")
+                self.assertEqual(
+                    request.call_args.args[0],
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    "gemini-3.8-flash:generateContent",
+                )
+                self.assertEqual(request.call_args.kwargs["headers"], {
+                    "x-goog-api-key": "test-only-key",
+                })
+        # Gemini 2.5 access was restricted for new projects in September 2026;
+        # do not silently revert to the known HTTP 404 legacy fallback.
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-2.5-flash"}):
+            with patch.object(m, "request_json") as network:
+                with self.assertRaises(m.Hold) as invalid:
+                    m.call_provider("gemini-generative-api", "test-only-key", "review")
+                self.assertEqual(str(invalid.exception), "GEMINI_MODEL_INVALID")
+                network.assert_not_called()
+
+
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
               "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
