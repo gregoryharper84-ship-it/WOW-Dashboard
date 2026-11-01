@@ -41,12 +41,14 @@ BLOCKING_CATEGORIES = frozenset(FINDING_CATEGORIES) - {"informational"}
 # Bounded finding contract. The validator and the schema handed to the model are
 # generated from these, so a reviewer can never be held for a limit it was not
 # told about while the fail-closed validation itself stays unchanged.
+# Review finding text is untrusted evidence DATA: receipt storage and fixed-label
+# check publication do not execute it, pass it to a model, or authorize release.
 MAX_FINDINGS = 12
 MAX_FINDING_TEXT = 500
 MAX_FINDING_DETAIL = 2048
 FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_TEXT}
 FINDING_DETAIL_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_DETAIL}
-REVIEW_CONTRACT_VERSION = 2
+REVIEW_CONTRACT_VERSION = 3
 REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
@@ -319,7 +321,7 @@ def prompt_for(target):
             "objects; empty array when none). Each finding object has exactly these five keys and no "
             "others: severity in critical|high|medium|low, category in security|probability_integrity|"
             "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
-            "evidence are non-empty strings of at most 500 characters each; detail may be at most 2048 characters. Quote only the shortest "
+            "file and evidence are non-empty strings of at most 500 characters each; detail is a non-empty string of at most 2048 characters. Quote only the shortest "
             "decisive excerpt as evidence. Never return whitespace-only file, detail, or evidence. "
             "For a cross-cutting concern, cite the most relevant changed repository-relative file path, never blank. "
             "Prefer 100-200 characters in detail and 30-150 in evidence. Split complex concerns into separate "
