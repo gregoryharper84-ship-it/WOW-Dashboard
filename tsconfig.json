@@ -12,5 +12,9 @@
     {
       "path": "./lib/api-zod"
     }
+  ],
+  "include": [
+    "trigger.config.ts",
+    "src/trigger/**/*.ts"
   ]
 }
