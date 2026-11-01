@@ -592,8 +592,8 @@ def test_no_caller_or_scorer_money_status_can_be_passed_to_reducer():
 
 
 @pytest.mark.parametrize("status_claim", (
-    "resolved", "ReSoLvEd", "ＲＥＳＯＬＶＥＤ", "RESOLVED\\n",
-    "RESOLVED\\t", "RESOLVED\\u200d", "RESOLVED\\0", " Résolved ",
+    "resolved", "ReSoLvEd", "ＲＥＳＯＬＶＥＤ", "RESOLVED\n",
+    "RESOLVED\t", "RESOLVED\u200d", "RESOLVED\0", " Résolved ",
 ))
 def test_money_status_unicode_and_newline_variants_never_resolve(monkeypatch, status_claim):
     """Exercise authenticated HTTP with caller-controlled status, not dead args."""
