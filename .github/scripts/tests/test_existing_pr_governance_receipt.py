@@ -1671,6 +1671,10 @@ def test_v2_fallback_sunset_is_immutable_and_fail_closed():
     assert cutoff == datetime(2026, 11, 1, tzinfo=timezone.utc)
     receipt = build(now=NOW)
     verify(receipt, now=NOW)
+    # A receipt created just before sunset is accepted only until the cutoff.
+    before_cutoff = cutoff - timedelta(seconds=1)
+    just_before = build(now=before_cutoff)
+    verify(just_before, now=before_cutoff)
     for expired_time in (cutoff, cutoff + timedelta(seconds=1)):
         with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
                            match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
@@ -1688,6 +1692,75 @@ def test_historical_v2_acceptance_uses_explicit_clock():
     receipt = build(now=NOW)
     verify(receipt, now=NOW)
     assert receipt["certification_mode"] == verifier.CERTIFICATION_MODE
+
+
+def test_historical_cli_positive_and_provenance_rejections_are_process_isolated(tmp_path):
+    """Keep real argv, deserialization and error paths covered without changing
+    production CLI or making an expired receipt valid on the live clock.
+    The fixed clock exists only in the explicitly launched child interpreter.
+    """
+    receipt = build(now=NOW)
+    receipt_file = tmp_path / "receipt.json"
+    reviews_file = tmp_path / "reviews.json"
+    args = [
+        "--receipt", str(receipt_file),
+        "--repository", REPOSITORY,
+        "--head-sha", HEAD,
+        "--head-ref", "fix/issue-1806",
+        "--workflow-run-id", "12345",
+        "--workflow-name", verifier.WORKFLOW_NAME,
+        "--pr-number", "1822",
+        "--live-reviews-json", str(reviews_file),
+    ]
+    harness = """
+import importlib.util, pathlib, sys
+from datetime import datetime
+source = pathlib.Path(sys.argv[1])
+clock = datetime.fromisoformat(sys.argv[2])
+spec = importlib.util.spec_from_file_location("historical_receipt_verifier", source)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+class HistoricalClock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return clock if tz is None else clock.astimezone(tz)
+module.datetime = HistoricalClock
+sys.argv = [str(source), *sys.argv[3:]]
+raise SystemExit(module.main())
+"""
+
+    def check(candidate, reviews):
+        receipt_file.write_text(json.dumps(candidate), encoding="utf-8")
+        reviews_file.write_text(json.dumps(reviews), encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "-c", harness, str(SCRIPT), NOW.isoformat(), *args],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+        )
+
+    original_reviews = evidence()["reviews"]
+    valid = check(receipt, original_reviews)
+    assert valid.returncode == 0, valid.stdout + valid.stderr
+    assert "REVIEW_EVIDENCE_VERIFIED" in valid.stdout
+
+    withdrawn = original_reviews + [{
+        "id": 13, "state": "DISMISSED", "commit_id": HEAD,
+        "submitted_at": "2026-10-17T23:01:00Z",
+        "user": {**REVIEWER, "type": "User"},
+    }]
+    revoked = check(receipt, withdrawn)
+    assert revoked.returncode == 1
+    assert "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING" in revoked.stdout
+
+    renamed = dict(receipt)
+    renamed["changed_files"] = [{
+        "filename": "src/relocated.py",
+        "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
+        "status": "renamed",
+    }]
+    forbidden = check(renamed, original_reviews)
+    assert forbidden.returncode == 1
+    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in forbidden.stdout
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch, capsys):
