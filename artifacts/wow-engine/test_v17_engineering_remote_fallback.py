@@ -247,7 +247,9 @@ class RemoteFallbackTests(unittest.TestCase):
 
     def test_failed_cursor_reservation_refuses_missing_or_protected_branch_before_write(self):
         agent = "bc-12345678-1234-5678-1234-567812345678"
-        for invalid in (None, "", " ", "main", "master", "fix/branch ", True):
+        for invalid in (None, "", " ", "main", "master", "fix/branch ", True,
+                        "fix branch", "fix//branch", "fix/../bad", "fix/.lock",
+                        "fix/" + "a" * 255):
             with self.subTest(branch=invalid), self.assertRaisesRegex(
                 remote.ProviderUnavailable, "^CURSOR_RESERVATION_BRANCH_INVALID$"
             ):
