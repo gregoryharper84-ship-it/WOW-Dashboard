@@ -49,6 +49,8 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
     """Champion vs challenger on the same graded games (selected-side outcome)."""
     by_id = {str(getattr(p, "event_prediction_id", "")): p for p in predictions}
     rows: list[tuple[float, float, int]] = []
+    home_selected_rows: list[tuple[float, float, int]] = []
+    away_selected_rows: list[tuple[float, float, int]] = []
     for grade in grades:
         prediction = by_id.get(str(grade.event_prediction_id))
         if prediction is None:
@@ -64,7 +66,9 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
         p_home = p_sel if selected_home else 1.0 - p_sel
         ch_home = challenger_home_probability(p_home)
         ch_sel = ch_home if selected_home else 1.0 - ch_home
-        rows.append((p_sel, ch_sel, int(grade.outcome)))
+        item = (p_sel, ch_sel, int(grade.outcome))
+        rows.append(item)
+        (home_selected_rows if selected_home else away_selected_rows).append(item)
     n = len(rows)
     if n == 0:
         return {"challenger_id": CHALLENGER_ID, "n": 0, "status": "NO_GRADED_GAMES", "can_execute": False}
@@ -87,6 +91,28 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
 
     challenger_ece = _ece_for(1)
     challenger_bias = challenger_mean - observed
+
+    def _side_diagnostic(items: Sequence[tuple[float, float, int]]) -> dict[str, Any]:
+        count = len(items)
+        if count == 0:
+            return {"n": 0, "observed_win_rate": None, "champion_mean": None,
+                    "challenger_mean": None, "champion_bias": None, "challenger_bias": None}
+        observed_side = sum(y for _p, _c, y in items) / count
+        champion_side = sum(p for p, _c, _y in items) / count
+        challenger_side = sum(c for _p, c, _y in items) / count
+        return {
+            "n": count,
+            "observed_win_rate": observed_side,
+            "champion_mean": champion_side,
+            "challenger_mean": challenger_side,
+            "champion_bias": champion_side - observed_side,
+            "challenger_bias": challenger_side - observed_side,
+        }
+
+    side_diagnostics = {
+        "selected_home": _side_diagnostic(home_selected_rows),
+        "selected_away": _side_diagnostic(away_selected_rows),
+    }
     # Diagnostic failures are reported even before the 100-game minimum.
     # These are *not* an early certificate, a validated lower bound, or
     # permission for a consumer to use the transformed probability.
@@ -114,6 +140,7 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
         "mean_champion_selected_probability": champion_mean,
         "mean_challenger_selected_probability": challenger_mean,
         "selected_hit_rate": observed,
+        "selection_side_diagnostics": side_diagnostics,
         "champion_ece_10": _ece_for(0),
         "challenger_ece_10": challenger_ece,
         "champion_calibration_bias": champion_mean - observed,
