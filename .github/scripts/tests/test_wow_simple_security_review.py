@@ -442,17 +442,18 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         cases = (
             ("malformed_json", "STOP", "{not valid json}", "SEMANTIC_RESPONSE_NOT_JSON"),
             ("invalid_verdict", "STOP", json.dumps({**good, "security_review": "NOT_PASS"}),
-             "SEMANTIC_REVIEW_VALUE_INVALID"),
+             "SEMANTIC_VERDICT_INVALID"),
             ("non_stop", "MAX_TOKENS", json.dumps(good), "GEMINI_REVIEW_INCOMPLETE"),
         )
         with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
-            for name, reason, body, _expected in cases:
+            for name, reason, body, expected in cases:
                 with self.subTest(name=name):
                     result = {"candidates": [{"finishReason": reason, "content": {
                         "parts": [{"text": body}]}}]}
                     with patch.object(m, "request_json", return_value=result) as request:
-                        with self.assertRaises(m.Hold):
+                        with self.assertRaises(m.Hold) as caught:
                             m.call_provider("gemini-generative-api", "TEST_KEY", "diff")
+                        self.assertEqual(str(caught.exception), expected)
                         self.assertEqual(request.call_count, 1)
 
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
