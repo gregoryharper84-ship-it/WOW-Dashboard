@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 
 try:
     from .cursor_cloud_handoff import agent_id as deterministic_agent_id
@@ -25,6 +26,7 @@ BOT_LOGIN = "github-actions[bot]"
 EXPECTED_COMMENT_ID = 6412045537
 EXPECTED_INCIDENT_ID = "2054"
 EXPECTED_WORKER_ID = "github-actions:40295540537:1"
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class ReleaseBlocked(Exception):
@@ -93,8 +95,7 @@ def verified_released_ids(
             )
             if (
                 isinstance(claim.get("pr_sha"), str)
-                and len(claim["pr_sha"]) == 40
-                and all(c in "0123456789abcdef" for c in claim["pr_sha"])
+                and bool(SHA_RE.fullmatch(claim["pr_sha"]))
                 and isinstance(claim.get("pr_number"), str)
                 and claim["pr_number"].isdigit()
                 and int(claim["pr_number"]) > 0
@@ -104,6 +105,10 @@ def verified_released_ids(
         valid_negative_launch = (
             claim.get("status") == "CURSOR_LAUNCH_RESERVED"
             and claim.get("cursor_run_id") is None
+            and "cursor_run_status" not in claim
+            and claim.get("can_execute") is False
+            and claim.get("probability_authority") is False
+            and claim.get("terminal_authority") == "V17_TERMINAL_REDUCER"
             and doc.get("cursor_run_id") is None
             and doc.get("terminal_status") == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
             and doc.get("agent_status") == "NEVER_CREATED"
@@ -113,11 +118,9 @@ def verified_released_ids(
             and claim.get("cursor_agent_id") == expected_negative_agent_id
             and doc.get("agent_id") == expected_negative_agent_id
             and isinstance(doc.get("pr_sha"), str)
-            and len(doc["pr_sha"]) == 40
-            and all(c in "0123456789abcdef" for c in doc["pr_sha"])
+            and bool(SHA_RE.fullmatch(doc["pr_sha"]))
             and isinstance(doc.get("main_sha"), str)
-            and len(doc["main_sha"]) == 40
-            and all(c in "0123456789abcdef" for c in doc["main_sha"])
+            and bool(SHA_RE.fullmatch(doc["main_sha"]))
             and doc["pr_sha"] == claim.get("pr_sha")
             and doc["main_sha"] == claim.get("main_sha")
         )
@@ -139,8 +142,7 @@ def verified_released_ids(
                 or type(doc.get("run_attempt")) is not int
                 or doc["run_attempt"] <= 0
                 or not isinstance(doc.get("source_sha"), str)
-                or len(doc["source_sha"]) != 40
-                or any(c not in "0123456789abcdef" for c in doc["source_sha"])):
+                or not SHA_RE.fullmatch(doc["source_sha"])):
             raise ReleaseBlocked("REMOTE_RELEASE_RECEIPT_IDENTITY_UNVERIFIED")
         try:
             run = get_run(doc["workflow_run_id"])
@@ -162,25 +164,19 @@ def verified_released_ids(
 
 def append_terminal_release(api, *, cursor_token: str, run_id: int,
                             run_attempt: int, source_sha: str,
-                            reservation_comment_id: int | None = None,
-                            cursor_api=None) -> dict:
+                            reservation_comment_id: int | None = None) -> dict:
     """Called only under the EXISTING implementation-single-writer mutex."""
     try:
-        from .cursor_terminal_status_receipt import (
-            api_json, collect_receipt,
-        )
+        from . import cursor_terminal_status_receipt as _cursor_receipt_mod
         from .engineering_remote_fallback import (
             ProviderUnavailable, assert_no_local_writer, reservations,
         )
     except ImportError:  # Legacy standalone CLI entrypoint
-        from cursor_terminal_status_receipt import (
-            api_json, collect_receipt,
-        )
+        import cursor_terminal_status_receipt as _cursor_receipt_mod
         from engineering_remote_fallback import (
             ProviderUnavailable, assert_no_local_writer, reservations,
         )
 
-    provider_api = api_json if cursor_api is None else cursor_api
     if (not cursor_token or type(run_id) is not int or run_id <= 0
             or type(run_attempt) is not int or run_attempt <= 0
             or os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
@@ -220,7 +216,13 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             or not isinstance(originals[0].get("body"), str)
             or old.get("status") not in {"CURSOR_AGENT_ENQUEUED", "CURSOR_LAUNCH_RESERVED"}
             or (reservation_comment_id is None and is_failed_launch)
-            or (is_failed_launch and old.get("cursor_run_id") is not None)
+            or (is_failed_launch and (
+                old.get("cursor_run_id") is not None
+                or "cursor_run_status" in old
+                or old.get("can_execute") is not False
+                or old.get("probability_authority") is not False
+                or old.get("terminal_authority") != "V17_TERMINAL_REDUCER"
+            ))
             or (not is_failed_launch and (
                 not isinstance(old.get("cursor_run_id"), str)
                 or not old["cursor_run_id"].startswith("run-")
@@ -233,9 +235,8 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
 
     # GET the live provider run, agent and source PR again; the saved artifact
     # alone cannot authorize release and no Cursor write request is made.
-    proof = collect_receipt(
+    proof = _cursor_receipt_mod.collect_receipt(
         cursor_token, api.token,
-        **({"api": provider_api} if cursor_api is not None else {}),
         **({"reservation_comment_id": reservation_comment_id}
            if reservation_comment_id is not None else {}),
     )
@@ -331,7 +332,7 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             if cursor_run_id is not None:
                 raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_PROOF_INVALID")
             try:
-                provider_api(agent_url, token=cursor_token, basic=True)
+                _cursor_receipt_mod.api_json(agent_url, token=cursor_token, basic=True)
             except ReceiptBlocked as exc:
                 if exc.code != "STATUS_API_HTTP_404":
                     raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_RECHECK_UNVERIFIED") from None
@@ -340,8 +341,9 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             else:
                 raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_REACTIVATED")
             try:
-                verify_negative_inventories(
-                    cursor_token, agent_id=agent_id, pr_number=pr_number, api=provider_api,
+                _cursor_receipt_mod.verify_negative_inventories(
+                    cursor_token, agent_id=agent_id, pr_number=pr_number,
+                    api=_cursor_receipt_mod.api_json,
                 )
             except ReceiptBlocked as exc:
                 if exc.code in {
@@ -358,8 +360,8 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
                 raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_PROOF_INVALID")
             run_url = f"{agent_url}/runs/{quote(cursor_run_id, safe='')}"
             try:
-                fresh_agent = provider_api(agent_url, token=cursor_token, basic=True)
-                fresh_run = provider_api(run_url, token=cursor_token, basic=True)
+                fresh_agent = _cursor_receipt_mod.api_json(agent_url, token=cursor_token, basic=True)
+                fresh_run = _cursor_receipt_mod.api_json(run_url, token=cursor_token, basic=True)
             except Exception:
                 # A transport or provider error is not proof that a writer stopped.
                 raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_RECHECK_UNVERIFIED") from None

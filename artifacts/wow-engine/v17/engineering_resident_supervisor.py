@@ -217,11 +217,12 @@ class GitHubTransport:
                     fin_age = (now - fin_updated).total_seconds()
                     if fin_age < 0:
                         return "PROVIDER_STATUS_UNVERIFIED"
-                    if fin_updated >= route_time and fin["conclusion"] == "success" and fin_age <= 900:
+                    if fin_updated >= route_time and fin["conclusion"] == "success":
                         post_main = self.get("commits/main")
                         post_main_sha = post_main.get("sha") if isinstance(post_main, dict) else None
                         latest_success |= (
-                            fin["head_sha"] == pre_main_sha
+                            fin["head_sha"] == run["head_sha"]
+                            and fin["head_sha"] == pre_main_sha
                             and post_main_sha == pre_main_sha
                         )
         if latest_success:

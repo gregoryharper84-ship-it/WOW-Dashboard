@@ -6,6 +6,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from urllib import error, parse, request
 
@@ -23,8 +24,9 @@ RUN_ID = "run-7b568d98-de5b-4cce-b2a4-e7743fd43787"
 CURSOR_API = "https://api.cursor.com/v1"
 GITHUB_API = "https://api.github.com"
 TERMINAL_RUN_STATES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
-MAX_NEGATIVE_INVENTORY_PAGES = 100
+MAX_NEGATIVE_INVENTORY_PAGES = 20
 INVENTORY_PAGE_SIZE = 100
+NEXT_CURSOR_RE = re.compile(r"^[A-Za-z0-9_.:=-]{1,256}$")
 EXPECTED_FILES = {
     ".github/workflows/wow-v17-independent-qa-check.yml",
     "artifacts/wow-engine/docs/failure_codes.md",
@@ -299,7 +301,10 @@ def verify_negative_inventories(
             raw_next = page.get("nextCursor")
             if raw_next in (None, ""):
                 return pages, len(seen_ids)
-            if not isinstance(raw_next, str) or not items or raw_next in seen_cursors:
+            if (not isinstance(raw_next, str)
+                    or not NEXT_CURSOR_RE.fullmatch(raw_next)
+                    or not items
+                    or raw_next in seen_cursors):
                 raise ReceiptBlocked(unverified_code)
             seen_cursors.add(raw_next)
             next_cursor = raw_next
@@ -323,9 +328,6 @@ def verify_negative_inventories(
         "pr_pages": pr_pages,
         "pr_agents_checked": pr_count,
     }
-
-
-_verify_negative_inventories = verify_negative_inventories
 
 
 def collect_receipt(

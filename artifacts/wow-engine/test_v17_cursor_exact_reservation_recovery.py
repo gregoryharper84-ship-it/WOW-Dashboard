@@ -528,17 +528,17 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
     with patch.dict("os.environ", env), patch(
         "v17.cursor_terminal_status_receipt.collect_receipt", return_value=proof,
+    ), patch(
+        "v17.cursor_terminal_status_receipt.api_json", side_effect=fixture.api,
     ):
         with pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED"):
             release.append_terminal_release(
                 api, cursor_token="fixture", run_id=99010, run_attempt=1,
                 source_sha="a" * 40, reservation_comment_id=None,
-                cursor_api=fixture.api,
             )
         result = release.append_terminal_release(
             api, cursor_token="fixture", run_id=99010, run_attempt=1,
             source_sha="a" * 40, reservation_comment_id=FAILED_CID,
-            cursor_api=fixture.api,
         )
     assert result["status"] == "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS"
     assert result["original_comment_id"] == FAILED_CID
