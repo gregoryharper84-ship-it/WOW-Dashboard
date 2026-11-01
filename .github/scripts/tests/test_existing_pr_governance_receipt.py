@@ -2463,76 +2463,26 @@ def test_governance_review_route_contract_is_fail_closed_without_shell_execution
     assert 'if [ ! -f "$RUNNER_TEMP/source-review/decision.json" ] ||' in selector
     assert '[ ! -f "$RUNNER_TEMP/source-review-run.json" ]; then' in selector
 
-def test_selected_source_download_has_no_token_on_signed_redirect():
-    """Two-step artifact download: authenticated metadata, tokenless signed ZIP."""
+def test_selected_source_download_uses_authenticated_run_and_exact_name():
+    """Use GitHub's official artifact client; preserve provenance and fail closed."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    start = workflow.index('          [ "$GITHUB_REPOSITORY" = "gregoryharper84-ship-it/WOW-Dashboard" ]')
-    end = workflow.index('          unzip -p "$RUNNER_TEMP/source-review/decision.zip"', start)
-    block = workflow[start:end]
-    assert block.count("/actions/artifacts/${artifact_id}/zip") == 1
-    assert '[ "$GITHUB_REPOSITORY" = "gregoryharper84-ship-it/WOW-Dashboard" ]' in block
-    assert '[[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]' in block
-    assert "SOURCE_REVIEW_REPOSITORY_MISMATCH" in block
-    assert "SOURCE_REVIEW_ARTIFACT_ID_INVALID" in block
-    assert block.count('--oauth2-bearer "$GH_TOKEN"') == 1
-    assert "SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID" in block
-    assert '[ "$api_status" = "302" ]' in block
-    assert 'redirect_url=$(python - "$headers_tmp"' in block
-    assert 'u.scheme != "https"' in block
-    assert 'len(urls) != 1' in block
-    assert 'ip_host' in block
-    assert 'any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7f for ch in urls[0])' in block
-    assert 'allowed_host' in block
-    assert 'host == "objects.githubusercontent.com"' in block
-    assert 'productionresultssa[0-9]+' in block
-    assert 'host.endswith(".actions.githubusercontent.com")' not in block
-    assert 'or not allowed_host:' in block
-    assert '--output "$artifact_tmp" "$redirect_url"' in block
-    assert block.index('--oauth2-bearer "$GH_TOKEN"') < block.index('--output "$artifact_tmp" "$redirect_url"')
-    assert "--location" not in block
-    assert "--location-trusted" not in block
-    assert "--retry-all-errors" not in block
-    assert block.count("--retry 1 --retry-delay 5 --retry-max-time 40") == 2
-    assert 'mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX"' in block
-    assert 'mktemp "$RUNNER_TEMP/source-review/.headers.XXXXXXXX"' in block
-    assert 'trap \'rm -f "$artifact_tmp" "$artifact_zip" "$headers_tmp"\' EXIT' in block
-    assert all("trap \'exit " in block for _ in (0,))
-    assert "unzip -tqq" in block
-    assert 'mv -- "$artifact_tmp" "$artifact_zip"' in block
-    assert "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" in block
-    assert "SOURCE_REVIEW_ARTIFACT_ZIP_INVALID" in block
-    assert "--header \"Authorization: Bearer" not in block
-
-
-def test_signed_redirect_shell_metacharacters_remain_single_argument(tmp_path):
-    """Never execute extracted workflow shell; verify its quoted URL contract."""
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    start = workflow.index('          # Second request: fetch only the signed HTTPS URL')
-    end = workflow.index('          if ! unzip -tqq "$artifact_tmp"; then', start)
-    signed_request = workflow[start:end]
-    # Bind the behavioral proof to the real production command, not an invented route.
-    assert '--output "$artifact_tmp" "$redirect_url"; then' in signed_request
-    assert '--output "$artifact_tmp" $redirect_url' not in signed_request
-    assert 'eval ' not in signed_request
-    assert '--oauth2-bearer' not in signed_request
-    assert '--header "Authorization:' not in signed_request
-
-    # Fixed, harmless Bash function: no workflow-sourced shell is executed.
-    # A hostile URL is passed as data, never substituted into the script.
-    marker = tmp_path / "injection-marker"
-    payload = f"https://storage.example/file?sig=a b;$(touch {marker})&x='quoted'"
-    fake_curl = (
-        'curl() { printf "%s\\n" "$#"; printf "%s\\n" "$3"; }\n'
-        'artifact_tmp="$OUTPUT_PATH"\n'
-        'redirect_url="$UNTRUSTED_URL"\n'
-        'curl --output "$artifact_tmp" "$redirect_url"\n'
-    )
-    result = subprocess.run(
-        ["bash", "-c", fake_curl],
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-             "OUTPUT_PATH": str(tmp_path / "artifact.zip"),
-             "UNTRUSTED_URL": payload},
-        capture_output=True, text=True, check=True,
-    )
-    assert result.stdout.splitlines() == ["3", payload]
-    assert not marker.exists()
+    start = workflow.index('      - name: Resolve exact standalone source-review artifact')
+    end = workflow.index('      - name: Resolve exact PR identity and incident', start)
+    section = workflow[start:end]
+    assert 'verify_unique_artifact_inventory(' in section
+    assert '[[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]' in section
+    assert '[[ "$artifact_name" =~ ^wow-v17-independent-source-review-' in section
+    assert 'gh run download "$SOURCE_RUN_ID" --name "$artifact_name"' in section
+    assert '--repo "$GITHUB_REPOSITORY" --dir "$download_dir"' in section
+    assert section.count('gh run download "$SOURCE_RUN_ID"') == 1
+    assert 'SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE' in section
+    assert 'SOURCE_REVIEW_ARTIFACT_CONTENT_INVALID' in section
+    assert 'find "$download_dir" -mindepth 1 -maxdepth 1 | wc -l' in section
+    assert '[ ! -L "$download_dir/$name" ]' in section
+    assert 'trap \'rm -rf -- "$download_dir"\' EXIT' in section
+    assert '"$download_dir/wow-v17-independent-source-review.json" "$RUNNER_TEMP/source-review/decision.json"' in section
+    assert '"$download_dir/wow-v17-independent-source-review.json.sha256" "$RUNNER_TEMP/source-review/decision.json.sha256"' in section
+    assert 'python .github/scripts/independent_source_review_receipt.py' in section
+    assert '--verify' in section and '--artifact-id' not in section
+    assert 'curl ' not in section and 'redirect_url' not in section
+    assert '--trusted-reviewers-json' not in section

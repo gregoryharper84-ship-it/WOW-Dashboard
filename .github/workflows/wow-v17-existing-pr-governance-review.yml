@@ -275,80 +275,31 @@ jobs:
           [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || {
             echo "SOURCE_REVIEW_ARTIFACT_ID_INVALID" >&2; exit 1;
           }
-          artifact_zip="$RUNNER_TEMP/source-review/decision.zip"
-          artifact_tmp=$(mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX")
-          headers_tmp=$(mktemp "$RUNNER_TEMP/source-review/.headers.XXXXXXXX")
-          # All catchable termination exits through the same cleanup.
-          trap 'rm -f "$artifact_tmp" "$artifact_zip" "$headers_tmp"' EXIT
+          # GitHub CLI handles the authenticated API redirect and ZIP extraction.
+          # Both run identity and unique immutable artifact name/ID were checked
+          # above. No custom signed-URL parser, CDN allowlist or bearer forwarding.
+          download_dir=$(mktemp -d "$RUNNER_TEMP/source-review/.download.XXXXXXXX")
+          trap 'rm -rf -- "$download_dir"' EXIT
           trap 'exit 129' HUP
           trap 'exit 130' INT
           trap 'exit 143' TERM
-          # First request: authenticate to canonical GitHub only; do not follow
-          # the 302 because no token may reach the signed CDN download URL.
-          if ! api_status=$(curl --fail --no-progress-meter --show-error \
-            --connect-timeout 5 --max-time 15 \
-            --retry 1 --retry-delay 5 --retry-max-time 40 \
-            --oauth2-bearer "$GH_TOKEN" \
-            --header "Accept: application/vnd.github+json" \
-            --dump-header "$headers_tmp" --output /dev/null \
-            --write-out "%{http_code}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"); then
+          if ! gh run download "$SOURCE_RUN_ID" --name "$artifact_name" \
+            --repo "$GITHUB_REPOSITORY" --dir "$download_dir"; then
             echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
             exit 1
           fi
-          [ "$api_status" = "302" ] || {
-            echo "SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID" >&2
-            exit 1
+          # Exactly two expected regular files; never accept extra entries,
+          # symlinked payloads or a missing SHA sidecar.
+          [ "$(find "$download_dir" -mindepth 1 -maxdepth 1 | wc -l)" -eq 2 ] || {
+            echo "SOURCE_REVIEW_ARTIFACT_CONTENT_INVALID" >&2; exit 1;
           }
-          # Parse exactly one Location, HTTPS only, without logging its signed
-          # short-lived query string. This output stays in a shell variable.
-          redirect_url=$(python - "$headers_tmp" <<'PY'
-          import ipaddress, pathlib, re, sys
-          from urllib.parse import urlsplit
-          lines = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-          urls = [s.split(":", 1)[1].strip() for s in lines if s.lower().startswith("location:")]
-          if len(urls) != 1:
-              raise SystemExit("SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID")
-          # A signed URL is data, never shell syntax. Reject unencoded control
-          # or whitespace bytes even though the Bash argument is already quoted.
-          if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7f for ch in urls[0]):
-              raise SystemExit("SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID")
-          u = urlsplit(urls[0])
-          host = (u.hostname or "").lower()
-          # GitHub Actions artifact downloads use GitHub or signed Azure
-          # productionresultssa storage; any other host fails closed.
-          allowed_host = (host == "objects.githubusercontent.com"
-              or bool(re.fullmatch(r"productionresultssa[0-9]+\.blob\.core\.windows\.net", host)))
-          try:
-              ipaddress.ip_address(u.hostname or "")
-          except ValueError:
-              ip_host = False
-          else:
-              ip_host = True
-          if u.scheme != "https" or not u.hostname or ip_host or u.username or u.password or u.fragment or u.port not in (None, 443) or not allowed_host:
-              raise SystemExit("SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID")
-          print(urls[0])
-          PY
-          ) || exit 1
-          # Second request: fetch only the signed HTTPS URL; intentionally
-          # NO GH_TOKEN, Authorization header, cookies, or redirects.
-          if ! curl --fail --no-progress-meter --show-error \
-            --proto =https --max-redirs 0 \
-            --connect-timeout 5 --max-time 15 \
-            --retry 1 --retry-delay 5 --retry-max-time 40 \
-            --output "$artifact_tmp" "$redirect_url"; then
-            echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
-            exit 1
-          fi
-          if ! unzip -tqq "$artifact_tmp"; then
-            echo "SOURCE_REVIEW_ARTIFACT_ZIP_INVALID" >&2
-            exit 1
-          fi
-          mv -- "$artifact_tmp" "$artifact_zip"
-          unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
-            wow-v17-independent-source-review.json > "$RUNNER_TEMP/source-review/decision.json"
-          unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
-            wow-v17-independent-source-review.json.sha256 > "$RUNNER_TEMP/source-review/decision.json.sha256"
+          for name in wow-v17-independent-source-review.json wow-v17-independent-source-review.json.sha256; do
+            [ -f "$download_dir/$name" ] && [ ! -L "$download_dir/$name" ] || {
+              echo "SOURCE_REVIEW_ARTIFACT_CONTENT_INVALID" >&2; exit 1;
+            }
+          done
+          install -m 600 -- "$download_dir/wow-v17-independent-source-review.json" "$RUNNER_TEMP/source-review/decision.json"
+          install -m 600 -- "$download_dir/wow-v17-independent-source-review.json.sha256" "$RUNNER_TEMP/source-review/decision.json.sha256"
           pr_number=$(jq -er '.target.pr_number | select(type == "number" and . > 0)' \
             "$RUNNER_TEMP/source-review/decision.json")
           head_sha=$(jq -er '.target.head_sha | select(type == "string")' \
