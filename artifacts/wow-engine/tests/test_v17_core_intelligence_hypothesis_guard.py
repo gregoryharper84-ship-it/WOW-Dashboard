@@ -90,6 +90,7 @@ def test_repeated_40_forecasts_are_one_game_no_hypotheses(monkeypatch):
     assert summary["observation_n"] == 40
     assert summary["hypothesis_n"] == 0
     assert summary["hypotheses"] == []
+    assert summary["hypothesis_persistence"] == "HELD_EFFECTIVE_SAMPLE_AND_HOLDOUT_UNVERIFIED"
     assert summary["can_execute"] is False
     cohort = summary["cohorts"][0]
     assert cohort["raw_observation_hypothesis_threshold_met"] is True
@@ -150,6 +151,7 @@ def test_other_models_do_not_get_proxy_official_game_identity(monkeypatch):
     result = runtime.intelligence_summary(db, persist_hypotheses=True)
     assert result["hypothesis_n"] == 0
     assert "retrospective_research_audit" not in result["cohorts"][0]
+    assert result["hypothesis_persistence"] == "HELD_EFFECTIVE_SAMPLE_AND_HOLDOUT_UNVERIFIED"
     assert db.tables == []
 
 
@@ -185,3 +187,13 @@ def test_storage_transport_failure_remains_typed_boundary_error(monkeypatch):
         runtime.intelligence_summary(_Broken())
     assert error.value.boundary == "wow_predictions.select_core_intelligence_research_identity"
     assert error.value.error_type == "RuntimeError"
+
+
+def test_summary_read_path_cannot_persist_hypotheses(monkeypatch):
+    rows, sources = _cohort(n=1)
+    monkeypatch.setattr(runtime, "load_observations", lambda _db, **kw: rows)
+    db = _ReadOnlyDB(sources)
+    result = runtime.intelligence_summary(db, persist_hypotheses=False)
+    assert result["hypothesis_persistence"] == "NOT_REQUESTED"
+    assert result["hypothesis_n"] == 0 and result["hypotheses"] == []
+    assert "wow_intelligence_hypotheses" not in db.tables
