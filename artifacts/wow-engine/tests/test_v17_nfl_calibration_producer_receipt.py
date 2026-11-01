@@ -207,10 +207,25 @@ class _Query:
 
 class _CertifiedDb:
     def __init__(self, approved, graded, status="PASS", grade_version=None,
-                 unique_games=None, overconfident=False, post_kickoff=False):
+                 unique_games=None, overconfident=False, post_kickoff=False,
+                 certified=True, registry_version=None, registry_sha=None):
         self.model = {
             "active": True, "promoted": True,
+            "artifact_checksum": "a" * 64,
+            "model_artifact_version": "NFL_EVENT_LOGREG_PLATT_V1",
             "probability_publishable": approved,
+        }
+        self.registry = {
+            "ok": certified,
+            "certification_id": "certified-fixture-only" if certified else None,
+            "sport": "NFL", "league_scope": "NFL",
+            "model_version": registry_version or "NFL_EVENT_LOGREG_PLATT_V1",
+            "artifact_id": "model-fixture-id",
+            "artifact_sha256": registry_sha or "a" * 64,
+            "certification_status": "CERTIFIED" if certified else "REVOKED",
+            "independent_verification_status": "PASS" if certified else "FAIL",
+            "probability_publishable": certified,
+            "can_execute": False,
         }
         self.health = {
             "graded_n": graded, "minimum_forward_required": 100,
@@ -235,6 +250,11 @@ class _CertifiedDb:
             }
             for i in range(count)
         ]
+
+    def rpc(self, name, params):
+        assert name == "wow_v17_active_team_event_certification"
+        assert params == {"p_sport": "NFL", "p_league_scope": "NFL"}
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=self.registry))
 
     def table(self, name):
         if name == "wow_nfl_event_fitted_model_artifacts":
@@ -286,3 +306,24 @@ def test_exact_model_certification_requires_all_pages_not_first_hundred():
     for grade in db.grades[500:]:
         grade["outcome"] = 0
     assert _forward_certification_proven(db, row) is False
+
+
+def test_nfl_publication_requires_immutable_independent_certificate():
+    from v17.nfl_daily_stage_receipts import _forward_certification_proven
+    _, row, _ = _bound_evidence()
+    # Even all 100 quality-passing authentic grades and a global PASS cannot
+    # substitute for the separate, nonowner, immutable fitted certification.
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, certified=False), row
+    ) is False
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, registry_version="NFL_DIFFERENT_MODEL"), row
+    ) is False
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, registry_sha="b" * 64), row
+    ) is False
+    # A record for this model and exact artifact remains only a necessary
+    # condition; the actual quality gates are separately recomputed.
+    assert _forward_certification_proven(
+        _CertifiedDb(True, 100, overconfident=True), row
+    ) is False
