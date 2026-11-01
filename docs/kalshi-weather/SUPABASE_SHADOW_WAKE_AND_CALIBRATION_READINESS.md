@@ -55,7 +55,7 @@ SELECT COUNT(*) AS settled,COUNT(*) FILTER (WHERE brier_score IS NOT NULL) AS br
 FROM public.wow_kalshi_weather_outcomes;
 ```
 
-Verify that new Render logs show `WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_PASS` and a new immutable shadow row *after* the DB-driven wake. A pg_net HTTP 200 alone does not certify collection.
+Verify that new Render logs show `WOW_KALSHI_WEATHER_EMPIRICAL_COHORT status=EMPIRICAL_SHADOW_COHORT_PASS` and a new immutable shadow row *after* the DB-driven wake. A pg_net HTTP 200 alone does not certify collection.
 
 **Rollback:** `SELECT cron.unschedule('kalshi-weather-v2-shadow-read-only-wake');` (specific job only; do not drop shared extensions).
 
@@ -69,17 +69,50 @@ Verify that new Render logs show `WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_PASS` and 
 ### Research progress SQL — no probability or write
 
 ```sql
+-- One eligible pre-target as-of forecast per station, target hour and bucket.
+-- Duplicate market threshold siblings and revisions must not multiply N.
+WITH eligible AS (
+  SELECT
+    p.prediction_id,
+    p.model_payload->'contract'->>'settlement_location_code' AS settlement_station,
+    p.model_payload->'contract'->>'observation_window' AS target_window,
+    p.model_payload->>'lead_time_bucket' AS lead_bucket,
+    p.decision_time,
+    p.central_estimate_f - o.settled_value AS signed_error_f
+  FROM public.wow_kalshi_weather_predictions p
+  JOIN public.wow_kalshi_weather_outcomes o USING (prediction_id)
+  WHERE p.central_estimate_f IS NOT NULL
+    AND o.settled_value IS NOT NULL
+    AND p.decision_time IS NOT NULL
+    AND o.settled_at > p.decision_time
+    AND p.model_payload->'contract'->>'lane' = 'HOURLY_TEMPERATURE'
+    AND p.model_payload->'contract'->>'observation_window' LIKE 'POINT_IN_TIME:%'
+    AND p.model_payload->>'lead_time_bucket' IS NOT NULL
+), independent_targets AS (
+  SELECT *,
+         ROW_NUMBER() OVER (
+           PARTITION BY settlement_station, target_window, lead_bucket
+           ORDER BY decision_time ASC, prediction_id ASC
+         ) AS target_rank
+  FROM eligible
+)
 SELECT
-  p.model_payload->'contract'->>'settlement_location_code' AS settlement_station,
-  p.model_payload->>'lead_time_bucket' AS lead_bucket,
-  p.model_version,
-  COUNT(*) AS settled_predictions,
-  ROUND(AVG(ABS(p.central_estimate_f - o.settled_value))::numeric,3) AS mae_f,
-  ROUND(AVG(p.central_estimate_f - o.settled_value)::numeric,3) AS signed_bias_f
-FROM public.wow_kalshi_weather_predictions p
-JOIN public.wow_kalshi_weather_outcomes o USING (prediction_id)
-WHERE p.central_estimate_f IS NOT NULL AND o.settled_value IS NOT NULL
-GROUP BY 1,2,3 ORDER BY 1,2,3;
+  settlement_station,
+  lead_bucket,
+  COUNT(*) AS independent_settled_target_hours,
+  GREATEST(0, 30 - COUNT(*)) AS remaining_to_30_per_bucket,
+  ROUND(AVG(ABS(signed_error_f))::numeric, 3) AS mae_f,
+  ROUND(AVG(signed_error_f)::numeric, 3) AS signed_bias_f
+FROM independent_targets
+WHERE target_rank = 1
+GROUP BY settlement_station, lead_bucket
+ORDER BY settlement_station, lead_bucket;
 ```
+
+This is a retrospective research-only progress check, not probability certification.
+The 30/40 sample gates apply **within each** station/lane/horizon bucket, not
+across buckets or model-version groups. Recheck target identity, as-of evidence,
+source quality, and chronological holdout through the governed calibration tool
+before treating any result as a qualifying research cohort.
 
 **Failure modes:** GitHub schedules can be dropped; Open-Meteo HTTP 429 fails closed; Render Free may spin down, restart or exhaust shared hours; Supabase cron may be delayed; missing settlement points must not be silently imputed. All such failures reduce readiness, not the safety gate.
