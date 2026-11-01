@@ -1,4 +1,8 @@
 import { task } from "@trigger.dev/sdk";
+
+// Trigger.dev runs in Node; keep the worker typed without adding an otherwise
+// unnecessary @types/node package to the locked root dependency tree.
+declare const process: { env: Record<string, string | undefined> };
 import { executeWeatherResearchBackfill, type WeatherResearchPayload } from "./weather-research-core";
 
 /**
