@@ -108,6 +108,10 @@ def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
         db_client_fn=db_client_fn,
         targets=_scheduled_shadow_targets(),
     )
+    # A 512MiB core-only capture must never immediately load the settlement
+    # backlog into the same process. Settlement remains a separate work item.
+    if os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0") == "1":
+        return result
     if (
         os.getenv("WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER", "0") != "1"
         or os.getenv("WOW_KALSHI_WEATHER_ISOLATED_SETTLEMENT_ENABLED", "0") != "1"
