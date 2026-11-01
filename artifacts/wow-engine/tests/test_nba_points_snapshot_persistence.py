@@ -28,7 +28,7 @@ class MockQuery:
         return self
 
     def limit(self, n):
-        assert n == 1
+        assert n == 2
         return self
 
     def insert(self, item):
@@ -199,3 +199,19 @@ def test_changed_pregame_official_timestamp_never_write():
     receipt["snapshot"]["role_status"]["source_identity"]["nba_captured_at"] = "2026-10-26T20:30:00Z"
     fail("NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED", receipt, db=db)
     assert db.write_count == 0
+
+
+def test_database_auth_or_transport_failure_does_not_masquerade_as_insert_race():
+    receipt, db = sample(), MockDB()
+    db.write_error = True
+    fail("NBA_POINTS_SNAPSHOT_INSERT_FAILED", receipt, db=db)
+    assert db.rows == {}
+
+
+def test_exact_id_read_always_checks_for_ambiguity_up_to_two_rows():
+    # The real DB needs a unique constraint; the application still checks >1.
+    assert ".limit(2)" in __import__(
+        "inspect"
+    ).getsource(__import__(
+        "v17.nba_points_snapshot_persistence", fromlist=["_read"]
+    )._read)

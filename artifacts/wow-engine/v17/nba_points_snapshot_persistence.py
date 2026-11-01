@@ -55,7 +55,7 @@ def _equal(a: Any, b: Any, field: str) -> bool:
 def _read(db: Any, snapshot_id: str) -> dict[str, Any] | None:
     try:
         rows = (db.table(TABLE).select("*").eq("source_snapshot_id", snapshot_id)
-                .limit(1).execute().data or [])
+                .limit(2).execute().data or [])
     except Exception as exc:
         raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SNAPSHOT_READ_FAILED") from exc
     if len(rows) > 1:
@@ -168,11 +168,14 @@ def persist_validated_nba_points_snapshot(
                 "write_performed": False, "probability_publishable": False, "can_execute": False}
     try:
         db.table(TABLE).insert(snapshot).execute()
-    except Exception:
-        # A simultaneous first writer can race us. Read back; never overwrite.
+    except Exception as exc:
+        # Only PostgreSQL 23505 is an expected insert race. Authentication,
+        # transport and schema failures are not a duplicate proof.
+        if str(getattr(exc, "code", "")) != "23505":
+            raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SNAPSHOT_INSERT_FAILED") from exc
         existing = _read(db, snapshot_id)
         if existing is None or not _matching(existing, snapshot):
-            raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SNAPSHOT_INSERT_FAILED")
+            raise NBAPointsSnapshotPersistenceError("NBA_POINTS_IMMUTABLE_SNAPSHOT_CONFLICT") from exc
         return {"status": "ALREADY_PERSISTED_RESEARCH_ONLY", "source_snapshot_id": snapshot_id,
                 "write_performed": False, "probability_publishable": False, "can_execute": False}
     persisted = _read(db, snapshot_id)
@@ -182,10 +185,15 @@ def persist_validated_nba_points_snapshot(
             "write_performed": True, "probability_publishable": False, "can_execute": False}
 
 
-def capture_nba_points_snapshot(db: Any, *, now: datetime | None = None, **source_inputs: Any) -> dict[str, Any]:
-    """Use existing exact-source V17 validation, then persist its frozen result."""
+def capture_nba_points_snapshot(
+    db: Any, *, verified_roster_receipt: Mapping[str, Any],
+    now: datetime | None = None, **source_inputs: Any,
+) -> dict[str, Any]:
+    """Require authenticated pregame roster proof as an explicit server-side input."""
     from v17.nba_points_snapshot_bridge import build_nba_points_snapshot
-    result = build_nba_points_snapshot(now=now, **source_inputs)
+    result = build_nba_points_snapshot(
+        verified_roster_receipt=verified_roster_receipt, now=now, **source_inputs,
+    )
     return persist_validated_nba_points_snapshot(db, result, now=now)
 
 
