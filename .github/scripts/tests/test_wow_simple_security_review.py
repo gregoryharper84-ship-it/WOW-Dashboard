@@ -66,11 +66,107 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(items["properties"]["category"]["enum"], list(m.FINDING_CATEGORIES))
         self.assertEqual(m.REVIEW_CONTRACT_VERSION, 2)
         self.assertFalse(items["additionalProperties"])
+        # The enforced bounds are also handed to the model, so a reviewer is
+        # never held for a limit it was not told about.
+        self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
+        for key in ("file", "detail", "evidence"):
+            self.assertEqual(items["properties"][key]["maxLength"], m.MAX_FINDING_TEXT)
+            self.assertEqual(items["properties"][key]["minLength"], 1)
         prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "d"})
         self.assertIn("critical or high", prompt)
         self.assertIn("medium/low", prompt)
         self.assertIn("blocks regardless of severity", prompt)
+        self.assertIn("at most 12", prompt)
+        self.assertIn("at most 500 characters", prompt)
+        self.assertIn("exactly these five keys and no others", prompt)
+        self.assertIn("Never return whitespace-only", prompt)
+        self.assertIn("cross-cutting concern", prompt)
+        self.assertIn("100-200 characters in detail", prompt)
+        self.assertIn("30-150 in evidence", prompt)
+        self.assertIn("preserve every material risk", prompt)
+
+    def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
+        good = self._passing()
+        at_limit = self._finding("medium")
+        at_limit["evidence"] = "e" * m.MAX_FINDING_TEXT
+        self.assertEqual(m.parse_verdict({**good, "findings": [at_limit]})[0], "PASS")
+        over = {**at_limit, "evidence": "e" * (m.MAX_FINDING_TEXT + 1)}
+        with self.assertRaises(m.Hold) as err:
+            m.parse_verdict({**good, "findings": [over]})
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_finding_text_failures_are_field_specific_and_fail_closed(self):
+        good = self._passing()
+        for key in ("file", "detail", "evidence"):
+            for suffix, bad in (
+                ("TYPE", 123),
+                ("EMPTY", "  "),
+                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
+            ):
+                with self.subTest(field=key, error=suffix):
+                    malformed = {**self._finding("low"), key: bad}
+                    with self.assertRaises(m.Hold) as hold:
+                        m.parse_verdict({**good, "findings": [malformed]})
+                    self.assertEqual(
+                        str(hold.exception),
+                        "SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_" + suffix,
+                    )
+        # The new codes are diagnostics, not permission to retry malformed
+        # model output or to discard genuine risk-category findings.
+        decision, _ = m.parse_verdict({
+            **good, "findings": [self._finding("low", category="security")]
+        })
+        self.assertEqual(decision, "REJECT")
+
+    def test_finding_rejections_have_allowlisted_typed_reasons(self):
+        good = self._passing()
+        finding = self._finding("low")
+        samples = (
+            ("NOT_LIST", "invalid"),
+            ("TOO_MANY", [finding] * (m.MAX_FINDINGS + 1)),
+            ("NOT_OBJECT", ["legacy free text"]),
+            ("FIELD_SET", [{**finding, "extra": True}]),
+            ("SEVERITY", [{**finding, "severity": "unknown"}]),
+            ("CATEGORY", [{**finding, "category": "unknown"}]),
+            ("TEXT_EVIDENCE_EMPTY", [{**finding, "evidence": " " * 3}]),
+        )
+        for suffix, malformed in samples:
+            with self.subTest(reason=suffix):
+                with self.assertRaises(m.Hold) as error:
+                    m.parse_verdict({**good, "findings": malformed})
+                self.assertEqual(str(error.exception), "SEMANTIC_FINDINGS_INVALID:" + suffix)
+        # The schema's upper bound is also enforced at the parser boundary.
+        with self.assertRaises(m.Hold) as too_long:
+            m.parse_verdict({**good, "findings": [{**finding,
+                "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
+        self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
+        target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,
+                  "diff_sha256": "c" * 64}
+        event = {"pull_request": {"number": 2320, "head": {"sha": target["head_sha"]}}}
+        env = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+               "GITHUB_EVENT_PATH": "/mock/event.json", "GITHUB_EVENT_NAME": "pull_request_target",
+               "GH_READ_TOKEN": "fake-read-token", "GITHUB_RUN_ID": "33",
+               "GITHUB_RUN_ATTEMPT": "1", "QA_APP_TOKEN": "fake-check-token"}
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+             patch.object(m.Path, "write_text", autospec=True) as save, \
+             patch.object(m, "capture", return_value=target), \
+             patch.object(m, "prior_semantic_reject", side_effect=m.Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")), \
+             patch.object(m, "semantic_review") as forbidden_review, \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaises(SystemExit) as exiting:
+                m.main()
+        self.assertEqual(exiting.exception.code, 1)
+        forbidden_review.assert_not_called()
+        saved = m.json.loads(save.call_args.args[1])
+        self.assertEqual(saved["decision"], "HOLD")
+        self.assertEqual(saved["reason"], "PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
+        self.assertEqual(saved["attempts"], [])
+        self.assertNotIn("recovery_class", saved)
+        publish.assert_called_once()
 
     def test_category_prevents_severity_downgrade_of_real_risks(self):
         good = self._passing()
@@ -91,7 +187,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         good = self._passing()
         with self.assertRaises(m.Hold) as err:
             m.parse_verdict({**good, "findings": ["legacy string finding"]})
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
         called = []
         def malformed(provider, key, prompt):
             called.append(provider)
@@ -100,7 +196,10 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             m.semantic_review({"pr": 2301, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "safe"},
                               {p: "key" for p in m.PROVIDERS}, malformed)
-        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID")
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
+        self.assertEqual(err.exception.attempts,
+                         [{"provider": "anthropic-claude-api",
+                           "result": "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT"}])
         self.assertEqual(called, ["anthropic-claude-api"])
 
     def test_receipt_schema_is_versioned_without_rewriting_prior_verdicts(self):
@@ -185,6 +284,64 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertEqual(called, ["anthropic-claude-api"])
         with self.assertRaises(m.Hold):
             m.semantic_review(target, {})
+
+    def test_unusable_verdict_attributes_the_provider_that_produced_it(self):
+        target = {"pr": 2301, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "safe"}
+        called = []
+        def unusable(provider, key, prompt):
+            called.append(provider)
+            raise m.Hold("SEMANTIC_FINDINGS_INVALID:TEXT")
+        with self.assertRaises(m.Hold) as err:
+            m.semantic_review(target, {p: "key" for p in m.PROVIDERS}, unusable)
+        self.assertEqual(str(err.exception), "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(err.exception.attempts,
+                         [{"provider": "anthropic-claude-api",
+                           "result": "SEMANTIC_FINDINGS_INVALID:TEXT"}])
+        self.assertEqual(called, ["anthropic-claude-api"])
+        # Exercise the HOLD path in main(): searching its source text would
+        # also match the owner-fallback handler and miss lost attribution.
+        target_with_base = {**target, "base_sha": "c" * 40}
+        event = {"pull_request": {"number": target["pr"], "head": {"sha": target["head_sha"]}}}
+        env = {
+            "GITHUB_REPOSITORY": m.REPO,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_PATH": "/mock/event.json",
+            "GITHUB_EVENT_NAME": "pull_request_target",
+            "GH_READ_TOKEN": "fake-read-token",
+            "GITHUB_RUN_ID": "33",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "WOW_QA_REVIEW_ANTHROPIC_API_KEY": "fake-claude-token",
+            "WOW_QA_REVIEW_GEMINI_API_KEY": "fake-gemini-token",
+            "QA_APP_TOKEN": "fake-check-token",
+        }
+        original_semantic_review = m.semantic_review
+
+        def review_with_unusable_verdict(captured, credentials):
+            return original_semantic_review(captured, credentials, unusable)
+
+        with patch.dict(m.os.environ, env, clear=True), \
+             patch.object(m.Path, "read_text", return_value=m.json.dumps(event)), \
+             patch.object(m.Path, "write_text", autospec=True) as save, \
+             patch.object(m, "capture", return_value=target_with_base) as capture, \
+             patch.object(m, "prior_semantic_reject", return_value=False), \
+             patch.object(m, "semantic_review", side_effect=review_with_unusable_verdict), \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaises(SystemExit) as exiting:
+                m.main()
+
+        self.assertEqual(exiting.exception.code, 1)
+        capture.assert_called_once_with(target["pr"], target["head_sha"], "fake-read-token")
+        save.assert_called_once()
+        self.assertEqual(str(save.call_args.args[0]), "wow-independent-security-decision.json")
+        receipt = m.json.loads(save.call_args.args[1])
+        self.assertEqual(receipt["decision"], "HOLD")
+        self.assertEqual(receipt["reason"], "SEMANTIC_FINDINGS_INVALID:TEXT")
+        self.assertEqual(receipt["reviewer_identity"], "none")
+        self.assertEqual(receipt["attempts"], err.exception.attempts)
+        self.assertEqual(receipt["recovery_class"], "EVIDENCE_PENDING")
+        self.assertEqual(receipt["next_action"], "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD")
+        self.assertEqual(called, ["anthropic-claude-api", "anthropic-claude-api"])
+        publish.assert_called_once_with(target["head_sha"], receipt, "fake-check-token")
 
     def test_complete_diff_and_stale_sha_required(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
@@ -519,7 +676,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             ({"stop_reason": "tool_use", "content": [
                 {"type": "tool_use", "name": "submit_review",
                  "input": {**self._passing(), "findings": ["unsafe"]}}]},
-             "SEMANTIC_FINDINGS_INVALID"),
+             "SEMANTIC_FINDINGS_INVALID:NOT_OBJECT"),
             ({"stop_reason": "tool_use", "content": []},
              "CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE"),
             ({"stop_reason": "tool_use", "content": [{"type": "text", "text": "PASS"}]},
@@ -598,7 +755,9 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         prompt = m.prompt_for(target)
         self.assertIn("BEGIN_UNTRUSTED_DIFF", prompt)
         self.assertIn("END_UNTRUSTED_DIFF", prompt)
-        self.assertTrue(prompt.endswith("Return review findings for the exact identified PR and SHA only."))
+        self.assertIn("CRITICAL FORMAT REQUIREMENT", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
+        self.assertIn("500 characters or fewer", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
+        self.assertIn("if uncertain, FAIL", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
 
     def test_capture_rejects_head_change_during_diff_pagination(self):
         initial = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},

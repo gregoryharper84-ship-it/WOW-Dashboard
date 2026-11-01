@@ -3,11 +3,18 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from urllib import error, parse, request
+
+try:
+    from .cursor_cloud_handoff import agent_id as deterministic_agent_id
+except ImportError:
+    from cursor_cloud_handoff import agent_id as deterministic_agent_id
 
 
 REPOSITORY = "gregoryharper84-ship-it/WOW-Dashboard"
@@ -18,6 +25,16 @@ RUN_ID = "run-7b568d98-de5b-4cce-b2a4-e7743fd43787"
 CURSOR_API = "https://api.cursor.com/v1"
 GITHUB_API = "https://api.github.com"
 TERMINAL_RUN_STATES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
+PROTECTED_BRANCHES = frozenset({"main", "master"})
+# Legacy-reservation compatibility window (incident #2136, issue #1021).
+# #2343 merged at this instant and first required a recorded `branch`.
+# Reservation #6547956599 on #1138 predates it. The window is closed and
+# finite: no reservation created on or after this instant can use it, and the
+# legacy branch in _verified_reservation is the only code that reads it.
+BRANCH_REQUIREMENT_EFFECTIVE_UTC = "2026-11-01T01:44:02Z"
+MAX_NEGATIVE_INVENTORY_PAGES = 20
+INVENTORY_PAGE_SIZE = 100
+NEXT_CURSOR_RE = re.compile(r"^[A-Za-z0-9_.:=-]{1,256}$")
 EXPECTED_FILES = {
     ".github/workflows/wow-v17-independent-qa-check.yml",
     "artifacts/wow-engine/docs/failure_codes.md",
@@ -31,6 +48,20 @@ class ReceiptBlocked(Exception):
     def __init__(self, code: str):
         self.code = code
         super().__init__(code)
+
+
+def _utc(value: object) -> datetime | None:
+    """Strictly parse a calendar-valid `YYYY-MM-DDTHH:MM:SSZ` UTC instant."""
+    if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value):
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+BRANCH_REQUIREMENT_EFFECTIVE = _utc(BRANCH_REQUIREMENT_EFFECTIVE_UTC)
 
 
 def api_json(url: str, *, token: str, basic: bool = False) -> dict | list:
@@ -137,6 +168,39 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     source_sha = entry.get("pr_sha")
     main_sha = entry.get("main_sha")
     worker_id = entry.get("worker_id")
+    status = entry.get("status")
+    branch = entry.get("branch")
+    legacy_branchless = False
+    if status == "CURSOR_LAUNCH_RESERVED":
+        if run_id is not None:
+            raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+        if "branch" not in entry:
+            # Immutable reservations written before the branch requirement
+            # never recorded one. The comment timestamps are only a first
+            # filter (GitHub sets them server-side, and only the verified
+            # github-actions bot may author the comment); eligibility is
+            # additionally bound below to the independently authenticated
+            # dispatcher workflow run that wrote the reservation. The branch
+            # is recovered from the authenticated live source PR in
+            # _verify_dynamic_pr, never from caller input.
+            created = _utc(comment.get("created_at"))
+            updated = _utc(comment.get("updated_at"))
+            if created is None or updated is None:
+                raise ReceiptBlocked("CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED")
+            if updated != created or created >= BRANCH_REQUIREMENT_EFFECTIVE:
+                raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+            legacy_branchless = True
+        elif (not isinstance(branch, str) or not branch.strip()
+                or branch in PROTECTED_BRANCHES):
+            raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+        is_failed_launch = True
+    elif status in (None, "CURSOR_AGENT_ENQUEUED"):
+        if (not isinstance(run_id, str)
+                or re.fullmatch(r"run-[0-9a-f-]{36}", run_id) is None):
+            raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+        is_failed_launch = False
+    else:
+        raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
     if (marker != f"<!-- WOW_REMOTE_REPAIR_ATTEMPT:{incident} -->"
             or entry.get("provider") != "cursor"
             or entry.get("hold") is not True
@@ -148,10 +212,11 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or entry.get("lease_group") != f"PR_{number}"
             or not isinstance(agent_id, str)
             or not re.fullmatch(r"bc-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", agent_id)
-            or not isinstance(run_id, str) or not re.fullmatch(r"run-[0-9a-f-]{36}", run_id)
             or not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
             or not isinstance(main_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha)
-            or not isinstance(worker_id, str)):
+            or not isinstance(worker_id, str)
+            or (is_failed_launch
+                and agent_id != deterministic_agent_id(REPOSITORY, int(number), source_sha))):
         raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
     match = re.fullmatch(r"github-actions:([1-9][0-9]*):([1-9][0-9]*)", worker_id)
     if not match:
@@ -160,6 +225,7 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
         api(f"{GITHUB_API}/repos/{REPOSITORY}/actions/runs/{match.group(1)}",
             token=github_token), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED",
     )
+    expected_conclusion = "failure" if is_failed_launch else "success"
     if (origin.get("id") != int(match.group(1))
             or origin.get("run_attempt") != int(match.group(2))
             or origin.get("path") != ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
@@ -167,15 +233,26 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or origin.get("head_sha") != main_sha
             or origin.get("head_branch") != "main"
             or origin.get("status") != "completed"
-            or origin.get("conclusion") != "success"
+            or origin.get("conclusion") != expected_conclusion
             or not isinstance(origin.get("repository"), dict)
             or origin["repository"].get("full_name") != REPOSITORY
             or not isinstance(origin.get("head_repository"), dict)
             or origin["head_repository"].get("full_name") != REPOSITORY):
         raise ReceiptBlocked("CURSOR_RESERVATION_WORKFLOW_UNVERIFIED")
+    if legacy_branchless:
+        # Independent of the mutable comment: the authenticated dispatcher
+        # run that wrote this reservation must itself predate the window.
+        run_created = _utc(origin.get("created_at"))
+        if run_created is None:
+            raise ReceiptBlocked("CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED")
+        if run_created >= BRANCH_REQUIREMENT_EFFECTIVE:
+            raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
     return {
         "reservation_comment_id": comment_id,
         "reservation_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "reservation_status": status or "CURSOR_AGENT_ENQUEUED",
+        "reservation_branch": branch if isinstance(branch, str) else None,
+        "legacy_branchless": legacy_branchless,
         "incident_id": incident, "pr_number": int(number),
         "original_head_sha": source_sha, "agent_id": agent_id, "run_id": run_id,
         "worker_id": worker_id, "source_workflow_run_id": origin["id"],
@@ -184,7 +261,7 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
 
 
 def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[str]:
-    """Permit reviewed PR head advancement, never an unrelated branch or force push."""
+    """Require exact identity and an ancestors-only head from the reserved SHA."""
     import re
 
     head, base = pr.get("head"), pr.get("base")
@@ -198,6 +275,15 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
             or not isinstance(head.get("sha"), str)
             or not re.fullmatch(r"[0-9a-f]{40}", head["sha"])):
         raise ReceiptBlocked("CURSOR_SOURCE_PR_IDENTITY_INVALID")
+    failed_launch = target.get("reservation_status") == "CURSOR_LAUNCH_RESERVED"
+    live_ref = head.get("ref")
+    if failed_launch:
+        if (not isinstance(live_ref, str) or not live_ref.strip()
+                or live_ref in PROTECTED_BRANCHES or live_ref == base.get("ref")):
+            raise ReceiptBlocked("CURSOR_SOURCE_PR_IDENTITY_INVALID")
+        if (target.get("reservation_branch") is not None
+                and target["reservation_branch"] != live_ref):
+            raise ReceiptBlocked("CURSOR_RESERVATION_BRANCH_MISMATCH")
     original, latest = target["original_head_sha"], head["sha"]
     if original != latest:
         comparison = _require_object(
@@ -226,12 +312,81 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
             or again.get("state") != "open"
             or not isinstance(again.get("head"), dict)
             or again["head"].get("sha") != latest
+            or (failed_launch and again["head"].get("ref") != live_ref)
             or not isinstance(again["head"].get("repo"), dict)
             or again["head"]["repo"].get("full_name") != REPOSITORY
             or not isinstance(again.get("base"), dict)
             or again["base"].get("ref") != "main"):
         raise ReceiptBlocked("CURSOR_PR_MOVED_DURING_PROBE")
     return sorted(names)
+
+
+def verify_negative_inventories(
+    cursor_token: str, *, agent_id: str, pr_number: int, api,
+) -> dict:
+    """Prove via complete archived inventories that no Cursor agent exists or is active."""
+    pr_url = f"https://github.com/{REPOSITORY}/pull/{pr_number}"
+
+    def _scan_inventory(base_params: dict[str, object], *, unverified_code: str, active_code: str) -> tuple[int, int]:
+        seen_ids: set[str] = set()
+        seen_cursors: set[str] = set()
+        next_cursor: str | None = None
+        pages = 0
+        for _ in range(MAX_NEGATIVE_INVENTORY_PAGES):
+            params = dict(base_params)
+            if next_cursor is not None:
+                params["cursor"] = next_cursor
+            query = parse.urlencode(params)
+            page = api(f"{CURSOR_API}/agents?{query}", token=cursor_token, basic=True)
+            if not isinstance(page, dict):
+                raise ReceiptBlocked(unverified_code)
+            items = page.get("items")
+            if not isinstance(items, list) or len(items) > INVENTORY_PAGE_SIZE:
+                raise ReceiptBlocked(unverified_code)
+            pages += 1
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ReceiptBlocked(unverified_code)
+                item_id = item.get("id")
+                if not isinstance(item_id, str) or not item_id.strip():
+                    raise ReceiptBlocked(unverified_code)
+                if item_id in seen_ids:
+                    raise ReceiptBlocked(unverified_code)
+                seen_ids.add(item_id)
+                if item_id == agent_id:
+                    raise ReceiptBlocked("CURSOR_AGENT_INVENTORY_CONTRADICTION")
+                if item.get("status") == "ACTIVE":
+                    raise ReceiptBlocked(active_code)
+            raw_next = page.get("nextCursor")
+            if raw_next in (None, ""):
+                return pages, len(seen_ids)
+            if (not isinstance(raw_next, str)
+                    or not NEXT_CURSOR_RE.fullmatch(raw_next)
+                    or not items
+                    or raw_next in seen_cursors):
+                raise ReceiptBlocked(unverified_code)
+            seen_cursors.add(raw_next)
+            next_cursor = raw_next
+        # Fail closed on pagination exhaustion: raising ReceiptBlocked aborts
+        # negative-launch verification and retains the shared-writer hold.
+        raise ReceiptBlocked(unverified_code)
+
+    global_pages, global_count = _scan_inventory(
+        {"limit": INVENTORY_PAGE_SIZE, "includeArchived": "true"},
+        unverified_code="CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED",
+        active_code="CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS",
+    )
+    pr_pages, pr_count = _scan_inventory(
+        {"prUrl": pr_url, "limit": INVENTORY_PAGE_SIZE, "includeArchived": "true"},
+        unverified_code="CURSOR_AGENT_INVENTORY_UNVERIFIED",
+        active_code="CURSOR_ACTIVE_PR_AGENT_EXISTS",
+    )
+    return {
+        "global_pages": global_pages,
+        "global_agents_checked": global_count,
+        "pr_pages": pr_pages,
+        "pr_agents_checked": pr_count,
+    }
 
 
 def collect_receipt(
@@ -250,6 +405,48 @@ def collect_receipt(
     pr_number = target["pr_number"] if target else PR_NUMBER
 
     agent_url = f"{CURSOR_API}/agents/{parse.quote(agent_id, safe='')}"
+    if target is not None and run_id is None:
+        try:
+            existing = api(agent_url, token=cursor_token, basic=True)
+        except ReceiptBlocked as exc:
+            if exc.code != "STATUS_API_HTTP_404":
+                raise
+        else:
+            if isinstance(existing, dict) and existing.get("status") == "ACTIVE":
+                raise ReceiptBlocked("CURSOR_AGENT_STILL_ACTIVE")
+            raise ReceiptBlocked("CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION")
+
+        negative_proof = verify_negative_inventories(
+            cursor_token, agent_id=agent_id, pr_number=pr_number, api=api,
+        )
+        pr_url = f"{GITHUB_API}/repos/{REPOSITORY}/pulls/{pr_number}"
+        pr = _require_object(
+            api(pr_url, token=github_token),
+            "SOURCE_PR_IDENTITY_UNVERIFIED",
+        )
+        changed_files = _verify_dynamic_pr(pr, target, github_token, api)
+        return {
+            "status": "CURSOR_TERMINAL_STATUS_VERIFIED",
+            "agent_id": agent_id,
+            "agent_status": "NEVER_CREATED",
+            "run_id": None,
+            "latest_run_id": None,
+            "terminal_status": "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN",
+            "run_result_field_present": False,
+            "negative_launch_proof": negative_proof,
+            "repository": REPOSITORY,
+            "pr_number": pr_number,
+            "base_ref": pr["base"]["ref"],
+            "head_sha": pr["head"]["sha"],
+            "changed_files": changed_files,
+            "release_authorized": False,
+            "lease_released": False,
+            "can_execute": False,
+            "production_verified": False,
+            "terminal_authority": "V17_TERMINAL_REDUCER",
+            "reservation": target,
+        }
+
     run_url = (
         f"{CURSOR_API}/agents/{parse.quote(agent_id, safe='')}/runs/"
         f"{parse.quote(run_id, safe='')}"

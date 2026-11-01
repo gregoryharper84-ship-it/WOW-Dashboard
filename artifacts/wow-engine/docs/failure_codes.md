@@ -12,6 +12,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 | `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
 | `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
 | `DISCOVERY_MAIN_SHA_INVALID_HOLD` | Engineering App source discovery | The caller supplied a malformed purported current protected-main SHA; reject before any GitHub source inventory or writer admission. | No |
+| `SEMANTIC_FINDINGS_INVALID` | independent semantic reviewer / response validation | Untrusted verdict has missing/wrong findings array or more than 12 items (`:NOT_LIST`, `:TOO_MANY`); a finding is not an object, has the wrong exact key set, invalid severity/category, or malformed file/detail/evidence (`:NOT_OBJECT`, `:FIELD_SET`, `:SEVERITY`, `:CATEGORY`, and `:TEXT_{FILE,DETAIL,EVIDENCE}_{TYPE,EMPTY,TOO_LONG}`). Historical pre-patch receipts may retain `:TEXT`. The nine new suffixes identify the field and condition without emitting untrusted text. The 500-character bound remains unchanged. All are allowlisted reasons with no provider body or secrets. **EVIDENCE_PENDING**; preserve authenticated attempt identity, publish HOLD, inspect source/schema/provider preflight and produce a new reviewed source head if repair is required. A malformed response is never an automatic Gemini failover, retry, PASS, or review approval. | No |
 | `CLAUDE_REVIEW_TRUNCATED` | independent semantic reviewer / Claude response | A single Anthropic request with a 6144-token output budget returned explicit `max_tokens` without the required structured-tool verdict. No replay of the untrusted diff or same-head reviewer shopping is permitted. `EVIDENCE_PENDING`; QA App publishes HOLD, reviewer operations investigates output length/model health, never fails over, never self-approves or reattempts solely for a friendlier decision. | No |
 | `CLAUDE_REVIEW_REFUSED` | independent semantic reviewer / Claude response | Provider returned an explicit `refusal` stop reason rather than a typed verdict. `EVIDENCE_PENDING` policy HOLD (not a substantive security REJECT): no retry, no fallback and no PASS; escalate genuine provider refusal to an authenticated independent Security/Architect. No response text logged. | No |
 | `CLAUDE_REVIEW_INCOMPLETE` | independent semantic reviewer / Claude response | Provider ended without required authenticated tool output for a non-truncation stop reason (including `end_turn`, `stop_sequence`, `pause_turn`, unknown). `EVIDENCE_PENDING`; QA App HOLD and security owner investigates allowlisted stop-reason metadata. Do not retry or fallback on such ambiguity. | No |
@@ -388,6 +389,9 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 | `CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS` | Cursor API preflight | Provider rejects request, target repository or configuration |
 | `CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED`, `CURSOR_API_RESPONSE_INVALID` | Remote evidence | Network, timeout, unparsable or non-object response |
 | `CURSOR_DISPATCH_RECEIPT_UNVERIFIED` | Cursor enqueue confirmation | Create did not return matching agent ID and run ID |
+| `CURSOR_CREATE_FAILED_NO_AGENT_PROVEN` | failed-launch reconciliation | Authenticated read-only probe (`GET /v1/agents/{id}` HTTP 404 plus complete archived global and PR inventories) proves no Cursor agent was created after a failed create attempt (catalog version `2026-10-31.2`; consumer parsers updated in lock-step in `engineering_remote_writer_release.py` and `cursor_terminal_status_receipt.py`) |
+| `CURSOR_AGENT_STILL_ACTIVE`, `CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION`, `CURSOR_AGENT_INVENTORY_CONTRADICTION` | failed-launch negative probe | Direct agent lookup or archived inventory shows the deterministic agent ID exists or is active; negative-launch release is refused and the writer hold remains active (catalog version `2026-10-31.2`) |
+| `CURSOR_FAILED_LAUNCH_REQUIRES_NEGATIVE_PROOF_AND_RELEASE` | shared #1138 writer reconciliation | Held `CURSOR_LAUNCH_RESERVED` record without a `cursor_run_id` requires authenticated negative-launch proof and serialized release receipt before writer admission (catalog version `2026-10-31.2`; 0-second bypass tolerance; hold persists indefinitely until verified release, and resident supervisor recovery window is bounded to 900 seconds post-release) |
 
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
@@ -481,6 +485,30 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## V17 candidate-only recalibration research input failures
+
+These are typed research-input rejections from `v17/refit_scheduler.py`, never model capability or Action failures. All preserve `can_execute=false`, `probability_publishable=false`; no champion/production mutation follows. The retrospective diagnostic is **not** an independent promotion holdout.
+
+| Code | Owning lane | Condition | Rank eligible? |
+|---|---|---|---:|
+| `REFIT_PROPOSAL_TYPE_UNSUPPORTED` | V17 advisory refit scheduler | Proposal is not an exact RECALIBRATION_CHALLENGER. | No |
+| `REFIT_PROPOSAL_SAFETY_INVALID` | V17 advisory refit scheduler | Proposal lacks mandatory nonpromotion or nonexecution safety flags. | No |
+| `REFIT_PROPOSAL_IDENTITY_REQUIRED` | V17 advisory refit scheduler | Proposal ID or exact cohort key is missing. | No |
+| `REFIT_EVIDENCE_FLOOR_INVALID` | V17 advisory refit scheduler | Requested fit/diagnostic event floor is below the candidate-only evidence minimum. | No |
+| `REFIT_EVENT_OR_PREDICTION_ID_MISSING` | V17 advisory refit scheduler | Immutable prediction ID or official event ID is missing. | No |
+| `REFIT_DUPLICATE_PREDICTION` | V17 advisory refit scheduler | One prediction ID occurs multiple times in the hydrated cohort. | No |
+| `REFIT_COHORT_MISMATCH` | V17 advisory refit scheduler | Source forecast does not match the exact proposal cohort. | No |
+| `REFIT_NOT_CALIBRATED_FORECAST` | V17 advisory refit scheduler | Frozen input probability is not attributed to calibrated_probability. | No |
+| `REFIT_BINARY_SETTLEMENT_REQUIRED` | V17 advisory refit scheduler | Exact officially settled outcome is not a nonboolean binary 0/1. | No |
+| `REFIT_MODEL_TIME_REQUIRED` | V17 advisory refit scheduler | Pregame model timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_EVENT_TIME_REQUIRED` | V17 advisory refit scheduler | Official event timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_SETTLEMENT_TIME_REQUIRED` | V17 advisory refit scheduler | Official settlement timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_TEMPORAL_IDENTITY_INVALID` | V17 advisory refit scheduler | Model timestamp is not strictly pregame or settlement precedes event. | No |
+| `REFIT_EVENT_TIME_CONFLICT` | V17 advisory refit scheduler | Same official event ID has inconsistent event-start timestamps. | No |
+| `REFIT_PROBABILITY_INVALID` | V17 advisory refit scheduler | Frozen calibrated forecast probability is not a finite number strictly between 0 and 1. | No |
+| `REFIT_EVENT_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Chronologically distinct events fall below candidate-only train plus diagnostic floor. | No |
+| `REFIT_MATURED_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Enough fully settled pre-cutoff training events or diagnostic events are unavailable. | No |
 
 ## Sports Agent Runtime authenticated run admission (contract v1)
 
