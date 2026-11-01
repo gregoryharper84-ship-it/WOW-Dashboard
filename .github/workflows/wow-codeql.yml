@@ -1,6 +1,12 @@
 name: wow-codeql
 
 on:
+  # Standard pull_request keeps untrusted PR code out of a privileged
+  # pull_request_target context. CodeQL needs no model or vendor API key.
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
   schedule:
     - cron: '15 8 * * *'
   workflow_dispatch:
