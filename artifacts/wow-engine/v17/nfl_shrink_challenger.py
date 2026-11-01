@@ -5,7 +5,10 @@ parameters): on the unseen 2025 season the champion's favourites won 60.6%
 vs 64.7% predicted. Shrinking the calibrated home logit 25% toward the base
 home rate improved Brier 0.2312 -> 0.2298 and log loss 0.6529 -> 0.6502.
 
-PRE-REGISTERED 2026-10-09, before any forward evaluation. Do not retune:
+REGISTERED 2026-10-09, after some 2026 games were already graded. Their
+grades are exploratory only. For genuinely post-registration comparisons the
+unknown intraday registration time requires a conservative 2026-10-10 UTC
+cutoff. Do not retune:
 - SHRINK = 0.75 (fixed in the replay above)
 - BASE_HOME_RATE = 0.541301 (pooled 2024+2025 holdout home-win rate, n=569)
 
@@ -20,12 +23,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 CAN_EXECUTE = False
 PROBABILITY_PUBLISHABLE = False
 CHALLENGER_ID = "NFL_ML_SHRINK075_V1"
 PREREGISTERED_ON = "2026-10-09"
+# No independently attested intraday freeze timestamp exists. Exclude
+# ALL October 9 kickoffs, as well as older settled games, from prospective
+# challenger evidence; never silently change this cutoff later.
+PROSPECTIVE_START_UTC = "2026-10-10T00:00:00+00:00"
 SHRINK = 0.75
 BASE_HOME_RATE = 0.541301
 MIN_REVIEW_N = 100
@@ -47,6 +55,16 @@ def _log_loss(p: float, y: int) -> float:
     return -math.log(p if y == 1 else 1.0 - p)
 
 
+def _instant(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.utcoffset() is None:
+        raise ValueError("NFL_SHADOW_CHALLENGER_UNAWARE_TIMESTAMP")
+    return parsed.astimezone(timezone.utc)
+
+
 def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any]:
     """Champion vs challenger on the same graded games (selected-side outcome)."""
     by_id = {str(getattr(p, "event_prediction_id", "")): p for p in predictions}
@@ -55,6 +73,8 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
     rows: list[tuple[float, float, int]] = []
     model_versions: set[str] = set()
     matched_ids: set[str] = set()
+    seen_grade_ids: set[str] = set()
+    excluded_pre_registration_n = 0
     home_selected_rows: list[tuple[float, float, int]] = []
     away_selected_rows: list[tuple[float, float, int]] = []
     for grade in grades:
@@ -65,10 +85,24 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
         grade_model = str(getattr(grade, "model_version", "") or "")
         if not prediction_model or prediction_model != grade_model:
             raise ValueError("NFL_SHADOW_CHALLENGER_MODEL_VERSION_MISMATCH")
-        model_versions.add(grade_model)
         prediction_id = str(grade.event_prediction_id)
-        if prediction_id in matched_ids:
+        if prediction_id in seen_grade_ids:
             raise ValueError("NFL_SHADOW_CHALLENGER_DUPLICATE_GRADE")
+        seen_grade_ids.add(prediction_id)
+
+        # A frozen champion grade can predate Oct 9 even when that grade is
+        # valid for the champion's original forward health. It cannot be
+        # used as a preregistered challenger holdout result.
+        kickoff = _instant(getattr(grade, "event_start_time_utc", None))
+        prediction_kickoff = _instant(getattr(prediction, "event_start_time_utc", None))
+        predicted_at = _instant(getattr(grade, "prediction_created_at", None))
+        if kickoff != prediction_kickoff or predicted_at >= kickoff:
+            raise ValueError("NFL_SHADOW_CHALLENGER_CHRONOLOGY_INVALID")
+        if kickoff < _instant(PROSPECTIVE_START_UTC):
+            excluded_pre_registration_n += 1
+            continue
+
+        model_versions.add(grade_model)
         matched_ids.add(prediction_id)
         if prediction.selected_participant not in (prediction.home_team, prediction.away_team):
             raise ValueError("NFL_SHADOW_CHALLENGER_INVALID_SELECTED_TEAM")
@@ -86,7 +120,12 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
         (home_selected_rows if selected_home else away_selected_rows).append(item)
     n = len(rows)
     if n == 0:
-        return {"challenger_id": CHALLENGER_ID, "n": 0, "status": "NO_GRADED_GAMES", "can_execute": False}
+        return {
+            "challenger_id": CHALLENGER_ID, "n": 0,
+            "excluded_before_prospective_cutoff_n": excluded_pre_registration_n,
+            "prospective_start_utc": PROSPECTIVE_START_UTC,
+            "status": "NO_GRADED_GAMES", "can_execute": False,
+        }
     if len(model_versions) != 1:
         raise ValueError("NFL_SHADOW_CHALLENGER_MIXED_MODEL_VERSIONS")
     model_version = next(iter(model_versions))
@@ -158,6 +197,8 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
         "challenger_id": CHALLENGER_ID,
         "status": "EVALUATED",
         "n": n,
+        "excluded_before_prospective_cutoff_n": excluded_pre_registration_n,
+        "prospective_start_utc": PROSPECTIVE_START_UTC,
         "model_version": model_version,
         "cohort_key": cohort_key,
         "cohort_sha256": cohort_digest,
