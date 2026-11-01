@@ -22198,8 +22198,15 @@ try:
 except Exception:
     pass  # No DATABASE_URL configured; fallback to process-memory is safe
 
-_threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
-_bt("startup daemon spawned — app fully ready")
+# CI initializes its schema synchronously in wow-verify.yml.  Do not start a
+# background psycopg2 warmup during pytest: its connection may outlive scoped
+# environment patches and crash the interpreter while those patches unwind.
+# Production behavior is unchanged; the normal startup warmup still runs.
+if os.environ.get("WOW_CI", "").strip().lower() in {"1", "true", "yes"}:
+    _bt("startup warmup skipped under CI — app fully ready")
+else:
+    _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
+    _bt("startup daemon spawned — app fully ready")
 
 
 def _get_session_ledger(session_id: str | None) -> "_PgSessionLedger | None":
