@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+import json
 from math import fsum, log, sqrt
 import re
 from typing import Any, Iterable, Mapping
@@ -203,13 +204,38 @@ def audit_mlb_strikeout_forecasts(
         cluster_se = sqrt(g / (g - 1) * sum(
             (sum(a) - len(a) * gain) ** 2 for a in per_game.values()
         )) / n
+    # Bind research replay to the actual selected snapshots, not just IDs.
+    # Separate selections or calibration artifacts must never share a receipt
+    # while the original ID-only digest remains available for older consumers.
+    selection_context = {
+        "selection": selection,
+        "snapshots": [{
+            "prediction_id": r["prediction_id"],
+            "official_game_pk": r["game_pk"],
+            "player_name_surrogate": r["thesis"][1],
+            "line": r["thesis"][3],
+            "model_artifact_version": r["thesis"][4],
+            "calibration_version": r["thesis"][5],
+            "direction": r["thesis"][6],
+            "model_time": r["model_time"].isoformat(),
+        } for r in selected],
+    }
+    selection_context_sha = sha256(
+        json.dumps(selection_context, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     base_result.update({
         "brier_score": brier, "log_loss": log_loss,
         "constant_half_brier": 0.25, "brier_gain_against_constant_half": gain,
         "approx_game_cluster_se": cluster_se,
+        "independent_game_clusters_n": len(per_game),
+        "approx_game_cluster_status": (
+            "INSUFFICIENT_GAME_CLUSTERS" if cluster_se is None
+            else "APPROXIMATE_CORRELATED_MARKETS_ONLY"
+        ),
         "approx_game_cluster_normal_ci95": [gain - 1.96 * cluster_se, gain + 1.96 * cluster_se]
         if cluster_se is not None else None,
         "selected_prediction_ids_sha256": sha256("\n".join(sorted(r["prediction_id"] for r in selected)).encode()).hexdigest(),
+        "selection_context_sha256": selection_context_sha,
         "independence_warning": "MORE_LESS_AND_SAME_GAME_CORRELATED; NOT_AN_INDEPENDENT_BET_CARD",
     })
     return base_result
