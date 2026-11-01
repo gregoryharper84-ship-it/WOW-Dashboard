@@ -45,6 +45,9 @@ jobs:
       - name: Validate rapid-repair harness
         run: python -m pytest -q --tb=short tests/test_wow_rapid.py
 
+      - name: Test three-track recovery to science to SIRT handoff contracts
+        run: python -m pytest -q --tb=short test_v17_engineering_three_track_handoffs.py
+
       - name: Compile touched engineering surfaces
         run: python -m compileall -q scripts v17
 
