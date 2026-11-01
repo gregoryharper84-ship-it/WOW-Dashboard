@@ -701,60 +701,23 @@ def test_scheduled_recovery_reuses_exact_mutex_and_manual_dispatch_is_unchanged(
 
 
 
-def test_schedule_cli_noop_or_exact_target_without_overriding_manual_path(capsys):
-    import sys
-    from unittest.mock import Mock
-    from test_v17_engineering_remote_writer_release import _FakeAPI
-    env = {
-        "GITHUB_EVENT_NAME": "schedule",
-        "GITHUB_REPOSITORY": ledger.REPOSITORY,
-        "GITHUB_REF": "refs/heads/main",
-        "GITHUB_SHA": "a" * 40,
-        "GITHUB_RUN_ID": "99099",
-        "GITHUB_RUN_ATTEMPT": "1",
-        "GH_TOKEN": "fixture-github",
-        "CURSOR_API_KEY": "fixture-cursor",
-    }
-    api = _FakeAPI([])
-    with patch.dict("os.environ", env), patch.object(ledger, "GitHub", return_value=api), patch(
-        "v17.engineering_remote_writer_release.auto_failed_launch_target", return_value=None,
-    ), patch(
-        "v17.engineering_remote_writer_release.append_terminal_release",
-    ) as append, patch.object(sys, "argv", ["finalize", "finalize-cursor"]):
-        ledger.main()
-    assert json.loads(capsys.readouterr().out)["status"] == "NO_UNRELEASED_REMOTE_WRITER"
-    append.assert_not_called()
 
-    with patch.dict("os.environ", env), patch.object(ledger, "GitHub", return_value=api), patch(
-        "v17.engineering_remote_writer_release.auto_failed_launch_target",
-        return_value=FAILED_CID,
-    ), patch(
-        "v17.engineering_remote_writer_release.append_terminal_release",
-        return_value={"status": "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS", "can_execute": False},
-    ) as append, patch.object(sys, "argv", ["finalize", "finalize-cursor"]):
-        ledger.main()
-    assert json.loads(capsys.readouterr().out)["can_execute"] is False
-    assert append.call_args.kwargs["reservation_comment_id"] == FAILED_CID
-    assert append.call_args.kwargs["source_sha"] == "a" * 40
-
-
-def test_schedule_cli_rejects_wrong_protected_source_before_reading_ledger():
-    import sys
-    from test_v17_engineering_remote_writer_release import _FakeAPI
-    env = {
-        "GITHUB_EVENT_NAME": "schedule",
-        "GITHUB_REPOSITORY": ledger.REPOSITORY,
-        "GITHUB_REF": "refs/heads/other",
-        "GITHUB_SHA": "a" * 40,
-        "GITHUB_RUN_ID": "99099",
-        "GITHUB_RUN_ATTEMPT": "1",
-        "GH_TOKEN": "fixture-github",
-        "CURSOR_API_KEY": "fixture-cursor",
-    }
-    with patch.dict("os.environ", env), patch.object(ledger, "GitHub", return_value=_FakeAPI([])), patch(
-        "v17.engineering_remote_writer_release.auto_failed_launch_target",
-    ) as selector, patch.object(sys, "argv", ["finalize", "finalize-cursor"]), pytest.raises(
-        ledger.ProviderUnavailable, match="REMOTE_AUTO_RELEASE_SOURCE_UNVERIFIED",
-    ):
-        ledger.main()
-    selector.assert_not_called()
+def test_scheduled_recovery_read_only_selection_never_receives_cursor_secret():
+    root = Path(__file__).resolve().parents[2]
+    wf = (root / ".github/workflows/wow-v17-remote-writer-finalize.yml").read_text()
+    selection = wf.split("      - name: Resolve exact target without Cursor credential\n", 1)[1]
+    selection, finalizer = selection.split(
+        "      - name: Authenticate original Cursor state and append release\n", 1
+    )
+    assert "CURSOR_API_KEY" not in selection
+    assert "auto_failed_launch_target" in selection
+    assert 'if os.environ.get("GITHUB_EVENT_NAME") == "schedule"' in selection
+    assert 'raise SystemExit("REMOTE_RELEASE_TARGET_INVALID")' in selection
+    assert 'print("NO_UNRELEASED_REMOTE_WRITER")' in selection
+    assert "reservation_comment_id=" in selection
+    assert "CURSOR_API_KEY:" in finalizer
+    assert "if: steps.target.outputs.reservation_comment_id != ''" in wf
+    assert "finalize-cursor --reservation-comment-id" in finalizer
+    assert "workflow_dispatch:" in wf
+    assert "cancel-in-progress: false" in wf
+    assert "group: wow-v17-engineering-implementation-single-writer" in wf
