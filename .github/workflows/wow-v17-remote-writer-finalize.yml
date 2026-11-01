@@ -38,6 +38,9 @@ jobs:
       - name: Checkout protected source
         uses: actions/checkout@v4
         with:
+          # The finalizer validates this exact revision against live main
+          # before and after the source/ledger/provider witnesses.
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Resolve exact target without Cursor credential
         id: target
