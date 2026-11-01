@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -144,6 +145,49 @@ def is_code_health_failure(conclusion: str | None) -> bool:
     return str(conclusion or "").lower() not in {"success", "neutral", "skipped"}
 
 
+def code_health_blocker_packet(event: AuditEvent) -> dict[str, Any]:
+    """Safe triage instructions for the *existing* backlog and worker.
+
+    Details, stderr, environment values and exception bodies are untrusted and
+    must not become agent instructions or a secret-bearing context dump.
+    """
+    if event.source_kind != "CODE_HEALTH_RUN":
+        raise ValueError("BLOCKER_PACKET_SOURCE_INVALID")
+    conclusion = str(event.conclusion or "").lower()
+    failure_class = {
+        "failure": "CI_SEMANTIC_OR_INFRA_FAILURE",
+        "timed_out": "CI_TIMEOUT",
+        "cancelled": "CI_CANCELLED",
+    }.get(conclusion, "CI_RESULT_UNVERIFIED")
+    sha = str(event.head_sha or "")
+    verified_sha = sha.lower() if re.fullmatch(r"[0-9a-fA-F]{40}", sha) else None
+    # Numeric GitHub run IDs with bounded 20-digit future headroom; never URLs.
+    run_ref = str(event.source_ref or "")
+    verified_run = run_ref if re.fullmatch(r"[1-9][0-9]{0,19}", run_ref) else None
+    # Unknown GitHub states must not look like an ordinary scored failure.
+    next_action = (
+        "RECONCILE_UNRECOGNIZED_CI_CONCLUSION"
+        if conclusion not in {"failure", "timed_out", "cancelled"}
+        else ("READ_EXACT_RUN_LOGS_AND_IDENTIFY_CAUSE"
+              if verified_run and verified_sha
+              else "RECONCILE_AUTHORITATIVE_RUN_AND_HEAD_IDENTITY")
+    )
+    return {
+        "schema_version": "WOW_ENGINEERING_BLOCKER_PACKET_V1",
+        "failure_class": failure_class,
+        "head_sha": verified_sha,
+        "workflow_run_id": verified_run,
+        "next_action": next_action,
+        # A diagnostic packet is persisted by the auditor, not read as an
+        # execution grant. Dispatch is separately enforced by the trusted worker.
+        "evidence_sink": "ENGINEERING_AUDITOR_BACKLOG",
+        "dispatch_authorized": False,
+        "merge_authorized": False,
+        "deploy_authorized": False,
+        "can_execute": False,
+    }
+
+
 def _rows(response: Any) -> list[dict[str, Any]]:
     data = getattr(response, "data", None)
     return list(data) if isinstance(data, list) else []
@@ -240,15 +284,28 @@ class EngineeringAuditStore:
 
     def ingest_code_health(self, event: AuditEvent, *, now: datetime | None = None) -> dict[str, Any]:
         now = now or utcnow()
-        check_name = str((event.details or {}).get("check_name") or "V17_ENGINEERING_CODE_HEALTH")
+        # Only known GitHub workflows may influence durable component labels.
+        # The upstream `details` dict (URLs, stderr, environment, arbitrary
+        # provider text) is never persisted as a context-injection surface.
+        raw_name = (event.details or {}).get("check_name")
+        # Accept a bounded GitHub-style workflow name only when it matches
+        # the event title; unknown sources remain visibly unverified, not
+        # silently assigned to a trusted workflow.
+        check_name = (
+            raw_name
+            if isinstance(raw_name, str) and raw_name == event.title
+            and re.fullmatch(r"wow-[a-z0-9-]{2,96}", raw_name)
+            else "V17_ENGINEERING_CODE_HEALTH_UNVERIFIED"
+        )
         component = f"{event.repository}:{check_name}"
         if is_code_health_failure(event.conclusion):
+            packet = code_health_blocker_packet(event)
             evidence = {
-                "run_ref": event.source_ref,
-                "head_sha": event.head_sha,
-                "conclusion": event.conclusion or "unknown",
-                "event_name": event.event_name,
-                "details": event.details or {},
+                "run_ref": packet["workflow_run_id"],
+                "head_sha": packet["head_sha"],
+                "conclusion": packet["failure_class"],
+                "blocker_context": packet,
+                "event_name": "github_actions_reconcile",
                 "can_execute": False,
             }
             finding = self.open_finding(
