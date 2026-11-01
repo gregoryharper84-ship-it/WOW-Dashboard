@@ -74,3 +74,34 @@ test("invalid JSON does not masquerade as model outage", async () => {
   }, now });
   assert.equal(r.code, "BACKEND_READINESS_INVALID_JSON");
 });
+
+
+test("body interruption after HTTP headers is a transport failure, not invalid JSON", async () => {
+  let calls = 0;
+  const r = await probeWowRuntime({ fetchImpl: async () => {
+    calls += 1;
+    if (calls === 1) return { status: 200, json: async () => HEALTH };
+    // The HTTP headers have arrived, but the body stream aborts.
+    return { status: 200, json: async () => {
+      throw new DOMException("response body aborted", "AbortError");
+    } };
+  }, now });
+  assert.equal(calls, 2);
+  assert.equal(r.code, "BACKEND_READINESS_TRANSPORT_FAILURE");
+  assert.equal(r.status, "BLOCKED");
+  assert.equal(r.probes[1].http_status, 200);
+  assert.equal(r.can_execute, false);
+});
+
+test("liveness body interruption does not continue to readiness", async () => {
+  let calls = 0;
+  const r = await probeWowRuntime({ fetchImpl: async () => {
+    calls += 1;
+    return { status: 200, json: async () => {
+      throw new DOMException("body aborted", "AbortError");
+    } };
+  }, now });
+  assert.equal(calls, 1);
+  assert.equal(r.code, "BACKEND_LIVENESS_TRANSPORT_FAILURE");
+  assert.equal(r.probes.length, 1);
+});
