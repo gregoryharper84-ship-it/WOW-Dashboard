@@ -2484,6 +2484,9 @@ def test_selected_source_download_retries_transient_only_without_downgrade():
     assert '--max-time 15' in block
     assert 'mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX"' in block
     assert "trap 'rm -f \"$artifact_tmp\" \"$artifact_zip\"' EXIT" in block
+    assert "trap 'exit 129' HUP" in block
+    assert "trap 'exit 130' INT" in block
+    assert "trap 'exit 143' TERM" in block
     assert 'unzip -tqq "$artifact_tmp"' in block
     assert 'mv -- "$artifact_tmp" "$artifact_zip"' in block
     assert 'SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE' in block

@@ -277,7 +277,12 @@ jobs:
           }
           artifact_zip="$RUNNER_TEMP/source-review/decision.zip"
           artifact_tmp=$(mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX")
+          # Catchable signals become nonzero exits so EXIT cleanup runs.
+          # SIGKILL cannot be trapped; GitHub decommissions the per-job VM.
           trap 'rm -f "$artifact_tmp" "$artifact_zip"' EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           # Curl authenticates to api.github.com only. The GitHub artifact API
           # returns one 302 to a signed ZIP URL; never forward the bearer token
           # across origins, follow non-HTTPS locations, or trust extra redirects.
