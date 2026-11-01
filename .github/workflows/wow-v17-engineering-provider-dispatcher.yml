@@ -192,7 +192,7 @@ jobs:
             local recent conclusion run_id classified previous_incident
             if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
                 --workflow wow-v17-claude-engineering-worker.yml \
-                --status completed --limit 1 \
+                --branch main --status completed --limit 1 \
                 --json databaseId,conclusion 2>/dev/null) \
                 || ! jq -e 'type == "array" and length <= 1 and
                     (length == 0 or (.[0].databaseId | type == "number" and . > 0))' \
