@@ -21,12 +21,14 @@ def test_transform_matches_replay_formula_and_shrinks_toward_base():
     assert ch.challenger_home_probability(0.541301) == pytest.approx(0.541301)
 
 
-def _pred(pid, home, away, sel):
-    return SimpleNamespace(event_prediction_id=pid, home_team=home, away_team=away, selected_participant=sel)
+def _pred(pid, home, away, sel, *, version="NFL_EVENT_LOGREG_PLATT_V1_fixture"):
+    return SimpleNamespace(event_prediction_id=pid, home_team=home, away_team=away,
+                           selected_participant=sel, model_version=version)
 
 
-def _grade(pid, p, y):
-    return SimpleNamespace(event_prediction_id=pid, calibrated_probability=p, outcome=y)
+def _grade(pid, p, y, *, version="NFL_EVENT_LOGREG_PLATT_V1_fixture"):
+    return SimpleNamespace(event_prediction_id=pid, calibrated_probability=p,
+                           outcome=y, model_version=version)
 
 
 def test_evaluate_orients_home_and_away_selections_correctly():
@@ -88,7 +90,11 @@ def test_persist_is_advisory_and_idempotent_per_cohort_size():
     row = db.rows[0]
     assert row["authority"] == "ADVISORY_ONLY" and row["automatic_promotion_allowed"] is False
     assert row["review_status"] == "SHADOW_VALIDATING" and row["can_execute"] is False
-    assert row["cohort_key"] == "NFL_ML_FORWARD_SHADOW_N1"
+    assert row["cohort_key"] == ev["cohort_key"]
+    assert row["cohort_key"].startswith("NFL_ML_FORWARD_SHADOW_")
+    assert row["cohort_key"].endswith("_N1")
+    assert len(ev["cohort_sha256"]) == 64
+    assert ev["model_version"] == "NFL_EVENT_LOGREG_PLATT_V1_fixture"
 
 
 def test_daily_job_isolates_challenger_failure(monkeypatch):
@@ -248,3 +254,41 @@ def test_empty_selection_side_has_no_misleading_zero_accuracy():
     assert other["n"] == 0
     assert other["observed_win_rate"] is None
     assert other["champion_bias"] is None
+
+
+def test_research_cohort_binds_exact_single_model_version():
+    preds = [
+        _pred("a", "H", "A", "H", version="fitted_A"),
+        _pred("b", "H", "A", "H", version="fitted_B"),
+    ]
+    grades = [
+        _grade("a", 0.65, 1, version="fitted_A"),
+        _grade("b", 0.65, 0, version="fitted_B"),
+    ]
+    with pytest.raises(ValueError, match="MIXED_MODEL_VERSIONS"):
+        ch.evaluate(preds, grades)
+    with pytest.raises(ValueError, match="MODEL_VERSION_MISMATCH"):
+        ch.evaluate([preds[0]], [_grade("a", 0.65, 1, version="fitted_B")])
+
+
+def test_research_cohort_key_distinguishes_equal_size_event_sets_and_versions():
+    a = ch.evaluate([_pred("a", "H", "A", "H")], [_grade("a", 0.65, 1)])
+    b = ch.evaluate([_pred("b", "H", "A", "H")], [_grade("b", 0.65, 1)])
+    c = ch.evaluate([_pred("a", "H", "A", "H", version="new_model")],
+                    [_grade("a", 0.65, 1, version="new_model")])
+    assert len({a["cohort_key"], b["cohort_key"], c["cohort_key"]}) == 3
+    db = _DB()
+    for cohort in (a, b, c):
+        assert ch.persist(db, cohort) is True
+        assert ch.persist(db, cohort) is False
+    assert len(db.rows) == 3
+    assert all(r["authority"] == "ADVISORY_ONLY" and r["can_execute"] is False for r in db.rows)
+
+
+def test_research_duplicate_grades_fail_closed():
+    pred = _pred("a", "H", "A", "H")
+    g = _grade("a", 0.7, 1)
+    with pytest.raises(ValueError, match="DUPLICATE_GRADE"):
+        ch.evaluate([pred], [g, g])
+    with pytest.raises(ValueError, match="DUPLICATE_PREDICTION_ID"):
+        ch.evaluate([pred, pred], [g])
