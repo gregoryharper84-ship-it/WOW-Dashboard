@@ -105,3 +105,39 @@ test("liveness body interruption does not continue to readiness", async () => {
   assert.equal(r.code, "BACKEND_LIVENESS_TRANSPORT_FAILURE");
   assert.equal(r.probes.length, 1);
 });
+
+
+test("HTTP 200 with status not_ready is a typed contract failure, never READY", async () => {
+  const { fetchImpl } = responses(HEALTH, { ...READY, status: "not_ready" }, 200);
+  const r = await probeWowRuntime({ fetchImpl, now });
+  assert.equal(r.status, "BLOCKED");
+  assert.equal(r.code, "BACKEND_READINESS_CONTRACT_INVALID");
+  assert.equal(r.action_receipt, "UNVERIFIED_NOT_PROBED");
+  assert.equal(r.can_execute, false);
+});
+
+test("HTTP 503 with can_execute=true is a contract violation, not a normal not-ready", async () => {
+  const { fetchImpl } = responses(HEALTH, {
+    detail: { ...READY, status: "not_ready", can_execute: true },
+  }, 503);
+  const r = await probeWowRuntime({ fetchImpl, now });
+  assert.equal(r.status, "BLOCKED");
+  assert.equal(r.code, "BACKEND_READINESS_CONTRACT_INVALID");
+  assert.equal(r.can_execute, false);
+  assert.equal(r.probes[1].http_status, 503);
+});
+
+test("redirect errors fail closed and do not disclose transport exception details", async () => {
+  const calls = [];
+  const r = await probeWowRuntime({ fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    throw new TypeError("redirect blocked: secret=must-not-serialize");
+  }, now });
+  assert.equal(r.code, "BACKEND_LIVENESS_TRANSPORT_FAILURE");
+  assert.equal(r.status, "BLOCKED");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.redirect, "error");
+  assert.equal(calls[0].url, `${WOW_BACKEND}/health`);
+  assert.equal(r.can_execute, false);
+  assert.ok(!JSON.stringify(r).includes("must-not-serialize"));
+});
