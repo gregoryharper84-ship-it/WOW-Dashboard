@@ -33,7 +33,16 @@ jobs:
           [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
           # A previous failure is NOT silently retried. It requires investigation.
           runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/wow-verify.yml/runs?per_page=100" --jq '.workflow_runs')
-          verdict=$(jq -r --arg sha "$main_sha" '[.[] | select(.head_sha == $sha and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$runs")
+          verifier=$(jq -c --arg sha "$main_sha" '[.[] | select(.head_sha == $sha and (.event == "push" or .event == "workflow_dispatch"))] | sort_by(.created_at) | reverse | first // empty' <<< "$runs")
+          if [ -n "$verifier" ]; then
+            # Bind release evidence to the exact upstream verifier run, not
+            # to the (possibly newer) downstream workflow source revision.
+            verify_run_id=$(jq -r '.id | tostring' <<< "$verifier")
+            [[ "$verify_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::EXACT_MAIN_VERIFY_RUN_ID_UNVERIFIED"; exit 1; }
+            verdict=$(jq -r '.status + "|" + (.conclusion // "")' <<< "$verifier")
+          else
+            verdict=MISSING
+          fi
           if [ "$verdict" != MISSING ]; then
             echo "EXACT_MAIN_VERIFY_PRESENT:$verdict"
             # A completed green verifier is not a deployed release. Do not
@@ -47,7 +56,11 @@ jobs:
               echo "::error::EXACT_MAIN_RELEASE_HANDOFF_EVIDENCE_UNAVAILABLE"
               exit 1
             fi
-            release_verdict=$(jq -r --arg sha "$main_sha" '[.[] | select(.head_sha == $sha and (.event == "workflow_run" or .event == "workflow_dispatch"))] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$releases")
+            # run-name is emitted from the protected release workflow's
+            # authenticated workflow_run event: source SHA + source run ID.
+            # A downstream head_sha alone does not identify its release target.
+            origin_label="release-${main_sha}-verify-${verify_run_id}"
+            release_verdict=$(jq -r --arg label "$origin_label" '[.[] | select(.event == "workflow_run" and .display_title == $label)] | sort_by(.created_at) | reverse | first | if . == null then "MISSING" else (.status + "|" + (.conclusion // "")) end' <<< "$releases")
             if [ "$release_verdict" = MISSING ]; then
               echo "::error::EXACT_MAIN_RELEASE_HANDOFF_MISSING:$main_sha"
               exit 1
