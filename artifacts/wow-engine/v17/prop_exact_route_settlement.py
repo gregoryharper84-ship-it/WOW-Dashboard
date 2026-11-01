@@ -160,13 +160,14 @@ def _request_json(
     http_get: Callable[..., Any],
     params: Mapping[str, Any] | None = None,
     headers: Mapping[str, str] | None = None,
+    follow_redirects: bool = True,
 ) -> dict[str, Any]:
     response = http_get(
         url,
         params=dict(params or {}),
         headers=dict(headers or {}),
         timeout=HTTP_TIMEOUT_SECONDS,
-        follow_redirects=True,
+        follow_redirects=follow_redirects,
     )
     status = int(getattr(response, "status_code", 200))
     if status >= 400:

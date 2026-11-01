@@ -14,7 +14,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping
+import hashlib
+import json
 import re
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -36,8 +39,6 @@ NBA_SUPPORTED = frozenset(("NBA", stat) for stat in STAT_COMPONENTS)
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "User-Agent": "Mozilla/5.0 (compatible; WOW-V17-ReadOnly-Settlement/1.0)",
-    "Referer": "https://www.nba.com/",
-    "Origin": "https://www.nba.com",
 }
 
 
@@ -63,14 +64,15 @@ def _integer_stat(value: Any) -> float | None:
     f = settlement._finite_number(value)
     if f is None or not f.is_integer() or not 0 <= f <= 500:
         return None
-    return f
+    return int(f)
 
 
 def _played(value: Any) -> bool | None:
-    if value is True or value in ("1", "true", "True", 1):
-        return True
-    if value is False or value in ("0", "false", "False", 0):
-        return False
+    # Do not rely on Python's bool/int equality or arbitrary truthy strings.
+    if type(value) is bool:
+        return value
+    if type(value) is str and value in {"1", "0"}:
+        return value == "1"
     return None
 
 
@@ -181,17 +183,30 @@ def settle_nba_scalar(
         return failure
     assert crosswalk is not None
     source = f"{NBA_CDN_BOXSCORE_BASE}boxscore_{crosswalk['game_id']}.json"
+    url = urlsplit(source)
+    if (url.scheme != "https" or url.netloc != "cdn.nba.com"
+            or not re.fullmatch(r"/static/json/liveData/boxscore/boxscore_[0-9]{10}\\.json", url.path)
+            or url.query or url.fragment):
+        return _hold("OFFICIAL_SOURCE_UNAVAILABLE", "NBA_OFFICIAL_BOXSCORE_URL_NOT_ALLOWLISTED")
     try:
-        payload = settlement._request_json(source, http_get=http_get, headers=HEADERS)
-    except Exception as exc:
+        # No cross-origin redirect may silently substitute an official result.
+        payload = settlement._request_json(
+            source, http_get=http_get, headers=HEADERS, follow_redirects=False,
+        )
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
         return _hold("OFFICIAL_SOURCE_UNAVAILABLE", "NBA_OFFICIAL_FINAL_BOXSCORE_UNAVAILABLE", error_type=type(exc).__name__)
     game = payload.get("game")
     if not isinstance(game, Mapping):
         return _hold("OFFICIAL_STAT_SOURCE_INVALID", "NBA_FINAL_BOXSCORE_GAME_SCHEMA_INVALID")
     if _text(game.get("gameId")) != crosswalk["game_id"]:
         return _hold("OFFICIAL_EVENT_ID_MISMATCH", "NBA_OFFICIAL_GAME_ID_CONTRADICTION")
-    if str(game.get("gameStatus")) != "3":
-        return _hold("NOT_FINAL", "NBA_OFFICIAL_GAME_NOT_FINAL", official_state=game.get("gameStatus"))
+    official_status = game.get("gameStatus")
+    if (type(official_status) is int and official_status == 3) or (
+        type(official_status) is str and official_status == "3"
+    ):
+        pass
+    else:
+        return _hold("NOT_FINAL", "NBA_OFFICIAL_GAME_NOT_FINAL", official_state=official_status)
     if _utc(game.get("gameTimeUTC")) != crosswalk["event_start"]:
         return _hold("OFFICIAL_EVENT_ID_MISMATCH", "NBA_OFFICIAL_EVENT_START_CONTRADICTION")
 
@@ -249,7 +264,12 @@ def settle_nba_scalar(
     if any(value is None for value in components.values()):
         return _hold("OFFICIAL_STAT_MISSING", "NBA_EXACT_STAT_COMPONENT_MISSING_OR_INVALID", stat_type=stat)
 
-    actual = float(sum(value for value in components.values() if value is not None))
+    # All seven scalar families require every integer component above.
+    # Never drop a missing component to manufacture a partial stat.
+    actual = float(sum(components.values()))
+    payload_sha256 = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
     return {
         "status": "SETTLED",
         "outcome": settlement._settlement_result(
@@ -259,6 +279,8 @@ def settle_nba_scalar(
         "official_event_id": crosswalk["game_id"],
         "official_player_id": crosswalk["person_id"],
         "settlement_source_kind": NBA_SETTLEMENT_SOURCE,
+        # This is an observed canonical-JSON digest, NOT an NBA signature or immutable official revision.
+        "observed_boxscore_json_sha256": payload_sha256,
         "can_execute": False,
     }
 

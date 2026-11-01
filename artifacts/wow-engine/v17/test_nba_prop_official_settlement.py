@@ -319,3 +319,72 @@ def test_nba_official_settlement_blockers_registered_from_source_ast():
     documented = registry.read_text(encoding="utf-8")
     missing = sorted(code for code in blockers if f"`{code}`" not in documented)
     assert not missing, f"Unregistered NBA official settlement blockers: {missing}"
+
+
+def test_nba_source_url_is_allowlisted_and_redirects_are_disabled(monkeypatch):
+    import v17.nba_prop_official_settlement as nba
+
+    observed = []
+    def official(url, **kwargs):
+        observed.append((url, kwargs))
+        return Response(boxscore())
+
+    outcome = settle_nba_scalar(prediction(), snapshot(), now=NOW, http_get=official)
+    assert outcome["status"] == "SETTLED"
+    assert len(observed) == 1
+    url, kwargs = observed[0]
+    assert url == f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{GAME_ID}.json"
+    assert kwargs["follow_redirects"] is False
+    assert kwargs["timeout"] == base.HTTP_TIMEOUT_SECONDS
+    assert "Origin" not in kwargs["headers"]
+    assert "Referer" not in kwargs["headers"]
+
+    monkeypatch.setattr(nba, "NBA_CDN_BOXSCORE_BASE", "https://malicious.invalid/boxscore/")
+    observed.clear()
+    held = settle_nba_scalar(prediction(), snapshot(), now=NOW, http_get=official)
+    assert held["blocker"] == "NBA_OFFICIAL_BOXSCORE_URL_NOT_ALLOWLISTED"
+    assert "outcome" not in held
+    assert observed == []
+
+
+def test_official_status_requires_exact_final_enum_and_played_is_unambiguous():
+    for suspicious in (True, 3.0, " 3", None, "FINAL", 2):
+        feed = boxscore()
+        feed["game"]["gameStatus"] = suspicious
+        held = run(feed=feed)
+        assert held["blocker"] == "NBA_OFFICIAL_GAME_NOT_FINAL"
+        assert "outcome" not in held
+
+    for suspicious in (1, 0, "true", "false", "True", "", None):
+        feed = boxscore()
+        feed["game"]["homeTeam"]["players"][0]["played"] = suspicious
+        held = run(feed=feed)
+        assert held["blocker"] == "NBA_EXPLICIT_PLAYED_STATUS_REQUIRED"
+        assert "outcome" not in held
+
+    for explicit in ("1", "0"):
+        feed = boxscore()
+        feed["game"]["homeTeam"]["players"][0]["played"] = explicit
+        feed["game"]["homeTeam"]["players"][0]["notPlayingReason"] = "INACTIVE"
+        result = run(feed=feed)
+        assert result["status"] == ("SETTLED" if explicit == "1" else "SETTLED_VOID_DNP")
+
+
+def test_official_payload_digest_is_repeatable_and_changes_with_source():
+    a = run()
+    b = run()
+    assert a["observed_boxscore_json_sha256"] == b["observed_boxscore_json_sha256"]
+    assert len(a["observed_boxscore_json_sha256"]) == 64
+    revised = boxscore()
+    revised["game"]["homeTeam"]["players"][0]["statistics"]["points"] = 28
+    c = run(feed=revised)
+    assert c["outcome"]["actual_stat"] == 28.0
+    assert c["observed_boxscore_json_sha256"] != a["observed_boxscore_json_sha256"]
+
+
+def test_unexpected_transport_programming_errors_are_not_false_source_holds():
+    def broken_adapter(*args, **kwargs):
+        raise TypeError("programmer regression")
+    import pytest
+    with pytest.raises(TypeError, match="programmer regression"):
+        settle_nba_scalar(prediction(), snapshot(), now=NOW, http_get=broken_adapter)

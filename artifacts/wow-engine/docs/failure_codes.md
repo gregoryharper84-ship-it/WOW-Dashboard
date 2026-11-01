@@ -505,6 +505,7 @@ These codes are emitted by `v17/nba_prop_official_settlement.py` through typed `
 | `NBA_SETTLEMENT_CLOCK_MUST_BE_UTC_AWARE` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Explicit settlement clock is not a timezone-aware datetime. | No |
 | `NBA_EXACT_STAT_SETTLEMENT_UNSUPPORTED` | NBA official scalar settlement | `MODEL_OR_IDENTITY_UNSUPPORTED` | Statistic is outside seven declared NBA full-game scalar settlement families. | No |
 | `NBA_OFFICIAL_FINAL_BOXSCORE_UNAVAILABLE` | NBA official scalar settlement | `OFFICIAL_SOURCE_UNAVAILABLE` | Exact official NBA CDN final boxscore request fails or cannot be retrieved. | No |
+| `NBA_OFFICIAL_BOXSCORE_URL_NOT_ALLOWLISTED` | NBA official scalar settlement | `OFFICIAL_SOURCE_UNAVAILABLE` | Exact boxscore URL is not the fixed HTTPS NBA CDN host and ten-digit game-ID path, or has query/fragment material. | No |
 | `NBA_FINAL_BOXSCORE_GAME_SCHEMA_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_SOURCE_INVALID` | Official response lacks a valid game object. | No |
 | `NBA_OFFICIAL_GAME_ID_CONTRADICTION` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Official boxscore game ID disagrees with frozen NBA event crosswalk. | No |
 | `NBA_OFFICIAL_GAME_NOT_FINAL` | NBA official scalar settlement | `NOT_FINAL` | Official NBA game status is not final. | No |
