@@ -60,9 +60,11 @@ def validate_pr(data: dict, *, repo: str, number: int, sha: str,
         raise HandoffBlocked("CURSOR_FORK_HEAD_UNSUPPORTED")
     head_branch = head.get("ref")
     if (not isinstance(head_branch, str) or not head_branch.strip()
-            or head_branch != head_branch.strip()
-            or head_branch in ("main", "master")
-            or head_branch == base.get("ref")):
+            or len(head_branch) > 255 or head_branch in ("main", "master")
+            or head_branch == base.get("ref")
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", head_branch) is None
+            or ".." in head_branch or "//" in head_branch
+            or head_branch.endswith(("/", ".", ".lock"))):
         raise HandoffBlocked("CURSOR_UNSAFE_TARGET_BRANCH")
     if base.get("ref") != "main":
         raise HandoffBlocked("CURSOR_UNEXPECTED_BASE_BRANCH")
