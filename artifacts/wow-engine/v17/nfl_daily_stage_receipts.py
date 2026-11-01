@@ -153,8 +153,25 @@ def _final_refresh_proven(row: Mapping[str, Any], governed: Mapping[str, Any]) -
     return all((checked, modeled, kickoff)) and modeled <= checked < kickoff
 
 
-def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
-    """Independent cohort and champion certification, never automatic promotion."""
+def _forward_certification_diagnosis(
+    db: Any, row: Mapping[str, Any]
+) -> tuple[bool, list[str], dict[str, Any]]:
+    """Independent cohort and champion certification, never automatic promotion.
+
+    Returns the same boolean decision this module has always made, plus the
+    typed evidence behind a HOLD. A bare False collapse made every distinct
+    cause of an unproven forward certification indistinguishable, which is what
+    let earlier reviews diagnose this gate as a missing-boolean problem.
+    """
+    blockers: list[str] = []
+    evidence: dict[str, Any] = {
+        "model_version": str(row.get("model_version") or ""),
+        "model_artifact_id": str(row.get("model_artifact_id") or ""),
+        "graded_events": None,
+        "minimum_forward_required": None,
+        "health_graded_n": None,
+        "health_status": None,
+    }
     try:
         models = db.table("wow_nfl_event_fitted_model_artifacts").select(
             "artifact_id,active,promoted,probability_publishable"
@@ -163,16 +180,19 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
             "graded_n,minimum_forward_required,status,certification_recommendation,blockers"
         ).order("generated_at", desc=True).limit(1).execute().data
     except Exception:
-        return False
+        return False, ["NFL_FORWARD_CERTIFICATION_QUERY_FAILED"], evidence
     if not isinstance(models, list) or len(models) != 1 or not isinstance(health, list) or len(health) != 1:
-        return False
+        return False, ["NFL_FORWARD_CERTIFICATION_REGISTRY_SHAPE_INVALID"], evidence
     model, assessment = models[0], health[0]
     minimum = assessment.get("minimum_forward_required")
+    evidence["health_graded_n"] = assessment.get("graded_n")
+    evidence["health_status"] = assessment.get("status")
+    evidence["minimum_forward_required"] = minimum
     # Health is a global snapshot. Verify that its cohort actually contains
     # enough unique prospective grades for this prediction's exact model version.
     # A different champion's 100 games can never authorize this model.
     if not isinstance(minimum, int) or minimum < 100:
-        return False
+        return False, ["NFL_FORWARD_MINIMUM_COHORT_INVALID"], evidence
     try:
         grade_result = (
             db.table("wow_nfl_forward_shadow_grades")
@@ -183,26 +203,60 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
         )
         grades = grade_result.data
         if not isinstance(grades, list):
-            return False
+            return False, ["NFL_FORWARD_GRADE_COHORT_QUERY_FAILED"], evidence
         unique_games = {
             str(g.get("official_event_id"))
             for g in grades if isinstance(g, Mapping) and g.get("official_event_id")
         }
     except Exception:
-        return False
-    return bool(
-        len(unique_games) >= minimum
-        and model.get("active") is True
-        and model.get("promoted") is True
-        and model.get("probability_publishable") is True
-        and isinstance(assessment.get("graded_n"), int)
-        and isinstance(assessment.get("minimum_forward_required"), int)
-        and assessment["minimum_forward_required"] >= 100
-        and assessment["graded_n"] >= assessment["minimum_forward_required"]
-        and assessment.get("status") == "PASS"
-        and assessment.get("certification_recommendation") == "FORWARD_EVIDENCE_PASS"
-        and assessment.get("blockers") == []
-    )
+        return False, ["NFL_FORWARD_GRADE_COHORT_QUERY_FAILED"], evidence
+    evidence["graded_events"] = len(unique_games)
+
+    # Each conjunct is reported separately so an operator can tell genuine
+    # missing forward evidence from a champion-registry or policy defect.
+    # An empty exact-version cohort is its own defect: the global health
+    # snapshot is grading some other model_version, so its counts can never
+    # authorize this prediction.
+    if not unique_games:
+        blockers.append("NFL_FORWARD_COHORT_MODEL_VERSION_MISMATCH")
+    if not len(unique_games) >= minimum:
+        blockers.append("NFL_FORWARD_GRADED_EVENTS_BELOW_MINIMUM")
+    if model.get("active") is not True:
+        blockers.append("NFL_ARTIFACT_NOT_ACTIVE")
+    if model.get("promoted") is not True:
+        blockers.append("NFL_ARTIFACT_NOT_PROMOTED")
+    if model.get("probability_publishable") is not True:
+        # wow_nfl_event_fitted_model_artifacts is constrained by
+        # wow_nfl_event_fitted_registry_not_probability_publication
+        # (CHECK (probability_publishable = false)), so this conjunct can never
+        # hold. It is reported as a policy/schema conflict, never repaired here
+        # and never treated as a licence to publish. This diagnostic is a
+        # classification label; the governing terminal code stays unchanged.
+        blockers.append("NFL_ARTIFACT_PUBLICATION_FLAG_NOT_GRANTED")
+        blockers.append("NFL_REGISTRY_PUBLICATION_AUTHORITY_CONFLICT")
+        evidence["artifact_publication_activation"] = "SCHEMA_CONSTRAINED_FALSE"
+        evidence["diagnostic_classification"] = "NFL_REGISTRY_PUBLICATION_AUTHORITY_CONFLICT"
+    if not isinstance(assessment.get("graded_n"), int):
+        blockers.append("NFL_FORWARD_HEALTH_COHORT_MALFORMED")
+    if not isinstance(assessment.get("minimum_forward_required"), int):
+        blockers.append("NFL_FORWARD_HEALTH_COHORT_MALFORMED")
+    elif assessment["minimum_forward_required"] < 100:
+        blockers.append("NFL_FORWARD_MINIMUM_COHORT_INVALID")
+    if isinstance(assessment.get("graded_n"), int) and isinstance(minimum, int) and not assessment["graded_n"] >= minimum:
+        blockers.append("NFL_FORWARD_HEALTH_GRADED_N_BELOW_MINIMUM")
+    if assessment.get("status") != "PASS":
+        blockers.append("NFL_FORWARD_HEALTH_STATUS_NOT_PASS")
+    if assessment.get("certification_recommendation") != "FORWARD_EVIDENCE_PASS":
+        blockers.append("NFL_FORWARD_RECOMMENDATION_NOT_PASS")
+    if assessment.get("blockers") != []:
+        blockers.append("NFL_FORWARD_HEALTH_BLOCKERS_PRESENT")
+    return not blockers, sorted(set(blockers)), evidence
+
+
+def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
+    """Boolean-only view of the forward-certification decision."""
+    proven, _blockers, _evidence = _forward_certification_diagnosis(db, row)
+    return proven
 
 
 def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, Any]) -> dict[str, Any]:
@@ -319,7 +373,14 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
     if calibration_proven and not refresh_proven:
         stage_reasons.append("NFL_FINAL_REFRESH_SOURCE_PROOF_UNPROVEN")
     stage_proven = calibration_proven and refresh_proven
-    certified_forward = _forward_certification_proven(db, rows[0]) if stage_proven else False
+    forward_blockers: list[str] = []
+    forward_evidence: dict[str, Any] = {}
+    if stage_proven:
+        certified_forward, forward_blockers, forward_evidence = _forward_certification_diagnosis(
+            db, rows[0]
+        )
+    else:
+        certified_forward = False
     upstream_approved = (
         out.get("rank_eligible") is True
         and out.get("probability_publishable") is True
@@ -389,6 +450,8 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
             "forward_certification_status": (
                 "NOT_CHECKED" if not stage_proven else "PASS" if certified_forward else "HOLD"
             ),
+            "forward_certification_blockers": list(forward_blockers),
+            "forward_certification_evidence": dict(forward_evidence),
             "blockers": stage_reasons,
             "source": STAGE_SOURCE,
             "prediction_id": prediction_id,
@@ -405,6 +468,7 @@ def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, 
         out["blockers"] = sorted(set([
             *(str(value) for value in out.get("blockers", [])),
             *stage_reasons,
+            *forward_blockers,
             "NFL_FORWARD_CERTIFICATION_UNPROVEN" if stage_proven and not certified_forward
             else "NFL_UPSTREAM_TERMINAL_UNPROVEN" if stage_proven else "NFL_STAGE_PROOF_UNPROVEN",
         ]))
