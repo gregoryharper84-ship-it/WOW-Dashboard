@@ -6,6 +6,7 @@ and no certification, activation, promotion, publication, ranking, or execution 
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Sequence
 
 from ncaaf_cfbd_hydrator import SourceSnapshot
@@ -32,6 +33,11 @@ def _snapshot_from_row(row: Mapping[str, Any]) -> SourceSnapshot:
         raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_ROWS_INVALID")
     if not isinstance(blocker_codes, list):
         blocker_codes = []
+    payload_sha256 = row.get("payload_sha256")
+    if not isinstance(payload_sha256, str) or re.fullmatch(r"[0-9a-fA-F]{64}", payload_sha256) is None:
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "PAYLOAD_SHA256_INVALID"
+        )
     can_execute = row.get("can_execute")
     if can_execute is not False:
         raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_GOVERNANCE_INVALID")
@@ -45,7 +51,7 @@ def _snapshot_from_row(row: Mapping[str, Any]) -> SourceSnapshot:
         request_params=dict(row.get("request_params") or {}),
         response_rows=response_rows,
         response_row_count=int(row.get("response_row_count") or 0),
-        payload_sha256=str(row.get("payload_sha256") or ""),
+        payload_sha256=payload_sha256,
         acquisition_status=str(row.get("acquisition_status") or ""),
         blocker_codes=[str(v) for v in blocker_codes],
         can_execute=False,

@@ -46,6 +46,7 @@ class _Query:
         self.fence = False
         self.cutoff = None
         self.count_query = False
+        self.filters = {}
 
     def select(self, fields, count=None):
         assert fields == "created_at" or "source_snapshot_id" in fields
@@ -56,11 +57,13 @@ class _Query:
 
     def eq(self, field, value):
         assert (field, value) in (("provider", "CFBD"), ("endpoint", "/games/players"))
+        self.filters[field] = value
         return self
 
     def in_(self, field, values):
         assert field == "season"
         assert values == [2025]
+        self.filters[field] = tuple(values)
         return self
 
     def order(self, field, desc=False):
@@ -87,6 +90,7 @@ class _Query:
         return self
 
     def execute(self):
+        assert self.filters == {"provider": "CFBD", "endpoint": "/games/players", "season": (2025,)}
         if self.fence:
             ordered = sorted(
                 (r for r in self.db.rows if isinstance(r, dict) and "created_at" in r),
@@ -214,6 +218,17 @@ def test_missing_snapshot_id_fails_closed():
     with pytest.raises(NCAAFPropChallengerRunnerError) as err:
         load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
     assert (err.value.code, err.value.detail) == ("NCAAF_PROP_SOURCE_READ_INVALID", "SNAPSHOT_ID_INVALID")
+
+
+@pytest.mark.parametrize("bad_hash", ["", "0" * 63, "z" * 64, None, 17])
+def test_invalid_payload_sha256_fails_closed(bad_hash):
+    record = _row(1)
+    record["payload_sha256"] = bad_hash
+    with pytest.raises(NCAAFPropChallengerRunnerError) as err:
+        load_source_snapshots(_Db([record]), endpoint="/games/players", seasons=[2025], page_size=2)
+    assert (err.value.code, err.value.detail) == (
+        "NCAAF_PROP_SOURCE_READ_INVALID", "PAYLOAD_SHA256_INVALID"
+    )
 
 
 def test_nonmapping_row_fails_closed_instead_of_being_dropped():
