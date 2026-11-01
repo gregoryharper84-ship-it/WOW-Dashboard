@@ -482,3 +482,44 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## NBA official full-game scalar settlement blocker registry — #1988 / PR #2211
+
+These codes are emitted by `v17/nba_prop_official_settlement.py` through typed `_hold(status, blocker)` results. They belong to **official postgame outcome settlement for immutable forward pregame NBA props**, not to the fitted sporting probability, calibrator, publication, or execution lanes. All rows remain a typed settlement hold; they never authorize an outcome write or classify a missing input as `MODEL_UNAVAILABLE`. `V17_TERMINAL_REDUCER` remains sole terminal authority; `can_execute=false`.
+
+| Code | Owning lane | Returned status | Exact condition | Outcome write? |
+| --- | --- | --- | --- | --- |
+| `NBA_FORWARD_PREGAME_TEMPORAL_PROOF_REQUIRED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Snapshot capture, model, lock, event start or settlement clock chronology is absent, contradictory, or not strictly pregame. | No |
+| `NBA_EXACT_SNAPSHOT_IDENTITY_MISMATCH` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Frozen prediction and source snapshot disagree on snapshot ID, event, player, sport or statistic. | No |
+| `NBA_EXACT_LINE_OR_DIRECTION_INVALID` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Prediction line is nonfinite/negative/different from the immutable snapshot, or side is not MORE/LESS. | No |
+| `NBA_ROLE_AND_OFFER_EVIDENCE_REQUIRED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Frozen role-status or opportunity-ledger evidence is missing or is not a mapping. | No |
+| `NBA_EXACT_FULL_GAME_PERIOD_REQUIRED` | NBA official scalar settlement | `MODEL_OR_IDENTITY_UNSUPPORTED` | Exact offer period is absent or not FULL_GAME. | No |
+| `NBA_LITERAL_EXACT_OFFER_REQUIRED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | No literal exact numeric offer threshold is preserved with pregame evidence. | No |
+| `NBA_AT_LEAST_OFFER_ADAPTER_NOT_CERTIFIED` | NBA official scalar settlement | `MODEL_OR_IDENTITY_UNSUPPORTED` | At-least/at-most, ladder, compound or +/- suffixed offers lack an exact certified settlement adapter. | No |
+| `NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Literal threshold cannot be parsed as a finite numeric offer, including NaN and infinity. | No |
+| `NBA_LITERAL_EXACT_OFFER_LINE_MISMATCH` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Finite literal offer threshold does not equal the immutable prediction line. | No |
+| `NBA_VERIFIED_PREGAME_CROSS_PROVIDER_IDENTITY_REQUIRED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Frozen role evidence lacks source_identity binding ESPN and official NBA identifiers. | No |
+| `NBA_OFFICIAL_EVENT_PLAYER_CROSSWALK_INCOMPLETE` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | NBA game/player IDs, ESPN event ID, team tricode or required provider identities are absent/invalid. | No |
+| `NBA_OFFICIAL_EVENT_PLAYER_CROSSWALK_CONTRADICTION` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Frozen official event/person IDs or event start disagree with the prediction or role evidence. | No |
+| `NBA_OFFICIAL_PREGAME_SOURCE_TIMESTAMPS_INVALID` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Provider capture timestamps are missing, post-start or later than immutable snapshot capture. | No |
+| `NBA_SETTLEMENT_CLOCK_MUST_BE_UTC_AWARE` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Explicit settlement clock is not a timezone-aware datetime. | No |
+| `NBA_EXACT_STAT_SETTLEMENT_UNSUPPORTED` | NBA official scalar settlement | `MODEL_OR_IDENTITY_UNSUPPORTED` | Statistic is outside seven declared NBA full-game scalar settlement families. | No |
+| `NBA_OFFICIAL_FINAL_BOXSCORE_UNAVAILABLE` | NBA official scalar settlement | `OFFICIAL_SOURCE_UNAVAILABLE` | Exact official NBA CDN final boxscore request fails or cannot be retrieved. | No |
+| `NBA_OFFICIAL_BOXSCORE_URL_NOT_ALLOWLISTED` | NBA official scalar settlement | `OFFICIAL_SOURCE_UNAVAILABLE` | Exact boxscore URL is not the fixed HTTPS NBA CDN host and ten-digit game-ID path, or has query/fragment material. | No |
+| `NBA_FINAL_BOXSCORE_GAME_SCHEMA_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_SOURCE_INVALID` | Official response lacks a valid game object. | No |
+| `NBA_OFFICIAL_GAME_ID_CONTRADICTION` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Official boxscore game ID disagrees with frozen NBA event crosswalk. | No |
+| `NBA_OFFICIAL_GAME_NOT_FINAL` | NBA official scalar settlement | `NOT_FINAL` | Official NBA game status is not final. | No |
+| `NBA_OFFICIAL_EVENT_START_CONTRADICTION` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Official game start differs from locked pregame event start. | No |
+| `NBA_FINAL_BOXSCORE_TEAM_SCHEMA_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_SOURCE_INVALID` | Official home/away team objects, tricodes or player arrays are malformed. | No |
+| `NBA_FINAL_BOXSCORE_TEAMS_CONFLICT` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Official home and away teams have the same tricode. | No |
+| `NBA_OFFICIAL_TEAM_CROSSWALK_MISMATCH` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Neither exactly one official team matches the frozen roster tricode. | No |
+| `NBA_FINAL_BOXSCORE_PLAYER_SCHEMA_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_SOURCE_INVALID` | Official player array contains a malformed player object. | No |
+| `NBA_EXACT_OFFICIAL_PLAYER_ROW_NOT_FOUND` | NBA official scalar settlement | `OFFICIAL_PLAYER_STAT_ROW_MISSING` | Frozen NBA person ID has no official boxscore player row; absence is not DNP proof. | No |
+| `NBA_DUPLICATE_OFFICIAL_PLAYER_ROWS` | NBA official scalar settlement | `OFFICIAL_PLAYER_EVENT_IDENTITY_AMBIGUOUS` | Frozen NBA person ID appears in multiple official boxscore player rows. | No |
+| `NBA_OFFICIAL_PLAYER_TEAM_MISMATCH` | NBA official scalar settlement | `OFFICIAL_PLAYER_EVENT_IDENTITY_CONTRADICTION` | Official player row belongs to a team other than the frozen roster team. | No |
+| `NBA_OFFICIAL_PLAYER_NAME_MISMATCH` | NBA official scalar settlement | `OFFICIAL_PLAYER_EVENT_IDENTITY_CONTRADICTION` | Official boxscore player name disagrees with frozen player identity. | No |
+| `NBA_EXPLICIT_DNP_REASON_REQUIRED` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | Player is marked not played but no explicit official nonparticipation reason is supplied. | No |
+| `NBA_EXPLICIT_PLAYED_STATUS_REQUIRED` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | Official player row does not explicitly confirm played or did-not-play. | No |
+| `NBA_OFFICIAL_PLAYER_STATS_OBJECT_REQUIRED` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | Official player row lacks a statistics object. | No |
+| `NBA_EXACT_STAT_COMPONENT_MISSING_OR_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | An exact official stat component is missing, nonfinite, nonintegral, negative or beyond allowed bounds. | No |
+| `NBA_OFFICIAL_SETTLEMENT_ADAPTER_IMPORT_FAILED` | NBA exact-route settlement import | NBA official settlement module or a dependency cannot be imported; preserve typed adapter failure rather than relabeling as a missing fitted model. | No |

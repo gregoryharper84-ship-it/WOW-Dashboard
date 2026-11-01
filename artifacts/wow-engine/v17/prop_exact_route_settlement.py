@@ -8,7 +8,9 @@ certification, promotion, publication, or execution authority.
 Currently wired official adapters:
 * MLB pitcher strikeouts, pitching outs, strikes thrown, balls thrown;
 * MLB batter plate appearances;
-* WNBA points, rebounds, assists, three-pointers made.
+* WNBA points, rebounds, assists, three-pointers made;
+* NBA exact full-game points, rebounds, assists and P/R/A composites, with
+  immutable pregame cross-provider NBA game/player identity proof.
 
 MLB 1IP and Fantasy Score keep separate typed settlement blockers until their
 exact event-tree/component settlement contracts are wired.
@@ -54,7 +56,12 @@ WNBA_SUPPORTED = frozenset({
     ("WNBA", "ASSISTS"),
     ("WNBA", "THREE_POINTERS_MADE"),
 })
-SUPPORTED_SETTLEMENT_ROUTES = MLB_SUPPORTED | WNBA_SUPPORTED
+NBA_SUPPORTED = frozenset({
+    ("NBA", "POINTS"), ("NBA", "REBOUNDS"), ("NBA", "ASSISTS"),
+    ("NBA", "PRA"), ("NBA", "POINTS_REBOUNDS"),
+    ("NBA", "POINTS_ASSISTS"), ("NBA", "REBOUNDS_ASSISTS"),
+})
+SUPPORTED_SETTLEMENT_ROUTES = MLB_SUPPORTED | WNBA_SUPPORTED | NBA_SUPPORTED
 SEPARATE_SETTLEMENT_ROUTES = frozenset({("MLB", "1ST_INNING_PITCHES_THROWN")})
 FANTASY_SETTLEMENT_ROUTES = frozenset((spec.sport, spec.stat_type) for spec in LANE_SPECS.values())
 
@@ -89,6 +96,8 @@ def _route_status(key: tuple[str, str]) -> tuple[str, str | None, str | None]:
         return SETTLEMENT_READY, "MLB_STATS_API_OFFICIAL_GAME_FEED", None
     if key in WNBA_SUPPORTED:
         return SETTLEMENT_READY, "WNBA_OFFICIAL_CDN_PLUS_STATS_LEAGUE_GAME_LOG", None
+    if key in NBA_SUPPORTED:
+        return SETTLEMENT_READY, "NBA_OFFICIAL_CDN_FINAL_BOXSCORE", None
     if key in SEPARATE_SETTLEMENT_ROUTES:
         return SEPARATE_SETTLEMENT_REQUIRED, None, "MLB_1IP_EXACT_EVENT_TREE_SETTLEMENT_REQUIRED"
     if key in FANTASY_SETTLEMENT_ROUTES:
@@ -151,13 +160,14 @@ def _request_json(
     http_get: Callable[..., Any],
     params: Mapping[str, Any] | None = None,
     headers: Mapping[str, str] | None = None,
+    follow_redirects: bool = True,
 ) -> dict[str, Any]:
     response = http_get(
         url,
         params=dict(params or {}),
         headers=dict(headers or {}),
         timeout=HTTP_TIMEOUT_SECONDS,
-        follow_redirects=True,
+        follow_redirects=follow_redirects,
     )
     status = int(getattr(response, "status_code", 200))
     if status >= 400:
@@ -452,6 +462,24 @@ def settle_wnba_scalar(
     }
 
 
+def settle_nba_scalar(
+    prediction: Mapping[str, Any], snapshot: Mapping[str, Any], *,
+    http_get: Callable[..., Any] = httpx.get,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Late import preserves the existing routes; import failure is typed, never a model absence."""
+    try:
+        from v17.nba_prop_official_settlement import settle_nba_scalar as settle_official
+    except ImportError as exc:
+        return {
+            "status": "SETTLEMENT_ADAPTER_UNAVAILABLE",
+            "blocker": "NBA_OFFICIAL_SETTLEMENT_ADAPTER_IMPORT_FAILED",
+            "error_type": type(exc).__name__,
+            "can_execute": False,
+        }
+    return settle_official(prediction, snapshot, http_get=http_get, now=now)
+
+
 def _db_call(boundary: str, call: Callable[[], Any]) -> Any:
     try:
         return call()
@@ -492,7 +520,7 @@ def _snapshots(db: Any, ids: list[str]) -> dict[str, dict[str, Any]]:
         rows = _paginate(
             "wow_prop_evidence_snapshots.select_settlement_identity",
             lambda chunk=chunk: db.table("wow_prop_evidence_snapshots")
-            .select("source_snapshot_id,event_id,event_start_time,sport,player,stat_type,line,role_status,opportunity_ledger")
+            .select("source_snapshot_id,captured_at,event_id,event_start_time,sport,player,stat_type,line,role_status,opportunity_ledger")
             .in_("source_snapshot_id", chunk),
         )
         output.update({str(row["source_snapshot_id"]): row for row in rows if row.get("source_snapshot_id")})
@@ -563,6 +591,8 @@ def run_exact_route_settlement(
             result = settle_mlb_scalar(prediction, snapshot, http_get=http_get, now=now)
         elif key in WNBA_SUPPORTED:
             result = settle_wnba_scalar(prediction, snapshot, http_get=http_get, now=now)
+        elif key in NBA_SUPPORTED:
+            result = settle_nba_scalar(prediction, snapshot, http_get=http_get, now=now)
         else:
             result = {"status": "EXACT_ROUTE_SETTLEMENT_ADAPTER_REQUIRED", "can_execute": False}
         outcome = result.get("outcome") if isinstance(result.get("outcome"), dict) else None
@@ -602,10 +632,12 @@ __all__ = [
     "CAN_EXECUTE",
     "ExactRouteSettlementRequest",
     "MLB_SUPPORTED",
+    "NBA_SUPPORTED",
     "SUPPORTED_SETTLEMENT_ROUTES",
     "WNBA_SUPPORTED",
     "build_settlement_inventory",
     "run_exact_route_settlement",
     "settle_mlb_scalar",
+    "settle_nba_scalar",
     "settle_wnba_scalar",
 ]
