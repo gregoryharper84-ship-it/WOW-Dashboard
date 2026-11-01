@@ -70,7 +70,8 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         # never held for a limit it was not told about.
         self.assertEqual(m.REVIEW_SCHEMA["properties"]["findings"]["maxItems"], m.MAX_FINDINGS)
         for key in ("file", "detail", "evidence"):
-            self.assertEqual(items["properties"][key]["maxLength"], m.MAX_FINDING_TEXT)
+            expected = m.MAX_FINDING_DETAIL if key == "detail" else m.MAX_FINDING_TEXT
+            self.assertEqual(items["properties"][key]["maxLength"], expected)
             self.assertEqual(items["properties"][key]["minLength"], 1)
         prompt = m.prompt_for({"pr": 1, "head_sha": "a" * 40,
                                "diff_sha256": "b" * 64, "diff": "d"})
@@ -79,6 +80,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("blocks regardless of severity", prompt)
         self.assertIn("at most 12", prompt)
         self.assertIn("at most 500 characters", prompt)
+        self.assertIn("detail may be at most 2048 characters", prompt)
         self.assertIn("exactly these five keys and no others", prompt)
         self.assertIn("Never return whitespace-only", prompt)
         self.assertIn("cross-cutting concern", prompt)
@@ -102,7 +104,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             for suffix, bad in (
                 ("TYPE", 123),
                 ("EMPTY", "  "),
-                ("TOO_LONG", "x" * (m.MAX_FINDING_TEXT + 1)),
+                ("TOO_LONG", "x" * ((m.MAX_FINDING_DETAIL if key == "detail" else m.MAX_FINDING_TEXT) + 1)),
             ):
                 with self.subTest(field=key, error=suffix):
                     malformed = {**self._finding("low"), key: bad}
@@ -141,6 +143,23 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             m.parse_verdict({**good, "findings": [{**finding,
                 "evidence": "z" * (m.MAX_FINDING_TEXT + 1)}]})
         self.assertEqual(str(too_long.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
+
+    def test_long_semantic_detail_preserves_blocking_verdict_and_stays_bounded(self):
+        """A longer medium-risk finding must not be dropped or downgraded."""
+        good = self._passing()
+        finding = self._finding("medium", "r" * 1700, category="security")
+        decision, payload = m.parse_verdict({**good, "findings": [finding]})
+        self.assertEqual(decision, "REJECT")
+        self.assertEqual(payload["findings"][0]["detail"], "r" * 1700)
+        finding["detail"] = "r" * (m.MAX_FINDING_DETAIL + 1)
+        with self.assertRaises(m.Hold) as error:
+            m.parse_verdict({**good, "findings": [finding]})
+        self.assertEqual(str(error.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_DETAIL_TOO_LONG")
+        finding["detail"] = "safe detail"
+        finding["evidence"] = "e" * (m.MAX_FINDING_TEXT + 1)
+        with self.assertRaises(m.Hold) as error:
+            m.parse_verdict({**good, "findings": [finding]})
+        self.assertEqual(str(error.exception), "SEMANTIC_FINDINGS_INVALID:TEXT_EVIDENCE_TOO_LONG")
 
     def test_prior_security_reject_stays_a_hold_with_explicit_zero_attempts(self):
         target = {"pr": 2320, "head_sha": "a" * 40, "base_sha": "b" * 40,

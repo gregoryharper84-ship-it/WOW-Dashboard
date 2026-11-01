@@ -43,7 +43,9 @@ BLOCKING_CATEGORIES = frozenset(FINDING_CATEGORIES) - {"informational"}
 # told about while the fail-closed validation itself stays unchanged.
 MAX_FINDINGS = 12
 MAX_FINDING_TEXT = 500
+MAX_FINDING_DETAIL = 2048
 FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_TEXT}
+FINDING_DETAIL_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_DETAIL}
 REVIEW_CONTRACT_VERSION = 2
 REVIEW_SCHEMA = {
     "type": "object",
@@ -56,7 +58,7 @@ REVIEW_SCHEMA = {
             "properties": {"severity": {"type": "string", "enum": list(FINDING_SEVERITIES)},
                            "category": {"type": "string", "enum": list(FINDING_CATEGORIES)},
                            "file": dict(FINDING_TEXT_SCHEMA),
-                           "detail": dict(FINDING_TEXT_SCHEMA),
+                           "detail": dict(FINDING_DETAIL_SCHEMA),
                            "evidence": dict(FINDING_TEXT_SCHEMA)},
             "required": ["severity", "category", "file", "detail", "evidence"],
             "additionalProperties": False}},
@@ -289,7 +291,8 @@ def parse_verdict(value):
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TYPE")
             if not field_value.strip():
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_EMPTY")
-            if len(field_value) > MAX_FINDING_TEXT:
+            limit = MAX_FINDING_DETAIL if key == "detail" else MAX_FINDING_TEXT
+            if len(field_value) > limit:
                 raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TOO_LONG")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
     # Model-provided severity alone cannot downgrade any safety or correctness
@@ -316,7 +319,7 @@ def prompt_for(target):
             "objects; empty array when none). Each finding object has exactly these five keys and no "
             "others: severity in critical|high|medium|low, category in security|probability_integrity|"
             "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
-            "evidence are non-empty strings of at most 500 characters each, so quote only the shortest "
+            "evidence are non-empty strings of at most 500 characters each; detail may be at most 2048 characters. Quote only the shortest "
             "decisive excerpt as evidence. Never return whitespace-only file, detail, or evidence. "
             "For a cross-cutting concern, cite the most relevant changed repository-relative file path, never blank. "
             "Prefer 100-200 characters in detail and 30-150 in evidence. Split complex concerns into separate "
