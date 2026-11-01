@@ -95,8 +95,8 @@ def test_render_deployment_pointer_is_governed_by_typed_exact_receipts():
     assert backend["current_render_service_id"] == "srv-da7sa9gu01pc73brt80g"
     assert "current_deployed_sha" not in backend
     assert "current_render_deploy_id" not in backend
-    assert backend["auto_deploy"] is True
-    assert backend["auto_deploy_trigger"] == "checksPass"
+    assert backend["auto_deploy"] is False
+    assert backend["auto_deploy_trigger"] == "off"
     assert backend["openapi_introspection_blocks_live_editor_sync"] is False
 
     assert pointer["authority"] == "LATEST_SUCCESSFUL_GITHUB_DEPLOYMENT_ATTESTATION_FROM_EXACT_RENDER_RECEIPT"
