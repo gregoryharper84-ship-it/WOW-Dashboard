@@ -369,3 +369,69 @@ def test_claim_job_refuses_a_running_job_whose_lease_has_not_expired():
     job = _running_job_with_heartbeat_age(client, heartbeat_age_seconds=5)  # well inside the default 180s lease
     claimed = repository.claim_job(client, job["job_id"])
     assert claimed is False
+
+
+
+def test_create_run_retains_canonical_request_payload() -> None:
+    client = _client()
+    payload = {"sports": ["NFL"], "lanes": ["MONEYLINE"], "discovery_enabled": True}
+    row, reused = repository.create_run(
+        client,
+        idempotency_key="product-truth-request",
+        request_hash="hash-product-truth-request",
+        run_type="FULL_MODEL",
+        requested_as_of="2026-10-07T12:00:00Z",
+        user_timezone="America/Chicago",
+        governance_version="TEST_V1",
+        request_payload=payload,
+    )
+    assert reused is False
+    assert row["request_payload"] == payload
+
+
+def test_product_truth_snapshot_is_append_only_and_latest_is_readable() -> None:
+    client = _client()
+    run, _ = repository.create_run(
+        client,
+        idempotency_key="product-truth-ledger",
+        request_hash="hash-product-truth-ledger",
+        run_type="FULL_MODEL",
+        requested_as_of="2026-10-07T12:00:00Z",
+        user_timezone="America/Chicago",
+        governance_version="TEST_V1",
+    )
+    first = {"run_id": run["run_id"], "version": 1, "can_execute": False}
+    second = {"run_id": run["run_id"], "version": 2, "can_execute": False}
+    repository.record_product_truth_snapshot(
+        client, run_id=run["run_id"], snapshot=first
+    )
+    repository.record_product_truth_snapshot(
+        client, run_id=run["run_id"], snapshot=second
+    )
+    events = client._store["wow_agent_audit_events"]
+    assert len(events) == 2
+    assert all(event["can_execute"] is False for event in events)
+    assert repository.get_latest_product_truth_snapshot(
+        client, run["run_id"]
+    )["version"] == 2
+
+
+def test_product_truth_snapshot_rejects_execution_authority() -> None:
+    client = _client()
+    with pytest.raises(ValueError, match="can_execute=false"):
+        repository.record_product_truth_snapshot(
+            client,
+            run_id="run-1",
+            snapshot={"can_execute": True},
+        )
+
+
+
+def test_product_truth_snapshot_rejects_run_identity_mismatch() -> None:
+    client = _client()
+    with pytest.raises(ValueError, match="run_id mismatch"):
+        repository.record_product_truth_snapshot(
+            client,
+            run_id="run-1",
+            snapshot={"run_id": "run-2", "can_execute": False},
+        )
