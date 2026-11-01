@@ -22198,12 +22198,13 @@ try:
 except Exception:
     pass  # No DATABASE_URL configured; fallback to process-memory is safe
 
-# CI initializes its schema synchronously in wow-verify.yml.  Do not start a
-# background psycopg2 warmup during pytest: its connection may outlive scoped
-# environment patches and crash the interpreter while those patches unwind.
-# Production behavior is unchanged; the normal startup warmup still runs.
+# CI must initialize *all* required schema before pytest rather than
+# racing a background psycopg2 connection against test environment teardown.
+# Run the existing warmup synchronously only in CI; its MLB network prewarm is
+# already separately gated by WOW_CI. Production daemon behavior is unchanged.
 if os.environ.get("WOW_CI", "").strip().lower() in {"1", "true", "yes"}:
-    _bt("startup warmup skipped under CI — app fully ready")
+    _run_startup_warmup()
+    _bt("startup warmup completed synchronously under CI — app fully ready")
 else:
     _threading.Thread(target=_run_startup_warmup, daemon=True, name="startup-warmup").start()
     _bt("startup daemon spawned — app fully ready")
@@ -23430,6 +23431,10 @@ def gate_engine_run():
         result["outright_winner_ledger"]           = _ow_results
         result["outright_winner_contract_failures"] = _ow_failure_results
         result["outright_event_dedup_map"]          = _ow_dedup_map
+
+    # The fail-closed ledger branch below must have the canonical hash before
+    # the later success-only lazy import, or it raises UnboundLocalError.
+    from gate_engine.wow_runtime_manifest import MANIFEST_GOVERNANCE_HASH
 
     # Detect session-ledger DB failure → fail closed at HTTP level.
     # Any row blocked by SESSION_LEDGER_UNAVAILABLE means we cannot confirm
