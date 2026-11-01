@@ -88,6 +88,39 @@ class WakeProbeTests(unittest.TestCase):
                     request, None, 302, "Found", {"Location": destination}, destination
                 ))
 
+    def test_installed_opener_refuses_redirect_response_before_followup_get(self):
+        """Exercise the real opener with a fake HTTPS transport, without network."""
+        from io import BytesIO
+        from urllib.error import HTTPError
+        from urllib.request import HTTPSHandler
+        from urllib.response import addinfourl
+
+        self.assertTrue(any(isinstance(h, probe._RejectRedirects)
+                            for h in probe.HTTP_CLIENT.handlers))
+        transport = next(h for h in probe.HTTP_CLIENT.handlers
+                         if isinstance(h, HTTPSHandler))
+        for destination in (
+            "https://example.net/health",
+            probe.BASE_URL + "/unapproved",
+            probe.BASE_URL + "/collector/readiness",
+        ):
+            visits = []
+            def fake_get(request):
+                visits.append(request.full_url)
+                result = addinfourl(
+                    BytesIO(b""), {"Location": destination},
+                    request.full_url, code=302,
+                )
+                result.msg = "Found"
+                return result
+
+            with self.subTest(destination=destination):
+                with patch.object(transport, "https_open", side_effect=fake_get):
+                    with self.assertRaises(HTTPError) as error:
+                        probe.read_json("/health")
+                self.assertEqual(error.exception.code, 302)
+                self.assertEqual(visits, [probe.BASE_URL + "/health"])
+
     def test_proxy_url_mismatch_is_rejected_even_on_same_host(self):
         from unittest.mock import MagicMock
         response = MagicMock()
