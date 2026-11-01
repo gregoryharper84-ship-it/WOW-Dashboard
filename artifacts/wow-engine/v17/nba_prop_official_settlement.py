@@ -120,7 +120,9 @@ def _identity(
         return None, _hold("MODEL_OR_IDENTITY_UNSUPPORTED", "NBA_AT_LEAST_OFFER_ADAPTER_NOT_CERTIFIED")
     try:
         offered = Decimal(threshold)
-        if not offered.is_finite() or offered != Decimal(str(line)):
+        if not offered.is_finite():
+            return None, _hold("IDENTITY_UNRESOLVED", "NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED")
+        if offered != Decimal(str(line)):
             return None, _hold("IDENTITY_UNRESOLVED", "NBA_LITERAL_EXACT_OFFER_LINE_MISMATCH")
     except InvalidOperation:
         return None, _hold("IDENTITY_UNRESOLVED", "NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED")
