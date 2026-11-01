@@ -9,6 +9,8 @@ on:
       - "artifacts/wow-engine/kalshi_weather_v2/research_backfill.py"
       - "artifacts/wow-engine/test_kalshi_weather_research_backfill.py"
       - "src/trigger/weather-research-backfill.ts"
+      - "src/trigger/weather-research-core.ts"
+      - "tests/weather-research-backfill.test.mjs"
       - "trigger.config.ts"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -26,6 +28,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: kalshi-weather-trigger-research-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   offline-research:
@@ -59,3 +65,7 @@ jobs:
           run_install: false
       - name: Verify pinned SDK with frozen lock and no lifecycle scripts
         run: pnpm install --frozen-lockfile --ignore-scripts --filter .
+      - name: Typecheck actual Trigger worker and cloud configuration
+        run: pnpm exec tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --lib es2022,dom --skipLibCheck src/trigger/weather-research-core.ts src/trigger/weather-research-backfill.ts trigger.config.ts
+      - name: Offline trigger task boundary tests
+        run: node --experimental-strip-types --test tests/weather-research-backfill.test.mjs
