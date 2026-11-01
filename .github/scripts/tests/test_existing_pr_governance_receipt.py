@@ -1725,35 +1725,10 @@ def _historical_cli_subprocess(tmp_path, receipt, reviews):
     )
 
 
-def test_historical_v2_cli_accepts_then_rejects_withdrawn_and_renamed_sources(tmp_path):
-    receipt = build(now=NOW)
-    reviews = evidence()["reviews"]
-    accepted = _historical_cli_subprocess(tmp_path, receipt, reviews)
+def test_historical_v2_cli_acceptance_is_isolated_from_live_sunset(tmp_path):
+    accepted = _historical_cli_subprocess(tmp_path, build(now=NOW), evidence()["reviews"])
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     assert json.loads(accepted.stdout)["status"] == "REVIEW_EVIDENCE_VERIFIED"
-
-    withdrawn = reviews + [{
-        "id": 13, "state": "DISMISSED", "commit_id": HEAD,
-        "submitted_at": "2026-10-17T23:01:00Z",
-        "user": {**REVIEWER, "type": "User"},
-    }]
-    rejected = _historical_cli_subprocess(tmp_path, receipt, withdrawn)
-    assert rejected.returncode == 1, rejected.stdout + rejected.stderr
-    assert json.loads(rejected.stdout) == {
-        "status": "HOLD", "reason": "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING",
-    }
-
-    renamed = json.loads(json.dumps(receipt))
-    renamed["changed_files"] = [{
-        "filename": "src/relocated.py",
-        "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
-        "status": "renamed",
-    }]
-    rejected = _historical_cli_subprocess(tmp_path, renamed, reviews)
-    assert rejected.returncode == 1, rejected.stdout + rejected.stderr
-    assert json.loads(rejected.stdout) == {
-        "status": "HOLD", "reason": "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE",
-    }
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch, capsys):
@@ -1777,9 +1752,6 @@ def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_p
     ])
 
     # The real CLI must reject V2 after sunset. It never receives a test clock.
-    assert datetime.now(timezone.utc) >= datetime.fromisoformat(
-        verifier.FALLBACK_PROVIDER_SUNSET_UTC.replace("Z", "+00:00")
-    )
     assert verifier.main() == 1
     outcome = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert outcome == {"status": "HOLD", "reason": "TEMPORARY_FALLBACK_PROVIDER_SUNSET"}
@@ -1928,14 +1900,10 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "user": {**REVIEWER, "type": "User"},
         }
     ]
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
-                       match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING"):
-        verifier.verify_receipt(
-            receipt, expected_repository=REPOSITORY, expected_head_sha=HEAD,
-            expected_head_ref="fix/issue-1806", expected_workflow_run_id="12345",
-            expected_workflow_name=verifier.WORKFLOW_NAME, expected_pr_number=1822,
-            live_reviews=withdrawn, now=NOW,
-        )
+    # Historical subprocess runs the real CLI with an interpreter-local clock.
+    v2_withdrawn = _historical_cli_subprocess(tmp_path, receipt, withdrawn)
+    assert v2_withdrawn.returncode == 1, v2_withdrawn.stdout + v2_withdrawn.stderr
+    assert json.loads(v2_withdrawn.stdout)["reason"] == "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING"
 
     renamed_source = dict(receipt)
     renamed_source["changed_files"] = [
@@ -1945,14 +1913,9 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "status": "renamed",
         }
     ]
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
-                       match="TRUST_ROOT_CHANGE_NOT_CERTIFIABLE"):
-        verifier.verify_receipt(
-            renamed_source, expected_repository=REPOSITORY, expected_head_sha=HEAD,
-            expected_head_ref="fix/issue-1806", expected_workflow_run_id="12345",
-            expected_workflow_name=verifier.WORKFLOW_NAME, expected_pr_number=1822,
-            live_reviews=reviews, now=NOW,
-        )
+    v2_renamed = _historical_cli_subprocess(tmp_path, renamed_source, reviews)
+    assert v2_renamed.returncode == 1, v2_renamed.stdout + v2_renamed.stderr
+    assert json.loads(v2_renamed.stdout)["reason"] == "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE"
 
     boot_data = bootstrap_evidence()
     boot = build_bootstrap(boot_data, now=datetime.now(timezone.utc))
