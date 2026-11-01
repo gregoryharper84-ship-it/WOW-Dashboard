@@ -145,29 +145,21 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     main_sha = entry.get("main_sha")
     worker_id = entry.get("worker_id")
     status = entry.get("status")
-    valid_enqueued = (
-        status in (None, "CURSOR_AGENT_ENQUEUED")
-        and isinstance(run_id, str)
-        and re.fullmatch(r"run-[0-9a-f-]{36}", run_id) is not None
-    )
-    # Failed-launch reservations have no provider run_id; authenticity is bound
-    # jointly to the GitHub Actions bot author (id 41898282), immutable comment
-    # body SHA-256, verified failed protected-main dispatcher workflow run
-    # (origin id/attempt/head_sha/conclusion below), non-main PR branch, and
-    # deterministic agent_id.
     branch = entry.get("branch")
-    valid_failed_launch = (
-        status == "CURSOR_LAUNCH_RESERVED"
-        and run_id is None
-        and isinstance(branch, str)
-        and bool(branch.strip())
-        and branch not in {"main", "master"}
-        and isinstance(number, str)
-        and re.fullmatch(r"[1-9][0-9]*", number) is not None
-        and isinstance(source_sha, str)
-        and re.fullmatch(r"[0-9a-f]{40}", source_sha) is not None
-        and agent_id == deterministic_agent_id(REPOSITORY, int(number), source_sha)
-    )
+    if status == "CURSOR_LAUNCH_RESERVED":
+        if (run_id is not None
+                or not isinstance(branch, str)
+                or not branch.strip()
+                or branch in {"main", "master"}):
+            raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+        is_failed_launch = True
+    elif status in (None, "CURSOR_AGENT_ENQUEUED"):
+        if (not isinstance(run_id, str)
+                or re.fullmatch(r"run-[0-9a-f-]{36}", run_id) is None):
+            raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+        is_failed_launch = False
+    else:
+        raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
     if (marker != f"<!-- WOW_REMOTE_REPAIR_ATTEMPT:{incident} -->"
             or entry.get("provider") != "cursor"
             or entry.get("hold") is not True
@@ -179,10 +171,11 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or entry.get("lease_group") != f"PR_{number}"
             or not isinstance(agent_id, str)
             or not re.fullmatch(r"bc-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", agent_id)
-            or not (valid_enqueued or valid_failed_launch)
             or not isinstance(source_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
             or not isinstance(main_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", main_sha)
-            or not isinstance(worker_id, str)):
+            or not isinstance(worker_id, str)
+            or (is_failed_launch
+                and agent_id != deterministic_agent_id(REPOSITORY, int(number), source_sha))):
         raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
     match = re.fullmatch(r"github-actions:([1-9][0-9]*):([1-9][0-9]*)", worker_id)
     if not match:
@@ -191,7 +184,7 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
         api(f"{GITHUB_API}/repos/{REPOSITORY}/actions/runs/{match.group(1)}",
             token=github_token), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED",
     )
-    expected_conclusion = "failure" if valid_failed_launch else "success"
+    expected_conclusion = "failure" if is_failed_launch else "success"
     if (origin.get("id") != int(match.group(1))
             or origin.get("run_attempt") != int(match.group(2))
             or origin.get("path") != ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
@@ -216,12 +209,14 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     }
 
 
-def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[str]:
-    """Permit reviewed PR head advancement, never an unrelated branch or force push."""
+def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api, *,
+                       allow_closed_negative_launch: bool = False) -> list[str]:
+    """Require exact identity; closed PRs are allowed only for proved never-created agents."""
     import re
 
+    allowed_states = ("open", "closed") if allow_closed_negative_launch else ("open",)
     head, base = pr.get("head"), pr.get("base")
-    if (pr.get("number") != target["pr_number"] or pr.get("state") != "open"
+    if (pr.get("number") != target["pr_number"] or pr.get("state") not in allowed_states
             or not isinstance(head, dict) or not isinstance(base, dict)
             or not isinstance(head.get("repo"), dict)
             or not isinstance(base.get("repo"), dict)
@@ -256,7 +251,7 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
     again = _require_object(api(url, token=github_token),
                             "CURSOR_SOURCE_PR_RECHECK_FAILED")
     if (again.get("number") != target["pr_number"]
-            or again.get("state") != "open"
+            or again.get("state") != pr.get("state")
             or not isinstance(again.get("head"), dict)
             or again["head"].get("sha") != latest
             or not isinstance(again["head"].get("repo"), dict)
@@ -368,7 +363,9 @@ def collect_receipt(
             api(pr_url, token=github_token),
             "SOURCE_PR_IDENTITY_UNVERIFIED",
         )
-        changed_files = _verify_dynamic_pr(pr, target, github_token, api)
+        changed_files = _verify_dynamic_pr(
+            pr, target, github_token, api, allow_closed_negative_launch=True,
+        )
         return {
             "status": "CURSOR_TERMINAL_STATUS_VERIFIED",
             "agent_id": agent_id,

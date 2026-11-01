@@ -83,8 +83,10 @@ def verified_released_ids(
         )
         # Negative-launch release is bound jointly to the GitHub Actions bot
         # author of both the reservation and release comments, the SHA-256
-        # digest of the original reservation body, the exact PR/main SHAs,
-        # worker_id, deterministic agent_id, and the verified finalizer run.
+        # digest of the original reservation body, the exact PR/main SHAs
+        # certified by the protected-main finalizer receipt `doc`, worker_id,
+        # deterministic agent_id derived from the certified receipt, and the
+        # verified finalizer workflow run.
         valid_negative_launch = (
             claim.get("status") == "CURSOR_LAUNCH_RESERVED"
             and claim.get("cursor_run_id") is None
@@ -93,18 +95,18 @@ def verified_released_ids(
             and doc.get("agent_status") == "NEVER_CREATED"
             and len(matches) == 1
             and matches[0].get("user", {}).get("login") == BOT_LOGIN
-            and isinstance(claim.get("pr_sha"), str)
-            and len(claim["pr_sha"]) == 40
-            and all(c in "0123456789abcdef" for c in claim["pr_sha"])
-            and isinstance(claim.get("main_sha"), str)
-            and len(claim["main_sha"]) == 40
-            and all(c in "0123456789abcdef" for c in claim["main_sha"])
-            and doc.get("pr_sha") == claim["pr_sha"]
-            and doc.get("main_sha") == claim["main_sha"]
-            and str(claim.get("pr_number", "")).isdigit()
-            and int(claim["pr_number"]) > 0
+            and isinstance(doc.get("pr_sha"), str)
+            and len(doc["pr_sha"]) == 40
+            and all(c in "0123456789abcdef" for c in doc["pr_sha"])
+            and isinstance(doc.get("main_sha"), str)
+            and len(doc["main_sha"]) == 40
+            and all(c in "0123456789abcdef" for c in doc["main_sha"])
+            and doc["pr_sha"] == claim.get("pr_sha")
+            and doc["main_sha"] == claim.get("main_sha")
+            and str(doc.get("pr_number", "")).isdigit()
+            and int(doc["pr_number"]) > 0
             and doc.get("agent_id") == deterministic_agent_id(
-                REPOSITORY, int(claim["pr_number"]), claim["pr_sha"],
+                REPOSITORY, int(doc["pr_number"]), doc["pr_sha"],
             )
         )
         if (type(cid) is not int or len(matches) != 1 or len(claims) != 1
@@ -304,7 +306,8 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         fresh_pr = api.request(f"/repos/{REPOSITORY}/pulls/{pr_number}")
         if (not isinstance(fresh_pr, dict)
                 or fresh_pr.get("number") != pr_number
-                or fresh_pr.get("state") != "open"
+                or fresh_pr.get("state") != proof.get("pr_state")
+                or fresh_pr.get("state") not in (("open", "closed") if is_failed_launch else ("open",))
                 or not isinstance(fresh_pr.get("head"), dict)
                 or not isinstance(fresh_pr.get("base"), dict)
                 or fresh_pr["head"].get("sha") != expected_head

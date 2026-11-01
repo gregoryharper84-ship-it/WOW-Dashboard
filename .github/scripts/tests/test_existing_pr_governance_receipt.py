@@ -1666,10 +1666,25 @@ def test_independent_approval_still_required_with_fresh_receipt():
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch):
-    # CLI uses live wall clock; never feed it the suite’s frozen historical NOW.
-    receipt = build(now=datetime.now(timezone.utc))
+    current = datetime.now(timezone.utc)
+    receipt = verifier.build_receipt(
+        evidence(),
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        automated_review=automated_review_data(now=current),
+        source_review_run=SOURCE_REVIEW_RUN,
+        source_review_artifact_id=555,
+        now=current,
+    )
     live_reviews = tmp_path / "reviews.json"
     live_reviews.write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
+    source_run = tmp_path / "source-run.json"
+    source_run.write_text(json.dumps(SOURCE_REVIEW_RUN), encoding="utf-8")
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", [
         "verify",
@@ -1681,6 +1696,7 @@ def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_p
         "--workflow-name", verifier.WORKFLOW_NAME,
         "--pr-number", "1822",
         "--live-reviews-json", str(live_reviews),
+        "--source-review-run-json", str(source_run),
     ])
 
     assert verifier.main() == 0
@@ -1814,11 +1830,9 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     assert legacy_invalid.returncode == 1
     assert "receipt head SHA mismatch" in legacy_invalid.stdout
 
-    # External Python verifier uses the current wall clock, not the test fixture clock.
-    receipt = build(now=datetime.now(timezone.utc))
+    receipt = build(now=NOW)
     reviews = evidence()["reviews"]
-    v2_valid = run(verifier.WORKFLOW_NAME, receipt, reviews)
-    assert v2_valid.returncode == 0, v2_valid.stderr
+    verify(receipt, live_reviews=reviews, now=NOW)
     withdrawn = reviews + [
         {
             "id": 13,
@@ -1828,21 +1842,11 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "user": {**REVIEWER, "type": "User"},
         }
     ]
-    v2_withdrawn = run(verifier.WORKFLOW_NAME, receipt, withdrawn)
-    assert v2_withdrawn.returncode == 1
-    assert "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING" in v2_withdrawn.stdout
-
-    renamed_source = dict(receipt)
-    renamed_source["changed_files"] = [
-        {
-            "filename": "src/relocated.py",
-            "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
-            "status": "renamed",
-        }
-    ]
-    v2_renamed = run(verifier.WORKFLOW_NAME, renamed_source, reviews)
-    assert v2_renamed.returncode == 1
-    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in v2_renamed.stdout
+    with pytest.raises(
+        verifier.ExistingPrGovernanceReceiptError,
+        match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING",
+    ):
+        verify(receipt, live_reviews=withdrawn, now=NOW)
 
     boot_data = bootstrap_evidence()
     boot = build_bootstrap(boot_data, now=datetime.now(timezone.utc))
@@ -1874,6 +1878,19 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
         verifier.WORKFLOW_NAME, automated, live_reviews=[], source_run=SOURCE_REVIEW_RUN
     )
     assert automated_valid.returncode == 0, automated_valid.stdout + automated_valid.stderr
+    renamed_source = dict(automated)
+    renamed_source["changed_files"] = [
+        {
+            "filename": "src/relocated.py",
+            "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
+            "status": "renamed",
+        }
+    ]
+    automated_renamed = run(
+        verifier.WORKFLOW_NAME, renamed_source, live_reviews=[], source_run=SOURCE_REVIEW_RUN
+    )
+    assert automated_renamed.returncode == 1
+    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in automated_renamed.stdout
     automated_missing_source = run(verifier.WORKFLOW_NAME, automated, live_reviews=[])
     assert automated_missing_source.returncode == 1
     assert "SOURCE_REVIEW_RUN_METADATA_MISSING" in automated_missing_source.stdout
@@ -2052,19 +2069,24 @@ def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch):
     evidence_path.write_text(json.dumps(ordinary), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["verify", *common, "--classify"])
     assert verifier.main() == 0
+    source_review_path = tmp_path / "source-review.json"
+    source_review_path.write_text(
+        json.dumps(automated_review_data(now=datetime.now(timezone.utc))),
+        encoding="utf-8",
+    )
+    source_run_path = tmp_path / "source-run.json"
+    source_run_path.write_text(json.dumps(SOURCE_REVIEW_RUN), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", [
         "verify", *common, "--output", str(output),
-        "--trusted-reviewers-json", json.dumps(ALLOWLIST),
+        "--source-review-json", str(source_review_path),
+        "--source-review-run-json", str(source_run_path),
+        "--source-review-artifact-id", "555",
     ])
-    # CLI verifies against the wall clock; the fixture clock is historical.
-    original_build = verifier.build_receipt
-
-    def build_now(*args, **kwargs):
-        kwargs["now"] = datetime.now(timezone.utc)
-        return original_build(*args, **kwargs)
-
-    monkeypatch.setattr(verifier, "build_receipt", build_now)
     assert verifier.main() == 0
+    ordinary_receipt = json.loads(output.read_text(encoding="utf-8"))
+    assert ordinary_receipt["certification_mode"] == "ORDINARY_ENGINEERING"
+    assert ordinary_receipt["receipt_schema_version"] == 3
+    assert ordinary_receipt["can_execute"] is False
 
 
 @pytest.mark.parametrize('filename,previous_filename', (
