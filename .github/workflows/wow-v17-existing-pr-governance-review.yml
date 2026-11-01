@@ -268,9 +268,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/source-review"
           # Fetch only the selected authenticated artifact. Any transport
           # failure is a HOLD; never substitute another artifact or review route.
+          # GitHub metadata is still treated as untrusted input at the URL boundary.
+          [ "$GITHUB_REPOSITORY" = "gregoryharper84-ship-it/WOW-Dashboard" ] || {
+            echo "SOURCE_REVIEW_REPOSITORY_MISMATCH" >&2; exit 1;
+          }
+          [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] || {
+            echo "SOURCE_REVIEW_ARTIFACT_ID_INVALID" >&2; exit 1;
+          }
           artifact_zip="$RUNNER_TEMP/source-review/decision.zip"
           artifact_tmp=$(mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX")
-          trap 'rm -f "$artifact_tmp"' EXIT
+          trap 'rm -f "$artifact_tmp" "$artifact_zip"' EXIT
           # Curl authenticates to api.github.com only. The GitHub artifact API
           # returns one 302 to a signed ZIP URL; never forward the bearer token
           # across origins, follow non-HTTPS locations, or trust extra redirects.
