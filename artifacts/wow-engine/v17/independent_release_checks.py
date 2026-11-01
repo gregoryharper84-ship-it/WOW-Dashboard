@@ -57,7 +57,33 @@ NATIVE_WORKFLOWS = {
     NATIVE_CHANGE_IMPACT_WORKFLOW_ID: NATIVE_CHANGE_IMPACT_WORKFLOW_PATH,
 }
 MAX_NATIVE_RUN_AGE = timedelta(hours=2)
+NATIVE_STARTUP_GRACE = timedelta(seconds=90)
+NATIVE_JOB_COMPLETION_GRACE = timedelta(seconds=45)
 ACTIVE_WORK_STATUSES = frozenset({"queued", "in_progress", "pending", "waiting"})
+# Pin these exact names to the jobs in the three protected workflow YAMLs.
+# Job names have no authority without GitHub-authenticated workflow/run identity
+# and a complete attempt-specific jobs inventory.
+NATIVE_CHECK_JOB_NAMES = {
+    "WOW required-three regression": frozenset({
+        "WOW required-three collection contract",
+        "WOW required-three shard / gate-engine",
+        "WOW required-three shard / services",
+        "WOW required-three shard / application",
+        "WOW required-three regression",
+    }),
+    "WOW additional required regression": frozenset({
+        "WOW additional shard / kalshi",
+        "WOW additional shard / validation",
+        "WOW additional required regression",
+    }),
+    "WOW governed probability backend": frozenset({
+        *(f"WOW governed backend shard / {n}" for n in range(4)),
+        "WOW durable Agent Runtime integration",
+        "WOW Render and Action release contracts",
+        "WOW governed probability backend",
+    }),
+    CHANGE_IMPACT_CHECK: frozenset({CHANGE_IMPACT_CHECK}),
+}
 
 Fetch = Callable[[str], tuple[int, Any]]
 QA_WORKFLOW_NAME = "wow-v17-independent-qa-check"
@@ -192,21 +218,56 @@ def _native_workflow_evidence(
                      key=lambda run: run["id"], default=None)
         if latest is None or latest.get("status") not in ACTIVE_WORK_STATUSES:
             continue
-        # The immutable GitHub run identity and active state, not a job name,
-        # establish whether the exact-head workflow is still producing its
-        # required aggregate. Jobs may not exist during runner scheduling.
-        evidence.append({
+        # A pinned workflow ID alone is insufficient: verify the current
+        # GitHub Actions definition and exact YAML path on every active read.
+        workflow_status, definition = fetch(
+            f"repos/{repo}/actions/workflows/{workflow_id}"
+        )
+        if (
+            workflow_status != 200
+            or not isinstance(definition, dict)
+            or definition.get("id") != workflow_id
+            or definition.get("path") != NATIVE_WORKFLOWS[workflow_id]
+            or definition.get("state") != "active"
+        ):
+            errors.append(f"NATIVE_WORKFLOW_DEFINITION_UNVERIFIED:{workflow_id}")
+            continue
+        jobs = _paged_exact(
+            fetch,
+            f"repos/{repo}/actions/runs/{latest['id']}/attempts/{latest['run_attempt']}/jobs",
+            "jobs", errors, "NATIVE_WORKFLOW_JOBS",
+        )
+        if errors:
+            return []
+        if any(
+            not isinstance(job, dict)
+            or not isinstance(job.get("id"), int)
+            or isinstance(job.get("id"), bool)
+            or job["id"] <= 0
+            or job.get("run_id") != latest["id"]
+            or not isinstance(job.get("name"), str)
+            or job.get("status") not in (ACTIVE_WORK_STATUSES | {"completed"})
+            for job in jobs
+        ):
+            errors.append("NATIVE_WORKFLOW_JOBS_INVALID")
+            return []
+        record = {
             key: latest.get(key)
             for key in (
                 "id", "run_attempt", "workflow_id", "path", "event", "head_sha",
                 "head_branch", "created_at", "status", "repository",
                 "head_repository", "pull_requests",
             )
-        })
+        }
+        record["jobs"] = jobs
+        record["jobs_verified"] = True
+        evidence.append(record)
     return evidence
 
 
-def _recent_active_timestamp(value: Any, *, now: datetime | None = None) -> bool:
+def _recent_active_timestamp(
+    value: Any, *, now: datetime | None = None, max_age: timedelta = MAX_NATIVE_RUN_AGE,
+) -> bool:
     if not isinstance(value, str):
         return False
     try:
@@ -216,7 +277,7 @@ def _recent_active_timestamp(value: Any, *, now: datetime | None = None) -> bool
     if created.tzinfo is None:
         return False
     age = (now or datetime.now(timezone.utc)) - created
-    return timedelta(0) <= age < MAX_NATIVE_RUN_AGE
+    return timedelta(0) <= age < max_age
 
 
 def gather(
@@ -555,10 +616,9 @@ def pending_required_regressions(ev: dict) -> list[str]:
     native_runs = ev.get("native_workflow_runs")
     if not isinstance(native_runs, list):
         return pending
-    # One authenticated active workflow can produce several required checks.
-    # Do not infer authority from mutable/free-form GitHub job names: the
-    # exact workflow ID/path, repo, PR, head, attempt and active-age bound are
-    # the evidence. A pending state never creates a successful check.
+    # Workflow-level activity alone cannot defer a specific missing check.
+    # Check jobs against a finite per-workflow inventory and bound startup
+    # and check-publication grace independently.
     required_for_workflow = {
         NATIVE_REGRESSION_WORKFLOW_ID: (
             "WOW required-three regression", "WOW additional required regression",
@@ -587,10 +647,31 @@ def pending_required_regressions(ev: dict) -> list[str]:
             )
             or run.get("status") not in ACTIVE_WORK_STATUSES
             or not _recent_active_timestamp(run.get("created_at"))
+            or run.get("jobs_verified") is not True
+            or not isinstance(run.get("jobs"), list)
         ):
             continue
+        jobs = run["jobs"]
+        startup = not jobs and _recent_active_timestamp(
+            run.get("created_at"), max_age=NATIVE_STARTUP_GRACE,
+        )
         for name in required_for_workflow.get(run["workflow_id"], ()):
-            if not completed(name):
+            if completed(name):
+                continue
+            allowed = NATIVE_CHECK_JOB_NAMES[name]
+            relevant = any(
+                isinstance(job, dict) and job.get("name") in allowed and (
+                    job.get("status") in ACTIVE_WORK_STATUSES
+                    or (
+                        job.get("status") == "completed"
+                        and _recent_active_timestamp(
+                            job.get("completed_at"), max_age=NATIVE_JOB_COMPLETION_GRACE,
+                        )
+                    )
+                )
+                for job in jobs
+            )
+            if startup or relevant:
                 pending.append(name)
     return list(dict.fromkeys(pending))
 
