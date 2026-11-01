@@ -394,6 +394,49 @@ def test_candidate_depth_limit_rejects_before_db(monkeypatch, auth_headers):
     assert response.json()["detail"]["code"] == "RUN_CANDIDATE_COMPLEXITY_EXCEEDED"
 
 
+def test_admission_bucket_isolated_per_render_service_and_shared_by_instances(monkeypatch):
+    """Use Render service identity, never instance identity, for the Redis budget."""
+    seen = []
+
+    class RecordingRedis:
+        def eval(self, script, nkeys, bucket, limit, window, member):
+            assert nkeys == 1
+            seen.append(bucket)
+            return 1
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("RENDER_SERVICE_ID", "srv-aaaa11112222")
+    monkeypatch.setenv("RENDER_INSTANCE_ID", "srv-instance-1")
+    monkeypatch.setattr(agent_runtime_api, "_admission_redis", lambda url: RecordingRedis())
+    agent_runtime_api._check_admission_rate_limit(idempotency_key="one", request_hash="a")
+    monkeypatch.setenv("RENDER_INSTANCE_ID", "srv-instance-2")
+    agent_runtime_api._check_admission_rate_limit(idempotency_key="two", request_hash="a")
+    assert seen[0] == seen[1]
+    assert seen[0].endswith(":srv-aaaa11112222")
+
+    monkeypatch.setenv("RENDER_SERVICE_ID", "srv-bbbb33334444")
+    agent_runtime_api._check_admission_rate_limit(idempotency_key="three", request_hash="a")
+    assert seen[-1] != seen[0]
+    assert seen[-1].endswith(":srv-bbbb33334444")
+
+
+def test_missing_render_service_id_fails_closed_before_redis(monkeypatch):
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.delenv("RENDER_SERVICE_ID", raising=False)
+    monkeypatch.setattr(
+        agent_runtime_api, "_admission_redis",
+        lambda url: pytest.fail("missing service identity contacted Redis"),
+    )
+    with pytest.raises(HTTPException) as err:
+        agent_runtime_api._check_admission_rate_limit(
+            idempotency_key="missing-id", request_hash="a"
+        )
+    assert err.value.status_code == 503
+    assert err.value.detail == {
+        "code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False,
+    }
+
+
 def test_existing_redis_global_admission_limit_and_outage_fail_closed(monkeypatch):
     rate = agent_runtime_api._admission_redis(os.environ["REDIS_URL"])
     assert rate is agent_runtime_api._admission_redis(os.environ["REDIS_URL"])
