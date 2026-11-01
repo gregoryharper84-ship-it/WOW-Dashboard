@@ -17,6 +17,8 @@ published, never promoted automatically; promotion needs governed review.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from typing import Any, Mapping, Sequence
 
@@ -48,13 +50,26 @@ def _log_loss(p: float, y: int) -> float:
 def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any]:
     """Champion vs challenger on the same graded games (selected-side outcome)."""
     by_id = {str(getattr(p, "event_prediction_id", "")): p for p in predictions}
+    if len(by_id) != len(predictions):
+        raise ValueError("NFL_SHADOW_CHALLENGER_DUPLICATE_PREDICTION_ID")
     rows: list[tuple[float, float, int]] = []
+    model_versions: set[str] = set()
+    matched_ids: set[str] = set()
     home_selected_rows: list[tuple[float, float, int]] = []
     away_selected_rows: list[tuple[float, float, int]] = []
     for grade in grades:
         prediction = by_id.get(str(grade.event_prediction_id))
         if prediction is None:
             continue
+        prediction_model = str(getattr(prediction, "model_version", "") or "")
+        grade_model = str(getattr(grade, "model_version", "") or "")
+        if not prediction_model or prediction_model != grade_model:
+            raise ValueError("NFL_SHADOW_CHALLENGER_MODEL_VERSION_MISMATCH")
+        model_versions.add(grade_model)
+        prediction_id = str(grade.event_prediction_id)
+        if prediction_id in matched_ids:
+            raise ValueError("NFL_SHADOW_CHALLENGER_DUPLICATE_GRADE")
+        matched_ids.add(prediction_id)
         if prediction.selected_participant not in (prediction.home_team, prediction.away_team):
             raise ValueError("NFL_SHADOW_CHALLENGER_INVALID_SELECTED_TEAM")
         if int(grade.outcome) not in (0, 1):
@@ -72,6 +87,17 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
     n = len(rows)
     if n == 0:
         return {"challenger_id": CHALLENGER_ID, "n": 0, "status": "NO_GRADED_GAMES", "can_execute": False}
+    if len(model_versions) != 1:
+        raise ValueError("NFL_SHADOW_CHALLENGER_MIXED_MODEL_VERSIONS")
+    model_version = next(iter(model_versions))
+    # Bind the immutable advisory comparison to exact model and prediction IDs.
+    # A new model or corrected prospective cohort of equal size cannot replace
+    # or silently share another cohort's evidence.
+    cohort_digest = hashlib.sha256(json.dumps({
+        "model_version": model_version,
+        "prediction_ids": sorted(matched_ids),
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    cohort_key = f"NFL_ML_FORWARD_SHADOW_{cohort_digest[:24]}_N{n}"
     champ_brier = sum((p - y) ** 2 for p, _c, y in rows) / n
     ch_brier = sum((c - y) ** 2 for _p, c, y in rows) / n
     champ_ll = sum(_log_loss(p, y) for p, _c, y in rows) / n
@@ -132,6 +158,9 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
         "challenger_id": CHALLENGER_ID,
         "status": "EVALUATED",
         "n": n,
+        "model_version": model_version,
+        "cohort_key": cohort_key,
+        "cohort_sha256": cohort_digest,
         "champion_brier": champ_brier,
         "challenger_brier": ch_brier,
         "brier_improvement": champ_brier - ch_brier,
@@ -156,10 +185,13 @@ def evaluate(predictions: Sequence[Any], grades: Sequence[Any]) -> dict[str, Any
 
 
 def persist(db: Any, evaluation: Mapping[str, Any]) -> bool:
-    """Append one advisory row per new graded-cohort size (idempotent)."""
+    """Append one advisory row per exact model/version/cohort identity."""
     if evaluation.get("status") != "EVALUATED":
         return False
-    cohort_key = f"NFL_ML_FORWARD_SHADOW_N{int(evaluation['n'])}"
+    cohort_key = str(evaluation.get("cohort_key") or "")
+    if not (evaluation.get("model_version") and cohort_key.startswith("NFL_ML_FORWARD_SHADOW_") and
+            len(str(evaluation.get("cohort_sha256") or "")) == 64):
+        raise ValueError("NFL_SHADOW_CHALLENGER_COHORT_IDENTITY_MISSING")
     existing = (
         db.table(TABLE).select("evaluation_id").eq("challenger_id", CHALLENGER_ID)
         .eq("cohort_key", cohort_key).limit(1).execute()
