@@ -548,6 +548,8 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     assert appended_doc["cursor_run_id"] is None
     assert appended_doc["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
     assert appended_doc["agent_status"] == "NEVER_CREATED"
+    assert appended_doc["negative_inventory_contract"] == 2
+    assert appended_doc["pr_agents_checked"] == 0
     released = release.verified_released_ids(
         api.comments, ledger.reservations(api.comments), get_run=lambda _: run(),
     )
@@ -673,3 +675,30 @@ def test_legacy_reservation_altered_identity_is_rejected(key, value):
     fixture.comment["body"] = ledger._body(doc)
     with pytest.raises(probe.ReceiptBlocked):
         fixture.prove()
+
+
+@pytest.mark.parametrize("agent_status", ["IDLE", "ARCHIVED", "FINISHED", "UNKNOWN"])
+def test_failed_launch_rejects_any_other_agent_on_same_pr(agent_status):
+    fixture = FailedLaunchFixture()
+    fixture.pr_pages = [{"items": [{"id": "bc-unexpected-pr-agent", "status": agent_status}]}]
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_PR_ASSOCIATED_AGENT_EXISTS"):
+        fixture.prove()
+
+
+def test_failed_launch_refuses_malformed_or_nonzero_inventory_count_before_append():
+    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments
+    fixture = FailedLaunchFixture()
+    original = fixture.prove()
+    api = _FakeAPI(released_comments() + [fixture.comment])
+    env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
+    for invalid in (None, True, 1, "0"):
+        corrupted = copy.deepcopy(original)
+        corrupted["negative_launch_proof"]["pr_agents_checked"] = invalid
+        with patch.dict("os.environ", env), patch(
+            "v17.cursor_terminal_status_receipt.collect_receipt", return_value=corrupted,
+        ), pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_TERMINAL_PROOF_MISMATCH"):
+            release.append_terminal_release(
+                api, cursor_token="fixture", run_id=99010, run_attempt=1,
+                source_sha="a" * 40, reservation_comment_id=FAILED_CID,
+            )
+    assert api.puts == 0

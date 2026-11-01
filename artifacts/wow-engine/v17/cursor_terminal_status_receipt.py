@@ -327,7 +327,7 @@ def verify_negative_inventories(
     """Prove via complete archived inventories that no Cursor agent exists or is active."""
     pr_url = f"https://github.com/{REPOSITORY}/pull/{pr_number}"
 
-    def _scan_inventory(base_params: dict[str, object], *, unverified_code: str, active_code: str) -> tuple[int, int]:
+    def _scan_inventory(base_params: dict[str, object], *, unverified_code: str, active_code: str, require_empty: bool = False) -> tuple[int, int]:
         seen_ids: set[str] = set()
         seen_cursors: set[str] = set()
         next_cursor: str | None = None
@@ -344,6 +344,8 @@ def verify_negative_inventories(
             if not isinstance(items, list) or len(items) > INVENTORY_PAGE_SIZE:
                 raise ReceiptBlocked(unverified_code)
             pages += 1
+            if require_empty and items:
+                raise ReceiptBlocked("CURSOR_PR_ASSOCIATED_AGENT_EXISTS")
             for item in items:
                 if not isinstance(item, dict):
                     raise ReceiptBlocked(unverified_code)
@@ -380,6 +382,7 @@ def verify_negative_inventories(
         {"prUrl": pr_url, "limit": INVENTORY_PAGE_SIZE, "includeArchived": "true"},
         unverified_code="CURSOR_AGENT_INVENTORY_UNVERIFIED",
         active_code="CURSOR_ACTIVE_PR_AGENT_EXISTS",
+        require_empty=True,
     )
     return {
         "global_pages": global_pages,
