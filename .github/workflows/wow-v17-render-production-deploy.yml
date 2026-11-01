@@ -1,4 +1,6 @@
 name: wow-v17-render-production-deploy
+# Authenticated upstream workflow_run event, not this workflow's own source revision.
+run-name: "release-${{ github.event.workflow_run.head_sha }}-verify-${{ github.event.workflow_run.id }}"
 
 on:
   workflow_run:
