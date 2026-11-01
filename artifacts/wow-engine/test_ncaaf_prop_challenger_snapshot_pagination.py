@@ -114,6 +114,13 @@ def test_missing_snapshot_id_fails_closed():
     assert (err.value.code, err.value.detail) == ("NCAAF_PROP_SOURCE_READ_INVALID", "SNAPSHOT_ID_INVALID")
 
 
+def test_nonmapping_row_fails_closed_instead_of_being_dropped():
+    db = _Db(["not-a-snapshot"])
+    with pytest.raises(NCAAFPropChallengerRunnerError) as err:
+        load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
+    assert (err.value.code, err.value.detail) == ("NCAAF_PROP_SOURCE_READ_INVALID", "ROW_INVALID")
+
+
 @pytest.mark.parametrize("page_size", [0, -1, 1001, True, 1.5])
 def test_invalid_page_size_never_touches_database(page_size):
     db = _Db([_row(1)])
