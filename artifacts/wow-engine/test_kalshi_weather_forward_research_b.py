@@ -122,6 +122,12 @@ def test_30_targets_only_give_no_forward_probability():
 
 def test_later_outcome_cannot_change_earlier_candidate_probability():
     fixture = ledger(35)
+    # Use an asymmetric candidate event so YES/NO grade scores differ;
+    # P(YES)=0.5 would produce identical Brier for both outcomes.
+    contract = fixture["wow_kalshi_weather_predictions"][-1]["model_payload"]["contract"]
+    contract["threshold_lower"] = 76.0
+    contract["yes_condition"] = "index > 76°F"
+    contract["no_condition"] = "NOT (index > 76°F)"
     initial = build_release_b_research_report(FakeClient(fixture))
     changed = copy.deepcopy(fixture)
     # This outcome is not available at its own decision time.
