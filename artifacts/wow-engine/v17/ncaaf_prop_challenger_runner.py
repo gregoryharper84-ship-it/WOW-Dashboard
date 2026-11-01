@@ -64,7 +64,13 @@ def load_source_snapshots(
     # grows, changing fitted challenger inputs with no code or data change.
     if type(page_size) is not int or not 1 <= page_size <= 1000:
         raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_READ_INVALID", "PAGE_SIZE_INVALID")
-    season_values = tuple(sorted({int(value) for value in seasons}))
+    if not isinstance(seasons, (list, tuple)) or any(
+        type(value) is not int or not 2010 <= value <= 2030 for value in seasons
+    ):
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "SEASONS_INVALID"
+        )
+    season_values = tuple(sorted(set(seasons)))
     if not season_values:
         raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_READ_INVALID", "SEASONS_EMPTY")
     fields = (
@@ -105,6 +111,34 @@ def load_source_snapshots(
             "NCAAF_PROP_SOURCE_READ_INVALID", "FENCE_TIMESTAMP_INVALID"
         )
     source_cutoff = fence_rows[0]["created_at"]
+
+    def _scoped_count() -> int:
+        # Compare the same timestamp-fenced source set before and after paging.
+        # A restart, deletion, or backdated write that changes its cardinality
+        # must not silently create a partial challenger-training corpus.
+        try:
+            counted = (
+                db.table("wow_ncaaf_source_snapshots")
+                .select("source_snapshot_id", count="exact")
+                .eq("provider", "CFBD")
+                .eq("endpoint", endpoint)
+                .in_("season", list(season_values))
+                .lte("created_at", source_cutoff)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise NCAAFPropChallengerRunnerError(
+                "NCAAF_PROP_SOURCE_READ_FAILED", endpoint
+            ) from exc
+        n = getattr(counted, "count", None)
+        if type(n) is not int or n < 0:
+            raise NCAAFPropChallengerRunnerError(
+                "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_COUNT_INVALID"
+            )
+        return n
+
+    expected_count = _scoped_count()
     snapshots: list[SourceSnapshot] = []
     last_id = ""
     while True:
@@ -148,6 +182,10 @@ def load_source_snapshots(
             last_id = snapshot_id
         if len(rows) < page_size:
             break
+    if len(snapshots) != expected_count or _scoped_count() != expected_count:
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
+        )
     return snapshots
 
 
