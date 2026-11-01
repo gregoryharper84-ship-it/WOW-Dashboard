@@ -275,12 +275,12 @@ jobs:
           trap 'rm -f "$artifact_tmp"' EXIT
           # curl retries only documented transient transport/HTTP errors;
           # 401/403/404 and invalid payloads fail closed without fallback.
-          if ! curl --fail --silent --show-error --location \\
-            --connect-timeout 5 --max-time 15 \\
-            --retry 1 --retry-delay 5 --retry-max-time 40 \\
-            --header "Authorization: Bearer ${GH_TOKEN}" \\
-            --header "Accept: application/vnd.github+json" \\
-            --output "$artifact_tmp" \\
+          if ! curl --fail --silent --show-error --location \
+            --connect-timeout 5 --max-time 15 \
+            --retry 1 --retry-delay 5 --retry-max-time 40 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --output "$artifact_tmp" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"; then
             echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
             exit 1
