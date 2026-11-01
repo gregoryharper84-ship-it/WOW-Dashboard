@@ -38,15 +38,18 @@ def manifest():
 class FakeRender:
     def __init__(self, values=None):
         self.values = dict(values or {})
+        self.calls = []
         self.set_calls = []
         self.deploy_calls = 0
         self.auto_deploy_checks = 0
         self.auto_deploy_disabled = True
 
     def get_env(self, name):
+        self.calls.append(("GET", name))
         return self.values.get(name)
 
     def set_env(self, name, value):
+        self.calls.append(("PUT", name))
         self.set_calls.append((name, value))
         self.values[name] = value
 
@@ -97,6 +100,38 @@ def test_workflow_secret_discovery_reads_names_only(tmp_path):
     }
 
 
+def test_legacy_render_key_does_not_satisfy_isolated_sync_principal(manifest, tmp_path):
+    render = FakeRender({"RUNDOWN_API_KEY": "old"})
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
+        secret_sync.run_sync(
+            manifest,
+            mode="github-to-render",
+            repo_root=tmp_path,
+            environ={"RENDER_API_KEY": "legacy-key", "RUNDOWN_API_KEY": "new"},
+            render_client=render,
+            dry_run=True,
+        )
+    assert exc.value.reason_code == "BOOTSTRAP_SYNC_RENDER_CREDENTIAL_UNCONFIGURED"
+    assert render.set_calls == []
+    assert render.deploy_calls == 0
+    assert render.calls == []
+
+
+def test_missing_environment_scoped_sync_key_fails_closed_without_render_calls(manifest, tmp_path):
+    render = FakeRender({"RUNDOWN_API_KEY": "old"})
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
+        secret_sync.run_sync(
+            manifest,
+            mode="github-to-render",
+            repo_root=tmp_path,
+            environ={"RENDER_API_KEY": "legacy-key", "RUNDOWN_API_KEY": "new"},
+            render_client=render,
+            dry_run=True,
+        )
+    assert exc.value.reason_code == "BOOTSTRAP_SYNC_RENDER_CREDENTIAL_UNCONFIGURED"
+    assert render.calls == []
+
+
 def test_github_to_render_required_missing_fails_closed(manifest, tmp_path):
     render = FakeRender()
     with pytest.raises(secret_sync.SecretSyncError) as exc:
@@ -104,15 +139,16 @@ def test_github_to_render_required_missing_fails_closed(manifest, tmp_path):
             manifest,
             mode="github-to-render",
             repo_root=tmp_path,
-            environ={"RENDER_API_KEY": "render-control"},
+            environ={"WOW_RENDER_SYNC_KEY": "render-control"},
             render_client=render,
+            dry_run=True,
         )
     assert exc.value.reason_code == "GITHUB_SOURCE_SECRET_UNCONFIGURED"
     assert render.set_calls == []
     assert render.deploy_calls == 0
 
 
-def test_both_mode_missing_reverse_bootstrap_fails_before_any_mutation(manifest, tmp_path):
+def test_unattested_credential_scope_blocks_live_sync_before_any_render_request(manifest, tmp_path):
     render = FakeRender({"RUNDOWN_API_KEY": "old"})
     with pytest.raises(secret_sync.SecretSyncError) as exc:
         secret_sync.run_sync(
@@ -120,55 +156,90 @@ def test_both_mode_missing_reverse_bootstrap_fails_before_any_mutation(manifest,
             mode="both",
             repo_root=tmp_path,
             environ={
-                "RENDER_API_KEY": "render-control",
+                "WOW_RENDER_SYNC_KEY": "render-control",
                 "RUNDOWN_API_KEY": "new",
             },
             render_client=render,
         )
-    assert exc.value.reason_code == "BOOTSTRAP_GITHUB_SECRET_SYNC_TOKEN_UNCONFIGURED"
+    assert exc.value.reason_code == "RENDER_CREDENTIAL_SCOPE_UNATTESTED"
     assert render.set_calls == []
     assert render.deploy_calls == 0
+    assert render.calls == []
 
 
-def test_github_to_render_updates_secret_and_queues_release_request_without_deploy(manifest, tmp_path):
+def test_live_github_to_render_mutation_is_held_until_scope_attestation(manifest, tmp_path):
     render = FakeRender({"RUNDOWN_API_KEY": "old"})
-    summary = secret_sync.run_sync(
-        manifest,
-        mode="github-to-render",
-        repo_root=tmp_path,
-        environ={
-            "RENDER_API_KEY": "render-control",
-            "RUNDOWN_API_KEY": "new",
-        },
-        render_client=render,
-    )
-    assert render.set_calls == [("RUNDOWN_API_KEY", "new")]
-    assert render.deploy_calls == 0
-    assert summary.github_to_render_changed == 1
-    assert summary.deploy_triggered is False
-    assert summary.release_request_status == "SECRET_ENV_CHANGED_RELEASE_REQUEST"
-    assert render.auto_deploy_checks == 1
-
-
-def test_live_auto_deploy_unknown_or_enabled_blocks_secret_mutation(manifest, tmp_path):
-    render = FakeRender({"RUNDOWN_API_KEY": "old"})
-    render.auto_deploy_disabled = False
-
-    with pytest.raises(secret_sync.SecretSyncError, match="verified off"):
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
         secret_sync.run_sync(
             manifest,
             mode="github-to-render",
             repo_root=tmp_path,
             environ={
-                "RENDER_API_KEY": "render-control",
+                "WOW_RENDER_SYNC_KEY": "render-control",
+                "RUNDOWN_API_KEY": "new",
+            },
+            render_client=render,
+        )
+    assert exc.value.reason_code == "RENDER_CREDENTIAL_SCOPE_UNATTESTED"
+    assert render.set_calls == []
+    assert render.deploy_calls == 0
+    assert render.calls == []
+    assert render.auto_deploy_checks == 0
+
+
+def test_direct_render_mutation_is_held_before_any_api_request():
+    client = secret_sync.RenderClient("render-control", "srv-test")
+    calls = []
+    client._request = lambda *args, **kwargs: calls.append((args, kwargs))
+
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
+        client.set_env("RUNDOWN_API_KEY", "new")
+
+    assert exc.value.reason_code == "RENDER_CREDENTIAL_SCOPE_UNATTESTED"
+    assert calls == []
+
+
+def test_direct_sync_mutation_paths_are_held_before_render_or_github_writes(manifest, tmp_path):
+    render = FakeRender({"PLATFORM_SHARED_API_KEY": "value"})
+    github = FakeGitHub()
+
+    with pytest.raises(secret_sync.SecretSyncError) as github_to_render:
+        secret_sync.sync_github_to_render(
+            manifest,
+            render,
+            {"RUNDOWN_API_KEY": "new"},
+        )
+    with pytest.raises(secret_sync.SecretSyncError) as render_to_github:
+        secret_sync.sync_render_to_github(manifest, render, github, tmp_path)
+
+    assert github_to_render.value.reason_code == "RENDER_CREDENTIAL_SCOPE_UNATTESTED"
+    assert render_to_github.value.reason_code == "RENDER_CREDENTIAL_SCOPE_UNATTESTED"
+    assert render.calls == []
+    assert render.set_calls == []
+    assert github.calls == []
+
+
+def test_live_auto_deploy_state_is_not_checked_before_scope_hold(manifest, tmp_path):
+    render = FakeRender({"RUNDOWN_API_KEY": "old"})
+    render.auto_deploy_disabled = False
+
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
+        secret_sync.run_sync(
+            manifest,
+            mode="github-to-render",
+            repo_root=tmp_path,
+            environ={
+                "WOW_RENDER_SYNC_KEY": "render-control",
                 "RUNDOWN_API_KEY": "new",
             },
             render_client=render,
         )
 
+    assert exc.value.reason_code == "RENDER_CREDENTIAL_SCOPE_UNATTESTED"
     assert render.set_calls == []
     assert render.deploy_calls == 0
-    assert render.auto_deploy_checks == 1
+    assert render.calls == []
+    assert render.auto_deploy_checks == 0
 
 
 def test_render_client_checks_live_service_auto_deploy_fields():
@@ -203,13 +274,8 @@ def test_render_client_fails_closed_when_live_auto_deploy_is_not_off(service):
 
 
 def test_secret_change_release_receipt_is_durable_typed_and_secret_free(manifest, tmp_path):
-    render = FakeRender({"RUNDOWN_API_KEY": "old"})
-    summary = secret_sync.run_sync(
-        manifest,
-        mode="github-to-render",
-        repo_root=tmp_path,
-        environ={"RENDER_API_KEY": "render-control", "RUNDOWN_API_KEY": "new-secret"},
-        render_client=render,
+    summary = secret_sync.SyncSummary(
+        release_request_status="SECRET_ENV_CHANGED_RELEASE_REQUEST"
     )
     environment = {
         "GITHUB_REPOSITORY": manifest["github_repository"],
@@ -238,75 +304,25 @@ def test_secret_change_release_receipt_is_durable_typed_and_secret_free(manifest
     assert stored["secret_values_exposed"] is False
     assert "new-secret" not in json.dumps(stored)
     assert "render-control" not in json.dumps(stored)
-    assert render.set_calls == [("RUNDOWN_API_KEY", "new-secret")]
-    assert render.deploy_calls == 0
 
 
-def test_partial_secret_mutation_keeps_release_request_receipt(manifest, tmp_path):
-    class FailingRender(FakeRender):
-        def set_env(self, name, value):
-            if name == "OPTIONAL_API_KEY":
-                raise secret_sync.SecretSyncError("RENDER_API_REQUEST_FAILED", "write failed")
-            super().set_env(name, value)
-
-    render = FailingRender({"RUNDOWN_API_KEY": "old", "OPTIONAL_API_KEY": "old-optional"})
+def test_live_sync_hold_does_not_write_release_request_receipt(manifest, tmp_path):
+    render = FakeRender({"RUNDOWN_API_KEY": "old"})
     receipt_path = tmp_path / "partial-request.json"
-    with pytest.raises(secret_sync.SecretSyncError, match="write failed"):
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
         secret_sync.run_sync(
             manifest,
             mode="github-to-render",
             repo_root=tmp_path,
-            environ={
-                "RENDER_API_KEY": "render-control",
-                "RUNDOWN_API_KEY": "new-secret",
-                "OPTIONAL_API_KEY": "new-optional",
-                "GITHUB_REPOSITORY": manifest["github_repository"],
-                "GITHUB_REF": "refs/heads/main",
-                "GITHUB_SHA": "a" * 40,
-                "GITHUB_RUN_ID": "12345",
-                "GITHUB_RUN_ATTEMPT": "1",
-            },
+            environ={"WOW_RENDER_SYNC_KEY": "render-control", "RUNDOWN_API_KEY": "new-secret"},
             render_client=render,
             release_request_file=receipt_path,
         )
 
-    stored = json.loads(receipt_path.read_text(encoding="utf-8"))
-    assert stored["request_type"] == "SECRET_ENV_CHANGED_RELEASE_REQUEST"
-    assert stored["source_sha"] == "a" * 40
-    assert render.set_calls == [("RUNDOWN_API_KEY", "new-secret")]
-    assert render.deploy_calls == 0
-
-
-def test_secret_readback_mismatch_keeps_request_and_fails_closed(manifest, tmp_path):
-    class MismatchedRender(FakeRender):
-        def set_env(self, name, value):
-            super().set_env(name, "unexpected-value")
-
-    render = MismatchedRender({"RUNDOWN_API_KEY": "old"})
-    receipt_path = tmp_path / "readback-request.json"
-    with pytest.raises(secret_sync.SecretSyncError) as error:
-        secret_sync.run_sync(
-            manifest,
-            mode="github-to-render",
-            repo_root=tmp_path,
-            environ={
-                "RENDER_API_KEY": "render-control",
-                "RUNDOWN_API_KEY": "new-secret",
-                "GITHUB_REPOSITORY": manifest["github_repository"],
-                "GITHUB_REF": "refs/heads/main",
-                "GITHUB_SHA": "a" * 40,
-                "GITHUB_RUN_ID": "12345",
-                "GITHUB_RUN_ATTEMPT": "1",
-            },
-            render_client=render,
-            release_request_file=receipt_path,
-        )
-
-    assert error.value.reason_code == "RENDER_ENV_UPDATE_READBACK_MISMATCH"
-    stored = json.loads(receipt_path.read_text(encoding="utf-8"))
-    assert stored["request_type"] == "SECRET_ENV_CHANGED_RELEASE_REQUEST"
-    assert "unexpected-value" not in json.dumps(stored)
-    assert "new-secret" not in json.dumps(stored)
+    assert exc.value.reason_code == "RENDER_CREDENTIAL_SCOPE_UNATTESTED"
+    assert not receipt_path.exists()
+    assert render.calls == []
+    assert render.set_calls == []
     assert render.deploy_calls == 0
 
 
@@ -324,19 +340,16 @@ def test_secret_change_request_requires_exact_main_workflow_identity(manifest):
         )
 
 
-def test_secret_sync_workflow_archives_request_before_controller_dispatch():
+def test_secret_sync_workflow_is_read_only_and_cannot_dispatch_release():
     workflow = (REPO_ROOT / ".github/workflows/wow-v17-secret-sync.yml").read_text(encoding="utf-8")
 
-    assert "actions: write" in workflow
-    assert "--release-request-file" in workflow
-    artifact_step = workflow.index("Persist typed secret-change release request")
-    dispatch_step = workflow.index("Dispatch protected Render release controller")
-    assert artifact_step < dispatch_step
-    assert "if: always() && steps.release-request.outputs.release_request == 'true'" in workflow
-    assert "if: always() && steps.release-request.outputs.release_request == 'true' && steps.persist-request.outcome == 'success'" in workflow
-    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in workflow
-    assert "wow-v17-render-production-deploy.yml" in workflow
-    assert "secret_sync_request_run_id" in workflow
+    assert "actions: write" not in workflow
+    assert "--release-request-file" not in workflow
+    assert "Persist typed secret-change release request" not in workflow
+    assert "Dispatch protected Render release controller" not in workflow
+    assert "gh workflow run" not in workflow
+    assert "default: true" in workflow
+    assert 'if [ "$dry_run" != "false" ]; then' in workflow
     assert "/deploys" not in (REPO_ROOT / "artifacts/wow-engine/v17/secret_sync.py").read_text(
         encoding="utf-8"
     )
@@ -349,10 +362,11 @@ def test_github_to_render_equal_value_does_not_redeploy(manifest, tmp_path):
         mode="github-to-render",
         repo_root=tmp_path,
         environ={
-            "RENDER_API_KEY": "render-control",
+            "WOW_RENDER_SYNC_KEY": "render-control",
             "RUNDOWN_API_KEY": "same",
         },
         render_client=render,
+        dry_run=True,
     )
     assert render.set_calls == []
     assert render.deploy_calls == 0
@@ -370,6 +384,8 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
                 "C: ${{ secrets.RUNDOWN_API_KEY }}",
                 "D: ${{ secrets.WOW_ACTION_API_KEY }}",
                 "E: ${{ secrets.RENDER_API_KEY }}",
+                "F: ${{ secrets.WOW_MCP_AUTH_TOKEN }}",
+                "G: ${{ secrets.WOW_RENDER_SYNC_KEY }}",
             ]
         ),
         encoding="utf-8",
@@ -381,6 +397,8 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
             "RUNDOWN_API_KEY": "must-not-win",
             "WOW_ACTION_API_KEY": "must-not-copy",
             "RENDER_API_KEY": "must-not-copy",
+            "WOW_MCP_AUTH_TOKEN": "must-not-copy",
+            "WOW_RENDER_SYNC_KEY": "must-not-copy",
         }
     )
     github = FakeGitHub()
@@ -388,19 +406,30 @@ def test_render_to_github_uses_workflow_refs_but_excludes_github_owned_and_contr
         manifest,
         mode="render-to-github",
         repo_root=tmp_path,
-        environ={
-            "RENDER_API_KEY": "render-control",
-            "WOW_GITHUB_SECRET_SYNC_TOKEN": "github-control",
-        },
+        environ={"WOW_RENDER_SYNC_KEY": "render-control"},
         render_client=render,
         github_writer=github,
+        dry_run=True,
     )
-    assert sorted(github.calls) == [
-        ("PLATFORM_SHARED_API_KEY", "render-one"),
-        ("SECOND_TOKEN", "render-two"),
-    ]
+    assert github.calls == []
     assert summary.render_to_github_changed == 2
+    assert {name for method, name in render.calls if method == "GET"} == {
+        "PLATFORM_SHARED_API_KEY",
+        "SECOND_TOKEN",
+    }
     assert render.deploy_calls == 0
+
+
+def test_direct_github_secret_writer_is_held_before_cli_invocation(monkeypatch):
+    writer = secret_sync.GitHubSecretWriter("github-control", "owner/repo")
+    calls = []
+    monkeypatch.setattr(secret_sync.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    with pytest.raises(secret_sync.SecretSyncError) as exc:
+        writer.set_secret("PLATFORM_SHARED_API_KEY", "value")
+
+    assert exc.value.reason_code == "RENDER_CREDENTIAL_SCOPE_UNATTESTED"
+    assert calls == []
 
 
 def test_dry_run_never_mutates_either_store_and_needs_no_github_write_token(manifest, tmp_path):
@@ -417,7 +446,7 @@ def test_dry_run_never_mutates_either_store_and_needs_no_github_write_token(mani
         mode="both",
         repo_root=tmp_path,
         environ={
-            "RENDER_API_KEY": "render-control",
+            "WOW_RENDER_SYNC_KEY": "render-control",
             "RUNDOWN_API_KEY": "new",
         },
         dry_run=True,
@@ -440,10 +469,11 @@ def test_summary_never_contains_secret_values(manifest, tmp_path):
         mode="github-to-render",
         repo_root=tmp_path,
         environ={
-            "RENDER_API_KEY": "render-control",
+            "WOW_RENDER_SYNC_KEY": "render-control",
             "RUNDOWN_API_KEY": secret_value,
         },
         render_client=render,
+        dry_run=True,
     )
     encoded = json.dumps(summary.as_dict(), sort_keys=True)
     assert secret_value not in encoded
