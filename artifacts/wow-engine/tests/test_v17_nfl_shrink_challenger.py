@@ -139,6 +139,8 @@ def test_operational_workflow_checks_feature_and_advisory_receipts():
     ).read_text(encoding="utf-8")
     assert 'feature_refresh.get("status") == "COMPLETED"' in workflow
     assert "feature_rows_labeled" in workflow
+    assert 'feature_refresh.get("latest_labeled_gameday")' in workflow
+    assert 'refresh.get("latest_gameday")' in workflow
     assert 'challenger.get("status") == "EVALUATED"' in workflow
     assert 'challenger.get("automatic_promotion_allowed") is False' in workflow
     assert "tests/test_v17_nfl_shrink_challenger.py" in workflow
