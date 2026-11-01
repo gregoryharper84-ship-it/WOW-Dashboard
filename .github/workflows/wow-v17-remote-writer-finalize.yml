@@ -71,13 +71,13 @@ jobs:
           # selecting the credentialed step.
           if candidate is None:
               with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-                  out.write("reservation_comment_id=\\n")
+                  out.write("reservation_comment_id=\n")
               print("NO_UNRELEASED_REMOTE_WRITER")
               raise SystemExit(0)
           if type(candidate) is not int or candidate <= 0:
               raise SystemExit("REMOTE_RELEASE_TARGET_INVALID")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"reservation_comment_id={candidate}\\n")
+              out.write(f"reservation_comment_id={candidate}\n")
           PY
       - name: Authenticate original Cursor state and append release
         if: ${{ success() && steps.target.outcome == 'success' && steps.target.outputs.reservation_comment_id != '' }}
