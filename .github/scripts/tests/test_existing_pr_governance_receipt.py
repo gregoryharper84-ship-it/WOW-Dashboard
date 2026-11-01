@@ -2419,57 +2419,41 @@ def test_authenticated_reject_cannot_mint_or_replay_success_receipt():
         )
 
 
-@pytest.mark.parametrize(
-    ("classification", "reviewers", "artifact_id", "payloads", "zero_credit", "expected", "exit_code"),
-    [
-        ("ORDINARY_ENGINEERING", '["reviewer"]', "555", True, False, "--source-review-json", 0),
-        ("ORDINARY_ENGINEERING", '["reviewer"]', "", False, False, "--trusted-reviewers-json", 0),
-        ("ORDINARY_ENGINEERING", '["reviewer"]', "555", False, False,
-         "SOURCE_REVIEW_SELECTED_ARTIFACT_PAYLOAD_MISSING", 1),
-        ("ORDINARY_ENGINEERING", "", "", False, False, "INDEPENDENT_REVIEW_EVIDENCE_MISSING", 1),
-        ("CLASS_A_DETERMINISTIC", "", "", False, True, "--deterministic-class-a", 0),
-        ("TRUST_ROOT_BOOTSTRAP", "", "", False, False, "--bootstrap", 0),
-    ],
-)
-def test_governance_review_route_selection_is_deterministic_and_fail_closed(
-    tmp_path, classification, reviewers, artifact_id, payloads, zero_credit, expected, exit_code
-):
-    """Exercise routing only; real verifier tests establish authenticity and PASS."""
+def test_governance_review_route_contract_is_fail_closed_without_shell_execution():
+    """Inspect the protected selector as data, never execute workflow text in CI."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    step = workflow.split("      - name: Build and verify review-evidence receipt\n", 1)[1]
-    begin = '          if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then\n'
-    end = step.index('          sha256sum "$receipt"')
-    # The same classification check also occurs earlier during bootstrap
-    # evidence collection. Exercise the final credential-route selector only.
-    start = step.rfind(begin, 0, end)
+    section = workflow.split("      - name: Build and verify review-evidence receipt\\n", 1)[1]
+    begin = '          if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then\\n'
+    start = section.rfind(begin, 0, section.index('          sha256sum "$receipt"'))
     assert start >= 0
-    selector = step[start:end]
-    if payloads:
-        folder = tmp_path / "source-review"
-        folder.mkdir()
-        (folder / "decision.json").write_text("{}", encoding="utf-8")
-        (tmp_path / "source-review-run.json").write_text("{}", encoding="utf-8")
-    route_log = tmp_path / "route.log"
-    bash = (
-        'set -euo pipefail\n'
-        'common=(--evidence stub)\n'
-        'python() { printf "%s\n" "$*" >> "$ROUTE_LOG"; }\n'.replace('"%s\n"', '"%s\\n"')
-        + textwrap.dedent(selector)
-    )
-    result = subprocess.run(
-        ["bash", "-c", bash],
-        env=os.environ | {
-            "classification": classification,
-            "TRUSTED_REVIEWERS_JSON": reviewers,
-            "SOURCE_REVIEW_ARTIFACT_ID": artifact_id,
-            "ZERO_CREDIT_MODE": "true" if zero_credit else "false",
-            "RUNNER_TEMP": str(tmp_path),
-            "ROUTE_LOG": str(route_log),
-        },
-        capture_output=True, text=True, check=False,
-    )
-    assert result.returncode == exit_code, result.stdout + result.stderr
-    observed = route_log.read_text(encoding="utf-8") if route_log.exists() else result.stderr
-    assert expected in observed
-    if artifact_id and not payloads:
-        assert not route_log.exists(), "Missing selected artifact must never fall back to human route"
+    selector = section[start:section.index('          sha256sum "$receipt"')]
+    bootstrap = selector.index('--bootstrap')
+    deterministic = selector.index('--deterministic-class-a')
+    selected = selector.index('elif [ -n "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then')
+    missing = selector.index("SOURCE_REVIEW_SELECTED_ARTIFACT_PAYLOAD_MISSING")
+    source = selector.index('--source-review-json')
+    human = selector.index('--trusted-reviewers-json')
+    no_evidence = selector.index("INDEPENDENT_REVIEW_EVIDENCE_MISSING")
+    assert bootstrap < deterministic < selected < missing < source < human < no_evidence
+    # Once an automated artifact was selected, missing local payload cannot
+    # downgrade authority to a human/temporary fallback.
+    assert selector.index('exit 1', missing) < source
+    assert selector.count('--source-review-artifact-id') == 1
+    assert selector.count('--trusted-reviewers-json') == 1
+    assert '&& [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]' in selector
+    assert 'if [ ! -f "$RUNNER_TEMP/source-review/decision.json" ] ||' in selector
+    assert '[ ! -f "$RUNNER_TEMP/source-review-run.json" ]; then' in selector
+
+
+def test_source_artifact_retry_is_bounded_and_never_falls_back_to_human():
+    """Retry only typed transient GitHub transport failures for the same artifact."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    start = workflow.index('          artifact_download="$RUNNER_TEMP/source-review/decision.zip"')
+    end = workflow.index('          unzip -p "$RUNNER_TEMP/source-review/decision.zip"', start)
+    block = workflow[start:end]
+    assert block.count('gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"') == 2
+    assert 'grep -Eq' in block
+    assert 'HTTP (408|429|500|502|503|504)' in block
+    assert block.count('SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE') == 2
+    assert '--trusted-reviewers-json' not in block
+    assert 'exit 1' in block
