@@ -189,9 +189,9 @@ def test_multi_game_cluster_se_matches_hand_calculated_unequal_groups():
                         abs_tol=1e-12)
     assert math.isclose(audit['approx_game_cluster_se'],0.64/3,
                         abs_tol=1e-12)
-    expected=(-0.07-1.96*0.64/3,-0.07+1.96*0.64/3)
-    assert all(math.isclose(actual,target,abs_tol=1e-12)
-               for actual,target in zip(audit['approx_game_cluster_normal_ci95'],expected))
+    # Two independent games cannot support an asymptotic normal CI95.
+    assert audit['approx_game_cluster_status'] == 'INSUFFICIENT_GAME_CLUSTERS_FOR_CI95'
+    assert audit['approx_game_cluster_normal_ci95'] is None
     assert audit==audit_mlb_strikeout_forecasts(list(reversed(records)))
 
 
@@ -222,6 +222,27 @@ def test_cluster_uncertainty_is_explicitly_descriptive_not_certified():
     audit = audit_mlb_strikeout_forecasts([first, second])
     assert audit['status'] == 'RESEARCH_ONLY'
     assert audit['independent_game_clusters_n'] == 2
-    assert audit['approx_game_cluster_status'] == 'APPROXIMATE_CORRELATED_MARKETS_ONLY'
+    assert audit['approx_game_cluster_status'] == 'INSUFFICIENT_GAME_CLUSTERS_FOR_CI95'
     assert audit['approx_game_cluster_se'] is not None
+    assert audit['approx_game_cluster_normal_ci95'] is None
     assert audit['certified'] is False and audit['can_execute'] is False
+
+
+
+def test_normal_interval_requires_at_least_thirty_official_games():
+    records = [
+        row(
+            prediction_id=f'p{i}',
+            game_pk=str(823333 + i),
+            probability=0.6 if i % 2 else 0.4,
+            hit=bool(i % 2),
+        )
+        for i in range(30)
+    ]
+    result = audit_mlb_strikeout_forecasts(records)
+    assert result['status'] == 'RESEARCH_ONLY'
+    assert result['independent_game_clusters_n'] == 30
+    assert result['approx_game_cluster_status'] == 'APPROXIMATE_CORRELATED_MARKETS_ONLY'
+    assert result['approx_game_cluster_normal_ci95'] is not None
+    assert result['selected_prediction_ids_digest_scope'] == 'LEGACY_IDS_ONLY_NOT_AUTHORITATIVE'
+    assert result['certified'] is False and result['can_execute'] is False
