@@ -2469,12 +2469,12 @@ def test_selected_source_download_has_bounded_timeout_without_authority_downgrad
     start = workflow.index('          artifact_zip="$RUNNER_TEMP/source-review/decision.zip"')
     end = workflow.index('          unzip -p "$RUNNER_TEMP/source-review/decision.zip"', start)
     block = workflow[start:end]
-    assert block.count('timeout -k 5s 30s gh api') == 2
+    assert block.count('timeout -k 3s 12s gh api') == 2
     assert block.count('/actions/artifacts/${artifact_id}/zip') == 2
     assert 'if [ "$artifact_rc" -eq 124 ]; then' in block
-    assert 'sleep 2' in block
+    assert 'sleep 5' in block
     assert block.count('SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE') == 2
     assert block.count('rm -f "$artifact_zip"') == 2
     assert '--trusted-reviewers-json' not in block
-    assert '2>/dev/null' in block
+    assert '2>/dev/null' not in block
 
