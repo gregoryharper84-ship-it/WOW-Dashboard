@@ -189,6 +189,9 @@ jobs:
                 pull_request_target) protected_main_source=true ;;
                 workflow_dispatch) [ "$head_branch" = "main" ] && protected_main_source=true ;;
                 workflow_run) [ "$head_branch" = "main" ] && protected_main_source=true ;;
+                # The protected existing-PR producer also runs on authenticated
+                # check_run completion; require its exact name/path and main.
+                check_run) [ "$head_branch" = "main" ] && protected_main_source=true ;;
                 *) exit 1 ;;
               esac
               ;;
@@ -264,7 +267,7 @@ jobs:
             verifier=".github/scripts/verify_existing_pr_governance_receipt.py"
             cert_mode=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("certification_mode") or "")' "$receipt")
             live_checks="$RUNNER_TEMP/wow-live-checks.json"
-            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$cert_mode" = "CLASS_A_DETERMINISTIC" ]; then
               checks='[]'
               for page in $(seq 1 10); do
                 response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}")
@@ -281,7 +284,7 @@ jobs:
           extra_args=()
           if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ]; then
             extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
-            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$cert_mode" = "CLASS_A_DETERMINISTIC" ]; then
               extra_args+=(--live-checks-json "$live_checks")
             fi
           fi

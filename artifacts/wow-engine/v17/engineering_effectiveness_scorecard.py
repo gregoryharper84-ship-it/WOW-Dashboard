@@ -10,6 +10,7 @@ import argparse
 import json
 import re
 from datetime import datetime, timedelta, timezone
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,19 @@ def _dt(value: str | None) -> datetime | None:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _timing_distribution(minutes: list[float]) -> dict[str, Any]:
+    """Nearest-rank percentiles; absent evidence stays absent, never zero."""
+    values = sorted(minutes)
+    count = len(values)
+    return {
+        "sample_count": count,
+        "p50_minutes": round(values[ceil(count * 0.5) - 1], 2) if count else None,
+        "p95_minutes": round(values[ceil(count * 0.95) - 1], 2) if count else None,
+        "under_30_minutes": sum(value < 30 for value in values),
+        "under_60_minutes": sum(value < 60 for value in values),
+    }
 
 
 def is_followup(pr: dict[str, Any]) -> bool:
@@ -64,6 +78,14 @@ def summarize(
         if (created_at := _dt(pr.get("created_at"))) is not None and created_at <= stale_before
     ]
 
+    pr_merge_minutes = []
+    for pr in recent:
+        created = _dt(pr.get("created_at"))
+        merged = _dt(pr.get("merged_at"))
+        # A missing or inconsistent timestamp is not a successful fast merge.
+        if created is not None and merged is not None and created <= merged <= now:
+            pr_merge_minutes.append((merged - created).total_seconds() / 60)
+
     merged_n = len(recent)
     followup_n = len(followups)
     first_pass_proxy = None if merged_n == 0 else max(0.0, (merged_n - followup_n) / merged_n)
@@ -74,6 +96,14 @@ def summarize(
         "merged_prs": merged_n,
         "followup_or_replacement_prs": followup_n,
         "first_pass_proxy": first_pass_proxy,
+        "pr_creation_to_merge": _timing_distribution(pr_merge_minutes),
+        "pr_creation_to_merge_note": "PR opening to GitHub merge; not blocker detection, DORA change lead time or production deployment",
+        "merge_to_verified_production": {
+            "status": "NOT_MEASURED",
+            "p50_minutes": None,
+            "p95_minutes": None,
+            "note": "Requires independently verified Render deployment and product readback joined to a merged source revision",
+        },
         "explicit_superseded_open_prs": [int(pr["number"]) for pr in explicit_superseded],
         "stale_open_prs": [int(pr["number"]) for pr in stale_open],
         "followup_prs": [int(pr["number"]) for pr in followups],

@@ -1,11 +1,15 @@
 """Execute the real provider-routing shell with bounded provider/CLI fixtures."""
 import json
+import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import textwrap
 import unittest
+import zipfile
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
@@ -135,6 +139,302 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
         self.assertNotIn("status", receipt)
         self.assertNotIn("provider_generation_allowed", receipt)
         self.assertFalse(receipt["can_execute"])
+
+
+class GeminiWorkerCompletionRouteTests(unittest.TestCase):
+    def _run_gemini_route(self, *, conclusion="failure", issue_state="OPEN",
+                          openai=True, anthropic=False, missing_artifact=False,
+                          source_event="workflow_dispatch", primary_failure_log="",
+                          artifact_variant="valid"):
+        if not shutil.which("jq"):
+            self.skipTest("Workflow shell fixture requires jq (present on GitHub Actions)")
+        text = WORKFLOW.read_text()
+        section = text.split("      - name: Resolve provider action", 1)[1]
+        script = textwrap.dedent(section.split("        run: |\n", 1)[1]
+                                 .split("\n      - name:", 1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture_root = root / "fixtures"
+            fixture_root.mkdir()
+            receipt_dir = fixture_root / "receipts"
+            receipt_dir.mkdir()
+            sha = "d129f421b8f4f21ec17fe6dec0a5b8195e210226"
+            run_id = 40292121097
+            attempt = 1
+            repository = "gregoryharper84-ship-it/WOW-Dashboard"
+            repository_id = 1240256887
+            run = {
+                "id": run_id,
+                "run_attempt": attempt,
+                "event": source_event,
+                "path": ".github/workflows/wow-v17-gemini-engineering-worker.yml",
+                "status": "completed",
+                "conclusion": conclusion,
+                "head_branch": "main",
+                "head_sha": sha,
+                "repository": {"id": repository_id, "full_name": repository},
+                "head_repository": {"id": repository_id, "full_name": repository},
+            }
+            artifacts = {
+                "total_count": 1,
+                "artifacts": [{
+                    "id": 12635928678,
+                    "name": f"wow-gemini-candidate-{run_id}-{attempt}",
+                    "expired": False,
+                    "digest": "",
+                    "workflow_run": {
+                        "id": run_id,
+                        "repository_id": repository_id,
+                        "head_repository_id": repository_id,
+                        "head_branch": "main",
+                        "head_sha": sha,
+                    },
+                }],
+            }
+            manifest = {
+                "can_execute": False,
+                "terminal_authority": "V17_TERMINAL_REDUCER",
+                "restoration": [{
+                    "issue_number": 1951,
+                    "severity": "P0",
+                    "priority_rank": 1,
+                    "execution_lane": "RAPID",
+                    "rapid_stream": "NCAAF_RESTORE",
+                    "lease_group": "P0_NCAAF_RESTORE",
+                    "conflict_keys": ["NCAAF_MONEYLINE"],
+                }],
+                "acceleration": [],
+            }
+            issues = [{
+                "number": 1951,
+                "title": "NCAAF restoration",
+                "body": "Issue content does not authorize routing.",
+                "state": issue_state,
+            }]
+            selection = {
+                "status": "SELECTED",
+                "code": "EXISTING_CONDUCTOR_RESEARCH_ONLY",
+                "incident_id": "1951",
+                "issue_number": 1951,
+                "title": "NCAAF restoration",
+                "lease_group": "P0_NCAAF_RESTORE",
+                "severity": "P0",
+                "execution_lane": "RAPID",
+                "writer_lease_granted": False,
+                "github_branch_write_allowed": False,
+                "can_execute": False,
+                "terminal_authority": "V17_TERMINAL_REDUCER",
+            }
+            receipts = {
+                "admission.json": {
+                    "status": "ADMITTED", "code": "ADMITTED", "provider": "gemini",
+                    "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+                },
+                "selection.json": selection,
+                "workspace.json": {
+                    "status": "TRUSTED", "code": "GEMINI_WORKSPACE_TRUSTED",
+                    "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+                },
+                "model-receipt.json": {
+                    "status": "HELD", "code": "GEMINI_API_UPSTREAM_UNAVAILABLE",
+                    "exit_code": 247, "source_head_sha": sha, "retry_allowed": False,
+                    "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+                },
+            }
+            if conclusion == "success":
+                receipts["model-receipt.json"] = {
+                    "status": "COMPLETED", "code": "GEMINI_CLI_COMPLETE",
+                    "exit_code": 0, "source_head_sha": sha, "retry_allowed": False,
+                    "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+                }
+                receipts["patch-inspection.json"] = {
+                    "status": "CANDIDATE_ONLY", "can_execute": False,
+                }
+                receipts["regression-receipt.json"] = {
+                    "status": "TESTED_CANDIDATE", "code": "GEMINI_REGRESSION_PASS",
+                    "exit_code": 0, "can_execute": False,
+                }
+                receipts["files.json"] = ["artifacts/wow-engine/v17/example.py"]
+                receipts["candidate.patch"] = "diff --git a/example.py b/example.py\n"
+            for name, value in receipts.items():
+                path = receipt_dir / name
+                path.write_text(value if isinstance(value, str) else json.dumps(value))
+            artifact_zip = fixture_root / "artifact.zip"
+            with zipfile.ZipFile(artifact_zip, "w", zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(receipt_dir.iterdir()):
+                    archive.write(path, path.name)
+            artifacts["artifacts"][0]["digest"] = (
+                "sha256:" + hashlib.sha256(artifact_zip.read_bytes()).hexdigest()
+            )
+            if artifact_variant == "wrong_attempt":
+                artifacts["artifacts"][0]["name"] = (
+                    f"wow-gemini-candidate-{run_id}-{attempt + 1}"
+                )
+            elif artifact_variant == "duplicate":
+                artifacts["artifacts"].append({
+                    **artifacts["artifacts"][0],
+                    "id": 12635928679,
+                })
+                artifacts["total_count"] = 2
+            elif artifact_variant == "cross_repository":
+                artifacts["artifacts"][0]["workflow_run"]["repository_id"] += 1
+            elif artifact_variant == "paginated":
+                artifacts["total_count"] = 101
+            elif artifact_variant == "digest_mismatch":
+                artifacts["artifacts"][0]["digest"] = "sha256:" + "0" * 64
+            elif artifact_variant == "missing":
+                artifacts["total_count"] = 0
+                artifacts["artifacts"] = []
+            (fixture_root / "run.json").write_text(json.dumps(run))
+            (fixture_root / "artifacts.json").write_text(json.dumps(artifacts))
+            (fixture_root / "issues.json").write_text(json.dumps(issues))
+            (fixture_root / "manifest.json").write_text(json.dumps(manifest))
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            gh = bin_dir / "gh"
+            gh.write_text(
+                "#!/bin/bash\n"
+                "if [ \"$1\" = api ]; then\n"
+                "  case \"$2\" in\n"
+                "    *\"/actions/runs/40292121097/artifacts?per_page=100\") "
+                "cat \"$FIXTURE_ROOT/artifacts.json\" ;;\n"
+                "    *\"/actions/artifacts/12635928678/zip\") "
+                "[ \"$FIXTURE_MISSING_ARTIFACT\" != true ] && cat \"$FIXTURE_ROOT/artifact.zip\" ;;\n"
+                "    *\"/actions/runs/40292121097\") cat \"$FIXTURE_ROOT/run.json\" ;;\n"
+                "    *) exit 70 ;;\n"
+                "  esac\n"
+                "elif [ \"$1\" = issue ] && [ \"$2\" = list ]; then\n"
+                "  cat \"$FIXTURE_ROOT/issues.json\"\n"
+                "elif [ \"$1\" = run ] && [ \"$2\" = view ]; then\n"
+                "  printf '%s\\n' \"$FIXTURE_PRIMARY_FAILURE_LOG\"\n"
+                "elif [ \"$1\" = run ] && [ \"$2\" = list ]; then\n"
+                "  if [[ \"$*\" == *wow-v17-chatgpt-engineering-worker.yml* ]] "
+                "&& [ -n \"$FIXTURE_PRIMARY_FAILURE_LOG\" ]; then\n"
+                "    printf '[{\"databaseId\":555,\"conclusion\":\"failure\",\"updatedAt\":\"%s\"}]\\n' \"$FIXTURE_UPDATED_AT\"\n"
+                "  elif [[ \"$*\" == *wow-v17-claude-engineering-worker.yml* ]] "
+                "&& [ \"$FIXTURE_SECONDARY_CONCLUSION\" != none ]; then\n"
+                "    printf '[{\"databaseId\":556,\"conclusion\":\"%s\"}]\\n' \"$FIXTURE_SECONDARY_CONCLUSION\"\n"
+                "  else printf '[]\\n'; fi\n"
+                "else exit 70; fi\n"
+            )
+            gh.chmod(0o755)
+            output = root / "github-output"
+            output.touch()
+            env = dict(
+                os.environ,
+                PATH=str(bin_dir) + ":" + os.environ["PATH"],
+                RUNNER_TEMP=str(root),
+                GITHUB_OUTPUT=str(output),
+                GITHUB_RUN_ID="900",
+                GITHUB_REPOSITORY=repository,
+                EVENT_NAME="workflow_run",
+                SOURCE_WORKFLOW="wow-v17-gemini-engineering-worker",
+                SOURCE_RUN_ID=str(run_id),
+                SOURCE_RUN_ATTEMPT=str(attempt),
+                SOURCE_CONCLUSION="failure",
+                SOURCE_DISPLAY_TITLE="lease=GLOBAL incident=9999",
+                MANUAL_TARGET_INCIDENT="",
+                MANUAL_LEASE_GROUP="",
+                FORCE_PROVIDER="auto",
+                OPENAI_API_KEY="test-key" if openai else "",
+                ANTHROPIC_API_KEY="test-key" if anthropic else "",
+                CLAUDE_CODE_OAUTH_TOKEN="",
+                GEMINI_ENGINEERING_ENABLED="true",
+                GEMINI_AUTO_ROUTING_ENABLED="false",
+                GEMINI_SPEND_CAP_CONFIRMED="true",
+                FIXTURE_ROOT=str(fixture_root),
+                FIXTURE_MISSING_ARTIFACT="true" if missing_artifact else "false",
+                FIXTURE_PRIMARY_FAILURE_LOG=primary_failure_log,
+                FIXTURE_UPDATED_AT=datetime.now(timezone.utc).isoformat(),
+                FIXTURE_SECONDARY_CONCLUSION="success" if anthropic else "none",
+            )
+            result = subprocess.run(
+                ["bash", "-c", script], env=env, cwd=ROOT,
+                capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = json.loads((root / "provider-route.json").read_text())
+            self.assertFalse(receipt["can_execute"])
+            self.assertEqual(receipt["terminal_authority"], "V17_TERMINAL_REDUCER")
+            return receipt
+
+    def test_verified_upstream_failure_routes_only_authorized_provider_and_exact_issue_lease(self):
+        receipt = self._run_gemini_route()
+        self.assertEqual((receipt["action"], receipt["provider"]), ("DISPATCH", "openai"))
+        self.assertTrue(receipt["reason"].startswith("GEMINI_API_UPSTREAM_UNAVAILABLE:"))
+        self.assertEqual(receipt["parent_run_id"], "40292121097")
+        self.assertEqual(receipt["target_incident"], "1951")
+        self.assertEqual(receipt["lease_group"], "P0_NCAAF_RESTORE")
+
+    def test_success_and_invalid_child_evidence_never_dispatch_provider(self):
+        success = self._run_gemini_route(conclusion="success")
+        self.assertEqual(success["action"], "NO_ACTION")
+        self.assertEqual(success["reason"], "GEMINI_TESTED_CANDIDATE_REQUIRES_INDEPENDENT_REVIEW")
+
+        closed = self._run_gemini_route(issue_state="CLOSED")
+        self.assertEqual((closed["action"], closed["provider"]), ("SURVIVAL", "deterministic"))
+        self.assertEqual(closed["reason"], "GEMINI_CHILD_INCIDENT_NOT_CURRENTLY_OPEN")
+
+        missing = self._run_gemini_route(missing_artifact=True, artifact_variant="missing")
+        self.assertEqual((missing["action"], missing["provider"]), ("SURVIVAL", "deterministic"))
+        self.assertEqual(missing["reason"], "GEMINI_CHILD_ARTIFACT_MISSING")
+
+        missing_archive = self._run_gemini_route(missing_artifact=True)
+        self.assertEqual((missing_archive["action"], missing_archive["provider"]),
+                         ("SURVIVAL", "deterministic"))
+        self.assertEqual(missing_archive["reason"], "GEMINI_CHILD_ARTIFACT_MISSING")
+
+        for variant in (
+            "wrong_attempt", "duplicate", "cross_repository", "paginated",
+            "digest_mismatch",
+        ):
+            with self.subTest(artifact_variant=variant):
+                invalid = self._run_gemini_route(artifact_variant=variant)
+                self.assertEqual((invalid["action"], invalid["provider"]),
+                                 ("SURVIVAL", "deterministic"))
+
+        no_provider = self._run_gemini_route(openai=False, anthropic=False)
+        self.assertEqual((no_provider["action"], no_provider["provider"]), ("SURVIVAL", "deterministic"))
+        self.assertTrue(no_provider["reason"].startswith(
+            "GEMINI_API_UPSTREAM_UNAVAILABLE:NO_HEALTHY_ENGINEERING_PROVIDER_AVAILABLE"
+        ))
+
+        wrong_source = self._run_gemini_route(source_event="push")
+        self.assertEqual((wrong_source["action"], wrong_source["provider"]),
+                         ("SURVIVAL", "deterministic"))
+        self.assertEqual(wrong_source["reason"], "GEMINI_CHILD_SOURCE_PROVENANCE_MISMATCH")
+
+    def test_existing_primary_http_402_and_429_breakers_do_not_retry_openai(self):
+        for error in ("HTTP 402 payment required", "HTTP 429 Too Many Requests"):
+            with self.subTest(error=error):
+                receipt = self._run_gemini_route(primary_failure_log=error)
+                self.assertEqual((receipt["action"], receipt["provider"]),
+                                 ("SURVIVAL", "deterministic"))
+                self.assertIn("CIRCUIT_BREAKER:OPENAI_API_", receipt["reason"])
+                self.assertTrue(receipt["reason"].endswith(
+                    "SECONDARY_UNAVAILABLE_OR_FAILED"
+                ))
+
+                fallback = self._run_gemini_route(
+                    primary_failure_log=error, anthropic=True,
+                )
+                self.assertEqual((fallback["action"], fallback["provider"]),
+                                 ("DISPATCH", "anthropic"))
+                self.assertIn("CIRCUIT_BREAKER:OPENAI_API_", fallback["reason"])
+
+    def test_gemini_recovery_keeps_remote_writer_and_p0_concurrency_limits(self):
+        text = WORKFLOW.read_text()
+        dispatcher = text.split("      - name: Dispatch OpenAI primary worker", 1)[1]
+        fence = text.split("      - name: Fence unresolved remote writers", 1)[1]
+        self.assertIn("id: remote_fence", fence.split("\n      - name:", 1)[0])
+        self.assertIn("steps.remote_fence.outcome == 'success'", dispatcher)
+        self.assertLess(text.index("Fence unresolved remote writers"),
+                        text.index("Dispatch OpenAI primary worker"))
+        p0_dispatch = (ROOT / ".github/workflows/wow-v17-p0-rapid-dispatch.yml").read_text()
+        self.assertIn("max_parallel_writers: 3", p0_dispatch)
+        self.assertIn("ACTIVE_WRITER_INVENTORY_TRUNCATED", p0_dispatch)
+        self.assertIn("wow-v17-engineering-implementation-single-writer", text)
 
 
 class ProviderControlPlaneHandoffTests(unittest.TestCase):
@@ -328,6 +628,35 @@ class ProviderControlPlaneHandoffTests(unittest.TestCase):
         self.assertIn("independent-provider-receipt.json", job)
         self.assertIn("if-no-files-found: error", job)
         self.assertIn("engineering_remote_fallback.py guard", self.text)
+
+    def test_gemini_child_and_fallback_dispatch_never_claim_router_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / "summary.md"
+            result = self.run_step(
+                "Record provider-control summary",
+                {
+                    "GITHUB_STEP_SUMMARY": str(summary),
+                    "ACTION": "DISPATCH",
+                    "PROVIDER": "openai",
+                    "REASON": "GEMINI_API_UPSTREAM_UNAVAILABLE:OPENAI_PRIMARY_AVAILABLE",
+                    "PARENT_RUN_ID": "40292121097",
+                    "TARGET_INCIDENT": "1951",
+                    "LEASE_GROUP": "P0_NCAAF_RESTORE",
+                    "ROUTE_OUTCOME": "success",
+                    "REMOTE_FENCE_OUTCOME": "success",
+                    "SURVIVAL_OUTCOME": "skipped",
+                    "OPENAI_DISPATCH_OUTCOME": "success",
+                    "ANTHROPIC_DISPATCH_OUTCOME": "skipped",
+                    "GEMINI_DISPATCH_OUTCOME": "skipped",
+                    "RECEIPT_VALIDATION_OUTCOME": "success",
+                    "RECEIPT_UPLOAD_OUTCOME": "success",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = summary.read_text()
+            self.assertIn("router_status: BLOCKED_WITH_EXACT_REASON", report)
+            self.assertIn("provider_dispatch_acceptance_is_not_candidate_acceptance: true", report)
+            self.assertNotIn("router_status: ROUTER_READY", report)
 
 
 if __name__ == "__main__":

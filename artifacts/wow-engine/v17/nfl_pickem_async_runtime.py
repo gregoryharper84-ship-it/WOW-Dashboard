@@ -35,7 +35,9 @@ DEFAULT_DB_FAILURE_BACKOFF_MAX_SECONDS = 120
 
 class AsyncNFLPickemSubmitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    requested_slate_dates: list[str] = Field(min_length=1, max_length=7)
+    requested_slate_dates: list[str] = Field(default_factory=list, max_length=7)
+    requested_season: int | None = Field(default=None, ge=2000, le=2100, strict=True)
+    requested_week: int | None = Field(default=None, ge=1, le=18, strict=True)
     requested_timezone: str = Field(default="America/Chicago", min_length=1, max_length=64)
     expected_game_count: int = Field(default=16, ge=1, le=32)
     strategy_mode: Literal["MAX_EXPECTED_CORRECT"] = "MAX_EXPECTED_CORRECT"
@@ -58,11 +60,17 @@ def _idle_wait_seconds(poll_seconds: int, failure_streak: int, max_backoff_secon
 
 
 def _request_payload(req: AsyncNFLPickemSubmitRequest) -> dict[str, Any]:
-    return req.model_dump(mode="json", exclude={"idempotency_key"})
+    # Keep legacy date-only idempotency hashes identical: omit newly optional
+    # season/week fields when not supplied.
+    return req.model_dump(mode="json", exclude={"idempotency_key"}, exclude_none=True)
 
 
 def _submit(db: Any, req: AsyncNFLPickemSubmitRequest) -> str:
     payload = _request_payload(req)
+    # Reject ambiguous or half-specified NFL week requests before persistence.
+    # The durable worker retains the identical validated request selector.
+    from v17.nfl_pickem_runtime import NFLPickemBoardRequest, _validate_request
+    _validate_request(NFLPickemBoardRequest(**payload))
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     request_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     idempotency_key = req.idempotency_key

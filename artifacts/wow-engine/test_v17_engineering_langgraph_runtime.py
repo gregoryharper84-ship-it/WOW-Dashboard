@@ -106,7 +106,13 @@ def test_render_worker_declares_fail_closed_langgraph_activation_contract():
     worker = next(service for service in manifest["services"] if service.get("name") == "wow-agent-worker")
     env = {item["key"]: item for item in worker["envVars"]}
 
-    assert worker["autoDeployTrigger"] == "off"
+    # Workers must follow the same protected-main CI admission as the web service.
+    # Automatic deployment is not a substitute for an approved/verified release.
+    assert worker["autoDeployTrigger"] == "checksPass"
+    web = next(service for service in manifest["services"] if service.get("name") == "wow-governed-probability-engine")
+    assert web["autoDeployTrigger"] == worker["autoDeployTrigger"]
+    assert worker["rootDir"] == web["rootDir"] == "artifacts/wow-engine"
+    assert worker["maxShutdownDelaySeconds"] == 120
     assert env["WOW_ENGINEERING_LANGGRAPH_ENABLED"]["value"] == "0"
     assert env["WOW_ENGINEERING_CHECKPOINT_DB_URI"]["sync"] is False
     assert env["LANGGRAPH_STRICT_MSGPACK"]["value"] == "true"

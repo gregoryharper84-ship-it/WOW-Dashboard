@@ -392,3 +392,66 @@ def test_trusted_consumers_use_dedicated_existing_pr_verifier():
     for text in (gate, morning, release):
         assert "--live-checks-json" in text
         assert "TRUST_ROOT_BOOTSTRAP" in text
+
+
+
+def test_class_a_deterministic_receipt_regressions_execute_in_native_ci():
+    """Run the protected receipt's focused Class A cases on the actual PR SHA.
+
+    The certifier's own protected-main workflow executes its full suite only
+    after adoption; this focused smoke exercises new policy negatives in the
+    regular governed-backend PR CI before protected integration.
+    """
+    cmd = [
+        sys.executable, "-m", "pytest", "-q", "--tb=short",
+        ".github/scripts/tests/test_existing_pr_governance_receipt.py",
+        "-k", "class_a",
+    ]
+    result = subprocess.run(
+        cmd, cwd=ROOT, capture_output=True, text=True, check=False, timeout=120,
+    )
+    assert result.returncode == 0, (result.stdout + "\n" + result.stderr)[-4500:]
+    assert "passed" in result.stdout
+
+
+def test_global_off_semantic_canary_requires_unique_current_attempt_receipt():
+    """Only an authenticated exact-run semantic review reaches certification."""
+    content = WORKFLOW.read_text(encoding="utf-8")
+    assert "SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}" in content
+    assert '[ "$SOURCE_CONCLUSION" = "success" ] || neutral' in content
+    assert 'if [ "$REVIEW_ACTIVE" != "true" ]; then' in content
+    assert "wow-v17-independent-source-review-" in content
+    assert '(.expired == false and' in content
+    assert '(.name | endswith($suffix))' in content
+    assert '"INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"' in content
+    assert "SOURCE_REVIEW_ARTIFACT_MISSING_OR_DUPLICATE" in content
+    assert "independent_source_review_receipt.py" in content
+    assert "--verify" in content
+    assert '(.event == "workflow_dispatch" or .event == "workflow_run")' in content
+    assert "steps.route.outputs.applicable == 'true' && github.event_name == 'workflow_run'" in content
+
+
+def test_semantic_canary_jq_receipt_cardinality_rejects_unbound_attempts():
+    jq = shutil.which("jq")
+    if jq is None:
+        pytest.skip("GitHub Actions requires jq")
+    prefix = "wow-v17-independent-source-review-2247-" + "a" * 40
+    suffix = "-40800668523-2"
+    selector = ('[.artifacts[] | select(.expired == false and '
+                '(.name | startswith("wow-v17-independent-source-review-")) and '
+                '(.name | endswith($suffix)))] | length')
+    genuine = {"name": prefix + suffix, "expired": False}
+    for items, expected in [
+        ([genuine], 1),
+        ([dict(genuine, expired=True)], 0),
+        ([dict(genuine, name=prefix + "-40800668523-1")], 0),
+        ([genuine, genuine], 2),
+        ([], 0),
+    ]:
+        result = subprocess.run(
+            [jq, "-er", "--arg", "suffix", suffix, selector],
+            input=json.dumps({"artifacts": items}),
+            text=True, capture_output=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert int(result.stdout.strip()) == expected

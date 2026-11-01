@@ -101,7 +101,8 @@ class GitHubTransport:
                 break
         else:
             raise ValueError("REMOTE_RESERVATION_INVALID")
-        assert_no_remote_writer(comments)
+        assert_no_remote_writer(
+            comments, get_run=lambda run_id: self.get(f"actions/runs/{run_id}"))
         now = datetime.now(timezone.utc)
         for comment in comments:
             body = comment.get("body") or ""
@@ -740,10 +741,30 @@ def run_resident_supervisor(stop: threading.Event = _STOP) -> None:
                 db_client, status="RUNNING", outcome="CYCLE_STARTED", instance_id=instance_id,
             )
             manifest = json.loads(MANIFEST.read_text())
+            client = GitHubTransport(os.environ["WOW_ENGINEERING_GITHUB_TOKEN"])
+            # The Reporter remains a read/persist-only lane in THIS supervisor.
+            # It cannot clear the remote writer fence, dispatch an agent,
+            # manufacture an issue approval or bypass source-identity checks.
+            if os.getenv("WOW_V17_LOG_REPORTER_ENABLED", "false") == "true":
+                try:
+                    from v17.engineering_log_reporter import resident_reporter_cycle
+                    reporter_outcome = resident_reporter_cycle(
+                        client, db_client, instance_id=instance_id)
+                    LOG.warning(
+                        "WOW_ENGINEERING_LOG_REPORTER outcome=%s can_execute=false",
+                        reporter_outcome,
+                    )
+                except Exception as reporter_exc:
+                    # Preserve normal engineering dispatch even if telemetry
+                    # is unavailable. Never print raw upstream exceptions.
+                    LOG.warning(
+                        "WOW_ENGINEERING_LOG_REPORTER outcome=REPORTER_CYCLE_ERROR "
+                        "error_type=%s can_execute=false",
+                        type(reporter_exc).__name__,
+                    )
             with Redis.from_url(os.environ["REDIS_URL"]) as redis_client:
-                outcome = dispatch_once(client=GitHubTransport(
-                    os.environ["WOW_ENGINEERING_GITHUB_TOKEN"],
-                ), redis_client=redis_client, manifest=manifest)
+                outcome = dispatch_once(client=client, redis_client=redis_client,
+                                        manifest=manifest)
             is_hold = outcome in {
                 "DISPATCH_ATTEMPT_CAP_REQUIRES_TRIAGE",
                 "AWAITING_EXISTING_PR_REVIEW_OR_REPAIR",

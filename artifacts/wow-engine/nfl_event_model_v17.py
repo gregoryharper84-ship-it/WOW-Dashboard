@@ -480,6 +480,24 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
     if not np.all(np.isfinite(x)):
         raise NFLModelInputsInsufficient("NFL_FEATURE_VECTOR_NONFINITE")
 
+    # Compare the canonical frozen input vector with the EXACT numeric array
+    # handed to the fitted logistic scorer. This proves scorer vector equivalence,
+    # not independent authentication of source data or current QB/roster facts.
+    vector_context = {
+        "feature_schema_version": model.feature_schema_version,
+        "feature_order": list(model.feature_order),
+    }
+    frozen_vector_sha256 = _sha256_json({
+        **vector_context,
+        "numeric_feature_vector": [float(v) for v in vector],
+    })
+    consumed_vector_sha256 = _sha256_json({
+        **vector_context,
+        "numeric_feature_vector": x.tolist(),
+    })
+    if frozen_vector_sha256 != consumed_vector_sha256:
+        raise NFLModelOutputInvalid("NFL_MODEL_CONSUMED_VECTOR_MISMATCH")
+
     standardized = (x - model.scaler_mean) / model.scaler_scale
     logit = float(np.dot(model.coefficients, standardized) + model.intercept)
     raw_home = float(_sigmoid(logit))
@@ -551,6 +569,9 @@ def score_feature_row(model: CertifiedNFLModel, feature_row: dict[str, Any]) -> 
         "model_label": PROVIDER_IDENTITY,
         "model_artifact_id": model.artifact_id,
         "model_timestamp": model_timestamp,
+        "feature_snapshot_hash": frozen_vector_sha256,
+        "model_consumed_feature_hash": consumed_vector_sha256,
+        "feature_vector_hash_policy": "NFL_CANONICAL_NUMERIC_VECTOR_SCHEMA_ORDER_V1",
         "feature_schema_version": model.feature_schema_version,
         "feature_order_hash": model.feature_order_hash,
         "training_dataset_hash": model.training_dataset_hash,

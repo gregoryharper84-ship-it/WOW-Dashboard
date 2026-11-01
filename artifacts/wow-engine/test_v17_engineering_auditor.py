@@ -420,3 +420,20 @@ def test_watchdog_finding_type_respects_real_postgres_schema_constraint():
     reconcile_sirt_watchdog(store, session=_WatchdogSession([]), now=now)
     assert store.opened[0][0] == "AUDITOR_HEALTH"
     assert store.opened[0][1]["evidence"]["finding_code"] == "WATCHDOG_HEARTBEAT_MISSING"
+
+
+def test_lifecycle_audit_reads_live_exact_head_metadata_not_stale_event():
+    """Metadata edits must not require a new PR code SHA or trust stale event data."""
+    text = WORKFLOW.read_text()
+    assert "PR_BODY: ${{ github.event.pull_request.body" not in text
+    assert 'GH_TOKEN: ${{ github.token }}' in text
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"' in text
+    assert '.base.repo.full_name == $repo and .head.sha == $sha' in text
+    assert 'LIFECYCLE_PR_STALE_OR_WRONG_TARGET' in text
+    assert 'LIFECYCLE_PR_READ_FAILED' in text
+    assert 'LIFECYCLE_PR_IDENTITY_INVALID' in text
+    assert 'jq -r \'.body // ""\'' in text
+    assert 'lifecycle-classify' in text
+    assert 'git diff --name-only HEAD^1 HEAD^2' in text
+    assert 'pull_request:' in text
+    assert 'permission-checks: write' not in text

@@ -88,6 +88,11 @@ def _positive_int(value: object, name: str) -> int:
 
 
 def _is_qa_workflow_run(run: Mapping[str, Any]) -> bool:
+    """Authenticate immutable workflow ID + pinned path, not display title.
+
+    Only the protected QA workflow constructs producer context; consumers fetch
+    the run from GitHub. Missing, boolean or foreign IDs fail closed.
+    """
     workflow_id = run.get("workflow_id")
     return (
         isinstance(workflow_id, int)
@@ -619,8 +624,7 @@ def build_artifact(
         else None
     )
     _require(
-        run.get("name") == WORKFLOW_NAME
-        and run.get("path") == WORKFLOW_PATH
+        _is_qa_workflow_run(run)
         and source_event in {"workflow_dispatch", "workflow_run"}
         and run.get("head_branch") == "main"
         and run_repository_name == repository,
@@ -899,8 +903,7 @@ def verify_artifact(
             else None
         )
         _require(
-            run.get("name") == WORKFLOW_NAME
-            and run.get("path") == WORKFLOW_PATH
+            _is_qa_workflow_run(run)
             and run.get("event") == source.get("event")
             and run.get("head_branch") == "main"
             and repository_name == expected_repository,
@@ -1036,8 +1039,7 @@ def build_qa_review_policy(
     _positive_int(run.get("id"), "QA_POLICY_RUN_ID")
     attempt = _positive_int(run.get("run_attempt"), "QA_POLICY_RUN_ATTEMPT")
     _require(
-        run.get("name") == WORKFLOW_NAME
-        and run.get("path") == WORKFLOW_PATH
+        _is_qa_workflow_run(run)
         and run.get("event") in {"workflow_dispatch", "workflow_run"}
         and run.get("head_branch") == "main"
         and run.get("repository") == repository
