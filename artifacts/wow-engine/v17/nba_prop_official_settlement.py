@@ -38,7 +38,7 @@ STAT_COMPONENTS = {
 NBA_SUPPORTED = frozenset(("NBA", stat) for stat in STAT_COMPONENTS)
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
-    "User-Agent": "Mozilla/5.0 (compatible; WOW-V17-ReadOnly-Settlement/1.0)",
+    "User-Agent": "WOW-V17-ReadOnly-Settlement/1.0",
 }
 
 

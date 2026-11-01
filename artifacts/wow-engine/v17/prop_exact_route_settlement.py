@@ -467,8 +467,16 @@ def settle_nba_scalar(
     http_get: Callable[..., Any] = httpx.get,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Late import preserves the underlying settlement module's existing routes."""
-    from v17.nba_prop_official_settlement import settle_nba_scalar as settle_official
+    """Late import preserves the existing routes; import failure is typed, never a model absence."""
+    try:
+        from v17.nba_prop_official_settlement import settle_nba_scalar as settle_official
+    except ImportError as exc:
+        return {
+            "status": "SETTLEMENT_ADAPTER_UNAVAILABLE",
+            "blocker": "NBA_OFFICIAL_SETTLEMENT_ADAPTER_IMPORT_FAILED",
+            "error_type": type(exc).__name__,
+            "can_execute": False,
+        }
     return settle_official(prediction, snapshot, http_get=http_get, now=now)
 
 

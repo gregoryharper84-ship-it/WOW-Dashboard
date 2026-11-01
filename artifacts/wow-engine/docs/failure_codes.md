@@ -522,3 +522,4 @@ These codes are emitted by `v17/nba_prop_official_settlement.py` through typed `
 | `NBA_EXPLICIT_PLAYED_STATUS_REQUIRED` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | Official player row does not explicitly confirm played or did-not-play. | No |
 | `NBA_OFFICIAL_PLAYER_STATS_OBJECT_REQUIRED` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | Official player row lacks a statistics object. | No |
 | `NBA_EXACT_STAT_COMPONENT_MISSING_OR_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | An exact official stat component is missing, nonfinite, nonintegral, negative or beyond allowed bounds. | No |
+| `NBA_OFFICIAL_SETTLEMENT_ADAPTER_IMPORT_FAILED` | NBA exact-route settlement import | NBA official settlement module or a dependency cannot be imported; preserve typed adapter failure rather than relabeling as a missing fitted model. | No |

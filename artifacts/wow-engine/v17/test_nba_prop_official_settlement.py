@@ -89,6 +89,7 @@ def test_inventory_registers_exact_supported_routes_not_fantasy_or_wager():
         assert rows[0]["status"] == base.SETTLEMENT_READY
         assert rows[0]["can_execute"] is False
     assert ("NBA", "FANTASY_SCORE") not in NBA_SUPPORTED
+    assert NBA_SUPPORTED == base.NBA_SUPPORTED
 
 
 def test_components_one_official_player_event_and_all_directions():
