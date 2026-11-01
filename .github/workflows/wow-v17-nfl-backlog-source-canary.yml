@@ -1,0 +1,62 @@
+name: WOW V17 NFL Backlog Read-Only Canary
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '.github/workflows/wow-v17-nfl-backlog-source-canary.yml'
+      - 'artifacts/wow-engine/v17/nfl_multi_source_pilot.py'
+      - 'artifacts/wow-engine/v17/multi_source_historical_collector.py'
+      - 'artifacts/wow-engine/scripts/nfl_backlog_canary_1933.py'
+      - 'artifacts/wow-engine/tests/test_nfl_backlog_canary_1933.py'
+      - 'artifacts/wow-engine/v17/nfl_espn_independent_parity_1933.py'
+      - 'artifacts/wow-engine/tests/test_nfl_espn_independent_parity_1933.py tests/test_nfl_research_evidence_gate_1933.py'
+      - 'artifacts/wow-engine/v17/nfl_research_evidence_gate_1933.py'
+      - 'artifacts/wow-engine/tests/test_nfl_research_evidence_gate_1933.py'
+      - 'artifacts/wow-engine/tests/test_nfl_multi_source_pilot.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-nfl-backlog-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  read-only-source-canary:
+    if: >-
+      github.event.pull_request.number == 1937 &&
+      github.event.pull_request.head.repo.full_name == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.head_ref == 'backlog/1933-multi-source-historical-collectors'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run offline safety fixtures
+        working-directory: artifacts/wow-engine
+        run: |
+          python -m pip install --disable-pip-version-check pytest httpx
+          python -m pytest --confcutdir=tests -q tests/test_nfl_backlog_canary_1933.py tests/test_nfl_multi_source_pilot.py tests/test_nfl_espn_independent_parity_1933.py
+      - name: Fetch pinned 2025 nflverse inputs; publish typed, read-only receipt
+        id: canary
+        working-directory: artifacts/wow-engine
+        shell: bash
+        run: |
+          set +e
+          python -m scripts.nfl_backlog_canary_1933 > "$RUNNER_TEMP/wow-nfl-backlog-canary-receipt.json"
+          RESULT=$?
+          set -e
+          echo '### NFL read-only historical data canary — research-only' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'No model weights, scoring, Supabase writes, secrets, scheduling, deployment or wagers.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A passing job only confirms research-evidence coherence; SOURCE_VALIDATION_HOLD, LICENSE_REVIEW_REQUIRED and nonpublishability remain in force.' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          python -m json.tool "$RUNNER_TEMP/wow-nfl-backlog-canary-receipt.json" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/wow-nfl-backlog-canary-receipt.json"
+          exit "$RESULT"
