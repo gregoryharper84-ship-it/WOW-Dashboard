@@ -86,6 +86,33 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("30-150 in evidence", prompt)
         self.assertIn("preserve every material risk", prompt)
 
+    def test_prompt_requires_real_failure_path_and_keeps_risk_veto(self):
+        target = {"pr": 2300, "head_sha": "a" * 40,
+                  "base_sha": "b" * 40, "diff_sha256": "c" * 64,
+                  "diff": "untrusted source"}
+        prompt = m.prompt_for(target)
+        schema = m.REVIEW_SCHEMA["properties"]["findings"]["description"]
+        self.assertIn("concrete input and observable failure", prompt)
+        self.assertIn("Do not invent speculative issues", prompt)
+        self.assertIn("already fail closed", m.SYSTEM_ROLE)
+        self.assertIn("unresolved, actionable source risks", schema)
+        self.assertIn("all real risk categories block regardless", prompt)
+        # Instructions are advisory to the independent model only; the
+        # fail-closed parser and existing security veto are unchanged.
+        good = self._passing()
+        low_real_risk = self._finding("low", "unmitigated leak", "security")
+        harmless_note = self._finding("low", "cosmetic only", "informational")
+        self.assertEqual(m.parse_verdict({**good, "findings": [low_real_risk]})[0],
+                         "REJECT")
+        self.assertEqual(m.parse_verdict({**good, "findings": [harmless_note]})[0],
+                         "PASS")
+        self.assertEqual(m.parse_verdict({**good, "security_review": "FAIL",
+                                          "findings": [harmless_note]})[0],
+                         "REJECT")
+        self.assertEqual(m.parse_verdict({**good, "findings": [
+            self._finding("critical", "critical finding", "informational")
+        ]})[0], "REJECT")
+
     def test_finding_text_bounds_are_shared_by_schema_and_validator(self):
         good = self._passing()
         at_limit = self._finding("medium")
@@ -400,6 +427,32 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 m.call_provider("gemini-generative-api", "key", "review")
             self.assertEqual(str(cm.exception), "GEMINI_MODEL_INVALID")
 
+
+
+    def test_gemini_fallback_pins_current_stable_model_and_denies_restricted_legacy(self):
+        # An actual provider call stays mocked: this is an endpoint/allowlist
+        # contract, not permission to invoke a paid or unverified reviewer.
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}):
+            with patch.object(m, "request_json", return_value={"candidates": []}) as request:
+                with self.assertRaises(m.Hold) as incomplete:
+                    m.call_provider("gemini-generative-api", "test-only-key", "review")
+                self.assertEqual(str(incomplete.exception), "GEMINI_REVIEW_INCOMPLETE")
+                self.assertEqual(
+                    request.call_args.args[0],
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    "gemini-3.8-flash:generateContent",
+                )
+                self.assertEqual(request.call_args.kwargs["headers"], {
+                    "x-goog-api-key": "test-only-key",
+                })
+        # Gemini 2.5 access was restricted for new projects in September 2026;
+        # do not silently revert to the known HTTP 404 legacy fallback.
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-2.5-flash"}):
+            with patch.object(m, "request_json") as network:
+                with self.assertRaises(m.Hold) as invalid:
+                    m.call_provider("gemini-generative-api", "test-only-key", "review")
+                self.assertEqual(str(invalid.exception), "GEMINI_MODEL_INVALID")
+                network.assert_not_called()
 
 
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
