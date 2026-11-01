@@ -21,13 +21,13 @@ From the Trigger.dev branch checkout:
 
 ```bash
 node --experimental-strip-types --test tests/wow-v17-recovery-probe.test.mjs
-npx trigger.dev@latest dev
+npx trigger.dev@4.8.3 dev
 ```
 
 In another Terminal (same checkout), with the dev worker still running:
 
 ```bash
-npx trigger.dev@latest tasks trigger wow-v17-recovery-sentinel --payload '{}' --wait
+npx trigger.dev@4.8.3 tasks trigger wow-v17-recovery-sentinel --payload '{}' --wait
 ```
 
 Read the complete run output, not only the CLI terminal success message. Record the run ID, timestamp and typed receipt. If the backend is unready, a task can **complete technically** while returning `status=BLOCKED`; this is the expected diagnostic result, not permission to mark runtime healthy.
