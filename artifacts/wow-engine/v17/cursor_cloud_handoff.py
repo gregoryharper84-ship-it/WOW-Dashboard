@@ -58,7 +58,11 @@ def validate_pr(data: dict, *, repo: str, number: int, sha: str,
         raise HandoffBlocked("CURSOR_STALE_PR_HEAD")
     if head_repo.get("full_name") != repo:
         raise HandoffBlocked("CURSOR_FORK_HEAD_UNSUPPORTED")
-    if head.get("ref") in ("main", "master", "") or not head.get("ref"):
+    head_branch = head.get("ref")
+    if (not isinstance(head_branch, str) or not head_branch.strip()
+            or head_branch != head_branch.strip()
+            or head_branch in ("main", "master")
+            or head_branch == base.get("ref")):
         raise HandoffBlocked("CURSOR_UNSAFE_TARGET_BRANCH")
     if base.get("ref") != "main":
         raise HandoffBlocked("CURSOR_UNEXPECTED_BASE_BRANCH")
@@ -261,7 +265,7 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
         lease_id, lease = reserve_cursor(
             lease_api, comments, incident=incident_number, main_sha=main_sha,
             pr_number=pr_number, pr_sha=expected_head,
-            cursor_agent_id=body["agentId"],
+            branch=current_pr["head"]["ref"], cursor_agent_id=body["agentId"],
             worker_id=f"github-actions:{os.environ.get('GITHUB_RUN_ID', 'local')}:"
                       f"{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}",
         )
@@ -281,6 +285,8 @@ def dispatch(repo: str, pr_number: int, expected_head: str, task: str,
             raise HandoffBlocked("CURSOR_GITHUB_PR_RESPONSE_INVALID")
         validate_pr(current_pr, repo=repo, number=pr_number,
                     sha=expected_head, incident_number=incident_number)
+        if current_pr["head"]["ref"] != lease["branch"]:
+            raise HandoffBlocked("CURSOR_PR_BRANCH_CHANGED")
         current_incident = api(
             f"{GITHUB_API}/repos/{repo}/issues/{incident_number}", token=github_token,
         )
