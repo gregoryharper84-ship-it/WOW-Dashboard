@@ -33,9 +33,13 @@ on:
 permissions:
   actions: read
   checks: read
-  contents: write
-  pull-requests: write
-  issues: write
+  # Source pushes and PR publication use the isolated Engineering App token.
+  # The ambient workflow token must never be a second source writer.
+  contents: read
+  pull-requests: read
+  # Legacy heartbeat and incident comments use the Engineering App token.
+  # Canonical transactional fencing is a separate coordinated rollout.
+  issues: read
 
 concurrency:
   # Same global writer mutex. queue: max is GitHub's native pending cap
@@ -276,7 +280,7 @@ jobs:
         id: safety
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           RESTORATION: ${{ steps.dispatch.outputs.restoration }}
           ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
           LEASE_GROUP: ${{ steps.dispatch.outputs.lease_group }}
@@ -1192,7 +1196,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           RESTORATION: ${{ steps.dispatch.outputs.restoration }}
           ACCELERATION: ${{ steps.dispatch.outputs.acceleration }}
           QUEUE_DEPTH: ${{ steps.dispatch.outputs.queue_depth }}
@@ -1324,7 +1328,7 @@ jobs:
         if: always() && steps.lead.outputs.action == 'REPAIR'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.eng_token.outputs.token }}
           INCIDENT: ${{ steps.lead.outputs.incident }}
           DELIVERY: ${{ steps.delivery.outputs.delivery }}
           CODE: ${{ steps.delivery.outputs.code }}
