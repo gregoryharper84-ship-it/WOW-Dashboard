@@ -109,15 +109,24 @@ class GitHubTransport:
             assert_no_remote_writer(
                 comments, get_run=lambda run_id: self.get(f"actions/runs/{run_id}"))
         except Exception:
+            target_cid = None
             try:
                 target_cid = reconcilable_cursor_reservation_id(
                     comments,
                     get_run=lambda run_id: self.get(f"actions/runs/{run_id}"),
                 )
-                if target_cid is not None:
-                    self.reconcile_cursor_writer(target_cid)
-            except Exception:
-                pass
+                if target_cid is not None and not self.reconcile_cursor_writer(target_cid):
+                    LOG.warning(
+                        "CURSOR_WRITER_RECOVERY_NOT_DISPATCHED reservation_comment_id=%d",
+                        target_cid,
+                    )
+            except Exception as exc:
+                # Never log raw GitHub errors, URLs, payloads or credentials.
+                LOG.warning(
+                    "CURSOR_WRITER_RECOVERY_REQUEST_FAILED reservation_comment_id=%s error_type=%s",
+                    target_cid if target_cid is not None else "UNVERIFIED",
+                    type(exc).__name__,
+                )
             raise
         now = datetime.now(timezone.utc)
         for comment in comments:
