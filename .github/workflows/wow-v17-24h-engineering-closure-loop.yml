@@ -5,6 +5,14 @@ on:
     - cron: "47 * * * *"
   push:
     branches: [main]
+  pull_request_review:
+    types: [submitted, dismissed]
+  workflow_run:
+    workflows:
+      - "WOW Elite Ecosystem Assurance"
+      - "wow-engine-verify"
+      - "wow-v17-existing-pr-governance-review"
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -290,3 +298,91 @@ jobs:
             echo "- model improvement: challenger/experiment only until governed evidence earns promotion"
             echo "- can_execute: false"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  autonomous-pr-continuation:
+    name: Continue eligible PR lifecycle without chat
+    if: github.event_name == 'schedule' || github.event_name == 'pull_request_review' || github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      actions: write
+      checks: read
+      contents: read
+      pull-requests: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+      EVENT_PR: ${{ github.event.pull_request.number || '' }}
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Re-enter CI / certification / reviewer stages (bounded)
+        shell: bash
+        run: |
+          set -euo pipefail
+          numbers="$RUNNER_TEMP/continuation-prs.txt"
+          : > "$numbers"
+          if [ "$EVENT_NAME" = pull_request_review ]; then
+            printf '%s\n' "$EVENT_PR" >> "$numbers"
+          elif [ "$EVENT_NAME" = workflow_run ]; then
+            gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" --jq '.pull_requests[]?.number' >> "$numbers"
+          else
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
+              --jq '.[] | select(.draft == false) | select((.body // "") | contains("Incident: #1547") or contains("Terminal-Closure-Autonomous: true")) | .number' >> "$numbers"
+          fi
+          sort -un "$numbers" -o "$numbers"
+          attempts=0
+          while read -r number; do
+            [ -n "$number" ] || continue
+            [ "$attempts" -lt 5 ] || break
+            attempts=$((attempts + 1))
+            pr=$(gh api "/repos/$GITHUB_REPOSITORY/pulls/$number")
+            head=$(jq -r '.head.sha' <<<"$pr")
+            head_repo=$(jq -r '.head.repo.full_name' <<<"$pr")
+            author=$(jq -r '.user.login' <<<"$pr")
+            if [ "$(jq -r '.state' <<<"$pr")" != open ] || [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+              continue
+            fi
+            checks=$(gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$head/check-runs?per_page=100" --jq '.check_runs')
+            # A passing check is not enough: zero checks, pending checks and
+            # any failed check are all non-certifiable.
+            count=$(jq 'length' <<<"$checks")
+            failing=$(jq '[.[] | select(.status != "completed" or (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped"))] | length' <<<"$checks")
+            if [ "$count" -eq 0 ] || [ "$failing" -ne 0 ]; then
+              echo "PR #$number CI_PENDING_OR_FAILED head=$head" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            # Certification is an independent workflow, never an approval.
+            # One attempt per SHA is recorded in the PR discussion to prevent
+            # hourly re-dispatch storms; a new head gets a new attempt.
+            marker="WOW_AUTO_CERTIFICATION_HEAD:$head"
+            comments=$(gh api --paginate "/repos/$GITHUB_REPOSITORY/issues/$number/comments?per_page=100" --jq '[.[].body]')
+            if ! jq -e --arg m "$marker" 'any(.[]; contains($m))' <<<"$comments" >/dev/null; then
+              gh workflow run wow-v17-existing-pr-governance-review.yml \
+                --repo "$GITHUB_REPOSITORY" --ref main -f pr_number="$number"
+              gh pr comment "$number" --repo "$GITHUB_REPOSITORY" \
+                --body "<!-- $marker --> Trusted certification dispatched for exact PR head $head. This is NOT independent approval."
+              echo "PR #$number certification dispatched for $head" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            # Reviewer discovery is read-only and never promotes permissions.
+            reviewers=$(jq -r '.requested_reviewers[]?.login' <<<"$pr")
+            authorized=0
+            while read -r reviewer; do
+              [ -n "$reviewer" ] || continue
+              [ "$reviewer" != "$author" ] || continue
+              perm=$(gh api "/repos/$GITHUB_REPOSITORY/collaborators/$reviewer/permission" --jq '.permission' 2>/dev/null || echo unknown)
+              if [ "$perm" = write ] || [ "$perm" = maintain ] || [ "$perm" = admin ]; then
+                authorized=1
+                break
+              fi
+            done <<<"$reviewers"
+            if [ "$authorized" -ne 1 ]; then
+              echo "PR #$number BLOCKED_WITH_EXACT_REASON:REVIEWER_NOT_CONFIGURED" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "PR #$number authorized reviewer requested; awaiting GitHub-enforced approval and protected release" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done < "$numbers"
