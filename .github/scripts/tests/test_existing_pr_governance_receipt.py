@@ -2422,8 +2422,8 @@ def test_authenticated_reject_cannot_mint_or_replay_success_receipt():
 def test_governance_review_route_contract_is_fail_closed_without_shell_execution():
     """Inspect the protected selector as data, never execute workflow text in CI."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    section = workflow.split("      - name: Build and verify review-evidence receipt\\n", 1)[1]
-    begin = '          if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then\\n'
+    section = workflow.split("      - name: Build and verify review-evidence receipt\n", 1)[1]
+    begin = '          if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then\n'
     start = section.rfind(begin, 0, section.index('          sha256sum "$receipt"'))
     assert start >= 0
     selector = section[start:section.index('          sha256sum "$receipt"')]
