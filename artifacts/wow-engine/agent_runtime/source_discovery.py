@@ -68,13 +68,28 @@ def select_current_daily_candidates(
         if result.get("event_status") != "PREGAME":
             skip("EVENT_STATUS_NOT_PREGAME")
             continue
-        sport = str(identity.get("sport") or "").upper()
+        # The canonical MLB team-event writer stores this exact identity
+        # shape without an explicit sport; the independent cross-sport lane
+        # intentionally excludes those event IDs. Admit this one reviewed
+        # persisted shape only, retaining the source snapshot and fresh
+        # PREGAME/clock gates. Never infer it from a generic missing sport.
+        canonical_mlb = (
+            not identity.get("sport")
+            and set(identity) == {
+                "official_event_id", "event_start_time", "home_team",
+                "away_team", "snapshot_id",
+            }
+            and isinstance(identity.get("snapshot_id"), str)
+            and bool(identity["snapshot_id"].strip())
+        )
+        sport = "MLB" if canonical_mlb else str(identity.get("sport") or "").upper()
         if sport not in FULL_GAME_SPORTS:
             skip("SETTLEMENT_ADAPTER_NOT_VERIFIED")
             continue
         event_id = identity.get("official_event_id")
         home, away = identity.get("home_team"), identity.get("away_team")
-        start = _aware(identity.get("commence_time_utc"))
+        start = _aware(identity.get("event_start_time") if canonical_mlb
+                       else identity.get("commence_time_utc"))
         if not all(isinstance(x, str) and x.strip() for x in (event_id, home, away)):
             skip("SOURCE_IDENTITY_UNRESOLVED")
             continue
