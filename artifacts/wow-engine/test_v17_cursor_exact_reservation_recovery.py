@@ -564,6 +564,103 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     with pytest.raises(ledger.ProviderUnavailable, match="REMOTE_RELEASE_RECEIPT_UNVERIFIED"):
         ledger.assert_no_remote_writer(bad_comments, get_run=lambda _: run())
 
+def exact_post_cutover_fixture():
+    """One immutable, bot-authored orphaned reservation; no live provider calls."""
+    witness = probe.EXACT_POST_CUTOVER_BRANCH_WITNESS
+    original = ledger.receipt(
+        "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id="1988",
+        assignment_attempts=1, hold=True, lease_group="PR_2211",
+        main_sha="8857e4882f85f01dc47c78ee94a5318398289179",
+        next_action=("Reconcile this reservation; keep the shared writer hold until "
+                     "Cursor termination and independent review are verified."),
+        pr_number="2211", pr_sha="27e1a86262d80e032ca2e8c8fb64430c137b6a9a",
+        source_pr=2211, cursor_run_id=None,
+        cursor_agent_id="bc-df9cd4ca-0f45-5d5d-ac25-d500977be83e",
+        worker_id="github-actions:41276607293:1",
+    )
+    body = ledger._body(original)
+    assert hashlib.sha256(body.encode()).hexdigest() == witness["digest"]
+    fixture = {
+        "comment": {
+            "id": witness["comment_id"],
+            "body": body,
+            "user": {"login": "github-actions[bot]", "id": 41898282},
+            "issue_url": f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/issues/1138",
+        },
+        "origin": {
+            "id": 41276607293, "run_attempt": 1, "event": "workflow_dispatch",
+            "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+            "head_sha": witness["main_sha"], "head_branch": "main",
+            "status": "completed", "conclusion": "failure",
+            "repository": {"full_name": probe.REPOSITORY},
+            "head_repository": {"full_name": probe.REPOSITORY},
+        },
+        "pr": {
+            "number": 2211, "state": "open", "changed_files": 1,
+            "head": {
+                "sha": witness["source_sha"], "ref": witness["branch"],
+                "repo": {"full_name": probe.REPOSITORY},
+            },
+            "base": {"ref": "main", "repo": {"full_name": probe.REPOSITORY}},
+        },
+    }
+    return fixture
+
+
+def prove_exact_post_cutover(fixture):
+    witness = probe.EXACT_POST_CUTOVER_BRANCH_WITNESS
+    prefix = f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}"
+    def api(url, *, token, basic=False):
+        if url == prefix + f"/issues/comments/{witness['comment_id']}":
+            return copy.deepcopy(fixture["comment"])
+        if url == prefix + "/actions/runs/41276607293":
+            return copy.deepcopy(fixture["origin"])
+        if url == prefix + "/pulls/2211":
+            return copy.deepcopy(fixture["pr"])
+        if url == prefix + "/pulls/2211/files?per_page=100&page=1":
+            return [{"filename": "artifacts/wow-engine/v17/nba_official_settlement.py"}]
+        if url == f"{probe.CURSOR_API}/agents/{witness['agent_id']}":
+            assert basic
+            raise probe.ReceiptBlocked("STATUS_API_HTTP_404")
+        if url.startswith(f"{probe.CURSOR_API}/agents?"):
+            assert basic
+            return {"items": []}
+        raise AssertionError("unexpected proof endpoint: " + url)
+    return probe.collect_receipt(
+        "fixture-cursor", "fixture-github", api=api,
+        reservation_comment_id=witness["comment_id"],
+    )
+
+
+def test_exact_post_cutover_branch_witness_does_not_release_without_provider_proof():
+    fixture = exact_post_cutover_fixture()
+    result = prove_exact_post_cutover(fixture)
+    assert result["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
+    assert result["reservation"]["exact_branchless_witness"] is True
+    assert result["reservation"]["reservation_branch"] == (
+        probe.EXACT_POST_CUTOVER_BRANCH_WITNESS["branch"])
+    assert result["lease_released"] is False
+    assert result["can_execute"] is False
+    assert result["negative_launch_proof"]["pr_agents_checked"] == 0
+
+
+@pytest.mark.parametrize("tamper,code", [
+    (lambda f: f["comment"].update(id=9), "CURSOR_RESERVATION_UNTRUSTED"),
+    (lambda f: f["comment"].update(body=f["comment"]["body"] + " "),
+     "CURSOR_RESERVATION_IDENTITY_INVALID"),
+    (lambda f: f["comment"]["user"].update(id=1), "CURSOR_RESERVATION_UNTRUSTED"),
+    (lambda f: f["origin"].update(conclusion="success"), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
+    (lambda f: f["pr"]["head"].update(ref="fix/renamed"),
+     "CURSOR_RESERVATION_BRANCH_MISMATCH"),
+    (lambda f: f["pr"]["head"].update(sha="a" * 40), "CURSOR_EXACT_WITNESS_PR_MOVED"),
+])
+def test_exact_post_cutover_witness_rejects_tampering_and_moved_pr(tamper, code):
+    fixture = exact_post_cutover_fixture()
+    tamper(fixture)
+    with pytest.raises(probe.ReceiptBlocked, match=code):
+        prove_exact_post_cutover(fixture)
+
+
 def test_missing_branch_never_uses_historical_time_exception():
     fixture = FailedLaunchFixture()
     header, payload = fixture.comment["body"].split("\n", 1)
