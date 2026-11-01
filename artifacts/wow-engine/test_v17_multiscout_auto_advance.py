@@ -325,3 +325,109 @@ def test_large_slate_uses_bounded_parallel_batches_and_deterministic_receipt_ord
     assert receipt["reconciliation"]["response_reconciliation_pass"] is True
     assert receipt["status"] == "AUTO_ADVANCE_COMPLETE"
     assert receipt["can_execute"] is False
+
+
+def test_unstamped_scout_quote_is_not_upgraded_to_generated_at():
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["prop_candidates"][0]
+    evidence = dict(candidate["market_evidence"])
+    evidence.pop("market_last_update", None)
+    evidence.pop("bookmaker_last_update", None)
+    handoff["model_handoff"]["prop_candidates"] = [{**candidate, "market_evidence": evidence}]
+    dispatch = build_dispatch(handoff)
+    assert dispatch["mapping"]["mapped_prop_rows"] == 0
+    assert dispatch["mapping"]["rejected_prop_rows"] == [
+        {"source_index": 1, "code": "PROP_QUOTE_TIMESTAMP_UNVERIFIED"}
+    ]
+    assert dispatch["mapping"]["source_prop_reconciliation_pass"] is True
+    assert dispatch["prop_batches"] == []
+    assert dispatch["governance"]["can_execute"] is False
+
+
+def test_invalid_or_naive_provider_quote_timestamp_stays_held():
+    for bad in ("not-a-timestamp", "2026-09-07T14:00:00", "", "2026-09-07T14:00:00+99:00"):
+        handoff = _handoff()
+        candidate = handoff["model_handoff"]["prop_candidates"][0]
+        handoff["model_handoff"]["prop_candidates"] = [{
+            **candidate,
+            "market_evidence": {**candidate["market_evidence"], "market_last_update": bad},
+        }]
+        dispatch = build_dispatch(handoff)
+        assert dispatch["mapping"]["mapped_prop_rows"] == 0
+        assert dispatch["mapping"]["rejected_prop_rows"][0]["code"] == "PROP_QUOTE_TIMESTAMP_UNVERIFIED"
+        assert dispatch["mapping"]["source_prop_reconciliation_pass"] is True
+
+
+def test_provider_bookmaker_timestamp_used_without_scout_timestamp_substitution():
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["prop_candidates"][0]
+    evidence = dict(candidate["market_evidence"])
+    evidence.pop("market_last_update", None)
+    evidence["bookmaker_last_update"] = "2026-09-07T14:00:13Z"
+    handoff["model_handoff"]["prop_candidates"] = [{**candidate, "market_evidence": evidence}]
+    dispatch = build_dispatch(handoff)
+    assert dispatch["mapping"]["mapped_prop_rows"] == 1
+    row = dispatch["prop_batches"][0]["rows"][0]
+    assert row["source_capture_timestamp"] == evidence["bookmaker_last_update"]
+    assert row["source_capture_timestamp"] != handoff["generated_at"]
+    assert row["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert "price" not in row
+    assert dispatch["governance"]["scout_probability_authority"] is False
+
+
+def test_invalid_market_timestamp_uses_valid_same_provider_bookmaker_observation():
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["prop_candidates"][0]
+    handoff["model_handoff"]["prop_candidates"] = [{
+        **candidate,
+        "market_evidence": {
+            **candidate["market_evidence"],
+            "market_last_update": "2026-09-07T14:00:00",  # naive is not observed time
+            "bookmaker_last_update": "2026-09-07T14:00:14Z",
+        },
+    }]
+    dispatch = build_dispatch(handoff)
+    assert dispatch["mapping"]["mapped_prop_rows"] == 1
+    assert dispatch["mapping"]["rejected_prop_rows"] == []
+    row = dispatch["prop_batches"][0]["rows"][0]
+    assert row["source_capture_timestamp"] == "2026-09-07T14:00:14Z"
+    assert row["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert "price" not in row
+
+
+def test_timezone_aware_quote_formats_reach_mapping_without_fabricated_time():
+    for observed in ("2026-09-07T14:00:00Z", "2026-09-07T14:00:00+00:00", "2026-09-07T09:00:00-05:00"):
+        handoff = _handoff()
+        candidate = handoff["model_handoff"]["prop_candidates"][0]
+        handoff["model_handoff"]["prop_candidates"] = [{
+            **candidate,
+            "market_evidence": {**candidate["market_evidence"], "market_last_update": observed},
+        }]
+        dispatch = build_dispatch(handoff)
+        assert dispatch["mapping"]["mapped_prop_rows"] == 1
+        assert dispatch["prop_batches"][0]["rows"][0]["source_capture_timestamp"] == observed
+        assert dispatch["prop_batches"][0]["rows"][0]["money_lane_status"] == "PAYOUT_UNRESOLVED"
+        assert dispatch["governance"]["scout_probability_authority"] is False
+
+
+def test_adversarial_timestamp_parse_exception_stays_typed_mapping_reject():
+    class UnparseableTimestamp:
+        def __str__(self):
+            raise RuntimeError("malformed source timestamp")
+
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["prop_candidates"][0]
+    handoff["model_handoff"]["prop_candidates"] = [{
+        **candidate,
+        "market_evidence": {
+            **candidate["market_evidence"],
+            "market_last_update": UnparseableTimestamp(),
+        },
+    }]
+    dispatch = build_dispatch(handoff)
+    assert dispatch["mapping"]["rejected_prop_rows"] == [
+        {"source_index": 1, "code": "PROP_QUOTE_TIMESTAMP_UNVERIFIED"}
+    ]
+    assert dispatch["mapping"]["source_prop_reconciliation_pass"] is True
+    assert dispatch["prop_batches"] == []
+    assert dispatch["governance"]["can_execute"] is False

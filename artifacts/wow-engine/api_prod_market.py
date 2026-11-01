@@ -207,8 +207,10 @@ def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementR
     }
 
 
-def _effective_money_lane(row: Any, settlement_lane: dict[str, Any]) -> dict[str, Any]:
-    lane = _money_lane(row)
+def _effective_money_lane(settlement_lane: dict[str, Any]) -> dict[str, Any]:
+    # Only server-owned, separately authenticated receipts may ever authorize
+    # MONEY; a scorer row cannot be passed as implicit payout authority.
+    lane = _money_lane()
     if settlement_lane.get("status") != "PASS":
         lane = dict(lane)
         lane["status"] = "HOLD"
@@ -250,11 +252,20 @@ def _market_lane(row: Any) -> dict[str, Any]:
     }
 
 
-def _money_lane(row: Any) -> dict[str, Any]:
-    status = getattr(row, "money_lane_status", None) or "PAYOUT_UNRESOLVED"
+def _money_lane() -> dict[str, Any]:
+    """Caller/model status is not payout authority.
+
+    Without a validated server-owned, immutable payout quote and contract,
+    MONEY remains HOLD. A future positive path requires an independently
+    reviewed receipt keyed to exact event, player, line, side, book, price,
+    observation time and payout terms, with replay protection. This guard does
+    not claim that such a source is present or certified.
+    """
     return {
-        "status": "PASS" if status == "RESOLVED" else "HOLD",
-        "money_lane_status": status,
+        "status": "HOLD",
+        "money_lane_status": "PAYOUT_UNRESOLVED",
+        "money_authority": "UNVERIFIED",
+        "money_transition": "SERVER_RECEIPT_REQUIRED",
         "blocks_model_probability": False,
         "can_execute": False,
     }
@@ -900,7 +911,8 @@ def score_prop(
                 source_snapshot_id=effective_snapshot_id,
                 features=_model_features(evidence),
                 seed=req.seed,
-                money_lane_status=req.money_lane_status,
+                # Caller status cannot enter immutable model/money persistence.
+                money_lane_status="PAYOUT_UNRESOLVED",
                 market_side_a=market_audit.side_a,
                 market_side_b=market_audit.side_b,
             )
@@ -934,7 +946,7 @@ def score_prop(
     with _score_stage_timer("settlement_market_lanes", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
         market_lane = _market_lane_with_audit(result.row, market_audit)
         settlement_lane = _settlement_lane(result.row, req, settlement_rule, settlement_resolution, market_audit.side_a, market_audit.side_b)
-        money_lane = _effective_money_lane(result.row, settlement_lane)
+        money_lane = _effective_money_lane(settlement_lane)
     with _score_stage_timer("arithmetic_audit", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
         market_lane, settlement_lane, money_lane, arithmetic_audit = _apply_wolfram_arithmetic_gate(
             row=result.row,
