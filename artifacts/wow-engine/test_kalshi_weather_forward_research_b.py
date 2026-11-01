@@ -16,28 +16,37 @@ BASE = datetime(2026, 10, 1, 0, tzinfo=timezone.utc)
 
 
 class FakeQuery:
-    def __init__(self, records):
+    def __init__(self, records, *, page_cap=1000, exact_count=True):
         self.records = records
+        self.page_cap = page_cap
+        self.exact_count = exact_count
+        self.start, self.stop = 0, 1000
 
-    def select(self, _fields):
+    def select(self, _fields, count=None):
+        self.want_count = count == "exact"
         return self
 
     def order(self, _key, desc=False):
         return self
 
-    def limit(self, _limit):
+    def range(self, first, last):
+        self.start, self.stop = first, last
         return self
 
     def execute(self):
-        return SimpleNamespace(data=self.records)
+        end = min(self.stop + 1, self.start + self.page_cap)
+        count = len(self.records) if self.want_count and self.exact_count else None
+        return SimpleNamespace(data=self.records[self.start:end], count=count)
 
 
 class FakeClient:
-    def __init__(self, fixture):
+    def __init__(self, fixture, *, page_cap=1000, exact_count=True):
         self.fixture = fixture
+        self.page_cap = page_cap
+        self.exact_count = exact_count
 
     def table(self, table):
-        return FakeQuery(self.fixture[table])
+        return FakeQuery(self.fixture[table], page_cap=self.page_cap, exact_count=self.exact_count)
 
 
 def _iso(value):
@@ -78,6 +87,7 @@ def ledger(n=35):
             }
         })
         fixture["wow_kalshi_weather_outcomes"].append({
+            "outcome_id": f"outcome-{i}",
             "prediction_id": pid, "settled_at": _iso(target + timedelta(minutes=30)),
             "settled_value": official, "settlement_source_name": "Synoptic Data",
             "yes_outcome": official > 75,
@@ -169,7 +179,8 @@ def test_wrong_settlement_index_or_source_is_rejected_not_substituted():
     fixture["wow_kalshi_weather_outcomes"][0]["settlement_source_name"] = "NWS"
     fixture["wow_kalshi_weather_predictions"][1]["model_payload"]["contract"]["settlement_location_code"] = "KALSHI_WEATHER_INDEX:NYC"
     report = build_release_b_research_report(FakeClient(fixture))
-    assert report["source_qc"]["excluded_invalid_or_unverified"] == 2
+    assert report["source_qc"]["excluded_invalid_or_unverified"] == 1
+    assert report["source_qc"]["excluded_unverified_outcomes"] == 1
 
 
 def test_rule_yes_condition_must_match_official_index_and_boundary():
@@ -178,7 +189,8 @@ def test_rule_yes_condition_must_match_official_index_and_boundary():
     fixture["wow_kalshi_weather_outcomes"][1]["yes_outcome"] = False
     fixture["wow_kalshi_weather_predictions"][2]["model_payload"]["contract"]["no_condition"] = "index <= 75°F"
     report = build_release_b_research_report(FakeClient(fixture))
-    assert report["source_qc"]["excluded_invalid_or_unverified"] == 3
+    assert report["source_qc"]["excluded_invalid_or_unverified"] == 2
+    assert report["source_qc"]["excluded_unverified_outcomes"] == 1
 
 
 def test_duplicate_hour_chooses_earliest_decision_not_best_fitted_error():
@@ -218,3 +230,50 @@ def test_cannot_weaken_sample_gate_or_publish_directly():
         evaluate_walk_forward(cases, min_prior=5)
     assert MIN_PRIOR_SETTLED == 30
     assert not any(hasattr(c, "market_price") for c in cases)
+
+
+def test_invalid_future_settlement_cannot_replace_ex_ante_earliest_sibling():
+    fixture = ledger(35)
+    newer = copy.deepcopy(fixture["wow_kalshi_weather_predictions"][0])
+    newer["prediction_id"] = "newer-sibling"
+    newer["ticker"] = "newer-sibling"
+    newer["decision_time"] = _iso(BASE - timedelta(minutes=10))
+    fixture["wow_kalshi_weather_predictions"].append(newer)
+    later_outcome = copy.deepcopy(fixture["wow_kalshi_weather_outcomes"][0])
+    later_outcome["prediction_id"] = "newer-sibling"
+    later_outcome["outcome_id"] = "newer-outcome"
+    fixture["wow_kalshi_weather_outcomes"].append(later_outcome)
+
+    initial, _ = load_cases(FakeClient(fixture))
+    changed = copy.deepcopy(fixture)
+    changed["wow_kalshi_weather_outcomes"][0]["settlement_source_name"] = "NWS"
+    revised, qc = load_cases(FakeClient(changed))
+
+    assert initial[0].prediction_id == "pred-0"
+    assert revised[0].prediction_id == "pred-0"
+    assert initial[0].nws_f == revised[0].nws_f
+    assert initial[0].decision_at == revised[0].decision_at
+    assert initial[0].actual_yes is not None
+    assert revised[0].actual_yes is None
+    assert qc["excluded_duplicate_target"] == 1
+    assert qc["excluded_unverified_outcomes"] == 1
+    assert len(initial) == len(revised) == 35
+
+
+def test_small_server_side_page_cap_still_reads_entire_historical_ledger():
+    fixture = ledger(35)
+    expected = build_release_b_research_report(FakeClient(fixture))
+    paged = build_release_b_research_report(FakeClient(fixture, page_cap=2))
+    assert paged == expected
+
+
+def test_missing_exact_count_blocks_historical_research():
+    with pytest.raises(RuntimeError, match="RESEARCH_LEDGER_COUNT_UNVERIFIED"):
+        load_cases(FakeClient(ledger(3), exact_count=False))
+
+
+def test_duplicate_result_id_across_source_pages_fails_closed():
+    fixture = ledger(3)
+    fixture["wow_kalshi_weather_source_snapshots"][1]["source_snapshot_id"] = "source-0"
+    with pytest.raises(RuntimeError, match="RESEARCH_LEDGER_DUPLICATE_OR_MISSING_ROW_ID"):
+        load_cases(FakeClient(fixture, page_cap=1))
