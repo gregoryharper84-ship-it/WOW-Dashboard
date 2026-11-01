@@ -258,9 +258,12 @@ def test_literal_offer_required_and_numeric_offer_must_match_prediction():
     s = snapshot()
     s["opportunity_ledger"]["threshold_type"] = "AT_LEAST"
     assert run(s=s)["blocker"] == "NBA_AT_LEAST_OFFER_ADAPTER_NOT_CERTIFIED"
-    s = snapshot()
-    s["opportunity_ledger"]["literal_threshold"] = "NaN"
-    assert run(s=s)["blocker"] == "NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED"
+    for nonfinite in ("NaN", "sNaN", "Infinity", "-Infinity"):
+        s = snapshot()
+        s["opportunity_ledger"]["literal_threshold"] = nonfinite
+        result = run(s=s)
+        assert result["blocker"] == "NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED"
+        assert "outcome" not in result
 
 
 def test_naive_settlement_clock_rejected():
