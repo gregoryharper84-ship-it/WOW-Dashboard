@@ -59,12 +59,21 @@ def load_source_snapshots(
     seasons: Sequence[int] = SOURCE_SEASONS,
     page_size: int = 500,
 ) -> list[SourceSnapshot]:
+    # Stable PK ordering is mandatory for paginated research snapshots. An
+    # unordered PostgREST range can silently skip/repeat rows when a corpus
+    # grows, changing fitted challenger inputs with no code or data change.
+    if type(page_size) is not int or not 1 <= page_size <= 1000:
+        raise NCAAFPropChallengerRunnerError("NCAAF_PROP_PAGE_SIZE_INVALID")
+    season_values = tuple(sorted({int(value) for value in seasons}))
+    if not season_values:
+        raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SEASONS_EMPTY")
     fields = (
-        "provider,endpoint,season,week,requested_at,retrieved_at,request_params,"
+        "source_snapshot_id,provider,endpoint,season,week,requested_at,retrieved_at,request_params,"
         "response_rows,response_row_count,payload_sha256,acquisition_status,blocker_codes,can_execute"
     )
     snapshots: list[SourceSnapshot] = []
     offset = 0
+    last_id = ""
     while True:
         try:
             result = (
@@ -72,7 +81,8 @@ def load_source_snapshots(
                 .select(fields)
                 .eq("provider", "CFBD")
                 .eq("endpoint", endpoint)
-                .in_("season", [int(v) for v in seasons])
+                .in_("season", list(season_values))
+                .order("source_snapshot_id", desc=False)
                 .range(offset, offset + page_size - 1)
                 .execute()
             )
@@ -83,7 +93,22 @@ def load_source_snapshots(
         rows = getattr(result, "data", None)
         if not isinstance(rows, list):
             raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_READ_INVALID", endpoint)
-        snapshots.extend(_snapshot_from_row(row) for row in rows if isinstance(row, Mapping))
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_ROW_INVALID", endpoint
+                )
+            snapshot_id = row.get("source_snapshot_id")
+            if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_ID_INVALID", endpoint
+                )
+            if snapshot_id <= last_id:
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_PAGE_ORDER_INVALID", endpoint
+                )
+            snapshots.append(_snapshot_from_row(row))
+            last_id = snapshot_id
         if len(rows) < page_size:
             break
         offset += page_size
