@@ -35,10 +35,9 @@ pnpm dlx trigger.dev@4.8.3 login
 pnpm dlx trigger.dev@4.8.3 deploy
 ```
 
-The owner must authorize CLI login and provision separately scoped production
-credentials in Trigger.dev Cloud and Render. Never commit or print secrets.
-Verify the deployed Trigger **production** environment, task version, and source
-SHA, then deploy isolated Render (its `autoDeploy=off`) and verify Render SHA.
+Owner authorizes login and provisions separate production secrets in Cloud and
+Render. Never print secrets. Verify Trigger environment, task/source SHA and
+Render deployment SHA (`autoDeploy=off`).
 
 Request one run:
 
@@ -48,11 +47,9 @@ curl -fsS -X POST https://wow-kalshi-weather-v2.onrender.com/research/backfill \
   -H 'Content-Type: application/json' --data '{"scope":"miami"}'
 ```
 
-The 202 response means **accepted**, not completed. Confirm Cloud terminal
-run receipt, actual Supabase outcome IDs, canonical source/target provenance,
-and unchanged unique-prediction outcome count on a retry. Also verify missing
-official index point, wrong credential and disabled-secret failure paths.
-Until that is proved, do not call Release B operational.
+HTTP 202 means **accepted**, not completed. Independently verify Cloud run,
+Supabase unique outcomes, canonical source/target, retry dedupe, missing point,
+wrong credential, and missing-secret failures. No production claim before proof.
 
 Rollback: disable only `WOW_KALSHI_WEATHER_BACKFILL_REQUEST_KEY` on Render
 and disable the one Trigger.dev task. Leave existing Supabase Cron, shadow
