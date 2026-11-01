@@ -406,35 +406,15 @@ def main():
         return
     if args.command == "finalize-cursor":
         try:
-            from .engineering_remote_writer_release import (
-                append_terminal_release, auto_failed_launch_target,
-            )
+            from .engineering_remote_writer_release import append_terminal_release
         except ImportError:  # Standalone script and package entrypoints
-            from engineering_remote_writer_release import (
-                append_terminal_release, auto_failed_launch_target,
-            )
-        target_id = args.reservation_comment_id
-        if env.get("GITHUB_EVENT_NAME") == "schedule":
-            if target_id is not None:
-                raise ProviderUnavailable("REMOTE_AUTO_RELEASE_MANUAL_TARGET_INVALID")
-            if (env.get("GITHUB_REPOSITORY") != REPOSITORY
-                    or env.get("GITHUB_REF") != "refs/heads/main"
-                    or not SHA.fullmatch(env.get("GITHUB_SHA", ""))):
-                raise ProviderUnavailable("REMOTE_AUTO_RELEASE_SOURCE_UNVERIFIED")
-            target_id = auto_failed_launch_target(api)
-            if target_id is None:
-                print(json.dumps({
-                    "status": "NO_UNRELEASED_REMOTE_WRITER",
-                    "can_execute": False,
-                    "terminal_authority": "V17_TERMINAL_REDUCER",
-                }, sort_keys=True))
-                return
+            from engineering_remote_writer_release import append_terminal_release
         output = append_terminal_release(
             api, cursor_token=env.get("CURSOR_API_KEY", ""),
             run_id=int(env["GITHUB_RUN_ID"]),
             run_attempt=int(env["GITHUB_RUN_ATTEMPT"]),
             source_sha=env["GITHUB_SHA"],
-            reservation_comment_id=target_id,
+            reservation_comment_id=args.reservation_comment_id,
         )
         print(json.dumps(output, sort_keys=True))
         return
