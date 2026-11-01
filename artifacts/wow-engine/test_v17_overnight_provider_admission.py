@@ -42,7 +42,7 @@ def _route(*, event="schedule", primary="failure", secondary="failure",
             "    if [ \"$TEST_CLAUDE_FAILURE\" = delivery ]; then\n"
             "      printf '{\"provider\":\"anthropic\",\"code\":\"ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE\",\"provider_signal\":null,\"disposition\":\"UNRESOLVED_TYPED_FAILURE\",\"failover_eligible\":false}\\n'\n"
             "    else\n"
-            "      printf '{\"provider\":\"anthropic\",\"code\":\"ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE\",\"provider_signal\":\"ANTHROPIC_API_RATE_LIMITED\",\"disposition\":\"UNRESOLVED_TYPED_FAILURE\",\"failover_eligible\":true}\\n'\n"
+            "      printf '{\"provider\":\"anthropic\",\"code\":\"ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE\",\"provider_signal\":\"ANTHROPIC_API_RATE_LIMITED\",\"disposition\":\"UNRESOLVED_TYPED_FAILURE\",\"failover_eligible\":false}\\n'\n"
             "    fi ;;\n"
             "  *' classify '*) printf '{\"code\":\"OPENAI_API_QUOTA_EXCEEDED\",\"failover_eligible\":true}\\n' ;;\n"
             "  *' circuit-breaker '*) printf '{\"active\":true}\\n' ;;\n"
