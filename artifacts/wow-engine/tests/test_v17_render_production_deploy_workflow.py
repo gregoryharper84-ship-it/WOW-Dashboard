@@ -272,9 +272,12 @@ def test_daily_snapshot_has_deploy_handoff_runway_and_network_retries():
     assert "post_deploy_acceptance:" in text
     assert "\n  push:\n" not in text
     assert "if: inputs.post_deploy_acceptance == true" in text
-    assert "max_attempts = 90" in text
-    assert "retry_delay_seconds = 20" in text
-    assert "except (urllib.error.URLError, TimeoutError):" in text
+    # A scoring POST with unknown outcome is not safe to repeat blindly.
+    # Require durable receipt reconciliation instead of an implicit retry.
+    assert "DAILY_SNAPSHOT_AMBIGUOUS_POST_HOLD_RECONCILE_RECEIPT" in text
+    assert "max_attempts = 90" not in text
+    assert "time.sleep(retry_delay_seconds)" not in text
+    assert "urllib.error.URLError, TimeoutError" in text
     assert 'WOW_CAN_EXECUTE: "false"' in text
     assert 'WOW_DRY_RUN_ONLY: "true"' in text
 
