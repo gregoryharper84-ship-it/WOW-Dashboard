@@ -113,10 +113,10 @@ def test_endpoint_requires_distinct_worker_key(monkeypatch):
     client = TestClient(api.app)
     endpoint = "/internal/research/miami-settlement-reconcile"
     assert client.post(endpoint).status_code == 401
-    assert client.post(endpoint, headers={"Authorization": "Bearer launch-secret"}).status_code == 401
-    ok = client.post(endpoint, headers={"Authorization": "Bearer worker-secret"})
+    assert client.post(endpoint, json={"scope": "miami"}, headers={"Authorization": "Bearer launch-secret"}).status_code == 401
+    ok = client.post(endpoint, json={"scope": "miami"}, headers={"Authorization": "Bearer worker-secret"})
     assert ok.status_code == 200 and ok.json()["can_execute"] is False
-    assert client.post("/research/backfill", headers={"Authorization": "Bearer worker-secret"}).status_code == 401
+    assert client.post("/research/backfill", json={"scope": "miami"}, headers={"Authorization": "Bearer worker-secret"}).status_code == 401
 
 
 def test_launch_requires_credentials_and_explicit_trigger_environment(monkeypatch):
@@ -142,10 +142,10 @@ def test_launch_returns_only_trigger_receipt(monkeypatch):
     def fake_post(url, **kwargs):
         assert url == "https://api.trigger.dev/api/v1/tasks/weather-research-backfill/trigger"
         assert kwargs["headers"]["Authorization"] == "Bearer prod-trigger-secret"
-        assert kwargs["json"]["payload"]["scope"] == "miami"
+        assert kwargs["json"]["payload"] == {"scope": "miami"}
         return Response()
     monkeypatch.setattr(api.httpx, "post", fake_post)
-    result = TestClient(api.app).post("/research/backfill", json={"scope": "miami", "limit": 2},
+    result = TestClient(api.app).post("/research/backfill", json={"scope": "miami"},
         headers={"Authorization": "Bearer launch-secret"})
     assert result.status_code == 202
     assert result.json()["run_id"] == "run_0123456789abcdef"
