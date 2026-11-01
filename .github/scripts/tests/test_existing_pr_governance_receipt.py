@@ -2463,18 +2463,23 @@ def test_governance_review_route_contract_is_fail_closed_without_shell_execution
     assert 'if [ ! -f "$RUNNER_TEMP/source-review/decision.json" ] ||' in selector
     assert '[ ! -f "$RUNNER_TEMP/source-review-run.json" ]; then' in selector
 
-def test_selected_source_download_holds_without_fallback_or_executing_retries():
-    """One exact-ID fetch; errors never permit alternative review authority."""
+def test_selected_source_download_retries_transient_only_without_downgrade():
+    """Read one authenticated exact-ID artifact; validate before publishing ZIP."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     start = workflow.index('          artifact_zip="$RUNNER_TEMP/source-review/decision.zip"')
     end = workflow.index('          unzip -p "$RUNNER_TEMP/source-review/decision.zip"', start)
     block = workflow[start:end]
     assert block.count('/actions/artifacts/${artifact_id}/zip') == 1
-    assert 'if ! gh api ' in block
-    assert 'rm -f "$artifact_zip"' in block
+    assert '--fail --silent --show-error --location' in block
+    assert '--retry 1 --retry-delay 5 --retry-max-time 40' in block
+    assert '--retry-all-errors' not in block
+    assert '--max-time 15' in block
+    assert 'mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX"' in block
+    assert "trap 'rm -f \"$artifact_tmp\"' EXIT" in block
+    assert 'unzip -tqq "$artifact_tmp"' in block
+    assert 'mv -- "$artifact_tmp" "$artifact_zip"' in block
     assert 'SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE' in block
+    assert 'SOURCE_REVIEW_ARTIFACT_ZIP_INVALID' in block
     assert 'exit 1' in block
     assert '--trusted-reviewers-json' not in block
     assert '2>/dev/null' not in block
-    assert 'timeout ' not in block
-    assert 'sleep ' not in block

@@ -271,11 +271,26 @@ jobs:
           # Fetch only the selected authenticated artifact. Any transport
           # failure is a HOLD; never substitute another artifact or review route.
           artifact_zip="$RUNNER_TEMP/source-review/decision.zip"
-          if ! gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$artifact_zip"; then
-            rm -f "$artifact_zip"
+          artifact_tmp=$(mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX")
+          trap 'rm -f "$artifact_tmp"' EXIT
+          # curl retries only documented transient transport/HTTP errors;
+          # 401/403/404 and invalid payloads fail closed without fallback.
+          if ! curl --fail --silent --show-error --location \\
+            --connect-timeout 5 --max-time 15 \\
+            --retry 1 --retry-delay 5 --retry-max-time 40 \\
+            --header "Authorization: Bearer ${GH_TOKEN}" \\
+            --header "Accept: application/vnd.github+json" \\
+            --output "$artifact_tmp" \\
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"; then
             echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
             exit 1
           fi
+          if ! unzip -tqq "$artifact_tmp"; then
+            echo "SOURCE_REVIEW_ARTIFACT_ZIP_INVALID" >&2
+            exit 1
+          fi
+          mv -- "$artifact_tmp" "$artifact_zip"
+          trap - EXIT
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
             wow-v17-independent-source-review.json > "$RUNNER_TEMP/source-review/decision.json"
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
