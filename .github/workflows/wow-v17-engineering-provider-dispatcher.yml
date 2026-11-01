@@ -221,7 +221,7 @@ jobs:
                 ' <<<"$run_meta" >/dev/null 2>&1 || return 1
                 jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" 2>/dev/null) || return 1
                 jq -e --argjson id "$run_id" '
-                  .total_count == 1 and (.jobs | type == "array" and length == 1)
+                  . as $root | .total_count == 1 and (.jobs | type == "array" and length == 1)
                   and .jobs[0].run_id == $id
                   and .jobs[0].name == "WOW V17 Claude fallback engineering team"
                   and .jobs[0].status == "completed" and .jobs[0].conclusion == "failure"
@@ -237,7 +237,7 @@ jobs:
                     ["Enforce mutation safety gate", "skipped"],
                     ["Enforce actionable repair delivery", "failure"]
                   ] | all(. as $expected |
-                    ([.jobs[0].steps[] | select(.name == $expected[0]
+                    ([$root.jobs[0].steps[] | select(.name == $expected[0]
                       and .status == "completed"
                       and .conclusion == $expected[1])] | length) == 1))
                 ' <<<"$jobs" >/dev/null 2>&1
