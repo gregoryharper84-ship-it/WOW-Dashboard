@@ -40,6 +40,13 @@ EXACT_POST_CUTOVER_BRANCH_WITNESS = {
     "worker_id": "github-actions:41276607293:1",
     "agent_id": "bc-df9cd4ca-0f45-5d5d-ac25-d500977be83e",
     "branch": "fix/nba-exact-official-player-settlement-20261028",
+    # Independent authenticated owner request predates the dispatcher run.
+    # Unlike a static digest alone, this is a separate GitHub principal and
+    # independent PR conversation object verified live before release proof.
+    "owner_comment_id": 6553861045,
+    "owner_comment_digest": "76383ab6235314f7eca52c6f26f82a021d4f8f278db83ddb298e91dbc8ee45d5",
+    "owner_comment_created_at": "2026-11-01T05:20:49Z",
+    "origin_created_at": "2026-11-01T05:21:01Z",
 }
 
 MAX_NEGATIVE_INVENTORY_PAGES = 20
@@ -181,6 +188,25 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
                     or agent_id != witness["agent_id"]
                     or entry.get("source_pr") != int(witness["pr_number"])):
                 raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+            owner_request = _require_object(
+                api(f"{GITHUB_API}/repos/{REPOSITORY}/issues/comments/{witness['owner_comment_id']}",
+                    token=github_token),
+                "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED",
+            )
+            command_body = owner_request.get("body")
+            if (owner_request.get("id") != witness["owner_comment_id"]
+                    or owner_request.get("issue_url") != (
+                        f"{GITHUB_API}/repos/{REPOSITORY}/issues/{number}")
+                    or not isinstance(owner_request.get("user"), dict)
+                    or owner_request["user"].get("login") != "gregoryharper84-ship-it"
+                    or owner_request["user"].get("id") != 285088163
+                    or owner_request.get("created_at") != witness["owner_comment_created_at"]
+                    or owner_request.get("updated_at") != witness["owner_comment_created_at"]
+                    or not isinstance(command_body, str)
+                    or not command_body.startswith("/wow-cursor\n")
+                    or hashlib.sha256(command_body.encode("utf-8")).hexdigest()
+                       != witness["owner_comment_digest"]):
+                raise ReceiptBlocked("CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED")
             branch = witness["branch"]
             exact_witness = True
         if (run_id is not None or not isinstance(branch, str)
@@ -227,6 +253,9 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
             or origin.get("head_branch") != "main"
             or origin.get("status") != "completed"
             or origin.get("conclusion") != expected_conclusion
+            or (exact_witness and (
+                origin.get("created_at") != EXACT_POST_CUTOVER_BRANCH_WITNESS["origin_created_at"]
+            ))
             or not isinstance(origin.get("repository"), dict)
             or origin["repository"].get("full_name") != REPOSITORY
             or not isinstance(origin.get("head_repository"), dict)
