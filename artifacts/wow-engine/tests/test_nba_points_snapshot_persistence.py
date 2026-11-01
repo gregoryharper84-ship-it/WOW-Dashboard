@@ -229,25 +229,86 @@ def test_duplicate_exact_id_rows_fail_closed_with_behavioral_query():
     assert db.write_count == 0
 
 
-def test_capture_reuses_one_clock_for_bridge_and_persistence(monkeypatch):
+def test_capture_requires_live_official_fetch_before_collector(monkeypatch):
+    import v17.nba_points_pregame_roster as official_adapter
     import v17.nba_points_snapshot_bridge as bridge
     import v17.nba_points_snapshot_persistence as persistence
-    calls = []
-    injected_clock = datetime(2026, 10, 26, 17, tzinfo=timezone.utc)
 
-    def source(*, verified_roster_receipt, now, **kwargs):
-        calls.append(("source", now, verified_roster_receipt))
-        return {"research": True}
+    clock = datetime(2026, 10, 26, 17, tzinfo=timezone.utc)
+    events = []
+    roster = {"player": "Example Player", "event_id": "espn-987654",
+              "player_id": "12", "team_id": "espn-10"}
+    official = {"roster": roster, "source_acquisition": {
+        "provider_calls": 2, "transport": "READ_ONLY_FIXED_ORIGINS",
+        "source_names": ["ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"]}}
 
-    def save(db, receipt, *, now):
-        calls.append(("persist", now, receipt))
+    def source(**kwargs):
+        events.append(("official", kwargs["player_name"]))
+        return official
+
+    def collect(receipt):
+        events.append(("collect", receipt))
+        return {"target": {"player": "Example Player"}, "roster": roster}
+
+    def bridge_build(*, verified_roster_receipt, now, **kwargs):
+        events.append(("bridge", now))
+        assert verified_roster_receipt is official
+        return {"source_snapshot_id": "test"}
+
+    def persist(db, receipt, *, now):
+        events.append(("persist", now))
         return {"status": "PERSISTED_RESEARCH_ONLY", "can_execute": False}
 
-    monkeypatch.setattr(bridge, "build_nba_points_snapshot", source)
-    monkeypatch.setattr(persistence, "persist_validated_nba_points_snapshot", save)
+    monkeypatch.setattr(official_adapter, "acquire_nba_points_current_roster", source)
+    monkeypatch.setattr(bridge, "build_nba_points_snapshot", bridge_build)
+    monkeypatch.setattr(persistence, "persist_validated_nba_points_snapshot", persist)
     result = persistence.capture_nba_points_snapshot(
-        object(), verified_roster_receipt={"verified": True}, now=injected_clock,
+        object(), espn_event_id="espn-987654", nba_game_id="0022600001",
+        player_name="Example Player", collect_source_inputs=collect,
+        clock=lambda: clock,
     )
     assert result["can_execute"] is False
-    assert calls[0][1] is injected_clock and calls[1][1] is injected_clock
+    assert [v[0] for v in events] == ["official", "collect", "bridge", "persist"]
+    assert events[2][1] is clock and events[3][1] is clock
 
+
+def test_capture_refuses_forged_receipts_and_override_hooks(monkeypatch):
+    import v17.nba_points_pregame_roster as official_adapter
+    import v17.nba_points_snapshot_persistence as persistence
+
+    official = {"roster": {"player": "Example Player"}, "source_acquisition": {
+        "provider_calls": 2, "transport": "READ_ONLY_FIXED_ORIGINS",
+        "source_names": ["ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"]}}
+    monkeypatch.setattr(official_adapter, "acquire_nba_points_current_roster",
+                        lambda **kwargs: official)
+    for injection in ({"verified_roster_receipt": official},
+                      {"resolve_identity": lambda **kwargs: {}},
+                      {"now": NOW}):
+        db = MockDB()
+        with pytest.raises(NBAPointsSnapshotPersistenceError,
+                           match="NBA_POINTS_UNTRUSTED_SOURCE_OVERRIDE"):
+            persistence.capture_nba_points_snapshot(
+                db, espn_event_id="espn-987654", nba_game_id="0022600001",
+                player_name="Example Player",
+                collect_source_inputs=lambda receipt, bad=injection: {
+                    "target": {"player": "Example Player"},
+                    "roster": receipt["roster"], **bad},
+                clock=lambda: NOW,
+            )
+        assert db.write_count == 0
+
+
+def test_capture_rejects_unattested_source_acquisition(monkeypatch):
+    import v17.nba_points_pregame_roster as official_adapter
+    import v17.nba_points_snapshot_persistence as persistence
+    monkeypatch.setattr(official_adapter, "acquire_nba_points_current_roster",
+                        lambda **kwargs: {"roster": {"player": "Example Player"}})
+    db = MockDB()
+    with pytest.raises(NBAPointsSnapshotPersistenceError,
+                       match="NBA_POINTS_OFFICIAL_ACQUISITION_REQUIRED"):
+        persistence.capture_nba_points_snapshot(
+            db, espn_event_id="espn-987654", nba_game_id="0022600001",
+            player_name="Example Player", collect_source_inputs=lambda _: {},
+            clock=lambda: NOW,
+        )
+    assert db.write_count == 0

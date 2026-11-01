@@ -187,18 +187,56 @@ def persist_validated_nba_points_snapshot(
 
 
 def capture_nba_points_snapshot(
-    db: Any, *, verified_roster_receipt: Mapping[str, Any],
-    now: datetime | None = None, **source_inputs: Any,
+    db: Any, *, espn_event_id: str, nba_game_id: str, player_name: str,
+    collect_source_inputs: Any, clock: Any = None,
 ) -> dict[str, Any]:
-    """Require authenticated pregame roster proof as an explicit server-side input."""
+    """Fetch independent official roster before freezing exact-board evidence.
+
+    The trusted backend's collector must run after the official observations.
+    A caller-provided verified_roster_receipt is not admissible on this path.
+    No probability, market offer or role is invented from roster membership.
+    """
+    from httpx import get as official_http_get
+    from v17.nba_points_pregame_roster import acquire_nba_points_current_roster
     from v17.nba_points_snapshot_bridge import build_nba_points_snapshot
-    # One frozen clock input is shared across verification and persistence,
-    # avoiding inconsistent pregame gates at a rollover boundary.
-    capture_clock = now if now is not None else datetime.now(timezone.utc)
-    result = build_nba_points_snapshot(
-        verified_roster_receipt=verified_roster_receipt, now=capture_clock, **source_inputs,
+
+    if not callable(collect_source_inputs):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_TRUSTED_SOURCE_COLLECTOR_REQUIRED")
+    if clock is None:
+        clock = lambda: datetime.now(timezone.utc)
+    if not callable(clock):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_CAPTURE_CLOCK_INVALID")
+    official = acquire_nba_points_current_roster(
+        espn_event_id=espn_event_id, nba_game_id=nba_game_id,
+        player_name=player_name, http_get=official_http_get, clock=clock,
     )
-    return persist_validated_nba_points_snapshot(db, result, now=capture_clock)
+    if official.get("source_acquisition") != {
+        "provider_calls": 2, "transport": "READ_ONLY_FIXED_ORIGINS",
+        "source_names": ["ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"],
+    }:
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_OFFICIAL_ACQUISITION_REQUIRED")
+    try:
+        source_inputs = collect_source_inputs(official)
+    except Exception as exc:
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SOURCE_COLLECTION_FAILED") from exc
+    if (not isinstance(source_inputs, Mapping)
+        or any(k in source_inputs for k in (
+            "verified_roster_receipt", "now", "clock", "resolve_identity",
+            "validate_evidence", "snapshot_factory", "row_factory", "evidence_factory"
+        ))):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_UNTRUSTED_SOURCE_OVERRIDE")
+    if source_inputs.get("roster") != official.get("roster"):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION")
+    target = source_inputs.get("target")
+    if not isinstance(target, Mapping) or str(target.get("player") or "").strip() != player_name:
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION")
+    captured_now = clock()
+    if not isinstance(captured_now, datetime) or captured_now.utcoffset() is None:
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_CAPTURE_CLOCK_INVALID")
+    receipt = build_nba_points_snapshot(
+        verified_roster_receipt=official, now=captured_now, **source_inputs,
+    )
+    return persist_validated_nba_points_snapshot(db, receipt, now=captured_now)
 
 
 __all__ = ["NBAPointsSnapshotPersistenceError", "persist_validated_nba_points_snapshot",
