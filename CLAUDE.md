@@ -320,3 +320,16 @@ When a real stop condition occurs:
 3. keep affected lanes fail-closed
 4. continue unaffected lanes when allowed by active WOW governance
 5. do not guess or silently relax a gate
+
+## 11. Evidence-only operational reporting
+
+FACTUAL STATUS
+- Operational claims need current authoritative receipt, source/ID, checked time, SHA/identity and scope; else UNVERIFIED. Chat/request != execution.
+- Requested/submitted/running/merged/deployed/verified are separate: success receipt/current job/exact SHA/production acceptance plus required independent verification.
+- Label plans/estimates; deadlines are targets. Never invent escalation, workers, progress or background work. Correct unsupported claims.
+
+Apply to every engineering report and handoff. A disclaimer cannot repair an unsupported headline. Missing, stale, conflicting or mismatched evidence must remain UNVERIFIED with the exact next verification action. Percent complete requires a defined denominator and verified completed items. Preserve all existing release, independence and probability gates. This policy does not itself install live editor changes.
+
+## Global scoped blockers / mandatory continuation
+
+Follow `docs/wow/engineering/GLOBAL_SCOPED_BLOCKER_POLICY.md`. A blocker stops only dependent actions; release held does not mean development halted. Identify the prohibited operation, evidence, dependency and unblock condition; immediately continue authorized independent work within role, ownership, lease, isolation and baseline constraints. Keep development and release states separate. If no permitted action exists, record exact reasons and a revisit trigger. Preserve all safety, independent review and release gates. Policy changes are not proof of deployed worker enforcement.
