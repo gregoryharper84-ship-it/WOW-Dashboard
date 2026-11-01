@@ -62,6 +62,8 @@ jobs:
           test_v17_nfl_forward_settlement_refresh.py
           test_v17_github_oidc.py
           test_basketball_training_freshness.py
+          tests/test_v17_nfl_data_quality.py
+          tests/test_v17_nfl_shrink_challenger.py
 
   forward-shadow:
     name: Grade immutable NFL forward predictions
@@ -122,8 +124,27 @@ jobs:
           assert payload.get("automatic_promotion") is False
           health = payload.get("calibration_health") or {}
           refresh = payload.get("settlement_refresh") or {}
+          feature_refresh = payload.get("feature_table_refresh") or {}
+          challenger = payload.get("shadow_challenger") or {}
           assert refresh.get("can_execute") is False
           assert refresh.get("status") == "COMPLETED"
+          # A green settlement/grade run must not conceal a failed feature rebuild.
+          assert feature_refresh.get("can_execute") is False
+          assert feature_refresh.get("status") == "COMPLETED", (
+              f"NFL_FEATURE_REFRESH_NOT_COMPLETED:{feature_refresh.get('status')}:"
+              f"{feature_refresh.get('reason_code')}"
+          )
+          assert isinstance(feature_refresh.get("feature_rows_built"), int)
+          assert isinstance(feature_refresh.get("feature_rows_labeled"), int)
+          assert feature_refresh["feature_rows_built"] >= feature_refresh["feature_rows_labeled"] > 0
+          # The challenger is advisory and never authorizes winner publication.
+          assert challenger.get("can_execute") is False
+          assert challenger.get("probability_publishable") is False
+          assert challenger.get("automatic_promotion_allowed") is False
+          assert challenger.get("status") == "EVALUATED", (
+              f"NFL_SHADOW_CHALLENGER_NOT_EVALUATED:{challenger.get('status')}:"
+              f"{challenger.get('reason_code')}"
+          )
           assert health.get("can_execute") is False
           assert health.get("certification_recommendation") in {
               "DO_NOT_CERTIFY_YET",
@@ -133,6 +154,13 @@ jobs:
               "status": payload.get("status"),
               "settlement_refresh_status": refresh.get("status"),
               "settled_games_materialized": refresh.get("completed_games_materialized"),
+              "feature_refresh_status": feature_refresh.get("status"),
+              "feature_rows_built": feature_refresh.get("feature_rows_built"),
+              "feature_rows_labeled": feature_refresh.get("feature_rows_labeled"),
+              "feature_rows_upserted": feature_refresh.get("feature_rows_upserted"),
+              "shadow_challenger_status": challenger.get("status"),
+              "shadow_challenger_n": challenger.get("n"),
+              "shadow_challenger_persisted": challenger.get("persisted"),
               "latest_settled_gameday": refresh.get("latest_gameday"),
               "canonical_events": payload.get("canonical_events"),
               "graded_events": payload.get("graded_events"),
