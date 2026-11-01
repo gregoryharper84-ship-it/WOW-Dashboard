@@ -26,7 +26,7 @@ GITHUB_API = "https://api.github.com"
 TERMINAL_RUN_STATES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
 PROTECTED_BRANCHES = frozenset({"main", "master"})
 # One immutable post-cutover reservation was written by the broken producer.
-# A separately reviewed Class P source attestation binds only this exact
+# A proposed Class P attestation (independent sign-off required) binds this
 # bot-authored comment/digest and authenticated dispatcher to its PR branch.
 # This NEVER substitutes for the live PR, Cursor 404, archived inventories,
 # fresh second probe, or the protected successful finalizer receipt.
