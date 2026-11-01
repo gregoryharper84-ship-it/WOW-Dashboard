@@ -145,3 +145,30 @@ def test_operational_workflow_checks_feature_and_advisory_receipts():
     assert 'challenger.get("automatic_promotion_allowed") is False' in workflow
     assert "tests/test_v17_nfl_shrink_challenger.py" in workflow
     assert '"can_execute": False' in workflow
+
+
+def test_research_diagnostics_keep_model_uncertified_with_small_cohort():
+    preds = [_pred(str(i), "H", "A", "H") for i in range(10)]
+    grades = [_grade(str(i), 0.80, 1 if i < 5 else 0) for i in range(10)]
+    result = ch.evaluate(preds, grades)
+    assert result["champion_ece_10"] == pytest.approx(0.3)
+    assert result["challenger_ece_10"] < result["champion_ece_10"]
+    assert "FORWARD_GRADED_N_10_LT_100" in result["provisional_certification_failures"]
+    assert "FORWARD_CALIBRATION_BIAS_ABOVE_0_08" in result["provisional_certification_failures"]
+    assert "CHALLENGER_LOWER_BOUND_NOT_INDEPENDENTLY_VALIDATED" in result["provisional_certification_failures"]
+    assert result["challenger_lower_bound_certified"] is False
+    assert result["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+    assert result["automatic_promotion_allowed"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+@pytest.mark.parametrize("selected,p,y", [
+    ("UNKNOWN", 0.7, 1),
+    ("H", 1.0, 1),
+    ("H", float("nan"), 1),
+    ("H", 0.7, 2),
+])
+def test_invalid_research_inputs_fail_closed(selected, p, y):
+    with pytest.raises(ValueError):
+        ch.evaluate([_pred("x", "H", "A", selected)], [_grade("x", p, y)])
