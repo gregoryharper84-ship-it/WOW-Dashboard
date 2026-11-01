@@ -211,7 +211,9 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert "wow-v17-claude-engineering-worker.yml" in gate
     assert '[ "$event" = "workflow_dispatch" ]' in gate
     assert 'id: workflow' in gate
-    assert 'echo "name=$name" >> "$GITHUB_OUTPUT"' in gate
+    assert 'worker_run_name_pattern=' in gate
+    assert 'if [[ "$name" =~ $worker_run_name_pattern ]]; then' in gate
+    assert 'echo "name=$canonical_name" >> "$GITHUB_OUTPUT"' in gate
     assert '--workflow-name "$WORKFLOW_NAME"' in gate
     identity_step = gate.split("- name: Verify trusted workflow identity and completion", 1)[1].split(
         "- name: Download and verify exact-head receipt", 1
@@ -677,6 +679,7 @@ def test_release_verification_requires_trusted_exact_head_governance_and_exact_m
     assert "Resolve trusted exact-head governance artifact" in text
     assert 'artifact_name="wow-v17-engineering-governance-${HEAD_SHA}"' in text
     assert "Verify governance-producing workflow provenance" in text
+    assert 'echo "name=$canonical_name" >> "$GITHUB_OUTPUT"' in text
     assert 'protected_main_source=false' in text
     assert '[ "$head_repo" = "$GITHUB_REPOSITORY" ]' in text
     assert "wow-v17-existing-pr-governance-review.yml" in text
