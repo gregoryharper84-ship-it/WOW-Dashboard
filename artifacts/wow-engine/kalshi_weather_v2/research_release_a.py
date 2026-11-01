@@ -38,7 +38,7 @@ class ResearchReadError(RuntimeError):
 
 
 def require_browser_key(credentials: HTTPBasicCredentials | None = Depends(_basic)) -> None:
-    """Reuse isolated weather API key through HTTPS Basic; never put it in a URL."""
+    """Use the isolated read-only research credential, not the weather writer key."""
     configured = os.getenv("WOW_KALSHI_WEATHER_RESEARCH_KEY", "")
     if not configured:
         raise HTTPException(status_code=503, detail="RESEARCH_AUTH_NOT_CONFIGURED")
@@ -129,7 +129,7 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
     rows: list[dict[str, Any]] = []
     unique_target_residuals: dict[tuple[str, str, str], tuple[datetime, float]] = {}
     settled_count = 0
-    newest_forecast_time = None
+    newest_analysis_time = None
     for prediction in predictions:
         payload = prediction.get("model_payload")
         payload = payload if isinstance(payload, Mapping) else {}
@@ -142,14 +142,14 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
         if not ticker:
             continue
         decision_time = prediction.get("decision_time")
-        if newest_forecast_time is None:
-            newest_forecast_time = decision_time
+        if newest_analysis_time is None:
+            newest_analysis_time = decision_time
         outcome = outcome_by_id.get(str(prediction.get("prediction_id") or ""), {})
         rule = rule_by_id.get(str(prediction.get("rule_snapshot_id") or ""), {})
         quote = quote_by_ticker.get(ticker, {})
         forecast = _finite_float(prediction.get("central_estimate_f"))
         actual = _finite_float(outcome.get("settled_value"))
-        forecast_age = _age_minutes(decision_time, clock)
+        analysis_age = _age_minutes(decision_time, clock)
         quote_age = _age_minutes(quote.get("retrieved_at"), clock)
         model_notes = payload.get("forecast")
         model_notes = model_notes if isinstance(model_notes, Mapping) else {}
@@ -191,9 +191,15 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
             "settlement_source_url": rule.get("settlement_source_url"),
             "rounding_rule": contract.get("rounding_convention"),
             "forecast_f": forecast,
-            "forecast_as_of": decision_time,
-            "forecast_age_minutes": forecast_age,
-            "forecast_fresh": forecast_age is not None and forecast_age <= PREDICTION_FRESH_MINUTES,
+            # Decision time is not the underlying provider's forecast-issue time.
+            # Never certify source freshness from analysis recency.
+            "forecast_as_of": None,
+            "forecast_age_minutes": None,
+            "forecast_fresh": False,
+            "source_forecast_freshness": "UNVERIFIED",
+            "analysis_as_of": decision_time,
+            "analysis_age_minutes": analysis_age,
+            "analysis_recent": analysis_age is not None and analysis_age <= PREDICTION_FRESH_MINUTES,
             "forecast_components": components,
             "lead_bucket": payload.get("lead_time_bucket"),
             "settled_value_f": actual,
@@ -217,7 +223,23 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
 
     residuals = [value for _, value in unique_target_residuals.values()]
     sample_n = len(residuals)
-    forecast_age = _age_minutes(newest_forecast_time, clock)
+    # Candidate support is independently counted per lead bucket. Pooling H0
+    # and H1 can yield a misleading apparent candidate after only 15 + 15.
+    per_bucket: dict[str, list[float]] = {}
+    for (_, _, bucket), (_, residual) in unique_target_residuals.items():
+        per_bucket.setdefault(bucket, []).append(residual)
+    bucket_progress = {
+        bucket: {
+            "eligible_unique_settled_samples": len(values),
+            "minimum_candidate_samples": 30,
+            "remaining_to_candidate": max(0, 30 - len(values)),
+            "historical_mae_f": round(sum(abs(x) for x in values) / len(values), 3),
+            "historical_signed_bias_f": round(sum(values) / len(values), 3),
+            "candidate_sample_count_met": len(values) >= 30,
+        }
+        for bucket, values in sorted(per_bucket.items())
+    }
+    analysis_age = _age_minutes(newest_analysis_time, clock)
     return {
         "release": "A_RESEARCH_ONLY",
         "status": "RESEARCH_AVAILABLE" if rows else "NO_PLAY_DATA_INSUFFICIENT",
@@ -225,16 +247,25 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
         "station_scope": STATION,
         "metric": LANE,
         "settlement_identity_note": "Kalshi Miami weather index location code. Not an assertion that an individual physical station is specified.",
-        "latest_forecast_as_of": newest_forecast_time,
-        "latest_forecast_age_minutes": forecast_age,
-        "collection_fresh": forecast_age is not None and forecast_age <= PREDICTION_FRESH_MINUTES,
+        # Kept as null/false for fail-closed backward compatibility: no
+        # provider-issue timestamp was independently established.
+        "latest_forecast_as_of": None,
+        "latest_forecast_age_minutes": None,
+        "collection_fresh": False,
+        "source_forecast_freshness": "UNVERIFIED",
+        "latest_analysis_as_of": newest_analysis_time,
+        "latest_analysis_age_minutes": analysis_age,
+        "analysis_recent": analysis_age is not None and analysis_age <= PREDICTION_FRESH_MINUTES,
         "loaded_forecasts": len(rows),
         "loaded_settled_forecasts": settled_count,
         "calibration": {
             "eligible_unique_settled_samples": sample_n,
-            "minimum_candidate_samples": 30,
-            "minimum_forward_validation_samples": 40,
-            "remaining_to_candidate": max(0, 30 - sample_n),
+            "minimum_candidate_samples_per_lead_bucket": 30,
+            "minimum_forward_validation_samples_per_lead_bucket": 40,
+            "remaining_to_candidate": None,  # A pooled target count is not candidate readiness.
+            "by_lead_bucket": bucket_progress,
+            "readiness_scope": "PER_LEAD_BUCKET_NOT_POOLED",
+            "pooled_error_scope": "RESEARCH_DIAGNOSTIC_ONLY_NOT_CANDIDATE_READINESS",
             "historical_mae_f": round(sum(abs(x) for x in residuals) / sample_n, 3) if sample_n else None,
             "historical_signed_bias_f": round(sum(residuals) / sample_n, 3) if sample_n else None,
             "status": "RESEARCH_ONLY_NOT_CERTIFIED",
@@ -275,7 +306,7 @@ def render_research_html(snapshot: Mapping[str, Any]) -> str:
             f"{_degrees(entry['settled_value_f'])} ({_h(entry['settlement_source'])})"
             if entry["settled_value_f"] is not None else "Pending official outcome"
         )
-        freshness = "Fresh forecast" if entry["forecast_fresh"] else "Stale/unknown forecast"
+        freshness = "Provider forecast issue time unknown; source freshness unverified"
         market_age = (
             f"{_h(entry['quote_age_minutes'])} min old"
             if entry["quote_age_minutes"] is not None else "age unknown"
@@ -289,7 +320,7 @@ def render_research_html(snapshot: Mapping[str, Any]) -> str:
             f'<p><strong>Observation:</strong> {_h(entry["target_window"])} '
             f'({_h(entry["timezone"])})</p>'
             f'<p><strong>Forecast:</strong> {_degrees(entry["forecast_f"])} '
-            f'· {_h(entry["forecast_as_of"])} · {freshness}</p>'
+            f'· analysis recorded {_h(entry["analysis_as_of"])} · {freshness}</p>'
             f'<p><strong>Components:</strong> {components}</p>'
             f'<p><strong>Official index:</strong> {settled}</p>'
             f'<p><strong>Last observed asks:</strong> {quote}; {market_age}. '
@@ -301,7 +332,13 @@ def render_research_html(snapshot: Mapping[str, Any]) -> str:
             '</article>'
         )
     content = "".join(cards) if cards else '<p>No validated Miami research records available.</p>'
-    latest = snapshot.get("latest_forecast_as_of")
+    latest = snapshot.get("latest_analysis_as_of")
+    bucket_progress = " · ".join(
+        f"{_h(bucket)}: {_h(progress['eligible_unique_settled_samples'])}/30 independent settled targets "
+        f"({_h(progress['remaining_to_candidate'])} more for sample minimum; "
+        f"MAE {_h(progress['historical_mae_f'])}°F; signed bias {_h(progress['historical_signed_bias_f'])}°F)"
+        for bucket, progress in sorted(calibration["by_lead_bucket"].items())
+    ) or "No verified lead-bucket samples"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kalshi Weather · Miami Research</title>
@@ -327,14 +364,15 @@ a{{color:#93c5fd}}
 <div class="notice"><strong>No live trading recommendations.</strong> Independent P(YES)/P(NO), calibration, and fees-adjusted edge are not certified. All entries are NO_PLAY.</div></div>
 <div class="metrics">
 <div class="metric">Forecasts loaded<b>{_h(snapshot["loaded_forecasts"])}</b></div>
-<div class="metric">Settled samples<b>{_h(calibration["eligible_unique_settled_samples"])} / 30</b></div>
-<div class="metric">Historical MAE<b>{_degrees(calibration["historical_mae_f"])}</b></div>
-<div class="metric">Fresh collection<b>{"Yes" if snapshot["collection_fresh"] else "No"}</b></div>
+<div class="metric">Unique settled targets (all buckets)<b>{_h(calibration["eligible_unique_settled_samples"])}</b></div>
+<div class="metric">Pooled MAE (research only)<b>{_degrees(calibration["historical_mae_f"])}</b></div>
+<div class="metric">Provider freshness verified<b>No</b></div>
 </div>
-<p><strong>Latest forecast:</strong> {_h(latest)} · Research as of {_h(snapshot["as_of"])}</p>
+<p><strong>Latest analysis time:</strong> {_h(latest)} · Provider forecast issue age: unknown · Research as of {_h(snapshot["as_of"])}</p>
+<p><strong>Candidate sample progress by lead bucket:</strong> {bucket_progress}. Counts from different buckets are never pooled for candidate readiness.</p>
 <p><strong>Settlement identity:</strong> {_h(snapshot["settlement_identity_note"])}</p>
 <h2>Recorded contracts</h2>{content}
-<small>No external scripts, orders, model probability substitution, or market-price-based predictions. Quote freshness threshold: 10 minutes. Forecast freshness threshold: 90 minutes.</small>
+<small>No external scripts, orders, model probability substitution, or market-price-based predictions. Quote freshness threshold: 10 minutes. Analysis recency threshold: 90 minutes; it does not establish weather-source freshness.</small>
 </body></html>"""
 
 
