@@ -215,3 +215,36 @@ def test_forward_certification_mixed_model_versions_never_aggregate_into_pass():
     assert health["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
     assert health["blockers"] == ["FORWARD_MIXED_MODEL_VERSION_COHORT"]
     assert health["can_execute"] is False
+
+
+def test_home_away_calibration_segments_are_research_only():
+    preds = [
+        _pred("home-a", "H", "A", "H"),
+        _pred("home-b", "H", "A", "H"),
+        _pred("away-a", "H", "A", "A"),
+    ]
+    grades = [
+        _grade("home-a", 0.7, 1),
+        _grade("home-b", 0.7, 0),
+        _grade("away-a", 0.6, 1),
+    ]
+    out = ch.evaluate(preds, grades)
+    slices = out["selection_side_diagnostics"]
+    assert slices["selected_home"]["n"] == 2
+    assert slices["selected_home"]["champion_mean"] == pytest.approx(0.7)
+    assert slices["selected_home"]["observed_win_rate"] == pytest.approx(0.5)
+    assert slices["selected_home"]["champion_bias"] == pytest.approx(0.2)
+    assert slices["selected_away"]["n"] == 1
+    assert slices["selected_away"]["champion_mean"] == pytest.approx(0.6)
+    assert slices["selected_away"]["observed_win_rate"] == pytest.approx(1.0)
+    assert out["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+    assert out["automatic_promotion_allowed"] is False
+    assert out["probability_publishable"] is False
+
+
+def test_empty_selection_side_has_no_misleading_zero_accuracy():
+    out = ch.evaluate([_pred("only", "H", "A", "H")], [_grade("only", 0.65, 1)])
+    other = out["selection_side_diagnostics"]["selected_away"]
+    assert other["n"] == 0
+    assert other["observed_win_rate"] is None
+    assert other["champion_bias"] is None
