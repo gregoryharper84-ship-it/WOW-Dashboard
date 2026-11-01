@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import datetime, timezone
 from typing import Optional
+
+import httpx
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from kalshi_weather_v2.research_release_a import install_release_a_research
+from kalshi_weather_v2.research_backfill import BackfillDataError, reconcile_miami_settlements
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
 from kalshi_weather_v2.empirical_runtime import install_empirical_cohort_scheduler
 from kalshi_weather_v2.isolated_capture_wiring import install_isolated_capture_if_owned
@@ -241,3 +245,87 @@ def _raise_governed(exc: Exception) -> None:
             "can_execute": False,
         },
     ) from exc
+
+
+# Research-only Trigger.dev integration. Independent of the browser's read-only
+# password and the weather shadow-capture writer credential.
+class MiamiBackfillLaunch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scope: str = Field(pattern=r"^miami$")
+
+
+def _require_scoped_bearer(env_name: str, authorization: Optional[str]) -> None:
+    configured = os.getenv(env_name, "")
+    if not configured:
+        raise HTTPException(status_code=503, detail="RESEARCH_JOB_AUTH_NOT_CONFIGURED")
+    prefix = "Bearer "
+    token = authorization[len(prefix):] if authorization and authorization.startswith(prefix) else ""
+    if not token or not secrets.compare_digest(token, configured):
+        raise HTTPException(status_code=401, detail="RESEARCH_JOB_AUTH_REQUIRED")
+
+
+def _require_backfill_request_key(authorization: Optional[str] = Header(default=None)) -> None:
+    _require_scoped_bearer("WOW_KALSHI_WEATHER_BACKFILL_REQUEST_KEY", authorization)
+
+
+def _require_backfill_worker_key(authorization: Optional[str] = Header(default=None)) -> None:
+    _require_scoped_bearer("WOW_KALSHI_WEATHER_BACKFILL_WORKER_KEY", authorization)
+
+
+@app.post(
+    "/research/backfill",
+    status_code=202,
+    dependencies=[Depends(_require_backfill_request_key)],
+    include_in_schema=False,
+)
+def launch_miami_research_backfill(req: MiamiBackfillLaunch):
+    """Launch one tiny Trigger.dev research task, never a forecast or trade."""
+    trigger_key = os.getenv("WOW_KALSHI_WEATHER_TRIGGER_SECRET_KEY", "")
+    if not trigger_key:
+        raise HTTPException(status_code=503, detail="TRIGGER_RESEARCH_NOT_CONFIGURED")
+    # One request per five-minute bucket; source-ledger uniqueness also guards
+    # retries, later replays and overlapping launches beyond Trigger's TTL.
+    stamp = datetime.now(timezone.utc)
+    five_minute = stamp.replace(minute=(stamp.minute // 5) * 5, second=0, microsecond=0)
+    try:
+        result = httpx.post(
+            "https://api.trigger.dev/api/v1/tasks/weather-research-backfill/trigger",
+            headers={"Authorization": f"Bearer {trigger_key}", "Content-Type": "application/json"},
+            json={
+                "payload": {"scope": "miami"},
+                "options": {
+                    "idempotencyKey": f"kalshi-miami-backfill-{five_minute.isoformat()}",
+                    "idempotencyKeyTTL": "5m",
+                },
+            },
+            timeout=12.0,
+        )
+        if result.status_code not in (200, 201, 202):
+            raise ValueError("TRIGGER_UPSTREAM_STATUS")
+        run_id = result.json().get("id")
+        if not isinstance(run_id, str) or not run_id.startswith("run_"):
+            raise ValueError("TRIGGER_RUN_ID_MISSING")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="TRIGGER_RESEARCH_LAUNCH_UNAVAILABLE") from exc
+    return {
+        "status": "RESEARCH_TASK_ACCEPTED",
+        "run_id": run_id,
+        "scope": "miami",
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
+@app.post(
+    "/internal/research/miami-settlement-reconcile",
+    dependencies=[Depends(_require_backfill_worker_key)],
+    include_in_schema=False,
+)
+def run_miami_research_backfill(req: MiamiBackfillLaunch):
+    """Worker-only, bounded reconciliation of previously captured Miami events."""
+    try:
+        return reconcile_miami_settlements(client=get_client())
+    except BackfillDataError as exc:
+        raise HTTPException(status_code=503, detail="RESEARCH_BACKFILL_UNAVAILABLE") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="RESEARCH_BACKFILL_UNAVAILABLE") from exc
