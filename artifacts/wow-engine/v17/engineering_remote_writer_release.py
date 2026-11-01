@@ -319,6 +319,8 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
                 or not isinstance(fresh_pr.get("head"), dict)
                 or not isinstance(fresh_pr.get("base"), dict)
                 or fresh_pr["head"].get("sha") != expected_head
+                or (is_failed_launch
+                    and fresh_pr["head"].get("ref") != proof["reservation"].get("reservation_branch"))
                 or not isinstance(fresh_pr["head"].get("repo"), dict)
                 or fresh_pr["head"]["repo"].get("full_name") != REPOSITORY
                 or fresh_pr["base"].get("ref") != "main"
