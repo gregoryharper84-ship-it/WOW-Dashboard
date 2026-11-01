@@ -11,7 +11,7 @@ import numpy as np
 
 from nfl_event_features_p2 import FEATURE_ORDER, FEATURE_SCHEMA_VERSION
 from nfl_event_model_v17 import score_feature_row
-from test_v17_nfl_daily_stage_receipts import _fixture, _prove
+from test_v17_nfl_daily_stage_receipts import MODEL, _fixture, _prove
 
 
 def _scorer_output():
@@ -220,7 +220,7 @@ class _CertifiedDb:
             "certification_id": "certified-fixture-only" if certified else None,
             "sport": "NFL", "league_scope": "NFL",
             "model_version": registry_version or "NFL_EVENT_LOGREG_PLATT_V1",
-            "artifact_id": "model-fixture-id",
+            "artifact_id": MODEL,
             "artifact_sha256": registry_sha or "a" * 64,
             "certification_status": "CERTIFIED" if certified else "REVOKED",
             "independent_verification_status": "PASS" if certified else "FAIL",
