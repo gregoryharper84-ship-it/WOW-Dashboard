@@ -525,7 +525,7 @@ provider outages, retry authorization, or evidence of a fitted probability.
 | `RUN_METADATA_PAYLOAD_TOO_LARGE` | `INVALID_REQUEST` | Noncandidate run metadata exceeds 8192 UTF-8 bytes or cannot serialize safely | Reduce genuine run metadata; preserve the same request identity and `can_execute=false` |
 | `RUN_CANDIDATE_COMPLEXITY_EXCEEDED` | `INVALID_REQUEST` | Candidate exceeds 12 nesting levels or 4096 traversed nodes | Reduce genuine candidate complexity |
 | `RUN_ID_INVALID` | `INVALID_REQUEST` | Run identifier is not a UUID | Supply the authentic persisted UUID |
-| `AGENT_RUNTIME_ADMISSION_RATE_LIMITED` | `RATE_LIMITED` | Existing Redis minute bucket exceeds 60 admitted calls | Retry later with the same authentic idempotency key; no synthetic jobs |
+| `AGENT_RUNTIME_ADMISSION_RATE_LIMITED` | `RATE_LIMITED` | Existing Redis minute bucket exceeds 60 unique run admissions, or five retries of the same admitted identity within that window | Retry later with the same authentic idempotency key; no synthetic jobs |
 | `AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE` | `INFRA_UNAVAILABLE` | Existing Redis admission bound cannot be checked | Restore Redis; never bypass throttle or DB safety |
 
 Source/receipt contract: `WOW-AGENT-RUNTIME-V1-PHASE1`; actor:
@@ -535,14 +535,16 @@ a distinct `WOW_AGENT_RUNTIME_API_KEY` of at least 32 characters; it cannot
 fall back to or equal `WOW_ACTION_API_KEY`. A deployment without this separate
 secret fails closed with HTTP 401. Configure it securely in the existing Render
 web service and the authorized live canary caller before attempting a POST.
-The existing Redis broker enforces a deployment-wide 60-admissions-per-rolling-minute
-sliding window with atomic Lua checks and fails closed if Redis is unavailable. This is not
+The existing Redis broker enforces a deployment-wide 60-unique-admissions-per-rolling-minute
+sliding window, plus up to five idempotent same-identity retries per window.
+Both counters use one atomic Lua script and fail closed if Redis is unavailable. This is not
 a claim of externally verified gateway throttling. Authenticated run reads use
 `api._require_agent_runtime_api_key`; `/health/live` and `/health/ready`
 remain public. No change to `V17_TERMINAL_REDUCER`.
 
 Security scope: this phase has ONE runtime bearer/principal and an intentionally
-shared deployment-wide 60-admissions-per-rolling-minute resource bound; it
+shared deployment-wide 60-unique-admissions-per-rolling-minute resource bound
+with five idempotent retries per admitted identity; it
 cannot attribute separate people using the same credential. Do not share the
 credential with unrelated tenants. Redis is volatile: a restart or key eviction
 resets the current window, so this is an abuse bound during normal Redis uptime,
