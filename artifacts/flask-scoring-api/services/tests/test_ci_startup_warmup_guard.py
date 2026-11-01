@@ -35,14 +35,17 @@ def test_ci_never_starts_background_warmup(value, monkeypatch):
     monkeypatch.setenv("WOW_CI", value)
     threaded = Mock()
     timings = Mock()
+    warmup = Mock()
     exec(_startup_guard_code(), {
         "os": os,
         "_threading": SimpleNamespace(Thread=threaded),
-        "_run_startup_warmup": Mock(),
+        "_run_startup_warmup": warmup,
         "_bt": timings,
     })
     threaded.assert_not_called()
-    timings.assert_called_once_with("startup warmup skipped under CI — app fully ready")
+    # CI must initialize all required schemas before the tests execute.
+    warmup.assert_called_once_with()
+    timings.assert_called_once_with("startup warmup completed synchronously under CI — app fully ready")
 
 
 @pytest.mark.parametrize("value", ["", "0", "false"])
