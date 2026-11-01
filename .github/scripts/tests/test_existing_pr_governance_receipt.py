@@ -1680,6 +1680,82 @@ def test_v2_fallback_sunset_is_immutable_and_fail_closed():
             build(now=expired_time)
 
 
+def _historical_cli_subprocess(tmp_path, receipt, reviews):
+    """Run the real CLI with a test-only historical clock in a new interpreter.
+
+    No global pytest patch or production CLI override can survive this process.
+    The same CLI is independently exercised with its actual wall clock below.
+    """
+    receipt_path = tmp_path / "historical-receipt.json"
+    reviews_path = tmp_path / "historical-reviews.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    reviews_path.write_text(json.dumps(reviews), encoding="utf-8")
+    harness = textwrap.dedent("""
+        import importlib.util
+        import sys
+        from datetime import datetime
+        source, timestamp, *args = sys.argv[1:]
+        as_of = datetime.fromisoformat(timestamp)
+        spec = importlib.util.spec_from_file_location("historical_cli_verifier", source)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        original = module.datetime
+        class IsolatedTestClock(original):
+            @classmethod
+            def now(cls, tz=None):
+                return as_of.astimezone(tz) if tz is not None else as_of.replace(tzinfo=None)
+        module.datetime = IsolatedTestClock
+        sys.argv = [source, *args]
+        raise SystemExit(module.main())
+    """)
+    return subprocess.run(
+        [
+            sys.executable, "-c", harness, str(SCRIPT), NOW.isoformat(),
+            "--receipt", str(receipt_path),
+            "--repository", REPOSITORY,
+            "--head-sha", HEAD,
+            "--head-ref", "fix/issue-1806",
+            "--workflow-run-id", "12345",
+            "--workflow-name", verifier.WORKFLOW_NAME,
+            "--pr-number", "1822",
+            "--live-reviews-json", str(reviews_path),
+        ],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+    )
+
+
+def test_historical_v2_cli_accepts_then_rejects_withdrawn_and_renamed_sources(tmp_path):
+    receipt = build(now=NOW)
+    reviews = evidence()["reviews"]
+    accepted = _historical_cli_subprocess(tmp_path, receipt, reviews)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert json.loads(accepted.stdout)["status"] == "REVIEW_EVIDENCE_VERIFIED"
+
+    withdrawn = reviews + [{
+        "id": 13, "state": "DISMISSED", "commit_id": HEAD,
+        "submitted_at": "2026-10-17T23:01:00Z",
+        "user": {**REVIEWER, "type": "User"},
+    }]
+    rejected = _historical_cli_subprocess(tmp_path, receipt, withdrawn)
+    assert rejected.returncode == 1, rejected.stdout + rejected.stderr
+    assert json.loads(rejected.stdout) == {
+        "status": "HOLD", "reason": "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING",
+    }
+
+    renamed = json.loads(json.dumps(receipt))
+    renamed["changed_files"] = [{
+        "filename": "src/relocated.py",
+        "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
+        "status": "renamed",
+    }]
+    rejected = _historical_cli_subprocess(tmp_path, renamed, reviews)
+    assert rejected.returncode == 1, rejected.stdout + rejected.stderr
+    assert json.loads(rejected.stdout) == {
+        "status": "HOLD", "reason": "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE",
+    }
+
+
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch, capsys):
     # Historical acceptance uses explicit time injection into the pure verifier,
     # never a module-global datetime override or production clock override.
