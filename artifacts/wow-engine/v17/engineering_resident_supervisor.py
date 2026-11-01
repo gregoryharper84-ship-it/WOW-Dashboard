@@ -186,9 +186,15 @@ class GitHubTransport:
                      or route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED")):
             # A finalizer workflow run alone never grants admission; the #1138
             # shared-writer ledger must also prove all held reservations have a
-            # verified terminal release receipt.
+            # verified terminal release receipt under a stable protected-main SHA.
+            pre_main = self.get("commits/main")
+            pre_main_sha = pre_main.get("sha") if isinstance(pre_main, dict) else None
             try:
-                fence_cleared = self.remote_writer_clear()
+                fence_cleared = bool(
+                    isinstance(pre_main_sha, str)
+                    and re.fullmatch(r"[0-9a-f]{40}", pre_main_sha)
+                    and self.remote_writer_clear()
+                )
             except Exception:
                 fence_cleared = False
             if fence_cleared:
@@ -212,7 +218,12 @@ class GitHubTransport:
                     if fin_age < 0:
                         return "PROVIDER_STATUS_UNVERIFIED"
                     if fin_updated >= route_time and fin["conclusion"] == "success" and fin_age <= 900:
-                        latest_success |= fin["head_sha"] == self.get("commits/main").get("sha")
+                        post_main = self.get("commits/main")
+                        post_main_sha = post_main.get("sha") if isinstance(post_main, dict) else None
+                        latest_success |= (
+                            fin["head_sha"] == pre_main_sha
+                            and post_main_sha == pre_main_sha
+                        )
         if latest_success:
             return "PROVIDER_ADMITTED"
         if decision == "PROVIDER_ADMITTED" and self.get("commits/main").get("sha") != run["head_sha"]:

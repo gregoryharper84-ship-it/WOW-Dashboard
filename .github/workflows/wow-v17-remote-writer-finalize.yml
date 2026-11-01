@@ -10,16 +10,13 @@ on:
         description: Exact immutable Cursor reservation comment ID in issue #1138
         required: true
         type: string
-  workflow_run:
-    workflows: [wow-v17-engineering-provider-dispatcher]
-    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   finalize-original-cursor:
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'failure'))
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -35,9 +32,8 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout protected source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Authenticate exact original terminal Cursor run and append release evidence
         env:

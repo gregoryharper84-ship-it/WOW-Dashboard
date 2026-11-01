@@ -119,7 +119,9 @@ def api_json(url: str, *, token: str, basic: bool = False, method: str = "GET",
                 raise HandoffBlocked("CURSOR_API_RESPONSE_INVALID")
             return out
     except error.HTTPError as exc:
-        status_code = exc.code if type(exc.code) is int and 100 <= exc.code <= 599 else 0
+        if type(exc.code) is not int or not (100 <= exc.code <= 599):
+            raise HandoffBlocked("CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED") from exc
+        status_code = exc.code
         if basic:
             if status_code in (401, 403):
                 raise HandoffBlocked(

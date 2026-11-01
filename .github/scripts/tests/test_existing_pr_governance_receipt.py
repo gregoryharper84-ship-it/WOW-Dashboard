@@ -1666,25 +1666,17 @@ def test_independent_approval_still_required_with_fresh_receipt():
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch):
-    current = datetime.now(timezone.utc)
-    receipt = verifier.build_receipt(
-        evidence(),
-        expected_repository=REPOSITORY,
-        expected_head_sha=HEAD,
-        expected_head_ref="fix/issue-1806",
-        expected_pr_number=1822,
-        expected_incident_id="1806",
-        expected_workflow_run_id="12345",
-        expected_workflow_run_attempt=1,
-        automated_review=automated_review_data(now=current),
-        source_review_run=SOURCE_REVIEW_RUN,
-        source_review_artifact_id=555,
-        now=current,
+    original_verify_receipt = verifier.verify_receipt
+    monkeypatch.setattr(
+        verifier,
+        "verify_receipt",
+        lambda *args, **kwargs: original_verify_receipt(
+            *args, **{**kwargs, "now": kwargs.get("now") or NOW},
+        ),
     )
+    receipt = build(now=NOW)
     live_reviews = tmp_path / "reviews.json"
     live_reviews.write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
-    source_run = tmp_path / "source-run.json"
-    source_run.write_text(json.dumps(SOURCE_REVIEW_RUN), encoding="utf-8")
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", [
         "verify",
@@ -1696,7 +1688,6 @@ def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_p
         "--workflow-name", verifier.WORKFLOW_NAME,
         "--pr-number", "1822",
         "--live-reviews-json", str(live_reviews),
-        "--source-review-run-json", str(source_run),
     ])
 
     assert verifier.main() == 0
@@ -1847,6 +1838,19 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
         match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING",
     ):
         verify(receipt, live_reviews=withdrawn, now=NOW)
+    renamed = dict(receipt)
+    renamed["changed_files"] = [
+        {
+            "filename": "src/relocated.py",
+            "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
+            "status": "renamed",
+        }
+    ]
+    with pytest.raises(
+        verifier.ExistingPrGovernanceReceiptError,
+        match="TRUST_ROOT_CHANGE_NOT_CERTIFIABLE",
+    ):
+        verify(renamed, live_reviews=reviews, now=NOW)
 
     boot_data = bootstrap_evidence()
     boot = build_bootstrap(boot_data, now=datetime.now(timezone.utc))
@@ -2069,23 +2073,29 @@ def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch):
     evidence_path.write_text(json.dumps(ordinary), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["verify", *common, "--classify"])
     assert verifier.main() == 0
-    source_review_path = tmp_path / "source-review.json"
-    source_review_path.write_text(
-        json.dumps(automated_review_data(now=datetime.now(timezone.utc))),
-        encoding="utf-8",
+    original_build_receipt = verifier.build_receipt
+    original_verify_receipt = verifier.verify_receipt
+    monkeypatch.setattr(
+        verifier,
+        "build_receipt",
+        lambda *args, **kwargs: original_build_receipt(
+            *args, **{**kwargs, "now": kwargs.get("now") or NOW},
+        ),
     )
-    source_run_path = tmp_path / "source-run.json"
-    source_run_path.write_text(json.dumps(SOURCE_REVIEW_RUN), encoding="utf-8")
+    monkeypatch.setattr(
+        verifier,
+        "verify_receipt",
+        lambda *args, **kwargs: original_verify_receipt(
+            *args, **{**kwargs, "now": kwargs.get("now") or NOW},
+        ),
+    )
     monkeypatch.setattr(sys, "argv", [
         "verify", *common, "--output", str(output),
-        "--source-review-json", str(source_review_path),
-        "--source-review-run-json", str(source_run_path),
-        "--source-review-artifact-id", "555",
+        "--trusted-reviewers-json", json.dumps(ALLOWLIST),
     ])
     assert verifier.main() == 0
     ordinary_receipt = json.loads(output.read_text(encoding="utf-8"))
-    assert ordinary_receipt["certification_mode"] == "ORDINARY_ENGINEERING"
-    assert ordinary_receipt["receipt_schema_version"] == 3
+    assert ordinary_receipt["receipt_schema_version"] == 2
     assert ordinary_receipt["can_execute"] is False
 
 

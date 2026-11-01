@@ -23,7 +23,7 @@ RUN_ID = "run-7b568d98-de5b-4cce-b2a4-e7743fd43787"
 CURSOR_API = "https://api.cursor.com/v1"
 GITHUB_API = "https://api.github.com"
 TERMINAL_RUN_STATES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
-MAX_NEGATIVE_INVENTORY_PAGES = 5
+MAX_NEGATIVE_INVENTORY_PAGES = 100
 INVENTORY_PAGE_SIZE = 100
 EXPECTED_FILES = {
     ".github/workflows/wow-v17-independent-qa-check.yml",
@@ -209,14 +209,12 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     }
 
 
-def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api, *,
-                       allow_closed_negative_launch: bool = False) -> list[str]:
-    """Require exact identity; closed PRs are allowed only for proved never-created agents."""
+def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[str]:
+    """Require exact identity and an ancestors-only head from the reserved SHA."""
     import re
 
-    allowed_states = ("open", "closed") if allow_closed_negative_launch else ("open",)
     head, base = pr.get("head"), pr.get("base")
-    if (pr.get("number") != target["pr_number"] or pr.get("state") not in allowed_states
+    if (pr.get("number") != target["pr_number"] or pr.get("state") != "open"
             or not isinstance(head, dict) or not isinstance(base, dict)
             or not isinstance(head.get("repo"), dict)
             or not isinstance(base.get("repo"), dict)
@@ -251,7 +249,7 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api, *,
     again = _require_object(api(url, token=github_token),
                             "CURSOR_SOURCE_PR_RECHECK_FAILED")
     if (again.get("number") != target["pr_number"]
-            or again.get("state") != pr.get("state")
+            or again.get("state") != "open"
             or not isinstance(again.get("head"), dict)
             or again["head"].get("sha") != latest
             or not isinstance(again["head"].get("repo"), dict)
@@ -305,6 +303,8 @@ def verify_negative_inventories(
                 raise ReceiptBlocked(unverified_code)
             seen_cursors.add(raw_next)
             next_cursor = raw_next
+        # Fail closed on pagination exhaustion: raising ReceiptBlocked aborts
+        # negative-launch verification and retains the shared-writer hold.
         raise ReceiptBlocked(unverified_code)
 
     global_pages, global_count = _scan_inventory(
@@ -363,9 +363,7 @@ def collect_receipt(
             api(pr_url, token=github_token),
             "SOURCE_PR_IDENTITY_UNVERIFIED",
         )
-        changed_files = _verify_dynamic_pr(
-            pr, target, github_token, api, allow_closed_negative_launch=True,
-        )
+        changed_files = _verify_dynamic_pr(pr, target, github_token, api)
         return {
             "status": "CURSOR_TERMINAL_STATUS_VERIFIED",
             "agent_id": agent_id,
@@ -377,7 +375,6 @@ def collect_receipt(
             "negative_launch_proof": negative_proof,
             "repository": REPOSITORY,
             "pr_number": pr_number,
-            "pr_state": pr["state"],
             "base_ref": pr["base"]["ref"],
             "head_sha": pr["head"]["sha"],
             "changed_files": changed_files,

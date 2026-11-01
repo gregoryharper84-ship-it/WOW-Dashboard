@@ -1153,7 +1153,7 @@ def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_re
         if suffix == "actions/runs/99010":
             return {
                 "id": 99010, "run_attempt": 1, "status": "completed",
-                "conclusion": "success", "event": "workflow_run",
+                "conclusion": "success", "event": "workflow_dispatch",
                 "head_branch": "main", "head_sha": sha,
                 "path": release.WORKFLOW,
                 "repository": {"full_name": remote.REPOSITORY},

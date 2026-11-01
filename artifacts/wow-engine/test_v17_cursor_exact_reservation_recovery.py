@@ -471,22 +471,15 @@ def test_failed_launch_negative_proof_fails_closed_on_ambiguous_or_active_eviden
         fixture.prove()
 
 
-def test_closed_failed_launch_pr_does_not_block_negative_agent_proof():
+def test_closed_failed_launch_pr_fails_closed():
     fixture = FailedLaunchFixture()
     fixture.pr["state"] = "closed"
-    result = fixture.prove()
-    assert result["status"] == "CURSOR_TERMINAL_STATUS_VERIFIED"
-    assert result["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
-    assert result["pr_state"] == "closed"
-    assert result["agent_status"] == "NEVER_CREATED"
-    assert result["release_authorized"] is False
-    assert result["lease_released"] is False
-    assert result["can_execute"] is False
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_SOURCE_PR_IDENTITY_INVALID"):
+        fixture.prove()
 
 
-def test_closed_failed_launch_pr_state_movement_is_still_rejected():
+def test_failed_launch_pr_state_movement_during_probe_is_rejected():
     fixture = FailedLaunchFixture()
-    fixture.pr["state"] = "closed"
     original_api = fixture.api
     seen = 0
 
@@ -497,7 +490,7 @@ def test_closed_failed_launch_pr_state_movement_is_still_rejected():
             seen += 1
             if seen == 2:
                 item = copy.deepcopy(fixture.pr)
-                item["state"] = "open"
+                item["state"] = "closed"
                 return item
         return original_api(url, token=token, basic=basic)
 
@@ -509,13 +502,10 @@ def test_closed_failed_launch_pr_state_movement_is_still_rejected():
     assert seen == 2
 
 
-@pytest.mark.parametrize("pr_state", ["open", "closed"])
-@pytest.mark.parametrize("explicit_cid", [FAILED_CID, None])
-def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_id(pr_state, explicit_cid):
+def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_id():
     from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments, run
 
     fixture = FailedLaunchFixture()
-    fixture.pr["state"] = pr_state
     proof = fixture.prove()
 
     class FailedLaunchAPI(_FakeAPI):
@@ -538,12 +528,17 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
     with patch.dict("os.environ", env), patch(
         "v17.cursor_terminal_status_receipt.collect_receipt", return_value=proof,
-    ), patch(
-        "v17.cursor_terminal_status_receipt.api_json", side_effect=fixture.api,
     ):
+        with pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED"):
+            release.append_terminal_release(
+                api, cursor_token="fixture", run_id=99010, run_attempt=1,
+                source_sha="a" * 40, reservation_comment_id=None,
+                cursor_api=fixture.api,
+            )
         result = release.append_terminal_release(
             api, cursor_token="fixture", run_id=99010, run_attempt=1,
-            source_sha="a" * 40, reservation_comment_id=explicit_cid,
+            source_sha="a" * 40, reservation_comment_id=FAILED_CID,
+            cursor_api=fixture.api,
         )
     assert result["status"] == "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS"
     assert result["original_comment_id"] == FAILED_CID
