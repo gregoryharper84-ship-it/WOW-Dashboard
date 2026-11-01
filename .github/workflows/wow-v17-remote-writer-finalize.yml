@@ -39,26 +39,48 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Authenticate exact original terminal Cursor run and append release evidence
+      - name: Resolve exact target without Cursor credential
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANUAL_RESERVATION_ID: ${{ inputs.reservation_comment_id }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=artifacts/wow-engine python - <<'PY'
+          import os
+          import re
+          from v17.engineering_remote_fallback import GitHub, REPOSITORY
+          from v17.engineering_remote_writer_release import auto_failed_launch_target
+
+          if (os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
+                  or os.environ.get("GITHUB_REF") != "refs/heads/main"):
+              raise SystemExit("REMOTE_RELEASE_PROTECTED_MAIN_UNVERIFIED")
+          manual = os.environ.get("MANUAL_RESERVATION_ID", "")
+          if os.environ.get("GITHUB_EVENT_NAME") == "schedule":
+              if manual:
+                  raise SystemExit("REMOTE_AUTO_RELEASE_MANUAL_TARGET_INVALID")
+              candidate = auto_failed_launch_target(GitHub(os.environ["GH_TOKEN"]))
+          else:
+              if not re.fullmatch(r"[1-9][0-9]*", manual):
+                  raise SystemExit("REMOTE_RELEASE_TARGET_INVALID")
+              candidate = int(manual)
+          # Empty means no unresolved remote writer, not a release PASS.
+          if candidate is None:
+              print("NO_UNRELEASED_REMOTE_WRITER")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"reservation_comment_id={candidate or ''}\n")
+          PY
+      - name: Authenticate original Cursor state and append release
+        if: steps.target.outputs.reservation_comment_id != ''
         env:
           GH_TOKEN: ${{ github.token }}
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          RESERVATION_COMMENT_ID: ${{ inputs.reservation_comment_id }}
+          RESERVATION_COMMENT_ID: ${{ steps.target.outputs.reservation_comment_id }}
         run: |
           set -euo pipefail
-          if [ -n "${RESERVATION_COMMENT_ID:-}" ]; then
-            [[ "$RESERVATION_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] || {
-              echo "::error::REMOTE_RELEASE_TARGET_INVALID"
-              exit 1
-            }
-          fi
-          # On schedule, the CLI discovers at most one unresolved failed
-          # Cursor launch. On manual dispatch, exact ID remains required.
-          # Both paths re-read provider and source, recheck the entire held
-          # ledger and append one receipt. Guards trust only completed
-          # successful runs, not this job's initial success flag.
-          args=()
-          if [ -n "${RESERVATION_COMMENT_ID:-}" ]; then
-            args+=(--reservation-comment-id "$RESERVATION_COMMENT_ID")
-          fi
-          PYTHONPATH=artifacts/wow-engine python -m v17.engineering_remote_fallback finalize-cursor "${args[@]}"
+          # The preflight is only a read-only candidate lookup. Under the
+          # original writer mutex the existing finalizer authenticates source,
+          # performs two fresh provider inventory probes, re-reads the PR,
+          # checks the immutable ledger and rechecks protected main before POST.
+          PYTHONPATH=artifacts/wow-engine python -m v17.engineering_remote_fallback \
+            finalize-cursor --reservation-comment-id "$RESERVATION_COMMENT_ID"
