@@ -1665,14 +1665,29 @@ def test_independent_approval_still_required_with_fresh_receipt():
         build(data=evidence(review_state="DISMISSED"))
 
 
+def _freeze_verifier_clock(monkeypatch, at=NOW):
+    """Use historical time only inside this test process; never in production."""
+    class FrozenVerifierDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return at.astimezone(tz) if tz is not None else at.replace(tzinfo=None)
+    monkeypatch.setattr(verifier, "datetime", FrozenVerifierDatetime)
+
+
+def test_v2_fallback_sunset_is_immutable_and_fail_closed():
+    cutoff = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert verifier.FALLBACK_PROVIDER_SUNSET_UTC == "2026-11-01T00:00:00Z"
+    receipt = build(now=NOW)
+    verify(receipt, now=NOW)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                       match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
+        verify(receipt, now=cutoff)
+
+
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch, capsys):
-    # Pre-sunset V2 fixtures remain valid in their historical time window.
-    # The live CLI must reject schema 2 after the hard reviewer-fallback sunset.
-    past_sunset = datetime.now(timezone.utc) >= datetime.fromisoformat(
-        verifier.FALLBACK_PROVIDER_SUNSET_UTC.replace("Z", "+00:00"))
-    receipt = build(now=NOW if past_sunset else datetime.now(timezone.utc))
-    if past_sunset:
-        verify(receipt, now=NOW)
+    # Historical verification is deterministic; production CLI remains unchanged.
+    receipt = build(now=NOW)
+    _freeze_verifier_clock(monkeypatch, at=NOW)
     live_reviews = tmp_path / "reviews.json"
     live_reviews.write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
@@ -1688,9 +1703,8 @@ def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_p
         "--live-reviews-json", str(live_reviews),
     ])
 
-    assert verifier.main() == (1 if past_sunset else 0)
-    if past_sunset:
-        assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" in capsys.readouterr().out
+    assert verifier.main() == 0
+    assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" not in capsys.readouterr().out
 
 
 def test_consumer_context_does_not_infer_pr_number_from_event(tmp_path, monkeypatch):
@@ -1821,20 +1835,12 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     assert legacy_invalid.returncode == 1
     assert "receipt head SHA mismatch" in legacy_invalid.stdout
 
-    # The old V2 human-allowlist fallback was sunset at a fixed UTC instant.
-    # A post-sunset CLI HOLD is correct even with previously valid fixtures.
-    past_sunset = datetime.now(timezone.utc) >= datetime.fromisoformat(
-        verifier.FALLBACK_PROVIDER_SUNSET_UTC.replace("Z", "+00:00"))
-    receipt = build(now=NOW if past_sunset else datetime.now(timezone.utc))
+    # Real subprocess rejects expired V2 while other controls remain testable.
+    receipt = build(now=NOW)
     reviews = evidence()["reviews"]
     v2_valid = run(verifier.WORKFLOW_NAME, receipt, reviews)
-    if past_sunset:
-        assert v2_valid.returncode == 1, v2_valid.stderr
-        assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" in v2_valid.stdout
-        # Specific withdrawn/renamed rejection tests exercise frozen NOW
-        # separately; do not backdate this actual protected workflow subprocess.
-        return
-    assert v2_valid.returncode == 0, v2_valid.stderr
+    assert v2_valid.returncode == 1, v2_valid.stderr
+    assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" in v2_valid.stdout
     withdrawn = reviews + [
         {
             "id": 13,
@@ -1844,9 +1850,14 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "user": {**REVIEWER, "type": "User"},
         }
     ]
-    v2_withdrawn = run(verifier.WORKFLOW_NAME, receipt, withdrawn)
-    assert v2_withdrawn.returncode == 1
-    assert "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING" in v2_withdrawn.stdout
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                       match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING"):
+        verifier.verify_receipt(
+            receipt, expected_repository=REPOSITORY, expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806", expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME, expected_pr_number=1822,
+            live_reviews=withdrawn, now=NOW,
+        )
 
     renamed_source = dict(receipt)
     renamed_source["changed_files"] = [
@@ -1856,9 +1867,14 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "status": "renamed",
         }
     ]
-    v2_renamed = run(verifier.WORKFLOW_NAME, renamed_source, reviews)
-    assert v2_renamed.returncode == 1
-    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in v2_renamed.stdout
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                       match="TRUST_ROOT_CHANGE_NOT_CERTIFIABLE"):
+        verifier.verify_receipt(
+            renamed_source, expected_repository=REPOSITORY, expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806", expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME, expected_pr_number=1822,
+            live_reviews=reviews, now=NOW,
+        )
 
     boot_data = bootstrap_evidence()
     boot = build_bootstrap(boot_data, now=datetime.now(timezone.utc))
@@ -2072,21 +2088,12 @@ def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch, capsy
         "verify", *common, "--output", str(output),
         "--trusted-reviewers-json", json.dumps(ALLOWLIST),
     ])
-    # CLI verifies against the wall clock; the fixture clock is historical.
-    original_build = verifier.build_receipt
-
-    def build_now(*args, **kwargs):
-        kwargs["now"] = datetime.now(timezone.utc)
-        return original_build(*args, **kwargs)
-
-    monkeypatch.setattr(verifier, "build_receipt", build_now)
-    past_sunset = datetime.now(timezone.utc) >= datetime.fromisoformat(
-        verifier.FALLBACK_PROVIDER_SUNSET_UTC.replace("Z", "+00:00"))
-    assert verifier.main() == (1 if past_sunset else 0)
-    if past_sunset:
-        assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" in capsys.readouterr().out
-        # A denied ordinary receipt must not overwrite the trusted bootstrap.
-        assert json.loads(output.read_text(encoding="utf-8"))["certification_mode"] == "TRUST_ROOT_BOOTSTRAP"
+    # The test-only historical clock exercises ordinary schema V2 acceptance.
+    # The pinned-sunset test separately proves rejection at and after cutoff.
+    _freeze_verifier_clock(monkeypatch, at=NOW)
+    assert verifier.main() == 0
+    assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" not in capsys.readouterr().out
+    assert json.loads(output.read_text(encoding="utf-8"))["certification_mode"] == verifier.CERTIFICATION_MODE
 
 
 @pytest.mark.parametrize('filename,previous_filename', (
