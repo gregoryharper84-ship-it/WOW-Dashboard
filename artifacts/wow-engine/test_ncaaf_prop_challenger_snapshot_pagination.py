@@ -18,6 +18,7 @@ def _row(number: int) -> dict:
         "provider": "CFBD",
         "endpoint": "/games/players",
         "season": 2025,
+        "created_at": f"2026-10-29T15:00:{number:02d}+00:00",
         "week": number,
         "requested_at": "2026-10-29T15:00:00+00:00",
         "retrieved_at": "2026-10-29T15:01:00+00:00",
@@ -36,9 +37,12 @@ class _Query:
         self.db = db
         self.after = None
         self.limit = None
+        self.fence = False
+        self.cutoff = None
 
     def select(self, fields):
-        assert "source_snapshot_id" in fields
+        assert fields == "created_at" or "source_snapshot_id" in fields
+        self.fence = fields == "created_at"
         return self
 
     def eq(self, field, value):
@@ -51,8 +55,16 @@ class _Query:
         return self
 
     def order(self, field, desc=False):
-        assert field == "source_snapshot_id"
-        assert desc is False
+        assert (field, desc) in (("created_at", True), ("source_snapshot_id", False))
+        return self
+
+    def limit(self, count):
+        assert self.fence and count == 1
+        return self
+
+    def lte(self, field, value):
+        assert field == "created_at"
+        self.cutoff = value
         return self
 
     def gt(self, field, value):
@@ -66,17 +78,32 @@ class _Query:
         return self
 
     def execute(self):
+        if self.fence:
+            ordered = sorted(
+                (r for r in self.db.rows if isinstance(r, dict) and "created_at" in r),
+                key=lambda r: r["created_at"],
+                reverse=True,
+            )
+            fence_rows = [{"created_at": ordered[0]["created_at"]}] if ordered else []
+            if self.db.new_row_after_fence is not None:
+                self.db.rows.append(self.db.new_row_after_fence)
+                self.db.new_row_after_fence = None
+            return SimpleNamespace(data=fence_rows)
         self.db.calls.append((self.after, self.limit))
         rows = self.db.rows
+        if self.cutoff is not None:
+            rows = [r for r in rows if not isinstance(r, dict)
+                    or r.get("created_at", "") <= self.cutoff]
         if self.after is not None:
             rows = [r for r in rows if r["source_snapshot_id"] > self.after]
         return SimpleNamespace(data=rows[: self.limit])
 
 
 class _Db:
-    def __init__(self, rows):
+    def __init__(self, rows, new_row_after_fence=None):
         self.rows = rows
         self.calls = []
+        self.new_row_after_fence = new_row_after_fence
 
     def table(self, name):
         assert name == "wow_ncaaf_source_snapshots"
@@ -95,6 +122,17 @@ def test_keyset_pagination_is_exact_once_across_three_pages():
     ]
     assert CAN_EXECUTE is False
     assert all(x.can_execute is False for x in output)
+
+
+def test_new_source_snapshot_during_paging_is_outside_frozen_corpus():
+    old = [_row(n) for n in range(1, 6)]
+    newly_committed = _row(30)
+    newly_committed["created_at"] = "2026-10-30T10:00:00+00:00"
+    db = _Db(old, new_row_after_fence=newly_committed)
+    output = load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
+    assert [r.week for r in output] == [1, 2, 3, 4, 5]
+    assert len(db.rows) == 6  # a concurrent insert was simulated
+    assert len(output) == 5    # frozen source corpus is unchanged
 
 
 def test_repeated_page_fails_closed_instead_of_double_counting():
