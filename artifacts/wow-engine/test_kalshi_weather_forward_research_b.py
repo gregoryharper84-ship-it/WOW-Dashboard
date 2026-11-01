@@ -128,7 +128,7 @@ def test_later_outcome_cannot_change_earlier_candidate_probability():
     changed["wow_kalshi_weather_outcomes"][-1]["yes_outcome"] = True
     revised = build_release_b_research_report(FakeClient(changed))
     assert initial["candidates"][-1]["shadow_p_yes"] == revised["candidates"][-1]["shadow_p_yes"]
-    assert initial["candidates"][-1]["brier"] == revised["candidates"][-1]["brier"]
+    assert initial["candidates"][-1]["brier"] != revised["candidates"][-1]["brier"]
 
 
 def test_h1_does_not_augment_h0_prior_samples():
