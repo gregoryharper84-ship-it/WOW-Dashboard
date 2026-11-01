@@ -7,7 +7,7 @@ Candidate probabilities stay research-only even after a sample count is met.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import math
 from typing import Any, Mapping
@@ -18,6 +18,7 @@ ROUNDING = "USE_OFFICIAL_KALSHI_WEATHER_INDEX_AS_PUBLISHED;NO_ENGINE_ROUNDING"
 MODEL_VERSION = "MIAMI_H0_NWS_EMPIRICAL_WALKFORWARD_R1"
 MIN_PRIOR_SETTLED = 30
 MAX_RECORDS = 2000
+PAGE_SIZE = 250
 
 
 def _time(value: Any) -> datetime | None:
@@ -70,13 +71,56 @@ class Case:
 
 
 def _source_rows(client: Any, table: str, fields: str, order_by: str) -> list[dict[str, Any]]:
-    response = client.table(table).select(fields).order(order_by, desc=True).limit(MAX_RECORDS).execute()
-    rows = response.data
-    if not isinstance(rows, list):
-        raise RuntimeError("RESEARCH_READ_UNAVAILABLE")
-    if len(rows) >= MAX_RECORDS:
-        raise RuntimeError("RESEARCH_LEDGER_PAGINATION_UNVERIFIED")
-    return [r for r in rows if isinstance(r, dict)]
+    """Require exact table count and exhaust capped PostgREST pages without gaps.
+
+    A server-side row cap can be smaller than PAGE_SIZE. The next offset is
+    based on actual returned rows, not the requested page length. Two stable
+    sort keys and unique row IDs protect page boundary consistency.
+    """
+    key_field = {
+        "wow_kalshi_weather_predictions": "prediction_id",
+        "wow_kalshi_weather_outcomes": "outcome_id",
+        "wow_kalshi_weather_source_snapshots": "source_snapshot_id",
+        "wow_kalshi_weather_contract_rules": "rule_snapshot_id",
+    }.get(table)
+    if not key_field:
+        raise RuntimeError("RESEARCH_TABLE_NOT_ALLOWLISTED")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total: int | None = None
+    while total is None or len(result) < total:
+        offset = len(result)
+        response = (
+            client.table(table)
+            .select(fields, count="exact")
+            .order(order_by, desc=True)
+            .order(key_field, desc=True)
+            .range(offset, offset + PAGE_SIZE - 1)
+            .execute()
+        )
+        count = response.count
+        rows = response.data
+        if (not isinstance(count, int) or isinstance(count, bool)
+                or count < 0 or count >= MAX_RECORDS
+                or (total is not None and count != total)
+                or not isinstance(rows, list)):
+            raise RuntimeError("RESEARCH_LEDGER_COUNT_UNVERIFIED")
+        total = count
+        if len(rows) > PAGE_SIZE or (not rows and len(result) < total):
+            raise RuntimeError("RESEARCH_LEDGER_PAGINATION_INCOMPLETE")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError("RESEARCH_LEDGER_ROW_INVALID")
+            row_key = str(row.get(key_field) or "")
+            if not row_key or row_key in seen:
+                raise RuntimeError("RESEARCH_LEDGER_DUPLICATE_OR_MISSING_ROW_ID")
+            seen.add(row_key)
+            result.append(row)
+        if len(result) > total:
+            raise RuntimeError("RESEARCH_LEDGER_COUNT_MISMATCH")
+    if len(result) != total:
+        raise RuntimeError("RESEARCH_LEDGER_COUNT_MISMATCH")
+    return result
 
 
 def load_cases(client: Any) -> tuple[list[Case], dict[str, int]]:
@@ -92,7 +136,7 @@ def load_cases(client: Any) -> tuple[list[Case], dict[str, int]]:
     )
     outcomes = _source_rows(
         client, "wow_kalshi_weather_outcomes",
-        "prediction_id,settled_at,settled_value,settlement_source_name,yes_outcome", "settled_at",
+        "outcome_id,prediction_id,settled_at,settled_value,settlement_source_name,yes_outcome", "settled_at",
     )
     sources = _source_rows(
         client, "wow_kalshi_weather_source_snapshots",
@@ -103,9 +147,14 @@ def load_cases(client: Any) -> tuple[list[Case], dict[str, int]]:
         "rule_snapshot_id,settlement_source_name", "created_at",
     )
     outcomes_by_id = {str(x["prediction_id"]): x for x in outcomes}
+    if len(outcomes_by_id) != len(outcomes):
+        raise RuntimeError("DUPLICATE_OUTCOME_FOR_PREDICTION")
     sources_by_id = {str(x["source_snapshot_id"]): x for x in sources}
     rules_by_id = {str(x["rule_snapshot_id"]): x for x in rules}
-    counters = {"examined": 0, "excluded_invalid_or_unverified": 0, "excluded_duplicate_target": 0}
+    counters = {
+        "examined": 0, "excluded_invalid_or_unverified": 0,
+        "excluded_duplicate_target": 0, "excluded_unverified_outcomes": 0,
+    }
     parsed: list[Case] = []
 
     for row in preds:
@@ -160,18 +209,8 @@ def load_cases(client: Any) -> tuple[list[Case], dict[str, int]]:
                     (issued <= available <= decision_at < target_at)):
                 raise ValueError("point-in-time source not proven")
 
-            outcome = outcomes_by_id.get(str(row["prediction_id"]))
-            settled_at = _time(outcome.get("settled_at")) if outcome else None
-            official_f = _number(outcome.get("settled_value")) if outcome else None
-            official_yes = outcome.get("yes_outcome") if outcome else None
-            if outcome:
-                if (outcome.get("settlement_source_name") != SETTLEMENT_SOURCE
-                        or settled_at is None or settled_at < target_at
-                        or official_f is None or not isinstance(official_yes, bool)):
-                    raise ValueError("unverified settlement")
-                computed = official_f >= threshold_f if inclusive else official_f > threshold_f
-                if computed != official_yes:
-                    raise ValueError("official/parsed condition conflict")
+            # Select the ex-ante prediction without consulting future settlement.
+            # Outcome validation happens only after deterministic sibling dedupe.
 
             parsed.append(Case(
                 prediction_id=str(row["prediction_id"]), ticker=str(row["ticker"]),
@@ -179,7 +218,7 @@ def load_cases(client: Any) -> tuple[list[Case], dict[str, int]]:
                 target_at=target_at, decision_at=decision_at,
                 forecast_issued_at=issued, forecast_available_at=available,
                 nws_f=nws_f, threshold_f=threshold_f, inclusive=inclusive,
-                settled_at=settled_at, official_f=official_f, official_yes=official_yes,
+                settled_at=None, official_f=None, official_yes=None,
             ))
         except (KeyError, TypeError, ValueError, AttributeError):
             counters["excluded_invalid_or_unverified"] += 1
@@ -192,7 +231,29 @@ def load_cases(client: Any) -> tuple[list[Case], dict[str, int]]:
             counters["excluded_duplicate_target"] += 1
         else:
             by_target[case.key] = case
-    return sorted(by_target.values(), key=lambda c: (c.decision_at, c.prediction_id)), counters
+    resolved: list[Case] = []
+    for case in sorted(by_target.values(), key=lambda c: (c.decision_at, c.prediction_id)):
+        outcome = outcomes_by_id.get(case.prediction_id)
+        if outcome is None:
+            resolved.append(case)
+            continue
+        settled_at = _time(outcome.get("settled_at"))
+        official_f = _number(outcome.get("settled_value"))
+        official_yes = outcome.get("yes_outcome")
+        if (outcome.get("settlement_source_name") != SETTLEMENT_SOURCE
+                or settled_at is None or settled_at < case.target_at
+                or official_f is None or not isinstance(official_yes, bool)
+                or (official_f >= case.threshold_f if case.inclusive
+                    else official_f > case.threshold_f) != official_yes):
+            counters["excluded_unverified_outcomes"] += 1
+            # Preserve immutable prediction selection; omit unverifiable grade.
+            resolved.append(case)
+            continue
+        resolved.append(replace(
+            case, settled_at=settled_at, official_f=official_f,
+            official_yes=official_yes,
+        ))
+    return resolved, counters
 
 
 def _wilson(successes: int, count: int) -> tuple[float, float]:
