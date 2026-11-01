@@ -231,15 +231,25 @@ def test_admission_lua_real_redis_ttl_and_duplicate_semantics():
         pytest.skip("real Redis integration requires REDIS_URL")
     connection = redis.Redis.from_url(redis_url, socket_connect_timeout=1, socket_timeout=1)
     key = "wow:agent-runtime:ci-window:" + secrets.token_hex(12)
+    replay_key = key + ":replays"
     try:
         lua = agent_runtime_api._ADMISSION_LUA
-        assert connection.eval(lua, 1, key, 2, 60000, "member-a") == 1
-        assert connection.eval(lua, 1, key, 2, 60000, "member-a") == 2
-        assert connection.eval(lua, 1, key, 2, 60000, "member-b") == 1
-        assert connection.eval(lua, 1, key, 2, 60000, "member-c") == 0
+
+        def admit(member: str) -> int:
+            return connection.eval(lua, 2, key, replay_key, 2, 60000, member, 2)
+
+        assert admit("member-a") == 1
+        assert admit("member-a") == 2
+        assert admit("member-a") == 2
+        # Retries remain idempotent, but a hot key cannot bypass all limits.
+        assert admit("member-a") == 0
+        assert admit("member-b") == 1
+        assert admit("member-c") == 0
+        assert connection.hget(replay_key, "member-a") == b"3"
         assert 0 < connection.pttl(key) <= 120000
+        assert 0 < connection.pttl(replay_key) <= 120000
     finally:
-        connection.delete(key)
+        connection.delete(key, replay_key)
 
 
 # ---------------------------------------------------------------------------
