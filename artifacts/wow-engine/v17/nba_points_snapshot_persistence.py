@@ -8,7 +8,8 @@ pregame, canonical-validated bridge receipt may be written.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+import re
 from math import isfinite
 from typing import Any, Mapping
 from uuid import UUID
@@ -104,6 +105,37 @@ def persist_validated_nba_points_snapshot(
             or not str(identity.get("player_id") or "").strip()
             or not str(identity.get("board_line_provider") or "").strip()):
         raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SOURCE_IDENTITY_MISMATCH")
+    if receipt.get("official_roster_verified_for_snapshot") is not True:
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED")
+    role = snapshot.get("role_status")
+    offer = snapshot.get("opportunity_ledger")
+    proof = role.get("source_identity") if isinstance(role, Mapping) else None
+    if not isinstance(proof, Mapping) or not isinstance(offer, Mapping):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED")
+    if (not re.fullmatch(r"[0-9]{10}", str(proof.get("nba_game_id") or ""))
+            or not re.fullmatch(r"[1-9][0-9]{0,9}", str(proof.get("nba_person_id") or ""))
+            or not re.fullmatch(r"[A-Z]{2,4}", str(proof.get("team_tricode") or ""))
+            or proof.get("espn_event_id") != snapshot["event_id"]
+            or str(role.get("official_game_id")) != str(proof.get("nba_game_id"))
+            or str(role.get("player_id")) != str(proof.get("nba_person_id"))
+            or identity.get("nba_game_id") != proof.get("nba_game_id")
+            or str(identity.get("nba_person_id")) != str(proof.get("nba_person_id"))
+            or not isinstance(proof.get("source_names"), list)
+            or not {"ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"}.issubset(
+                {x for x in proof["source_names"] if isinstance(x, str)}
+            )):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED")
+    if (offer.get("period") != "FULL_GAME"
+            or offer.get("threshold_type") != "EXACT_NUMERIC"):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED")
+    threshold = offer.get("literal_threshold")
+    try:
+        offered = Decimal(str(threshold))
+        expected = Decimal(str(snapshot["line"]))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED") from exc
+    if not offered.is_finite() or not expected.is_finite() or offered != expected:
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED")
     try:
         line = float(snapshot["line"])
     except (TypeError, ValueError) as exc:
@@ -118,6 +150,12 @@ def persist_validated_nba_points_snapshot(
             or roster_time is None or not (role_time <= captured < now < start)
             or board_time > captured or roster_time > captured):
         raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SNAPSHOT_NO_LONGER_PREGAME")
+    if (_timestamp(proof.get("event_start_time")) != start
+            or any((_timestamp(proof.get(k)) is None
+                    or _timestamp(proof.get(k)) > captured
+                    or _timestamp(proof.get(k)) >= start)
+                   for k in ("espn_captured_at", "nba_captured_at"))):
+        raise NBAPointsSnapshotPersistenceError("NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED")
     source_times = snapshot.get("source_timestamps")
     if (not isinstance(source_times, dict) or not source_times
             or any((_timestamp(ts) is None or _timestamp(ts) > captured) for ts in source_times.values())):

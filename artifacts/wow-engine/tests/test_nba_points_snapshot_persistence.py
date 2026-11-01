@@ -69,8 +69,19 @@ def sample():
         "sport": "NBA", "player": "Example Player", "stat_type": "POINTS",
         "line": 20.5, "game_log": [10.0] * 10,
         "box_score_log": [{"event_id": f"prior-{i}", "points": 10} for i in range(10)],
-        "role_status": {"status": "ACTIVE"}, "role_timestamp": "2026-10-26T16:20:00Z",
-        "opportunity_ledger": {"status": "PASS"},
+        "role_status": {
+            "status": "ACTIVE", "official_game_id": "0022600001", "player_id": "12",
+            "source_identity": {
+                "nba_game_id": "0022600001", "nba_person_id": "12",
+                "espn_event_id": "espn-987654", "team_tricode": "BOS",
+                "event_start_time": "2026-10-26T20:00:00Z",
+                "espn_captured_at": "2026-10-26T16:15:00Z",
+                "nba_captured_at": "2026-10-26T16:18:00Z",
+                "source_names": ["ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"],
+            },
+        }, "role_timestamp": "2026-10-26T16:20:00Z",
+        "opportunity_ledger": {"status": "PASS", "period": "FULL_GAME",
+                              "literal_threshold": "20.5", "threshold_type": "EXACT_NUMERIC"},
         "source_timestamps": {"NBA_LOG": "2026-10-26T16:30:00Z"},
         "hydration_status": "PASS", "blockers": [],
         "evidence_version": "PROP_EVIDENCE_V1", "can_execute": False,
@@ -79,9 +90,11 @@ def sample():
         "status": "SOURCE_VALIDATED_SNAPSHOT_NOT_PERSISTED",
         "write_performed": False, "can_execute": False, "probability_publishable": False,
         "rank_eligible": False, "source_snapshot_id": sid, "snapshot": snapshot,
+        "official_roster_verified_for_snapshot": True,
         "source_identity": {"canonical_event_id": "espn-987654", "player_id": "nba-12",
             "board_line_provider": "EXACT_BOARD", "board_captured_at": "2026-10-26T16:35:00Z",
-            "roster_captured_at": "2026-10-26T16:20:00Z"},
+            "roster_captured_at": "2026-10-26T16:20:00Z",
+            "nba_game_id": "0022600001", "nba_person_id": "12"},
     }
 
 
@@ -153,3 +166,35 @@ def test_late_source_timestamp_rejected():
     receipt = sample()
     receipt["snapshot"]["source_timestamps"]["NBA_LOG"] = "2026-10-26T16:55:00Z"
     fail("NBA_POINTS_SOURCE_TIMESTAMP_INVALID", receipt)
+
+
+def test_unverified_roster_receipt_cannot_be_persisted():
+    receipt, db = sample(), MockDB()
+    receipt["official_roster_verified_for_snapshot"] = False
+    fail("NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED", receipt, db=db)
+    assert db.write_count == 0
+
+
+def test_cross_provider_player_and_game_mismatch_never_write():
+    receipt, db = sample(), MockDB()
+    receipt["snapshot"]["role_status"]["source_identity"]["nba_person_id"] = "99"
+    fail("NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED", receipt, db=db)
+    assert db.write_count == 0
+
+
+def test_missing_or_changed_literal_board_offer_never_write():
+    receipt, db = sample(), MockDB()
+    receipt["snapshot"]["opportunity_ledger"].pop("literal_threshold")
+    fail("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED", receipt, db=db)
+    assert db.write_count == 0
+    receipt, db = sample(), MockDB()
+    receipt["snapshot"]["opportunity_ledger"]["literal_threshold"] = "21.5"
+    fail("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED", receipt, db=db)
+    assert db.write_count == 0
+
+
+def test_changed_pregame_official_timestamp_never_write():
+    receipt, db = sample(), MockDB()
+    receipt["snapshot"]["role_status"]["source_identity"]["nba_captured_at"] = "2026-10-26T20:30:00Z"
+    fail("NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED", receipt, db=db)
+    assert db.write_count == 0

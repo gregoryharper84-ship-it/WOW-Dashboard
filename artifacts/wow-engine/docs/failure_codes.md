@@ -504,3 +504,9 @@ These detail codes belong only to the source-validated NBA POINTS research snaps
 | `NBA_POINTS_IMMUTABLE_SNAPSHOT_CONFLICT` | NBA snapshot immutability | Reused UUID maps to materially divergent row; never overwrite historical evidence. | No |
 | `NBA_POINTS_SNAPSHOT_INSERT_FAILED` | NBA snapshot DB write | Immutable insert failed and subsequent exact-ID readback did not prove an identical winning concurrent writer. | No |
 | `NBA_POINTS_SNAPSHOT_READBACK_MISMATCH` | NBA snapshot DB readback | Insert returned but the exact persisted candidate cannot be read back identically. | No |
+| `NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_REQUIRED` | NBA source verification | Provided official roster receipt lacks the verified pregame ESPN/NBA roster contract or safety flags. | No |
+| `NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION` | NBA source verification | Supplied verified roster, event, player, team, capture timestamps or official ESPN/NBA crosswalk contradict current exact thesis. | No |
+| `NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED` | NBA board evidence / persistence | Literal full-game numeric offer or exact threshold type missing, nonfinite, unsupported, or unequal to captured board line. | No |
+| `NBA_POINTS_LITERAL_EXACT_OFFER_CONTRADICTION` | NBA board evidence | Captured literal threshold, period or type conflicts with preexisting opportunity ledger. | No |
+| `NBA_POINTS_VERIFIED_SNAPSHOT_PROOF_NOT_FROZEN` | NBA immutable snapshot | Snapshot factory failed to preserve the validated official roster crosswalk or exact captured offer in the frozen fingerprint payload. | No |
+| `NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED` | NBA snapshot persistence | No verified official roster receipt, incomplete/mismatched cross-provider identity, or non-pregame official source timestamp; no write. | No |
