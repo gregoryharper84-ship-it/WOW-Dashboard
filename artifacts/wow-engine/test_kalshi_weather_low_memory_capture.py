@@ -29,7 +29,7 @@ def sample(ticker, target_time):
 
 def test_low_memory_mode_captures_one_h0_core_only(monkeypatch):
     monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "1")
-    seen = {"captured": [], "closed": False}
+    seen = {"captured": [], "closed": False, "forbidden_calls": []}
     class FakeHttp:
         def close(self):
             seen["closed"] = True
@@ -44,10 +44,13 @@ def test_low_memory_mode_captures_one_h0_core_only(monkeypatch):
         bounded, "_discover_target_contracts",
         lambda _http, _target, _now: contracts,
     )
-    def forbidden(**_kw):
-        raise AssertionError("low-memory mode must not execute side feeds")
-    monkeypatch.setattr(bounded, "capture_market_microstructure_batch", forbidden)
-    monkeypatch.setattr(bounded, "capture_hourly_supplemental_sources", forbidden)
+    def forbid_side_feed(name):
+        def fail_if_called(**_kw):
+            seen["forbidden_calls"].append(name)
+            raise AssertionError(f"low-memory mode called forbidden {name}")
+        return fail_if_called
+    monkeypatch.setattr(bounded, "capture_market_microstructure_batch", forbid_side_feed("market_microstructure"))
+    monkeypatch.setattr(bounded, "capture_hourly_supplemental_sources", forbid_side_feed("supplemental_sources"))
     def capture(**kwargs):
         seen["captured"].append(kwargs["ticker"])
         return {"prediction_id": "p1", "rule_snapshot_id": "r1"}
@@ -57,6 +60,7 @@ def test_low_memory_mode_captures_one_h0_core_only(monkeypatch):
         now="2026-11-01T14:00:00Z",
     )
     assert seen["captured"] == ["MIA-A"]
+    assert seen["forbidden_calls"] == []
     assert seen["closed"]
     assert result.samples_captured == 1
     assert result.capture_failures == ()
@@ -70,6 +74,12 @@ def test_low_memory_mode_captures_one_h0_core_only(monkeypatch):
 
 
 def test_low_memory_mode_excludes_non_h0_even_without_current_sample(monkeypatch):
+    forbidden_calls = []
+    def forbid(name):
+        def fail_if_called(**_kw):
+            forbidden_calls.append(name)
+            raise AssertionError(f"unexpected {name}")
+        return fail_if_called
     monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "1")
     class FakeHttp:
         def close(self):
@@ -80,18 +90,14 @@ def test_low_memory_mode_excludes_non_h0_even_without_current_sample(monkeypatch
         bounded, "_discover_target_contracts",
         lambda _http, _target, _now: (sample("MIA-H1", "2026-11-01T15:30:00Z"),),
     )
-    monkeypatch.setattr(
-        bounded, "capture_hourly_shadow",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("unexpected H1 capture")),
-    )
-    monkeypatch.setattr(
-        bounded, "capture_market_microstructure_batch",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("unexpected quote capture")),
-    )
+    monkeypatch.setattr(bounded, "capture_hourly_shadow", forbid("H1_capture"))
+    monkeypatch.setattr(bounded, "capture_market_microstructure_batch", forbid("market_microstructure"))
+    monkeypatch.setattr(bounded, "capture_hourly_supplemental_sources", forbid("supplemental_sources"))
     result = bounded.run_bounded_capture_only_cohort_once(
         db_client_fn=lambda: object(), targets=(target(),),
         now="2026-11-01T14:00:00Z",
     )
+    assert forbidden_calls == []
     assert result.samples_captured == 0
     assert result.capture_failures == ()
     assert result.supplemental_failures == ()
@@ -100,6 +106,10 @@ def test_low_memory_mode_excludes_non_h0_even_without_current_sample(monkeypatch
 
 
 def test_low_memory_suppresses_settlement_even_when_owner_flag_enabled(monkeypatch):
+    settlement_calls = []
+    def forbidden_settlement(*args, **kwargs):
+        settlement_calls.append((args, kwargs))
+        raise AssertionError("settlement must be isolated")
     monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "1")
     monkeypatch.setenv("WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER", "1")
     monkeypatch.setenv("WOW_KALSHI_WEATHER_ISOLATED_SETTLEMENT_ENABLED", "1")
@@ -111,11 +121,9 @@ def test_low_memory_suppresses_settlement_even_when_owner_flag_enabled(monkeypat
     )
     monkeypatch.setattr(runtime, "run_bounded_capture_only_cohort_once", lambda **kw: expected)
     monkeypatch.setattr(runtime, "_scheduled_shadow_targets", lambda: (target(),))
-    monkeypatch.setattr(
-        runtime, "_settle_ready_predictions",
-        lambda *args, **kw: (_ for _ in ()).throw(AssertionError("settlement must be isolated")),
-    )
+    monkeypatch.setattr(runtime, "_settle_ready_predictions", forbidden_settlement)
     assert runtime._run_bounded_shadow_cycle(db_client_fn=lambda: object()) == expected
+    assert settlement_calls == []
 
 
 def test_default_mode_remains_unchanged_when_low_memory_flag_absent(monkeypatch):
