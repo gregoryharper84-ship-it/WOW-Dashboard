@@ -529,6 +529,7 @@ def _native_verify_run(**overrides):
             "number": 7,
             "head": {"sha": HEAD, "ref": "fix/issue-1830"},
         }],
+        "jobs_verified": True,
         "jobs": [{"name": "WOW required-three regression", "status": "queued"}],
     }
     run.update(overrides)
@@ -580,12 +581,8 @@ def test_native_workflow_deferral_ignores_forged_job_names_but_expires():
         {"name": "unrelated renamed shard", "status": "completed"},
     ])
     ev["native_workflow_runs"] = [active]
-    # No job-name prefix can be used as an approval or trusted identity.
-    # Official exact-workflow identity + active status yields a *bounded*
-    # pending state for its two missing required checks only.
-    assert m.pending_required_regressions(ev) == [
-        "WOW required-three regression", "WOW additional required regression"
-    ]
+    # Neither a forged prefix nor unrelated work can defer a required check.
+    assert m.pending_required_regressions(ev) == []
     ev["native_workflow_runs"] = [{**active, "status": "completed"}]
     assert m.pending_required_regressions(ev) == []
     ev["native_workflow_runs"] = [{
@@ -618,9 +615,10 @@ def test_global_qa_and_release_defer_before_native_jobs_exist():
     # completes; native workflow status, not shard status, controls deferral.
     ev["native_workflow_runs"] = [
         _native_verify_run(jobs=[
-            {"name": "WOW required-three collection contract", "status": "completed"}]),
+            {"name": "WOW required-three collection contract", "status": "in_progress"},
+            {"name": "WOW additional shard / kalshi", "status": "queued"}]),
         {**engine_run, "jobs": [
-            {"name": "WOW governed backend shard / 0", "status": "completed"}]},
+            {"name": "WOW governed backend shard / 0", "status": "in_progress"}]},
     ]
     assert m.pending_required_regressions(ev) == expected
     # The readiness classifier is shared by the QA and Release workflows;
@@ -652,9 +650,10 @@ def test_change_impact_native_workflow_startup_defers_without_qa_approval():
     )
     ev["native_workflow_runs"] = [change]
     assert m.pending_required_regressions(ev) == [m.CHANGE_IMPACT_CHECK]
-    # A completed relevant job before aggregate publication still defers.
+    # A recently completed job allows only short check-publication grace.
     ev["native_workflow_runs"] = [{
-        **change, "jobs": [{"name": m.CHANGE_IMPACT_CHECK, "status": "completed"}],
+        **change, "jobs": [{"name": m.CHANGE_IMPACT_CHECK, "status": "completed",
+                            "completed_at": datetime.now(timezone.utc).isoformat()}],
     }]
     assert m.pending_required_regressions(ev) == [m.CHANGE_IMPACT_CHECK]
     assert f"QA_EVIDENCE_MISSING:{m.CHANGE_IMPACT_CHECK}" in m.qa_findings(ev)
@@ -685,9 +684,8 @@ def test_governed_native_workflow_pending_only_with_trusted_exact_identity():
     ev["native_workflow_runs"] = [
         {**engine_run, "jobs": [{"name": "unrelated job", "status": "in_progress"}]}
     ]
-    # The trusted native workflow's active identity controls deferral; a
-    # renamed or adversarial job cannot create a fake PASS or permanent HOLD.
-    assert m.pending_required_regressions(ev) == ["WOW governed probability backend"]
+    # Unrelated active jobs cannot defer missing required evidence.
+    assert m.pending_required_regressions(ev) == []
 
 
 def test_missing_aggregate_does_not_defer_after_native_run_exceeds_pending_bound():
@@ -700,6 +698,77 @@ def test_missing_aggregate_does_not_defer_after_native_run_exceeds_pending_bound
     ev["native_workflow_runs"] = [_native_verify_run(created_at=expired)]
 
     assert m.pending_required_regressions(ev) == []
+
+
+
+def test_native_job_readiness_never_defers_unrelated_or_expired_inventory():
+    ev = evidence()
+    ev["check_runs"] = [c for c in ev["check_runs"]
+                        if c["name"] != "WOW required-three regression"]
+    active = _native_verify_run(jobs=[
+        {"name": "WOW required-three shard / application", "status": "queued"}])
+    ev["native_workflow_runs"] = [active]
+    assert m.pending_required_regressions(ev) == ["WOW required-three regression"]
+    for changed in (
+        {**active, "jobs_verified": False},
+        {**active, "jobs": [{"name": "unrelated", "status": "in_progress"}]},
+        {**active, "jobs": [], "created_at":
+            (datetime.now(timezone.utc) - m.NATIVE_STARTUP_GRACE).isoformat()},
+        {**active, "jobs": [{"name": "WOW required-three regression",
+                            "status": "completed", "completed_at":
+                            (datetime.now(timezone.utc) -
+                             m.NATIVE_JOB_COMPLETION_GRACE).isoformat()}]},
+    ):
+        ev["native_workflow_runs"] = [changed]
+        assert m.pending_required_regressions(ev) == []
+
+
+def test_native_job_inventory_requires_live_workflow_definition_and_complete_jobs():
+    run = _native_verify_run()
+    routes = _gather_routes()
+    runs_path = f"repos/{REPO}/actions/runs?head_sha={HEAD}&event=pull_request&per_page=100&page=1"
+    routes[runs_path] = (200, {"total_count": 1, "workflow_runs": [run]})
+    definition = f"repos/{REPO}/actions/workflows/{m.NATIVE_REGRESSION_WORKFLOW_ID}"
+    job_path = f"repos/{REPO}/actions/runs/7001/attempts/1/jobs?per_page=100&page=1"
+    routes[definition] = (200, {
+        "id": m.NATIVE_REGRESSION_WORKFLOW_ID,
+        "path": m.NATIVE_REGRESSION_WORKFLOW_PATH, "state": "active",
+    })
+    routes[job_path] = (200, {"total_count": 1, "jobs": [{
+        "id": 8001, "run_id": 7001,
+        "name": "WOW required-three regression", "status": "queued",
+    }]})
+    ev = m.gather(REPO, 7, HEAD, fetch=Fake(routes),
+                  source_review_resolver=_source_review_resolver)
+    assert ev["evidence_errors"] == []
+    assert ev["native_workflow_runs"][0]["jobs_verified"] is True
+    assert len(ev["native_workflow_runs"][0]["jobs"]) == 1
+
+    for bad_definition in (
+        {"id": 1, "path": m.NATIVE_REGRESSION_WORKFLOW_PATH, "state": "active"},
+        {"id": m.NATIVE_REGRESSION_WORKFLOW_ID, "path": ".github/workflows/foreign.yml",
+         "state": "active"},
+        {"id": m.NATIVE_REGRESSION_WORKFLOW_ID, "path": m.NATIVE_REGRESSION_WORKFLOW_PATH,
+         "state": "disabled_manually"},
+    ):
+        changed = dict(routes, **{definition: (200, bad_definition)})
+        held = m.gather(REPO, 7, HEAD, fetch=Fake(changed),
+                        source_review_resolver=_source_review_resolver)
+        assert any(e.startswith("NATIVE_WORKFLOW_DEFINITION_UNVERIFIED")
+                   for e in held["evidence_errors"])
+        assert held["native_workflow_runs"] == []
+    for bad_jobs in (
+        (403, {}),
+        (200, {"total_count": 2, "jobs": routes[job_path][1]["jobs"]}),
+        (200, {"total_count": 1, "jobs": [
+            {"id": 8, "run_id": 999, "name": "WOW required-three regression",
+             "status": "in_progress"}]}),
+    ):
+        changed = dict(routes, **{job_path: bad_jobs})
+        held = m.gather(REPO, 7, HEAD, fetch=Fake(changed),
+                        source_review_resolver=_source_review_resolver)
+        assert held["evidence_errors"]
+        assert held["native_workflow_runs"] == []
 
 
 def test_qa_check_published_by_another_app_is_a_foreign_source():
