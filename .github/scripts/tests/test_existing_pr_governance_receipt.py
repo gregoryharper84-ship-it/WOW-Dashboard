@@ -2474,7 +2474,8 @@ def test_selected_source_download_retries_transient_only_without_downgrade():
     assert '[[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]' in block
     assert 'SOURCE_REVIEW_REPOSITORY_MISMATCH' in block
     assert 'SOURCE_REVIEW_ARTIFACT_ID_INVALID' in block
-    assert '--fail --silent --show-error --location' in block
+    assert '--fail --no-progress-meter --show-error --location' in block
+    assert '--silent' not in block
     assert '--max-redirs 1 --proto-redir =https' in block
     assert '--oauth2-bearer "$GH_TOKEN"' in block
     assert '--header "Authorization: Bearer' not in block
