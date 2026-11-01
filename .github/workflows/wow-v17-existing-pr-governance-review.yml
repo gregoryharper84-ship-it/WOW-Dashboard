@@ -268,23 +268,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/source-review"
           # Same authenticated artifact only. Retry once on a proven command
           # timeout (exit 124); all other fetch errors HOLD immediately.
+          # Fetch only the selected authenticated artifact. Any transport
+          # failure is a HOLD; never substitute another artifact or review route.
           artifact_zip="$RUNNER_TEMP/source-review/decision.zip"
-          if timeout -k 3s 12s gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$artifact_zip" ; then
-            :
-          else
-            artifact_rc=$?
-            if [ "$artifact_rc" -eq 124 ]; then
-              sleep 5
-              if ! timeout -k 3s 12s gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$artifact_zip" ; then
-                rm -f "$artifact_zip"
-                echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
-                exit 1
-              fi
-            else
-              rm -f "$artifact_zip"
-              echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
-              exit 1
-            fi
+          if ! gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$artifact_zip"; then
+            rm -f "$artifact_zip"
+            echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
+            exit 1
           fi
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
             wow-v17-independent-source-review.json > "$RUNNER_TEMP/source-review/decision.json"

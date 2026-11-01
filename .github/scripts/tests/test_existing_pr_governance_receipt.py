@@ -2463,18 +2463,18 @@ def test_governance_review_route_contract_is_fail_closed_without_shell_execution
     assert 'if [ ! -f "$RUNNER_TEMP/source-review/decision.json" ] ||' in selector
     assert '[ ! -f "$RUNNER_TEMP/source-review-run.json" ]; then' in selector
 
-def test_selected_source_download_has_bounded_timeout_without_authority_downgrade():
-    """A command timeout may retry the same artifact once; other failures HOLD."""
+def test_selected_source_download_holds_without_fallback_or_executing_retries():
+    """One exact-ID fetch; errors never permit alternative review authority."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     start = workflow.index('          artifact_zip="$RUNNER_TEMP/source-review/decision.zip"')
     end = workflow.index('          unzip -p "$RUNNER_TEMP/source-review/decision.zip"', start)
     block = workflow[start:end]
-    assert block.count('timeout -k 3s 12s gh api') == 2
-    assert block.count('/actions/artifacts/${artifact_id}/zip') == 2
-    assert 'if [ "$artifact_rc" -eq 124 ]; then' in block
-    assert 'sleep 5' in block
-    assert block.count('SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE') == 2
-    assert block.count('rm -f "$artifact_zip"') == 2
+    assert block.count('/actions/artifacts/${artifact_id}/zip') == 1
+    assert 'if ! gh api ' in block
+    assert 'rm -f "$artifact_zip"' in block
+    assert 'SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE' in block
+    assert 'exit 1' in block
     assert '--trusted-reviewers-json' not in block
     assert '2>/dev/null' not in block
-
+    assert 'timeout ' not in block
+    assert 'sleep ' not in block
