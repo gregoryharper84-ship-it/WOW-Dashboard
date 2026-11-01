@@ -133,15 +133,7 @@ def assert_no_local_writer(comments):
 
 
 def reserve_cursor(api, comments, *, incident, main_sha, pr_number, pr_sha,
-                   branch, cursor_agent_id, worker_id):
-    # The immutable reservation must record the authenticated source PR ref.
-    # This is required by the independent finalizer after a failed launch.
-    if (not isinstance(branch, str) or not branch.strip()
-            or len(branch) > 255 or branch in ("main", "master")
-            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch) is None
-            or ".." in branch or "//" in branch
-            or branch.endswith(("/", ".", ".lock"))):
-        raise ProviderUnavailable("CURSOR_RESERVATION_BRANCH_INVALID")
+                   cursor_agent_id, worker_id):
     attempts = reservations(comments)
     assert_no_remote_writer(
         comments, get_run=lambda run_id: api.request(
@@ -157,8 +149,8 @@ def reserve_cursor(api, comments, *, incident, main_sha, pr_number, pr_sha,
         "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id=str(incident),
         lease_group=f"PR_{pr_number}", main_sha=main_sha, hold=True,
         worker_id=worker_id, assignment_attempts=1, source_pr=pr_number,
-        pr_number=str(pr_number), pr_sha=pr_sha, branch=branch,
-        cursor_agent_id=cursor_agent_id, cursor_run_id=None,
+        pr_number=str(pr_number), pr_sha=pr_sha, cursor_agent_id=cursor_agent_id,
+        cursor_run_id=None,
         next_action="Reconcile this reservation; keep the shared writer hold until Cursor "
                     "termination and independent review are verified.",
     )

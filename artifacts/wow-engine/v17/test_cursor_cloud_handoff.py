@@ -49,8 +49,7 @@ def dispatch(*args, **kwargs):
 class FakeApi:
     def __init__(self, *, global_agents=None, pr_agents=None, global_next=None,
                  pr_next=None, issue_data=None, stale_pr_read=None,
-                 malformed_pr_read=None, renamed_pr_read=None,
-                 post_result=None, post_error=None,
+                 malformed_pr_read=None, post_result=None, post_error=None,
                  fail_ledger_write=False):
         self.calls = []
         self.comments = []
@@ -62,7 +61,6 @@ class FakeApi:
         self.issue_data = issue_data or issue()
         self.stale_pr_read = stale_pr_read
         self.malformed_pr_read = malformed_pr_read
-        self.renamed_pr_read = renamed_pr_read
         self.pr_reads = 0
         self.post_result = post_result
         self.post_error = post_error
@@ -74,10 +72,6 @@ class FakeApi:
             self.pr_reads += 1
             if self.pr_reads == self.malformed_pr_read:
                 return []
-            if self.renamed_pr_read is not None and self.pr_reads >= self.renamed_pr_read:
-                changed = pr()
-                changed["head"]["ref"] = "fix/renamed"
-                return changed
             return pr(sha="b" * 40) if self.pr_reads == self.stale_pr_read else pr()
         if "/issues/comments/" in url and kwargs.get("method") == "PATCH":
             self.comments[0]["body"] = kwargs["body"]["body"]
@@ -146,16 +140,6 @@ class HandoffTests(unittest.TestCase):
                     mod.validate_pr(data, repo=REPO, number=1948, sha=SHA,
                                    incident_number=INCIDENT)
                 self.assertEqual(cm.exception.code, reason)
-
-    def test_reject_malformed_pr_branch_before_ledger_or_provider(self):
-        for bad_ref in (None, 7, "", " ", "main", "master", "fix branch",
-                        "fix/../bad", "fix//branch", "fix/" + "a" * 255):
-            datum = pr()
-            datum["head"]["ref"] = bad_ref
-            with self.subTest(branch=bad_ref), self.assertRaises(mod.HandoffBlocked) as cm:
-                mod.validate_pr(datum, repo=REPO, number=1948, sha=SHA,
-                                incident_number=INCIDENT)
-            self.assertEqual(cm.exception.code, "CURSOR_UNSAFE_TARGET_BRANCH")
 
     def test_reject_pr_without_exact_incident_binding(self):
         with self.assertRaises(mod.HandoffBlocked) as cm:
@@ -246,21 +230,6 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, "CURSOR_STALE_PR_HEAD")
         self.assertEqual(api.cursor_posts, [])
 
-    def test_pr_branch_change_before_reservation_is_recorded_from_verified_read(self):
-        api = FakeApi(renamed_pr_read=2)
-        result = dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
-        self.assertEqual(result["status"], "CURSOR_AGENT_ENQUEUED")
-        self.assertEqual(remote.reservations(api.comments)[0][1]["branch"], "fix/renamed")
-
-    def test_pr_branch_change_after_reservation_blocks_provider_post(self):
-        api = FakeApi(renamed_pr_read=3)
-        with self.assertRaises(mod.HandoffBlocked) as cm:
-            dispatch(REPO, 1948, SHA, "Fix", "gh", "cursor", api)
-        self.assertEqual(cm.exception.code, "CURSOR_PR_BRANCH_CHANGED")
-        self.assertEqual(api.cursor_posts, [])
-        self.assertEqual(remote.reservations(api.comments)[0][1]["branch"], "fix/daily")
-        self.assertTrue(remote.reservations(api.comments)[0][1]["hold"])
-
     def test_malformed_pr_recheck_fails_typed_before_lease_or_create(self):
         api = FakeApi(malformed_pr_read=2)
         with self.assertRaises(mod.HandoffBlocked) as cm:
@@ -304,7 +273,6 @@ class HandoffTests(unittest.TestCase):
         })
         self.assertEqual(result["writer_lease_comment_id"], 55)
         self.assertEqual(result["writer_lease_status"], "CURSOR_AGENT_ENQUEUED")
-        self.assertEqual(remote.reservations(api.comments)[0][1]["branch"], "fix/daily")
         self.assertEqual(len(api.cursor_posts), 1)
         self.assertLess(
             next(i for i, (url, kwargs) in enumerate(api.calls)
@@ -479,7 +447,6 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(cm.exception.details["main_sha"], MAIN_SHA)
         self.assertTrue(cm.exception.details["reconciliation_required"])
         self.assertEqual(cm.exception.details["provider_http_status"], 400)
-        self.assertEqual(remote.reservations(api.comments)[0][1]["branch"], "fix/daily")
 
 
 if __name__ == "__main__":

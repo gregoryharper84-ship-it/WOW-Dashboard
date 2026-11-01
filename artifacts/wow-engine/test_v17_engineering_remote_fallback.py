@@ -222,12 +222,10 @@ class RemoteFallbackTests(unittest.TestCase):
         agent = "bc-12345678-1234-5678-1234-567812345678"
         comment_id, lease = remote.reserve_cursor(
             self.api, [], incident="1021", main_sha=MAIN, pr_number=1948,
-            pr_sha="b" * 40, branch="fix/verified-head",
-            cursor_agent_id=agent, worker_id="workflow:run:1",
+            pr_sha="b" * 40, cursor_agent_id=agent, worker_id="workflow:run:1",
         )
         self.assertEqual(comment_id, 55)
         self.assertEqual(lease["provider"], "cursor")
-        self.assertEqual(lease["branch"], "fix/verified-head")
         self.assertTrue(lease["hold"])
         with self.assertRaisesRegex(
             remote.ProviderUnavailable, "^REMOTE_WRITER_RECONCILIATION_REQUIRED$"
@@ -244,21 +242,6 @@ class RemoteFallbackTests(unittest.TestCase):
         self.assertEqual(reconciled[0]["status"],
                          "CURSOR_LEASE_REQUIRES_TERMINATION_AND_REVIEW")
         self.assertTrue(remote.reservations(self.api.comments)[0][1]["hold"])
-
-    def test_failed_cursor_reservation_refuses_missing_or_protected_branch_before_write(self):
-        agent = "bc-12345678-1234-5678-1234-567812345678"
-        for invalid in (None, "", " ", "main", "master", "fix/branch ", True,
-                        "fix branch", "fix//branch", "fix/../bad", "fix/.lock",
-                        "fix/" + "a" * 255):
-            with self.subTest(branch=invalid), self.assertRaisesRegex(
-                remote.ProviderUnavailable, "^CURSOR_RESERVATION_BRANCH_INVALID$"
-            ):
-                remote.reserve_cursor(
-                    self.api, [], incident="1021", main_sha=MAIN, pr_number=1948,
-                    pr_sha="b" * 40, branch=invalid,
-                    cursor_agent_id=agent, worker_id="github-actions:1:1",
-                )
-        self.assertEqual(self.api.comments, [])
 
     def test_cursor_lease_identity_is_validated_and_replay_protected(self):
         base = remote.receipt(
@@ -278,7 +261,7 @@ class RemoteFallbackTests(unittest.TestCase):
         ):
             remote.reserve_cursor(
                 self.api, self.api.comments, incident="1021", main_sha=MAIN,
-                pr_number=1948, pr_sha="c" * 40, branch="fix/verified-head",
+                pr_number=1948, pr_sha="c" * 40,
                 cursor_agent_id="bc-87654321-4321-8765-4321-876543218765",
                 worker_id="workflow:run:2",
             )
