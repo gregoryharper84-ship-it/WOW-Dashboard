@@ -208,10 +208,46 @@ def test_database_auth_or_transport_failure_does_not_masquerade_as_insert_race()
     assert db.rows == {}
 
 
-def test_exact_id_read_always_checks_for_ambiguity_up_to_two_rows():
-    # The real DB needs a unique constraint; the application still checks >1.
-    assert ".limit(2)" in __import__(
-        "inspect"
-    ).getsource(__import__(
-        "v17.nba_points_snapshot_persistence", fromlist=["_read"]
-    )._read)
+def test_duplicate_exact_id_rows_fail_closed_with_behavioral_query():
+    from types import SimpleNamespace
+
+    class DuplicateReadQuery(MockQuery):
+        def execute(self):
+            if self.item is None:
+                return SimpleNamespace(data=[deepcopy(receipt["snapshot"]),
+                                             deepcopy(receipt["snapshot"])])
+            return super().execute()
+
+    class DuplicateReadDB(MockDB):
+        def table(self, table):
+            assert table == "wow_prop_evidence_snapshots"
+            return DuplicateReadQuery(self)
+
+    receipt = sample()
+    db = DuplicateReadDB()
+    fail("NBA_POINTS_SNAPSHOT_IDENTITY_AMBIGUOUS", receipt, db=db)
+    assert db.write_count == 0
+
+
+def test_capture_reuses_one_clock_for_bridge_and_persistence(monkeypatch):
+    import v17.nba_points_snapshot_bridge as bridge
+    import v17.nba_points_snapshot_persistence as persistence
+    calls = []
+    injected_clock = datetime(2026, 10, 26, 17, tzinfo=timezone.utc)
+
+    def source(*, verified_roster_receipt, now, **kwargs):
+        calls.append(("source", now, verified_roster_receipt))
+        return {"research": True}
+
+    def save(db, receipt, *, now):
+        calls.append(("persist", now, receipt))
+        return {"status": "PERSISTED_RESEARCH_ONLY", "can_execute": False}
+
+    monkeypatch.setattr(bridge, "build_nba_points_snapshot", source)
+    monkeypatch.setattr(persistence, "persist_validated_nba_points_snapshot", save)
+    result = persistence.capture_nba_points_snapshot(
+        object(), verified_roster_receipt={"verified": True}, now=injected_clock,
+    )
+    assert result["can_execute"] is False
+    assert calls[0][1] is injected_clock and calls[1][1] is injected_clock
+

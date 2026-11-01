@@ -13,6 +13,7 @@ import re
 from math import isfinite
 from typing import Any, Mapping
 from uuid import UUID
+from postgrest.exceptions import APIError as PostgrestAPIError
 
 CAN_EXECUTE = False
 TABLE = "wow_prop_evidence_snapshots"
@@ -171,7 +172,7 @@ def persist_validated_nba_points_snapshot(
     except Exception as exc:
         # Only PostgreSQL 23505 is an expected insert race. Authentication,
         # transport and schema failures are not a duplicate proof.
-        if str(getattr(exc, "code", "")) != "23505":
+        if not isinstance(exc, PostgrestAPIError) or str(exc.code) != "23505":
             raise NBAPointsSnapshotPersistenceError("NBA_POINTS_SNAPSHOT_INSERT_FAILED") from exc
         existing = _read(db, snapshot_id)
         if existing is None or not _matching(existing, snapshot):
@@ -191,10 +192,13 @@ def capture_nba_points_snapshot(
 ) -> dict[str, Any]:
     """Require authenticated pregame roster proof as an explicit server-side input."""
     from v17.nba_points_snapshot_bridge import build_nba_points_snapshot
+    # One frozen clock input is shared across verification and persistence,
+    # avoiding inconsistent pregame gates at a rollover boundary.
+    capture_clock = now if now is not None else datetime.now(timezone.utc)
     result = build_nba_points_snapshot(
-        verified_roster_receipt=verified_roster_receipt, now=now, **source_inputs,
+        verified_roster_receipt=verified_roster_receipt, now=capture_clock, **source_inputs,
     )
-    return persist_validated_nba_points_snapshot(db, result, now=now)
+    return persist_validated_nba_points_snapshot(db, result, now=capture_clock)
 
 
 __all__ = ["NBAPointsSnapshotPersistenceError", "persist_validated_nba_points_snapshot",
