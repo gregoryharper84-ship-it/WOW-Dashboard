@@ -799,6 +799,27 @@ SOURCE_REVIEW_RUN = {
 }
 
 
+
+def build_automated(*, now=None, data=None):
+    """Build an authenticated schema-3 fixture, never an asserted live certification."""
+    current = now or datetime.now(timezone.utc)
+    source = evidence() if data is None else data
+    return verifier.build_receipt(
+        source,
+        expected_repository=REPOSITORY,
+        expected_head_sha=HEAD,
+        expected_head_ref="fix/issue-1806",
+        expected_pr_number=1822,
+        expected_incident_id="1806",
+        expected_workflow_run_id="12345",
+        expected_workflow_run_attempt=1,
+        automated_review=automated_review_data(source, now=current),
+        source_review_run=SOURCE_REVIEW_RUN,
+        source_review_artifact_id=555,
+        now=current,
+    )
+
+
 def test_builds_versioned_exact_head_review_evidence_without_legacy_pass_fields():
     receipt = build()
 
@@ -1665,25 +1686,44 @@ def test_independent_approval_still_required_with_fresh_receipt():
         build(data=evidence(review_state="DISMISSED"))
 
 
-def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch):
-    # CLI uses live wall clock; never feed it the suite’s frozen historical NOW.
-    receipt = build(now=datetime.now(timezone.utc))
-    live_reviews = tmp_path / "reviews.json"
-    live_reviews.write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
-    (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", [
+def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch, capsys):
+    # Live-clock consumer exercises authenticated schema-3 review, not retired schema-2.
+    receipt = build_automated()
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    reviews = tmp_path / "reviews.json"
+    reviews.write_text("[]", encoding="utf-8")
+    source_run = tmp_path / "source-review-run.json"
+    source_run.write_text(json.dumps(SOURCE_REVIEW_RUN), encoding="utf-8")
+    common = [
         "verify",
-        "--receipt", str(tmp_path / "receipt.json"),
+        "--receipt", str(receipt_path),
         "--repository", REPOSITORY,
         "--head-sha", HEAD,
         "--head-ref", "fix/issue-1806",
         "--workflow-run-id", "12345",
         "--workflow-name", verifier.WORKFLOW_NAME,
         "--pr-number", "1822",
-        "--live-reviews-json", str(live_reviews),
-    ])
-
+        "--live-reviews-json", str(reviews),
+        "--source-review-run-json", str(source_run),
+    ]
+    monkeypatch.setattr(sys, "argv", common)
     assert verifier.main() == 0
+    assert receipt["receipt_schema_version"] == 3
+
+    # Exact PR binding remains mandatory even with authenticated source evidence.
+    monkeypatch.setattr(sys, "argv", [
+        *common[:common.index("--pr-number") + 1], "1823",
+        *common[common.index("--pr-number") + 2:],
+    ])
+    assert verifier.main() == 1
+    assert "PR_NUMBER_MISMATCH" in capsys.readouterr().out
+
+    # A historical human-allowlist receipt cannot be replayed after sunset.
+    receipt_path.write_text(json.dumps(build()), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", common)
+    assert verifier.main() == 1
+    assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" in capsys.readouterr().out
 
 
 def test_consumer_context_does_not_infer_pr_number_from_event(tmp_path, monkeypatch):
@@ -1814,11 +1854,16 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
     assert legacy_invalid.returncode == 1
     assert "receipt head SHA mismatch" in legacy_invalid.stdout
 
-    # External Python verifier uses the current wall clock, not the test fixture clock.
-    receipt = build(now=datetime.now(timezone.utc))
+    # External Python verifier runs at the real clock: only schema-3 is live.
+    receipt = build_automated()
+    automated_valid = run(
+        verifier.WORKFLOW_NAME, receipt, live_reviews=[], source_run=SOURCE_REVIEW_RUN
+    )
+    assert automated_valid.returncode == 0, automated_valid.stdout + automated_valid.stderr
+    assert receipt["receipt_schema_version"] == 3
+
+    # Frozen schema-2 history still proves a withdrawn approval is invalid.
     reviews = evidence()["reviews"]
-    v2_valid = run(verifier.WORKFLOW_NAME, receipt, reviews)
-    assert v2_valid.returncode == 0, v2_valid.stderr
     withdrawn = reviews + [
         {
             "id": 13,
@@ -1828,9 +1873,11 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "user": {**REVIEWER, "type": "User"},
         }
     ]
-    v2_withdrawn = run(verifier.WORKFLOW_NAME, receipt, withdrawn)
-    assert v2_withdrawn.returncode == 1
-    assert "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING" in v2_withdrawn.stdout
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING"):
+        verify(build(), live_reviews=withdrawn)
+    expired_human = run(verifier.WORKFLOW_NAME, build(), withdrawn)
+    assert expired_human.returncode == 1
+    assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" in expired_human.stdout
 
     renamed_source = dict(receipt)
     renamed_source["changed_files"] = [
@@ -1840,9 +1887,11 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "status": "renamed",
         }
     ]
-    v2_renamed = run(verifier.WORKFLOW_NAME, renamed_source, reviews)
-    assert v2_renamed.returncode == 1
-    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in v2_renamed.stdout
+    renamed = run(
+        verifier.WORKFLOW_NAME, renamed_source, live_reviews=[], source_run=SOURCE_REVIEW_RUN
+    )
+    assert renamed.returncode == 1
+    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in renamed.stdout
 
     boot_data = bootstrap_evidence()
     boot = build_bootstrap(boot_data, now=datetime.now(timezone.utc))
@@ -2019,7 +2068,7 @@ def test_protected_worker_paths_classify_as_trust_root_bootstrap():
     ) == verifier.ORDINARY_MODE
 
 
-def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch):
+def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(REPO_ROOT)
     data = bootstrap_evidence()
     evidence_path = tmp_path / "evidence.json"
@@ -2052,19 +2101,26 @@ def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch):
     evidence_path.write_text(json.dumps(ordinary), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["verify", *common, "--classify"])
     assert verifier.main() == 0
+    current = datetime.now(timezone.utc)
+    source_artifact = tmp_path / "source-review.json"
+    source_artifact.write_text(json.dumps(automated_review_data(now=current)), encoding="utf-8")
+    source_run = tmp_path / "source-run.json"
+    source_run.write_text(json.dumps(SOURCE_REVIEW_RUN), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "verify", *common, "--output", str(output),
+        "--source-review-json", str(source_artifact),
+        "--source-review-run-json", str(source_run),
+        "--source-review-artifact-id", "555",
+    ])
+    assert verifier.main() == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["receipt_schema_version"] == 3
+    # Ordinary human allowlist fallback remains prohibited after its authorized sunset.
     monkeypatch.setattr(sys, "argv", [
         "verify", *common, "--output", str(output),
         "--trusted-reviewers-json", json.dumps(ALLOWLIST),
     ])
-    # CLI verifies against the wall clock; the fixture clock is historical.
-    original_build = verifier.build_receipt
-
-    def build_now(*args, **kwargs):
-        kwargs["now"] = datetime.now(timezone.utc)
-        return original_build(*args, **kwargs)
-
-    monkeypatch.setattr(verifier, "build_receipt", build_now)
-    assert verifier.main() == 0
+    assert verifier.main() == 1
+    assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('filename,previous_filename', (
