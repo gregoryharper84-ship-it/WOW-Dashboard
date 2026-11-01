@@ -112,17 +112,6 @@ def verified_released_ids(
             and doc.get("cursor_run_id") is None
             and doc.get("terminal_status") == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
             and doc.get("agent_status") == "NEVER_CREATED"
-            and (
-                (doc.get("negative_inventory_contract") == 2
-                 and type(doc.get("pr_agents_checked")) is int
-                 and doc["pr_agents_checked"] == 0)
-                or (doc.get("negative_inventory_contract") is None
-                    and doc.get("pr_agents_checked") is None
-                    and doc.get("source_sha") == "5f15758b00b5c398aeaf91a9247ddb2056a23c18"
-                    and doc.get("workflow_run_id") == 41266212464
-                    and doc.get("run_attempt") == 1
-                    and doc.get("original_comment_id") == 6547956599)
-            )
             and len(matches) == 1
             and matches[0].get("user", {}).get("login") == BOT_LOGIN
             and expected_negative_agent_id is not None
