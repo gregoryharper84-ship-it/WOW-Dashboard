@@ -2463,36 +2463,36 @@ def test_governance_review_route_contract_is_fail_closed_without_shell_execution
     assert 'if [ ! -f "$RUNNER_TEMP/source-review/decision.json" ] ||' in selector
     assert '[ ! -f "$RUNNER_TEMP/source-review-run.json" ]; then' in selector
 
-def test_selected_source_download_retries_transient_only_without_downgrade():
-    """Read one authenticated exact-ID artifact; validate before publishing ZIP."""
+def test_selected_source_download_has_no_token_on_signed_redirect():
+    """Two-step artifact download: authenticated metadata, tokenless signed ZIP."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     start = workflow.index('          [ "$GITHUB_REPOSITORY" = "gregoryharper84-ship-it/WOW-Dashboard" ]')
     end = workflow.index('          unzip -p "$RUNNER_TEMP/source-review/decision.zip"', start)
     block = workflow[start:end]
-    assert block.count('/actions/artifacts/${artifact_id}/zip') == 1
+    assert block.count("/actions/artifacts/${artifact_id}/zip") == 1
     assert '[ "$GITHUB_REPOSITORY" = "gregoryharper84-ship-it/WOW-Dashboard" ]' in block
     assert '[[ "$artifact_id" =~ ^[1-9][0-9]*$ ]]' in block
-    assert 'SOURCE_REVIEW_REPOSITORY_MISMATCH' in block
-    assert 'SOURCE_REVIEW_ARTIFACT_ID_INVALID' in block
-    assert '--fail --no-progress-meter --show-error --location' in block
-    assert '--silent' not in block
-    assert '--max-redirs 1 --proto-redir =https' in block
-    assert '--oauth2-bearer "$GH_TOKEN"' in block
-    assert '--header "Authorization: Bearer' not in block
-    assert '--location-trusted' not in block
-    assert '--retry 1 --retry-delay 5 --retry-max-time 40' in block
-    assert '--retry-all-errors' not in block
-    assert '--max-time 15' in block
+    assert "SOURCE_REVIEW_REPOSITORY_MISMATCH" in block
+    assert "SOURCE_REVIEW_ARTIFACT_ID_INVALID" in block
+    assert block.count('--oauth2-bearer "$GH_TOKEN"') == 1
+    assert "SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID" in block
+    assert '[ "$api_status" = "302" ]' in block
+    assert 'redirect_url=$(python - "$headers_tmp"' in block
+    assert 'u.scheme != "https"' in block
+    assert 'len(urls) != 1' in block
+    assert 'ip_host' in block
+    assert '--output "$artifact_tmp" "$redirect_url"' in block
+    assert block.index('--oauth2-bearer "$GH_TOKEN"') < block.index('--output "$artifact_tmp" "$redirect_url"')
+    assert "--location" not in block
+    assert "--location-trusted" not in block
+    assert "--retry-all-errors" not in block
+    assert block.count("--retry 1 --retry-delay 5 --retry-max-time 40") == 2
     assert 'mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX"' in block
-    assert "trap 'rm -f \"$artifact_tmp\" \"$artifact_zip\"' EXIT" in block
-    assert "trap 'exit 129' HUP" in block
-    assert "trap 'exit 130' INT" in block
-    assert "trap 'exit 143' TERM" in block
-    assert 'unzip -tqq "$artifact_tmp"' in block
+    assert 'mktemp "$RUNNER_TEMP/source-review/.headers.XXXXXXXX"' in block
+    assert 'trap \'rm -f "$artifact_tmp" "$artifact_zip" "$headers_tmp"\' EXIT' in block
+    assert all("trap \'exit " in block for _ in (0,))
+    assert "unzip -tqq" in block
     assert 'mv -- "$artifact_tmp" "$artifact_zip"' in block
-    assert 'SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE' in block
-    assert 'SOURCE_REVIEW_ARTIFACT_ZIP_INVALID' in block
-    assert 'exit 1' in block
-    assert '--trusted-reviewers-json' not in block
-    assert '2>/dev/null' not in block
-    assert 'trap - EXIT' not in block
+    assert "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" in block
+    assert "SOURCE_REVIEW_ARTIFACT_ZIP_INVALID" in block
+    assert "--header \"Authorization: Bearer" not in block

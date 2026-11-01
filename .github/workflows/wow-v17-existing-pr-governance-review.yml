@@ -277,24 +277,57 @@ jobs:
           }
           artifact_zip="$RUNNER_TEMP/source-review/decision.zip"
           artifact_tmp=$(mktemp "$RUNNER_TEMP/source-review/.decision.XXXXXXXX")
-          # Catchable signals become nonzero exits so EXIT cleanup runs.
-          # SIGKILL cannot be trapped; GitHub decommissions the per-job VM.
-          trap 'rm -f "$artifact_tmp" "$artifact_zip"' EXIT
+          headers_tmp=$(mktemp "$RUNNER_TEMP/source-review/.headers.XXXXXXXX")
+          # All catchable termination exits through the same cleanup.
+          trap 'rm -f "$artifact_tmp" "$artifact_zip" "$headers_tmp"' EXIT
           trap 'exit 129' HUP
           trap 'exit 130' INT
           trap 'exit 143' TERM
-          # Curl authenticates to api.github.com only. The GitHub artifact API
-          # returns one 302 to a signed ZIP URL; never forward the bearer token
-          # across origins, follow non-HTTPS locations, or trust extra redirects.
-          # One native retry is allowed only for transient HTTP/transport errors.
-          if ! curl --fail --no-progress-meter --show-error --location \
-            --max-redirs 1 --proto-redir =https \
+          # First request: authenticate to canonical GitHub only; do not follow
+          # the 302 because no token may reach the signed CDN download URL.
+          if ! api_status=$(curl --fail --no-progress-meter --show-error \
             --connect-timeout 5 --max-time 15 \
             --retry 1 --retry-delay 5 --retry-max-time 40 \
             --oauth2-bearer "$GH_TOKEN" \
             --header "Accept: application/vnd.github+json" \
-            --output "$artifact_tmp" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"; then
+            --dump-header "$headers_tmp" --output /dev/null \
+            --write-out "%{http_code}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"); then
+            echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
+            exit 1
+          fi
+          [ "$api_status" = "302" ] || {
+            echo "SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID" >&2
+            exit 1
+          }
+          # Parse exactly one Location, HTTPS only, without logging its signed
+          # short-lived query string. This output stays in a shell variable.
+          redirect_url=$(python - "$headers_tmp" <<'PY'
+          import ipaddress, pathlib, sys
+          from urllib.parse import urlsplit
+          lines = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          urls = [s.split(":", 1)[1].strip() for s in lines if s.lower().startswith("location:")]
+          if len(urls) != 1:
+              raise SystemExit("SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID")
+          u = urlsplit(urls[0])
+          try:
+              ipaddress.ip_address(u.hostname or "")
+          except ValueError:
+              ip_host = False
+          else:
+              ip_host = True
+          if u.scheme != "https" or not u.hostname or ip_host or u.username or u.password or u.fragment or u.port not in (None, 443):
+              raise SystemExit("SOURCE_REVIEW_ARTIFACT_REDIRECT_INVALID")
+          print(urls[0])
+          PY
+          ) || exit 1
+          # Second request: fetch only the signed HTTPS URL; intentionally
+          # NO GH_TOKEN, Authorization header, cookies, or redirects.
+          if ! curl --fail --no-progress-meter --show-error \
+            --proto =https --max-redirs 0 \
+            --connect-timeout 5 --max-time 15 \
+            --retry 1 --retry-delay 5 --retry-max-time 40 \
+            --output "$artifact_tmp" "$redirect_url"; then
             echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
             exit 1
           fi
