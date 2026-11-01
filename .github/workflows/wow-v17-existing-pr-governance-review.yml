@@ -266,10 +266,26 @@ jobs:
               raise SystemExit(1)
           PY
           mkdir -p "$RUNNER_TEMP/source-review"
-          # A selected source-review artifact is authoritative. GitHub download
-          # failures HOLD immediately; no undocumented retry or weaker fallback.
-          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
-            > "$RUNNER_TEMP/source-review/decision.zip"
+          # Same authenticated artifact only. Retry once on a proven command
+          # timeout (exit 124); all other fetch errors HOLD immediately.
+          artifact_zip="$RUNNER_TEMP/source-review/decision.zip"
+          if timeout -k 5s 30s gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$artifact_zip" 2>/dev/null; then
+            :
+          else
+            artifact_rc=$?
+            if [ "$artifact_rc" -eq 124 ]; then
+              sleep 2
+              if ! timeout -k 5s 30s gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$artifact_zip" 2>/dev/null; then
+                rm -f "$artifact_zip"
+                echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
+                exit 1
+              fi
+            else
+              rm -f "$artifact_zip"
+              echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
+              exit 1
+            fi
+          fi
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
             wow-v17-independent-source-review.json > "$RUNNER_TEMP/source-review/decision.json"
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
