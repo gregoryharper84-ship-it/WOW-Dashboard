@@ -485,3 +485,27 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## V17 candidate-only recalibration research input failures
+
+These are typed research-input rejections from `v17/refit_scheduler.py`, never model capability or Action failures. All preserve `can_execute=false`, `probability_publishable=false`; no champion/production mutation follows. The retrospective diagnostic is **not** an independent promotion holdout.
+
+| Code | Owning lane | Condition | Rank eligible? |
+|---|---|---|---:|
+| `REFIT_PROPOSAL_TYPE_UNSUPPORTED` | V17 advisory refit scheduler | Proposal is not an exact RECALIBRATION_CHALLENGER. | No |
+| `REFIT_PROPOSAL_SAFETY_INVALID` | V17 advisory refit scheduler | Proposal lacks mandatory nonpromotion or nonexecution safety flags. | No |
+| `REFIT_PROPOSAL_IDENTITY_REQUIRED` | V17 advisory refit scheduler | Proposal ID or exact cohort key is missing. | No |
+| `REFIT_EVIDENCE_FLOOR_INVALID` | V17 advisory refit scheduler | Requested fit/diagnostic event floor is below the candidate-only evidence minimum. | No |
+| `REFIT_EVENT_OR_PREDICTION_ID_MISSING` | V17 advisory refit scheduler | Immutable prediction ID or official event ID is missing. | No |
+| `REFIT_DUPLICATE_PREDICTION` | V17 advisory refit scheduler | One prediction ID occurs multiple times in the hydrated cohort. | No |
+| `REFIT_COHORT_MISMATCH` | V17 advisory refit scheduler | Source forecast does not match the exact proposal cohort. | No |
+| `REFIT_NOT_CALIBRATED_FORECAST` | V17 advisory refit scheduler | Frozen input probability is not attributed to calibrated_probability. | No |
+| `REFIT_BINARY_SETTLEMENT_REQUIRED` | V17 advisory refit scheduler | Exact officially settled outcome is not a nonboolean binary 0/1. | No |
+| `REFIT_MODEL_TIME_REQUIRED` | V17 advisory refit scheduler | Pregame model timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_EVENT_TIME_REQUIRED` | V17 advisory refit scheduler | Official event timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_SETTLEMENT_TIME_REQUIRED` | V17 advisory refit scheduler | Official settlement timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_TEMPORAL_IDENTITY_INVALID` | V17 advisory refit scheduler | Model timestamp is not strictly pregame or settlement precedes event. | No |
+| `REFIT_EVENT_TIME_CONFLICT` | V17 advisory refit scheduler | Same official event ID has inconsistent event-start timestamps. | No |
+| `REFIT_PROBABILITY_INVALID` | V17 advisory refit scheduler | Frozen calibrated forecast probability is not a finite number strictly between 0 and 1. | No |
+| `REFIT_EVENT_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Chronologically distinct events fall below candidate-only train plus diagnostic floor. | No |
+| `REFIT_MATURED_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Enough fully settled pre-cutoff training events or diagnostic events are unavailable. | No |
