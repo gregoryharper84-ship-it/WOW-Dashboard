@@ -137,7 +137,10 @@ def reserve_cursor(api, comments, *, incident, main_sha, pr_number, pr_sha,
     # The immutable reservation must record the authenticated source PR ref.
     # This is required by the independent finalizer after a failed launch.
     if (not isinstance(branch, str) or not branch.strip()
-            or branch != branch.strip() or branch in ("main", "master")):
+            or len(branch) > 255 or branch in ("main", "master")
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch) is None
+            or ".." in branch or "//" in branch
+            or branch.endswith(("/", ".", ".lock"))):
         raise ProviderUnavailable("CURSOR_RESERVATION_BRANCH_INVALID")
     attempts = reservations(comments)
     assert_no_remote_writer(
