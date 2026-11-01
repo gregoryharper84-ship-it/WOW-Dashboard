@@ -2,8 +2,12 @@ name: wow-v17-remote-writer-finalize
 
 # Exact-reservation terminal release of one authenticated Cursor writer.
 # Reuse the SAME global implementation mutex, never the read-only probe queue.
-# Do not auto-run on merges: an unrelated push cannot pick a safe reservation.
+# One existing workflow, same single-writer mutex. The hourly scheduled
+# path discovers only a unique, immutable failed-launch reservation; it does
+# not react to arbitrary merges or accept untrusted PR code.
 on:
+  schedule:
+    - cron: "37 * * * *"
   workflow_dispatch:
     inputs:
       reservation_comment_id:
@@ -48,9 +52,11 @@ jobs:
               exit 1
             }
           fi
-          # Finalizer rereads the provider and source, rechecks the entire
-          # held ledger, and appends one receipt. It never patches the old
-          # reservation. Guards trust only a COMPLETED SUCCESSFUL run.
+          # On schedule, the CLI discovers at most one unresolved failed
+          # Cursor launch. On manual dispatch, exact ID remains required.
+          # Both paths re-read provider and source, recheck the entire held
+          # ledger and append one receipt. Guards trust only completed
+          # successful runs, not this job's initial success flag.
           args=()
           if [ -n "${RESERVATION_COMMENT_ID:-}" ]; then
             args+=(--reservation-comment-id "$RESERVATION_COMMENT_ID")
