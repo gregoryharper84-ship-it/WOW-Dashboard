@@ -444,7 +444,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",
-        choices=["guard", "fallback", "finalize-cursor", "reconcile-target"],
+        choices=["guard", "fallback", "finalize-cursor"],
     )
     parser.add_argument("--reservation-comment-id", type=int)
     parser.add_argument("--output")
@@ -455,15 +455,6 @@ def main():
         assert_no_remote_writer(
             api.pages(LEDGER), get_run=lambda run_id: api.request(
                 f"/repos/{REPOSITORY}/actions/runs/{run_id}"))
-        return
-    if args.command == "reconcile-target":
-        target_cid = reconcilable_cursor_reservation_id(
-            api.pages(LEDGER),
-            get_run=lambda run_id: api.request(
-                f"/repos/{REPOSITORY}/actions/runs/{run_id}"),
-        )
-        if target_cid is not None:
-            print(target_cid)
         return
     if args.command == "finalize-cursor":
         try:

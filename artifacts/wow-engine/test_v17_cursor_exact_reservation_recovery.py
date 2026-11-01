@@ -352,14 +352,14 @@ def test_dynamic_finalizer_appends_new_receipt_only_after_terminal_proof():
     assert api.puts == 1, "no duplicate release"
 
 
-FAILED_CID = 6547956599
-FAILED_INCIDENT = "2136"
-FAILED_PR = 2326
-FAILED_ORIGINAL_HEAD = "3940506a482403335dcc7b999423a2c67efba6d8"
-FAILED_NEW_HEAD = "76820bc16cd371c196b52369831c64e58be1103a"
-FAILED_MAIN = "02b43f4b3a989bb8ebc30ff73514864c8db325f5"
-FAILED_AGENT = "bc-b5a33d9c-34ff-540d-a011-9671917dc14a"
-FAILED_WORKER_RUN = 41233280933
+FAILED_CID = 900001
+FAILED_INCIDENT = "101"
+FAILED_PR = 101
+FAILED_ORIGINAL_HEAD = "d" * 40
+FAILED_NEW_HEAD = "e" * 40
+FAILED_MAIN = "f" * 40
+FAILED_AGENT = probe.deterministic_agent_id(probe.REPOSITORY, FAILED_PR, FAILED_ORIGINAL_HEAD)
+FAILED_WORKER_RUN = 800001
 FAILED_WORKER = f"github-actions:{FAILED_WORKER_RUN}:1"
 
 
@@ -372,6 +372,7 @@ class FailedLaunchFixture:
             "body": ledger._body(ledger.receipt(
                 "CURSOR_LAUNCH_RESERVED", incident_id=FAILED_INCIDENT, provider="cursor",
                 lease_group=f"PR_{FAILED_PR}", main_sha=FAILED_MAIN, hold=True,
+                branch="fix/synthetic-101",
                 pr_number=str(FAILED_PR), pr_sha=FAILED_ORIGINAL_HEAD,
                 cursor_agent_id=FAILED_AGENT, cursor_run_id=None, worker_id=FAILED_WORKER,
             )),

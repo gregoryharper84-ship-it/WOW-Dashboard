@@ -81,15 +81,26 @@ def verified_released_ids(
             and doc.get("terminal_status") == "FINISHED"
             and doc.get("agent_status") == "IDLE"
         )
+        # Negative-launch release is bound jointly to the GitHub Actions bot
+        # author of both the reservation and release comments, the SHA-256
+        # digest of the original reservation body, the exact PR/main SHAs,
+        # worker_id, deterministic agent_id, and the verified finalizer run.
         valid_negative_launch = (
             claim.get("status") == "CURSOR_LAUNCH_RESERVED"
             and claim.get("cursor_run_id") is None
             and doc.get("cursor_run_id") is None
             and doc.get("terminal_status") == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
             and doc.get("agent_status") == "NEVER_CREATED"
+            and len(matches) == 1
+            and matches[0].get("user", {}).get("login") == BOT_LOGIN
             and isinstance(claim.get("pr_sha"), str)
             and len(claim["pr_sha"]) == 40
             and all(c in "0123456789abcdef" for c in claim["pr_sha"])
+            and isinstance(claim.get("main_sha"), str)
+            and len(claim["main_sha"]) == 40
+            and all(c in "0123456789abcdef" for c in claim["main_sha"])
+            and doc.get("pr_sha") == claim["pr_sha"]
+            and doc.get("main_sha") == claim["main_sha"]
             and str(claim.get("pr_number", "")).isdigit()
             and int(claim["pr_number"]) > 0
             and doc.get("agent_id") == deterministic_agent_id(
@@ -121,9 +132,14 @@ def verified_released_ids(
             run = get_run(doc["workflow_run_id"])
         except Exception:
             raise ReleaseBlocked("REMOTE_RELEASE_WORKFLOW_NOT_VERIFIED") from None
+        allowed_events = (
+            {"workflow_dispatch", "workflow_run"}
+            if valid_negative_launch
+            else {"workflow_dispatch", "push"}
+        )
         if (not isinstance(run, dict)
                 or run.get("path") != WORKFLOW
-                or run.get("event") not in {"workflow_dispatch", "push"}
+                or run.get("event") not in allowed_events
                 or run.get("status") != "completed"
                 or run.get("conclusion") != "success"
                 or run.get("head_branch") != "main"
@@ -169,13 +185,23 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
     )
     held = [(cid, row) for cid, row in all_reservations
             if row["hold"] and cid not in verified]
-    expected_id = (reservation_comment_id if reservation_comment_id is not None
-                   else EXPECTED_COMMENT_ID)
+    auto_failed_launch = (
+        reservation_comment_id is None
+        and len(held) == 1
+        and held[0][1].get("provider") == "cursor"
+        and held[0][1].get("status") == "CURSOR_LAUNCH_RESERVED"
+        and held[0][1].get("cursor_run_id") is None
+    )
+    expected_id = (
+        reservation_comment_id if reservation_comment_id is not None
+        else (held[0][0] if auto_failed_launch else EXPECTED_COMMENT_ID)
+    )
+    use_dynamic_target = reservation_comment_id is not None or auto_failed_launch
     if (len(held) != 1 or held[0][0] != expected_id
             or held[0][1].get("provider") != "cursor"):
         raise ReleaseBlocked("REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED")
     old = held[0][1]
-    if reservation_comment_id is None and (
+    if not use_dynamic_target and (
             old.get("incident_id") != EXPECTED_INCIDENT_ID
             or old.get("worker_id") != EXPECTED_WORKER_ID):
         raise ReleaseBlocked("REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED")
@@ -186,7 +212,7 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             or originals[0]["user"].get("login") != BOT_LOGIN
             or not isinstance(originals[0].get("body"), str)
             or old.get("status") not in {"CURSOR_AGENT_ENQUEUED", "CURSOR_LAUNCH_RESERVED"}
-            or (reservation_comment_id is None and is_failed_launch)
+            or (not use_dynamic_target and is_failed_launch)
             or (is_failed_launch and old.get("cursor_run_id") is not None)
             or (not is_failed_launch and (
                 not isinstance(old.get("cursor_run_id"), str)
@@ -203,9 +229,9 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
     proof = collect_receipt(
         cursor_token, api.token,
         **({"reservation_comment_id": expected_id}
-           if reservation_comment_id is not None else {}),
+           if use_dynamic_target else {}),
     )
-    if reservation_comment_id is not None:
+    if use_dynamic_target:
         identity = proof.get("reservation")
         if (not isinstance(identity, dict)
                 or identity.get("reservation_comment_id") != expected_id
@@ -255,18 +281,18 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
     if api.request(f"/repos/{REPOSITORY}/commits/main").get("sha") != source_sha:
         raise ReleaseBlocked("REMOTE_RELEASE_SOURCE_MOVED")
 
-    if reservation_comment_id is not None:
+    if use_dynamic_target:
         # This must be a FRESH witness after the initial terminal probe, ledger
         # and protected-main readbacks. The Actions mutex cannot fence a
         # concurrent external PR push or resumed Cursor run by itself.
         from urllib.parse import quote
         try:
             from .cursor_terminal_status_receipt import (
-                CURSOR_API, ReceiptBlocked, _verify_negative_inventories, api_json,
+                CURSOR_API, ReceiptBlocked, api_json, verify_negative_inventories,
             )
         except ImportError:  # Legacy standalone CLI entrypoint
             from cursor_terminal_status_receipt import (
-                CURSOR_API, ReceiptBlocked, _verify_negative_inventories, api_json,
+                CURSOR_API, ReceiptBlocked, api_json, verify_negative_inventories,
             )
         pr_number = proof.get("pr_number")
         expected_head = proof.get("head_sha")
@@ -306,7 +332,7 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             else:
                 raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_REACTIVATED")
             try:
-                _verify_negative_inventories(
+                verify_negative_inventories(
                     cursor_token, agent_id=agent_id, pr_number=pr_number, api=api_json,
                 )
             except ReceiptBlocked as exc:
@@ -361,6 +387,9 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         "can_execute": False,
         "terminal_authority": "V17_TERMINAL_REDUCER",
     }
+    if is_failed_launch:
+        doc["pr_sha"] = old["pr_sha"]
+        doc["main_sha"] = old["main_sha"]
     body = f"{RELEASE_MARKER}{old['incident_id']} -->\n" + json.dumps(doc, sort_keys=True)
     created = api.request(LEDGER, {"body": body}, "POST")
     cid = created.get("id") if isinstance(created, dict) else None

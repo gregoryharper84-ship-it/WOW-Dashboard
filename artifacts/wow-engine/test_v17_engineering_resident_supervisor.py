@@ -1125,47 +1125,35 @@ def test_numeric_repository_link_alias_only_for_configured_repository(monkeypatc
 
 
 def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_release(monkeypatch):
+    from v17 import cursor_cloud_handoff as handoff
     from v17 import engineering_remote_fallback as remote
     from v17 import engineering_remote_writer_release as release
 
     sha = "a" * 40
-    pr_sha = "3940506a482403335dcc7b999423a2c67efba6d8"
-    agent_id = "bc-b5a33d9c-34ff-540d-a011-9671917dc14a"
+    pr_sha = "d" * 40
+    agent_id = handoff.agent_id(remote.REPOSITORY, 101, pr_sha)
     held_claim = remote.receipt(
-        "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id="2136",
-        lease_group="PR_2326", main_sha=sha, hold=True, pr_number="2326",
-        pr_sha=pr_sha, cursor_agent_id=agent_id, cursor_run_id=None,
-        worker_id="github-actions:41233280933:1",
+        "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id="101",
+        lease_group="PR_101", main_sha=sha, hold=True, branch="fix/synthetic-101",
+        pr_number="101", pr_sha=pr_sha, cursor_agent_id=agent_id,
+        cursor_run_id=None, worker_id="github-actions:800001:1",
     )
     comments = [{
-        "id": 6547956599,
+        "id": 900001,
         "body": remote._body(held_claim),
         "user": {"login": "github-actions[bot]"},
     }]
-    dispatched_finalizers = []
     client = GitHubTransport("fixture-token")
     now = datetime.now(timezone.utc)
     stamp = (now - timedelta(minutes=20)).isoformat()
 
-    def fake_call(path, payload=None):
-        if path.endswith("/actions/workflows/wow-v17-remote-writer-finalize.yml/dispatches"):
-            dispatched_finalizers.append(payload)
-            return {}
-        raise AssertionError((path, payload))
-
     def fake_get(suffix):
         if suffix.startswith("issues/1138/comments?"):
             return list(comments)
-        if suffix == "actions/runs/41233280933":
-            return {
-                "id": 41233280933, "run_attempt": 1, "status": "completed",
-                "conclusion": "failure",
-                "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
-            }
         if suffix == "actions/runs/99010":
             return {
                 "id": 99010, "run_attempt": 1, "status": "completed",
-                "conclusion": "success", "event": "workflow_dispatch",
+                "conclusion": "success", "event": "workflow_run",
                 "head_branch": "main", "head_sha": sha,
                 "path": release.WORKFLOW,
                 "repository": {"full_name": remote.REPOSITORY},
@@ -1196,7 +1184,6 @@ def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_re
             return {"workflow_runs": []}
         raise AssertionError(suffix)
 
-    monkeypatch.setattr(client, "call", fake_call)
     monkeypatch.setattr(client, "get", fake_get)
     monkeypatch.setattr(client, "provider_receipt", lambda _: {
         "action": "SURVIVAL", "provider": "deterministic",
@@ -1206,22 +1193,21 @@ def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_re
 
     store = FakeRedis()
     assert dispatch_once(client, store, MANIFEST) == "REMOTE_WRITER_RECONCILIATION_REQUIRED"
-    assert dispatched_finalizers == [{
-        "ref": "main",
-        "inputs": {"reservation_comment_id": "6547956599"},
-    }]
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
 
     # Append verified negative-launch release receipt; remote_writer_clear and provider_admission now succeed.
     rel_doc = {
         "status": "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS",
-        "incident_id": "2136",
-        "original_comment_id": 6547956599,
+        "incident_id": "101",
+        "original_comment_id": 900001,
         "original_digest": release._original_digest(comments[0]),
         "provider": "cursor",
         "agent_id": agent_id,
         "cursor_run_id": None,
-        "worker_id": "github-actions:41233280933:1",
-        "pr_number": 2326,
+        "worker_id": "github-actions:800001:1",
+        "pr_number": 101,
+        "pr_sha": pr_sha,
+        "main_sha": sha,
         "terminal_status": "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN",
         "agent_status": "NEVER_CREATED",
         "workflow_run_id": 99010,
@@ -1231,8 +1217,8 @@ def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_re
         "terminal_authority": "V17_TERMINAL_REDUCER",
     }
     comments.append({
-        "id": 6550000001,
-        "body": f"{release.RELEASE_MARKER}2136 -->\n" + json.dumps(rel_doc, sort_keys=True),
+        "id": 900002,
+        "body": f"{release.RELEASE_MARKER}101 -->\n" + json.dumps(rel_doc, sort_keys=True),
         "user": {"login": "github-actions[bot]"},
     })
     assert client.remote_writer_clear() is True

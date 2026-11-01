@@ -119,32 +119,35 @@ def api_json(url: str, *, token: str, basic: bool = False, method: str = "GET",
                 raise HandoffBlocked("CURSOR_API_RESPONSE_INVALID")
             return out
     except error.HTTPError as exc:
+        status_code = exc.code if type(exc.code) is int and 100 <= exc.code <= 599 else 0
         if basic:
-            if exc.code in (401, 403):
+            if status_code in (401, 403):
                 raise HandoffBlocked(
-                    "CURSOR_AUTH_OR_ACCESS_DENIED", provider_http_status=exc.code,
+                    "CURSOR_AUTH_OR_ACCESS_DENIED", provider_http_status=status_code,
                 ) from exc
-            if exc.code in (402, 429):
+            if status_code in (402, 429):
                 raise HandoffBlocked(
-                    "CURSOR_BILLING_OR_RATE_LIMIT_BLOCKED", provider_http_status=exc.code,
+                    "CURSOR_BILLING_OR_RATE_LIMIT_BLOCKED", provider_http_status=status_code,
                 ) from exc
-            if exc.code == 409:
-                details = exc.read(2048).decode(errors="replace").lower()
-                if "agent_id_conflict" in details:
+            if status_code == 409:
+                # Inspect bounded raw ASCII bytes only; never decode or propagate
+                # untrusted provider error strings.
+                raw_conflict = exc.read(512)
+                if isinstance(raw_conflict, (bytes, bytearray)) and b"agent_id_conflict" in bytes(raw_conflict).lower():
                     raise HandoffBlocked(
-                        "CURSOR_DUPLICATE_DISPATCH_SUPPRESSED", provider_http_status=exc.code,
+                        "CURSOR_DUPLICATE_DISPATCH_SUPPRESSED", provider_http_status=status_code,
                     ) from exc
                 raise HandoffBlocked(
-                    "CURSOR_API_CONFLICT_UNRESOLVED", provider_http_status=exc.code,
+                    "CURSOR_API_CONFLICT_UNRESOLVED", provider_http_status=status_code,
                 ) from exc
-            if exc.code == 400:
+            if status_code == 400:
                 raise HandoffBlocked(
-                    "CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS", provider_http_status=exc.code,
+                    "CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS", provider_http_status=status_code,
                 ) from exc
             raise HandoffBlocked(
-                f"CURSOR_API_HTTP_{exc.code}", provider_http_status=exc.code,
+                f"CURSOR_API_HTTP_{status_code}", provider_http_status=status_code,
             ) from exc
-        raise HandoffBlocked(f"CURSOR_GITHUB_PR_HTTP_{exc.code}") from exc
+        raise HandoffBlocked(f"CURSOR_GITHUB_PR_HTTP_{status_code}") from exc
     except (error.URLError, TimeoutError, ValueError) as exc:
         raise HandoffBlocked("CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED") from exc
 

@@ -25,10 +25,7 @@ from urllib.parse import parse_qs, urlparse
 from v17.engineering_dispatch_queue import _validate_manifest
 from v17.amrt_operational_lanes import dispatch_preflight
 from v17.engineering_provider_failover import resident_provider_admission
-from v17.engineering_remote_fallback import (
-    assert_no_remote_writer,
-    reconcilable_cursor_reservation_id,
-)
+from v17.engineering_remote_fallback import assert_no_remote_writer
 
 LOG = logging.getLogger("wow.v17.engineering_resident_supervisor")
 REPO = "gregoryharper84-ship-it/WOW-Dashboard"
@@ -105,20 +102,8 @@ class GitHubTransport:
                 break
         else:
             raise ValueError("REMOTE_RESERVATION_INVALID")
-        try:
-            assert_no_remote_writer(
-                comments, get_run=lambda run_id: self.get(f"actions/runs/{run_id}"))
-        except Exception:
-            try:
-                target_cid = reconcilable_cursor_reservation_id(
-                    comments,
-                    get_run=lambda run_id: self.get(f"actions/runs/{run_id}"),
-                )
-                if target_cid is not None:
-                    self.reconcile_cursor_writer(target_cid)
-            except Exception:
-                pass
-            raise
+        assert_no_remote_writer(
+            comments, get_run=lambda run_id: self.get(f"actions/runs/{run_id}"))
         now = datetime.now(timezone.utc)
         for comment in comments:
             body = comment.get("body") or ""
@@ -129,31 +114,6 @@ class GitHubTransport:
                 stamp = datetime.fromisoformat(expiry[1].replace("Z", "+00:00"))
                 if stamp > now:
                     return False
-        return True
-
-    def reconcile_cursor_writer(self, reservation_comment_id: int) -> bool:
-        if type(reservation_comment_id) is not int or reservation_comment_id <= 0:
-            return False
-        for state in ("queued", "in_progress", "waiting", "requested"):
-            active = self.get(
-                f"actions/workflows/{FINALIZE_WORKFLOW}/runs?status={state}&per_page=100"
-            )
-            if not isinstance(active, dict):
-                return False
-            runs = active.get("workflow_runs")
-            total = active.get("total_count")
-            if (isinstance(total, bool) or not isinstance(total, int)
-                    or total < 0 or not isinstance(runs, list)):
-                return False
-            if total > 0 or runs:
-                return False
-        self.call(
-            f"/repos/{self.repo}/actions/workflows/{FINALIZE_WORKFLOW}/dispatches",
-            {
-                "ref": "main",
-                "inputs": {"reservation_comment_id": str(reservation_comment_id)},
-            },
-        )
         return True
 
     def provider_admission(self) -> str:
@@ -187,13 +147,10 @@ class GitHubTransport:
         # A later successful protected worker proves recovery; a later failed
         # or unclassified worker invalidates an older positive route receipt.
         latest_success = False
-        worker_workflows = [
+        for workflow in (
             "wow-v17-chatgpt-engineering-worker.yml",
             "wow-v17-claude-engineering-worker.yml",
-        ]
-        if route.get("provider") == "cursor" or route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED":
-            worker_workflows.append(FINALIZE_WORKFLOW)
-        for workflow in worker_workflows:
+        ):
             workers = self.get(f"actions/workflows/{workflow}/runs?branch=main&status=completed&per_page=1")
             items = workers.get("workflow_runs")
             if not isinstance(items, list):
@@ -224,6 +181,38 @@ class GitHubTransport:
                 elif (decision == "PROVIDER_ADMITTED"
                       and route.get("provider") == ("openai" if "chatgpt" in workflow else "anthropic")):
                     decision = "PROVIDER_RECOVERY_UNVERIFIED"
+        if (not latest_success
+                and (route.get("provider") == "cursor"
+                     or route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED")):
+            # A finalizer workflow run alone never grants admission; the #1138
+            # shared-writer ledger must also prove all held reservations have a
+            # verified terminal release receipt.
+            try:
+                fence_cleared = self.remote_writer_clear()
+            except Exception:
+                fence_cleared = False
+            if fence_cleared:
+                finalizers = self.get(
+                    f"actions/workflows/{FINALIZE_WORKFLOW}/runs?branch=main&status=completed&per_page=1"
+                )
+                fin_items = finalizers.get("workflow_runs")
+                if not isinstance(fin_items, list):
+                    return "PROVIDER_STATUS_UNVERIFIED"
+                if fin_items:
+                    fin = fin_items[0]
+                    if (fin.get("path") != f".github/workflows/{FINALIZE_WORKFLOW}"
+                            or fin.get("head_branch") != "main" or fin.get("status") != "completed"
+                            or type(fin.get("id")) is not int or fin["id"] <= 0
+                            or not re.fullmatch(r"[0-9a-f]{40}", str(fin.get("head_sha", "")))
+                            or fin.get("conclusion") not in {"success", "failure", "cancelled", "timed_out"}):
+                        return "PROVIDER_STATUS_UNVERIFIED"
+                    fin_updated = datetime.fromisoformat(fin["updated_at"].replace("Z", "+00:00"))
+                    route_time = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
+                    fin_age = (now - fin_updated).total_seconds()
+                    if fin_age < 0:
+                        return "PROVIDER_STATUS_UNVERIFIED"
+                    if fin_updated >= route_time and fin["conclusion"] == "success" and fin_age <= 900:
+                        latest_success |= fin["head_sha"] == self.get("commits/main").get("sha")
         if latest_success:
             return "PROVIDER_ADMITTED"
         if decision == "PROVIDER_ADMITTED" and self.get("commits/main").get("sha") != run["head_sha"]:

@@ -23,6 +23,8 @@ RUN_ID = "run-7b568d98-de5b-4cce-b2a4-e7743fd43787"
 CURSOR_API = "https://api.cursor.com/v1"
 GITHUB_API = "https://api.github.com"
 TERMINAL_RUN_STATES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
+MAX_NEGATIVE_INVENTORY_PAGES = 5
+INVENTORY_PAGE_SIZE = 100
 EXPECTED_FILES = {
     ".github/workflows/wow-v17-independent-qa-check.yml",
     "artifacts/wow-engine/docs/failure_codes.md",
@@ -148,9 +150,18 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
         and isinstance(run_id, str)
         and re.fullmatch(r"run-[0-9a-f-]{36}", run_id) is not None
     )
+    # Failed-launch reservations have no provider run_id; authenticity is bound
+    # jointly to the GitHub Actions bot author (id 41898282), immutable comment
+    # body SHA-256, verified failed protected-main dispatcher workflow run
+    # (origin id/attempt/head_sha/conclusion below), non-main PR branch, and
+    # deterministic agent_id.
+    branch = entry.get("branch")
     valid_failed_launch = (
         status == "CURSOR_LAUNCH_RESERVED"
         and run_id is None
+        and isinstance(branch, str)
+        and bool(branch.strip())
+        and branch not in {"main", "master"}
         and isinstance(number, str)
         and re.fullmatch(r"[1-9][0-9]*", number) is not None
         and isinstance(source_sha, str)
@@ -256,7 +267,7 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
     return sorted(names)
 
 
-def _verify_negative_inventories(
+def verify_negative_inventories(
     cursor_token: str, *, agent_id: str, pr_number: int, api,
 ) -> dict:
     """Prove via complete archived inventories that no Cursor agent exists or is active."""
@@ -267,7 +278,7 @@ def _verify_negative_inventories(
         seen_cursors: set[str] = set()
         next_cursor: str | None = None
         pages = 0
-        for _ in range(20):
+        for _ in range(MAX_NEGATIVE_INVENTORY_PAGES):
             params = dict(base_params)
             if next_cursor is not None:
                 params["cursor"] = next_cursor
@@ -276,7 +287,7 @@ def _verify_negative_inventories(
             if not isinstance(page, dict):
                 raise ReceiptBlocked(unverified_code)
             items = page.get("items")
-            if not isinstance(items, list):
+            if not isinstance(items, list) or len(items) > INVENTORY_PAGE_SIZE:
                 raise ReceiptBlocked(unverified_code)
             pages += 1
             for item in items:
@@ -302,12 +313,12 @@ def _verify_negative_inventories(
         raise ReceiptBlocked(unverified_code)
 
     global_pages, global_count = _scan_inventory(
-        {"limit": 100, "includeArchived": "true"},
+        {"limit": INVENTORY_PAGE_SIZE, "includeArchived": "true"},
         unverified_code="CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED",
         active_code="CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS",
     )
     pr_pages, pr_count = _scan_inventory(
-        {"prUrl": pr_url, "limit": 100, "includeArchived": "true"},
+        {"prUrl": pr_url, "limit": INVENTORY_PAGE_SIZE, "includeArchived": "true"},
         unverified_code="CURSOR_AGENT_INVENTORY_UNVERIFIED",
         active_code="CURSOR_ACTIVE_PR_AGENT_EXISTS",
     )
@@ -317,6 +328,9 @@ def _verify_negative_inventories(
         "pr_pages": pr_pages,
         "pr_agents_checked": pr_count,
     }
+
+
+_verify_negative_inventories = verify_negative_inventories
 
 
 def collect_receipt(
@@ -346,7 +360,7 @@ def collect_receipt(
                 raise ReceiptBlocked("CURSOR_AGENT_STILL_ACTIVE")
             raise ReceiptBlocked("CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION")
 
-        negative_proof = _verify_negative_inventories(
+        negative_proof = verify_negative_inventories(
             cursor_token, agent_id=agent_id, pr_number=pr_number, api=api,
         )
         pr_url = f"{GITHUB_API}/repos/{REPOSITORY}/pulls/{pr_number}"
