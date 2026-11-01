@@ -298,6 +298,45 @@ def test_expired_resident_lease_cannot_send_workflow():
     assert not client.sent and store.attempts == 0
 
 
+def test_failed_cursor_finalizer_dispatch_is_logged_without_credential_leak(monkeypatch, caplog):
+    from v17 import engineering_resident_supervisor as supervisor
+    client = GitHubTransport("test-secret-never-log")
+    monkeypatch.setattr(client, "get", lambda path: [] if "issues/1138/comments?" in path else {})
+    def held(*args, **kwargs):
+        raise RuntimeError("EXISTING_REMOTE_WRITER_HELD")
+    monkeypatch.setattr(supervisor, "assert_no_remote_writer", held)
+    monkeypatch.setattr(supervisor, "reconcilable_cursor_reservation_id",
+                        lambda *args, **kwargs: 6547956599)
+    def denied(_id):
+        raise PermissionError("secret-provider-response-must-not-leak")
+    monkeypatch.setattr(client, "reconcile_cursor_writer", denied)
+    with caplog.at_level("WARNING", logger="wow.v17.engineering_resident_supervisor"):
+        with pytest.raises(RuntimeError, match="EXISTING_REMOTE_WRITER_HELD"):
+            client.remote_writer_clear()
+    assert "CURSOR_WRITER_RECOVERY_REQUEST_FAILED" in caplog.text
+    assert "reservation_comment_id=6547956599" in caplog.text
+    assert "PermissionError" in caplog.text
+    assert "secret-provider-response-must-not-leak" not in caplog.text
+    assert "test-secret-never-log" not in caplog.text
+
+
+def test_cursor_finalizer_refusal_is_logged_without_releasing_writer(monkeypatch, caplog):
+    from v17 import engineering_resident_supervisor as supervisor
+    client = GitHubTransport("test-secret")
+    monkeypatch.setattr(client, "get", lambda path: [] if "issues/1138/comments?" in path else {})
+    def held(*args, **kwargs):
+        raise RuntimeError("EXISTING_REMOTE_WRITER_HELD")
+    monkeypatch.setattr(supervisor, "assert_no_remote_writer", held)
+    monkeypatch.setattr(supervisor, "reconcilable_cursor_reservation_id",
+                        lambda *args, **kwargs: 6547956599)
+    monkeypatch.setattr(client, "reconcile_cursor_writer", lambda _id: False)
+    with caplog.at_level("WARNING", logger="wow.v17.engineering_resident_supervisor"):
+        with pytest.raises(RuntimeError, match="EXISTING_REMOTE_WRITER_HELD"):
+            client.remote_writer_clear()
+    assert "CURSOR_WRITER_RECOVERY_NOT_DISPATCHED" in caplog.text
+    assert "reservation_comment_id=6547956599" in caplog.text
+
+
 def test_unreadable_remote_reservation_never_dispatches():
     client, store = FakeClient(), FakeRedis()
     def unavailable():
