@@ -101,6 +101,18 @@ The following proof-validation details remain underneath `TEAM_EVENT_SPECIALIST_
 
 The following existing statuses remain authoritative in their owning modules and are intentionally not collapsed into the generic codes above: `NO_CONFIGURED_DISCOVERY_FEED`, `PROVIDER_REQUEST_FAILED`, `PROVIDER_RATE_LIMITED`, `PROVIDER_SCHEMA_FAILURE`, `DISCOVERY_BUDGET_EXHAUSTED`, `EVENT_WRONG_DATE`, `EVENT_STARTED_OR_FINAL`, `EVENT_CANCELLED_OR_POSTPONED`, and `EVENT_IDENTITY_UNRESOLVED`.
 
+## Native GitHub workflow evidence (Independent QA / Release Authority)
+
+Pinned repository-local GitHub Actions definitions: `wow-verify.yml` (338954264), `wow-engine-verify.yml` (343452862), and `wow-v17-change-impact-gate.yml` (366263833). Their IDs, paths and active states must be confirmed by the live GitHub Actions workflow-definition API before any pending evidence is trusted. The exact-head workflow run plus complete attempt-specific job inventory must also match. Only finite, exact job-name allowlists from these workflow YAMLs can defer missing required checks. A jobless startup may defer for at most 90 seconds; a completed job may defer check publication for at most 45 seconds. An active workflow older than two hours cannot defer. Deferral never creates a passing check.
+
+| Code | Owning lane/stage | Exact condition | Disposition |
+|---|---|---|---|
+| `NATIVE_WORKFLOW_DEFINITION_UNVERIFIED` | QA/Release native-workflow provenance | Definition GET failed or pinned GitHub workflow ID, path or active state did not match (suffix is workflow ID). | Fail-closed evidence error |
+| `NATIVE_WORKFLOW_JOBS_UNREADABLE` | QA/Release exact-head jobs | Jobs list GET failed or pagination metadata was invalid. | Fail-closed evidence error |
+| `NATIVE_WORKFLOW_JOBS_TRUNCATED` | QA/Release exact-head jobs | Pagination did not exhaust the authoritative total. | Fail-closed evidence error |
+| `NATIVE_WORKFLOW_JOBS_COUNT_INVALID` | QA/Release exact-head jobs | Jobs list exceeded declared total. | Fail-closed evidence error |
+| `NATIVE_WORKFLOW_JOBS_INVALID` | QA/Release exact-head jobs | A job record lacked valid exact run-bound ID, name or status. | Fail-closed evidence error |
+
 ## Engineering worker repair delivery codes (incidents #1021, #1527)
 
 Emitted by the protected Claude engineering worker (`wow-v17-claude-engineering-worker.yml`, step *Enforce actionable repair delivery* and *Append incident delivery receipt*) only when the Lead chose `REPAIR`. Legitimate `NO_ACTION` and `VERIFY_RELEASE` never emit them. Every code fails the run (non-success), is persisted to the #1138 heartbeat, the dispatch receipt JSON and an append-only receipt comment on the incident issue, and is classified by `v17/engineering_provider_failover.py` from the emitted `##[error]` line. None affects sporting probability, rank or `can_execute=false`; none grants QA, merge or deploy authority.
