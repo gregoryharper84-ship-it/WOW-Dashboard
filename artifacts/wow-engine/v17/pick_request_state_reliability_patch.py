@@ -100,12 +100,18 @@ def _identity_conflict_outcome(
 
 
 def _isolate_exact_identity_conflicts(
-    source_rows: list[Any], outcomes: list[dict[str, Any]]
+    source_rows: list[Any],
+    outcomes: list[dict[str, Any]],
+    identity_resolution: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    probe = enforce_exact_board_identity(
-        {"rows": deepcopy(outcomes), "reconciliation_pass": True, "can_execute": False},
-        source_rows,
-    )
+    probe_response: dict[str, Any] = {
+        "rows": deepcopy(outcomes),
+        "reconciliation_pass": True,
+        "can_execute": False,
+    }
+    if isinstance(identity_resolution, dict):
+        probe_response["nfl_event_identity_resolution"] = deepcopy(identity_resolution)
+    probe = enforce_exact_board_identity(probe_response, source_rows)
     audit = probe.get("exact_board_identity_reconciliation") or {}
     mismatches = [
         dict(item)
@@ -187,7 +193,11 @@ def install_pick_request_state_reliability_patch() -> bool:
 
     def merged_response_with_identity_isolation(ctx: Any, inner: Any):
         outcomes = state._current_full_outcomes(ctx, inner)
-        isolated, mismatches = _isolate_exact_identity_conflicts(list(ctx.batch.rows), outcomes)
+        isolated, mismatches = _isolate_exact_identity_conflicts(
+            list(ctx.batch.rows),
+            outcomes,
+            (inner or {}).get("nfl_event_identity_resolution") if isinstance(inner, dict) else None,
+        )
         if not mismatches:
             return original_merged_response(ctx, inner)
         by_key = {str(item.get("row_key") or ""): item for item in isolated}
