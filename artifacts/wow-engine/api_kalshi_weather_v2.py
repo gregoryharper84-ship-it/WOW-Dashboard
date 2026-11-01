@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from kalshi_weather_v2.research_release_a import install_release_a_research
 from kalshi_weather_v2.persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
 from kalshi_weather_v2.empirical_runtime import install_empirical_cohort_scheduler
 from kalshi_weather_v2.isolated_capture_wiring import install_isolated_capture_if_owned
@@ -197,6 +198,11 @@ def hourly_settle(req: HourlySettleRequest):
         )
     except Exception as exc:
         _raise_governed(exc)
+
+
+# Read-only private research UI. Uses the same dedicated weather bearer key
+# through HTTP Basic; the key is never placed into a query string.
+install_release_a_research(app, lambda: get_client())
 
 
 def _raise_governed(exc: Exception) -> None:
