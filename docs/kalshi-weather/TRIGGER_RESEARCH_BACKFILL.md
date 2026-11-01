@@ -1,116 +1,59 @@
-# Kalshi Weather — Trigger.dev research backfill (Release B, research-only)
+# Kalshi Weather — Trigger.dev Release B (research only)
 
-Scope: **manual Miami hourly settlement reconciliation**. The previously merged
-Release A dashboard remains read-only. Existing isolated Render service and
-Supabase prediction/outcome ledgers remain the only system of record.
+**Scope:** manual recovery of existing Miami hourly settlement outcomes. No
+historic forecast fabrication, new scheduler, model promotion, trades or
+independent probability publication. Release A's browser key remains read-only.
 
-## What this actually does
+## Boundaries
 
-1. A caller with a **dedicated request credential** sends `POST /research/backfill`
-   to the isolated Render weather API (not to Trigger.dev directly).
-2. Render accepts only `{"scope":"miami"}` and triggers
-   `weather-research-backfill` in Trigger.dev. Repeated launch requests within
-   the same five-minute bucket use the same Trigger idempotency key.
-3. Trigger.dev runs **one task, maximum concurrency 1**, retries transient
-   failures, and sends a fixed-host POST to
-   `/internal/research/miami-settlement-reconcile` with a **different**
-   worker credential.
-4. Render examines only already-recorded Miami hourly index predictions, requires
-   a pre-target decision timestamp, checks a 10-minute settlement grace period,
-   and bounds each run to three attempts and a 90-day lookback over 500 rows.
-5. The existing canonical settlement resolver fetches the exact Kalshi Weather
-   Index observation and writes the existing immutable outcome row, with raw
-   source evidence and reference to the frozen rule/prediction. Existing
-   outcomes are skipped; missing/non-final observations stay unresolved.
-6. Trigger.dev returns a receipt with outcome IDs or typed gaps. A successful
-   Trigger run is **not** model certification, a recommendation, or proof of a
-   newly available Kalshi settlement observation.
+- `POST /research/backfill` accepts only `{"scope":"miami"}`, requires
+  `WOW_KALSHI_WEATHER_BACKFILL_REQUEST_KEY`, returns a Trigger run ID (202).
+- Render triggers `weather-research-backfill` using a **Trigger-only**
+  `WOW_KALSHI_WEATHER_TRIGGER_SECRET_KEY` on the isolated Render service.
+  Launches share a five-minute bucket idempotency key; this is **not** a
+  global rate limiter. Task concurrency is one, with three retry attempts.
+- Trigger.dev holds only `WOW_KALSHI_WEATHER_BACKFILL_WORKER_KEY`. Render holds
+  the same key and validates it at its fixed worker endpoint.
+- No Trigger task receives Supabase, writer API or trading secrets. Do not
+  reuse `WOW_KALSHI_WEATHER_API_KEY` or the Release A research password.
+- Render evaluates **pre-existing** Miami hourly predictions only (500-row
+  scan, 90-day lookback, up to three attempts, 10-minute grace). Canonical
+  Kalshi Weather Index observations alone may settle. Missing/non-final points
+  remain unresolved; an advancing deterministic cursor avoids starvation.
+- Immutable Supabase outcome identities prevent duplicate writes on retries.
+  All receipts preserve `NO_PLAY_DATA_INSUFFICIENT`, null model probability,
+  `probability_publishable=false`, and `can_execute=false`.
 
-**No historical forecast generation.** Current/revised archives are not used to
-manufacture point-in-time predictions. No new scheduler, writer, training policy,
-model promotion, trades, order API, or probability endpoint is installed.
-All output explicitly preserves `NO_PLAY_DATA_INSUFFICIENT`,
-`probability_publishable=false`, and `can_execute=false`.
+## Release and rollback
 
-## Required credentials — separate scopes, never commit values
+The Trigger.dev project ID is `proj_ywxmmbamgelgqoxbpbql`. From the **exact
+accepted merge commit** in a trusted pnpm checkout:
 
-| Location | Environment variable | Role |
-|---|---|---|
-| Render isolated Weather API | `WOW_KALSHI_WEATHER_BACKFILL_REQUEST_KEY` | Authorize user/plugin launch only |
-| Render isolated Weather API | `WOW_KALSHI_WEATHER_TRIGGER_SECRET_KEY` | Trigger.dev **production Trigger-only** API key |
-| Render isolated Weather API | `WOW_KALSHI_WEATHER_BACKFILL_WORKER_KEY` | Authorize only internal settlement reconciliation |
-| Trigger.dev Cloud production environment | `WOW_KALSHI_WEATHER_BACKFILL_WORKER_KEY` | Identical limited worker key; no Supabase service role |
-
-Do not reuse `WOW_KALSHI_WEATHER_API_KEY` (live shadow-writer key),
-`WOW_KALSHI_WEATHER_RESEARCH_KEY` (read-only dashboard Basic password),
-or any Trigger.dev root/admin key. Do not add secrets to GitHub Actions.
-
-If a credential is missing, the corresponding endpoint fails closed with
-503; wrong credentials give 401.
-
-## Setup and release
-
-The Trigger.dev project ID is `proj_ywxmmbamgelgqoxbpbql`, reused from
-the earlier **closed, unmerged** Trigger proof-of-concept PR #2359.
-Only this single task is carried forward. At the repository root:
-
-```bash
+```sh
 pnpm install --frozen-lockfile
 pnpm dlx trigger.dev@4.8.3 login
-# Checkout the exact reviewed merge SHA before cloud deployment.
-git rev-parse HEAD
 pnpm dlx trigger.dev@4.8.3 deploy
 ```
 
-Deploy into the verified **production** environment after the corresponding
-protected GitHub PR has passed checks and merged. Save the exact local commit
-SHA, Trigger.dev deployment ID/version and environment in the release receipt;
-independently compare that SHA to the protected GitHub merge. Do not accept an
-unattributed cloud run or claim deployment parity from a developer smoke test. Verify the task is visible
-under the correct Trigger.dev project/environment and review its run permissions.
-The CLI login must be completed by the account owner. Trigger.cloud development
-smoke runs or a GitHub merge do **not** establish production deployment.
+The owner must authorize CLI login and provision separately scoped production
+credentials in Trigger.dev Cloud and Render. Never commit or print secrets.
+Verify the deployed Trigger **production** environment, task version, and source
+SHA, then deploy isolated Render (its `autoDeploy=off`) and verify Render SHA.
 
-Deploy the isolated Render weather service from the verified merge SHA, with the
-three Render environment variables above. It has `autoDeploy=off`, so merging
-does not automatically deploy it. Keep the existing Supabase Cron wake and the
-current bounded shadow collector unchanged.
+Request one run:
 
-Example owner launch after deployments/configuration:
-
-```bash
+```sh
 curl -fsS -X POST https://wow-kalshi-weather-v2.onrender.com/research/backfill \
   -H "Authorization: Bearer ${WOW_KALSHI_WEATHER_BACKFILL_REQUEST_KEY}" \
-  -H 'Content-Type: application/json' \
-  --data '{"scope":"miami"}'
+  -H 'Content-Type: application/json' --data '{"scope":"miami"}'
 ```
 
-The response is HTTP 202 with a Trigger run ID, **not** a completed backfill.
-Verify that run in Trigger.dev Cloud and independently read Supabase
-`wow_kalshi_weather_outcomes` for newly persisted outcome IDs. Replay the
-same request and verify unique `prediction_id` rows do not multiply. Confirm
-raw indexed evidence, target timestamps, source identity, and absence of
-probability publication or trades. Test a missing/unfinished index point and a
-missing-secret configuration as separate negative cases.
+The 202 response means **accepted**, not completed. Confirm Cloud terminal
+run receipt, actual Supabase outcome IDs, canonical source/target provenance,
+and unchanged unique-prediction outcome count on a retry. Also verify missing
+official index point, wrong credential and disabled-secret failure paths.
+Until that is proved, do not call Release B operational.
 
-Release acceptance requires: targeted Python and frozen pnpm tests passing at
-exact PR head, correct credential scoping, independent review, registered cloud
-production task, Render SHA parity, a real bounded Miami run receipt, and
-independently validated unique Supabase outcome records. Until all are verified
-**do not claim a production deployment or a completed backfill.**
-
-## Rollback
-
-Disable launch by removing only `WOW_KALSHI_WEATHER_BACKFILL_REQUEST_KEY`
-from the isolated Render service; disable/cancel this task in Trigger.dev.
-Do not disable existing weather shadow capture/Supabase Cron. Existing immutable
-outcomes remain as provenance records and must not be deleted to "rollback"
-research activity.
-
-## Readiness gate
-
-The previous strict **30 unique settled target-hours per lead bucket**
-minimum remains unchanged. This job only recovers missing settlement evidence
-from predictions that were already captured before target time. It cannot
-retroactively create the missing historical forecast snapshots or independently
-certify forecast issue-time availability.
+Rollback: disable only `WOW_KALSHI_WEATHER_BACKFILL_REQUEST_KEY` on Render
+and disable the one Trigger.dev task. Leave existing Supabase Cron, shadow
+collector and append-only historical outcomes untouched.
