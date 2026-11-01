@@ -35,7 +35,12 @@ def validate_nhl_pregame_evidence(
     """Return typed blockers. PASS means only source completeness, not model readiness."""
     if as_of_utc.tzinfo is None:
         raise ValueError("as_of_utc must be timezone-aware")
-    missing = [k for k in REQUIRED if evidence.get(k) is None or (isinstance(evidence.get(k), str) and not evidence.get(k).strip())]
+    def _missing_required(value: Any) -> bool:
+        return (value is None
+                or (isinstance(value, str) and not value.strip())
+                or (isinstance(value, (Mapping, list, tuple, set, frozenset)) and not value))
+
+    missing = [k for k in REQUIRED if _missing_required(evidence.get(k))]
     reasons: list[str] = []
     if missing:
         reasons.append("MODEL_INPUTS_INSUFFICIENT")
@@ -55,7 +60,8 @@ def validate_nhl_pregame_evidence(
     for key in ("home_goalie_sv_pct", "away_goalie_sv_pct", "home_pp_pct", "away_pk_pct"):
         try:
             n = float(evidence[key])
-            if not 0 <= n <= 1:
+            from math import isfinite
+            if isinstance(evidence[key], bool) or not isfinite(n) or not 0 <= n <= 1:
                 reasons.append("NHL_NUMERIC_FEATURE_INVALID")
         except (KeyError, ValueError, TypeError):
             reasons.append("NHL_NUMERIC_FEATURE_INVALID")
@@ -66,9 +72,9 @@ def validate_nhl_pregame_evidence(
                 reasons.append("NHL_NUMERIC_FEATURE_INVALID")
         except (KeyError, ValueError, TypeError):
             reasons.append("NHL_NUMERIC_FEATURE_INVALID")
-    if not evidence.get("source_snapshot_id"):
+    if not isinstance(evidence.get("source_snapshot_id"), str) or not evidence["source_snapshot_id"].strip():
         reasons.append("NHL_SOURCE_SNAPSHOT_MISSING")
-    if not evidence.get("goalie_identity_snapshot_id"):
+    if not isinstance(evidence.get("goalie_identity_snapshot_id"), str) or not evidence["goalie_identity_snapshot_id"].strip():
         reasons.append("NHL_GOALIE_IDENTITY_UNVERIFIED")
     return {
         "status": "INPUT_EVIDENCE_PASS_NOT_CERTIFICATION" if not missing and not reasons else "HELD",
