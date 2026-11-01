@@ -85,3 +85,35 @@ def test_invalid_goalie_timestamp_and_missing_identity_fail_closed():
     r = validate_nhl_pregame_evidence(d, as_of_utc=NOW)
     assert "NHL_GOALIE_STATUS_STALE" in r["blockers"]
     assert "NHL_GOALIE_IDENTITY_UNVERIFIED" in r["blockers"]
+
+ 
+def test_empty_structured_evidence_fails_closed():
+    for key in ("injury_report", "rest_travel", "calibration_artifact"):
+        for empty in ({}, [], ()):
+            row = valid()
+            row[key] = empty
+            result = validate_nhl_pregame_evidence(row, as_of_utc=NOW)
+            assert result["status"] == "HELD"
+            assert key in result["missing_fields"]
+            assert "MODEL_INPUTS_INSUFFICIENT" in result["blockers"]
+
+
+def test_whitespace_and_invalid_snapshot_identities_fail_closed():
+    for key, reason in (("source_snapshot_id", "NHL_SOURCE_SNAPSHOT_MISSING"),
+                        ("goalie_identity_snapshot_id", "NHL_GOALIE_IDENTITY_UNVERIFIED")):
+        for invalid in ("  ", {}, [], 42):
+            row = valid()
+            row[key] = invalid
+            result = validate_nhl_pregame_evidence(row, as_of_utc=NOW)
+            assert result["status"] == "HELD"
+            assert reason in result["blockers"]
+
+
+def test_boolean_and_nonfinite_percentages_never_pass():
+    for key in ("home_goalie_sv_pct", "away_goalie_sv_pct", "home_pp_pct", "away_pk_pct"):
+        for invalid in (True, False, float("nan"), float("inf")):
+            row = valid()
+            row[key] = invalid
+            result = validate_nhl_pregame_evidence(row, as_of_utc=NOW)
+            assert result["status"] == "HELD"
+            assert "NHL_NUMERIC_FEATURE_INVALID" in result["blockers"]
