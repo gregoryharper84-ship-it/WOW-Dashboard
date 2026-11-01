@@ -61,6 +61,19 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/main"
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
+      - name: Fail closed unless runtime bearer is distinct from scoring bearer
+        shell: bash
+        env:
+          # Used only for this comparison; never supplied to the producer.
+          WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+          WOW_AGENT_RUNTIME_API_KEY: ${{ secrets.WOW_AGENT_RUNTIME_API_KEY }}
+        run: |
+          if [[ -z "${WOW_ACTION_API_KEY:-}" ||
+                -z "${WOW_AGENT_RUNTIME_API_KEY:-}" ||
+                "${WOW_ACTION_API_KEY}" == "${WOW_AGENT_RUNTIME_API_KEY}" ]]; then
+            echo "PRODUCER_DISTINCT_CREDENTIAL_NOT_VERIFIED" >&2
+            exit 1
+          fi
       - name: Admit real, idempotent sports research run
         env:
           # Never expose the runtime bearer to checkout or earlier steps.
