@@ -38,6 +38,12 @@ BLOCKING_SEVERITIES = frozenset({"critical", "high"})
 FINDING_CATEGORIES = ("security", "probability_integrity", "governance",
                       "provenance", "reliability", "informational")
 BLOCKING_CATEGORIES = frozenset(FINDING_CATEGORIES) - {"informational"}
+# Bounded finding contract. The validator and the schema handed to the model are
+# generated from these, so a reviewer can never be held for a limit it was not
+# told about while the fail-closed validation itself stays unchanged.
+MAX_FINDINGS = 12
+MAX_FINDING_TEXT = 500
+FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDING_TEXT}
 REVIEW_CONTRACT_VERSION = 2
 REVIEW_SCHEMA = {
     "type": "object",
@@ -45,12 +51,13 @@ REVIEW_SCHEMA = {
         "source_review": {"type": "string", "enum": ["PASS", "FAIL"]},
         "security_review": {"type": "string", "enum": ["PASS", "FAIL"]},
         "probability_integrity_review": {"type": "string", "enum": ["PASS", "FAIL"]},
-        "findings": {"type": "array", "maxItems": 12, "items": {
+        "findings": {"type": "array", "maxItems": MAX_FINDINGS, "items": {
             "type": "object",
             "properties": {"severity": {"type": "string", "enum": list(FINDING_SEVERITIES)},
                            "category": {"type": "string", "enum": list(FINDING_CATEGORIES)},
-                           "file": {"type": "string"}, "detail": {"type": "string"},
-                           "evidence": {"type": "string"}},
+                           "file": dict(FINDING_TEXT_SCHEMA),
+                           "detail": dict(FINDING_TEXT_SCHEMA),
+                           "evidence": dict(FINDING_TEXT_SCHEMA)},
             "required": ["severity", "category", "file", "detail", "evidence"],
             "additionalProperties": False}},
     },
@@ -256,21 +263,34 @@ def parse_verdict(value):
     if any(type(value[k]) is not str or value[k] not in ALLOWED for k in keys):
         raise Hold("SEMANTIC_VERDICT_INVALID")
     findings = value["findings"]
-    if type(findings) is not list or len(findings) > 12:
-        raise Hold("SEMANTIC_FINDINGS_INVALID")
+    if type(findings) is not list:
+        raise Hold("SEMANTIC_FINDINGS_INVALID:NOT_LIST")
+    if len(findings) > MAX_FINDINGS:
+        raise Hold("SEMANTIC_FINDINGS_INVALID:TOO_MANY")
     normalized = []
     for finding in findings:
         # Structured severities only. A free-text or partial finding cannot be
         # classified, so it fails closed instead of being read as advisory.
-        if type(finding) is not dict or set(finding) != {"severity", "category", "file", "detail", "evidence"}:
-            raise Hold("SEMANTIC_FINDINGS_INVALID")
+        if type(finding) is not dict:
+            raise Hold("SEMANTIC_FINDINGS_INVALID:NOT_OBJECT")
+        if set(finding) != {"severity", "category", "file", "detail", "evidence"}:
+            raise Hold("SEMANTIC_FINDINGS_INVALID:FIELD_SET")
         if type(finding["severity"]) is not str or finding["severity"] not in FINDING_SEVERITIES:
-            raise Hold("SEMANTIC_FINDINGS_INVALID")
+            raise Hold("SEMANTIC_FINDINGS_INVALID:SEVERITY")
         if type(finding["category"]) is not str or finding["category"] not in FINDING_CATEGORIES:
-            raise Hold("SEMANTIC_FINDINGS_INVALID")
-        if any(type(finding[key]) is not str or not finding[key].strip() or len(finding[key]) > 500
-               for key in ("file", "detail", "evidence")):
-            raise Hold("SEMANTIC_FINDINGS_INVALID")
+            raise Hold("SEMANTIC_FINDINGS_INVALID:CATEGORY")
+        # A real malformed provider response must remain HOLD, but the repair
+        # owner needs a safe, allowlisted reason that distinguishes type,
+        # blank and size, and identifies the field without logging its value.
+        # Key names and suffixes are fixed here, never model-controlled.
+        for key in ("file", "detail", "evidence"):
+            field_value = finding[key]
+            if type(field_value) is not str:
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TYPE")
+            if not field_value.strip():
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_EMPTY")
+            if len(field_value) > MAX_FINDING_TEXT:
+                raise Hold("SEMANTIC_FINDINGS_INVALID:TEXT_" + key.upper() + "_TOO_LONG")
         normalized.append({key: finding[key] for key in ("severity", "category", "file", "detail", "evidence")})
     # Model-provided severity alone cannot downgrade any safety or correctness
     # concern. Even LOW severity in a risk category remains blocking.
@@ -292,9 +312,15 @@ def prompt_for(target):
             "non-risk observations may use category informational with medium/low severity and PASS domains. "
             "Do not disguise an actual concern as informational; report FAIL for uncertain risk. "
             "Return ONLY a JSON object with exactly four fields: source_review, "
-            "security_review, probability_integrity_review (each PASS or FAIL), findings (objects exactly "
-            "severity in critical|high|medium|low, category in security|probability_integrity|governance|"
-            "provenance|reliability|informational, file, detail, evidence; empty array when none). "
+            "security_review, probability_integrity_review (each PASS or FAIL), findings (at most 12 "
+            "objects; empty array when none). Each finding object has exactly these five keys and no "
+            "others: severity in critical|high|medium|low, category in security|probability_integrity|"
+            "governance|provenance|reliability|informational, file, detail, evidence. file, detail and "
+            "evidence are non-empty strings of at most 500 characters each, so quote only the shortest "
+            "decisive excerpt as evidence. Never return whitespace-only file, detail, or evidence. "
+            "For a cross-cutting concern, cite the most relevant changed repository-relative file path, never blank. "
+            "Prefer 100-200 characters in detail and 30-150 in evidence. Split complex concerns into separate "
+            "short findings rather than producing an oversized string; preserve every material risk. "
             f"Repository: {REPO}. PR: {target['pr']}; SHA: {target['head_sha']}; base SHA: {target.get('base_sha', 'unknown')}; "
             f"diff digest: {target['diff_sha256']}.\nBEGIN_UNTRUSTED_DIFF\n" +
             target["diff"] +
@@ -314,24 +340,43 @@ def call_provider(provider, key, prompt):
         claude_model = os.getenv("WOW_QA_CLAUDE_MODEL") or "claude-sonnet-4-6"
         if claude_model not in {"claude-sonnet-4-6"}:
             raise Hold("CLAUDE_MODEL_UNAPPROVED")
-        result = request_json(url, headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                              data={"model": claude_model,
-                                    "max_tokens": 1800, "system": SYSTEM_ROLE,
-                                    "messages": [{"role": "user", "content": prompt}],
-                                    "tools": [{"name": "submit_review",
-                                               "description": "Return a strict security review verdict.",
-                                               "input_schema": REVIEW_SCHEMA}],
-                                    "tool_choice": {"type": "tool", "name": "submit_review"}})
-        if result.get("stop_reason") != "tool_use":
-            raise Hold("CLAUDE_REVIEW_INCOMPLETE")
-        try:
-            responses = [part["input"] for part in result["content"]
+        # One complete, bounded, authenticated tool response. Never replay
+        # attacker-controlled diff text solely because an earlier model
+        # completion was truncated or incomplete: retrying the source gives
+        # prompt injection another opportunity to influence the decision.
+        result = request_json(
+            url, headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+            data={"model": claude_model, "max_tokens": 6144,
+                  "system": SYSTEM_ROLE,
+                  "messages": [{"role": "user", "content": prompt}],
+                  "tools": [{"name": "submit_review",
+                             "description": "Return a strict security review verdict.",
+                             "input_schema": REVIEW_SCHEMA}],
+                  "tool_choice": {"type": "tool", "name": "submit_review"}})
+        if type(result) is not dict:
+            raise Hold("CLAUDE_RESPONSE_INVALID")
+        reason = result.get("stop_reason")
+        if reason == "tool_use":
+            content = result.get("content")
+            if type(content) is not list or any(type(part) is not dict for part in content):
+                raise Hold("CLAUDE_RESPONSE_INVALID")
+            responses = [part.get("input") for part in content
                          if part.get("type") == "tool_use" and part.get("name") == "submit_review"]
             if len(responses) != 1:
                 raise Hold("CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE")
             return parse_verdict(responses[0])
-        except (KeyError, TypeError, ValueError):
-            raise Hold("CLAUDE_RESPONSE_INVALID") from None
+        # Fixed provider-defined labels only; never leak body, prompt,
+        # credential or arbitrary text to Actions diagnostic logs.
+        label = reason if type(reason) is str and reason in {
+            "max_tokens", "end_turn", "stop_sequence", "pause_turn", "refusal"
+        } else "UNCLASSIFIED"
+        print("REVIEW_CLAUDE_STOP_REASON:" + label, file=sys.stderr)
+        if reason == "max_tokens":
+            raise Hold("CLAUDE_REVIEW_TRUNCATED")
+        if reason == "refusal":
+            raise Hold("CLAUDE_REVIEW_REFUSED")
+        # Explicit non-truncation stopping and unknown reason fail closed.
+        raise Hold("CLAUDE_REVIEW_INCOMPLETE")
     elif provider == "gemini-generative-api":
         model = (os.getenv("WOW_QA_GEMINI_MODEL") or "gemini-2.5-flash")
         if model not in {"gemini-2.5-flash"}:
@@ -370,6 +415,12 @@ def semantic_review(target, credentials, invoke=call_provider):
         except ProviderUnavailable as exc:
             attempts.append({"provider": provider, "result": str(exc)})
             continue
+        except Hold as exc:
+            # Attribute the provider that produced an unusable verdict so the
+            # retained receipt is attributable. This is never a retry: a
+            # malformed or policy-denied review does not fail over.
+            exc.attempts = attempts + [{"provider": provider, "result": str(exc)}]
+            raise
         # A semantic REJECT, malformed output or policy denial NEVER fails over.
         attempts.append({"provider": provider, "result": decision})
         return decision, payload, provider, attempts
@@ -529,7 +580,7 @@ def main():
     receipt = {"schema_version": REVIEW_CONTRACT_VERSION, "repository": REPO, "pr_number": pr_number,
                "head_sha": target["head_sha"], "base_sha": target["base_sha"], "diff_sha256": target["diff_sha256"],
                "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-               "decision": "HOLD", "reviewer_identity": "none", "can_execute": False}
+               "decision": "HOLD", "reviewer_identity": "none", "attempts": [], "can_execute": False}
     try:
         if prior_semantic_reject(target["head_sha"], read_token):
             raise Hold("PREVIOUS_SEMANTIC_REJECT_SAME_SHA")
@@ -562,6 +613,12 @@ def main():
                 receipt["owner_review_instruction"] = owner_review_instruction(target)
     except Hold as exc:
         receipt["reason"] = str(exc)
+        # Persist a truthful (possibly empty) attempt list on *every* HOLD.
+        # This is provenance, never permission to retry malformed output.
+        receipt["attempts"] = list(getattr(exc, "attempts", []))
+        if str(exc).startswith("SEMANTIC_FINDINGS_INVALID:"):
+            receipt["recovery_class"] = "EVIDENCE_PENDING"
+            receipt["next_action"] = "REPAIR_REVIEWER_CONTRACT_AND_REVIEW_NEW_SOURCE_HEAD"
     # Last-second guarded acceptance. A moved protected main or a prior QA REJECT
     # must never be overwritten with a success, including the owner fallback path.
     if receipt["decision"] == "PASS":

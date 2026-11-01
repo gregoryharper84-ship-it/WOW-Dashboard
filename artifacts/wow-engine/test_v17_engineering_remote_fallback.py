@@ -359,6 +359,21 @@ class RemoteFallbackTests(unittest.TestCase):
         self.assertLess(claude.index("engineering_remote_fallback.py guard"),
                         claude.index("git switch --detach"))
 
+    def test_reconcile_identifies_failed_cursor_launch_requiring_negative_proof_and_release(self):
+        failed = remote.receipt(
+            "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id="101",
+            main_sha=MAIN, hold=True, pr_number="101",
+            pr_sha="d" * 40,
+            cursor_agent_id="bc-11111111-2222-3333-4444-555555555555",
+            cursor_run_id=None, worker_id="github-actions:800001:1",
+        )
+        comments = [{"id": 900001, "body": remote._body(failed)}]
+        observed = remote.reconcile(self.api, comments, "101")
+        self.assertEqual(
+            observed[0]["status"],
+            "CURSOR_FAILED_LAUNCH_REQUIRES_NEGATIVE_PROOF_AND_RELEASE",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

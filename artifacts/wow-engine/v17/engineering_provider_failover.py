@@ -550,6 +550,8 @@ def resident_provider_admission(route: dict[str, Any], *, updated_at: str, now: 
             return "PROVIDER_QUOTA_BLOCKED"
         if any(code in reason.split(":") for code in OPENAI_FAILOVER_ELIGIBLE):
             return "PROVIDER_THROTTLED" if age < 120 else "PROVIDER_RECOVERY_UNVERIFIED"
+        if reason == "REMOTE_WRITER_RECONCILIATION_REQUIRED":
+            return "PROVIDER_RECOVERY_UNVERIFIED"
         return "PROVIDER_STATUS_UNVERIFIED"
     if (route["action"] == "DISPATCH" and route.get("provider") in {"openai", "anthropic"}
             and age <= 15):

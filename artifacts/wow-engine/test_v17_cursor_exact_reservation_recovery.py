@@ -350,3 +350,213 @@ def test_dynamic_finalizer_appends_new_receipt_only_after_terminal_proof():
             source_sha="a" * 40, reservation_comment_id=CID,
         )
     assert api.puts == 1, "no duplicate release"
+
+
+FAILED_CID = 900001
+FAILED_INCIDENT = "101"
+FAILED_PR = 101
+FAILED_ORIGINAL_HEAD = "d" * 40
+FAILED_NEW_HEAD = "e" * 40
+FAILED_MAIN = "f" * 40
+FAILED_AGENT = probe.deterministic_agent_id(probe.REPOSITORY, FAILED_PR, FAILED_ORIGINAL_HEAD)
+UNRELATED_HISTORICAL_AGENT = "bc-00000000-1111-2222-3333-444444444444"
+FAILED_WORKER_RUN = 800001
+FAILED_WORKER = f"github-actions:{FAILED_WORKER_RUN}:1"
+
+
+class FailedLaunchFixture:
+    def __init__(self):
+        self.comment = {
+            "id": FAILED_CID,
+            "user": {"login": "github-actions[bot]", "id": 41898282},
+            "issue_url": f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/issues/1138",
+            "body": ledger._body(ledger.receipt(
+                "CURSOR_LAUNCH_RESERVED", incident_id=FAILED_INCIDENT, provider="cursor",
+                lease_group=f"PR_{FAILED_PR}", main_sha=FAILED_MAIN, hold=True,
+                branch="fix/synthetic-101",
+                pr_number=str(FAILED_PR), pr_sha=FAILED_ORIGINAL_HEAD,
+                cursor_agent_id=FAILED_AGENT, cursor_run_id=None, worker_id=FAILED_WORKER,
+            )),
+        }
+        self.origin = {
+            "id": FAILED_WORKER_RUN, "run_attempt": 1, "event": "workflow_dispatch",
+            "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+            "head_sha": FAILED_MAIN, "head_branch": "main",
+            "status": "completed", "conclusion": "failure",
+            "repository": {"full_name": probe.REPOSITORY},
+            "head_repository": {"full_name": probe.REPOSITORY},
+        }
+        self.agent_response = probe.ReceiptBlocked("STATUS_API_HTTP_404")
+        self.global_pages = [{"items": [{"id": UNRELATED_HISTORICAL_AGENT, "status": "IDLE"}]}]
+        self.pr_pages = [{"items": []}]
+        self.pr = {
+            "number": FAILED_PR, "state": "open", "changed_files": 2,
+            "head": {"sha": FAILED_NEW_HEAD, "repo": {"full_name": probe.REPOSITORY}},
+            "base": {"ref": "main", "repo": {"full_name": probe.REPOSITORY}},
+        }
+        self.comparison = {
+            "status": "ahead", "behind_by": 0,
+            "merge_base_commit": {"sha": FAILED_ORIGINAL_HEAD},
+        }
+        self.files = [
+            {"filename": ".github/scripts/wow_simple_security_review.py"},
+            {"filename": ".github/scripts/tests/test_wow_simple_security_review.py"},
+        ]
+
+    def api(self, url, *, token, basic=False):
+        prefix = f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}"
+        if url == f"{prefix}/issues/comments/{FAILED_CID}":
+            return copy.deepcopy(self.comment)
+        if url == f"{prefix}/actions/runs/{FAILED_WORKER_RUN}":
+            return copy.deepcopy(self.origin)
+        if url == f"{probe.CURSOR_API}/agents/{FAILED_AGENT}":
+            assert basic
+            if isinstance(self.agent_response, Exception):
+                raise self.agent_response
+            return copy.deepcopy(self.agent_response)
+        if url.startswith(f"{probe.CURSOR_API}/agents?"):
+            assert basic
+            if "prUrl=" in url:
+                return copy.deepcopy(self.pr_pages[0])
+            return copy.deepcopy(self.global_pages[0])
+        if url == f"{prefix}/pulls/{FAILED_PR}":
+            return copy.deepcopy(self.pr)
+        if url == f"{prefix}/pulls/{FAILED_PR}/files?per_page=100&page=1":
+            return copy.deepcopy(self.files)
+        if url == f"{prefix}/compare/{FAILED_ORIGINAL_HEAD}...{FAILED_NEW_HEAD}":
+            return copy.deepcopy(self.comparison)
+        raise AssertionError("unrecognized URL: " + url)
+
+    def prove(self):
+        return probe.collect_receipt(
+            "fixture-cursor", "fixture-github", api=self.api,
+            reservation_comment_id=FAILED_CID,
+        )
+
+
+def test_failed_launch_negative_proof_verifies_404_and_complete_archived_inventories():
+    fixture = FailedLaunchFixture()
+    result = fixture.prove()
+    assert result["status"] == "CURSOR_TERMINAL_STATUS_VERIFIED"
+    assert result["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
+    assert result["agent_status"] == "NEVER_CREATED"
+    assert result["agent_id"] == FAILED_AGENT
+    assert result["run_id"] is None
+    assert result["latest_run_id"] is None
+    assert result["release_authorized"] is False
+    assert result["lease_released"] is False
+    assert result["can_execute"] is False
+    assert result["production_verified"] is False
+    assert result["negative_launch_proof"] == {
+        "global_pages": 1, "global_agents_checked": 1,
+        "pr_pages": 1, "pr_agents_checked": 0,
+    }
+
+
+@pytest.mark.parametrize("mutate,expected", [
+    (lambda f: setattr(f, "agent_response", {"id": FAILED_AGENT, "status": "ACTIVE"}), "CURSOR_AGENT_STILL_ACTIVE"),
+    (lambda f: setattr(f, "agent_response", {"id": FAILED_AGENT, "status": "IDLE"}), "CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION"),
+    (lambda f: setattr(f, "agent_response", probe.ReceiptBlocked("STATUS_API_HTTP_503")), "STATUS_API_HTTP_503"),
+    (lambda f: setattr(f, "global_pages", [{"items": [{"id": FAILED_AGENT, "status": "IDLE"}]}]), "CURSOR_AGENT_INVENTORY_CONTRADICTION"),
+    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": FAILED_AGENT, "status": "IDLE"}]}]), "CURSOR_AGENT_INVENTORY_CONTRADICTION"),
+    (lambda f: setattr(f, "global_pages", [{"items": [{"id": "bc-other", "status": "ACTIVE"}]}]), "CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS"),
+    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": "bc-other", "status": "ACTIVE"}]}]), "CURSOR_ACTIVE_PR_AGENT_EXISTS"),
+    (lambda f: setattr(f, "global_pages", [{"items": [], "nextCursor": "page2"}]), "CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED"),
+    (lambda f: f.origin.update(conclusion="success"), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
+])
+def test_failed_launch_negative_proof_fails_closed_on_ambiguous_or_active_evidence(mutate, expected):
+    fixture = FailedLaunchFixture()
+    mutate(fixture)
+    with pytest.raises(probe.ReceiptBlocked, match=expected):
+        fixture.prove()
+
+
+def test_closed_failed_launch_pr_fails_closed():
+    fixture = FailedLaunchFixture()
+    fixture.pr["state"] = "closed"
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_SOURCE_PR_IDENTITY_INVALID"):
+        fixture.prove()
+
+
+def test_failed_launch_pr_state_movement_during_probe_is_rejected():
+    fixture = FailedLaunchFixture()
+    original_api = fixture.api
+    seen = 0
+
+    def changing_api(url, *, token, basic=False):
+        nonlocal seen
+        pr_url = f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/pulls/{FAILED_PR}"
+        if url == pr_url:
+            seen += 1
+            if seen == 2:
+                item = copy.deepcopy(fixture.pr)
+                item["state"] = "closed"
+                return item
+        return original_api(url, token=token, basic=basic)
+
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_PR_MOVED_DURING_PROBE"):
+        probe.collect_receipt(
+            "fixture-cursor", "fixture-github", api=changing_api,
+            reservation_comment_id=FAILED_CID,
+        )
+    assert seen == 2
+
+
+def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_id():
+    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments, run
+
+    fixture = FailedLaunchFixture()
+    proof = fixture.prove()
+
+    class FailedLaunchAPI(_FakeAPI):
+        def request(self, path, payload=None, method=None):
+            if path == f"/repos/{release.REPOSITORY}/pulls/{FAILED_PR}":
+                return copy.deepcopy(fixture.pr)
+            if path == release.LEDGER and method == "POST":
+                self.puts += 1
+                created = {
+                    "id": 9100000000, "body": payload["body"],
+                    "user": {"login": "github-actions[bot]"},
+                }
+                self.comments.append(created)
+                return copy.deepcopy(created)
+            if path.endswith("/issues/comments/9100000000"):
+                return copy.deepcopy(self.comments[-1])
+            return super().request(path, payload, method)
+
+    api = FailedLaunchAPI(released_comments() + [fixture.comment])
+    env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
+    with patch.dict("os.environ", env), patch(
+        "v17.cursor_terminal_status_receipt.collect_receipt", return_value=proof,
+    ), patch(
+        "v17.cursor_terminal_status_receipt.api_json", side_effect=fixture.api,
+    ):
+        with pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED"):
+            release.append_terminal_release(
+                api, cursor_token="fixture", run_id=99010, run_attempt=1,
+                source_sha="a" * 40, reservation_comment_id=None,
+            )
+        result = release.append_terminal_release(
+            api, cursor_token="fixture", run_id=99010, run_attempt=1,
+            source_sha="a" * 40, reservation_comment_id=FAILED_CID,
+        )
+    assert result["status"] == "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS"
+    assert result["original_comment_id"] == FAILED_CID
+    assert api.puts == 1
+    appended_doc = json.loads(api.comments[-1]["body"].split("\n", 1)[1])
+    assert appended_doc["cursor_run_id"] is None
+    assert appended_doc["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
+    assert appended_doc["agent_status"] == "NEVER_CREATED"
+    released = release.verified_released_ids(
+        api.comments, ledger.reservations(api.comments), get_run=lambda _: run(),
+    )
+    assert released == {release.EXPECTED_COMMENT_ID, FAILED_CID}
+    ledger.assert_no_remote_writer(api.comments, get_run=lambda _: run())
+
+    # Fabricating a cursor_run_id on a CURSOR_LAUNCH_RESERVED release fails closed.
+    bad_comments = copy.deepcopy(api.comments)
+    bad_doc = copy.deepcopy(appended_doc)
+    bad_doc["cursor_run_id"] = "run-fabricated"
+    bad_comments[-1]["body"] = f"{release.RELEASE_MARKER}{FAILED_INCIDENT} -->\n" + json.dumps(bad_doc, sort_keys=True)
+    with pytest.raises(ledger.ProviderUnavailable, match="REMOTE_RELEASE_RECEIPT_UNVERIFIED"):
+        ledger.assert_no_remote_writer(bad_comments, get_run=lambda _: run())
