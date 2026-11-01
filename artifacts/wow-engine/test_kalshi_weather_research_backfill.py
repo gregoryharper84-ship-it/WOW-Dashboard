@@ -170,6 +170,32 @@ def test_rotating_progress_does_not_starve_later_good_outcomes():
     assert settled_ids == ["available"]
 
 
+
+def test_periodic_thirty_minute_launches_do_not_alias_a_three_of_nine_slice():
+    from datetime import timedelta
+    db = Client([prediction(f"missing-{i}") for i in range(8)] + [prediction("zz-available")])
+    receipts = []
+    offsets = []
+    def settle(*, client, prediction_id, index_city, settled_at):
+        if prediction_id != "zz-available":
+            raise KalshiWeatherRuntimeError("SETTLEMENT_POINT_UNAVAILABLE", ("NO_DATA",))
+        client.outcomes.append({"prediction_id": prediction_id})
+        receipts.append(prediction_id)
+        return {"status": "SETTLED", "outcome_id": "outcome-available",
+                "target_time_utc": TARGET}
+
+    for i in range(12):
+        result = reconcile_miami_settlements(
+            client=db, limit=3, now=CLOCK + timedelta(minutes=30*i), settle=settle,
+        )
+        offsets.append(result["rotation_offset"])
+        assert result["attempted"] <= 3
+        assert result["can_execute"] is False
+        assert result["probability_publishable"] is False
+    assert len(set(offsets)) > 1
+    assert receipts == ["zz-available"]
+
+
 def test_receipt_cannot_claim_another_settlement_hour():
     db = Client([prediction("p1")])
     def bad_settle(**_kwargs):

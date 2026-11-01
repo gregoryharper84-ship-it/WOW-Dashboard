@@ -6,6 +6,7 @@ The official Kalshi index and frozen contract remain the settlement authority.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from typing import Any, Callable, Mapping
 
 from .persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
@@ -98,12 +99,17 @@ def reconcile_miami_settlements(
             continue
         eligible.append((target, prediction_id))
 
-    # Rotate the bounded search through every candidate across five-minute
-    # launch windows. Unlike restarting at the oldest unresolved record every
-    # run, missing/non-final official points cannot permanently starve later
-    # candidates. No mutable cursor table or new scheduler is required.
+    # A fixed-stride rotation can alias a periodic caller: nine eligible
+    # predictions and a 30-minute cadence with limit=3 repeatedly select the
+    # same three. Mix each five-minute window deterministically instead so
+    # periodic wakes do not lock onto that subset. No new scheduler or state.
+    # This is best-effort coverage, not a durable progress guarantee.
     eligible.sort(key=lambda item: (item[0], item[1]))
-    rotation_offset = ((int(clock.timestamp()) // 300) * limit) % len(eligible) if eligible else 0
+    window = int(clock.timestamp()) // 300
+    rotation_offset = (
+        int.from_bytes(sha256(f"miami-backfill:{window}".encode("ascii")).digest()[:8], "big")
+        % len(eligible)
+    ) if eligible else 0
     eligible = eligible[rotation_offset:] + eligible[:rotation_offset]
     attempted = 0
     written: list[dict[str, str]] = []
