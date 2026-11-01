@@ -17,7 +17,9 @@ DISPATCHER = ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.y
 PRIMARY = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml"
 
 
-def _route(*, event="schedule", primary="failure", secondary="failure", anthro=True, openai=True):
+def _route(*, event="schedule", primary="failure", secondary="failure",
+           anthro=True, openai=True, target="", claude_failure="delivery",
+           last_incident="1150", log_fetch="ok"):
     if not shutil.which("jq"):
         pytest.skip("Workflow shell fixture requires jq (present on GitHub Actions)")
     text = DISPATCHER.read_text()
@@ -36,6 +38,9 @@ def _route(*, event="schedule", primary="failure", secondary="failure", anthro=T
             "  *wow-v17-claude-engineering-worker.yml*) "
             "if [ \"$TEST_SECONDARY\" = none ]; then printf '[]\\n'; "
             "else printf '[{\"databaseId\":901,\"conclusion\":\"%s\"}]\\n' \"$TEST_SECONDARY\"; fi ;;\n"
+            "  *'run view '*)\n"
+            "    [ \"$TEST_LOG_FETCH\" = ok ] || exit 1\n"
+            "    printf '2026-10-23T07:41:06Z ##[error]ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE: incident=%s; triage repairable=false.\\n' \"$TEST_LAST_INCIDENT\" ;;\n"
             "  *) printf 'Quota exceeded\\n' ;;\n"
             "esac\n"
         )
@@ -45,6 +50,12 @@ def _route(*, event="schedule", primary="failure", secondary="failure", anthro=T
             "#!/bin/sh\n"
             "if [ \"$1\" = -c ]; then printf '5\\n'; exit 0; fi\n"
             "case \"$*\" in\n"
+            "  *' classify '*'--provider anthropic'*)\n"
+            "    if [ \"$TEST_CLAUDE_FAILURE\" = delivery ]; then\n"
+            "      printf '{\"provider\":\"anthropic\",\"code\":\"ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE\",\"provider_signal\":null,\"disposition\":\"UNRESOLVED_TYPED_FAILURE\",\"failover_eligible\":false}\\n'\n"
+            "    else\n"
+            "      printf '{\"provider\":\"anthropic\",\"code\":\"ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE\",\"provider_signal\":\"ANTHROPIC_API_RATE_LIMITED\",\"disposition\":\"UNRESOLVED_TYPED_FAILURE\",\"failover_eligible\":true}\\n'\n"
+            "    fi ;;\n"
             "  *' classify '*) printf '{\"code\":\"OPENAI_API_QUOTA_EXCEEDED\",\"failover_eligible\":true}\\n' ;;\n"
             "  *' circuit-breaker '*) printf '{\"active\":true}\\n' ;;\n"
             "  *) exit 30 ;;\n"
@@ -67,13 +78,16 @@ def _route(*, event="schedule", primary="failure", secondary="failure", anthro=T
             SOURCE_DISPLAY_TITLE="",
             FORCE_PROVIDER="auto",
             MANUAL_REASON="",
-            MANUAL_TARGET_INCIDENT="",
+            MANUAL_TARGET_INCIDENT=target,
             MANUAL_LEASE_GROUP="",
             OPENAI_API_KEY="test-key" if openai else "",
             ANTHROPIC_API_KEY="test-key" if anthro else "",
             CLAUDE_CODE_OAUTH_TOKEN="",
             TEST_PRIMARY=primary,
             TEST_SECONDARY=secondary,
+            TEST_CLAUDE_FAILURE=claude_failure,
+            TEST_LAST_INCIDENT=last_incident,
+            TEST_LOG_FETCH=log_fetch,
         )
         proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True,
                               text=True, timeout=20)
@@ -130,3 +144,28 @@ def test_only_dispatcher_owns_automatic_primary_entrypoint():
     assert "wow-v17-chatgpt-engineering-worker" in dispatch_triggers
     assert "wow-v17-claude-engineering-worker" in dispatch_triggers
     assert "wow-v17-gemini-engineering-worker" in dispatch_triggers
+
+
+def test_delivery_only_failed_claude_allows_a_different_exact_target():
+    receipt = _route(secondary="failure", target="1021")
+    assert (receipt["action"], receipt["provider"]) == ("DISPATCH", "anthropic")
+
+
+def test_delivery_failure_never_retries_same_failed_target():
+    receipt = _route(secondary="failure", target="1150")
+    assert (receipt["action"], receipt["provider"]) == ("SURVIVAL", "deterministic")
+
+
+def test_provider_failure_still_blocks_new_target():
+    receipt = _route(secondary="failure", target="1021", claude_failure="provider")
+    assert (receipt["action"], receipt["provider"]) == ("SURVIVAL", "deterministic")
+
+
+def test_unverifiable_failure_log_still_blocks_new_target():
+    receipt = _route(secondary="failure", target="1021", log_fetch="fail")
+    assert (receipt["action"], receipt["provider"]) == ("SURVIVAL", "deterministic")
+
+
+def test_cancelled_claude_is_never_treated_as_recovered():
+    receipt = _route(secondary="cancelled", target="1021")
+    assert (receipt["action"], receipt["provider"]) == ("SURVIVAL", "deterministic")
