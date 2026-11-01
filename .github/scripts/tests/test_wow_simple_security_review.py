@@ -436,6 +436,25 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 self.assertEqual(m.call_provider("gemini-generative-api",
                                                  "TEST_KEY", "diff")[0], "PASS")
 
+    def test_gemini_fallback_invalid_responses_hold_without_retry(self):
+        import json
+        good = self._passing()
+        cases = (
+            ("malformed_json", "STOP", "{not valid json}", "SEMANTIC_RESPONSE_NOT_JSON"),
+            ("invalid_verdict", "STOP", json.dumps({**good, "security_review": "NOT_PASS"}),
+             "SEMANTIC_REVIEW_VALUE_INVALID"),
+            ("non_stop", "MAX_TOKENS", json.dumps(good), "GEMINI_REVIEW_INCOMPLETE"),
+        )
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
+            for name, reason, body, _expected in cases:
+                with self.subTest(name=name):
+                    result = {"candidates": [{"finishReason": reason, "content": {
+                        "parts": [{"text": body}]}}]}
+                    with patch.object(m, "request_json", return_value=result) as request:
+                        with self.assertRaises(m.Hold):
+                            m.call_provider("gemini-generative-api", "TEST_KEY", "diff")
+                        self.assertEqual(request.call_count, 1)
+
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
               "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
