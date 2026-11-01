@@ -602,8 +602,17 @@ def exact_post_cutover_fixture():
             "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
             "head_sha": witness["main_sha"], "head_branch": "main",
             "status": "completed", "conclusion": "failure",
+            "created_at": witness["origin_created_at"],
             "repository": {"full_name": probe.REPOSITORY},
             "head_repository": {"full_name": probe.REPOSITORY},
+        },
+        "owner_request": {
+            "id": witness["owner_comment_id"],
+            "body": "/wow-cursor\nP0 NBA #1988 on existing PR #2211 at its current exact head. Do not create another PR, fit a replacement model, merge or deploy. Diagnose actual wow-engine-verify shard-2 failure: shared existing-PR governance fixture TEMPORARY_FALLBACK_PROVIDER_SUNSET (1710 other tests passed). Reuse existing narrowly-scoped tested fix PR #2345 via authorized independent governance adoption, rather than modifying NBA settlement logic to hide the fixture error. Also reconcile substantive exact-head independent security REJECT with minimal legitimate edits, and rerun all affected regression/tests. Do not modify any file leased by PR #2108; honor shared writer lease and fail closed on unavailable provider/authorization. Return exact branch SHA, CI run URLs, independent review decision, and the first typed remaining blocker. Keep source-time/official ID/immutable prediction protections, V17_TERMINAL_REDUCER and can_execute=false. No wager or certification changes.",
+            "user": {"login": "gregoryharper84-ship-it", "id": 285088163},
+            "issue_url": f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/issues/2211",
+            "created_at": witness["owner_comment_created_at"],
+            "updated_at": witness["owner_comment_created_at"],
         },
         "pr": {
             "number": 2211, "state": "open", "changed_files": 1,
@@ -623,6 +632,8 @@ def prove_exact_post_cutover(fixture):
     def api(url, *, token, basic=False):
         if url == prefix + f"/issues/comments/{witness['comment_id']}":
             return copy.deepcopy(fixture["comment"])
+        if url == prefix + f"/issues/comments/{witness['owner_comment_id']}":
+            return copy.deepcopy(fixture["owner_request"])
         if url == prefix + "/actions/runs/41276607293":
             return copy.deepcopy(fixture["origin"])
         if url == prefix + "/pulls/2211":
@@ -660,6 +671,16 @@ def test_exact_post_cutover_branch_witness_does_not_release_without_provider_pro
      "CURSOR_RESERVATION_IDENTITY_INVALID"),
     (lambda f: f["comment"]["user"].update(id=1), "CURSOR_RESERVATION_UNTRUSTED"),
     (lambda f: f["origin"].update(conclusion="success"), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
+    (lambda f: f["origin"].update(created_at="2026-11-01T04:20:01Z"),
+     "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
+    (lambda f: f["owner_request"].update(body="/wow-cursor\nforged task"),
+     "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED"),
+    (lambda f: f["owner_request"]["user"].update(id=1),
+     "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED"),
+    (lambda f: f["owner_request"].update(updated_at="2026-11-01T05:20:50Z"),
+     "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED"),
+    (lambda f: f["owner_request"].update(issue_url="https://github.com/other"),
+     "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED"),
     (lambda f: f["pr"]["head"].update(ref="fix/renamed"),
      "CURSOR_RESERVATION_BRANCH_MISMATCH"),
     (lambda f: f["pr"]["head"].update(sha="a" * 40), "CURSOR_EXACT_WITNESS_PR_MOVED"),
