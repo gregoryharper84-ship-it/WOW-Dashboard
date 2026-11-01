@@ -189,37 +189,75 @@ jobs:
           # failures. They follow the same credit-aware admission as cron.
           secondary_usable() {
             { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; } || return 1
-            local recent conclusion run_id classified previous_incident
+            local recent conclusion run_id run_meta attempt name inventory directory verdict
             if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
                 --workflow wow-v17-claude-engineering-worker.yml \
                 --branch main --status completed --limit 1 \
                 --json databaseId,conclusion 2>/dev/null) \
                 || ! jq -e 'type == "array" and length <= 1 and
-                    (length == 0 or (.[0].databaseId | type == "number" and . > 0))' \
+                    (length == 0 or ((.[0].databaseId | type) == "number"
+                    and .[0].databaseId > 0 and .[0].databaseId == (.[0].databaseId | floor)))' \
                     <<<"$recent" >/dev/null 2>&1; then
               return 1
             fi
-            # First-ever use is still bounded by the existing provider/worker fences.
+            # No prior run: retain the existing first-admission and writer fences.
             [ "$(jq 'length' <<<"$recent")" = "0" ] && return 0
             conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
             case "$conclusion" in
               success) return 0 ;;
               failure)
-                # A completed Claude analysis of an unrepairable incident is not
-                # an API quota failure. Permit only a DIFFERENT explicit incident.
-                # Never retry a prior failed target or bypass provider account holds.
+                # A task-only failed run does not prove Claude capacity is gone.
+                # Authenticate the existing worker's structured receipt, never
+                # parse a provider-controlled log or retry that same incident.
                 [[ "${target_incident:-}" =~ ^[1-9][0-9]*$ ]] || return 1
                 run_id=$(jq -r '.[0].databaseId' <<<"$recent") || return 1
-                classified=$(classify_run "$run_id" anthropic) || return 1
-                jq -e '.code == "ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE"
-                  and .provider == "anthropic"
-                  and .provider_signal == null
-                  and .disposition == "UNRESOLVED_TYPED_FAILURE"
-                  and .failover_eligible == false' <<<"$classified" >/dev/null 2>&1 || return 1
-                previous_incident=$(sed -nE 's/.*##\[error\]ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE: incident=([1-9][0-9]*);.*/\1/p' \
-                    "$RUNNER_TEMP/provider-${run_id}.log" | sort -u)
-                [[ "$previous_incident" =~ ^[1-9][0-9]*$ ]] \
-                  && [ "$previous_incident" != "$target_incident" ]
+                run_meta=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" 2>/dev/null) || return 1
+                jq -e --argjson id "$run_id" --arg repo "$GITHUB_REPOSITORY" '
+                  .id == $id and .repository.full_name == $repo
+                  and .path == ".github/workflows/wow-v17-claude-engineering-worker.yml"
+                  and .head_branch == "main" and .event == "workflow_dispatch"
+                  and .status == "completed" and .conclusion == "failure"
+                  and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
+                  and (.run_attempt | type == "number" and . > 0 and . == floor)
+                ' <<<"$run_meta" >/dev/null 2>&1 || return 1
+                attempt=$(jq -r '.run_attempt' <<<"$run_meta") || return 1
+                name="wow-v17-dual-stream-receipt-${run_id}-${attempt}"
+                inventory=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" 2>/dev/null) || return 1
+                jq -e --arg name "$name" --argjson id "$run_id" \
+                  --arg sha "$(jq -r '.head_sha' <<<"$run_meta")" '
+                  (.artifacts | type == "array") and (.total_count | type == "number")
+                  and .total_count == (.artifacts | length) and .total_count <= 100
+                  and ([.artifacts[] | select(.name == $name and .expired == false
+                      and .workflow_run.id == $id and .workflow_run.head_branch == "main"
+                      and .workflow_run.head_sha == $sha
+                      and (.size_in_bytes | type == "number" and . > 0))] | length) == 1
+                ' <<<"$inventory" >/dev/null 2>&1 || return 1
+                directory=$(mktemp -d "$RUNNER_TEMP/claude-receipt.XXXXXXXX") || return 1
+                if ! gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+                    --name "$name" --dir "$directory" >/dev/null 2>&1; then
+                  rm -rf -- "$directory"
+                  return 1
+                fi
+                if jq -e --arg id "$run_id" --arg attempt "$attempt" --arg target "$target_incident" '
+                    .workflow_run_id == $id and .provider == "anthropic"
+                    and .worker_id == ("github-actions:" + $id + ":" + $attempt + ":anthropic")
+                    and (.current_restoration_target | type == "string" and test("^[1-9][0-9]*$"))
+                    and .current_restoration_target != $target
+                    and .restoration_action == "REPAIR"
+                    and .restoration_delivery == "FAILED"
+                    and .restoration_delivery_code == "ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE"
+                    and .restoration_disposition == "UNRESOLVED_TYPED_FAILURE"
+                    and .job_status == "failure" and .worker_mode == "SAFE_HOLD"
+                    and .lease_state == "RELEASED_ON_FAILURE"
+                    and .can_execute == false
+                    and .terminal_authority == "V17_TERMINAL_REDUCER"
+                  ' "$directory/wow-dual-stream-receipt.json" >/dev/null 2>&1; then
+                  verdict=0
+                else
+                  verdict=1
+                fi
+                rm -rf -- "$directory"
+                return "$verdict"
                 ;;
               *) return 1 ;;
             esac
