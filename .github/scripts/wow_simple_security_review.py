@@ -400,8 +400,12 @@ def call_provider(provider, key, prompt):
         # Explicit non-truncation stopping and unknown reason fail closed.
         raise Hold("CLAUDE_REVIEW_INCOMPLETE")
     elif provider == "gemini-generative-api":
-        model = (os.getenv("WOW_QA_GEMINI_MODEL") or "gemini-2.5-flash")
-        if model not in {"gemini-2.5-flash"}:
+        # Google restricted Gemini 2.5 access to established projects on
+        # 2026-09-18. Fresh QA projects can receive HTTP 404 for 2.5 even with
+        # valid credentials. Pin one current stable, free-tier-capable model;
+        # unknown/legacy names fail closed rather than prompting model roulette.
+        model = (os.getenv("WOW_QA_GEMINI_MODEL") or "gemini-3.8-flash")
+        if model not in {"gemini-3.8-flash"}:
             raise Hold("GEMINI_MODEL_INVALID")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         result = request_json(url, headers={"x-goog-api-key": key},
