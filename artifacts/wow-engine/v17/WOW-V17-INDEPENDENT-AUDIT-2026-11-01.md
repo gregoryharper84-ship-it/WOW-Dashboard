@@ -54,7 +54,7 @@ Read from `public.wow_nfl_event_fitted_model_artifacts`:
 | `probability_publishable` | **`false` — and structurally forced false, see §2.1** |
 | training_rows | 787 (seasons 2021–2023) |
 | calibration | 2024, n=285 (`NFL_PLATT_TIME_SPLIT_V1`) |
-| validation | 2025, n=284: Brier **0.23115896846749356**, log loss 0.6529250857823151, AUC 0.6555023444976, ECE₁₀ 0.04190465343842191 |
+| validation | 2025, n=284: Brier **0.23115896846749356**, log loss 0.6529250857823151, AUC 0.6555023923444976, ECE₁₀ 0.04190465343842191 |
 | baseline | Brier 0.24890796301353832, log loss 0.6909632983050226 |
 | uncertainty_margin | 0.05591808310857731 |
 
@@ -200,6 +200,8 @@ That 504 was **492** when first measured earlier the same day, which is the sour
 | unit | run attempts, all `HELD` | persisted model probabilities |
 | window | `captured_at` within 2026-11-01 UTC | `requested_slate_date = 2026-11-01`, written from 2026-10-26 |
 | denominator | 9 runs, 12 events | 504 rows, 12 events |
+
+Both figures are **timestamped snapshots** taken at the original audit time (2026-11-01, prediction ledger read at 17:03Z). They are recorded as-is: a later re-read returning a larger prediction total must not silently overwrite them, and repeated prediction rows for one event must never be counted as independent games.
 
 **They are not contradictory and neither is a defect.** Every one of the 108 run rows terminated `HELD`, which is consistent with — and further evidence for — the §2.1 finding that no NFL row can reach a publication terminal state. Note the run ledger is 100% `HELD` for NFL on that date; the prediction ledger nevertheless carries 504 publishable-flagged projection rows, because the prediction-level flag is written upstream of the certification gate.
 

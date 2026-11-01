@@ -186,10 +186,19 @@ class _Query:
             self.rows = [row for row in self.rows if row.get(field) == value]
         return self
 
+    def neq(self, field, value):
+        if field == self.filter_field:
+            self.rows = [row for row in self.rows if row.get(field) != value]
+        return self
+
     def order(self, *_a, **_kw):
         return self
 
     def limit(self, *_a):
+        return self
+
+    def range(self, start, end):
+        self.rows = self.rows[start:end + 1]
         return self
 
     def execute(self):

@@ -153,6 +153,41 @@ def _final_refresh_proven(row: Mapping[str, Any], governed: Mapping[str, Any]) -
     return all((checked, modeled, kickoff)) and modeled <= checked < kickoff
 
 
+# Bounded pagination for the exact-version forward cohort. A single bounded
+# read is not sufficient: a 250-game cohort behind a 100-game minimum used to
+# read back as 200 and be presented as an exact total.
+_GRADE_PAGE_SIZE = 1000
+_GRADE_MAX_PAGES = 20
+
+
+def _observed_version_cohort(db: Any, version: str) -> tuple[set[str], bool]:
+    """Distinct officially graded events for one exact model version.
+
+    Pages until a short page proves the end of the version-filtered set. If the
+    page cap is reached the caller is told the result is a lower bound, so a
+    truncated read is never presented as an exact cohort size.
+    """
+    seen: set[str] = set()
+    for page in range(_GRADE_MAX_PAGES):
+        start = page * _GRADE_PAGE_SIZE
+        result = (
+            db.table("wow_nfl_forward_shadow_grades")
+            .select("official_event_id")
+            .eq("model_version", version)
+            .range(start, start + _GRADE_PAGE_SIZE - 1)
+            .execute()
+        )
+        grades = result.data
+        if not isinstance(grades, list):
+            raise ValueError("malformed forward grade page")
+        for grade in grades:
+            if isinstance(grade, Mapping) and grade.get("official_event_id"):
+                seen.add(str(grade["official_event_id"]))
+        if len(grades) < _GRADE_PAGE_SIZE:
+            return seen, False
+    return seen, True
+
+
 def _forward_certification_diagnosis(
     db: Any, row: Mapping[str, Any]
 ) -> tuple[bool, list[str], dict[str, Any]]:
@@ -164,10 +199,13 @@ def _forward_certification_diagnosis(
     let earlier reviews diagnose this gate as a missing-boolean problem.
     """
     blockers: list[str] = []
+    version = str(row.get("model_version") or "")
     evidence: dict[str, Any] = {
-        "model_version": str(row.get("model_version") or ""),
+        "model_version": version,
         "model_artifact_id": str(row.get("model_artifact_id") or ""),
         "graded_events": None,
+        "graded_events_exact": None,
+        "mismatch_evidence": [],
         "minimum_forward_required": None,
         "health_graded_n": None,
         "health_status": None,
@@ -194,31 +232,42 @@ def _forward_certification_diagnosis(
     if not isinstance(minimum, int) or minimum < 100:
         return False, ["NFL_FORWARD_MINIMUM_COHORT_INVALID"], evidence
     try:
-        grade_result = (
-            db.table("wow_nfl_forward_shadow_grades")
-            .select("official_event_id")
-            .eq("model_version", str(row["model_version"]))
-            .limit(minimum * 2)
-            .execute()
-        )
-        grades = grade_result.data
-        if not isinstance(grades, list):
-            return False, ["NFL_FORWARD_GRADE_COHORT_QUERY_FAILED"], evidence
-        unique_games = {
-            str(g.get("official_event_id"))
-            for g in grades if isinstance(g, Mapping) and g.get("official_event_id")
-        }
+        unique_games, truncated = _observed_version_cohort(db, version)
     except Exception:
         return False, ["NFL_FORWARD_GRADE_COHORT_QUERY_FAILED"], evidence
     evidence["graded_events"] = len(unique_games)
+    evidence["graded_events_exact"] = not truncated
 
     # Each conjunct is reported separately so an operator can tell genuine
     # missing forward evidence from a champion-registry or policy defect.
-    # An empty exact-version cohort is its own defect: the global health
-    # snapshot is grading some other model_version, so its counts can never
-    # authorize this prediction.
+    #
+    # An empty exact-version cohort is NOT by itself a version mismatch: a newly
+    # registered champion may have no settled events, or no captured pregame
+    # forecasts, yet. Mismatch is claimed only when a separately observed cohort
+    # for some other model_version actually exists.
     if not unique_games:
-        blockers.append("NFL_FORWARD_COHORT_MODEL_VERSION_MISMATCH")
+        other_versions: list[str] = []
+        try:
+            observed = (
+                db.table("wow_nfl_forward_shadow_grades")
+                .select("model_version")
+                .neq("model_version", version)
+                .limit(5)
+                .execute()
+                .data
+            )
+            if isinstance(observed, list):
+                other_versions = sorted({
+                    str(g["model_version"]) for g in observed
+                    if isinstance(g, Mapping) and g.get("model_version")
+                })
+        except Exception:
+            # Inability to establish a mismatch is not a mismatch claim, and it
+            # never upgrades the row: the cohort is still below minimum.
+            other_versions = []
+        evidence["mismatch_evidence"] = other_versions
+        if other_versions:
+            blockers.append("NFL_FORWARD_COHORT_MODEL_VERSION_MISMATCH")
     if not len(unique_games) >= minimum:
         blockers.append("NFL_FORWARD_GRADED_EVENTS_BELOW_MINIMUM")
     if model.get("active") is not True:
