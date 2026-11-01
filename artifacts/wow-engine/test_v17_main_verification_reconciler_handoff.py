@@ -71,9 +71,15 @@ def _run(tmp_path, *, verify=None, release=None, fail_release_api=False):
     )
 
 
-def _run_item(*, status="completed", conclusion="success", sha=MAIN, event="workflow_dispatch"):
+def _run_item(*, status="completed", conclusion="success", sha=MAIN, event="workflow_dispatch",
+              source_sha=None, source_id=7001, run_id=7001):
+    # GitHub release workflow run-name is derived from its authenticated
+    # triggering verification event, which can differ from downstream head_sha.
+    label = ("release-" + (source_sha or sha) + "-verify-" + str(source_id)
+             if event == "workflow_run" else "verify")
     return {
-        "head_sha": sha, "event": event, "status": status,
+        "id": run_id, "head_sha": sha, "event": event, "status": status,
+        "display_title": label,
         "conclusion": conclusion, "created_at": "2026-10-14T23:37:00Z",
     }
 
@@ -108,6 +114,40 @@ def test_stale_sha_release_run_does_not_authorize_current_main(tmp_path):
     result = _run(tmp_path, verify=[_run_item()], release=[_run_item(sha="b" * 40, event="workflow_run")])
     assert result.returncode == 1
     assert "EXACT_MAIN_RELEASE_HANDOFF_MISSING:" in result.stdout
+
+
+def test_newer_downstream_revision_still_matches_true_upstream_verified_sha(tmp_path):
+    # Workflow_run release can execute a newer workflow revision B, while the
+    # authoritative event identifies previously verified main revision A.
+    release = _run_item(sha="b" * 40, source_sha=MAIN, event="workflow_run")
+    result = _run(tmp_path, verify=[_run_item()], release=[release])
+    assert result.returncode == 0
+    assert "EXACT_MAIN_RELEASE_HANDOFF_COMPLETED:success" in result.stdout
+
+
+def test_same_sha_from_different_verifier_run_is_not_accepted(tmp_path):
+    # Comparing only downstream head_sha or only SHA would accept this.
+    release = _run_item(sha=MAIN, source_id=9999, event="workflow_run")
+    result = _run(tmp_path, verify=[_run_item(source_id=7001)], release=[release])
+    assert result.returncode == 1
+    assert "EXACT_MAIN_RELEASE_HANDOFF_MISSING:" in result.stdout
+
+
+def test_missing_verifier_run_identity_fails_closed(tmp_path):
+    verify = _run_item()
+    verify.pop("id")
+    result = _run(tmp_path, verify=[verify])
+    assert result.returncode == 1
+    assert "EXACT_MAIN_VERIFY_RUN_ID_UNVERIFIED" in result.stdout
+
+
+def test_trusted_release_run_name_exposes_source_run_and_sha():
+    release = WORKFLOW.with_name("wow-v17-render-production-deploy.yml").read_text()
+    assert 'run-name: "release-${{ github.event.workflow_run.head_sha }}-verify-${{ github.event.workflow_run.id }}"' in release
+    script = _script()
+    assert '.display_title == $label' in script
+    assert 'origin_label="release-${main_sha}-verify-${verify_run_id}"' in script
+    assert '.head_sha == $sha and (.event == "workflow_run"' not in script
 
 
 def test_downstream_api_unavailable_fails_closed(tmp_path):
