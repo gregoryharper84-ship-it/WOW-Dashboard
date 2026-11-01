@@ -755,7 +755,9 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         prompt = m.prompt_for(target)
         self.assertIn("BEGIN_UNTRUSTED_DIFF", prompt)
         self.assertIn("END_UNTRUSTED_DIFF", prompt)
-        self.assertTrue(prompt.endswith("Return review findings for the exact identified PR and SHA only."))
+        self.assertIn("CRITICAL FORMAT REQUIREMENT", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
+        self.assertIn("500 characters or fewer", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
+        self.assertIn("if uncertain, FAIL", prompt.split("END_UNTRUSTED_DIFF", 1)[1])
 
     def test_capture_rejects_head_change_during_diff_pagination(self):
         initial = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
