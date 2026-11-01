@@ -314,7 +314,7 @@ def verify_negative_inventories(
                 return pages, len(seen_ids)
             if (not isinstance(raw_next, str)
                     or not NEXT_CURSOR_RE.fullmatch(raw_next)
-                    or not items
+                    or (not items and not require_empty)
                     or raw_next in seen_cursors):
                 raise ReceiptBlocked(unverified_code)
             seen_cursors.add(raw_next)
