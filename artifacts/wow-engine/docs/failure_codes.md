@@ -509,3 +509,44 @@ These are typed research-input rejections from `v17/refit_scheduler.py`, never m
 | `REFIT_PROBABILITY_INVALID` | V17 advisory refit scheduler | Frozen calibrated forecast probability is not a finite number strictly between 0 and 1. | No |
 | `REFIT_EVENT_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Chronologically distinct events fall below candidate-only train plus diagnostic floor. | No |
 | `REFIT_MATURED_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Enough fully settled pre-cutoff training events or diagnostic events are unavailable. | No |
+
+## Sports Agent Runtime authenticated run admission (contract v1)
+
+These bounded HTTP 422 failures occur **before service-role database access** on the
+existing authenticated `POST /wow/runs` route. They are not model failures,
+provider outages, retry authorization, or evidence of a fitted probability.
+
+| Code | recovery_class | Trigger | Authorized next action |
+| --- | --- | --- | --- |
+| `RUN_BATCH_LIMIT_EXCEEDED` | `INVALID_REQUEST` | Authenticated run contains more than 32 candidate inputs | Submit a smaller genuine input batch under the same authorized caller; never split into synthetic jobs |
+| `IDEMPOTENCY_KEY_TOO_LONG` | `INVALID_REQUEST` | Caller-supplied Idempotency-Key exceeds 128 characters | Supply a bounded unique key; preserve the original request identity and `can_execute=false` |
+| `IDEMPOTENCY_KEY_INVALID_CHARACTERS` | `INVALID_REQUEST` | Key contains whitespace, control, non-ASCII or characters outside `[A-Za-z0-9._:-]` | Use a safe unique ASCII key; never coerce an unsafe key silently |
+| `RUN_CANDIDATE_PAYLOAD_TOO_LARGE` | `INVALID_REQUEST` | Candidate JSON batch exceeds 65536 UTF-8 bytes or cannot serialize safely | Reduce the genuine candidate payload without fabricating evidence |
+| `RUN_METADATA_PAYLOAD_TOO_LARGE` | `INVALID_REQUEST` | Noncandidate run metadata exceeds 8192 UTF-8 bytes or cannot serialize safely | Reduce genuine run metadata; preserve the same request identity and `can_execute=false` |
+| `RUN_CANDIDATE_COMPLEXITY_EXCEEDED` | `INVALID_REQUEST` | Candidate exceeds 12 nesting levels or 4096 traversed nodes | Reduce genuine candidate complexity |
+| `RUN_ID_INVALID` | `INVALID_REQUEST` | Run identifier is not a UUID | Supply the authentic persisted UUID |
+| `AGENT_RUNTIME_ADMISSION_RATE_LIMITED` | `RATE_LIMITED` | Existing Redis minute bucket exceeds 60 unique run admissions, or five retries of the same admitted identity within that window | Retry later with the same authentic idempotency key; no synthetic jobs |
+| `AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE` | `INFRA_UNAVAILABLE` | Existing Redis admission bound cannot be checked | Restore Redis; never bypass throttle or DB safety |
+
+Source/receipt contract: `WOW-AGENT-RUNTIME-V1-PHASE1`; actor:
+`wow.agent-runtime-api`. The per-request size limits do not replace the separate
+global Redis admission bound. The existing bearer comparison is reused, but sports Agent Runtime now requires
+a distinct `WOW_AGENT_RUNTIME_API_KEY` of at least 32 characters; it cannot
+fall back to or equal `WOW_ACTION_API_KEY`. A deployment without this separate
+secret fails closed with HTTP 401. Configure it securely in the existing Render
+web service and the authorized live canary caller before attempting a POST.
+The existing Redis broker enforces a deployment-wide 60-unique-admissions-per-rolling-minute
+sliding window, plus up to five idempotent same-identity retries per window.
+Both counters use one atomic Lua script and fail closed if Redis is unavailable. This is not
+a claim of externally verified gateway throttling. Authenticated run reads use
+`api._require_agent_runtime_api_key`; `/health/live` and `/health/ready`
+remain public. No change to `V17_TERMINAL_REDUCER`.
+
+Security scope: this phase has ONE runtime bearer/principal and an intentionally
+shared deployment-wide 60-unique-admissions-per-rolling-minute resource bound
+with five idempotent retries per admitted identity; it
+cannot attribute separate people using the same credential. Do not share the
+credential with unrelated tenants. Redis is volatile: a restart or key eviction
+resets the current window, so this is an abuse bound during normal Redis uptime,
+not a durable cross-restart quota. Connection errors fail closed. A changed
+REDIS_URL creates a new process-local pool; no credential is logged.

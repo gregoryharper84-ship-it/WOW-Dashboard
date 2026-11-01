@@ -196,8 +196,10 @@ def set_persist_fn(fn: Callable[..., dict]) -> None:
 
 
 def _require_action_api_key(authorization: Optional[str] = Header(default=None)) -> None:
-    """FastAPI dependency guarding every route that can mutate the
-    service-role-backed store (/score-prop, /score-event, /settle).
+    """FastAPI dependency guarding service-role-backed scoring mutations
+    (/score-prop, /score-event, /settle) and sports Agent Runtime run
+    admission, status, manifest, audit reads, and cancellation (the latter
+    use the separate _require_agent_runtime_api_key dependency).
     Callers authenticate with ``Authorization: Bearer <WOW_ACTION_API_KEY>``
     — an application-layer credential distinct from, and never exchanged
     for, the Supabase service-role key, which stays backend-only.
@@ -208,14 +210,38 @@ def _require_action_api_key(authorization: Optional[str] = Header(default=None))
     with a constant-time comparison and is never logged or echoed.
     """
     configured_key = os.environ.get("WOW_ACTION_API_KEY")
+    # An unset/empty key must fail before any constant-time comparison.
     if not configured_key:
         raise HTTPException(status_code=401, detail="This deployment is not configured for authenticated access.")
 
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
 
+    # Scoring-only bearer; never log or echo the bearer.
     supplied_key = authorization[len("Bearer "):]
     if not secrets.compare_digest(supplied_key, configured_key):
+        raise HTTPException(status_code=401, detail="Invalid credential.")
+
+
+def _require_agent_runtime_api_key(authorization: Optional[str] = Header(default=None)) -> None:
+    """Same existing fail-closed bearer mechanism, independently scoped to
+    sports Agent Runtime. No fallback to the scoring action credential.
+    A distinct >=32-character WOW_AGENT_RUNTIME_API_KEY is required on the
+    serving deployment; identical scoring/runtime keys are rejected.
+    """
+    configured_key = os.environ.get("WOW_AGENT_RUNTIME_API_KEY")
+    scoring_key = os.environ.get("WOW_ACTION_API_KEY")
+    if not configured_key or len(configured_key) < 32 or not configured_key.isascii() or (
+        # Byte comparison is defined even for non-ASCII scoring configuration.
+        scoring_key and secrets.compare_digest(configured_key.encode('utf-8'), scoring_key.encode('utf-8'))
+    ):
+        raise HTTPException(status_code=401, detail="Sports runtime credential is not independently configured.")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
+    supplied_key = authorization[len("Bearer "):]
+    # Python compare_digest(str, str) raises TypeError on non-ASCII input;
+    # a malformed bearer must produce 401, never an unhandled 500.
+    if not supplied_key.isascii() or not secrets.compare_digest(supplied_key, configured_key):
         raise HTTPException(status_code=401, detail="Invalid credential.")
 
 
