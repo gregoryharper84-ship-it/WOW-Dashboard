@@ -2456,9 +2456,11 @@ def test_source_artifact_retry_is_bounded_and_never_falls_back_to_human():
     assert 'grep -Eq' in block
     assert 'HTTP (408|429|500|502|503|504)' in block
     assert block.count('SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE') == 1
-    assert '2>&1 > "$artifact_partial"' in block
-    assert 'unset artifact_error' in block
-    assert 'rm -f "$artifact_partial"' in block
+    assert 'umask 077' in block
+    assert 'mktemp "$RUNNER_TEMP/source-review/.download-error.XXXXXXXX"' in block
+    assert 'trap \'rm -f "$artifact_partial" "$artifact_stderr"\' EXIT' in block
+    assert '> "$artifact_partial" 2> "$artifact_stderr"' in block
+    assert 'grep -Eq' in block
     assert 'mv "$artifact_partial" "$artifact_download"' in block
     assert '--trusted-reviewers-json' not in block
     assert 'exit 1' in block
