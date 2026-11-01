@@ -55,15 +55,20 @@ function readReadyPayload(value: unknown): Record<string, unknown> | null {
 async function getJson(
   fetchImpl: FetchLike, endpoint: Probe["endpoint"],
 ): Promise<{ status: number | null; body: unknown; error?: string }> {
+  const signal = AbortSignal.timeout(PROBE_TIMEOUT_MS);
   try {
     const response = await fetchImpl(`${WOW_BACKEND}${endpoint}`, {
-      method: "GET", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      method: "GET", signal,
       redirect: "error", headers: { accept: "application/json" },
     });
     try {
       return { status: response.status, body: await response.json() };
-    } catch {
-      return { status: response.status, body: null, error: "INVALID_JSON" };
+    } catch (error) {
+      // An aborted/stalled body is a transport failure, NOT malformed JSON.
+      // Only a real JSON SyntaxError with a live signal is an invalid body.
+      const code = signal.aborted || !(error instanceof SyntaxError)
+        ? "TRANSPORT_FAILURE" : "INVALID_JSON";
+      return { status: response.status, body: null, error: code };
     }
   } catch {
     // Deliberately don't serialize exception text: it may contain transport secrets.
