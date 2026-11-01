@@ -8,7 +8,7 @@ Supabase prediction/outcome ledgers remain the only system of record.
 
 1. A caller with a **dedicated request credential** sends `POST /research/backfill`
    to the isolated Render weather API (not to Trigger.dev directly).
-2. Render accepts only `{"scope":"miami","limit":1..3}` and triggers
+2. Render accepts only `{"scope":"miami"}` and triggers
    `weather-research-backfill` in Trigger.dev. Repeated launch requests within
    the same five-minute bucket use the same Trigger idempotency key.
 3. Trigger.dev runs **one task, maximum concurrency 1**, retries transient
@@ -56,12 +56,17 @@ Only this single task is carried forward. At the repository root:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm exec trigger.dev@4.8.3 login
-pnpm exec trigger.dev@4.8.3 deploy
+pnpm dlx trigger.dev@4.8.3 login
+# Checkout the exact reviewed merge SHA before cloud deployment.
+git rev-parse HEAD
+pnpm dlx trigger.dev@4.8.3 deploy
 ```
 
 Deploy into the verified **production** environment after the corresponding
-protected GitHub PR has passed checks and merged. Verify the task is visible
+protected GitHub PR has passed checks and merged. Save the exact local commit
+SHA, Trigger.dev deployment ID/version and environment in the release receipt;
+independently compare that SHA to the protected GitHub merge. Do not accept an
+unattributed cloud run or claim deployment parity from a developer smoke test. Verify the task is visible
 under the correct Trigger.dev project/environment and review its run permissions.
 The CLI login must be completed by the account owner. Trigger.cloud development
 smoke runs or a GitHub merge do **not** establish production deployment.
@@ -77,7 +82,7 @@ Example owner launch after deployments/configuration:
 curl -fsS -X POST https://wow-kalshi-weather-v2.onrender.com/research/backfill \
   -H "Authorization: Bearer ${WOW_KALSHI_WEATHER_BACKFILL_REQUEST_KEY}" \
   -H 'Content-Type: application/json' \
-  --data '{"scope":"miami","limit":2}'
+  --data '{"scope":"miami"}'
 ```
 
 The response is HTTP 202 with a Trigger run ID, **not** a completed backfill.
