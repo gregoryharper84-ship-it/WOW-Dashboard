@@ -189,17 +189,40 @@ jobs:
           # failures. They follow the same credit-aware admission as cron.
           secondary_usable() {
             { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; } || return 1
-            local recent conclusion
+            local recent conclusion run_id classified previous_incident
             if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
                 --workflow wow-v17-claude-engineering-worker.yml \
                 --status completed --limit 1 \
-                --json databaseId,conclusion 2>/dev/null); then
+                --json databaseId,conclusion 2>/dev/null) \
+                || ! jq -e 'type == "array" and length <= 1 and
+                    (length == 0 or (.[0].databaseId | type == "number" and . > 0))' \
+                    <<<"$recent" >/dev/null 2>&1; then
               return 1
             fi
+            # First-ever use is still bounded by the existing provider/worker fences.
+            [ "$(jq 'length' <<<"$recent")" = "0" ] && return 0
             conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") || return 1
-            # Account/structured-output failures require an explicit recovery
-            # probe, never hourly repetition. No prior run permits one probe.
-            [ "$conclusion" != "failure" ] && [ "$conclusion" != "cancelled" ]
+            case "$conclusion" in
+              success) return 0 ;;
+              failure)
+                # A completed Claude analysis of an unrepairable incident is not
+                # an API quota failure. Permit only a DIFFERENT explicit incident.
+                # Never retry a prior failed target or bypass provider account holds.
+                [[ "${target_incident:-}" =~ ^[1-9][0-9]*$ ]] || return 1
+                run_id=$(jq -r '.[0].databaseId' <<<"$recent") || return 1
+                classified=$(classify_run "$run_id" anthropic) || return 1
+                jq -e '.code == "ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE"
+                  and .provider == "anthropic"
+                  and .provider_signal == null
+                  and .disposition == "UNRESOLVED_TYPED_FAILURE"
+                  and .failover_eligible == false' <<<"$classified" >/dev/null 2>&1 || return 1
+                previous_incident=$(sed -nE 's/.*##\[error\]ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE: incident=([1-9][0-9]*);.*/\1/p' \
+                    "$RUNNER_TEMP/provider-${run_id}.log" | sort -u)
+                [[ "$previous_incident" =~ ^[1-9][0-9]*$ ]] \
+                  && [ "$previous_incident" != "$target_incident" ]
+                ;;
+              *) return 1 ;;
+            esac
           }
 
           gemini_child_held() {
