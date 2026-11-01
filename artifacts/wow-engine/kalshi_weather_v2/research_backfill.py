@@ -98,8 +98,13 @@ def reconcile_miami_settlements(
             continue
         eligible.append((target, prediction_id))
 
-    # Earliest missing targets first; tie-breaking must be deterministic.
+    # Rotate the bounded search through every candidate across five-minute
+    # launch windows. Unlike restarting at the oldest unresolved record every
+    # run, missing/non-final official points cannot permanently starve later
+    # candidates. No mutable cursor table or new scheduler is required.
     eligible.sort(key=lambda item: (item[0], item[1]))
+    rotation_offset = ((int(clock.timestamp()) // 300) * limit) % len(eligible) if eligible else 0
+    eligible = eligible[rotation_offset:] + eligible[:rotation_offset]
     attempted = 0
     written: list[dict[str, str]] = []
     pending: list[dict[str, str]] = []
@@ -136,7 +141,11 @@ def reconcile_miami_settlements(
         except Exception as exc:
             raise BackfillDataError("CANONICAL_SETTLEMENT_RETRY_REQUIRED") from exc
 
-        if result.get("status") != "SETTLED" or not result.get("outcome_id"):
+        receipt_target = result.get("target_time_utc")
+        if (result.get("status") != "SETTLED"
+                or not result.get("outcome_id")
+                or not isinstance(receipt_target, str)
+                or _utc(receipt_target) != _target):
             raise BackfillDataError("SETTLEMENT_RECEIPT_INVALID")
         written.append({
             "prediction_id": prediction_id,
@@ -150,6 +159,7 @@ def reconcile_miami_settlements(
         "settlement_location_code": STATION,
         "scanned_limit": MAX_SCAN,
         "eligible_preexisting_predictions": len(eligible),
+        "rotation_offset": rotation_offset,
         "attempted": attempted,
         "new_outcomes": len(written),
         "already_recorded": skipped_existing,
