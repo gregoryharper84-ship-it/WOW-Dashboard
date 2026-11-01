@@ -69,9 +69,12 @@ def _agent_runtime_auth_config(monkeypatch):
             return 1
 
     fake_rate = FakeAdmissionRedis()
-    agent_runtime_api._admission_redis.cache_clear()
+    cached_client_factory = agent_runtime_api._admission_redis
+    cached_client_factory.cache_clear()
     monkeypatch.setattr("redis.Redis.from_url", lambda *args, **kwargs: fake_rate)
-    return {"Authorization": f"Bearer {runtime_key}"}
+    yield {"Authorization": f"Bearer {runtime_key}"}
+    # Preserve isolation even when the test replaces the module function.
+    cached_client_factory.cache_clear()
 
 
 @pytest.fixture
@@ -392,6 +395,34 @@ def test_candidate_depth_limit_rejects_before_db(monkeypatch, auth_headers):
         headers={**auth_headers, "Idempotency-Key": "too-deep"})
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "RUN_CANDIDATE_COMPLEXITY_EXCEEDED"
+
+
+def test_redis_client_cache_changes_with_redis_url_and_evicts_old_client(monkeypatch):
+    """One cache entry is keyed by URL; rotation cannot reuse the old client."""
+    import redis
+
+    created = []
+
+    def fake_from_url(url, **kwargs):
+        connection = object()
+        created.append((url, connection))
+        return connection
+
+    monkeypatch.setattr(redis.Redis, "from_url", fake_from_url)
+    cache = agent_runtime_api._admission_redis
+    cache.cache_clear()
+    try:
+        first = cache("redis://old-redis/0")
+        assert cache("redis://old-redis/0") is first
+        second = cache("redis://new-redis/0")
+        assert second is not first
+        assert cache("redis://new-redis/0") is second
+        assert [item[0] for item in created] == [
+            "redis://old-redis/0", "redis://new-redis/0"
+        ]
+        assert cache.cache_info().currsize == 1
+    finally:
+        cache.cache_clear()
 
 
 def test_admission_bucket_isolated_per_render_service_and_shared_by_instances(monkeypatch):
