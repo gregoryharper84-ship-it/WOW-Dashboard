@@ -12,7 +12,7 @@ This repository uses pnpm. From the repository root:
 ```bash
 pnpm install --lockfile-only
 pnpm install --frozen-lockfile
-npx trigger.dev@latest login
+npx trigger.dev@4.8.3 login
 ```
 
 The login command opens a browser and must be completed by the account owner.
@@ -32,20 +32,20 @@ CI logs, or task payloads.
 ## Register and run the test task
 
 ```bash
-npx trigger.dev@latest dev
+npx trigger.dev@4.8.3 dev
 ```
 
 Keep that process running. In another terminal run:
 
 ```bash
-npx trigger.dev@latest tasks trigger wow-trigger-dev-smoke --payload '{"message":"WOW V17 development smoke test"}' --wait
+npx trigger.dev@4.8.3 tasks trigger wow-trigger-dev-smoke --payload '{"message":"WOW V17 development smoke test"}' --wait
 ```
 
 Check the **Development** task list and run details in the Trigger.dev
 dashboard. The task ID is `wow-trigger-dev-smoke`; a successful output includes
 `status: "ok"` and `can_execute: false`. Capture the run ID, result, and
 timestamp for independent acceptance. If the CLI is not authenticated, complete
-`npx trigger.dev@latest login` first.
+`npx trigger.dev@4.8.3 login` first.
 
 ## Release boundary
 
