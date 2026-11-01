@@ -65,8 +65,8 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
     def test_cursor_force_is_permanently_inert_for_new_dispatches(self):
         receipt = self.route("manual", event_name="workflow_dispatch",
                              force_provider="cursor")
-        self.assertEqual(receipt["action"], "SURVIVAL")
-        self.assertEqual(receipt["provider"], "deterministic")
+        self.assertEqual(receipt["action"], "NO_ACTION")
+        self.assertEqual(receipt["provider"], "none")
         self.assertEqual(receipt["reason"], "CURSOR_HANDOFF_DISABLED")
         self.assertEqual(receipt["cursor_status"], "CURSOR_NOT_CONFIGURED")
         self.assertFalse(receipt["independent_fallback_allowed"])
