@@ -331,8 +331,6 @@ def verify_negative_inventories(
             if not isinstance(items, list) or len(items) > INVENTORY_PAGE_SIZE:
                 raise ReceiptBlocked(unverified_code)
             pages += 1
-            if require_empty and items:
-                raise ReceiptBlocked("CURSOR_PR_ASSOCIATED_AGENT_EXISTS")
             for item in items:
                 if not isinstance(item, dict):
                     raise ReceiptBlocked(unverified_code)
@@ -344,8 +342,20 @@ def verify_negative_inventories(
                 seen_ids.add(item_id)
                 if item_id == agent_id:
                     raise ReceiptBlocked("CURSOR_AGENT_INVENTORY_CONTRADICTION")
+                # The global archived-inclusive inventory is a second
+                # independent consistency witness: if it identifies an agent
+                # against the target PR, refuse release even when the
+                # PR-filtered endpoint unexpectedly returns no agents.
+                for identity in (item, item.get("target"), item.get("source")):
+                    if isinstance(identity, dict) and identity.get("prUrl") == pr_url:
+                        raise ReceiptBlocked("CURSOR_PR_ASSOCIATED_AGENT_EXISTS")
                 if item.get("status") == "ACTIVE":
                     raise ReceiptBlocked(active_code)
+            # Any PR-filtered agent is disqualifying, independent of its
+            # status. Do not use the count as a substitute for exhausting
+            # every valid empty page and checking the final nextCursor.
+            if require_empty and items:
+                raise ReceiptBlocked("CURSOR_PR_ASSOCIATED_AGENT_EXISTS")
             raw_next = page.get("nextCursor")
             if raw_next in (None, ""):
                 return pages, len(seen_ids)
