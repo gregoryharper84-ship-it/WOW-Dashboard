@@ -653,15 +653,21 @@ def test_scheduled_negative_proof_release_receipt_is_authenticated_but_other_eve
     }
     comments = released_comments() + [fixture.comment, release_comment]
     def get_run(rid, **overrides):
-        return run(event="schedule", **overrides) if rid == 99099 else run()
+        if rid == 99099:
+            return run(**{"event": "schedule", **overrides})
+        return run()
     attempts = ledger.reservations(comments)
     assert release.verified_released_ids(
         comments, attempts, get_run=get_run,
     ) == {release.EXPECTED_COMMENT_ID, FAILED_CID}
     ledger.assert_no_remote_writer(comments, get_run=get_run)
-    assert release.auto_failed_launch_target(
-        __import__("test_v17_engineering_remote_writer_release", fromlist=["_FakeAPI"])._FakeAPI(comments),
-    ) is None
+    from test_v17_engineering_remote_writer_release import _FakeAPI
+    class ScheduledAPI(_FakeAPI):
+        def request(self, path, payload=None, method=None):
+            if path.endswith("/actions/runs/99099"):
+                return run(event="schedule")
+            return super().request(path, payload, method)
+    assert release.auto_failed_launch_target(ScheduledAPI(comments)) is None
 
     for bad_run in ({"conclusion": "failure"}, {"status": "in_progress"},
                     {"head_sha": "c" * 40}, {"path": "not-finalizer.yml"},
