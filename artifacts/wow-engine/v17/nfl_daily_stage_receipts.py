@@ -168,8 +168,15 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
         return False
     try:
         models = db.table("wow_nfl_event_fitted_model_artifacts").select(
-            "artifact_id,active,promoted,probability_publishable"
+            "artifact_id,artifact_checksum,model_artifact_version,active,promoted,probability_publishable"
         ).eq("artifact_id", row["model_artifact_id"]).limit(2).execute().data
+        # Independent certification is held in an immutable registry. The
+        # active helper resolves revocation and returns the latest official
+        # status; a model or its scoring request cannot self-certify it.
+        registry = db.rpc(
+            "wow_v17_active_team_event_certification",
+            {"p_sport": "NFL", "p_league_scope": "NFL"},
+        ).execute().data
         health = db.table("wow_nfl_forward_calibration_health").select(
             "graded_n,minimum_forward_required,status,certification_recommendation,blockers"
         ).order("generated_at", desc=True).limit(1).execute().data
@@ -178,6 +185,23 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
     if not isinstance(models, list) or len(models) != 1 or not isinstance(health, list) or len(health) != 1:
         return False
     model, assessment = models[0], health[0]
+    if not isinstance(registry, Mapping):
+        return False
+    if not (
+        registry.get("ok") is True
+        and registry.get("sport") == "NFL"
+        and registry.get("league_scope") == "NFL"
+        and registry.get("model_version") == exact_version
+        and registry.get("artifact_id") == str(row["model_artifact_id"])
+        and registry.get("artifact_sha256") == model.get("artifact_checksum")
+        and registry.get("certification_status") == "CERTIFIED"
+        and registry.get("independent_verification_status") == "PASS"
+        and registry.get("probability_publishable") is True
+        and registry.get("can_execute") is False
+        and str(registry.get("certification_id") or "")
+        and model.get("model_artifact_version") == exact_version
+    ):
+        return False
     minimum = assessment.get("minimum_forward_required")
     if not isinstance(minimum, int) or minimum < 100:
         return False
