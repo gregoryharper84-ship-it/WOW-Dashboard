@@ -1665,29 +1665,26 @@ def test_independent_approval_still_required_with_fresh_receipt():
         build(data=evidence(review_state="DISMISSED"))
 
 
-def _freeze_verifier_clock(monkeypatch, at=NOW):
-    """Use historical time only inside this test process; never in production."""
-    class FrozenVerifierDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return at.astimezone(tz) if tz is not None else at.replace(tzinfo=None)
-    monkeypatch.setattr(verifier, "datetime", FrozenVerifierDatetime)
-
-
 def test_v2_fallback_sunset_is_immutable_and_fail_closed():
-    cutoff = datetime(2026, 11, 1, tzinfo=timezone.utc)
-    assert verifier.FALLBACK_PROVIDER_SUNSET_UTC == "2026-11-01T00:00:00Z"
+    # Production policy is pinned separately; never infer this from wall time.
+    cutoff = datetime.fromisoformat(verifier.FALLBACK_PROVIDER_SUNSET_UTC.replace("Z", "+00:00"))
+    assert cutoff == datetime(2026, 11, 1, tzinfo=timezone.utc)
     receipt = build(now=NOW)
     verify(receipt, now=NOW)
-    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
-                       match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
-        verify(receipt, now=cutoff)
+    for expired_time in (cutoff, cutoff + timedelta(seconds=1)):
+        with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                           match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
+            verify(receipt, now=expired_time)
+        with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                           match="TEMPORARY_FALLBACK_PROVIDER_SUNSET"):
+            build(now=expired_time)
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch, capsys):
-    # Historical verification is deterministic; production CLI remains unchanged.
+    # Historical acceptance uses explicit time injection into the pure verifier,
+    # never a module-global datetime override or production clock override.
     receipt = build(now=NOW)
-    _freeze_verifier_clock(monkeypatch, at=NOW)
+    verify(receipt, now=NOW)
     live_reviews = tmp_path / "reviews.json"
     live_reviews.write_text(json.dumps(evidence()["reviews"]), encoding="utf-8")
     (tmp_path / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
@@ -1703,8 +1700,13 @@ def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_p
         "--live-reviews-json", str(live_reviews),
     ])
 
-    assert verifier.main() == 0
-    assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" not in capsys.readouterr().out
+    # The real CLI must reject V2 after sunset. It never receives a test clock.
+    assert datetime.now(timezone.utc) >= datetime.fromisoformat(
+        verifier.FALLBACK_PROVIDER_SUNSET_UTC.replace("Z", "+00:00")
+    )
+    assert verifier.main() == 1
+    outcome = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert outcome == {"status": "HOLD", "reason": "TEMPORARY_FALLBACK_PROVIDER_SUNSET"}
 
 
 def test_consumer_context_does_not_infer_pr_number_from_event(tmp_path, monkeypatch):
@@ -2088,12 +2090,17 @@ def test_cli_splits_bootstrap_and_ordinary_receipts(tmp_path, monkeypatch, capsy
         "verify", *common, "--output", str(output),
         "--trusted-reviewers-json", json.dumps(ALLOWLIST),
     ])
-    # The test-only historical clock exercises ordinary schema V2 acceptance.
-    # The pinned-sunset test separately proves rejection at and after cutoff.
-    _freeze_verifier_clock(monkeypatch, at=NOW)
-    assert verifier.main() == 0
-    assert "TEMPORARY_FALLBACK_PROVIDER_SUNSET" not in capsys.readouterr().out
-    assert json.loads(output.read_text(encoding="utf-8"))["certification_mode"] == verifier.CERTIFICATION_MODE
+    # Ordinary V2 is no longer a permitted live CLI outcome. The previous
+    # bootstrap receipt must remain intact after a rejected ordinary build.
+    assert verifier.main() == 1
+    outcome = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert outcome == {"status": "HOLD", "reason": "TEMPORARY_FALLBACK_PROVIDER_SUNSET"}
+    assert json.loads(output.read_text(encoding="utf-8")) == receipt
+    # Preserve deterministic historical positive coverage without freezing
+    # process-global datetime or making expired live receipts acceptable.
+    historical = build(now=NOW)
+    verify(historical, now=NOW)
+    assert historical["certification_mode"] == verifier.CERTIFICATION_MODE
 
 
 @pytest.mark.parametrize('filename,previous_filename', (
