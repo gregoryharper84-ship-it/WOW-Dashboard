@@ -8,7 +8,7 @@ import copy
 import pytest
 
 from kalshi_weather_v2.forward_research_b import (
-    MIN_PRIOR_SETTLED, MODEL_VERSION, build_release_b_research_report,
+    MIN_PRIOR_SETTLED, MAX_RECORDS, MODEL_VERSION, build_release_b_research_report,
     evaluate_walk_forward, load_cases,
 )
 
@@ -277,3 +277,17 @@ def test_duplicate_result_id_across_source_pages_fails_closed():
     fixture["wow_kalshi_weather_source_snapshots"][1]["source_snapshot_id"] = "source-0"
     with pytest.raises(RuntimeError, match="RESEARCH_LEDGER_DUPLICATE_OR_MISSING_ROW_ID"):
         load_cases(FakeClient(fixture, page_cap=1))
+
+
+def test_exact_maximum_ledger_size_is_accepted_but_excess_is_rejected():
+    cases, counters = load_cases(FakeClient(ledger(MAX_RECORDS)))
+    assert len(cases) == MAX_RECORDS
+    assert counters["examined"] == MAX_RECORDS
+    with pytest.raises(RuntimeError, match="RESEARCH_LEDGER_COUNT_UNVERIFIED"):
+        load_cases(FakeClient(ledger(MAX_RECORDS + 1)))
+
+
+def test_public_research_evaluator_rejects_unbounded_case_lists():
+    cases, _ = load_cases(FakeClient(ledger(1)))
+    with pytest.raises(ValueError, match="RESEARCH_COHORT_SIZE_UNBOUNDED"):
+        evaluate_walk_forward(cases * (MAX_RECORDS + 1))

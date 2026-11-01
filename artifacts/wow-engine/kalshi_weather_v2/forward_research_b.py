@@ -101,7 +101,7 @@ def _source_rows(client: Any, table: str, fields: str, order_by: str) -> list[di
         count = response.count
         rows = response.data
         if (not isinstance(count, int) or isinstance(count, bool)
-                or count < 0 or count >= MAX_RECORDS
+                or count < 0 or count > MAX_RECORDS
                 or (total is not None and count != total)
                 or not isinstance(rows, list)):
             raise RuntimeError("RESEARCH_LEDGER_COUNT_UNVERIFIED")
@@ -274,6 +274,10 @@ def evaluate_walk_forward(cases: list[Case], *, min_prior: int = MIN_PRIOR_SETTL
     """
     if min_prior < MIN_PRIOR_SETTLED:
         raise ValueError("MINIMUM_PRIOR_SAMPLE_GATE_CANNOT_BE_WEAKENED")
+    # Callers of this pure function must not bypass the ledger's bounded
+    # ingestion contract with an unbounded in-memory candidate list.
+    if len(cases) > MAX_RECORDS:
+        raise ValueError("RESEARCH_COHORT_SIZE_UNBOUNDED")
     if len({c.key for c in cases}) != len(cases):
         raise ValueError("DUPLICATE_TARGETS_NOT_INDEPENDENT")
 
