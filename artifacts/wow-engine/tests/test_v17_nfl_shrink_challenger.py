@@ -134,7 +134,7 @@ def test_operational_workflow_checks_feature_and_advisory_receipts():
     from pathlib import Path
 
     workflow = (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / ".github" / "workflows" / "wow-v17-nfl-forward-shadow.yml"
     ).read_text(encoding="utf-8")
     assert 'feature_refresh.get("status") == "COMPLETED"' in workflow
