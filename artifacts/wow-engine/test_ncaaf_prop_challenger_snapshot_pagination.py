@@ -102,7 +102,7 @@ def test_repeated_page_fails_closed_instead_of_double_counting():
     db = _Db([_row(2), _row(1)])
     with pytest.raises(NCAAFPropChallengerRunnerError) as err:
         load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
-    assert err.value.code == "NCAAF_PROP_SOURCE_PAGE_ORDER_INVALID"
+    assert (err.value.code, err.value.detail) == ("NCAAF_PROP_SOURCE_READ_INVALID", "PAGE_ORDER_INVALID")
 
 
 def test_missing_snapshot_id_fails_closed():
@@ -111,7 +111,7 @@ def test_missing_snapshot_id_fails_closed():
     db = _Db([record])
     with pytest.raises(NCAAFPropChallengerRunnerError) as err:
         load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
-    assert err.value.code == "NCAAF_PROP_SOURCE_ID_INVALID"
+    assert (err.value.code, err.value.detail) == ("NCAAF_PROP_SOURCE_READ_INVALID", "SNAPSHOT_ID_INVALID")
 
 
 @pytest.mark.parametrize("page_size", [0, -1, 1001, True, 1.5])
@@ -119,11 +119,11 @@ def test_invalid_page_size_never_touches_database(page_size):
     db = _Db([_row(1)])
     with pytest.raises(NCAAFPropChallengerRunnerError) as err:
         load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=page_size)
-    assert err.value.code == "NCAAF_PROP_PAGE_SIZE_INVALID"
+    assert (err.value.code, err.value.detail) == ("NCAAF_PROP_SOURCE_READ_INVALID", "PAGE_SIZE_INVALID")
     assert not db.calls
 
 
 def test_empty_seasons_fail_closed_without_fallback():
     with pytest.raises(NCAAFPropChallengerRunnerError) as err:
         load_source_snapshots(_Db([]), endpoint="/games/players", seasons=[], page_size=2)
-    assert err.value.code == "NCAAF_PROP_SEASONS_EMPTY"
+    assert (err.value.code, err.value.detail) == ("NCAAF_PROP_SOURCE_READ_INVALID", "SEASONS_EMPTY")
