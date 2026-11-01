@@ -566,16 +566,15 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
 
 def test_missing_branch_never_uses_historical_time_exception():
     fixture = FailedLaunchFixture()
-    header, payload = fixture.comment["body"].split("\\n", 1)
+    header, payload = fixture.comment["body"].split("\n", 1)
     entry = json.loads(payload)
     entry.pop("branch", None)
-    fixture.comment["body"] = header + "\\n" + json.dumps(entry, sort_keys=True)
+    fixture.comment["body"] = header + "\n" + json.dumps(entry, sort_keys=True)
     with pytest.raises(probe.ReceiptBlocked, match="CURSOR_RESERVATION_IDENTITY_INVALID"):
         fixture.prove()
 
 
 def test_negative_inventory_rejects_second_page_unexpected_agent():
-    url = f"{probe.CURSOR_API}/agents"
     seen = []
     def cursor_api(path, *, token, basic=False):
         assert basic and token == "test-cursor"
