@@ -2496,3 +2496,37 @@ def test_selected_source_download_has_no_token_on_signed_redirect():
     assert "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" in block
     assert "SOURCE_REVIEW_ARTIFACT_ZIP_INVALID" in block
     assert "--header \"Authorization: Bearer" not in block
+
+
+def test_signed_redirect_shell_metacharacters_remain_single_argument():
+    """Never execute extracted workflow shell; verify its quoted URL contract."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    start = workflow.index('          # Second request: fetch only the signed HTTPS URL')
+    end = workflow.index('          if ! unzip -tqq "$artifact_tmp"; then', start)
+    signed_request = workflow[start:end]
+    # Bind the behavioral proof to the real production command, not an invented route.
+    assert '--output "$artifact_tmp" "$redirect_url"; then' in signed_request
+    assert '--output "$artifact_tmp" $redirect_url' not in signed_request
+    assert 'eval ' not in signed_request
+    assert '--oauth2-bearer' not in signed_request
+    assert '--header "Authorization:' not in signed_request
+
+    # Fixed, harmless Bash function: no workflow-sourced shell is executed.
+    # A hostile URL is passed as data, never substituted into the script.
+    marker = tmp_path / "injection-marker"
+    payload = f"https://storage.example/file?sig=a b;$(touch {marker})&x='quoted'"
+    fake_curl = (
+        'curl() { printf "%s\\n" "$#"; printf "%s\\n" "$3"; }\\n'
+        'artifact_tmp="$OUTPUT_PATH"\\n'
+        'redirect_url="$UNTRUSTED_URL"\\n'
+        'curl --output "$artifact_tmp" "$redirect_url"\\n'
+    ).replace('\\n', '\n')
+    result = subprocess.run(
+        ["bash", "-c", fake_curl],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+             "OUTPUT_PATH": str(tmp_path / "artifact.zip"),
+             "UNTRUSTED_URL": payload},
+        capture_output=True, text=True, check=True,
+    )
+    assert result.stdout.splitlines() == ["3", payload]
+    assert not marker.exists()
