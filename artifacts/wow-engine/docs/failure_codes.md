@@ -393,6 +393,18 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 | `CURSOR_AGENT_STILL_ACTIVE`, `CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION`, `CURSOR_AGENT_INVENTORY_CONTRADICTION` | failed-launch negative probe | Direct agent lookup or archived inventory shows the deterministic agent ID exists or is active; negative-launch release is refused and the writer hold remains active (catalog version `2026-10-31.2`) |
 | `CURSOR_FAILED_LAUNCH_REQUIRES_NEGATIVE_PROOF_AND_RELEASE` | shared #1138 writer reconciliation | Held `CURSOR_LAUNCH_RESERVED` record without a `cursor_run_id` requires authenticated negative-launch proof and serialized release receipt before writer admission (catalog version `2026-10-31.2`; 0-second bypass tolerance; hold persists indefinitely until verified release, and resident supervisor recovery window is bounded to 900 seconds post-release) |
 
+#### Shared-writer auto-reconciliation (P0 #2136)
+
+All failures below belong to Engineering Release's protected-main finalizer. Recovery class is **SAFETY_HOLD** (not TRANSIENT); no automatic credential escalation, source bypass, live trading, or ledger mutation. Context is limited to a canonical reservation ID and typed code.
+
+| Canonical code | Owner / stage | Trigger | Recovery class / next action |
+| --- | --- | --- | --- |
+| `REMOTE_AUTO_RELEASE_MULTIPLE_HELD_WRITERS` | Engineering Release / secretless selection | More than one unresolved remote reservation survives authenticated release reconciliation | SAFETY_HOLD / reconcile competing writers under original lease; keep all holds |
+| `REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH` | Engineering Release / secretless selection | Candidate is not a single bot-authored canonical-issue Cursor failed launch with null run ID and preserved authority | SAFETY_HOLD / require exact manual provenance or legitimate terminal agent proof |
+| `REMOTE_AUTO_RELEASE_MANUAL_TARGET_INVALID` | Engineering Release / scheduled event admission | A scheduled workflow is presented with a manual reservation input | SAFETY_HOLD / reject mixed routing; use scheduled unique selection or separately authorized manual dispatch |
+| `REMOTE_RELEASE_PROTECTED_MAIN_UNVERIFIED`, `REMOTE_RELEASE_TARGET_INVALID` | Engineering Release / source and manual admission | Wrong repository, branch or malformed explicit target | SAFETY_HOLD / repair exact workflow/input provenance |
+| `NO_UNRELEASED_REMOTE_WRITER` | Engineering Release / scheduled read-only preflight | No held reservation remains after verification of prior releases | Neutral only, **not** release PASS / skip credentialed step and retain original receipts |
+
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
 Every Cursor create first persists a held reservation to the shared #1138 writer ledger while holding the existing implementation-single-writer Actions concurrency group. Provider workers recheck that ledger after acquiring the same group. The hold remains until remote termination and independent review are verified; ambiguous dispatches do not release it.
