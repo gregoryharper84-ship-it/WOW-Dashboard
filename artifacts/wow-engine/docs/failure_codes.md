@@ -8,6 +8,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `PROP_QUOTE_TIMESTAMP_UNVERIFIED` | V17 Multi-Scout prop discovery-to-scoring handoff / source evidence validation | Source quote lacks a timezone-aware `market_last_update` or `bookmaker_last_update`, or its timestamp is invalid. **EVIDENCE_PENDING**: reject mapping with bounded `source_index`, reconcile rejected row, reacquire genuine provider-observed quote time. Never substitute Scout `generated_at`, elevate sportsbook data to probability or payout authority, or execute. | No |
 | `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
 | `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
 | `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |

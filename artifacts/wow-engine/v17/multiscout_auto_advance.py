@@ -125,11 +125,12 @@ def _prop_row(candidate: dict[str, Any], *, generated_at: str, index: int) -> tu
     if not stat_type or not sport:
         return None, "PROP_MARKET_IDENTITY_INCOMPLETE"
 
-    captured_at = (
-        evidence.get("market_last_update")
-        or evidence.get("bookmaker_last_update")
-        or generated_at
-    )
+    # A Scout run timestamp is not a source quote observation. Missing or
+    # timezone-naive quote timestamps stay a typed evidence HOLD; do not
+    # relabel them as fresh merely because the handoff was generated now.
+    captured_at = evidence.get("market_last_update") or evidence.get("bookmaker_last_update")
+    if _aware(captured_at) is None:
+        return None, "PROP_QUOTE_TIMESTAMP_UNVERIFIED"
     return {
         "row_key": f"scout-prop-{index}",
         "event_id": event_id,
