@@ -1,13 +1,10 @@
 import { task } from "@trigger.dev/sdk";
-
-type BackfillPayload = {
-  scope: "miami";
-};
+import { executeWeatherResearchBackfill, type WeatherResearchPayload } from "./weather-research-core";
 
 /**
- * Manual, bounded, settlement-evidence-only research.
- * No schedule, database credentials, order API, model promotion, or trade access.
- * Only the separately authorized Render endpoint performs canonical writes.
+ * Manual research-only task. No recurring schedule and no trading access.
+ * Trigger.dev transports this fixed-scope request with retry and concurrency.
+ * The isolated Render service remains the canonical settlement writer.
  */
 export const weatherResearchBackfill = task({
   id: "weather-research-backfill",
@@ -20,41 +17,6 @@ export const weatherResearchBackfill = task({
     factor: 2,
     randomize: true,
   },
-  run: async (payload: BackfillPayload) => {
-    if (payload?.scope !== "miami") {
-      throw new Error("BACKFILL_SCOPE_OR_LIMIT_INVALID");
-    }
-    const workerKey = process.env.WOW_KALSHI_WEATHER_BACKFILL_WORKER_KEY;
-    if (!workerKey) {
-      throw new Error("BACKFILL_WORKER_AUTH_UNCONFIGURED");
-    }
-    // Fixed host/path: task payload cannot redirect requests or select a station.
-    const response = await fetch(
-      "https://wow-kalshi-weather-v2.onrender.com/internal/research/miami-settlement-reconcile",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${workerKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ scope: "miami" }),
-        signal: AbortSignal.timeout(115000),
-      },
-    );
-    if (!response.ok) {
-      // Never echo response bodies, which may contain sensitive diagnostics.
-      throw new Error(`WEATHER_RESEARCH_BACKFILL_HTTP_${response.status}`);
-    }
-    const receipt: unknown = await response.json();
-    if (!receipt || typeof receipt !== "object") {
-      throw new Error("WEATHER_RESEARCH_RECEIPT_INVALID");
-    }
-    const result = receipt as Record<string, unknown>;
-    if (result.can_execute !== false || result.probability_publishable !== false ||
-        result.status_gate !== "NO_PLAY_DATA_INSUFFICIENT" ||
-        result.historical_forecasts_created !== 0) {
-      throw new Error("WEATHER_RESEARCH_AUTHORITY_BOUNDARY_VIOLATION");
-    }
-    return receipt;
-  },
+  run: async (payload: WeatherResearchPayload) =>
+    executeWeatherResearchBackfill(payload, process.env.WOW_KALSHI_WEATHER_BACKFILL_WORKER_KEY),
 });
