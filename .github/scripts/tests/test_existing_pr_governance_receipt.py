@@ -2498,7 +2498,7 @@ def test_selected_source_download_has_no_token_on_signed_redirect():
     assert "--header \"Authorization: Bearer" not in block
 
 
-def test_signed_redirect_shell_metacharacters_remain_single_argument():
+def test_signed_redirect_shell_metacharacters_remain_single_argument(tmp_path):
     """Never execute extracted workflow shell; verify its quoted URL contract."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     start = workflow.index('          # Second request: fetch only the signed HTTPS URL')
@@ -2516,11 +2516,11 @@ def test_signed_redirect_shell_metacharacters_remain_single_argument():
     marker = tmp_path / "injection-marker"
     payload = f"https://storage.example/file?sig=a b;$(touch {marker})&x='quoted'"
     fake_curl = (
-        'curl() { printf "%s\\n" "$#"; printf "%s\\n" "$3"; }\\n'
-        'artifact_tmp="$OUTPUT_PATH"\\n'
-        'redirect_url="$UNTRUSTED_URL"\\n'
-        'curl --output "$artifact_tmp" "$redirect_url"\\n'
-    ).replace('\\n', '\n')
+        'curl() { printf "%s\\n" "$#"; printf "%s\\n" "$3"; }\n'
+        'artifact_tmp="$OUTPUT_PATH"\n'
+        'redirect_url="$UNTRUSTED_URL"\n'
+        'curl --output "$artifact_tmp" "$redirect_url"\n'
+    )
     result = subprocess.run(
         ["bash", "-c", fake_curl],
         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
