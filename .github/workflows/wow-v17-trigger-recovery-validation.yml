@@ -43,14 +43,14 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # immutable v4
         with:
           node-version: "24"
-      - name: Run deterministic no-network sentinel regression
-        run: node --experimental-strip-types --test tests/wow-v17-recovery-probe.test.mjs
       - name: Setup pnpm v10
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # immutable v4
         with:
           version: 10.34.9
           run_install: false
-      - name: Verify frozen Trigger.dev workspace dependencies
+      - name: Verify frozen Trigger.dev workspace dependencies before tests
         run: pnpm install --frozen-lockfile --ignore-scripts --filter .
+      - name: Run deterministic no-network sentinel regression
+        run: node --experimental-strip-types --test tests/wow-v17-recovery-probe.test.mjs
       - name: Verify TypeScript probe
         run: pnpm exec tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --skipLibCheck src/trigger/wow-v17-recovery-probe.ts
