@@ -61,6 +61,51 @@ def test_only_current_verified_events_are_discovered():
     assert skipped["SETTLEMENT_ADAPTER_NOT_VERIFIED"] == 1
 
 
+def test_canonical_mlb_snapshot_writer_shape_is_discovered_without_fake_sport():
+    """Fixture from daily_snapshot_runtime canonical MLB MONEYLINE writer."""
+    stored = {
+        "lane": "MONEYLINE", "row_status": "HELD",
+        "captured_at": (NOW - timedelta(minutes=25)).isoformat(),
+        "run_id": "source-daily-run",
+        "identity": {
+            "official_event_id": "813201",
+            "event_start_time": EVENT,
+            "home_team": "MLB Home", "away_team": "MLB Away",
+            "snapshot_id": "verified-mlb-snapshot-813201",
+        },
+        "detail": {"result": {"event_status": "PREGAME", "league": "MLB"}},
+    }
+    candidates, skipped = select_current_daily_candidates([stored], now=NOW)
+    assert skipped == {}
+    assert len(candidates) == 1
+    item = candidates[0]
+    assert item["sport"] == "MLB"
+    assert item["official_event_id"] == "813201"
+    assert item["event_start_utc"] == "2026-10-31T20:00:00+00:00"
+    assert item["event_status"] == "CURRENT_STATUS_UNVERIFIED"
+    assert item["settlement_identity_verified"] is False
+    assert item["discovery_authority"] == "RESEARCH_INTEREST"
+    assert item["can_execute"] is False
+
+
+def test_canonical_mlb_shape_requires_source_snapshot_current_status_and_time():
+    base = moneyline_row()
+    base["identity"] = {
+        "official_event_id": "813201", "event_start_time": EVENT,
+        "home_team": "MLB Home", "away_team": "MLB Away",
+        "snapshot_id": "snapshot-1",
+    }
+    for mutation in (
+        {"identity": {**base["identity"], "snapshot_id": ""}},
+        {"identity": {**base["identity"], "event_start_time": "2026-10-31T20:00:00"}},
+        {"detail": {"result": {"event_status": "LIVE", "league": "MLB"}}},
+        {"identity": {**base["identity"], "other": "UNVERIFIED"}},
+    ):
+        rows, skipped = select_current_daily_candidates([{**base, **mutation}], now=NOW)
+        assert rows == []
+        assert sum(skipped.values()) == 1
+
+
 def test_unresolved_identity_and_bad_timestamps_cannot_be_promoted():
     cases = [
         moneyline_row(event="2026-10-31T20:00:00"),  # no timezone
