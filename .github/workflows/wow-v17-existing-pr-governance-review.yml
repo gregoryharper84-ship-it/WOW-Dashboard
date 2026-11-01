@@ -266,8 +266,26 @@ jobs:
               raise SystemExit(1)
           PY
           mkdir -p "$RUNNER_TEMP/source-review"
-          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
-            > "$RUNNER_TEMP/source-review/decision.zip"
+          artifact_download="$RUNNER_TEMP/source-review/decision.zip"
+          artifact_partial="$RUNNER_TEMP/source-review/decision.zip.partial"
+          artifact_stderr="$RUNNER_TEMP/source-review/download.stderr"
+          # Retry the same authenticated artifact ID once only on typed
+          # transient GitHub HTTP failures. Never downgrade to human fallback.
+          if ! gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+              > "$artifact_partial" 2>"$artifact_stderr"; then
+            if grep -Eq 'HTTP (408|429|500|502|503|504)' "$artifact_stderr"; then
+              sleep 1
+              if ! gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+                  > "$artifact_partial" 2>"$artifact_stderr"; then
+                echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
+                exit 1
+              fi
+            else
+              echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
+              exit 1
+            fi
+          fi
+          mv "$artifact_partial" "$artifact_download"
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
             wow-v17-independent-source-review.json > "$RUNNER_TEMP/source-review/decision.json"
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
