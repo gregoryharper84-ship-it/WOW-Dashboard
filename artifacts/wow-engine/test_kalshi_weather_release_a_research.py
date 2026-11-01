@@ -75,11 +75,11 @@ class FakeQuery:
 
 
 class FakeClient:
-    def __init__(self, predictions=None, broken=False):
+    def __init__(self, predictions=None, outcomes=None, broken=False):
         self.broken = broken
         self.data = {
             "wow_kalshi_weather_predictions": [PRED] if predictions is None else predictions,
-            "wow_kalshi_weather_outcomes": [OUTCOME],
+            "wow_kalshi_weather_outcomes": [OUTCOME] if outcomes is None else outcomes,
             "wow_kalshi_weather_contract_rules": [RULE],
             "wow_kalshi_weather_market_microstructure_snapshots": [QUOTE],
         }
@@ -112,6 +112,24 @@ def test_release_a_research_deduplicates_and_does_not_publish_probabilities():
     assert row["settlement_station_id"] is None
     assert row["quote_fresh"] is False
     assert row["settled_value_f"] == 80.6
+
+
+def test_research_calibration_uses_earliest_asof_per_target_across_versions():
+    earliest = {**PRED, "prediction_id": "early", "decision_time": "2026-11-01T02:10:00Z",
+                "central_estimate_f": 76.6, "model_version": "OLD"}
+    latest = {**PRED, "prediction_id": "later", "decision_time": "2026-11-01T02:40:00Z",
+              "central_estimate_f": 78.1, "model_version": "NEW"}
+    outcomes = [
+        {**OUTCOME, "prediction_id": "early"},
+        {**OUTCOME, "prediction_id": "later"},
+    ]
+    data = build_research_snapshot(
+        client=FakeClient(predictions=[latest, earliest], outcomes=outcomes),
+        now=datetime(2026, 11, 1, 3, 15, tzinfo=timezone.utc),
+    )
+    assert data["calibration"]["eligible_unique_settled_samples"] == 1
+    assert data["calibration"]["historical_mae_f"] == 4.0
+    assert data["calibration"]["historical_signed_bias_f"] == -4.0
 
 
 def test_release_a_filters_different_cities_and_fails_closed_when_empty():
