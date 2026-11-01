@@ -252,7 +252,6 @@ def _raise_governed(exc: Exception) -> None:
 class MiamiBackfillLaunch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scope: str = Field(pattern=r"^miami$")
-    limit: int = Field(default=3, ge=1, le=3)
 
 
 def _require_scoped_bearer(env_name: str, authorization: Optional[str]) -> None:
@@ -293,9 +292,9 @@ def launch_miami_research_backfill(req: MiamiBackfillLaunch):
             "https://api.trigger.dev/api/v1/tasks/weather-research-backfill/trigger",
             headers={"Authorization": f"Bearer {trigger_key}", "Content-Type": "application/json"},
             json={
-                "payload": {"scope": "miami", "limit": req.limit},
+                "payload": {"scope": "miami"},
                 "options": {
-                    "idempotencyKey": f"kalshi-miami-backfill-{five_minute.isoformat()}-{req.limit}",
+                    "idempotencyKey": f"kalshi-miami-backfill-{five_minute.isoformat()}",
                     "idempotencyKeyTTL": "5m",
                 },
             },
@@ -322,11 +321,11 @@ def launch_miami_research_backfill(req: MiamiBackfillLaunch):
     dependencies=[Depends(_require_backfill_worker_key)],
     include_in_schema=False,
 )
-def run_miami_research_backfill(req: MiamiBackfillLaunch = MiamiBackfillLaunch(scope="miami")):
+def run_miami_research_backfill(req: MiamiBackfillLaunch):
     """Worker-only, bounded reconciliation of previously captured Miami events."""
     try:
-        return reconcile_miami_settlements(client=get_client(), limit=req.limit)
+        return reconcile_miami_settlements(client=get_client())
     except BackfillDataError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail="RESEARCH_BACKFILL_UNAVAILABLE") from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail="RESEARCH_BACKFILL_UNAVAILABLE") from exc
