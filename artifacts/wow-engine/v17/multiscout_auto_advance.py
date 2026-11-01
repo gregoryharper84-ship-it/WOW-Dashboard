@@ -94,7 +94,9 @@ def _aware(value: Any) -> datetime | None:
         if parsed.utcoffset() is None:
             return None
         return parsed.astimezone(timezone.utc)
-    except (TypeError, ValueError, OverflowError):
+    except Exception:
+        # Source evidence may be malformed or adversarial. Never abort the
+        # entire slate because a provider timestamp cannot be parsed.
         return None
 
 

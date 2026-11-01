@@ -408,3 +408,26 @@ def test_timezone_aware_quote_formats_reach_mapping_without_fabricated_time():
         assert dispatch["prop_batches"][0]["rows"][0]["source_capture_timestamp"] == observed
         assert dispatch["prop_batches"][0]["rows"][0]["money_lane_status"] == "PAYOUT_UNRESOLVED"
         assert dispatch["governance"]["scout_probability_authority"] is False
+
+
+def test_adversarial_timestamp_parse_exception_stays_typed_mapping_reject():
+    class UnparseableTimestamp:
+        def __str__(self):
+            raise RuntimeError("malformed source timestamp")
+
+    handoff = _handoff()
+    candidate = handoff["model_handoff"]["prop_candidates"][0]
+    handoff["model_handoff"]["prop_candidates"] = [{
+        **candidate,
+        "market_evidence": {
+            **candidate["market_evidence"],
+            "market_last_update": UnparseableTimestamp(),
+        },
+    }]
+    dispatch = build_dispatch(handoff)
+    assert dispatch["mapping"]["rejected_prop_rows"] == [
+        {"source_index": 1, "code": "PROP_QUOTE_TIMESTAMP_UNVERIFIED"}
+    ]
+    assert dispatch["mapping"]["source_prop_reconciliation_pass"] is True
+    assert dispatch["prop_batches"] == []
+    assert dispatch["governance"]["can_execute"] is False

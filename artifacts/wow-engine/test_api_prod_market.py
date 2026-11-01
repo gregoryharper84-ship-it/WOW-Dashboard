@@ -538,10 +538,9 @@ def test_forged_money_resolved_is_not_persisted_or_approved(monkeypatch):
 
 
 def test_unverified_resolved_cannot_pass_even_with_settlement_pass():
-    """A legitimate settlement rule is not independent payout provenance."""
-    row = SimpleNamespace(money_lane_status="RESOLVED")
+    """Settlement semantics do not independently prove server-owned payout terms."""
     money = api_prod_market._effective_money_lane(
-        row, {"status": "PASS", "money_context_required": False}
+        {"status": "PASS", "money_context_required": False}
     )
     assert money["status"] == "HOLD"
     assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
@@ -551,19 +550,17 @@ def test_unverified_resolved_cannot_pass_even_with_settlement_pass():
 
 
 def test_absent_payout_quote_is_not_recovered_from_caller_status():
-    row = SimpleNamespace(money_lane_status="RESOLVED")
     settlement = {"status": "HOLD", "blocker": "SETTLEMENT_RULE_UNRESOLVED"}
-    money = api_prod_market._effective_money_lane(row, settlement)
+    money = api_prod_market._effective_money_lane(settlement)
     assert money["status"] == "HOLD"
     assert money["settlement_blocker"] == "SETTLEMENT_RULE_UNRESOLVED"
     assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
 
 
 def test_untrusted_money_observation_is_bounded_and_never_reflected():
-    attack = "RESOLVED\nBearer PRIVATE_KEY\t<script>bad()</script>"
-    row = SimpleNamespace(money_lane_status=attack)
+    attack = "RESOLVED\\nBearer PRIVATE_KEY\\t<script>bad()</script>"
     money = api_prod_market._effective_money_lane(
-        row, {"status": "PASS", "money_context_required": False}
+        {"status": "PASS", "money_context_required": False}
     )
     assert money["status"] == "HOLD"
     assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
@@ -574,34 +571,49 @@ def test_untrusted_money_observation_is_bounded_and_never_reflected():
     assert money["can_execute"] is False
 
 
-def test_non_string_money_claim_never_authorizes_money():
-    for raw in (None, True, 1, {"status": "RESOLVED"}, ["RESOLVED"]):
-        row = SimpleNamespace(money_lane_status=raw)
-        # Exercise the real reducer as well as its low-level MONEY input.
-        for money in (
-            api_prod_market._money_lane(row),
+def test_no_caller_or_scorer_money_status_can_be_passed_to_reducer():
+    """Structurally remove the dead scorer-row input, not just ignore it."""
+    for raw in (None, True, 1, {"status": "RESOLVED"}, ["RESOLVED"], "RESOLVED"):
+        with pytest.raises(TypeError):
+            api_prod_market._money_lane(raw)
+        with pytest.raises(TypeError):
             api_prod_market._effective_money_lane(
-                row, {"status": "PASS", "money_context_required": False}
-            ),
-        ):
-            assert money["status"] == "HOLD"
-            assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
-            assert "observed_money_lane_status" not in money
-            assert money["can_execute"] is False
-
-
-def test_money_status_unicode_and_newline_variants_never_resolve():
-    """No normalization or Unicode spoofing upgrades caller payout authority."""
-    variants = ("resolved", "ReSoLvEd", "ＲＥＳＯＬＶＥＤ", "RESOLVED\n",
-                "RESOLVED\t", "RESOLVED\u200d", "RESOLVED\0", " Résolved ")
-    for value in variants:
-        money = api_prod_market._effective_money_lane(
-            SimpleNamespace(money_lane_status=value),
-            {"status": "PASS", "money_context_required": False},
-        )
+                raw, {"status": "PASS", "money_context_required": False}
+            )
+    for money in (
+        api_prod_market._money_lane(),
+        api_prod_market._effective_money_lane(
+            {"status": "PASS", "money_context_required": False}
+        ),
+    ):
         assert money["status"] == "HOLD"
         assert money["money_lane_status"] == "PAYOUT_UNRESOLVED"
         assert money["can_execute"] is False
+
+
+@pytest.mark.parametrize("status_claim", (
+    "resolved", "ReSoLvEd", "ＲＥＳＯＬＶＥＤ", "RESOLVED\\n",
+    "RESOLVED\\t", "RESOLVED\\u200d", "RESOLVED\\0", " Résolved ",
+))
+def test_money_status_unicode_and_newline_variants_never_resolve(monkeypatch, status_claim):
+    """Exercise authenticated HTTP with caller-controlled status, not dead args."""
+    recorded = {}
+    def fake_score(**kwargs):
+        recorded.update(kwargs)
+        fake = _result(market_available=True, market_quality="EXACT_TWO_WAY_NO_VIG")
+        fake.row.money_lane_status = status_claim
+        return fake
+
+    _install_common(monkeypatch, fake_score)
+    payload = _request_payload()
+    payload["money_lane_status"] = status_claim
+    response = client.post("/score-prop", json=payload, headers=AUTH)
+    assert response.status_code == 200
+    assert recorded["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert status_claim not in response.text
+    assert response.json()["objective_lanes"]["MONEY"]["status"] == "HOLD"
+    assert response.json()["objective_lanes"]["MONEY"]["money_lane_status"] == "PAYOUT_UNRESOLVED"
+    assert response.json()["can_execute"] is False
 
 
 def test_unauthenticated_score_prop_denied_before_money_lane(monkeypatch):

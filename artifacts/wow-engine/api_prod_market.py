@@ -207,8 +207,10 @@ def _settlement_lane(row: Any, req: ScorePropRequest, rule: Optional[SettlementR
     }
 
 
-def _effective_money_lane(row: Any, settlement_lane: dict[str, Any]) -> dict[str, Any]:
-    lane = _money_lane(row)
+def _effective_money_lane(settlement_lane: dict[str, Any]) -> dict[str, Any]:
+    # Only server-owned, separately authenticated receipts may ever authorize
+    # MONEY; a scorer row cannot be passed as implicit payout authority.
+    lane = _money_lane()
     if settlement_lane.get("status") != "PASS":
         lane = dict(lane)
         lane["status"] = "HOLD"
@@ -250,7 +252,7 @@ def _market_lane(row: Any) -> dict[str, Any]:
     }
 
 
-def _money_lane(row: Any) -> dict[str, Any]:
+def _money_lane() -> dict[str, Any]:
     """Caller/model status is not payout authority.
 
     Without a validated server-owned, immutable payout quote and contract,
@@ -944,7 +946,7 @@ def score_prop(
     with _score_stage_timer("settlement_market_lanes", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
         market_lane = _market_lane_with_audit(result.row, market_audit)
         settlement_lane = _settlement_lane(result.row, req, settlement_rule, settlement_resolution, market_audit.side_a, market_audit.side_b)
-        money_lane = _effective_money_lane(result.row, settlement_lane)
+        money_lane = _effective_money_lane(settlement_lane)
     with _score_stage_timer("arithmetic_audit", sport=req.sport, stat_type=req.stat_type, direction=req.direction):
         market_lane, settlement_lane, money_lane, arithmetic_audit = _apply_wolfram_arithmetic_gate(
             row=result.row,
