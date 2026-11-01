@@ -36,7 +36,7 @@ class _Query:
     def __init__(self, db):
         self.db = db
         self.after = None
-        self.limit = None
+        self.page_limit = None
         self.fence = False
         self.cutoff = None
 
@@ -74,7 +74,7 @@ class _Query:
 
     def range(self, start, stop):
         assert start == 0
-        self.limit = stop + 1
+        self.page_limit = stop + 1
         return self
 
     def execute(self):
@@ -84,26 +84,30 @@ class _Query:
                 key=lambda r: r["created_at"],
                 reverse=True,
             )
-            fence_rows = [{"created_at": ordered[0]["created_at"]}] if ordered else []
+            fence_rows = (
+                [{"created_at": ordered[0]["created_at"]}] if ordered
+                else ([{"created_at": "2026-10-29T15:00:00+00:00"}] if self.db.rows else [])
+            )
             if self.db.new_row_after_fence is not None:
                 self.db.rows.append(self.db.new_row_after_fence)
                 self.db.new_row_after_fence = None
             return SimpleNamespace(data=fence_rows)
-        self.db.calls.append((self.after, self.limit))
+        self.db.calls.append((self.after, self.page_limit))
         rows = self.db.rows
         if self.cutoff is not None:
             rows = [r for r in rows if not isinstance(r, dict)
                     or r.get("created_at", "") <= self.cutoff]
-        if self.after is not None:
+        if self.after is not None and not self.db.repeat_previous_page:
             rows = [r for r in rows if r["source_snapshot_id"] > self.after]
-        return SimpleNamespace(data=rows[: self.limit])
+        return SimpleNamespace(data=rows[: self.page_limit])
 
 
 class _Db:
-    def __init__(self, rows, new_row_after_fence=None):
+    def __init__(self, rows, new_row_after_fence=None, repeat_previous_page=False):
         self.rows = rows
         self.calls = []
         self.new_row_after_fence = new_row_after_fence
+        self.repeat_previous_page = repeat_previous_page
 
     def table(self, name):
         assert name == "wow_ncaaf_source_snapshots"
@@ -133,6 +137,16 @@ def test_new_source_snapshot_during_paging_is_outside_frozen_corpus():
     assert [r.week for r in output] == [1, 2, 3, 4, 5]
     assert len(db.rows) == 6  # a concurrent insert was simulated
     assert len(output) == 5    # frozen source corpus is unchanged
+
+
+def test_replayed_second_page_is_rejected_by_cursor_guard():
+    db = _Db([_row(n) for n in range(1, 5)], repeat_previous_page=True)
+    with pytest.raises(NCAAFPropChallengerRunnerError) as err:
+        load_source_snapshots(db, endpoint="/games/players", seasons=[2025], page_size=2)
+    assert (err.value.code, err.value.detail) == (
+        "NCAAF_PROP_SOURCE_READ_INVALID", "PAGE_ORDER_INVALID"
+    )
+    assert len(db.calls) == 2  # valid first page followed by repeated first page
 
 
 def test_repeated_page_fails_closed_instead_of_double_counting():
