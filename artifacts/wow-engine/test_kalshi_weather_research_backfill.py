@@ -150,3 +150,29 @@ def test_launch_returns_only_trigger_receipt(monkeypatch):
     assert result.status_code == 202
     assert result.json()["run_id"] == "run_0123456789abcdef"
     assert result.json()["can_execute"] is False
+
+
+def test_rotating_progress_does_not_starve_later_good_outcomes():
+    from datetime import timedelta
+    db = Client([prediction("missing-a"), prediction("missing-b"),
+                 prediction("missing-c"), prediction("available")])
+    settled_ids = []
+    def settle(*, client, prediction_id, index_city, settled_at):
+        if prediction_id.startswith("missing"):
+            raise KalshiWeatherRuntimeError("SETTLEMENT_POINT_UNAVAILABLE", ("NO_DATA",))
+        client.outcomes.append({"prediction_id": prediction_id})
+        settled_ids.append(prediction_id)
+        return {"status": "SETTLED", "outcome_id": "outcome-available", "target_time_utc": TARGET}
+
+    # Each five-minute window uses a different deterministic start offset.
+    for i in range(4):
+        reconcile_miami_settlements(client=db, limit=3, now=CLOCK + timedelta(minutes=5*i), settle=settle)
+    assert settled_ids == ["available"]
+
+
+def test_receipt_cannot_claim_another_settlement_hour():
+    db = Client([prediction("p1")])
+    def bad_settle(**_kwargs):
+        return {"status": "SETTLED", "outcome_id": "out-1", "target_time_utc": "2026-10-30T19:00:00Z"}
+    with pytest.raises(BackfillDataError, match="SETTLEMENT_RECEIPT_INVALID"):
+        reconcile_miami_settlements(client=db, now=CLOCK, settle=bad_settle)
