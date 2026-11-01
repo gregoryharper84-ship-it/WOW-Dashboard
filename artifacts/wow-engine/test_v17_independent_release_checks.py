@@ -1846,8 +1846,16 @@ def test_release_defers_without_publishing_while_exact_head_regression_is_runnin
     routes[f"repos/{REPO}/actions/runs?head_sha={HEAD}&event=pull_request&per_page=100&page=1"] = [
         200, {"total_count": 1, "workflow_runs": [native_run]},
     ]
+    # Authenticate the live workflow definition and complete attempt-bound job
+    # inventory, matching the production gate instead of an older synthetic API.
+    routes[f"repos/{REPO}/actions/workflows/{native_run['workflow_id']}"] = [
+        200, {"id": native_run["workflow_id"], "path": native_run["path"], "state": "active"},
+    ]
     routes[f"repos/{REPO}/actions/runs/{native_run['id']}/attempts/1/jobs?per_page=100&page=1"] = [
-        200, {"total_count": 1, "jobs": [{"name": "WOW required-three regression", "status": "queued"}]},
+        200, {"total_count": 1, "jobs": [{
+            "id": 8101, "run_id": native_run["id"],
+            "name": "WOW required-three regression", "status": "queued",
+        }]},
     ]
 
     proc, runner, env = _run_decide(
@@ -1905,8 +1913,16 @@ def test_qa_defers_without_publishing_while_exact_head_regression_is_running_the
     routes[f"repos/{REPO}/actions/runs?head_sha={HEAD}&event=pull_request&per_page=100&page=1"] = [
         200, {"total_count": 1, "workflow_runs": [native_run]},
     ]
+    # Authenticate the live workflow definition and complete attempt-bound job
+    # inventory, matching the production gate instead of an older synthetic API.
+    routes[f"repos/{REPO}/actions/workflows/{native_run['workflow_id']}"] = [
+        200, {"id": native_run["workflow_id"], "path": native_run["path"], "state": "active"},
+    ]
     routes[f"repos/{REPO}/actions/runs/{native_run['id']}/attempts/1/jobs?per_page=100&page=1"] = [
-        200, {"total_count": 1, "jobs": [{"name": "WOW required-three regression", "status": "queued"}]},
+        200, {"total_count": 1, "jobs": [{
+            "id": 8101, "run_id": native_run["id"],
+            "name": "WOW required-three regression", "status": "queued",
+        }]},
     ]
 
     proc, runner, env = _run_decide(
