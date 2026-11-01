@@ -185,7 +185,7 @@ def settle_nba_scalar(
     source = f"{NBA_CDN_BOXSCORE_BASE}boxscore_{crosswalk['game_id']}.json"
     url = urlsplit(source)
     if (url.scheme != "https" or url.netloc != "cdn.nba.com"
-            or not re.fullmatch(r"/static/json/liveData/boxscore/boxscore_[0-9]{10}\\.json", url.path)
+            or not re.fullmatch(r"/static/json/liveData/boxscore/boxscore_[0-9]{10}\.json", url.path)
             or url.query or url.fragment):
         return _hold("OFFICIAL_SOURCE_UNAVAILABLE", "NBA_OFFICIAL_BOXSCORE_URL_NOT_ALLOWLISTED")
     try:
