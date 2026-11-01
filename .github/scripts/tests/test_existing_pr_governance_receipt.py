@@ -1680,55 +1680,14 @@ def test_v2_fallback_sunset_is_immutable_and_fail_closed():
             build(now=expired_time)
 
 
-def _historical_cli_subprocess(tmp_path, receipt, reviews):
-    """Run the real CLI with a test-only historical clock in a new interpreter.
+def test_historical_v2_acceptance_uses_explicit_clock():
+    """Historical positive case uses the verifier's documented now seam.
 
-    No global pytest patch or production CLI override can survive this process.
-    The same CLI is independently exercised with its actual wall clock below.
+    Production CLI subprocesses remain unmodified and reject expired V2.
     """
-    receipt_path = tmp_path / "historical-receipt.json"
-    reviews_path = tmp_path / "historical-reviews.json"
-    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    reviews_path.write_text(json.dumps(reviews), encoding="utf-8")
-    harness = textwrap.dedent("""
-        import importlib.util
-        import sys
-        from datetime import datetime
-        source, timestamp, *args = sys.argv[1:]
-        as_of = datetime.fromisoformat(timestamp)
-        spec = importlib.util.spec_from_file_location("historical_cli_verifier", source)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        original = module.datetime
-        class IsolatedTestClock(original):
-            @classmethod
-            def now(cls, tz=None):
-                return as_of.astimezone(tz) if tz is not None else as_of.replace(tzinfo=None)
-        module.datetime = IsolatedTestClock
-        sys.argv = [source, *args]
-        raise SystemExit(module.main())
-    """)
-    return subprocess.run(
-        [
-            sys.executable, "-c", harness, str(SCRIPT), NOW.isoformat(),
-            "--receipt", str(receipt_path),
-            "--repository", REPOSITORY,
-            "--head-sha", HEAD,
-            "--head-ref", "fix/issue-1806",
-            "--workflow-run-id", "12345",
-            "--workflow-name", verifier.WORKFLOW_NAME,
-            "--pr-number", "1822",
-            "--live-reviews-json", str(reviews_path),
-        ],
-        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
-    )
-
-
-def test_historical_v2_cli_acceptance_is_isolated_from_live_sunset(tmp_path):
-    accepted = _historical_cli_subprocess(tmp_path, build(now=NOW), evidence()["reviews"])
-    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
-    assert json.loads(accepted.stdout)["status"] == "REVIEW_EVIDENCE_VERIFIED"
+    receipt = build(now=NOW)
+    verify(receipt, now=NOW)
+    assert receipt["certification_mode"] == verifier.CERTIFICATION_MODE
 
 
 def test_consumer_context_requires_independently_bound_pr_and_live_reviews(tmp_path, monkeypatch, capsys):
@@ -1900,10 +1859,16 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "user": {**REVIEWER, "type": "User"},
         }
     ]
-    # Historical subprocess runs the real CLI with an interpreter-local clock.
-    v2_withdrawn = _historical_cli_subprocess(tmp_path, receipt, withdrawn)
-    assert v2_withdrawn.returncode == 1, v2_withdrawn.stdout + v2_withdrawn.stderr
-    assert json.loads(v2_withdrawn.stdout)["reason"] == "EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING"
+    # Historical revoked-review behavior is verified with a pure frozen
+    # clock; live subprocess denial is independently proved above.
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                       match="EXACT_HEAD_INDEPENDENT_APPROVAL_MISSING"):
+        verifier.verify_receipt(
+            receipt, expected_repository=REPOSITORY, expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806", expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME, expected_pr_number=1822,
+            live_reviews=withdrawn, now=NOW,
+        )
 
     renamed_source = dict(receipt)
     renamed_source["changed_files"] = [
@@ -1913,9 +1878,14 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
             "status": "renamed",
         }
     ]
-    v2_renamed = _historical_cli_subprocess(tmp_path, renamed_source, reviews)
-    assert v2_renamed.returncode == 1, v2_renamed.stdout + v2_renamed.stderr
-    assert json.loads(v2_renamed.stdout)["reason"] == "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE"
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,
+                       match="TRUST_ROOT_CHANGE_NOT_CERTIFIABLE"):
+        verifier.verify_receipt(
+            renamed_source, expected_repository=REPOSITORY, expected_head_sha=HEAD,
+            expected_head_ref="fix/issue-1806", expected_workflow_run_id="12345",
+            expected_workflow_name=verifier.WORKFLOW_NAME, expected_pr_number=1822,
+            live_reviews=reviews, now=NOW,
+        )
 
     boot_data = bootstrap_evidence()
     boot = build_bootstrap(boot_data, now=datetime.now(timezone.utc))
