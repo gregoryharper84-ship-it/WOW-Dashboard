@@ -391,7 +391,8 @@ class FailedLaunchFixture:
         self.pr_pages = [{"items": []}]
         self.pr = {
             "number": FAILED_PR, "state": "open", "changed_files": 2,
-            "head": {"sha": FAILED_NEW_HEAD, "repo": {"full_name": probe.REPOSITORY}},
+            "head": {"sha": FAILED_NEW_HEAD, "ref": "fix/synthetic-101",
+                     "repo": {"full_name": probe.REPOSITORY}},
             "base": {"ref": "main", "repo": {"full_name": probe.REPOSITORY}},
         }
         self.comparison = {
@@ -560,6 +561,118 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     bad_comments[-1]["body"] = f"{release.RELEASE_MARKER}{FAILED_INCIDENT} -->\n" + json.dumps(bad_doc, sort_keys=True)
     with pytest.raises(ledger.ProviderUnavailable, match="REMOTE_RELEASE_RECEIPT_UNVERIFIED"):
         ledger.assert_no_remote_writer(bad_comments, get_run=lambda _: run())
+
+LEGACY_CREATED = "2026-10-31T19:15:12Z"
+LEGACY_RUN_CREATED = "2026-10-31T19:14:58Z"
+
+
+def _legacy(fixture, *, created=LEGACY_CREATED, updated=None, run_created=LEGACY_RUN_CREATED,
+            keep_branch=False):
+    """Make the reservation look like one written before `branch` existed."""
+    doc = json.loads(fixture.comment["body"].split("\n", 1)[1])
+    if not keep_branch:
+        doc.pop("branch")
+    fixture.comment["body"] = ledger._body(doc)
+    fixture.comment["created_at"] = created
+    fixture.comment["updated_at"] = updated or created
+    if run_created is not None:
+        fixture.origin["created_at"] = run_created
+    return doc
+
+
+def _after_legacy(mutate, **legacy_kwargs):
+    def run(fixture):
+        _legacy(fixture, **legacy_kwargs)
+        mutate(fixture)
+    return run
+
+
+def test_legacy_branchless_reservation_resolves_branch_from_live_pr_and_keeps_ancestry():
+    fixture = FailedLaunchFixture()
+    _legacy(fixture)
+    result = fixture.prove()
+    assert result["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
+    assert result["agent_status"] == "NEVER_CREATED"
+    assert result["reservation"]["legacy_branchless"] is True
+    assert result["reservation"]["reservation_branch"] is None
+    assert result["head_sha"] == FAILED_NEW_HEAD
+    # The reservation digest is of the immutable original body.
+    assert result["reservation"]["reservation_sha256"] == hashlib.sha256(
+        fixture.comment["body"].encode()).hexdigest()
+
+
+@pytest.mark.parametrize("mutate,expected", [
+    # Not eligible as legacy: created after the branch requirement, or edited.
+    (lambda f: _legacy(f, created="2026-11-01T01:44:02Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
+    (lambda f: _legacy(f, created="2026-11-02T00:00:00Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
+    (lambda f: _legacy(f, updated="2026-10-31T19:20:00Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
+    # Missing, malformed or calendar-invalid timestamps are unverifiable.
+    (_after_legacy(lambda f: f.comment.pop("created_at")), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
+    (_after_legacy(lambda f: f.comment.pop("updated_at")), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
+    (lambda f: _legacy(f, created="2026-00-01T00:00:00Z"), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
+    (lambda f: _legacy(f, created="2026-13-45T25:61:61Z"), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
+    (lambda f: _legacy(f, created="2026-10-31T19:15:12+00:00"), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
+    # The independently authenticated dispatcher run must also predate the window.
+    (lambda f: _legacy(f, run_created="2026-11-01T01:44:02Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
+    (lambda f: _legacy(f, run_created="2026-11-03T00:00:00Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
+    (lambda f: _legacy(f, run_created=None), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
+    (lambda f: _legacy(f, run_created="not-a-date"), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
+    # Live PR evidence rejected.
+    (_after_legacy(lambda f: f.pr["head"].update(ref="main")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
+    (_after_legacy(lambda f: f.pr["head"].update(ref="master")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
+    (_after_legacy(lambda f: f.pr["head"].pop("ref")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
+    (_after_legacy(lambda f: f.pr["head"].update(ref="")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
+    (_after_legacy(lambda f: f.pr["base"].update(ref="fix/synthetic-101")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
+    (_after_legacy(lambda f: f.pr.update(state="closed")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
+    (_after_legacy(lambda f: f.comparison.update(status="diverged")), "CURSOR_PR_HEAD_NOT_DESCENDANT"),
+    (_after_legacy(lambda f: f.comparison.update(behind_by=1)), "CURSOR_PR_HEAD_NOT_DESCENDANT"),
+    (_after_legacy(lambda f: f.comparison["merge_base_commit"].update(sha="9" * 40)),
+     "CURSOR_PR_HEAD_NOT_DESCENDANT"),
+    # Compatibility never relaxes the nonexistence proof.
+    (_after_legacy(lambda f: setattr(f, "agent_response", {"id": FAILED_AGENT, "status": "IDLE"})),
+     "CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION"),
+    (_after_legacy(lambda f: setattr(f, "global_pages", [{"items": [], "nextCursor": "p2"}])),
+     "CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED"),
+])
+def test_legacy_branchless_fallback_fails_closed(mutate, expected):
+    fixture = FailedLaunchFixture()
+    mutate(fixture)
+    with pytest.raises(probe.ReceiptBlocked, match=expected):
+        fixture.prove()
+
+
+@pytest.mark.parametrize("mutate,expected", [
+    (lambda f: f.pr["head"].update(ref="fix/other"), "CURSOR_RESERVATION_BRANCH_MISMATCH"),
+    (lambda f: f.pr["head"].update(ref="main"), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
+])
+def test_recorded_branch_must_match_live_pr_head_ref(mutate, expected):
+    fixture = FailedLaunchFixture()
+    mutate(fixture)
+    with pytest.raises(probe.ReceiptBlocked, match=expected):
+        fixture.prove()
+
+
+@pytest.mark.parametrize("branch", ["", "  ", "main", "master", None, 7])
+def test_present_but_invalid_recorded_branch_is_not_legacy(branch):
+    fixture = FailedLaunchFixture()
+    doc = _legacy(fixture, keep_branch=True)
+    doc["branch"] = branch
+    fixture.comment["body"] = ledger._body(doc)
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_RESERVATION_IDENTITY_INVALID"):
+        fixture.prove()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("pr_sha", "a" * 40), ("cursor_agent_id", UNRELATED_HISTORICAL_AGENT),
+    ("lease_group", "PR_999"),
+])
+def test_legacy_reservation_altered_identity_is_rejected(key, value):
+    fixture = FailedLaunchFixture()
+    doc = _legacy(fixture)
+    doc[key] = value
+    fixture.comment["body"] = ledger._body(doc)
+    with pytest.raises(probe.ReceiptBlocked):
+        fixture.prove()
 
 
 def test_auto_finalizer_resolves_exactly_one_immutable_failed_launch():
