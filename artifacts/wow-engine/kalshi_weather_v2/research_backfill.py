@@ -106,20 +106,23 @@ def reconcile_miami_settlements(
     skipped_existing = 0
 
     for _target, prediction_id in eligible:
+        if attempted >= limit:
+            break
         try:
             if persistence.outcome_exists_for_prediction(prediction_id):
                 skipped_existing += 1
                 continue
         except KalshiWeatherPersistenceError as exc:
             raise BackfillDataError("OUTCOME_LEDGER_UNAVAILABLE") from exc
-        if attempted >= limit:
-            break
         attempted += 1
         try:
             result = settle(
                 client=client,
                 prediction_id=prediction_id,
                 index_city="miami",
+                # settled_at is the ingestion/recording timestamp, NOT the
+                # target observation time; source target time is stored
+                # separately in the immutable outcome provenance.
                 settled_at=clock.isoformat().replace("+00:00", "Z"),
             )
         except KalshiWeatherRuntimeError as exc:
