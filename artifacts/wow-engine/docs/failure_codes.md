@@ -510,3 +510,30 @@ These detail codes belong only to the source-validated NBA POINTS research snaps
 | `NBA_POINTS_LITERAL_EXACT_OFFER_CONTRADICTION` | NBA board evidence | Captured literal threshold, period or type conflicts with preexisting opportunity ledger. | No |
 | `NBA_POINTS_VERIFIED_SNAPSHOT_PROOF_NOT_FROZEN` | NBA immutable snapshot | Snapshot factory failed to preserve the validated official roster crosswalk or exact captured offer in the frozen fingerprint payload. | No |
 | `NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED` | NBA snapshot persistence | No verified official roster receipt, incomplete/mismatched cross-provider identity, or non-pregame official source timestamp; no write. | No |
+
+
+#### Live official-roster capture trust boundary (NBA POINTS research only)
+
+The backend `capture_nba_points_snapshot` entrypoint first fetches the fixed-origin
+ESPN summary and NBA CDN boxscore through
+`acquire_nba_points_current_roster`; only then may the trusted backend collector
+freeze independently sourced board/role/log observations. A supplied
+`verified_roster_receipt` or validator/scorer hook is not permitted as an override.
+This narrows the source-authenticity boundary, **not** an attestation of provider
+signatures or eligibility for sporting probability publication. Only an authorized
+server-side caller with permitted database access may use this entrypoint.
+
+| Typed code | Owning stage | Condition | Predict/publish? |
+| --- | --- | --- | --- |
+| `NBA_POINTS_TRUSTED_SOURCE_COLLECTOR_REQUIRED` | NBA capture orchestration | No server collector callable to observe the exact board after official roster retrieval | No |
+| `NBA_POINTS_CAPTURE_CLOCK_INVALID` | NBA capture orchestration | Capture time provider missing, not callable, or timezone-naive | No |
+| `NBA_POINTS_OFFICIAL_ACQUISITION_REQUIRED` | Official source provenance | Official two-fetch fixed-origin acquisition metadata is absent or contradictory | No |
+| `NBA_POINTS_SOURCE_COLLECTION_FAILED` | Board/feature source collection | Trusted source collection fails after official roster acquisition | No |
+| `NBA_POINTS_UNTRUSTED_SOURCE_OVERRIDE` | NBA capture source boundary | Supplied source attempts to replace the official receipt, clock, identity resolver or V17 validation/factory | No |
+
+These codes are local typed input/evidence blockers. They never become
+`MODEL_UNAVAILABLE`, a fabricated fitted probability or an independent
+security verdict. The separate persistence helper remains internal, research-only
+and dependent on the authenticated server database principal; a Python object or
+the `CAN_EXECUTE = False` constant is not an authentication control. All
+public access remains subject to database RLS and grants; no trading or orders.
