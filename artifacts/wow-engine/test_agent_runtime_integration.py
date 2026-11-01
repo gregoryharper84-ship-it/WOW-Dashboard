@@ -177,8 +177,11 @@ def test_run_and_cancel_require_existing_bearer_key(monkeypatch):
     assert len(fake._store.get("wow_agent_runs", [])) == 1
     assert len(fake._store.get("wow_agent_jobs", [])) == 0
 
-    unauthorized_cancel = client.post(f"/wow/runs/{run['run_id']}/cancel")
-    assert unauthorized_cancel.status_code == 401
+    for headers in ({}, {"Authorization": "Bearer wrong"}):
+        unauthorized_cancel = client.post(
+            f"/wow/runs/{run['run_id']}/cancel", headers=headers,
+        )
+        assert unauthorized_cancel.status_code == 401
     assert repository.get_run(fake, run["run_id"])["status"] == "CREATED"
 
 
@@ -488,6 +491,24 @@ def test_create_run_requires_idempotency_key_header(monkeypatch, auth_headers):
     response = client.post("/wow/runs", json=_RUN_PAYLOAD, headers=auth_headers)
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+
+def test_rejected_runtime_admission_never_reaches_database(monkeypatch, auth_headers):
+    """Regression for Greptile: rejection must precede all service-role DB calls."""
+    def forbidden_db_access():
+        raise AssertionError("REJECTED_RUN_REQUEST_ACCESSED_DATABASE")
+
+    monkeypatch.setattr(agent_runtime_api, "get_client", forbidden_db_access)
+    for name, request, expected_status, reason in (
+        ("execution", {**_RUN_PAYLOAD, "can_execute": True}, 422, "EXECUTION_PROHIBITED"),
+        ("missing-key", _RUN_PAYLOAD, 400, "IDEMPOTENCY_KEY_REQUIRED"),
+    ):
+        headers = dict(auth_headers)
+        if name == "execution":
+            headers["Idempotency-Key"] = "pre-db-rejection"
+        result = client.post("/wow/runs", json=request, headers=headers)
+        assert result.status_code == expected_status, (name, result.text)
+        assert result.json()["detail"]["code"] == reason
 
 
 def test_create_run_happy_path_returns_202_and_pollable_run_id(monkeypatch, auth_headers):
