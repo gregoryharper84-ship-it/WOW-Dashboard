@@ -150,7 +150,13 @@ def verified_released_ids(
             raise ReleaseBlocked("REMOTE_RELEASE_WORKFLOW_NOT_VERIFIED") from None
         if (not isinstance(run, dict)
                 or run.get("path") != WORKFLOW
-                or run.get("event") not in {"workflow_dispatch", "push"}
+                # A scheduled run may release only a *negative-launch*
+                # reservation after the same authenticated live proofs.
+                # Ordinary completed-agent releases keep manual provenance.
+                or not (
+                    run.get("event") in {"workflow_dispatch", "push"}
+                    or (valid_negative_launch and run.get("event") == "schedule")
+                )
                 or run.get("status") != "completed"
                 or run.get("conclusion") != "success"
                 or run.get("head_branch") != "main"
@@ -160,6 +166,48 @@ def verified_released_ids(
             raise ReleaseBlocked("REMOTE_RELEASE_WORKFLOW_NOT_VERIFIED")
         ids.add(cid)
     return ids
+
+
+def auto_failed_launch_target(api) -> int | None:
+    """Select one provably unresolved failed-launch hold, never guess identity.
+
+    Only the existing scheduled finalizer calls this read-only preflight.
+    A concurrent/ambiguous/unverified release or any other held writer stays
+    locked. The live Cursor proof happens in append_terminal_release, not here.
+    """
+    try:
+        from .engineering_remote_fallback import reservations
+    except ImportError:
+        from engineering_remote_fallback import reservations
+
+    comments = api.pages(LEDGER)
+    attempts = reservations(comments)
+    verified = verified_released_ids(
+        comments, attempts,
+        get_run=lambda rid: api.request(f"/repos/{REPOSITORY}/actions/runs/{rid}"),
+    )
+    held = [(cid, row) for cid, row in attempts
+            if row["hold"] and cid not in verified]
+    if not held:
+        return None
+    if len(held) != 1:
+        raise ReleaseBlocked("REMOTE_AUTO_RELEASE_MULTIPLE_HELD_WRITERS")
+    cid, claim = held[0]
+    original = [c for c in comments if c.get("id") == cid]
+    if (type(cid) is not int or cid <= 0
+            or len(original) != 1
+            or original[0].get("user", {}).get("login") != BOT_LOGIN
+            or original[0].get("issue_url")
+               != f"https://api.github.com/repos/{REPOSITORY}/issues/1138"
+            or claim.get("provider") != "cursor"
+            or claim.get("status") != "CURSOR_LAUNCH_RESERVED"
+            or claim.get("cursor_run_id") is not None
+            or "cursor_run_status" in claim
+            or claim.get("can_execute") is not False
+            or claim.get("probability_authority") is not False
+            or claim.get("terminal_authority") != "V17_TERMINAL_REDUCER"):
+        raise ReleaseBlocked("REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH")
+    return cid
 
 
 def append_terminal_release(api, *, cursor_token: str, run_id: int,
