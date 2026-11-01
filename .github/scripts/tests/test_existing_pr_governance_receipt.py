@@ -2451,9 +2451,14 @@ def test_source_artifact_retry_is_bounded_and_never_falls_back_to_human():
     start = workflow.index('          artifact_download="$RUNNER_TEMP/source-review/decision.zip"')
     end = workflow.index('          unzip -p "$RUNNER_TEMP/source-review/decision.zip"', start)
     block = workflow[start:end]
-    assert block.count('gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"') == 2
+    assert block.count('gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip"') == 1
+    assert 'for backoff_seconds in 0 2 4; do' in block
     assert 'grep -Eq' in block
     assert 'HTTP (408|429|500|502|503|504)' in block
-    assert block.count('SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE') == 2
+    assert block.count('SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE') == 1
+    assert '2>&1 > "$artifact_partial"' in block
+    assert 'unset artifact_error' in block
+    assert 'rm -f "$artifact_partial"' in block
+    assert 'mv "$artifact_partial" "$artifact_download"' in block
     assert '--trusted-reviewers-json' not in block
     assert 'exit 1' in block
