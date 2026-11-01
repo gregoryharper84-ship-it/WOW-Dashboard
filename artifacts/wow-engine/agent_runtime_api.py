@@ -81,6 +81,26 @@ def _candidate_shape_bounded(value: Any) -> bool:
 
 _ADMISSION_WINDOW_MS = 60_000
 _ADMISSION_REDIS_KEY = "wow:agent-runtime:admissions:sliding-v1"
+
+
+def _admission_bucket_key() -> str:
+    """Keep one atomic deployment-wide gate, isolated across Render services.
+
+    RENDER_SERVICE_ID is documented and injected at runtime by Render.
+    Never key on RENDER_INSTANCE_ID: instances of the SAME service must share
+    their admission budget. Fail closed if the Render identity is absent.
+    """
+    if os.environ.get("RENDER") == "true":
+        service_id = os.environ.get("RENDER_SERVICE_ID", "")
+        if not re.fullmatch(r"srv-[a-z0-9]{8,40}", service_id):
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False},
+            )
+    else:
+        # Local integration uses a deliberately separate development namespace.
+        service_id = "local"
+    return f"{_ADMISSION_REDIS_KEY}:{service_id}"
 # Deployment-wide bound for ONE independently authenticated runtime principal.
 # This API does not identify multiple callers behind the same bearer; never
 # claim per-caller isolation. Do not distribute the bearer to unrelated tenants.
@@ -119,7 +139,7 @@ def _check_admission_rate_limit(*, idempotency_key: str, request_hash: str) -> N
     member = hashlib.sha256((idempotency_key + "\x00" + request_hash).encode("utf-8")).hexdigest()
     try:
         allowed = _admission_redis(redis_url).eval(
-            _ADMISSION_LUA, 1, _ADMISSION_REDIS_KEY,
+            _ADMISSION_LUA, 1, _admission_bucket_key(),
             MAX_RUN_ADMISSIONS_PER_MINUTE, _ADMISSION_WINDOW_MS, member,
         )
     except Exception as exc:
