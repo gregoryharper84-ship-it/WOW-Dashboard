@@ -172,3 +172,46 @@ def test_research_diagnostics_keep_model_uncertified_with_small_cohort():
 def test_invalid_research_inputs_fail_closed(selected, p, y):
     with pytest.raises(ValueError):
         ch.evaluate([_pred("x", "H", "A", selected)], [_grade("x", p, y)])
+
+
+def test_forward_certification_diagnostics_reveal_failures_below_minimum():
+    from types import SimpleNamespace
+
+    grades = [
+        SimpleNamespace(
+            model_version="NFL_EVENT_LOGREG_PLATT_V1_fixture",
+            calibrated_probability=0.80,
+            calibrated_lower_bound=0.75,
+            outcome=0,
+            brier=0.64,
+            log_loss=-math.log(0.20),
+        )
+        for _ in range(12)
+    ]
+    health = shadow.calibration_health(grades, min_forward=100)
+    assert health["status"] == "INSUFFICIENT_FORWARD_EVIDENCE"
+    assert health["blockers"] == ["FORWARD_GRADED_N_12_LT_100"]
+    assert health["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+    assert set(health["provisional_quality_failures"]) == {
+        "FORWARD_BRIER_NOT_BELOW_0_25",
+        "FORWARD_LOG_LOSS_NOT_BELOW_LOG2",
+        "FORWARD_ECE_ABOVE_0_12",
+        "FORWARD_CALIBRATION_BIAS_ABOVE_0_08",
+        "FORWARD_LOWER_BOUND_RELIABILITY_FAILED",
+    }
+    assert health["research_diagnostic_only"] is True
+    assert health["can_execute"] is False
+
+
+def test_forward_certification_mixed_model_versions_never_aggregate_into_pass():
+    from types import SimpleNamespace
+
+    grades = [
+        SimpleNamespace(model_version="fitted_A"),
+        SimpleNamespace(model_version="fitted_B"),
+    ]
+    health = shadow.calibration_health(grades, min_forward=1)
+    assert health["status"] == "MIXED_MODEL_VERSION_HOLD"
+    assert health["certification_recommendation"] == "DO_NOT_CERTIFY_YET"
+    assert health["blockers"] == ["FORWARD_MIXED_MODEL_VERSION_COHORT"]
+    assert health["can_execute"] is False
