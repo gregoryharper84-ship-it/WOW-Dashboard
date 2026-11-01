@@ -74,6 +74,8 @@ def _source_rows(client: Any, table: str, fields: str, order_by: str) -> list[di
     rows = response.data
     if not isinstance(rows, list):
         raise RuntimeError("RESEARCH_READ_UNAVAILABLE")
+    if len(rows) >= MAX_RECORDS:
+        raise RuntimeError("RESEARCH_LEDGER_PAGINATION_UNVERIFIED")
     return [r for r in rows if isinstance(r, dict)]
 
 
@@ -137,8 +139,9 @@ def load_cases(client: Any) -> tuple[list[Case], dict[str, int]]:
             inclusive = contract["lower_inclusive"]
             op = ">=" if inclusive else ">"
             expected_yes = f"index {op} {threshold_f:g}°F"
-            if contract["yes_condition"] != expected_yes:
-                raise ValueError("unverified YES condition")
+            if (contract["yes_condition"] != expected_yes
+                    or contract.get("no_condition") != f"NOT ({expected_yes})"):
+                raise ValueError("unverified YES/NO condition")
 
             estimates = forecast.get("estimates")
             nws = [e for e in estimates if isinstance(e, dict) and e.get("model") == "NWS_HOURLY"] if isinstance(estimates, list) else []
