@@ -36,6 +36,14 @@ QA starts only with:
 9. Verify `can_execute=false`, dry-run-only, and `V17_TERMINAL_REDUCER` authority.
 10. Hand off only after all applicable gates pass.
 
+## Fresh evidence and independent acceptance
+
+Use fresh evidence by running applicable checks from the exact candidate HEAD. Record each command, exit code, failure count, and exact HEAD SHA; do not accept stale, partial, or mixed-revision results. Verify that the regression reproduces the original defect as a pre-fix failure and catches it after the repair, rather than relying on a text-only assertion.
+
+Report deploy/health, model behavior, persistence/reconciliation, and Action acceptance as separate evidence lanes. A healthy deployment or passing health check does not prove model validity, governed persistence, or Action production acceptance. Do not claim any lane passed without its own applicable evidence.
+
+Keep implementation, review, and QA as independent roles. A QA pass does not replace CODEOWNER, Security, Review, Release, or other required approvals. Skill-text contract tests only verify that instructions and wiring are present; they do not establish runtime compliance. Behavioral failure-injection acceptance is required before claiming the worker follows this process in practice.
+
 ## Domain regression matrix
 
 ### WOW Host / orchestration
