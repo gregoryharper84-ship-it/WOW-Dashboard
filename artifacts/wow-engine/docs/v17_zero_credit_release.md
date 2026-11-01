@@ -11,7 +11,7 @@ The existing `.github/workflows/wow-codeql.yml` analyzes Python and
 JavaScript/TypeScript on `pull_request` to `main`, `push` to `main`,
 the existing daily schedule, and manual dispatch. Standard GitHub-hosted Actions
 for a public repository do not need OpenAI, Claude, Gemini, Cursor or a billing
-API key. CodeQL executes third-party static queries and publishes findings in
+API key. CodeQL executes static vulnerability queries and publishes findings in
 GitHub code scanning; it does **not** review the full semantics of a change,
 and a successful analyzer process is not proof of zero security findings.
 
