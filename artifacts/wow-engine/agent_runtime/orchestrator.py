@@ -5,6 +5,7 @@ PR #33's raw-psycopg JobRepository.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any, Optional
 
@@ -12,6 +13,9 @@ from agent_runtime import repository
 from agent_runtime.idempotency import input_hash as canonical_hash
 from agent_runtime.registry import worker_spec
 from agent_runtime.schemas import WorkerJobEnvelope
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class Orchestrator:
@@ -112,17 +116,27 @@ class Orchestrator:
             latest = repository.get_run(self.client, run_id) or run
             return {"run": latest, "job": job, "started": True, "can_execute": False}
         except Exception:
-            latest = repository.get_run(self.client, run_id)
-            # Dispatch may fail AFTER the run has reached DISCOVERY_QUEUED
-            # (for example, when the Celery broker refuses apply_async).
-            # Terminalize only if the run is still in an admission state.
-            # A worker that already advanced to DISCOVERY_RUNNING owns it.
-            if latest and latest.get("status") in ("VALIDATING_REQUEST", "DISCOVERY_QUEUED"):
-                try:
-                    repository.transition_run(
-                        self.client, run_id, expected_status=latest["status"],
-                        next_status="FAILED", stage="DISCOVERY_QUEUE_FAILED",
-                    )
-                except Exception:
-                    pass
+            # Preserve the original dispatch error, but do not silently lose
+            # cleanup failures. Emit only fixed, secret-safe diagnostic codes:
+            # DB/provider exception text can contain credential material.
+            try:
+                latest = repository.get_run(self.client, run_id)
+            except Exception:
+                _LOG.error("WOW_AGENT_RUNTIME_DISPATCH_CLEANUP_READBACK_FAILED")
+            else:
+                # A claimed worker owns DISCOVERY_RUNNING; never mark it FAILED.
+                if latest and latest.get("status") in ("VALIDATING_REQUEST", "DISCOVERY_QUEUED"):
+                    try:
+                        result = repository.transition_run(
+                            self.client, run_id, expected_status=latest["status"],
+                            next_status="FAILED", stage="DISCOVERY_QUEUE_FAILED",
+                        )
+                        if not result.applied:
+                            # Expected-status CAS protects a worker that moved
+                            # since readback. Reconcile later, do not clobber.
+                            _LOG.warning("WOW_AGENT_RUNTIME_DISPATCH_CLEANUP_CAS_MISSED")
+                    except Exception:
+                        _LOG.error("WOW_AGENT_RUNTIME_DISPATCH_CLEANUP_TRANSITION_FAILED")
+                elif latest is None:
+                    _LOG.error("WOW_AGENT_RUNTIME_DISPATCH_CLEANUP_RUN_MISSING")
             raise
