@@ -67,20 +67,30 @@ jobs:
               if not re.fullmatch(r"[1-9][0-9]*", manual):
                   raise SystemExit("REMOTE_RELEASE_TARGET_INVALID")
               candidate = int(manual)
-          # Empty means no unresolved remote writer, not a release PASS.
+          # A no-op is not an authorization; explicitly exit without
+          # selecting the credentialed step.
           if candidate is None:
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                  out.write("reservation_comment_id=\\n")
               print("NO_UNRELEASED_REMOTE_WRITER")
+              raise SystemExit(0)
+          if type(candidate) is not int or candidate <= 0:
+              raise SystemExit("REMOTE_RELEASE_TARGET_INVALID")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"reservation_comment_id={candidate or ''}\n")
+              out.write(f"reservation_comment_id={candidate}\\n")
           PY
       - name: Authenticate original Cursor state and append release
-        if: steps.target.outputs.reservation_comment_id != ''
+        if: ${{ success() && steps.target.outcome == 'success' && steps.target.outputs.reservation_comment_id != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           RESERVATION_COMMENT_ID: ${{ steps.target.outputs.reservation_comment_id }}
         run: |
           set -euo pipefail
+          [[ "$RESERVATION_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::REMOTE_RELEASE_TARGET_INVALID"
+            exit 1
+          }
           # The preflight is only a read-only candidate lookup. Under the
           # original writer mutex the existing finalizer authenticates source,
           # performs two fresh provider inventory probes, re-reads the PR,
