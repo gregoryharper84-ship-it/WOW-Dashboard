@@ -266,31 +266,10 @@ jobs:
               raise SystemExit(1)
           PY
           mkdir -p "$RUNNER_TEMP/source-review"
-          artifact_download="$RUNNER_TEMP/source-review/decision.zip"
-          artifact_partial="$RUNNER_TEMP/source-review/decision.zip.partial"
-          umask 077
-          artifact_stderr="$(mktemp "$RUNNER_TEMP/source-review/.download-error.XXXXXXXX")"
-          # Remove private diagnostics and any partial download even on failure.
-          trap 'rm -f "$artifact_partial" "$artifact_stderr"' EXIT
-          artifact_ok=false
-          # Retry the same authenticated ID at most twice after typed transient
-          # HTTP responses, with bounded 2s/4s backoff. Never log raw stderr.
-          for backoff_seconds in 0 2 4; do
-            if [ "$backoff_seconds" -gt 0 ]; then sleep "$backoff_seconds"; fi
-            if gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
-                > "$artifact_partial" 2> "$artifact_stderr"; then
-              artifact_ok=true
-              break
-            fi
-            if ! grep -Eq 'HTTP (408|429|500|502|503|504)' "$artifact_stderr"; then
-              break
-            fi
-          done
-          if [ "$artifact_ok" != "true" ]; then
-            echo "SOURCE_REVIEW_ARTIFACT_FETCH_UNAVAILABLE" >&2
-            exit 1
-          fi
-          mv "$artifact_partial" "$artifact_download"
+          # A selected source-review artifact is authoritative. GitHub download
+          # failures HOLD immediately; no undocumented retry or weaker fallback.
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            > "$RUNNER_TEMP/source-review/decision.zip"
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
             wow-v17-independent-source-review.json > "$RUNNER_TEMP/source-review/decision.json"
           unzip -p "$RUNNER_TEMP/source-review/decision.zip" \
