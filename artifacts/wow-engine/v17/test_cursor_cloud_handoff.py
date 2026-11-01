@@ -74,7 +74,7 @@ class FakeApi:
             self.pr_reads += 1
             if self.pr_reads == self.malformed_pr_read:
                 return []
-            if self.pr_reads == self.renamed_pr_read:
+            if self.renamed_pr_read is not None and self.pr_reads >= self.renamed_pr_read:
                 changed = pr()
                 changed["head"]["ref"] = "fix/renamed"
                 return changed
