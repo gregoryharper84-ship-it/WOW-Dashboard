@@ -7,6 +7,8 @@ execute. The existing V17 validator and snapshot factory own the payload.
 from __future__ import annotations
 
 import math
+import re
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
@@ -57,6 +59,7 @@ def build_nba_points_snapshot(
     roster: Mapping[str, Any],
     line_observation: Mapping[str, Any],
     evidence: Mapping[str, Any],
+    verified_roster_receipt: Mapping[str, Any] | None = None,
     now: datetime | None = None,
     resolve_identity: Callable[..., Mapping[str, Any]] | None = None,
     validate_evidence: Callable[[Any, str], dict[str, Any]] | None = None,
@@ -181,13 +184,81 @@ def build_nba_points_snapshot(
         if timestamp > captured or timestamp >= event_start:
             raise NBAPointsSourceError("NBA_POINTS_SOURCE_TIMESTAMP_INVALID")
 
+    # An optional, independently verified ESPN/NBA pregame roster receipt is
+    # the *only* path to settlement-ready source identity. A generic source
+    # snapshot without this receipt remains research-only and may not persist.
+    evidence_for_factory = dict(evidence)
+    verified_identity: dict[str, Any] | None = None
+    if verified_roster_receipt is not None:
+        if (verified_roster_receipt.get("status")
+                != "NBA_CURRENT_ROSTER_ACTIVE_SOURCE_VERIFIED_ROLE_NOT_PROVEN"
+                or verified_roster_receipt.get("write_performed") is not False
+                or verified_roster_receipt.get("can_execute") is not False):
+            raise NBAPointsSourceError("NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_REQUIRED")
+        verified_roster = verified_roster_receipt.get("roster")
+        proof = verified_roster_receipt.get("source_identity")
+        if not isinstance(verified_roster, Mapping) or not isinstance(proof, Mapping):
+            raise NBAPointsSourceError("NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_REQUIRED")
+        if any(verified_roster.get(k) != roster.get(k) for k in (
+                "event_id", "player_id", "team_id", "player", "availability", "captured_at")):
+            raise NBAPointsSourceError("NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION")
+        if (proof.get("espn_event_id") != event_id
+                or str(proof.get("nba_person_id")) != player_id
+                or not re.fullmatch(r"[0-9]{10}", str(proof.get("nba_game_id") or ""))
+                or not re.fullmatch(r"[A-Z]{2,4}", str(proof.get("team_tricode") or ""))
+                or not isinstance(proof.get("source_names"), list)
+                or not {"ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"}.issubset(
+                    set(str(x) for x in proof["source_names"] if isinstance(x, str))
+                )
+                or _time(proof.get("event_start_time"), "official_event_start") != event_start):
+            raise NBAPointsSourceError("NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION")
+        for key in ("espn_captured_at", "nba_captured_at"):
+            source_time = _time(proof.get(key), key)
+            if source_time > captured or source_time >= event_start:
+                raise NBAPointsSourceError("NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION")
+        threshold = line_observation.get("literal_threshold")
+        if not isinstance(threshold, str) or not threshold.strip():
+            raise NBAPointsSourceError("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED")
+        if str(line_observation.get("threshold_type") or "").upper() != "EXACT_NUMERIC":
+            raise NBAPointsSourceError("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED")
+        try:
+            offered = Decimal(threshold)
+        except InvalidOperation as exc:
+            raise NBAPointsSourceError("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED") from exc
+        if not offered.is_finite() or offered != Decimal(str(line)):
+            raise NBAPointsSourceError("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED")
+        role = dict(evidence["role_status"])
+        ledger = evidence.get("opportunity_ledger")
+        if not isinstance(ledger, Mapping):
+            raise NBAPointsSourceError("NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED")
+        ledger = dict(ledger)
+        for key, value in (
+            ("period", "FULL_GAME"),
+            ("literal_threshold", threshold),
+            ("threshold_type", "EXACT_NUMERIC"),
+        ):
+            if key in ledger and ledger[key] != value:
+                raise NBAPointsSourceError("NBA_POINTS_LITERAL_EXACT_OFFER_CONTRADICTION")
+            ledger[key] = value
+        for key, value in (
+            ("source_identity", dict(proof)),
+            ("official_game_id", proof["nba_game_id"]),
+            ("player_id", proof["nba_person_id"]),
+        ):
+            if key in role and role[key] != value:
+                raise NBAPointsSourceError("NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION")
+            role[key] = value
+        evidence_for_factory["role_status"] = role
+        evidence_for_factory["opportunity_ledger"] = ledger
+        verified_identity = dict(proof)
+
     if any(obj is None for obj in (row_factory, evidence_factory, validate_evidence, snapshot_factory)):
         from pick_request_runtime_core import PickRequestRow, RawPropEvidence, _validate_evidence, _snapshot_payload
         row_factory = row_factory or PickRequestRow
         evidence_factory = evidence_factory or RawPropEvidence
         validate_evidence = validate_evidence or _validate_evidence
         snapshot_factory = snapshot_factory or _snapshot_payload
-    frozen = evidence_factory.model_validate(dict(evidence))
+    frozen = evidence_factory.model_validate(evidence_for_factory)
     row = row_factory(
         row_key=f"nba-points-forward:{event_id}:{player_id}:{line}:{direction}",
         event_id=event_id, event_start_time=event_start.isoformat(),
@@ -209,12 +280,17 @@ def build_nba_points_snapshot(
     if _number(snapshot.get("line"), "snapshot_line") != line:
         raise NBAPointsSourceError("NBA_POINTS_SNAPSHOT_LINE_MISMATCH")
     snapshot["source_snapshot_id"] = snapshot_id
+    if verified_identity is not None:
+        if (snapshot.get("role_status") != evidence_for_factory["role_status"]
+                or snapshot.get("opportunity_ledger") != evidence_for_factory["opportunity_ledger"]):
+            raise NBAPointsSourceError("NBA_POINTS_VERIFIED_SNAPSHOT_PROOF_NOT_FROZEN")
     return {
         "status": "SOURCE_VALIDATED_SNAPSHOT_NOT_PERSISTED",
         "sport": SPORT, "stat_type": STAT_TYPE,
         "source_snapshot_id": snapshot_id,
         "evidence_fingerprint": fingerprint,
         "snapshot": snapshot,
+        "official_roster_verified_for_snapshot": verified_identity is not None,
         "source_identity": {
             "canonical_event_id": event_id,
             "canonical_resolution": canonical["identity_resolution"],
@@ -222,6 +298,10 @@ def build_nba_points_snapshot(
             "roster_captured_at": roster_time.isoformat(),
             "board_captured_at": line_captured.isoformat(),
             "board_line_provider": line_provider,
+            **({
+                "nba_game_id": verified_identity["nba_game_id"],
+                "nba_person_id": verified_identity["nba_person_id"],
+            } if verified_identity is not None else {}),
         },
         "probability_publishable": False,
         "rank_eligible": False,

@@ -485,3 +485,58 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## NBA POINTS immutable pregame research-snapshot persistence — #1988 / PR #2108
+
+These detail codes belong only to the source-validated NBA POINTS research snapshot adapter. They neither promote a model nor override the V17 terminal reducer; every case remains non-rank-eligible and `can_execute=false`.
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `NBA_POINTS_NOW_NAIVE` | NBA snapshot capture | Caller provided a timezone-naive current timestamp. | No |
+| `NBA_POINTS_VALIDATED_RECEIPT_REQUIRED` | NBA snapshot receipt intake | Receipt is not the existing canonical validated source bridge output or carries publication/execution/write claims. | No |
+| `NBA_POINTS_SNAPSHOT_MISSING` | NBA snapshot receipt intake | Validated receipt contains no snapshot mapping. | No |
+| `NBA_POINTS_SNAPSHOT_FIELDS_MISSING` | NBA snapshot schema | Required immutable pregame fields are absent. | No |
+| `NBA_POINTS_SNAPSHOT_ID_INVALID` | NBA snapshot identity | Deterministic source snapshot UUID is missing or malformed. | No |
+| `NBA_POINTS_SNAPSHOT_NOT_VALIDATED` | NBA snapshot validation | Sport, stat, event, player, identity or PASS/empty-blocker/write fence does not match validated NBA POINTS receipt. | No |
+| `NBA_POINTS_SOURCE_IDENTITY_MISMATCH` | NBA snapshot identity | Frozen canonical event/player/observed board source identity is missing or mismatched. | No |
+| `NBA_POINTS_EXACT_LINE_INVALID` | NBA snapshot exact line | Persisted exact board threshold is missing, nonfinite, or not positive. | No |
+| `NBA_POINTS_SNAPSHOT_NO_LONGER_PREGAME` | NBA snapshot timestamp gate | Event already began or role, roster, market, capture, and run timestamps fail a valid chronology. | No |
+| `NBA_POINTS_SOURCE_TIMESTAMP_INVALID` | NBA snapshot provenance | Required material source timestamp is malformed, absent, or later than the frozen capture. | No |
+| `NBA_POINTS_SNAPSHOT_READ_FAILED` | NBA snapshot DB read | Snapshot exact-ID lookup failed; no claim of successful persistence. | No |
+| `NBA_POINTS_SNAPSHOT_IDENTITY_AMBIGUOUS` | NBA snapshot DB read | Exact-ID lookup returned more than one row. | No |
+| `NBA_POINTS_IMMUTABLE_SNAPSHOT_CONFLICT` | NBA snapshot immutability | Reused UUID maps to materially divergent row; never overwrite historical evidence. | No |
+| `NBA_POINTS_SNAPSHOT_INSERT_FAILED` | NBA snapshot DB write | Immutable insert failed and subsequent exact-ID readback did not prove an identical winning concurrent writer. | No |
+| `NBA_POINTS_SNAPSHOT_READBACK_MISMATCH` | NBA snapshot DB readback | Insert returned but the exact persisted candidate cannot be read back identically. | No |
+| `NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_REQUIRED` | NBA source verification | Provided official roster receipt lacks the verified pregame ESPN/NBA roster contract or safety flags. | No |
+| `NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION` | NBA source verification | Supplied verified roster, event, player, team, capture timestamps or official ESPN/NBA crosswalk contradict current exact thesis. | No |
+| `NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED` | NBA board evidence / persistence | Literal full-game numeric offer or exact threshold type missing, nonfinite, unsupported, or unequal to captured board line. | No |
+| `NBA_POINTS_LITERAL_EXACT_OFFER_CONTRADICTION` | NBA board evidence | Captured literal threshold, period or type conflicts with preexisting opportunity ledger. | No |
+| `NBA_POINTS_VERIFIED_SNAPSHOT_PROOF_NOT_FROZEN` | NBA immutable snapshot | Snapshot factory failed to preserve the validated official roster crosswalk or exact captured offer in the frozen fingerprint payload. | No |
+| `NBA_POINTS_OFFICIAL_ROSTER_PROOF_REQUIRED` | NBA snapshot persistence | No verified official roster receipt, incomplete/mismatched cross-provider identity, or non-pregame official source timestamp; no write. | No |
+
+
+#### Live official-roster capture trust boundary (NBA POINTS research only)
+
+The backend `capture_nba_points_snapshot` entrypoint first fetches the fixed-origin
+ESPN summary and NBA CDN boxscore through
+`acquire_nba_points_current_roster`; only then may the trusted backend collector
+freeze independently sourced board/role/log observations. A supplied
+`verified_roster_receipt` or validator/scorer hook is not permitted as an override.
+This narrows the source-authenticity boundary, **not** an attestation of provider
+signatures or eligibility for sporting probability publication. Only an authorized
+server-side caller with permitted database access may use this entrypoint.
+
+| Typed code | Owning stage | Condition | Predict/publish? |
+| --- | --- | --- | --- |
+| `NBA_POINTS_TRUSTED_SOURCE_COLLECTOR_REQUIRED` | NBA capture orchestration | No server collector callable to observe the exact board after official roster retrieval | No |
+| `NBA_POINTS_CAPTURE_CLOCK_INVALID` | NBA capture orchestration | Capture time provider missing, not callable, or timezone-naive | No |
+| `NBA_POINTS_OFFICIAL_ACQUISITION_REQUIRED` | Official source provenance | Official two-fetch fixed-origin acquisition metadata is absent or contradictory | No |
+| `NBA_POINTS_SOURCE_COLLECTION_FAILED` | Board/feature source collection | Trusted source collection fails after official roster acquisition | No |
+| `NBA_POINTS_UNTRUSTED_SOURCE_OVERRIDE` | NBA capture source boundary | Supplied source attempts to replace the official receipt, clock, identity resolver or V17 validation/factory | No |
+
+These codes are local typed input/evidence blockers. They never become
+`MODEL_UNAVAILABLE`, a fabricated fitted probability or an independent
+security verdict. The separate persistence helper remains internal, research-only
+and dependent on the authenticated server database principal; a Python object or
+the `CAN_EXECUTE = False` constant is not an authentication control. All
+public access remains subject to database RLS and grants; no trading or orders.

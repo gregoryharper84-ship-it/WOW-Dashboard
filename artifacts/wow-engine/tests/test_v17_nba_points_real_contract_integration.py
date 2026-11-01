@@ -162,3 +162,64 @@ def test_actual_v17_evidence_contract_rejects_source_changed_after_capture():
     with pytest.raises(NBAPointsSourceError) as exc:
         _actual_bridge(data)
     assert exc.value.code == "NBA_POINTS_SOURCE_TIMESTAMP_INVALID"
+
+
+def _verified_forward_fixture():
+    """All IDs and observations here are synthetic; no claimed live NBA receipt."""
+    data = _real_contract_input()
+    event_id = "espn-401234567"
+    data["roster"]["event_id"] = event_id
+    data["line_observation"]["event_id"] = event_id
+    data["line_observation"]["literal_threshold"] = "21.5"
+    data["line_observation"]["threshold_type"] = "EXACT_NUMERIC"
+    captured = data["roster"]["captured_at"]
+    identity = {
+        "espn_event_id": event_id,
+        "nba_game_id": "0022600001",
+        "nba_person_id": data["target"]["player_id"],
+        "team_tricode": "BOS",
+        "event_start_time": data["target"]["event_start_time"],
+        "espn_captured_at": captured, "nba_captured_at": captured,
+        "source_names": ["ESPN_GAME_SUMMARY", "NBA_CDN_LIVE_BOXSCORE"],
+    }
+    data["verified_roster_receipt"] = {
+        "status": "NBA_CURRENT_ROSTER_ACTIVE_SOURCE_VERIFIED_ROLE_NOT_PROVEN",
+        "roster": deepcopy(data["roster"]), "source_identity": identity,
+        "write_performed": False, "can_execute": False,
+    }
+    def resolve(**_kwargs):
+        return {
+            "event_id": event_id,
+            "identity_resolution": "SPORTSDATAVERSE_SCHEDULE_EXACT_TEAM_DATE_MATCH",
+            "home_team_id": "espn-17", "away_team_id": "espn-22",
+        }
+    return data, resolve
+
+
+def test_real_v17_factory_freezes_verified_roster_and_literal_exact_offer():
+    data, resolver = _verified_forward_fixture()
+    original = deepcopy(data)
+    result = build_nba_points_snapshot(**data, resolve_identity=resolver)
+    assert data == original
+    assert result["official_roster_verified_for_snapshot"] is True
+    frozen = result["snapshot"]
+    assert frozen["role_status"]["source_identity"] == original["verified_roster_receipt"]["source_identity"]
+    assert frozen["role_status"]["official_game_id"] == "0022600001"
+    assert frozen["opportunity_ledger"]["period"] == "FULL_GAME"
+    assert frozen["opportunity_ledger"]["literal_threshold"] == "21.5"
+    assert frozen["opportunity_ledger"]["threshold_type"] == "EXACT_NUMERIC"
+    assert result["write_performed"] is False
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_verification_or_exact_quote_cannot_be_inferred():
+    data, resolver = _verified_forward_fixture()
+    data["verified_roster_receipt"]["source_identity"]["nba_person_id"] = "666"
+    with pytest.raises(NBAPointsSourceError, match="NBA_POINTS_OFFICIAL_ROSTER_RECEIPT_CONTRADICTION"):
+        build_nba_points_snapshot(**data, resolve_identity=resolver)
+
+    data, resolver = _verified_forward_fixture()
+    del data["line_observation"]["literal_threshold"]
+    with pytest.raises(NBAPointsSourceError, match="NBA_POINTS_LITERAL_EXACT_OFFER_REQUIRED"):
+        build_nba_points_snapshot(**data, resolve_identity=resolver)
