@@ -68,6 +68,7 @@ def ledger(n=35):
                     "observation_window": "POINT_IN_TIME:" + _iso(target),
                     "threshold_lower": 75.0, "threshold_upper": None,
                     "lower_inclusive": False, "yes_condition": "index > 75°F",
+                    "no_condition": "NOT (index > 75°F)",
                 }, "forecast": {
                     "estimates": [{"model": "NWS_HOURLY", "provider": "NWS",
                                    "source_snapshot_id": sid,
@@ -169,8 +170,9 @@ def test_rule_yes_condition_must_match_official_index_and_boundary():
     fixture = ledger(35)
     fixture["wow_kalshi_weather_predictions"][0]["model_payload"]["contract"]["yes_condition"] = "index >= 75°F"
     fixture["wow_kalshi_weather_outcomes"][1]["yes_outcome"] = False
+    fixture["wow_kalshi_weather_predictions"][2]["model_payload"]["contract"]["no_condition"] = "index <= 75°F"
     report = build_release_b_research_report(FakeClient(fixture))
-    assert report["source_qc"]["excluded_invalid_or_unverified"] == 2
+    assert report["source_qc"]["excluded_invalid_or_unverified"] == 3
 
 
 def test_duplicate_hour_chooses_earliest_decision_not_best_fitted_error():
