@@ -660,6 +660,44 @@ def test_dispatch_error_does_not_fail_run_already_claimed_by_worker(monkeypatch,
     assert fake._store["wow_agent_runs"][0]["can_execute"] is False
 
 
+
+def test_dispatch_cleanup_failure_has_safe_diagnostic_and_preserves_original_error(
+    monkeypatch, auth_headers, caplog,
+):
+    """Failed DB cleanup must be visible without logging raw broker/DB secrets."""
+    from agent_runtime.orchestrator import Orchestrator
+
+    fake = FakeSupabaseClient()
+    monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
+    original_transition = repository.transition_run
+
+    def cleanup_unavailable(db, run_id, *, expected_status, next_status, stage):
+        if next_status == "FAILED":
+            raise RuntimeError("DB_SECRET_MUST_NOT_BE_LOGGED")
+        return original_transition(
+            db, run_id, expected_status=expected_status,
+            next_status=next_status, stage=stage,
+        )
+
+    def broker_unavailable(self, **kwargs):
+        raise RuntimeError("BROKER_SECRET_MUST_NOT_BE_LOGGED")
+
+    monkeypatch.setattr(repository, "transition_run", cleanup_unavailable)
+    monkeypatch.setattr(Orchestrator, "queue_worker", broker_unavailable)
+    with caplog.at_level("ERROR", logger="agent_runtime.orchestrator"):
+        response = client.post(
+            "/wow/runs", json=_RUN_PAYLOAD,
+            headers={"Idempotency-Key": "cleanup-unavailable", **auth_headers},
+        )
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "AGENT_RUNTIME_START_FAILED"
+    assert response.json()["detail"]["status"] == "DISCOVERY_QUEUED"
+    assert fake._store["wow_agent_runs"][0]["status"] == "DISCOVERY_QUEUED"
+    assert "WOW_AGENT_RUNTIME_DISPATCH_CLEANUP_TRANSITION_FAILED" in caplog.text
+    assert "DB_SECRET_MUST_NOT_BE_LOGGED" not in caplog.text
+    assert "BROKER_SECRET_MUST_NOT_BE_LOGGED" not in caplog.text
+
+
 def test_repeated_create_run_same_key_and_body_is_idempotent(monkeypatch, auth_headers):
     fake = FakeSupabaseClient()
     monkeypatch.setattr(agent_runtime_api, "get_client", lambda: fake)
