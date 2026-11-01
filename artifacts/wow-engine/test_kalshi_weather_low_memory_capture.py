@@ -59,6 +59,9 @@ def test_low_memory_mode_captures_one_h0_core_only(monkeypatch):
     assert seen["captured"] == ["MIA-A"]
     assert seen["closed"]
     assert result.samples_captured == 1
+    assert result.capture_failures == ()
+    assert result.supplemental_failures == ()
+    assert result.market_microstructure_failures == ()
     assert result.market_microstructure_snapshots_captured == 0
     assert result.supplemental_snapshots_captured == 0
     assert result.predictions_settled == 0
@@ -90,6 +93,9 @@ def test_low_memory_mode_excludes_non_h0_even_without_current_sample(monkeypatch
         now="2026-11-01T14:00:00Z",
     )
     assert result.samples_captured == 0
+    assert result.capture_failures == ()
+    assert result.supplemental_failures == ()
+    assert result.market_microstructure_failures == ()
     assert result.predictions_settled == 0
 
 
