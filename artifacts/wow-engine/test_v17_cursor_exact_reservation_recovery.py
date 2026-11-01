@@ -469,6 +469,40 @@ def test_failed_launch_negative_proof_fails_closed_on_ambiguous_or_active_eviden
         fixture.prove()
 
 
+def test_closed_failed_launch_pr_does_not_block_negative_agent_proof():
+    fixture = FailedLaunchFixture()
+    fixture.pr["state"] = "closed"
+    result = fixture.prove()
+    assert result["status"] == "CURSOR_TERMINAL_STATUS_VERIFIED"
+    assert result["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
+    assert result["pr_state"] == "closed"
+    assert result["agent_status"] == "NEVER_CREATED"
+    assert result["release_authorized"] is False
+    assert result["lease_released"] is False
+    assert result["can_execute"] is False
+
+
+def test_closed_failed_launch_pr_state_movement_is_still_rejected():
+    fixture = FailedLaunchFixture()
+    fixture.pr["state"] = "closed"
+    original_api = fixture.api
+    seen = 0
+    def changing_api(url, *, token, basic=False):
+        nonlocal seen
+        pr_url = f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/pulls/{FAILED_PR}"
+        if url == pr_url:
+            seen += 1
+            if seen == 2:
+                item = copy.deepcopy(fixture.pr)
+                item["state"] = "open"
+                return item
+        return original_api(url, token=token, basic=basic)
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_PR_MOVED_DURING_PROBE"):
+        probe.collect_receipt("fixture-cursor", "fixture-github", api=changing_api,
+                              reservation_comment_id=FAILED_CID)
+    assert seen == 2
+
+
 def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_id():
     from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments, run
 
