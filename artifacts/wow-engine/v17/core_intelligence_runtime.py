@@ -313,7 +313,6 @@ def intelligence_summary(
     )
 
     cohort_rows: list[dict[str, Any]] = []
-    hypothesis_rows: list[dict[str, Any]] = []
     for key in sorted(grouped):
         summary = summarize_cohort(grouped[key], min_samples=min_samples)
         result = summary.as_dict()
@@ -341,27 +340,22 @@ def intelligence_summary(
                 result["retrospective_research_audit"] = research
         cohort_rows.append(result)
 
-    # Do not persist review hypotheses from dependent raw observation rows.
-    # The separate governed effective-N + holdout policy remains fail-closed.
-    if persist_hypotheses and hypothesis_rows:
-        _db_call(
-            "wow_intelligence_hypotheses.insert",
-            lambda: db.table("wow_intelligence_hypotheses").upsert(
-                hypothesis_rows,
-                on_conflict="hypothesis_id",
-                ignore_duplicates=True,
-            ).execute(),
-        )
-
     return {
         "schema_version": "WOW17_CORE_INTELLIGENCE_V1",
         "authority": AUTHORITY,
         "can_execute": CAN_EXECUTE,
         "observation_n": len(observations),
         "cohort_n": len(cohort_rows),
-        "hypothesis_n": len(hypothesis_rows),
+        # No row-dependent proposal can pass effective-N/holdout authority.
+        # Preserve the caller's persist_hypotheses option for compatibility,
+        # but do not retain a misleading unreachable database write.
+        "hypothesis_n": 0,
         "cohorts": cohort_rows,
-        "hypotheses": hypothesis_rows,
+        "hypotheses": [],
+        "hypothesis_persistence": (
+            "HELD_EFFECTIVE_SAMPLE_AND_HOLDOUT_UNVERIFIED"
+            if persist_hypotheses else "NOT_REQUESTED"
+        ),
     }
 
 
