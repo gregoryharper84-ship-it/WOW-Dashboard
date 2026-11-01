@@ -834,7 +834,9 @@ def test_scheduled_recovery_read_only_selection_never_receives_cursor_secret():
     assert "CURSOR_API_KEY:" in finalizer
     assert "ref: ${{ github.sha }}" in wf
     assert "persist-credentials: false" in wf
-    assert "if: steps.target.outputs.reservation_comment_id != ''" in wf
+    assert "steps.target.outcome == 'success'" in wf
+    assert "steps.target.outputs.reservation_comment_id != ''" in wf
+    assert '[[ "$RESERVATION_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]' in wf
     assert "finalize-cursor --reservation-comment-id" in finalizer
     assert "workflow_dispatch:" in wf
     assert "cancel-in-progress: false" in wf
