@@ -408,10 +408,21 @@ def test_ordinary_engine_code_stays_autonomous():
     assert m.qa_findings(ev) == []
 
 
-def test_owner_authored_trust_root_pr_can_never_pass():
-    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[
-        {"user": OWNER, "state": "APPROVED", "commit_id": HEAD, "submitted_at": "2026-10-09T02:00:00Z"}])
-    assert "QA_TRUST_ROOT_OWNER_AUTHORED" in m.qa_findings(ev)
+def test_owner_authored_trust_root_is_not_rejected_for_authorship():
+    # No fake independent review: source-review validation remains separately active.
+    ev = evidence(files=TRUST_ROOT_FILES, author=OWNER, reviews=[])
+    assert "QA_TRUST_ROOT_OWNER_AUTHORED" not in m.qa_findings(ev)
+    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" not in m.qa_findings(ev)
+    ev["expected_head_sha"] = OLD
+    assert "QA_HEAD_STALE" in m.qa_findings(ev)
+
+
+def test_non_owner_trust_root_still_needs_exact_head_owner_approval():
+    ev = evidence(files=TRUST_ROOT_FILES, author="wow-engineering[bot]", reviews=[])
+    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
+    ev["reviews"] = [{"user": OWNER, "state": "APPROVED", "commit_id": OLD,
+                      "submitted_at": "2026-10-09T02:00:00Z"}]
+    assert "QA_TRUST_ROOT_OWNER_APPROVAL_MISSING" in m.qa_findings(ev)
 
 
 # --- Release decisions --------------------------------------------------------------
@@ -910,8 +921,11 @@ def _qa_run(**overrides):
     return body
 
 
-def _qa_jobs(conclusion="success", *, status="completed", extra=()):
-    jobs = [{"name": "qa", "status": status, "conclusion": conclusion}, *extra]
+def _qa_jobs(conclusion="success", *, status="completed", steps=None, extra=()):
+    job = {"name": "qa", "status": status, "conclusion": conclusion}
+    if steps is not None:
+        job["steps"] = steps
+    jobs = [job, *extra]
     return {"total_count": len(jobs), "jobs": jobs}
 
 
@@ -938,6 +952,14 @@ def test_pull_request_associated_qa_run_is_applicable_before_release_policy():
 @pytest.mark.parametrize("run_over, jobs, reason", [
     ({"conclusion": "skipped"}, _qa_jobs("skipped"), "RELEASE_UPSTREAM_QA_SKIPPED"),
     ({}, _qa_jobs("skipped"), "RELEASE_UPSTREAM_QA_NO_TARGET"),
+    (
+        {},
+        _qa_jobs(
+            "success",
+            steps=[{"name": "Upload terminal QA outcome", "status": "completed", "conclusion": "skipped"}],
+        ),
+        "RELEASE_UPSTREAM_QA_NO_TARGET",
+    ),
 ])
 def test_prless_or_skipped_upstream_qa_is_neutral(run_over, jobs, reason):
     classified = m.classify_upstream_qa(
@@ -945,6 +967,31 @@ def test_prless_or_skipped_upstream_qa_is_neutral(run_over, jobs, reason):
         fetch=_classify_fetch(_qa_run(**run_over), jobs),
     )
     assert classified == {"disposition": "neutral", "reason": reason}
+
+
+@pytest.mark.parametrize("run_conclusion,job_conclusion", [
+    ("failure", "failure"),
+    ("failure", "success"),
+    ("success", "failure"),
+])
+def test_failed_qa_with_skipped_upload_must_still_reach_release_hold(
+    run_conclusion, job_conclusion,
+):
+    """A skipped artifact step cannot erase a failed QA workflow or job."""
+    classified = m.classify_upstream_qa(
+        REPO, run_id=40107281706, run_attempt=1,
+        fetch=_classify_fetch(
+            _qa_run(conclusion=run_conclusion),
+            _qa_jobs(
+                job_conclusion,
+                steps=[{"name": "Upload terminal QA outcome",
+                        "status": "completed", "conclusion": "skipped"}],
+            ),
+        ),
+    )
+    assert classified == {
+        "disposition": "applicable", "reason": "RELEASE_UPSTREAM_QA_APPLICABLE",
+    }
 
 
 @pytest.mark.parametrize("run_over, jobs, jobs_body_status, code", [
@@ -1649,6 +1696,70 @@ def test_release_defers_without_publishing_while_exact_head_regression_is_runnin
     assert posted[0]["payload"]["name"] == m.RELEASE_CHECK
     assert posted[0]["payload"]["head_sha"] == HEAD
     assert posted[0]["payload"]["conclusion"] == "success"
+
+
+def test_qa_defers_without_publishing_while_exact_head_regression_is_running_then_rechecks(fake_gh):
+    routes = _routes_for_pr(_evidence_runs())
+    checks = routes[f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"][1]["check_runs"]
+    routes[f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"][1]["check_runs"] = [
+        check for check in checks
+        if check["name"] != m.REQUIRED_REGRESSION_CHECKS[2]
+    ]
+    routes[f"repos/{REPO}/commits/{HEAD}/check-runs?per_page=100&page=1"][1]["total_count"] -= 1
+    native_run = _native_verify_run()
+    native_run.update({
+        "repository": {"full_name": REPO},
+        "head_repository": {"full_name": REPO},
+        "pull_requests": [{"number": 7, "head": {"sha": HEAD, "ref": "fix/issue-1830"}}],
+    })
+    del native_run["jobs"]
+    routes[f"repos/{REPO}/actions/runs?head_sha={HEAD}&event=pull_request&per_page=100&page=1"] = [
+        200, {"total_count": 1, "workflow_runs": [native_run]},
+    ]
+    routes[f"repos/{REPO}/actions/runs/{native_run['id']}/attempts/1/jobs?per_page=100&page=1"] = [
+        200, {"total_count": 1, "jobs": [{"name": "WOW required-three regression", "status": "queued"}]},
+    ]
+
+    proc, runner, env = _run_decide(
+        fake_gh, QA_WF, routes,
+        {"EVENT": "workflow_run", "INPUT_PR": ""},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=0" in Path(env["GITHUB_OUTPUT"]).read_text()
+    assert "RELEASE_QA_EVIDENCE_PENDING" in proc.stdout
+    assert not list((runner / "decisions").glob("decision-*.json"))
+
+    env.update({
+        "DECIDE_COUNT": "0",
+        "DECIDE_OUTCOME": "success",
+        "GH_TOKEN": "qa-app-token",
+    })
+    terminal = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Preserve terminal QA decision for every resolved target")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert terminal.returncode == 0, terminal.stdout + terminal.stderr
+    assert not (runner / "wow-v17-qa-terminal-decision.json").exists()
+
+    published = subprocess.run(
+        ["bash", "-c", _step_script(QA_WF, "Publish exact-head check")],
+        cwd=ROOT, env=env, capture_output=True, text=True,
+    )
+    assert published.returncode == 0, published.stdout + published.stderr
+    assert not (fake_gh / "gh.log").exists()
+
+    aggregate = run_(m.REQUIRED_REGRESSION_CHECKS[2], app=GHA, rid=903)
+    routes = _routes_for_pr(_evidence_runs([aggregate]))
+    proc, runner, env = _run_decide(
+        fake_gh, QA_WF, routes,
+        {"EVENT": "workflow_run", "INPUT_PR": ""},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "count=1" in Path(env["GITHUB_OUTPUT"]).read_text()
+    decision = json.loads((runner / "decisions" / "decision-7.json").read_text())
+    assert decision["conclusion"] == "success"
+    assert decision["check_name"] == m.QA_CHECK
+    assert decision["head_sha"] == HEAD and decision["can_execute"] is False
 
 
 def test_missing_aggregate_without_matching_active_native_work_is_terminal_hold(fake_gh):

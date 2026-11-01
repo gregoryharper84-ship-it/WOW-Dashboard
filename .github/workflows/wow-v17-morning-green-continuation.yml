@@ -292,7 +292,7 @@ jobs:
               echo "approved=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$cert_mode" = "CLASS_A_DETERMINISTIC" ]; then
               checks='[]'
               for page in $(seq 1 10); do
                 response=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?per_page=100&page=${page}") || {
@@ -318,7 +318,7 @@ jobs:
           extra_args=()
           if [ "$name" = "wow-v17-existing-pr-governance-review" ]; then
             extra_args=(--pr-number "$PR_NUMBER" --live-reviews-json "$live_reviews")
-            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ]; then
+            if [ "$cert_mode" = "TRUST_ROOT_BOOTSTRAP" ] || [ "$cert_mode" = "CLASS_A_DETERMINISTIC" ]; then
               extra_args+=(--live-checks-json "$live_checks")
             fi
           fi

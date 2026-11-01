@@ -59,6 +59,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REVIEW_ACTIVE: ${{ vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE || '' }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || '' }}
           SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
           CHECK_RUN_ID: ${{ github.event.check_run.id || '' }}
           CHECK_RUN_NAME: ${{ github.event.check_run.name || '' }}
@@ -80,9 +81,9 @@ jobs:
             exit 0
           }
           if [ "$EVENT_NAME" = "workflow_run" ]; then
-            [ "$REVIEW_ACTIVE" = "true" ] || neutral "INDEPENDENT_SOURCE_REVIEW_INACTIVE"
             [ "$SOURCE_CONCLUSION" = "success" ] || neutral "SOURCE_QA_RUN_NOT_SUCCESSFUL:${SOURCE_CONCLUSION:-none}"
-            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+            [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] &&
+              [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
               echo "SOURCE_REVIEW_RUN_ID_OR_ATTEMPT_INVALID" >&2; exit 1;
             }
             artifacts=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100")
@@ -90,6 +91,20 @@ jobs:
               echo "SOURCE_REVIEW_ARTIFACT_INVENTORY_INVALID" >&2; exit 1;
             }
             [ "$targeted" -gt 0 ] || neutral "SOURCE_QA_RUN_HAD_NO_EXACT_HEAD_TARGET"
+            # A whitelisted manual semantic-review canary is allowed to
+            # produce exact-head evidence while global review is off.
+            # Deterministic-only runs have no source-review artifact, and
+            # remain neutral; downstream steps check identity and full diff.
+            if [ "$REVIEW_ACTIVE" != "true" ]; then
+              suffix="-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+              semantic_count=$(jq -e --arg suffix "$suffix" \
+                '[.artifacts[] | select(.expired == false and
+                 (.name | startswith("wow-v17-independent-source-review-")) and
+                 (.name | endswith($suffix)))] | length' <<<"$artifacts") || {
+                echo "SOURCE_REVIEW_CANARY_INVENTORY_INVALID" >&2; exit 1;
+              }
+              [ "$semantic_count" -eq 1 ] || neutral "INDEPENDENT_SOURCE_REVIEW_INACTIVE_NO_EXACT_CANARY"
+            fi
           elif [ "$EVENT_NAME" = "check_run" ]; then
             [ "$CHECK_RUN_APP_ID" = "5245853" ] &&
               [ "$CHECK_RUN_NAME" = "WOW Release Authority exact-head" ] &&
@@ -188,7 +203,7 @@ jobs:
 
       - name: Resolve exact standalone source-review artifact
         id: source_review
-        if: steps.route.outputs.applicable == 'true' && (github.event_name == 'workflow_run' && vars.WOW_QA_INDEPENDENT_REVIEW_ACTIVE == 'true')
+        if: steps.route.outputs.applicable == 'true' && github.event_name == 'workflow_run'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -606,6 +621,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TRUSTED_REVIEWERS_JSON: ${{ vars.WOW_V17_INDEPENDENT_REVIEWERS }}
+          ZERO_CREDIT_MODE: ${{ vars.WOW_QA_ZERO_CREDIT_MODE }}
           HEAD_SHA: ${{ steps.target.outputs.head_sha }}
           HEAD_REF: ${{ steps.target.outputs.head_ref }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
@@ -636,7 +652,7 @@ jobs:
           fi
           classification=$(tr -d '[:space:]' < "$classification_file")
           case "$classification" in
-            TRUST_ROOT_BOOTSTRAP|ORDINARY_ENGINEERING) ;;
+            TRUST_ROOT_BOOTSTRAP|ORDINARY_ENGINEERING|CLASS_A_DETERMINISTIC) ;;
             *) echo "EXISTING_PR_CLASSIFICATION_INVALID:$classification" >&2; exit 1 ;;
           esac
 
@@ -668,10 +684,12 @@ jobs:
               "WOW Release Authority exact-head|5245853"
             )
             ready=false
+            failed_check=""
             checks='[]'
             for _ in $(seq 1 60); do
               checks=$(api_array "${api}/commits/${HEAD_SHA}/check-runs" '.check_runs')
               ready=true
+              failed_check=""
               for required_spec in "${required_checks[@]}"; do
                 check_name="${required_spec%%|*}"
                 app_id="${required_spec#*|}"
@@ -681,10 +699,13 @@ jobs:
                 if [ "$match" = "completed|failure" ] || [ "$match" = "completed|cancelled" ] || \
                    [ "$match" = "completed|timed_out" ] || [ "$match" = "completed|action_required" ] || \
                    [ "$match" = "completed|skipped" ]; then
-                  echo "EXISTING_PR_BOOTSTRAP_CHECK_FAILED:$check_name" >&2
-                  exit 1
-                fi
-                if [ "$match" != "completed|success" ]; then
+                  if [ "$app_id" = "15368" ]; then
+                    echo "EXISTING_PR_BOOTSTRAP_CHECK_FAILED:$check_name" >&2
+                    exit 1
+                  fi
+                  [ -n "$failed_check" ] || failed_check="$check_name"
+                  ready=false
+                elif [ "$match" != "completed|success" ]; then
                   ready=false
                 fi
               done
@@ -692,6 +713,10 @@ jobs:
               sleep 10
             done
             [ "$ready" = "true" ] || {
+              if [ -n "$failed_check" ]; then
+                echo "EXISTING_PR_BOOTSTRAP_CHECK_FAILED:$failed_check" >&2
+                exit 1
+              fi
               echo "EXISTING_PR_BOOTSTRAP_CHECKS_INCOMPLETE" >&2
               exit 1
             }
@@ -721,7 +746,13 @@ jobs:
           if [ "$classification" = "TRUST_ROOT_BOOTSTRAP" ]; then
             python .github/scripts/verify_existing_pr_governance_receipt.py "${common[@]}" --bootstrap
           else
-            if [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then
+            # A narrowly preapproved ordinary training diff may consume only genuine
+            # exact-head deterministic QA and Release App evidence in zero-credit mode.
+            # The receipt explicitly denies any claim of semantic source review.
+            if [ "$classification" = "CLASS_A_DETERMINISTIC" ] && [ "${ZERO_CREDIT_MODE:-false}" = "true" ] && [ -z "${SOURCE_REVIEW_ARTIFACT_ID:-}" ]; then
+              python .github/scripts/verify_existing_pr_governance_receipt.py \
+                "${common[@]}" --deterministic-class-a
+            elif [ -n "${TRUSTED_REVIEWERS_JSON}" ] && [ "${TRUSTED_REVIEWERS_JSON}" != "null" ]; then
               python .github/scripts/verify_existing_pr_governance_receipt.py \
                 "${common[@]}" \
                 --trusted-reviewers-json "$TRUSTED_REVIEWERS_JSON"

@@ -295,3 +295,27 @@ def test_malformed_source_name_collection_holds_without_exception():
     result = run(s=s)
     assert result["blocker"] == "NBA_OFFICIAL_EVENT_PLAYER_CROSSWALK_INCOMPLETE"
     assert "outcome" not in result
+
+
+def test_nba_official_settlement_blockers_registered_from_source_ast():
+    """Future _hold blockers must be registered, not only today's hardcoded examples."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).with_name("nba_prop_official_settlement.py")
+    registry = Path(__file__).resolve().parents[1] / "docs" / "failure_codes.md"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    blockers = {
+        node.args[1].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_hold"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    }
+    assert len(blockers) == 32
+    documented = registry.read_text(encoding="utf-8")
+    missing = sorted(code for code in blockers if f"`{code}`" not in documented)
+    assert not missing, f"Unregistered NBA official settlement blockers: {missing}"

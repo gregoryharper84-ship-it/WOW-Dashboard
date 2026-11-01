@@ -4,9 +4,20 @@ This file is the repository source of truth for governed typed failure/status co
 
 `can_execute=false` remains invariant. Market/evidence failures never imply a sporting-model capability failure.
 
+Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved in pre-V3 receipts, but is no longer emitted by V3 QA. It is intentionally excluded from the active emitted-code equality table below.
+
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
+| `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
+| `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
 | `DISCOVERY_MAIN_SHA_INVALID_HOLD` | Engineering App source discovery | The caller supplied a malformed purported current protected-main SHA; reject before any GitHub source inventory or writer admission. | No |
+| `SEMANTIC_FINDINGS_INVALID` | independent semantic reviewer / response validation | Untrusted verdict has missing/wrong findings array or more than 12 items (`:NOT_LIST`, `:TOO_MANY`); a finding is not an object, has the wrong exact key set, invalid severity/category, or malformed file/detail/evidence (`:NOT_OBJECT`, `:FIELD_SET`, `:SEVERITY`, `:CATEGORY`, and `:TEXT_{FILE,DETAIL,EVIDENCE}_{TYPE,EMPTY,TOO_LONG}`). Historical pre-patch receipts may retain `:TEXT`. The nine new suffixes identify the field and condition without emitting untrusted text. The 500-character bound remains unchanged. All are allowlisted reasons with no provider body or secrets. **EVIDENCE_PENDING**; preserve authenticated attempt identity, publish HOLD, inspect source/schema/provider preflight and produce a new reviewed source head if repair is required. A malformed response is never an automatic Gemini failover, retry, PASS, or review approval. | No |
+| `CLAUDE_REVIEW_TRUNCATED` | independent semantic reviewer / Claude response | A single Anthropic request with a 6144-token output budget returned explicit `max_tokens` without the required structured-tool verdict. No replay of the untrusted diff or same-head reviewer shopping is permitted. `EVIDENCE_PENDING`; QA App publishes HOLD, reviewer operations investigates output length/model health, never fails over, never self-approves or reattempts solely for a friendlier decision. | No |
+| `CLAUDE_REVIEW_REFUSED` | independent semantic reviewer / Claude response | Provider returned an explicit `refusal` stop reason rather than a typed verdict. `EVIDENCE_PENDING` policy HOLD (not a substantive security REJECT): no retry, no fallback and no PASS; escalate genuine provider refusal to an authenticated independent Security/Architect. No response text logged. | No |
+| `CLAUDE_REVIEW_INCOMPLETE` | independent semantic reviewer / Claude response | Provider ended without required authenticated tool output for a non-truncation stop reason (including `end_turn`, `stop_sequence`, `pause_turn`, unknown). `EVIDENCE_PENDING`; QA App HOLD and security owner investigates allowlisted stop-reason metadata. Do not retry or fallback on such ambiguity. | No |
+| `CLAUDE_RESPONSE_INVALID` | independent semantic reviewer / Claude tool transport | Provider message or content is not a valid dict/list container for exact-one `submit_review` tool payload. `REPAIRABLE_CODE` only after source/transport diagnosis, never fallback or PASS. | No |
+| `CLAUDE_TOOL_USE_MISSING_OR_DUPLICATE` | independent semantic reviewer / Claude tool contract | `tool_use` stop reason but not exactly one named `submit_review` result. `EVIDENCE_PENDING`; preserve HOLD and inspect the code-level tool schema, not the raw response. No retry or alternate reviewer shopping. | No |
 | `MODEL_UNAVAILABLE` | model capability | Exact required fitted specialist/artifact/adapter is absent for the route. Never use for data, market, scorer, repository, or editor failures. | No |
 | `MODEL_INPUTS_INSUFFICIENT` | model readiness | Fitted capability exists but required candidate-specific inputs are missing/insufficient. Includes a missing/invalid required calibration artifact for an otherwise available multisport scorer. | No |
 | `TEAM_EVENT_EVIDENCE_PREFLIGHT_FAILED` | LLP team/event official publication evidence preflight | Opted-in backend scorer did not prove current two-participant/field identity, event-effective personnel, feature consumption, required module execution or pregame freshness; preserve the completed sporting probability for diagnosis, but prohibit official ranking. Nested audit blockers identify the specific evidence failure. This is not `MODEL_UNAVAILABLE`. | No |
@@ -208,7 +219,6 @@ Emitted by `artifacts/wow-engine/v17/independent_release_checks.py` and the `wow
 | `QA_EVIDENCE_MISSING` | independent QA | A required exact-head check from `github-actions` (App 15368) has no completed run at the head; same-named checks from other Apps are ignored. Suffixed `:<check>`. | N/A |
 | `QA_EVIDENCE_FAILED` | independent QA | The latest exact-head run of a required check is not `success`; suffixed `:<check>`. | N/A |
 | `QA_TRUST_ROOT_OWNER_APPROVAL_MISSING` | independent QA | The PR changes a trust root (`.github/`, `.agents/`, or a file a governance workflow executes or reads) and the owner's latest review is not APPROVED on this exact head. | N/A |
-| `QA_TRUST_ROOT_OWNER_AUTHORED` | independent QA | A trust-root change authored by the owner account; it can never be independently approved (re-propose from the Engineering App). | N/A |
 | `RELEASE_APP_CREDENTIAL_MISSING` | release authority | `WOW_RELEASE_APP_ID` is not numeric or `WOW_RELEASE_APP_PRIVATE_KEY` is absent; no Release check is published. | N/A |
 | `RELEASE_PR_NUMBER_INVALID` | release authority | Manual Release re-entry did not provide a valid PR number to bind to its QA receipt. | N/A |
 | `RELEASE_QA_RUN_IDENTITY_INVALID` | Release read-only admission | Producing QA run ID or attempt is missing or malformed before assigning a PR-scoped writer. | N/A |
@@ -413,3 +423,101 @@ These local codes belong to `v17/universal_intelligence_paired_replay.py`. They 
 | `DESCRIPTIVE_SHADOW_METRICS_NOT_ATTESTED` | Intelligence shadow replay | Brier/log loss can be described for supplied rows, not independently validated or promotable | No |
 
 Global invariants remain `V17_TERMINAL_REDUCER` sole publisher, `probability_publishable=false`, `can_execute=false`; no source grant, model artifact, or immutable prediction authenticity can be inferred from synthetic inputs.
+
+## PropsMadness authenticated NFL browser-view research statuses
+
+These failures belong only to the offline `propsmadness_nfl_account_view_adapter`. They do not grant account-data extraction, persistence, model-training, market-data, or probability authority.
+
+| Code | Owning lane | Trigger condition | Model unavailable? |
+| --- | --- | --- | --- |
+| `PM_ACCOUNT_VIEW_TIMESTAMP_INVALID` | NFL account-view research | Capture timestamp missing, malformed, or timezone-naive | No |
+| `PM_ACCOUNT_VIEW_SOURCE_INVALID` | NFL account-view research | Non-PropsMadness NFL URL, credential-bearing, malformed or unexpected query fields/aliases | No |
+| `PM_ACCOUNT_VIEW_MARKET_CONFLICT` | NFL account-view research | Unsupported stat or conflicting selected market | No |
+| `PM_ACCOUNT_VIEW_OPERATOR_CONFIRMATION_MISSING` | NFL account-view research | Operator has not asserted that the visible page was a signed-in account view | No |
+| `PM_ACCOUNT_VIEW_INPUT_INVALID` | NFL account-view research | Empty, non-text, or oversized rendered browser view | No |
+| `PM_ACCOUNT_VIEW_IDENTITY_UNRESOLVED` | NFL account-view research | Selected player label absent or malformed | No |
+| `PM_ACCOUNT_VIEW_SECTION_MISSING` | NFL account-view research | No selected NFL player breakdown section | No |
+| `PM_ACCOUNT_VIEW_SELECTED_MARKET_UNRESOLVED` | NFL account-view research | The selected player's visible detail block does not show the declared NFL statistic | No |
+| `PM_ACCOUNT_VIEW_HISTORY_TABLE_INVALID` | NFL account-view research | Missing, ambiguous, malformed or oversized dated outcome table | No |
+| `PM_ACCOUNT_VIEW_ROW_INVALID` | NFL account-view research | Missing fields, invalid dates/results/threshold, mismatched display direction, or result dated after capture | No |
+| `PM_ACCOUNT_VIEW_DUPLICATE_GAME` | NFL account-view research | Same observed date/opponent appears twice in one selected player history | No |
+
+This family is research-only; each failure preserves `probability_publishable=false` and `can_execute=false`. The chart comparison threshold is never a historical closing-line authority.
+
+## PropsMadness NBA, MLB, WNBA account-view research statuses
+
+These typed failures are emitted only by `propsmadness_other_sports_account_view_adapter`, never by governed fitted scorers. The same account-view timestamp validation code `PM_ACCOUNT_VIEW_TIMESTAMP_INVALID` from the NFL parser is reused.
+
+| Code | Owner | Exact cause | Model unavailable? |
+| --- | --- | --- | --- |
+| `PM_MULTISPORT_SPORT_UNSUPPORTED` | Account-view research | Sport is not NBA, MLB or WNBA | No |
+| `PM_MULTISPORT_MARKET_CONFLICT` | Account-view research | Unsupported stat or market URL contradicts requested stat | No |
+| `PM_MULTISPORT_OPERATOR_CONFIRMATION_MISSING` | Account-view research | User-controlled signed-in view confirmation absent | No |
+| `PM_MULTISPORT_INPUT_INVALID` | Account-view research | Missing or oversized rendered-view text | No |
+| `PM_MULTISPORT_PLAYER_UNRESOLVED` | Account-view research | Player label missing or cannot be found near selected chart | No |
+| `PM_MULTISPORT_SOURCE_INVALID` | Account-view research | Unallowlisted URL, duplicate query key, credential component or nonnumeric provider aliases | No |
+| `PM_MULTISPORT_SECTION_MISSING` | Account-view research | Exact selected-sport breakdown section absent | No |
+| `PM_MULTISPORT_HISTORY_TABLE_INVALID` | Account-view research | Chart table missing, duplicate, wrong header, empty or over limit | No |
+| `PM_MULTISPORT_SELECTED_MARKET_UNRESOLVED` | Account-view research | Declared statistic does not match player detail label | No |
+| `PM_MULTISPORT_ROW_INVALID` | Account-view research | Bad date/opponent/value/line, future completed result, or displayed comparison-side mismatch | No |
+| `PM_MULTISPORT_DUPLICATE_GAME` | Account-view research | Duplicate date/opponent row within one player's chart | No |
+
+These are synthetic-layout research contracts until verified against distinct real authenticated NBA, MLB and WNBA pages; none permits storage, training, market claims, probability publication or execution.
+
+## NHL official boxscore player-game history research
+
+These typed errors belong to the offline `nhl_player_box_outcome_research` adapter. They do not imply model capability or replace governing specialist failures.
+
+| Code | Exact research condition | Model unavailable? |
+| --- | --- | --- |
+| `NHL_PLAYER_BOX_SCHEMA_INVALID` | Required official boxscore/side/player array missing | No |
+| `NHL_PLAYER_BOX_IDENTITY_MISMATCH` | Official event ID, team identity or supplied schedule start conflicts | No |
+| `NHL_PLAYER_BOX_NOT_FINAL_REGULAR_SEASON` | No final regular-season game / incorrect NHL season | No |
+| `NHL_PLAYER_BOX_TIMESTAMP_INVALID` | Missing, invalid or timezone-naive source/capture time | No |
+| `NHL_PLAYER_BOX_NOT_POSTGAME` | Source capture precedes claimed game start | No |
+| `NHL_PLAYER_BOX_PLAYER_ID_INVALID` | Official player ID missing or nonpositive | No |
+| `NHL_PLAYER_BOX_DUPLICATE_PLAYER` | A player occurs in more than one boxscore position/side | No |
+| `NHL_PLAYER_BOX_STAT_INVALID` | Missing, negative, non-integer or excessive stat count | No |
+| `NHL_PLAYER_BOX_STAT_CONTRADICTION` | Points differ from goals plus assists or saves exceed shots against | No |
+| `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
+
+This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## NBA official full-game scalar settlement blocker registry — #1988 / PR #2211
+
+These codes are emitted by `v17/nba_prop_official_settlement.py` through typed `_hold(status, blocker)` results. They belong to **official postgame outcome settlement for immutable forward pregame NBA props**, not to the fitted sporting probability, calibrator, publication, or execution lanes. All rows remain a typed settlement hold; they never authorize an outcome write or classify a missing input as `MODEL_UNAVAILABLE`. `V17_TERMINAL_REDUCER` remains sole terminal authority; `can_execute=false`.
+
+| Code | Owning lane | Returned status | Exact condition | Outcome write? |
+| --- | --- | --- | --- | --- |
+| `NBA_FORWARD_PREGAME_TEMPORAL_PROOF_REQUIRED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Snapshot capture, model, lock, event start or settlement clock chronology is absent, contradictory, or not strictly pregame. | No |
+| `NBA_EXACT_SNAPSHOT_IDENTITY_MISMATCH` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Frozen prediction and source snapshot disagree on snapshot ID, event, player, sport or statistic. | No |
+| `NBA_EXACT_LINE_OR_DIRECTION_INVALID` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Prediction line is nonfinite/negative/different from the immutable snapshot, or side is not MORE/LESS. | No |
+| `NBA_ROLE_AND_OFFER_EVIDENCE_REQUIRED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Frozen role-status or opportunity-ledger evidence is missing or is not a mapping. | No |
+| `NBA_EXACT_FULL_GAME_PERIOD_REQUIRED` | NBA official scalar settlement | `MODEL_OR_IDENTITY_UNSUPPORTED` | Exact offer period is absent or not FULL_GAME. | No |
+| `NBA_LITERAL_EXACT_OFFER_REQUIRED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | No literal exact numeric offer threshold is preserved with pregame evidence. | No |
+| `NBA_AT_LEAST_OFFER_ADAPTER_NOT_CERTIFIED` | NBA official scalar settlement | `MODEL_OR_IDENTITY_UNSUPPORTED` | At-least/at-most, ladder, compound or +/- suffixed offers lack an exact certified settlement adapter. | No |
+| `NBA_LITERAL_EXACT_OFFER_FORMAT_UNSUPPORTED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Literal threshold cannot be parsed as a finite numeric offer, including NaN and infinity. | No |
+| `NBA_LITERAL_EXACT_OFFER_LINE_MISMATCH` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Finite literal offer threshold does not equal the immutable prediction line. | No |
+| `NBA_VERIFIED_PREGAME_CROSS_PROVIDER_IDENTITY_REQUIRED` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Frozen role evidence lacks source_identity binding ESPN and official NBA identifiers. | No |
+| `NBA_OFFICIAL_EVENT_PLAYER_CROSSWALK_INCOMPLETE` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | NBA game/player IDs, ESPN event ID, team tricode or required provider identities are absent/invalid. | No |
+| `NBA_OFFICIAL_EVENT_PLAYER_CROSSWALK_CONTRADICTION` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Frozen official event/person IDs or event start disagree with the prediction or role evidence. | No |
+| `NBA_OFFICIAL_PREGAME_SOURCE_TIMESTAMPS_INVALID` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Provider capture timestamps are missing, post-start or later than immutable snapshot capture. | No |
+| `NBA_SETTLEMENT_CLOCK_MUST_BE_UTC_AWARE` | NBA official scalar settlement | `IDENTITY_UNRESOLVED` | Explicit settlement clock is not a timezone-aware datetime. | No |
+| `NBA_EXACT_STAT_SETTLEMENT_UNSUPPORTED` | NBA official scalar settlement | `MODEL_OR_IDENTITY_UNSUPPORTED` | Statistic is outside seven declared NBA full-game scalar settlement families. | No |
+| `NBA_OFFICIAL_FINAL_BOXSCORE_UNAVAILABLE` | NBA official scalar settlement | `OFFICIAL_SOURCE_UNAVAILABLE` | Exact official NBA CDN final boxscore request fails or cannot be retrieved. | No |
+| `NBA_FINAL_BOXSCORE_GAME_SCHEMA_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_SOURCE_INVALID` | Official response lacks a valid game object. | No |
+| `NBA_OFFICIAL_GAME_ID_CONTRADICTION` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Official boxscore game ID disagrees with frozen NBA event crosswalk. | No |
+| `NBA_OFFICIAL_GAME_NOT_FINAL` | NBA official scalar settlement | `NOT_FINAL` | Official NBA game status is not final. | No |
+| `NBA_OFFICIAL_EVENT_START_CONTRADICTION` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Official game start differs from locked pregame event start. | No |
+| `NBA_FINAL_BOXSCORE_TEAM_SCHEMA_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_SOURCE_INVALID` | Official home/away team objects, tricodes or player arrays are malformed. | No |
+| `NBA_FINAL_BOXSCORE_TEAMS_CONFLICT` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Official home and away teams have the same tricode. | No |
+| `NBA_OFFICIAL_TEAM_CROSSWALK_MISMATCH` | NBA official scalar settlement | `OFFICIAL_EVENT_ID_MISMATCH` | Neither exactly one official team matches the frozen roster tricode. | No |
+| `NBA_FINAL_BOXSCORE_PLAYER_SCHEMA_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_SOURCE_INVALID` | Official player array contains a malformed player object. | No |
+| `NBA_EXACT_OFFICIAL_PLAYER_ROW_NOT_FOUND` | NBA official scalar settlement | `OFFICIAL_PLAYER_STAT_ROW_MISSING` | Frozen NBA person ID has no official boxscore player row; absence is not DNP proof. | No |
+| `NBA_DUPLICATE_OFFICIAL_PLAYER_ROWS` | NBA official scalar settlement | `OFFICIAL_PLAYER_EVENT_IDENTITY_AMBIGUOUS` | Frozen NBA person ID appears in multiple official boxscore player rows. | No |
+| `NBA_OFFICIAL_PLAYER_TEAM_MISMATCH` | NBA official scalar settlement | `OFFICIAL_PLAYER_EVENT_IDENTITY_CONTRADICTION` | Official player row belongs to a team other than the frozen roster team. | No |
+| `NBA_OFFICIAL_PLAYER_NAME_MISMATCH` | NBA official scalar settlement | `OFFICIAL_PLAYER_EVENT_IDENTITY_CONTRADICTION` | Official boxscore player name disagrees with frozen player identity. | No |
+| `NBA_EXPLICIT_DNP_REASON_REQUIRED` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | Player is marked not played but no explicit official nonparticipation reason is supplied. | No |
+| `NBA_EXPLICIT_PLAYED_STATUS_REQUIRED` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | Official player row does not explicitly confirm played or did-not-play. | No |
+| `NBA_OFFICIAL_PLAYER_STATS_OBJECT_REQUIRED` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | Official player row lacks a statistics object. | No |
+| `NBA_EXACT_STAT_COMPONENT_MISSING_OR_INVALID` | NBA official scalar settlement | `OFFICIAL_STAT_MISSING` | An exact official stat component is missing, nonfinite, nonintegral, negative or beyond allowed bounds. | No |

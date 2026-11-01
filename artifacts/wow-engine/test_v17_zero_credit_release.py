@@ -82,9 +82,11 @@ def test_free_mode_rejects_stale_head():
     assert "QA_HEAD_STALE" in qa(ev)
 
 
-def test_free_mode_owner_authored_trust_root_still_holds():
+def test_free_mode_owner_authored_trust_root_can_pass_deterministic_qa():
     ev = evidence(author="gregoryharper84-ship-it", path="src/trust-root.py")
-    assert "QA_TRUST_ROOT_OWNER_AUTHORED" in qa(ev)
+    assert qa(ev) == []  # no independent-review claim; exact-head regressions remain mandatory
+    ev["check_runs"].pop()
+    assert any(x.startswith("QA_EVIDENCE_MISSING:") for x in qa(ev))
 
 
 def test_release_cannot_use_same_identity_as_qa():

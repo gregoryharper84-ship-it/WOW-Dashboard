@@ -69,19 +69,25 @@ concurrency:
     github.event.workflow_run.name != 'wow-v17-nightly-engineering-scan' &&
     'GLOBAL' ||
     (github.event_name == 'schedule' ||
-    github.event_name == 'workflow_dispatch' &&
-    (inputs.force_provider == 'auto' ||
-    inputs.force_provider == 'gemini') ||
     github.event_name == 'workflow_run' &&
     github.event.workflow_run.name == 'wow-v17-nightly-engineering-scan') &&
     'AUTO' ||
+    github.event_name == 'workflow_dispatch' &&
     inputs.force_provider == 'cursor' && 'CURSOR_SINGLE_AGENT' ||
+    github.event_name == 'workflow_dispatch' &&
+    inputs.lease_group != '' && inputs.lease_group != 'GLOBAL' &&
+    inputs.lease_group ||
+    github.event_name == 'workflow_dispatch' &&
+    (inputs.force_provider == 'auto' ||
+    inputs.force_provider == 'gemini') && 'AUTO' ||
     inputs.lease_group || 'GLOBAL' }}
   cancel-in-progress: false
 
 jobs:
   provider-control:
     name: WOW V17 engineering provider control plane
+    # Schedule/workflow_run use protected main; reject unmerged manual dispatch.
+    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -168,7 +174,12 @@ jobs:
             local run_id="$1"
             local provider_name="$2"
             local log_file="$RUNNER_TEMP/provider-${run_id}.log"
-            gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed > "$log_file" 2>&1 || true
+            # Never classify a CLI/API transport error as an empty provider log.
+            # Unknown log evidence cannot disable the OpenAI failure breaker.
+            if ! gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed > "$log_file" 2>&1; then
+              echo "::error::PROVIDER_FAILURE_LOG_FETCH_UNVERIFIED" >&2
+              return 1
+            fi
             python artifacts/wow-engine/v17/engineering_provider_failover.py classify \
               --provider "$provider_name" \
               --log-file "$log_file"
@@ -381,12 +392,14 @@ jobs:
             local comparison recovery recovery_status
             local recent_file comparison_file compare_path
             gemini_route_reason=GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY
-            if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
-                 --workflow wow-v17-gemini-engineering-worker.yml \
-                 --limit 1 \
-                 --json headSha,status,conclusion,updatedAt 2>/dev/null); then
+            # Ignore verified no-spend worker holds without resetting the
+            # provider-wide cooldown; unknown job-step provenance fails closed.
+            if ! recent=$(python artifacts/wow-engine/v17/engineering_gemini_headless.py \
+                provider-history-github); then
               return 1
             fi
+            recent=$(jq -ce 'select(.status == "VERIFIED_PROVIDER_HISTORY") | [.run] | map(select(. != null))' \
+                <<<"$recent") || return 1
             status=$(jq -r '.[0].status // empty' <<<"$recent") || return 1
             conclusion=$(jq -r '.[0].conclusion // empty' <<<"$recent") \
               || return 1
@@ -549,6 +562,17 @@ jobs:
           echo "lease_group=$lease_group" >> "$GITHUB_OUTPUT"
           echo "receipt=$receipt" >> "$GITHUB_OUTPUT"
           echo "independent_fallback_allowed=$independent_fallback_allowed" >> "$GITHUB_OUTPUT"
+
+      - name: Record AI resource pressure
+        id: resource_pressure
+        if: steps.route.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python artifacts/wow-engine/v17/engineering_provider_failover.py resource-pressure \
+            --route-receipt "$RUNNER_TEMP/provider-route.json" \
+            --output "$RUNNER_TEMP/wow-ai-resource-pressure.json"
 
       - name: Fence unresolved remote writers
         id: remote_fence
@@ -763,6 +787,7 @@ jobs:
           path: |
             ${{ steps.route.outputs.receipt }}
             ${{ runner.temp }}/wow-survival/*.json
+            ${{ runner.temp }}/wow-ai-resource-pressure.json
           retention-days: 14
 
       - name: Record provider-control summary
@@ -839,6 +864,11 @@ jobs:
             fi
             echo "- Gemini: disabled until separately authorized budget and canary"
             echo "- Cursor: opt-in existing-PR Cloud Agent only, not automatic fallback"
+            if [ -s "$RUNNER_TEMP/wow-ai-resource-pressure.json" ]; then
+              echo "- token_metering_status: $(jq -r '.usage_status' "$RUNNER_TEMP/wow-ai-resource-pressure.json")"
+              echo "- token_pressure_band: $(jq -r '.pressure_band' "$RUNNER_TEMP/wow-ai-resource-pressure.json")"
+              echo "- ai_resource_advisory_only: true"
+            fi
             echo "- can_execute: false"
             echo "- terminal_authority: V17_TERMINAL_REDUCER"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -921,8 +951,11 @@ jobs:
     # Only actual remote admission competes for the writer lock. The routing
     # job must never hold it while queueing an OpenAI/Claude worker.
     concurrency:
+      # Same global writer mutex. queue: max is GitHub's native pending cap
+      # (100), not a second controller or a per-sport writer lane.
       group: wow-v17-engineering-implementation-single-writer
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Checkout protected main
         uses: actions/checkout@v6
