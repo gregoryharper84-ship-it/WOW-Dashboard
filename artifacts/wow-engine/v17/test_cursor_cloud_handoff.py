@@ -147,6 +147,16 @@ class HandoffTests(unittest.TestCase):
                                    incident_number=INCIDENT)
                 self.assertEqual(cm.exception.code, reason)
 
+    def test_reject_malformed_pr_branch_before_ledger_or_provider(self):
+        for bad_ref in (None, 7, "", " ", "main", "master", "fix branch",
+                        "fix/../bad", "fix//branch", "fix/" + "a" * 255):
+            datum = pr()
+            datum["head"]["ref"] = bad_ref
+            with self.subTest(branch=bad_ref), self.assertRaises(mod.HandoffBlocked) as cm:
+                mod.validate_pr(datum, repo=REPO, number=1948, sha=SHA,
+                                incident_number=INCIDENT)
+            self.assertEqual(cm.exception.code, "CURSOR_UNSAFE_TARGET_BRANCH")
+
     def test_reject_pr_without_exact_incident_binding(self):
         with self.assertRaises(mod.HandoffBlocked) as cm:
             mod.validate_pr(pr(body="Incident: #2008\nIncident: #2009"),
@@ -469,6 +479,7 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(cm.exception.details["main_sha"], MAIN_SHA)
         self.assertTrue(cm.exception.details["reconciliation_required"])
         self.assertEqual(cm.exception.details["provider_http_status"], 400)
+        self.assertEqual(remote.reservations(api.comments)[0][1]["branch"], "fix/daily")
 
 
 if __name__ == "__main__":
