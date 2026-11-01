@@ -1,0 +1,54 @@
+name: wow-v17-trigger-recovery-validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-trigger-recovery-validation.yml"
+      - "src/trigger/**"
+      - "tests/wow-v17-recovery-probe.test.mjs"
+      - "trigger.config.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/wow-v17-trigger-recovery-validation.yml"
+      - "src/trigger/**"
+      - "tests/wow-v17-recovery-probe.test.mjs"
+      - "trigger.config.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-trigger-recovery-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: WOW Trigger.dev recovery regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact head
+        uses: actions/checkout@v4
+      - name: Use Node 24 with native TypeScript stripping
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Run deterministic no-network sentinel regression
+        run: node --experimental-strip-types --test tests/wow-v17-recovery-probe.test.mjs
+      - name: Setup pnpm v10
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.9
+          run_install: false
+      - name: Verify frozen Trigger.dev workspace dependencies
+        run: pnpm install --frozen-lockfile --filter .
+      - name: Verify TypeScript probe
+        run: pnpm exec tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --skipLibCheck src/trigger/wow-v17-recovery-probe.ts
