@@ -168,11 +168,11 @@ importers:
   .:
     dependencies:
       '@trigger.dev/sdk':
-        specifier: ^4.8.3
+        specifier: 4.8.3
         version: 4.8.3(react@19.1.0)(zod@4.3.6)
     devDependencies:
       '@trigger.dev/build':
-        specifier: ^4.8.3
+        specifier: 4.8.3
         version: 4.8.3(typescript@5.9.3)
       prettier:
         specifier: ^3.8.1
