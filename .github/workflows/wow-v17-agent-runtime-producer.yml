@@ -1,0 +1,88 @@
+name: wow-v17-agent-runtime-producer
+
+# Only the already-authorized Agent Runtime can admit this dry-run cycle.
+# No workflow_dispatch: scheduled protected-main admission only.
+# This workflow does not deploy, certify a model, modify a bet or authorize
+# production until P0 #2318's distinct runtime bearer is verified in Render.
+on:
+  schedule:
+    - cron: "19 * * * *"
+  pull_request:
+    paths:
+      - ".github/workflows/wow-v17-agent-runtime-producer.yml"
+      - "artifacts/wow-engine/agent_runtime/source_discovery.py"
+      - "artifacts/wow-engine/agent_runtime/runner.py"
+      - "artifacts/wow-engine/v17/agent_runtime_cycle_producer.py"
+      - "artifacts/wow-engine/tests/test_agent_runtime_cycle_producer.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wow-v17-agent-runtime-producer-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'production' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verify source and dry-run producer contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # verified v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # verified v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: artifacts/wow-engine/requirements.txt
+      - name: Install existing engine dependencies
+        run: python -m pip install -r artifacts/wow-engine/requirements.txt
+      - name: Run real-source producer regressions
+        env:
+          PYTHONPATH: artifacts/wow-engine
+        run: python -m pytest -q artifacts/wow-engine/tests/test_agent_runtime_cycle_producer.py
+  admit:
+    name: Admit one authenticated research cycle
+    needs: verify
+    if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      WOW_ACTION_ORIGIN: https://wow-governed-probability-engine.onrender.com
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # verified v4
+      - name: Verify exact protected-main checkout before introducing any credential
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+      - name: Fail closed unless runtime bearer is distinct from scoring bearer
+        shell: bash
+        env:
+          # Used only for this comparison; never supplied to the producer.
+          WOW_ACTION_API_KEY: ${{ secrets.WOW_ACTION_API_KEY }}
+          WOW_AGENT_RUNTIME_API_KEY: ${{ secrets.WOW_AGENT_RUNTIME_API_KEY }}
+        run: |
+          if [[ -z "${WOW_ACTION_API_KEY:-}" ||
+                -z "${WOW_AGENT_RUNTIME_API_KEY:-}" ||
+                "${WOW_ACTION_API_KEY}" == "${WOW_AGENT_RUNTIME_API_KEY}" ]]; then
+            echo "PRODUCER_DISTINCT_CREDENTIAL_NOT_VERIFIED" >&2
+            exit 1
+          fi
+      - name: Admit real, idempotent sports research run
+        env:
+          # Never expose the runtime bearer to checkout or earlier steps.
+          WOW_AGENT_RUNTIME_API_KEY: ${{ secrets.WOW_AGENT_RUNTIME_API_KEY }}
+          PYTHONPATH: artifacts/wow-engine
+        shell: bash
+        run: |
+          test "${#WOW_AGENT_RUNTIME_API_KEY}" -ge 32 || {
+            echo "PRODUCER_AUTH_OR_ORIGIN_UNAVAILABLE" >&2
+            exit 1
+          }
+          python -m v17.agent_runtime_cycle_producer

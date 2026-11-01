@@ -55,16 +55,56 @@ def _run_discovery(env: WorkerEnvelope) -> WorkerOutput:
     rows = env.payload.get("rows")
     if not isinstance(rows, list):
         return _blocked(env, "DISCOVERY_INPUT_MISSING")
+    source_skips: dict[str, int] = {}
+    discovery_source = "CALLER_SUPPLIED"
     if not rows and env.payload.get("discovery_enabled") is True:
-        return _blocked(env, "DISCOVERY_PROVIDER_UNAVAILABLE", output={"candidate_count": 0})
+        # Empty caller input with autonomous discovery enabled must invoke a
+        # real server-owned candidate source. Do not manufacture candidates or
+        # turn a missing provider into a successful empty search.
+        try:
+            from datetime import datetime, timezone
+            from ledger import get_client
+            from agent_runtime.source_discovery import discover_from_daily_ledger
+
+            rows, source_skips = discover_from_daily_ledger(
+                get_client(), now=datetime.now(timezone.utc),
+            )
+            discovery_source = "WOW_V17_DAILY_SNAPSHOT"
+        except Exception as exc:
+            # A fault stays a typed BLOCKED result, not a successful empty run.
+            # Preserve bounded failure class for repair without exposing raw
+            # PostgREST responses, ledger fields or service credentials.
+            return _blocked(env, "DISCOVERY_PROVIDER_UNAVAILABLE", output={
+                "candidate_count": 0, "discovery_source": "WOW_V17_DAILY_SNAPSHOT",
+                "failure_class": type(exc).__name__[:80],
+                "probability_publishable": False, "can_execute": False,
+            })
     merged = merge_discovery(rows)
-    return _succeeded(env, "RESEARCH_INTEREST", {"candidates": merged, "candidate_count": len(merged), "source_family_dedupe": True})
+    return _succeeded(env, "RESEARCH_INTEREST", {
+        "candidates": merged, "candidate_count": len(merged),
+        "source_family_dedupe": True, "discovery_source": discovery_source,
+        "source_skip_counts": source_skips,
+        "discovery_status": "CANDIDATES_FOUND" if merged else "NO_CURRENT_CANDIDATES",
+        "probability_authority": False, "can_execute": False,
+    })
 
 
 def _run_identity(env: WorkerEnvelope) -> WorkerOutput:
     row = env.payload.get("candidate")
     if not isinstance(row, dict):
         return _blocked(env, "CANDIDATE_IDENTITY_MISSING")
+    # Daily snapshots are only evidence at capture time. Without a
+    # separately refreshed official status and settlement proof, the agent
+    # runtime must stop BEFORE evidence/model/calibration, not rely on
+    # metadata warnings or treat a cached pregame label as current.
+    if row.get("discovery_source") == "WOW_V17_DAILY_SNAPSHOT" and (
+        row.get("event_status") != "PREGAME"
+        or row.get("settlement_identity_verified") is not True
+    ):
+        return _blocked(env, "SLATE_IDENTITY_INCOMPLETE", output={
+            "missing_fields": ["fresh_event_status", "verified_settlement_identity"],
+            "model_invocation_allowed": False, "can_execute": False,
+        })
     required = ["sport", "official_event_id", "participant", "market_family", "period"]
     if str(row.get("market_family") or "").upper() == "PLAYER_PROP":
         required += ["stat_family", "exact_line", "side"]
