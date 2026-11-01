@@ -697,6 +697,23 @@ def test_negative_inventory_rejects_second_page_unexpected_agent():
     assert len([u for u in seen if "prUrl=" in u]) == 2
 
 
+@pytest.mark.parametrize("identity_field", ["prUrl", "target", "source"])
+def test_global_inventory_pr_identity_contradiction_fails_closed(identity_field):
+    # A provider can report a PR-linked archived/idle agent globally while
+    # returning a misleading empty PR-filtered list. Never release that writer.
+    fixture = FailedLaunchFixture()
+    target_url = f"https://github.com/{probe.REPOSITORY}/pull/{FAILED_PR}"
+    associated = {"id": "bc-other-archived", "status": "ARCHIVED"}
+    if identity_field == "prUrl":
+        associated["prUrl"] = target_url
+    else:
+        associated[identity_field] = {"prUrl": target_url}
+    fixture.global_pages = [{"items": [associated]}]
+    fixture.pr_pages = [{"items": []}]
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_PR_ASSOCIATED_AGENT_EXISTS"):
+        fixture.prove()
+
+
 def test_negative_inventory_two_empty_pr_pages_are_exhaustively_verified():
     seen = []
     def cursor_api(path, *, token, basic=False):
