@@ -72,20 +72,22 @@ def load_source_snapshots(
         "response_rows,response_row_count,payload_sha256,acquisition_status,blocker_codes,can_execute"
     )
     snapshots: list[SourceSnapshot] = []
-    offset = 0
     last_id = ""
     while True:
         try:
-            result = (
+            query = (
                 db.table("wow_ncaaf_source_snapshots")
                 .select(fields)
                 .eq("provider", "CFBD")
                 .eq("endpoint", endpoint)
                 .in_("season", list(season_values))
                 .order("source_snapshot_id", desc=False)
-                .range(offset, offset + page_size - 1)
-                .execute()
             )
+            # Keyset paging prevents concurrent inserts/deletes in earlier
+            # pages from shifting the remaining rows of an offset-based scan.
+            if last_id:
+                query = query.gt("source_snapshot_id", last_id)
+            result = query.range(0, page_size - 1).execute()
         except Exception as exc:  # noqa: BLE001
             raise NCAAFPropChallengerRunnerError(
                 "NCAAF_PROP_SOURCE_READ_FAILED", endpoint
@@ -111,7 +113,6 @@ def load_source_snapshots(
             last_id = snapshot_id
         if len(rows) < page_size:
             break
-        offset += page_size
     return snapshots
 
 
