@@ -200,8 +200,8 @@ def hourly_settle(req: HourlySettleRequest):
         _raise_governed(exc)
 
 
-# Read-only private research UI. Uses the same dedicated weather bearer key
-# through HTTP Basic; the key is never placed into a query string.
+# Read-only private research UI. Uses an independent research-only password
+# through HTTP Basic; never activates the writer-capable weather API key.
 install_release_a_research(app, lambda: get_client())
 
 
