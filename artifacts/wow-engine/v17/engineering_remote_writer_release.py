@@ -278,7 +278,11 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         fresh_pr = api.request(f"/repos/{REPOSITORY}/pulls/{pr_number}")
         if (not isinstance(fresh_pr, dict)
                 or fresh_pr.get("number") != pr_number
-                or fresh_pr.get("state") != "open"
+                # The negative-launch proof can use an authenticated closed
+                # source PR. Revalidate the EXACT state from that fresh proof;
+                # ordinary finished-agent release still requires an open PR.
+                or fresh_pr.get("state") != proof.get("pr_state")
+                or fresh_pr.get("state") not in (("open", "closed") if is_failed_launch else ("open",))
                 or not isinstance(fresh_pr.get("head"), dict)
                 or not isinstance(fresh_pr.get("base"), dict)
                 or fresh_pr["head"].get("sha") != expected_head
