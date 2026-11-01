@@ -18,7 +18,8 @@ WORKFLOW = ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml
 class ProviderWorkflowIdentityTests(unittest.TestCase):
     def route(self, source, *, auth=True, code="OPENAI_API_QUOTA_EXCEEDED",
               eligible=True, conclusion="failure", title="lease=GLOBAL incident=AUTO",
-              secondary="success"):
+              secondary="success", event_name="workflow_run",
+              force_provider="auto"):
         text = WORKFLOW.read_text()
         section = text.split("      - name: Resolve provider action", 1)[1]
         script = section.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
@@ -44,7 +45,9 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             env = dict(os.environ, PATH=str(bin_dir)+":"+os.environ["PATH"],
                        RUNNER_TEMP=str(root), GITHUB_OUTPUT=str(output),
                        GITHUB_RUN_ID="900", GITHUB_REPOSITORY="fixture/repo",
-                       EVENT_NAME="workflow_run", SOURCE_WORKFLOW=source,
+                       EVENT_NAME=event_name, FORCE_PROVIDER=force_provider,
+                       MANUAL_REASON="MANUAL_ENGINEERING_DISPATCH",
+                       SOURCE_WORKFLOW=source,
                        SOURCE_RUN_ID="123", SOURCE_CONCLUSION=conclusion,
                        SOURCE_DISPLAY_TITLE=title, MANUAL_TARGET_INCIDENT="",
                        MANUAL_LEASE_GROUP="", ANTHROPIC_API_KEY="fixture" if auth else "",
@@ -58,6 +61,17 @@ class ProviderWorkflowIdentityTests(unittest.TestCase):
             self.assertEqual(receipt["terminal_authority"],"V17_TERMINAL_REDUCER")
             self.assertEqual(receipt["parent_run_id"],"123")
             return receipt
+
+    def test_cursor_force_is_permanently_inert_for_new_dispatches(self):
+        receipt = self.route("manual", event_name="workflow_dispatch",
+                             force_provider="cursor")
+        self.assertEqual(receipt["action"], "SURVIVAL")
+        self.assertEqual(receipt["provider"], "deterministic")
+        self.assertEqual(receipt["reason"], "CURSOR_HANDOFF_DISABLED")
+        self.assertEqual(receipt["cursor_status"], "CURSOR_NOT_CONFIGURED")
+        self.assertFalse(receipt["independent_fallback_allowed"])
+        # No Cursor admission, even if an old opt-in repository variable is true.
+        self.assertFalse(receipt["can_execute"])
 
     def test_static_and_observed_openai_identity_dispatch_claude(self):
         for source in ("wow-v17-chatgpt-engineering-worker",
