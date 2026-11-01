@@ -2471,6 +2471,10 @@ def test_selected_source_download_retries_transient_only_without_downgrade():
     block = workflow[start:end]
     assert block.count('/actions/artifacts/${artifact_id}/zip') == 1
     assert '--fail --silent --show-error --location' in block
+    assert '--max-redirs 1 --proto-redir =https' in block
+    assert '--oauth2-bearer "$GH_TOKEN"' in block
+    assert '--header "Authorization: Bearer' not in block
+    assert '--location-trusted' not in block
     assert '--retry 1 --retry-delay 5 --retry-max-time 40' in block
     assert '--retry-all-errors' not in block
     assert '--max-time 15' in block
@@ -2483,3 +2487,4 @@ def test_selected_source_download_retries_transient_only_without_downgrade():
     assert 'exit 1' in block
     assert '--trusted-reviewers-json' not in block
     assert '2>/dev/null' not in block
+    assert 'trap - EXIT' not in block
