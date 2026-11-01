@@ -318,8 +318,7 @@ jobs:
           # GitHub Actions artifact downloads use GitHub or signed Azure
           # productionresultssa storage; any other host fails closed.
           allowed_host = (host == "objects.githubusercontent.com"
-              or bool(re.fullmatch(r"productionresultssa[0-9]+\.blob\.core\.windows\.net", host))
-              or host.endswith(".actions.githubusercontent.com"))
+              or bool(re.fullmatch(r"productionresultssa[0-9]+\.blob\.core\.windows\.net", host)))
           try:
               ipaddress.ip_address(u.hostname or "")
           except ValueError:

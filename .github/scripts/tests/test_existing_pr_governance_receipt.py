@@ -2485,7 +2485,7 @@ def test_selected_source_download_has_no_token_on_signed_redirect():
     assert 'allowed_host' in block
     assert 'host == "objects.githubusercontent.com"' in block
     assert 'productionresultssa[0-9]+' in block
-    assert 'host.endswith(".actions.githubusercontent.com")' in block
+    assert 'host.endswith(".actions.githubusercontent.com")' not in block
     assert 'or not allowed_host:' in block
     assert '--output "$artifact_tmp" "$redirect_url"' in block
     assert block.index('--oauth2-bearer "$GH_TOKEN"') < block.index('--output "$artifact_tmp" "$redirect_url"')
