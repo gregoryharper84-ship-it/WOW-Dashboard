@@ -270,12 +270,17 @@ def _typed_mlb_failure(detail: dict[str, Any]) -> tuple[str, str]:
 
 def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> None:
     """Bind downstream card admission to the exact governed event prediction."""
-    rank_eligible = bool(outcome.get("objective_rank_eligible", outcome.get("rank_eligible")) is True)
+    # Sporting eligibility belongs to the fitted probability lane. Do not
+    # overwrite it with a market/objective-specific admission decision.
+    sporting_rank_eligible = outcome.get("probability_rank_eligible") is True
+    objective_rank_eligible = outcome.get("objective_rank_eligible") is True
     probability_publishable = outcome.get("probability_publishable") is True
     blockers: list[str] = []
     if outcome.get("terminal_status") != "COMPLETED":
         blockers.append("CARD_ADMISSION:TERMINAL_NOT_COMPLETED")
-    if not rank_eligible:
+    if not sporting_rank_eligible:
+        blockers.append("CARD_ADMISSION:PROBABILITY_RANK_INELIGIBLE")
+    if not objective_rank_eligible:
         blockers.append("CARD_ADMISSION:RANK_INELIGIBLE")
     if not probability_publishable:
         blockers.append("CARD_ADMISSION:PROBABILITY_NOT_PUBLISHABLE")
@@ -285,16 +290,51 @@ def _apply_card_admission(row: TeamEventRequestRow, outcome: dict[str, Any]) -> 
     selected = str(outcome.get("selected_team") or "").strip() or None
     if selected is None:
         blockers.append("CARD_ADMISSION:SELECTION_MISSING")
-    outcome["rank_eligible"] = rank_eligible
+    # Preserve the established probability-ledger meaning of rank_eligible:
+    # sporting-only, never market/card admission. The explicit scope and
+    # independent card audit prevent consumers from mistaking it for a
+    # market-approved order or a completed card admission.
+    previous_rank = outcome.get("rank_eligible")
+    if "rank_eligible" not in outcome:
+        rank_transition = "INITIALIZED_FROM_SPORTING_LANE"
+    elif type(previous_rank) is not bool:
+        rank_transition = "INVALID_PREVIOUS_RANK_TYPE_CORRECTED"
+    elif previous_rank != sporting_rank_eligible:
+        rank_transition = "PREVIOUS_RANK_CONTRADICTED_SPORTING_LANE"
+    else:
+        rank_transition = "ALREADY_MATCHES_SPORTING_LANE"
+    outcome["rank_eligible"] = sporting_rank_eligible
+    outcome["rank_eligibility_scope"] = "SPORTING_PROBABILITY"
+    outcome["rank_eligibility_transition"] = rank_transition
     outcome["card_admission_eligible"] = not blockers
     outcome["card_admission_blockers"] = blockers
+    outcome["card_admission_audit"] = {
+        "scope": "CARD_ADMISSION",
+        "terminal_status": outcome.get("terminal_status"),
+        "receipt_available": outcome.get("terminal_status") == "COMPLETED",
+        "rank_eligibility_transition": rank_transition,
+        "sporting_rank_eligible": sporting_rank_eligible,
+        "objective_rank_eligible": objective_rank_eligible,
+        "probability_publishable": probability_publishable,
+        "admission_eligible": not blockers,
+        "blockers": list(blockers),
+        "can_execute": False,
+    }
     outcome["card_admission_receipt"] = {
         "event_prediction_id": prediction_id,
         "official_event_id": row.event_key,
         "event_key": row.event_key,
         "selection": selected,
         "market_family": "OUTRIGHT_WINNER",
-        "rank_eligible": rank_eligible,
+        # This is a card-specific receipt: the legacy rank field is
+        # deliberately conservative (both lanes), unlike the top-level
+        # sporting-only rank. Consumers can inspect either native lane.
+        "rank_eligible": sporting_rank_eligible and objective_rank_eligible,
+        "rank_eligibility_scope": "CARD_ADMISSION",
+        "sporting_rank_eligible": sporting_rank_eligible,
+        "objective_rank_eligible": objective_rank_eligible,
+        "card_admission_eligible": not blockers,
+        "card_admission_blockers": list(blockers),
         "probability_publishable": probability_publishable,
         "can_execute": False,
     } if outcome.get("terminal_status") == "COMPLETED" else None
@@ -409,7 +449,14 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
         return _held(row, "MODEL_OUTPUT_INVALID", "NFL_GOVERNED_PROBABILITY_FIELDS_INVALID", scored)
     market_needed = row.price_required_for_objective or row.objective_lane != "OUTRIGHT_WIN_PROBABILITY"
     blockers = ["MARKET_DATA_UNOBTAINABLE"] if market_needed else []
-    probability_rank_eligible = bool(scored.get("rank_eligible", True))
+    # Missing fitted-model eligibility is not affirmative certification.
+    probability_rank_eligible = scored.get("rank_eligible") is True
+    if "rank_eligible" not in scored:
+        rank_evidence_status = "MISSING_FITTED_FLAG_FAIL_CLOSED"
+    elif type(scored.get("rank_eligible")) is not bool:
+        rank_evidence_status = "INVALID_FITTED_FLAG_TYPE_FAIL_CLOSED"
+    else:
+        rank_evidence_status = "EXPLICIT_FITTED_FLAG"
     return {
         "research_run_id": row.research_run_id, "event_key": row.event_key, "objective_lane": row.objective_lane,
         "terminal_status": "COMPLETED", "code": "SPORTING_PROBABILITY_COMPLETED", "selected_team": selected,
@@ -420,6 +467,7 @@ def _completed_nfl(row: TeamEventRequestRow, scored: dict[str, Any]) -> dict[str
         "score_snapshot_id": scored.get("score_snapshot_id"), "event_prediction_id": scored.get("event_prediction_id"),
         "probability_publishable": True,
         "probability_rank_eligible": probability_rank_eligible,
+        "rank_eligibility_evidence_status": rank_evidence_status,
         "objective_rank_eligible": _objective_rank_eligible(row, probability_rank_eligible, scored),
         **_probability_separation_fields(market_needed=market_needed),
         "can_execute": False,
