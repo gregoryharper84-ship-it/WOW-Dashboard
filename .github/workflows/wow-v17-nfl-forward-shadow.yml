@@ -167,6 +167,7 @@ jobs:
               "feature_rows_upserted": feature_refresh.get("feature_rows_upserted"),
               "shadow_challenger_status": challenger.get("status"),
               "shadow_challenger_n": challenger.get("n"),
+              "shadow_selected_side_diagnostics": challenger.get("selection_side_diagnostics"),
               "shadow_challenger_persisted": challenger.get("persisted"),
               "latest_settled_gameday": refresh.get("latest_gameday"),
               "canonical_events": payload.get("canonical_events"),
