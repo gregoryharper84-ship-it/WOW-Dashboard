@@ -144,6 +144,8 @@ def test_only_dispatcher_owns_automatic_primary_entrypoint():
     assert "wow-v17-chatgpt-engineering-worker" in dispatch_triggers
     assert "wow-v17-claude-engineering-worker" in dispatch_triggers
     assert "wow-v17-gemini-engineering-worker" in dispatch_triggers
+    secondary = dispatch.split("secondary_usable()", 1)[1].split("gemini_child_held()", 1)[0]
+    assert "--branch main --status completed" in secondary
 
 
 def test_delivery_only_failed_claude_allows_a_different_exact_target():
