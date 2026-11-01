@@ -500,9 +500,11 @@ jobs:
               provider=openai
               reason="${MANUAL_REASON:-MANUAL_ENGINEERING_DISPATCH}"
             elif [ "$force" = "cursor" ]; then
-              action=DISPATCH
-              provider=cursor
-              reason="${MANUAL_REASON:-OWNER_CURSOR_PR_HANDOFF}"
+              # Cursor is removed from engineering admission. Keep the legacy
+              # authenticated finalizer for existing held reservations only.
+              action=SURVIVAL
+              provider=deterministic
+              reason=CURSOR_HANDOFF_DISABLED
             elif [ "$force" = "gemini" ]; then
               if [ "${GEMINI_ENGINEERING_ENABLED:-}" = "true" ] &&
                  [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ]; then
