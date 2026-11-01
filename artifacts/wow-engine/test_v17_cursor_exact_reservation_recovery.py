@@ -459,9 +459,9 @@ def test_failed_launch_negative_proof_verifies_404_and_complete_archived_invento
     (lambda f: setattr(f, "agent_response", {"id": FAILED_AGENT, "status": "IDLE"}), "CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION"),
     (lambda f: setattr(f, "agent_response", probe.ReceiptBlocked("STATUS_API_HTTP_503")), "STATUS_API_HTTP_503"),
     (lambda f: setattr(f, "global_pages", [{"items": [{"id": FAILED_AGENT, "status": "IDLE"}]}]), "CURSOR_AGENT_INVENTORY_CONTRADICTION"),
-    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": FAILED_AGENT, "status": "IDLE"}]}]), "CURSOR_AGENT_INVENTORY_CONTRADICTION"),
+    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": FAILED_AGENT, "status": "IDLE"}]}]), "CURSOR_PR_ASSOCIATED_AGENT_EXISTS"),
     (lambda f: setattr(f, "global_pages", [{"items": [{"id": "bc-other", "status": "ACTIVE"}]}]), "CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS"),
-    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": "bc-other", "status": "ACTIVE"}]}]), "CURSOR_ACTIVE_PR_AGENT_EXISTS"),
+    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": "bc-other", "status": "ACTIVE"}]}]), "CURSOR_PR_ASSOCIATED_AGENT_EXISTS"),
     (lambda f: setattr(f, "global_pages", [{"items": [], "nextCursor": "page2"}]), "CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED"),
     (lambda f: f.origin.update(conclusion="success"), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
 ])
@@ -588,6 +588,39 @@ def test_negative_inventory_rejects_second_page_unexpected_agent():
         probe.verify_negative_inventories("test-cursor", agent_id=FAILED_AGENT,
             pr_number=FAILED_PR, api=cursor_api)
     assert len([u for u in seen if "prUrl=" in u]) == 2
+
+
+def test_negative_inventory_two_empty_pr_pages_are_exhaustively_verified():
+    seen = []
+    def cursor_api(path, *, token, basic=False):
+        assert basic and token == "test-cursor"
+        seen.append(path)
+        if "prUrl=" not in path:
+            return {"items": []}
+        if "cursor=next2" in path:
+            return {"items": []}
+        return {"items": [], "nextCursor": "next2"}
+    proof = probe.verify_negative_inventories(
+        "test-cursor", agent_id=FAILED_AGENT, pr_number=FAILED_PR, api=cursor_api,
+    )
+    assert proof == {
+        "global_pages": 1, "global_agents_checked": 0,
+        "pr_pages": 2, "pr_agents_checked": 0,
+    }
+    assert len([url for url in seen if "prUrl=" in url]) == 2
+
+
+@pytest.mark.parametrize("next_cursor", ["bad cursor!", "again"])
+def test_negative_inventory_malformed_or_repeating_pr_cursor_fails_closed(next_cursor):
+    def cursor_api(path, *, token, basic=False):
+        assert basic and token == "test-cursor"
+        if "prUrl=" not in path:
+            return {"items": []}
+        return {"items": [], "nextCursor": next_cursor}
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_AGENT_INVENTORY_UNVERIFIED"):
+        probe.verify_negative_inventories(
+            "test-cursor", agent_id=FAILED_AGENT, pr_number=FAILED_PR, api=cursor_api,
+        )
 
 
 @pytest.mark.parametrize("agent_status", ["IDLE", "ARCHIVED", "FINISHED", "UNKNOWN"])
