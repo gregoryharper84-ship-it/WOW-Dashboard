@@ -402,6 +402,40 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
 
 
+    def test_gemini_fallback_pins_stable_free_tier_candidate_and_keeps_fail_closed_parser(self):
+        import json
+        verdict = self._passing()
+        candidate = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(verdict)}]}}]}
+        # The workflow may inherit an absent/empty variable. Both select the
+        # reviewed, pinned stable model; no dynamic model names or raw URLs.
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}):
+            with patch.object(m, "request_json", return_value=candidate) as req:
+                decision, payload = m.call_provider(
+                    "gemini-generative-api", "TEST_KEY", "untrusted diff"
+                )
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(payload, verdict)
+        self.assertEqual(req.call_count, 1)
+        self.assertEqual(
+            req.call_args.args[0],
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+        )
+        self.assertEqual(req.call_args.kwargs["data"]["generationConfig"],
+                         {"responseMimeType": "application/json"})
+        # A legacy explicitly pinned variable must not invisibly change the
+        # signed model identity. The operator must update the Actions variable.
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-2.5-flash"}):
+            with patch.object(m, "request_json") as req:
+                with self.assertRaises(m.Hold) as caught:
+                    m.call_provider("gemini-generative-api", "TEST_KEY", "diff")
+                self.assertEqual(str(caught.exception), "GEMINI_MODEL_INVALID")
+                req.assert_not_called()
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
+            with patch.object(m, "request_json", return_value=candidate):
+                self.assertEqual(m.call_provider("gemini-generative-api",
+                                                 "TEST_KEY", "diff")[0], "PASS")
+
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
               "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
