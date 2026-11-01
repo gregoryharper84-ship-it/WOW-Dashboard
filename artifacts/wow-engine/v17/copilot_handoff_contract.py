@@ -18,9 +18,10 @@ SCHEMA = "WOW_COPILOT_HANDOFF_V1"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 LEASE = re.compile(r"^[A-Z0-9_]{1,72}$")
-PROTECTED_PREFIXES = (".github/", ".agents/")
+PROTECTED_PREFIXES = (".github/", ".agents/", ".codex/")
 PROTECTED_FILES = frozenset({
     ".agents",
+    ".codex",
     ".github",
     ".github/CODEOWNERS",
     ".github/actions/wow-chatgpt-agent/*",
@@ -70,6 +71,10 @@ def _valid_path(path: Any) -> bool:
 
 
 def _protected(path: str) -> bool:
+    # Agent instructions and Copilot configuration are governance inputs,
+    # including instruction files nested outside .github/ and .agents/.
+    if path in {"AGENTS.md", "CLAUDE.md"} or path.endswith(("/AGENTS.md", "/CLAUDE.md")):
+        return True
     return any(path.startswith(prefix) for prefix in PROTECTED_PREFIXES) or any(
         fnmatch.fnmatchcase(path, pattern) for pattern in PROTECTED_FILES
     )
@@ -135,15 +140,15 @@ def _links_incident(body: Any, repository: str, incident: int) -> bool:
     label = str(incident)
     repo = re.escape(repository)
     patterns = (
-        rf"(?<![\w/#])#{label}(?!\d)",
-        rf"(?<![\w/]){repo}#{label}(?!\d)",
-        rf"https://github\.com/{repo}/issues/{label}(?![\d/])",
+        rf"(?<![\w/#.-])#{label}(?!\d)",
+        rf"(?<![\w/.-]){repo}#{label}(?!\d)",
+        rf"(?<![\w/.-])https://github\.com/{repo}/issues/{label}(?![\d/])",
     )
     return any(re.search(pattern, body) for pattern in patterns)
 
 
 def verify_draft_pr(
-    packet: Mapping[str, Any], pr: Mapping[str, Any], changed_files: list[str],
+    packet: Mapping[str, Any], pr: Mapping[str, Any], changed_files: list[Mapping[str, Any]],
     *, repository: str, current_main_sha: str
 ) -> dict:
     """Shape-check a purported Copilot PR. This NEVER certifies CI or deployment."""
@@ -186,13 +191,35 @@ def verify_draft_pr(
         if type(changed_count) is int and changed_count != len(changed_files):
             errors.append("PR_FILE_INVENTORY_INCOMPLETE")
         seen_files: set[str] = set()
-        for path in changed_files:
+        for record in changed_files:
+            # GitHub rename records carry BOTH endpoints. A filename-only
+            # inventory cannot prove that a protected source was not removed.
+            if not isinstance(record, Mapping):
+                errors.append("PR_FILE_INVENTORY_UNSTRUCTURED")
+                continue
+            path = record.get("filename")
+            status = record.get("status")
+            if status not in ("added", "modified", "removed", "renamed",
+                              "copied", "changed", "unchanged"):
+                errors.append("PR_FILE_STATUS_INVALID")
             if not _valid_path(path):
                 errors.append("PR_SCOPE_VIOLATION")
                 continue
-            if path in seen_files or path not in packet["allowed_paths"]:
+            if path in seen_files or _protected(path) or path not in packet["allowed_paths"]:
                 errors.append("PR_SCOPE_VIOLATION")
             seen_files.add(path)
+            previous = record.get("previous_filename")
+            if status in ("renamed", "copied"):
+                if not _valid_path(previous) or previous == path:
+                    errors.append("PR_RENAME_ORIGIN_UNVERIFIED")
+                    continue
+                if _protected(previous) or previous not in packet["allowed_paths"]:
+                    errors.append("PR_SCOPE_VIOLATION")
+                if previous in seen_files:
+                    errors.append("PR_SCOPE_VIOLATION")
+                seen_files.add(previous)
+            elif previous is not None:
+                errors.append("PR_FILE_INVENTORY_UNSTRUCTURED")
     if errors:
         return {"decision": "HOLD", "reasons": sorted(set(errors)),
                 "can_execute": False, "assignment_authorized": False}
