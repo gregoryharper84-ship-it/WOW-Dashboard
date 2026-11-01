@@ -6,6 +6,7 @@ and no certification, activation, promotion, publication, ranking, or execution 
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping, Sequence
 
 from ncaaf_cfbd_hydrator import SourceSnapshot
@@ -32,6 +33,11 @@ def _snapshot_from_row(row: Mapping[str, Any]) -> SourceSnapshot:
         raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_ROWS_INVALID")
     if not isinstance(blocker_codes, list):
         blocker_codes = []
+    payload_sha256 = row.get("payload_sha256")
+    if not isinstance(payload_sha256, str) or re.fullmatch(r"[0-9a-fA-F]{64}", payload_sha256) is None:
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "PAYLOAD_SHA256_INVALID"
+        )
     can_execute = row.get("can_execute")
     if can_execute is not False:
         raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_GOVERNANCE_INVALID")
@@ -45,7 +51,7 @@ def _snapshot_from_row(row: Mapping[str, Any]) -> SourceSnapshot:
         request_params=dict(row.get("request_params") or {}),
         response_rows=response_rows,
         response_row_count=int(row.get("response_row_count") or 0),
-        payload_sha256=str(row.get("payload_sha256") or ""),
+        payload_sha256=payload_sha256,
         acquisition_status=str(row.get("acquisition_status") or ""),
         blocker_codes=[str(v) for v in blocker_codes],
         can_execute=False,
@@ -59,23 +65,104 @@ def load_source_snapshots(
     seasons: Sequence[int] = SOURCE_SEASONS,
     page_size: int = 500,
 ) -> list[SourceSnapshot]:
+    # Stable PK ordering is mandatory for paginated research snapshots. An
+    # unordered PostgREST range can silently skip/repeat rows when a corpus
+    # grows, changing fitted challenger inputs with no code or data change.
+    if type(page_size) is not int or not 1 <= page_size <= 1000:
+        raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_READ_INVALID", "PAGE_SIZE_INVALID")
+    if not isinstance(seasons, (list, tuple)) or any(
+        type(value) is not int or not 2010 <= value <= 2030 for value in seasons
+    ):
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "SEASONS_INVALID"
+        )
+    season_values = tuple(sorted(set(seasons)))
+    if not season_values:
+        raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_READ_INVALID", "SEASONS_EMPTY")
     fields = (
-        "provider,endpoint,season,week,requested_at,retrieved_at,request_params,"
+        "source_snapshot_id,provider,endpoint,season,week,requested_at,retrieved_at,request_params,"
         "response_rows,response_row_count,payload_sha256,acquisition_status,blocker_codes,can_execute"
     )
+    # Freeze a DB-side created_at high-water mark before collecting pages.
+    # New append-only source snapshots acquired during this scan are excluded
+    # even if their random UUID sorts before or after our keyset cursor.
+    # A staging-source update to preexisting immutable rows remains subject
+    # to the separate source-hash and lineage validation downstream.
+    try:
+        fence = (
+            db.table("wow_ncaaf_source_snapshots")
+            .select("created_at")
+            .eq("provider", "CFBD")
+            .eq("endpoint", endpoint)
+            .in_("season", list(season_values))
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_FAILED", endpoint
+        ) from exc
+    fence_rows = getattr(fence, "data", None)
+    if not isinstance(fence_rows, list):
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "FENCE_RESPONSE_INVALID"
+        )
+    if not fence_rows:
+        return []
+    if (not isinstance(fence_rows[0], Mapping)
+            or not isinstance(fence_rows[0].get("created_at"), str)
+            or not fence_rows[0]["created_at"].strip()):
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "FENCE_TIMESTAMP_INVALID"
+        )
+    source_cutoff = fence_rows[0]["created_at"]
+
+    def _scoped_count() -> int:
+        # Compare the same timestamp-fenced source set before and after paging.
+        # A restart, deletion, or backdated write that changes its cardinality
+        # must not silently create a partial challenger-training corpus.
+        try:
+            counted = (
+                db.table("wow_ncaaf_source_snapshots")
+                .select("source_snapshot_id", count="exact")
+                .eq("provider", "CFBD")
+                .eq("endpoint", endpoint)
+                .in_("season", list(season_values))
+                .lte("created_at", source_cutoff)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise NCAAFPropChallengerRunnerError(
+                "NCAAF_PROP_SOURCE_READ_FAILED", endpoint
+            ) from exc
+        n = getattr(counted, "count", None)
+        if type(n) is not int or n < 0:
+            raise NCAAFPropChallengerRunnerError(
+                "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_COUNT_INVALID"
+            )
+        return n
+
+    expected_count = _scoped_count()
     snapshots: list[SourceSnapshot] = []
-    offset = 0
+    last_id = ""
     while True:
         try:
-            result = (
+            query = (
                 db.table("wow_ncaaf_source_snapshots")
                 .select(fields)
                 .eq("provider", "CFBD")
                 .eq("endpoint", endpoint)
-                .in_("season", [int(v) for v in seasons])
-                .range(offset, offset + page_size - 1)
-                .execute()
+                .in_("season", list(season_values))
+                .lte("created_at", source_cutoff)
+                .order("source_snapshot_id", desc=False)
             )
+            # PK keyset paging avoids offset drift while the timestamp fence
+            # keeps newly acquired source rows out of this replay's corpus.
+            if last_id:
+                query = query.gt("source_snapshot_id", last_id)
+            result = query.range(0, page_size - 1).execute()
         except Exception as exc:  # noqa: BLE001
             raise NCAAFPropChallengerRunnerError(
                 "NCAAF_PROP_SOURCE_READ_FAILED", endpoint
@@ -83,10 +170,28 @@ def load_source_snapshots(
         rows = getattr(result, "data", None)
         if not isinstance(rows, list):
             raise NCAAFPropChallengerRunnerError("NCAAF_PROP_SOURCE_READ_INVALID", endpoint)
-        snapshots.extend(_snapshot_from_row(row) for row in rows if isinstance(row, Mapping))
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_READ_INVALID", "ROW_INVALID"
+                )
+            snapshot_id = row.get("source_snapshot_id")
+            if not isinstance(snapshot_id, str) or not snapshot_id.strip():
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_READ_INVALID", "SNAPSHOT_ID_INVALID"
+                )
+            if snapshot_id <= last_id:
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_READ_INVALID", "PAGE_ORDER_INVALID"
+                )
+            snapshots.append(_snapshot_from_row(row))
+            last_id = snapshot_id
         if len(rows) < page_size:
             break
-        offset += page_size
+    if len(snapshots) != expected_count or _scoped_count() != expected_count:
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
+        )
     return snapshots
 
 
