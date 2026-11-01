@@ -154,7 +154,18 @@ def _final_refresh_proven(row: Mapping[str, Any], governed: Mapping[str, Any]) -
 
 
 def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
-    """Independent cohort and champion certification, never automatic promotion."""
+    """Recheck exact-version frozen grades; a global PASS is never sufficient.
+
+    This is a read-only safety gate, not a model-certifying authority.
+    """
+    from math import log
+    from types import SimpleNamespace
+
+    from v17.nfl_forward_shadow import calibration_health
+
+    exact_version = str(row.get("model_version") or "")
+    if not exact_version:
+        return False
     try:
         models = db.table("wow_nfl_event_fitted_model_artifacts").select(
             "artifact_id,active,promoted,probability_publishable"
@@ -168,41 +179,87 @@ def _forward_certification_proven(db: Any, row: Mapping[str, Any]) -> bool:
         return False
     model, assessment = models[0], health[0]
     minimum = assessment.get("minimum_forward_required")
-    # Health is a global snapshot. Verify that its cohort actually contains
-    # enough unique prospective grades for this prediction's exact model version.
-    # A different champion's 100 games can never authorize this model.
     if not isinstance(minimum, int) or minimum < 100:
         return False
-    try:
-        grade_result = (
-            db.table("wow_nfl_forward_shadow_grades")
-            .select("official_event_id")
-            .eq("model_version", str(row["model_version"]))
-            .limit(minimum * 2)
-            .execute()
-        )
-        grades = grade_result.data
-        if not isinstance(grades, list):
-            return False
-        unique_games = {
-            str(g.get("official_event_id"))
-            for g in grades if isinstance(g, Mapping) and g.get("official_event_id")
-        }
-    except Exception:
-        return False
-    return bool(
-        len(unique_games) >= minimum
-        and model.get("active") is True
+    if not (
+        model.get("active") is True
         and model.get("promoted") is True
         and model.get("probability_publishable") is True
         and isinstance(assessment.get("graded_n"), int)
-        and isinstance(assessment.get("minimum_forward_required"), int)
-        and assessment["minimum_forward_required"] >= 100
-        and assessment["graded_n"] >= assessment["minimum_forward_required"]
+        and assessment["graded_n"] >= minimum
         and assessment.get("status") == "PASS"
         and assessment.get("certification_recommendation") == "FORWARD_EVIDENCE_PASS"
         and assessment.get("blockers") == []
-    )
+    ):
+        return False
+
+    # Global health has no model_version column. Recompute every metric from
+    # this *one* model version rather than trusting that unrelated PASS.
+    # Pagination is required: selecting just the first 200 could cherry-pick
+    # good games while silently excluding later losses.
+    try:
+        all_rows: list[Mapping[str, Any]] = []
+        page_size = 500
+        for offset in range(0, 10000, page_size):
+            batch = (
+                db.table("wow_nfl_forward_shadow_grades")
+                .select("official_event_id,model_version,event_start_time_utc,"
+                        "prediction_created_at,calibrated_probability,"
+                        "calibrated_lower_bound,outcome,can_execute")
+                .eq("model_version", exact_version)
+                .range(offset, offset + page_size - 1)
+                .execute().data
+            )
+            if not isinstance(batch, list):
+                return False
+            all_rows.extend(batch)
+            if len(batch) < page_size:
+                break
+        else:
+            return False  # Bounded scan must not certify an incomplete cohort.
+
+        unique_games: set[str] = set()
+        exact_grades = []
+        for grade in all_rows:
+            if not isinstance(grade, Mapping):
+                return False
+            game_id = str(grade.get("official_event_id") or "")
+            if not game_id or game_id in unique_games:
+                return False
+            unique_games.add(game_id)
+            if grade.get("model_version") != exact_version or grade.get("can_execute") is not False:
+                return False
+            prediction_at = _instant(grade.get("prediction_created_at"))
+            kickoff_at = _instant(grade.get("event_start_time_utc"))
+            if prediction_at is None or kickoff_at is None or prediction_at >= kickoff_at:
+                return False
+            y = grade.get("outcome")
+            if type(y) is not int or y not in (0, 1):
+                return False
+            p = float(grade["calibrated_probability"])
+            lower = float(grade["calibrated_lower_bound"])
+            if not (isfinite(p) and isfinite(lower) and 0.0 < lower <= p < 1.0):
+                return False
+            exact_grades.append(SimpleNamespace(
+                model_version=exact_version,
+                calibrated_probability=p,
+                calibrated_lower_bound=lower,
+                outcome=y,
+                brier=(p - y) ** 2,
+                log_loss=-(y * log(p) + (1 - y) * log(1.0 - p)),
+            ))
+
+        if len(unique_games) < minimum:
+            return False
+        version_health = calibration_health(exact_grades, min_forward=minimum)
+        return (
+            version_health.get("status") == "PASS"
+            and version_health.get("certification_recommendation") == "FORWARD_EVIDENCE_PASS"
+            and version_health.get("blockers") == []
+            and version_health.get("can_execute") is False
+        )
+    except Exception:
+        return False
 
 
 def attach_nfl_daily_stage_receipt(*, db: Any, req: Any, governed: Mapping[str, Any]) -> dict[str, Any]:
