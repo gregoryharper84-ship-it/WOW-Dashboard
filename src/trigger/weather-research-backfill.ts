@@ -2,7 +2,6 @@ import { task } from "@trigger.dev/sdk";
 
 type BackfillPayload = {
   scope: "miami";
-  limit?: number;
 };
 
 /**
@@ -22,8 +21,7 @@ export const weatherResearchBackfill = task({
     randomize: true,
   },
   run: async (payload: BackfillPayload) => {
-    if (payload?.scope !== "miami" ||
-        (payload.limit !== undefined && (!Number.isInteger(payload.limit) || payload.limit < 1 || payload.limit > 3))) {
+    if (payload?.scope !== "miami") {
       throw new Error("BACKFILL_SCOPE_OR_LIMIT_INVALID");
     }
     const workerKey = process.env.WOW_KALSHI_WEATHER_BACKFILL_WORKER_KEY;
@@ -39,7 +37,7 @@ export const weatherResearchBackfill = task({
           "Authorization": `Bearer ${workerKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ scope: "miami", limit: payload.limit ?? 3 }),
+        body: JSON.stringify({ scope: "miami" }),
         signal: AbortSignal.timeout(115000),
       },
     );
