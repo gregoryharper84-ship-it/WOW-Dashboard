@@ -340,8 +340,21 @@ def intelligence_summary(
                 result["retrospective_research_audit"] = research
         cohort_rows.append(result)
 
+    # Surface a cohort-level official-data contradiction to consumers that
+    # only read summary status; never rely on nested reports for a safety HOLD.
+    research_hold_reasons = sorted({
+        str(report["blocker"])
+        for cohort in cohort_rows
+        for report in [cohort.get("retrospective_research_audit")]
+        if isinstance(report, dict)
+        and report.get("status") == "HOLD"
+        and isinstance(report.get("blocker"), str)
+    })
     return {
         "schema_version": "WOW17_CORE_INTELLIGENCE_V1",
+        "status": ("HOLD" if research_hold_reasons else
+                   "RESEARCH_ONLY" if research_keys else "NO_CANONICAL_RESEARCH_COHORT"),
+        "retrospective_research_hold_reasons": research_hold_reasons,
         "authority": AUTHORITY,
         "can_execute": CAN_EXECUTE,
         "observation_n": len(observations),
