@@ -503,10 +503,12 @@ def test_closed_failed_launch_pr_state_movement_is_still_rejected():
     assert seen == 2
 
 
-def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_id():
+@pytest.mark.parametrize("pr_state", ["open", "closed"])
+def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_id(pr_state):
     from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments, run
 
     fixture = FailedLaunchFixture()
+    fixture.pr["state"] = pr_state
     proof = fixture.prove()
 
     class FailedLaunchAPI(_FakeAPI):
