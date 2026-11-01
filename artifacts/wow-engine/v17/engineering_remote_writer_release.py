@@ -196,7 +196,8 @@ def auto_failed_launch_target(api) -> int | None:
     original = [c for c in comments if c.get("id") == cid]
     if (type(cid) is not int or cid <= 0
             or len(original) != 1
-            or original[0].get("user", {}).get("login") != BOT_LOGIN
+            or not isinstance(original[0].get("user"), dict)
+            or original[0]["user"].get("login") != BOT_LOGIN
             or original[0].get("issue_url")
                != f"https://api.github.com/repos/{REPOSITORY}/issues/1138"
             or claim.get("provider") != "cursor"
