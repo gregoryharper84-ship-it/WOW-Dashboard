@@ -81,7 +81,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("at most 12", prompt)
         self.assertIn("at most 500 characters", prompt)
         self.assertIn("file and evidence are non-empty strings", prompt)
-        self.assertIn("detail may be at most 2048 characters", prompt)
+        self.assertIn("detail is a non-empty string of at most 2048 characters", prompt)
         self.assertIn("exactly these five keys and no others", prompt)
         self.assertIn("Never return whitespace-only", prompt)
         self.assertIn("cross-cutting concern", prompt)
