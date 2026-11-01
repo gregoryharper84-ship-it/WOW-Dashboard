@@ -265,6 +265,7 @@ def build_research_snapshot(*, client: Any, now: datetime | None = None) -> dict
             "remaining_to_candidate": None,  # A pooled target count is not candidate readiness.
             "by_lead_bucket": bucket_progress,
             "readiness_scope": "PER_LEAD_BUCKET_NOT_POOLED",
+            "pooled_error_scope": "RESEARCH_DIAGNOSTIC_ONLY_NOT_CANDIDATE_READINESS",
             "historical_mae_f": round(sum(abs(x) for x in residuals) / sample_n, 3) if sample_n else None,
             "historical_signed_bias_f": round(sum(residuals) / sample_n, 3) if sample_n else None,
             "status": "RESEARCH_ONLY_NOT_CERTIFIED",
@@ -334,7 +335,8 @@ def render_research_html(snapshot: Mapping[str, Any]) -> str:
     latest = snapshot.get("latest_analysis_as_of")
     bucket_progress = " · ".join(
         f"{_h(bucket)}: {_h(progress['eligible_unique_settled_samples'])}/30 independent settled targets "
-        f"({_h(progress['remaining_to_candidate'])} more for sample minimum)"
+        f"({_h(progress['remaining_to_candidate'])} more for sample minimum; "
+        f"MAE {_h(progress['historical_mae_f'])}°F; signed bias {_h(progress['historical_signed_bias_f'])}°F)"
         for bucket, progress in sorted(calibration["by_lead_bucket"].items())
     ) or "No verified lead-bucket samples"
     return f"""<!doctype html>
@@ -363,7 +365,7 @@ a{{color:#93c5fd}}
 <div class="metrics">
 <div class="metric">Forecasts loaded<b>{_h(snapshot["loaded_forecasts"])}</b></div>
 <div class="metric">Unique settled targets (all buckets)<b>{_h(calibration["eligible_unique_settled_samples"])}</b></div>
-<div class="metric">Historical MAE<b>{_degrees(calibration["historical_mae_f"])}</b></div>
+<div class="metric">Pooled MAE (research only)<b>{_degrees(calibration["historical_mae_f"])}</b></div>
 <div class="metric">Provider freshness verified<b>No</b></div>
 </div>
 <p><strong>Latest analysis time:</strong> {_h(latest)} · Provider forecast issue age: unknown · Research as of {_h(snapshot["as_of"])}</p>
