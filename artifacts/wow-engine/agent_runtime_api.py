@@ -136,10 +136,13 @@ def _check_admission_rate_limit(*, idempotency_key: str, request_hash: str) -> N
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
         raise HTTPException(status_code=503, detail={"code": "AGENT_RUNTIME_ADMISSION_GATE_UNAVAILABLE", "can_execute": False})
+    # Validate the service's shared admission namespace before opening Redis.
+    # Missing/invalid Render identity must fail closed without a network call.
+    bucket_key = _admission_bucket_key()
     member = hashlib.sha256((idempotency_key + "\x00" + request_hash).encode("utf-8")).hexdigest()
     try:
         allowed = _admission_redis(redis_url).eval(
-            _ADMISSION_LUA, 1, _admission_bucket_key(),
+            _ADMISSION_LUA, 1, bucket_key,
             MAX_RUN_ADMISSIONS_PER_MINUTE, _ADMISSION_WINDOW_MS, member,
         )
     except Exception as exc:
