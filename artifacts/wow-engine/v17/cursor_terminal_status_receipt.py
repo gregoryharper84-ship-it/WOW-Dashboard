@@ -24,6 +24,9 @@ RUN_ID = "run-7b568d98-de5b-4cce-b2a4-e7743fd43787"
 CURSOR_API = "https://api.cursor.com/v1"
 GITHUB_API = "https://api.github.com"
 TERMINAL_RUN_STATES = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
+PROTECTED_BRANCHES = frozenset({"main", "master"})
+# Merge time of the change that first required a recorded branch.
+BRANCH_REQUIREMENT_EFFECTIVE_UTC = "2026-11-01T01:44:02Z"
 MAX_NEGATIVE_INVENTORY_PAGES = 20
 INVENTORY_PAGE_SIZE = 100
 NEXT_CURSOR_RE = re.compile(r"^[A-Za-z0-9_.:=-]{1,256}$")
@@ -148,11 +151,25 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
     worker_id = entry.get("worker_id")
     status = entry.get("status")
     branch = entry.get("branch")
+    legacy_branchless = False
     if status == "CURSOR_LAUNCH_RESERVED":
-        if (run_id is not None
-                or not isinstance(branch, str)
-                or not branch.strip()
-                or branch in {"main", "master"}):
+        if run_id is not None:
+            raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+        if "branch" not in entry:
+            # Immutable reservations written before the branch requirement
+            # never recorded one. Accept only a never-edited comment created
+            # before that requirement took effect; the branch is then
+            # recovered from the authenticated live source PR in
+            # _verify_dynamic_pr, never from caller input.
+            created, updated = comment.get("created_at"), comment.get("updated_at")
+            if (not isinstance(created, str) or not isinstance(updated, str)
+                    or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", created)
+                    or updated != created
+                    or created >= BRANCH_REQUIREMENT_EFFECTIVE_UTC):
+                raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
+            legacy_branchless = True
+        elif (not isinstance(branch, str) or not branch.strip()
+                or branch in PROTECTED_BRANCHES):
             raise ReceiptBlocked("CURSOR_RESERVATION_IDENTITY_INVALID")
         is_failed_launch = True
     elif status in (None, "CURSOR_AGENT_ENQUEUED"):
@@ -204,6 +221,8 @@ def _verified_reservation(comment_id: int, github_token: str, api) -> dict:
         "reservation_comment_id": comment_id,
         "reservation_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "reservation_status": status or "CURSOR_AGENT_ENQUEUED",
+        "reservation_branch": branch if isinstance(branch, str) else None,
+        "legacy_branchless": legacy_branchless,
         "incident_id": incident, "pr_number": int(number),
         "original_head_sha": source_sha, "agent_id": agent_id, "run_id": run_id,
         "worker_id": worker_id, "source_workflow_run_id": origin["id"],
@@ -226,6 +245,15 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
             or not isinstance(head.get("sha"), str)
             or not re.fullmatch(r"[0-9a-f]{40}", head["sha"])):
         raise ReceiptBlocked("CURSOR_SOURCE_PR_IDENTITY_INVALID")
+    failed_launch = target.get("reservation_status") == "CURSOR_LAUNCH_RESERVED"
+    live_ref = head.get("ref")
+    if failed_launch:
+        if (not isinstance(live_ref, str) or not live_ref.strip()
+                or live_ref in PROTECTED_BRANCHES):
+            raise ReceiptBlocked("CURSOR_SOURCE_PR_IDENTITY_INVALID")
+        if (target.get("reservation_branch") is not None
+                and target["reservation_branch"] != live_ref):
+            raise ReceiptBlocked("CURSOR_RESERVATION_BRANCH_MISMATCH")
     original, latest = target["original_head_sha"], head["sha"]
     if original != latest:
         comparison = _require_object(
@@ -254,6 +282,7 @@ def _verify_dynamic_pr(pr: dict, target: dict, github_token: str, api) -> list[s
             or again.get("state") != "open"
             or not isinstance(again.get("head"), dict)
             or again["head"].get("sha") != latest
+            or (failed_launch and again["head"].get("ref") != live_ref)
             or not isinstance(again["head"].get("repo"), dict)
             or again["head"]["repo"].get("full_name") != REPOSITORY
             or not isinstance(again.get("base"), dict)
