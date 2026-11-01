@@ -137,6 +137,12 @@ jobs:
           assert isinstance(feature_refresh.get("feature_rows_built"), int)
           assert isinstance(feature_refresh.get("feature_rows_labeled"), int)
           assert feature_refresh["feature_rows_built"] >= feature_refresh["feature_rows_labeled"] > 0
+          # An all-Week-1 rebuild is not acceptance if later games have settled.
+          latest_settled = str(refresh.get("latest_gameday") or "")
+          latest_labeled = str(feature_refresh.get("latest_labeled_gameday") or "")
+          assert latest_settled and latest_labeled >= latest_settled, (
+              f"NFL_FEATURE_REFRESH_STALE:{latest_labeled}<{latest_settled}"
+          )
           # The challenger is advisory and never authorizes winner publication.
           assert challenger.get("can_execute") is False
           assert challenger.get("probability_publishable") is False
@@ -157,6 +163,7 @@ jobs:
               "feature_refresh_status": feature_refresh.get("status"),
               "feature_rows_built": feature_refresh.get("feature_rows_built"),
               "feature_rows_labeled": feature_refresh.get("feature_rows_labeled"),
+              "feature_latest_labeled_gameday": feature_refresh.get("latest_labeled_gameday"),
               "feature_rows_upserted": feature_refresh.get("feature_rows_upserted"),
               "shadow_challenger_status": challenger.get("status"),
               "shadow_challenger_n": challenger.get("n"),
