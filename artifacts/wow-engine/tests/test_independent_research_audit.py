@@ -39,6 +39,8 @@ def test_replay_74_times_not_74_independent_outcomes():
     assert audit['canonical_base_markets']==1
     assert audit['official_game_clusters']==1
     assert audit['approx_game_cluster_se'] is None
+    assert audit['independent_game_clusters_n'] == 1
+    assert audit['approx_game_cluster_status'] == 'INSUFFICIENT_GAME_CLUSTERS'
     assert audit['status']=='RESEARCH_ONLY' and audit['certified'] is False and audit['can_execute'] is False
 
 
@@ -191,3 +193,35 @@ def test_multi_game_cluster_se_matches_hand_calculated_unequal_groups():
     assert all(math.isclose(actual,target,abs_tol=1e-12)
                for actual,target in zip(audit['approx_game_cluster_normal_ci95'],expected))
     assert audit==audit_mlb_strikeout_forecasts(list(reversed(records)))
+
+
+
+def test_selection_context_provenance_binds_calibrator_artifact_and_method():
+    early = row(prediction_id='same-id', probability=.51, model_offset=5)
+    later = row(prediction_id='later', probability=.61, model_offset=1)
+    initial = audit_mlb_strikeout_forecasts([early, later], selection='earliest')
+    final = audit_mlb_strikeout_forecasts([early, later], selection='latest')
+    assert initial['selection_context_sha256'] != final['selection_context_sha256']
+    assert final['selection_context_sha256'] == audit_mlb_strikeout_forecasts(
+        [later, early], selection='latest'
+    )['selection_context_sha256']
+
+    changed = deepcopy(later)
+    changed['calibration_version'] = 'cal-2'
+    updated = audit_mlb_strikeout_forecasts([changed], selection='latest')
+    base = audit_mlb_strikeout_forecasts([later], selection='latest')
+    # Backward-compatible IDs alone cannot prove which calibrator was used.
+    assert updated['selected_prediction_ids_sha256'] == base['selected_prediction_ids_sha256']
+    assert updated['selection_context_sha256'] != base['selection_context_sha256']
+    assert updated['can_execute'] is False and updated['certified'] is False
+
+
+def test_cluster_uncertainty_is_explicitly_descriptive_not_certified():
+    first = row(prediction_id='g1', game_pk='823333')
+    second = row(prediction_id='g2', game_pk='823334', hit=False)
+    audit = audit_mlb_strikeout_forecasts([first, second])
+    assert audit['status'] == 'RESEARCH_ONLY'
+    assert audit['independent_game_clusters_n'] == 2
+    assert audit['approx_game_cluster_status'] == 'APPROXIMATE_CORRELATED_MARKETS_ONLY'
+    assert audit['approx_game_cluster_se'] is not None
+    assert audit['certified'] is False and audit['can_execute'] is False
