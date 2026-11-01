@@ -585,6 +585,7 @@ def test_auto_finalizer_resolves_exactly_one_immutable_failed_launch():
     ("other_hold", "REMOTE_AUTO_RELEASE_MULTIPLE_HELD_WRITERS"),
     ("enqueued", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
     ("wrong_author", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
+    ("missing_author", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
     ("wrong_issue", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
     ("run_id", "REMOTE_AUTO_RELEASE_NOT_FAILED_LAUNCH"),
     ("invalid_authority", "REMOTE_RESERVATION_INVALID"),
@@ -604,6 +605,8 @@ def test_auto_finalizer_never_guesses_or_accepts_incomplete_reservation(change, 
         rows = released_comments() + [active]
         if change == "wrong_author":
             active["user"]["login"] = "owner"
+        elif change == "missing_author":
+            active["user"] = None
         elif change == "wrong_issue":
             active["issue_url"] = "https://api.github.com/repos/other/repo/issues/1138"
         else:
