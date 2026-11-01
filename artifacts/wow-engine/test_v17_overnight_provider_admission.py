@@ -17,7 +17,10 @@ DISPATCHER = ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.y
 PRIMARY = ROOT / ".github/workflows/wow-v17-chatgpt-engineering-worker.yml"
 
 
-def _route(*, event="schedule", primary="failure", secondary="failure", anthro=True, openai=True):
+def _route(*, event="schedule", primary="failure", secondary="failure",
+           anthro=True, openai=True, target="", claude_failure="delivery",
+           last_incident="1150", receipt_fetch="ok", receipt_invalid="",
+           artifact="", run_identity="", run_id=""):
     if not shutil.which("jq"):
         pytest.skip("Workflow shell fixture requires jq (present on GitHub Actions)")
     text = DISPATCHER.read_text()
@@ -28,23 +31,19 @@ def _route(*, event="schedule", primary="failure", secondary="failure", anthro=T
         bin_dir = root / "bin"
         bin_dir.mkdir()
         gh = bin_dir / "gh"
-        gh.write_text(
-            "#!/bin/sh\n"
-            "case \"$*\" in\n"
-            "  *wow-v17-chatgpt-engineering-worker.yml*) "
-            "printf '[{\"databaseId\":900,\"conclusion\":\"%s\",\"updatedAt\":\"2026-10-23T03:00:00Z\"}]\\n' \"$TEST_PRIMARY\" ;;\n"
-            "  *wow-v17-claude-engineering-worker.yml*) "
-            "if [ \"$TEST_SECONDARY\" = none ]; then printf '[]\\n'; "
-            "else printf '[{\"databaseId\":901,\"conclusion\":\"%s\"}]\\n' \"$TEST_SECONDARY\"; fi ;;\n"
-            "  *) printf 'Quota exceeded\\n' ;;\n"
-            "esac\n"
-        )
+        gh.write_text("#!/usr/bin/env python3\nimport json\nimport os\nimport sys\nfrom pathlib import Path\n\nargs = sys.argv[1:]\nenv = os.environ\nrepo = \"test/repo\"\nrun_id = 901\nsha = \"a\" * 40\nname = \"wow-v17-dual-stream-receipt-901-1\"\ndef emit(value):\n    print(json.dumps(value))\n\nif args[:2] == [\"run\", \"list\"]:\n    workflow = args[args.index(\"--workflow\") + 1]\n    if \"chatgpt\" in workflow:\n        emit([{\"databaseId\": 900, \"conclusion\": env[\"TEST_PRIMARY\"], \"updatedAt\": \"2026-10-23T03:00:00Z\"}])\n    elif \"claude\" in workflow:\n        if \"--branch\" not in args or args[args.index(\"--branch\") + 1] != \"main\":\n            sys.exit(2)\n        if env[\"TEST_SECONDARY\"] == \"none\":\n            emit([])\n        else:\n            rid = \"../escape\" if env.get(\"TEST_RUN_ID\") == \"malicious\" else 901.5 if env.get(\"TEST_RUN_ID\") == \"float\" else run_id\n            emit([{\"databaseId\": rid, \"conclusion\": env[\"TEST_SECONDARY\"]}])\n    else:\n        sys.exit(3)\nelif args[:2] == [\"run\", \"view\"]:\n    print(\"Quota exceeded\")\nelif args[:1] == [\"api\"]:\n    path = args[1]\n    if path.endswith(\"/actions/runs/901/jobs?per_page=100\"):\n        if env.get(\"TEST_RECEIPT_FETCH\") == \"api-fail\":\n            sys.exit(4)\n        names = [\n            (\"Verify Anthropic authentication\", \"success\"),\n            (\"Engineering Lead agent\", \"success\"),\n            (\"Research / Root-Cause Triage agent\", \"success\"),\n            (\"Normalize Triage packet\", \"success\"),\n            (\"Specialist diagnostic subagent\", \"success\"),\n            (\"Normalize specialist packet\", \"success\"),\n            (\"Implementation agent\", \"skipped\"),\n            (\"Enforce mutation safety gate\", \"skipped\"),\n            (\"Enforce actionable repair delivery\", \"failure\")\n        ]\n        steps = [{\"name\": n, \"status\": \"completed\", \"conclusion\": c} for n, c in names]\n        if env.get(\"TEST_CLAUDE_FAILURE\") == \"provider\":\n            steps[0][\"conclusion\"] = \"failure\"\n        if env.get(\"TEST_RECEIPT_INVALID\") == \"lease\":\n            steps[6][\"conclusion\"] = \"success\"\n        if env.get(\"TEST_RECEIPT_INVALID\") == \"incident\":\n            steps[8][\"conclusion\"] = \"success\"\n        job = {\"id\": 1, \"run_id\": 901, \"name\": \"WOW V17 Claude fallback engineering team\",\n               \"status\": \"completed\", \"conclusion\": \"failure\", \"steps\": steps}\n        if env.get(\"TEST_RECEIPT_INVALID\") == \"worker\":\n            job[\"name\"] = \"Unrelated workflow\"\n        items = [] if env.get(\"TEST_ARTIFACT\") == \"missing\" else [job, job] if env.get(\"TEST_ARTIFACT\") == \"duplicate\" else [job]\n        emit({\"total_count\": len(items), \"jobs\": items})\n    elif path.endswith(\"/actions/runs/901\"):\n        emit({\n            \"id\": run_id, \"repository\": {\"full_name\": repo},\n            \"path\": \".github/workflows/other.yml\" if env.get(\"TEST_RUN_IDENTITY\") == \"bad\" else \".github/workflows/wow-v17-claude-engineering-worker.yml\",\n            \"head_branch\": \"main\", \"event\": \"workflow_dispatch\",\n            \"status\": \"completed\", \"conclusion\": \"failure\",\n            \"head_sha\": sha, \"run_attempt\": 1\n        })\n    else:\n        sys.exit(5)\nelse:\n    sys.exit(8)\n")
         gh.chmod(0o755)
         python = bin_dir / "python"
         python.write_text(
             "#!/bin/sh\n"
             "if [ \"$1\" = -c ]; then printf '5\\n'; exit 0; fi\n"
             "case \"$*\" in\n"
+            "  *' classify '*'--provider anthropic'*)\n"
+            "    if [ \"$TEST_CLAUDE_FAILURE\" = delivery ]; then\n"
+            "      printf '{\"provider\":\"anthropic\",\"code\":\"ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE\",\"provider_signal\":null,\"disposition\":\"UNRESOLVED_TYPED_FAILURE\",\"failover_eligible\":false}\\n'\n"
+            "    else\n"
+            "      printf '{\"provider\":\"anthropic\",\"code\":\"ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE\",\"provider_signal\":\"ANTHROPIC_API_RATE_LIMITED\",\"disposition\":\"UNRESOLVED_TYPED_FAILURE\",\"failover_eligible\":false}\\n'\n"
+            "    fi ;;\n"
             "  *' classify '*) printf '{\"code\":\"OPENAI_API_QUOTA_EXCEEDED\",\"failover_eligible\":true}\\n' ;;\n"
             "  *' circuit-breaker '*) printf '{\"active\":true}\\n' ;;\n"
             "  *) exit 30 ;;\n"
@@ -67,13 +66,20 @@ def _route(*, event="schedule", primary="failure", secondary="failure", anthro=T
             SOURCE_DISPLAY_TITLE="",
             FORCE_PROVIDER="auto",
             MANUAL_REASON="",
-            MANUAL_TARGET_INCIDENT="",
+            MANUAL_TARGET_INCIDENT=target,
             MANUAL_LEASE_GROUP="",
             OPENAI_API_KEY="test-key" if openai else "",
             ANTHROPIC_API_KEY="test-key" if anthro else "",
             CLAUDE_CODE_OAUTH_TOKEN="",
             TEST_PRIMARY=primary,
             TEST_SECONDARY=secondary,
+            TEST_CLAUDE_FAILURE=claude_failure,
+            TEST_LAST_INCIDENT=last_incident,
+            TEST_RECEIPT_FETCH=receipt_fetch,
+            TEST_RECEIPT_INVALID=receipt_invalid,
+            TEST_ARTIFACT=artifact,
+            TEST_RUN_IDENTITY=run_identity,
+            TEST_RUN_ID=run_id,
         )
         proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True,
                               text=True, timeout=20)
@@ -130,3 +136,56 @@ def test_only_dispatcher_owns_automatic_primary_entrypoint():
     assert "wow-v17-chatgpt-engineering-worker" in dispatch_triggers
     assert "wow-v17-claude-engineering-worker" in dispatch_triggers
     assert "wow-v17-gemini-engineering-worker" in dispatch_triggers
+    secondary = dispatch.split("secondary_usable()", 1)[1].split("gemini_child_held()", 1)[0]
+    assert "--branch main --status completed" in secondary
+
+
+def test_delivery_only_failed_claude_allows_a_different_exact_target():
+    receipt = _route(secondary="failure", target="1021")
+    assert (receipt["action"], receipt["provider"]) == ("DISPATCH", "anthropic")
+
+
+def test_failed_claude_requires_explicit_target_for_one_shot_retry():
+    receipt = _route(secondary="failure", target="")
+    assert (receipt["action"], receipt["provider"]) == ("SURVIVAL", "deterministic")
+
+
+def test_provider_failure_still_blocks_new_target():
+    receipt = _route(secondary="failure", target="1021", claude_failure="provider")
+    assert (receipt["action"], receipt["provider"]) == ("SURVIVAL", "deterministic")
+
+
+def test_unverifiable_job_api_still_blocks_new_target():
+    receipt = _route(secondary="failure", target="1021", receipt_fetch="api-fail")
+    assert (receipt["action"], receipt["provider"]) == ("SURVIVAL", "deterministic")
+
+
+def test_cancelled_claude_is_never_treated_as_recovered():
+    receipt = _route(secondary="cancelled", target="1021")
+    assert (receipt["action"], receipt["provider"]) == ("SURVIVAL", "deterministic")
+
+def test_native_job_api_failure_blocks():
+    assert _route(secondary="failure", target="1021", receipt_fetch="api-fail")["provider"] == "deterministic"
+
+
+def test_missing_or_duplicate_native_job_blocks():
+    for artifact in ("missing", "duplicate"):
+        assert _route(secondary="failure", target="1021", artifact=artifact)["provider"] == "deterministic"
+
+
+def test_invalid_native_job_step_outcome_or_job_identity_blocks():
+    for invalid in ("worker", "lease", "incident"):
+        assert _route(secondary="failure", target="1021", receipt_invalid=invalid)["provider"] == "deterministic"
+
+
+def test_wrong_workflow_run_identity_blocks():
+    assert _route(secondary="failure", target="1021", run_identity="bad")["provider"] == "deterministic"
+
+
+def test_run_ids_must_be_positive_integers():
+    for invalid in ("malicious", "float"):
+        assert _route(secondary="failure", target="1021", run_id=invalid)["provider"] == "deterministic"
+
+
+def test_missing_explicit_target_remains_held_after_task_only_failure():
+    assert _route(secondary="failure", target="")["provider"] == "deterministic"
