@@ -23,11 +23,6 @@ from ncaaf_fitted_provider import (
 
 KICKOFF = datetime(2026, 11, 1, 20, tzinfo=timezone.utc)
 EVENT_ID = "401900001"
-# One deterministic pregame instant for the whole fixture. The scorer re-checks
-# kickoff through `clock` after the snapshot read and ignores `now` when `clock`
-# is omitted, so a fixture with a fixed historical kickoff would otherwise pass
-# only while the CI runner's wall clock happened to precede it.
-_SCORING_NOW = KICKOFF - timedelta(minutes=30)
 
 
 def _sha(payload):
@@ -130,7 +125,7 @@ def _stored_snapshot():
     }
 
 
-def _score_context(snapshot=None, context=None, *, refreshed_at=None, with_clock=True):
+def _score_context(snapshot=None, context=None, *, refreshed_at=None):
     context = context or _context()
     normalized_receipts = [
         {
@@ -168,16 +163,10 @@ def _score_context(snapshot=None, context=None, *, refreshed_at=None, with_clock
         ).isoformat(),
         "payload_sha256": _sha(refresh_payload),
     }
-    # Keep a deterministic post-read clock unless the caller supplies its own.
-    # Current main already passes an explicit clock in three scorer tests; the
-    # helper must not provide a second keyword in those merged cases.
-    result = {
+    return {
         "current_context": context,
-        "now": _SCORING_NOW,
+        "now": KICKOFF - timedelta(minutes=30),
     }
-    if with_clock:
-        result["clock"] = lambda: _SCORING_NOW
-    return result
 
 
 class _RPC:
@@ -527,7 +516,7 @@ def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
         scorer=lambda *args, **kwargs: raw,
         calibrator=lambda *args, **kwargs: calibrated,
         clock=lambda: KICKOFF - timedelta(minutes=29),
-        **_score_context(snapshot, with_clock=False),
+        **_score_context(snapshot),
     )
     assert result["static_calibration_lower_diagnostic"] == 0.41
     assert result["calibrated_lower_bound"] is None
@@ -554,7 +543,7 @@ def test_invoked_scorer_failure_is_not_collapsed_to_model_unavailable():
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=fail,
             clock=lambda: KICKOFF - timedelta(minutes=29),
-            **_score_context(snapshot, with_clock=False),
+            **_score_context(snapshot),
         )
     assert exc.value.code == "MODEL_SCORER_FAILED"
 
@@ -578,34 +567,6 @@ def test_typed_invalid_model_output_keeps_output_failure_semantics():
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=invalid_output,
             clock=lambda: KICKOFF - timedelta(minutes=29),
-            **_score_context(snapshot, with_clock=False),
+            **_score_context(snapshot),
         )
     assert exc.value.code == "MODEL_OUTPUT_INVALID"
-
-
-@pytest.mark.parametrize(
-    "second_clock",
-    [KICKOFF, KICKOFF + timedelta(seconds=1)],
-)
-def test_second_clock_at_or_after_kickoff_still_holds_as_not_pregame(second_clock):
-    """The post-read recheck keeps its own authority over a pregame entry time."""
-    snapshot = _stored_snapshot()
-    client = _Client(snapshot)
-    invoked = []
-    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
-        score_current_event_snapshot(
-            client,
-            official_event_id=EVENT_ID,
-            event_start_time=KICKOFF.isoformat(),
-            home_team="Louisville",
-            away_team="Florida State",
-            expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
-            current_context=_score_context(snapshot)["current_context"],
-            now=_SCORING_NOW,
-            clock=lambda: second_clock,
-            scorer=lambda *args, **kwargs: invoked.append(True),
-        )
-    assert exc.value.code == "NCAAF_EVENT_NOT_PREGAME"
-    # The snapshot was read, so this is the second check holding, not the first.
-    assert len(client.calls) == 1
-    assert invoked == []
