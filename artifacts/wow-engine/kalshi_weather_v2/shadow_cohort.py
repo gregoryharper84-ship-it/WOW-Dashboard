@@ -661,7 +661,10 @@ def run_bounded_settlement_backlog_once(
         http.close()
 
     remaining = max(0, len(pending) - settled)
-    if not pending:
+    if not scan_complete:
+        failures.append("SETTLEMENT_BACKLOG_SCAN_TRUNCATED")
+        status = SETTLEMENT_BACKLOG_PARTIAL
+    elif not pending:
         status = SETTLEMENT_BACKLOG_CLEARED
     elif settled == 0 and failures:
         status = SETTLEMENT_BACKLOG_FAILED
@@ -676,7 +679,7 @@ def run_bounded_settlement_backlog_once(
         attempted=attempted,
         settled=settled,
         remaining_after_run=remaining,
-        truncated=len(pending) > attempted,
+        truncated=(not scan_complete or len(pending) > attempted),
         failures=tuple(failures),
     )
 
