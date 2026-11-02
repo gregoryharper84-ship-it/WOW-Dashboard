@@ -105,6 +105,9 @@ def test_rundown_quota_exhaustion_trips_one_scan_circuit(monkeypatch):
 
     def original_factory(*_args, **_kwargs):
         def fetch(_family, _target=None):
+            allowed, blocker = _kwargs["paid_call_guard"]()
+            if not allowed:
+                raise discovery.DiscoveryFeedError(blocker)
             calls.append(1)
             raise discovery.DiscoveryFeedError("RUNDOWN_QUOTA_EXHAUSTED")
 
@@ -145,6 +148,9 @@ def test_ambiguous_rate_limit_does_not_become_quota_circuit(monkeypatch):
 
     def original_factory(*_args, **_kwargs):
         def fetch(_family, _target=None):
+            allowed, blocker = _kwargs["paid_call_guard"]()
+            if not allowed:
+                raise discovery.DiscoveryFeedError(blocker)
             calls.append(1)
             if len(calls) == 1:
                 raise discovery.DiscoveryFeedError("RUNDOWN_HTTP_429_UNKNOWN")
@@ -266,6 +272,9 @@ def test_free_core_mode_blocks_paid_discovery_without_calling_provider(monkeypat
 
     def original_factory(*_args, **_kwargs):
         def fetch(_family, _target=None):
+            allowed, blocker = _kwargs["paid_call_guard"]()
+            if not allowed:
+                raise discovery.DiscoveryFeedError(blocker)
             calls.append(1)
             return []
         return fetch
@@ -369,3 +378,37 @@ def test_live_acquisition_boundary_preserves_final_refresh_reserve(monkeypatch):
     assert context["paid_provider_calls_attempted"] == 2
     assert context["paid_provider_calls_blocked_by_source_policy"] == 1
     assert context["_paid_call_budget"].remaining == 0
+
+
+def test_cached_rundown_board_survives_exhausted_provider_circuit(monkeypatch):
+    """A cached result costs no paid call and must outlive provider circuit open."""
+    calls = []
+
+    def original_factory(*_args, **_kwargs):
+        def fetch(_family, _target=None):
+            # Simulates a fresh hit from live/durable cache in the native adapter.
+            # The provider_call_guard is deliberately NOT invoked.
+            calls.append("CACHE")
+            return [{"id": "fresh-cached"}]
+        return fetch
+
+    monkeypatch.setattr(
+        feed, "_v17_quota_aware_original_rundown_board_feed",
+        original_factory, raising=False,
+    )
+    context = quota._new_context()
+    state = quota._provider_state(context, "RUNDOWN")
+    state["circuit_open"] = True
+    state["status"] = quota.QUOTA_EXHAUSTED
+    state["reason_code"] = "RUNDOWN_QUOTA_EXHAUSTED"
+    token = quota._SCAN_CONTEXT.set(context)
+    try:
+        fetch = quota._quota_aware_rundown_factory(slate_date="2026-11-02")
+        assert fetch("NFL") == [{"id": "fresh-cached"}]
+    finally:
+        quota._SCAN_CONTEXT.reset(token)
+
+    assert calls == ["CACHE"]
+    assert context["paid_provider_calls_attempted"] == 0
+    assert context["paid_provider_calls_blocked_by_quota_policy"] == 0
+    assert state["circuit_open"] is True
