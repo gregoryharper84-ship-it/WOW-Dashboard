@@ -457,4 +457,5 @@ def test_partial_nfl_discovery_outage_is_not_mislabeled_as_empty_slate(monkeypat
     assert "NO_CANONICAL_PREGAME_SNAPSHOTS" not in result["blockers"]
     assert result["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
     assert result["prop_discovery_accounting"]["new_candidates_acquired"] == 0
+    assert result["prop_discovery_accounting"]["zero_new_candidates_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
     assert result["can_execute"] is False
