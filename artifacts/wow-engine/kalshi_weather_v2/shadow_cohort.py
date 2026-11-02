@@ -84,7 +84,6 @@ class SettlementBacklogResult:
     failures: tuple[str, ...]
     probability_publishable: bool = False
     can_execute: bool = False
-    scan_complete: bool = False
 
 
 SETTLEMENT_BACKLOG_CLEARED = "SETTLEMENT_BACKLOG_CLEARED"
