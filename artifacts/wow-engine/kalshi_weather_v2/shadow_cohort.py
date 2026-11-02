@@ -619,7 +619,21 @@ def run_bounded_settlement_backlog_once(
     """
     limit = max(0, min(int(max_attempts), 25))
     now_iso = _iso(_parse_or_now(now))
-    pending = _pending_settlement_targets(client, now_iso, scan_limit=scan_limit)
+    page_limit = max(1, min(int(scan_limit), 500))
+    try:
+        pending, scan_complete = _pending_settlement_targets(
+            client, now_iso, scan_limit=page_limit
+        )
+    except Exception:
+        return SettlementBacklogResult(
+            status=SETTLEMENT_BACKLOG_FAILED,
+            pending_eligible=0,
+            attempted=0,
+            settled=0,
+            remaining_after_run=0,
+            truncated=True,
+            failures=("SETTLEMENT_BACKLOG_DATABASE_READ_FAILED",),
+        )
     failures: list[str] = []
     attempted = 0
     settled = 0
