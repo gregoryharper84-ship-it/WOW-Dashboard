@@ -541,8 +541,8 @@ def call_provider(provider, key, prompt):
                 # transport failure is never a license to shop for a PASS.
                 if reason not in ("PROVIDER_MODEL_UNAVAILABLE", "PROVIDER_HTTP_429"):
                     raise
+                last_unavailable = reason
                 if reason == "PROVIDER_HTTP_429":
-                    last_unavailable = "PROVIDER_HTTP_429"
                     print("REVIEW_GEMINI_MODEL_RATE_LIMITED:" + model, file=sys.stderr)
                 else:
                     print("REVIEW_GEMINI_MODEL_UNAVAILABLE:" + model, file=sys.stderr)
