@@ -38,7 +38,11 @@ def _valid_pr(pr: dict, expected_sha: str) -> bool:
 
 
 def _latest(checks: list[dict]) -> dict[str, dict]:
-    """Conservative duplicate handling: any conflicting result is a hold."""
+    """Choose only explicit newer check-run IDs; ambiguity is a HOLD.
+
+    The caller fetches all check-runs, not only GitHub's latest filter, so
+    a previously signed same-SHA security REJECT cannot be hidden.
+    """
     by_name: dict[str, dict] = {}
     for check in checks:
         if not isinstance(check, dict) or not isinstance(check.get("name"), str):
@@ -47,12 +51,53 @@ def _latest(checks: list[dict]) -> dict[str, dict]:
         prev = by_name.get(name)
         if prev is None:
             by_name[name] = check
+            continue
+        before, after = prev.get("id"), check.get("id")
+        if type(before) is int and type(after) is int and before != after:
+            if after > before:
+                by_name[name] = check
         elif (prev.get("app", {}).get("id") != check.get("app", {}).get("id")
               or prev.get("status") != check.get("status")
               or prev.get("conclusion") != check.get("conclusion")):
             raise ValueError("CONFLICTING_CHECK_EVIDENCE")
     return by_name
 
+
+def _signed_reject(check: dict) -> bool:
+    output = check.get("output") or {}
+    return (check.get("app", {}).get("id") == QA_APP_ID
+            and check.get("conclusion") == "failure"
+            and isinstance(output, dict)
+            and isinstance(output.get("title"), str)
+            and output["title"].startswith("REJECT"))
+
+
+def _failed_qa(check: dict, number: int, head: str) -> dict:
+    """Interpret only signed QA App presentation as a diagnostic, never PASS."""
+    output = check.get("output") or {}
+    title = output.get("title", "") if isinstance(output, dict) else ""
+    summary = output.get("summary", "") if isinstance(output, dict) else ""
+    # A REVIEWER MODEL or CREDIT error is not a source defect.
+    reason_match = re.search(r"\\breason (PROVIDER_[A-Z0-9_]+|HTTP_[0-9]{3}|OWNER_REVIEW_REQUIRED)\\b",
+                             summary if isinstance(summary, str) else "")
+    reason = reason_match.group(1) if reason_match else ""
+    if isinstance(title, str) and title.startswith("HOLD"):
+        if reason in ("PROVIDER_MODEL_UNAVAILABLE", "PROVIDER_HTTP_404", "HTTP_404"):
+            return _result("REVIEWER_MODEL_REPAIR", "VERIFY_REVIEWER_MODEL_AND_CREDENTIAL",
+                           "VALID_PROVIDER_PREFLIGHT_AND_NEW_QA_RECEIPT", pr=number, sha=head)
+        if reason in ("PROVIDER_CREDIT_EXHAUSTED", "PROVIDER_HTTP_401", "HTTP_401"):
+            return _result("REVIEWER_AUTH_OR_QUOTA_REPAIR", "VERIFY_EXISTING_REVIEWER_ENTITLEMENT",
+                           "AUTHORIZED_PROVIDER_AVAILABLE", pr=number, sha=head)
+        if reason in ("PROVIDER_HTTP_429", "PROVIDER_HTTP_500", "PROVIDER_HTTP_502",
+                      "PROVIDER_HTTP_503", "PROVIDER_HTTP_504", "PROVIDER_HTTP_529",
+                      "PROVIDER_TRANSPORT"):
+            return _result("REVIEWER_TRANSIENT_OUTAGE", "BOUNDED_RETRY_AFTER_RECOVERY",
+                           "REVIEWER_PROVIDER_RECOVERED", pr=number, sha=head)
+        if reason == "OWNER_REVIEW_REQUIRED":
+            return _result("OWNER_REVIEW_REQUIRED", "EXACT_HEAD_AUTHENTICATED_OWNER_REVIEW",
+                           "VALID_INDEPENDENT_OWNER_REVIEW", pr=number, sha=head)
+    return _result("INDEPENDENT_QA_NOT_ACCEPTED", "DIAGNOSE_SIGNED_REVIEW_RECEIPT",
+                   "NEW_VALID_QA_APP_EVIDENCE", pr=number, sha=head)
 
 def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
     """Classify a pre-merge PR without turning a classification into authority."""
@@ -62,6 +107,15 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
     if not _valid_pr(pr, expected_sha):
         return _result("SOURCE_HEAD_UNSTABLE", "RECHECK_EXACT_HEAD", "PR_HEAD_CHANGED",
                        pr=number, sha=expected_sha)
+    # All historical QA checks are considered before taking the newest
+    # check-run; a signed REJECT at this SHA is permanent until source changes.
+    qa_checks = [c for c in checks if c.get("name") == QA_CHECK]
+    if any(c.get("app", {}).get("id") != QA_APP_ID for c in qa_checks):
+        return _result("QA_IDENTITY_INVALID", "REPAIR_QA_APP_IDENTITY",
+                       "QA_APP_IDENTITY_RESTORED", pr=number, sha=expected_sha)
+    if any(_signed_reject(c) for c in qa_checks):
+        return _result("SEMANTIC_REJECT_SAME_SHA", "REPAIR_REJECTED_SOURCE_NEW_SHA",
+                       "NEW_SOURCE_SHA", pr=number, sha=expected_sha)
     by_name = _latest(checks)
     qa = by_name.get(QA_CHECK)
     if not qa:
@@ -74,9 +128,7 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
         return _result("EVIDENCE_PENDING", "FOLLOW_EXISTING_QA_RUN",
                        "QA_APP_CHECK_TERMINAL_AT_EXACT_SHA", pr=number, sha=expected_sha)
     if qa.get("conclusion") != "success":
-        # A QA HOLD is not a semantic REJECT. Both preserve the binding gate.
-        return _result("INDEPENDENT_QA_NOT_ACCEPTED", "DIAGNOSE_SIGNED_REVIEW_RECEIPT",
-                       "NEW_VALID_QA_APP_EVIDENCE", pr=number, sha=expected_sha)
+        return _failed_qa(qa, number, expected_sha)
     # The Release App is an independent gate, not a consequence of QA PASS.
     release = [c for c in checks if (c.get("app") or {}).get("id") == RELEASE_APP_ID]
     if not release:
