@@ -1,21 +1,21 @@
-name: TestDriver.ai Manual Smoke
+name: TestDriver.ai Manual Staging Smoke
 
-# Intentionally manual and nonblocking. Hosted AI browser tests can incur
-# TestDriver usage charges; do not turn on automatic PR/push triggers.
+# TestDriver's cloud service is metered and limited to test/non-production use.
+# Do not add push, pull_request, or schedule triggers.
 on:
   workflow_dispatch:
     inputs:
       confirm_usage:
-        description: "I checked TestDriver billing and authorize a manual run within my no-charge allowance"
+        description: "I verified an active no-charge allowance, no trial conversion risk, and authorize this one manual test"
         required: true
         type: boolean
         default: false
 
 jobs:
   smoke:
-    # Fail closed until the owner has explicitly confirmed a $0 entitlement
-    # in TestDriver AND opted into this single manual execution.
-    if: ${{ inputs.confirm_usage && vars.TD_ZERO_COST_VERIFIED == 'true' }}
+    # This protects GitHub CI only, not the TestDriver account's trial conversion.
+    # Owner must confirm billing/cancel renewal independently in TestDriver.
+    if: ${{ inputs.confirm_usage && vars.TD_ZERO_COST_VERIFIED == 'true' && vars.WOW_TESTDRIVER_STAGING_URL != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -24,9 +24,15 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      WOW_TESTDRIVER_STAGING_URL: ${{ vars.WOW_TESTDRIVER_STAGING_URL }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate staging target before hosted test
+        run: |
+          node -e 'const u = new URL(process.env.WOW_TESTDRIVER_STAGING_URL); if (u.protocol !== "https:" || !/(?:^|[.-])(staging|preview|sandbox|test)(?:[.-]|$)/i.test(u.hostname) || u.pathname !== "/docs" || u.username || u.password) process.exit(1);'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -48,7 +54,7 @@ jobs:
           channel: stable
           api-key: ${{ secrets.TD_API_KEY }}
 
-      - name: Run the single scoped browser smoke
+      - name: Run single staging smoke
         run: pnpm exec vitest run tests/production.test.js
 
       - name: Upload test results
