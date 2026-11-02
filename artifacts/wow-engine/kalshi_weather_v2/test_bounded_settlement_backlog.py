@@ -229,3 +229,12 @@ def test_backlog_endpoint_reports_never_executes(monkeypatch):
     assert body["can_execute"] is False
     # An unbounded environment value must still be clamped before the workload runs.
     assert captured["max_attempts"] == 25
+
+
+def test_backlog_read_error_status():
+    class F:
+        def table(self, x):
+            raise OSError()
+    result = shadow.run_bounded_settlement_backlog_once(client=F(), now=NOW)
+    assert result.status == shadow.SETTLEMENT_BACKLOG_FAILED
+    assert result.truncated is True
