@@ -11,8 +11,14 @@ import json
 import re
 from pathlib import Path
 
+# Accept the canonical "#123" form AND the literal existing worker PR
+# template: echo "Incident: \`$INCIDENT\`" (which produces "Incident: \`123\`").
+# Keep grouped delimiters strict so malformed / partial IDs cannot claim a PR.
 INCIDENT_LINE = re.compile(
-    r"(?im)^\s*(?:Incident|Fixes|Closes|Resolves)\s*:\s*#([1-9][0-9]*)\b"
+    r"(?im)^\s*(?:Incident|Fixes|Closes|Resolves)\s*:\s*"
+    r"(?:#(?P<hashed>[1-9][0-9]*)\b|"
+    r"`(?P<backticked>[1-9][0-9]*)`|"
+    r"(?P<plain>[1-9][0-9]*)\b)"
 )
 EXPLICIT_LINK = re.compile(r"(?im)^\s*(?:Fixes|Closes|Resolves)\s+#([1-9][0-9]*)\b")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -69,7 +75,11 @@ def related_incidents(pr: dict) -> set[int]:
     body = pr.get("body") or ""
     if not isinstance(body, str):
         return set()
-    return {int(n) for n in INCIDENT_LINE.findall(body) + EXPLICIT_LINK.findall(body)}
+    tagged = {
+        int(next(value for value in match.groups() if value is not None))
+        for match in INCIDENT_LINE.finditer(body)
+    }
+    return tagged | {int(n) for n in EXPLICIT_LINK.findall(body)}
 
 
 def valid_pr(pr: dict) -> bool:
