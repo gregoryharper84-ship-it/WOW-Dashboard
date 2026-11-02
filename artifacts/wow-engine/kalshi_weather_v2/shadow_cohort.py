@@ -240,8 +240,30 @@ async def run_shadow_cohort_loop(
 
 
 def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any]:
-    predictions = _select_rows(client, "wow_kalshi_weather_predictions", limit=5000)
-    outcomes = _select_rows(client, "wow_kalshi_weather_outcomes", limit=5000)
+    # Calibration must never interpret an unavailable or truncated source as
+    # an empty complete sample. An incomplete ledger cannot produce a fit.
+    try:
+        predictions = _strict_calibration_rows(
+            client, "wow_kalshi_weather_predictions", limit=5000
+        )
+        outcomes = _strict_calibration_rows(
+            client, "wow_kalshi_weather_outcomes", limit=5000
+        )
+    except RuntimeError as exc:
+        return {
+            "status": "EMPIRICAL_CALIBRATION_REPORT_INCOMPLETE",
+            "minimum_candidate_n": minimum_n,
+            "groups": [],
+            "dataset_integrity": {
+                "source_ledgers_complete": False,
+                "source_ledger_error_code": str(exc),
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+            "probability_publishable": False,
+            "capability_promotion_allowed": False,
+            "can_execute": False,
+        }
     outcome_by_prediction = {str(row.get("prediction_id")): row for row in outcomes if row.get("prediction_id")}
 
     groups: dict[tuple[str, str, str], dict[str, tuple[str, ForecastResidual]]] = {}
@@ -400,6 +422,7 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
         "minimum_candidate_n": minimum_n,
         "groups": reports,
         "dataset_integrity": {
+            "source_ledgers_complete": True,
             "total_predictions": len(predictions),
             "settled_predictions": settled_predictions,
             "eligible_hourly_predictions": eligible_predictions,
@@ -699,6 +722,27 @@ def run_bounded_settlement_backlog_once(
         truncated=(not scan_complete or len(pending) > attempted),
         failures=tuple(failures),
     )
+
+
+
+def _strict_calibration_rows(
+    client, table: str, *, limit: int
+) -> list[Mapping[str, Any]]:
+    """Return complete small-sample calibration ledger or fail closed.
+
+    For larger ledgers use a separately reviewed paginated calibration reader;
+    never fit from an invisible tail or a transiently unreadable table.
+    """
+    try:
+        response = client.table(table).select("*").limit(limit + 1).execute()
+    except Exception as exc:
+        raise RuntimeError("CALIBRATION_LEDGER_READ_FAILED") from exc
+    rows = getattr(response, "data", None)
+    if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+        raise RuntimeError("CALIBRATION_LEDGER_RESPONSE_INVALID")
+    if len(rows) > limit:
+        raise RuntimeError("CALIBRATION_LEDGER_TRUNCATED")
+    return [dict(row) for row in rows]
 
 
 def _select_rows(client, table: str, *, limit: int) -> list[Mapping[str, Any]]:
