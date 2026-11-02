@@ -212,6 +212,28 @@ def _receipt_snapshot_ids(acquisition: dict[str, Any] | None) -> set[str]:
     }
 
 
+def _nfl_fill_response_rows(
+    manifest: list[dict[str, Any]], max_props: int,
+) -> list[dict[str, Any]]:
+    """Reserve at most half the bounded page for newly filled NFL rows.
+
+    This is only used when an existing non-NFL canonical slate invoked the
+    opt-in missing-NFL fill. It leaves the canonical manifest, its ordering,
+    and the ordinary Daily and MLB-only selection paths untouched.
+    """
+    if max_props <= 0:
+        return []
+    nfl_rows = [
+        row for row in manifest if str(row.get("sport") or "").upper() == "NFL"
+    ]
+    if not nfl_rows:
+        return manifest[:max_props]
+    reserved = nfl_rows[:min(len(nfl_rows), max(1, max_props // 2))]
+    reserved_ids = {id(row) for row in reserved}
+    remainder = [row for row in manifest if id(row) not in reserved_ids]
+    return reserved + remainder[:max_props - len(reserved)]
+
+
 def _prop_source_unobtainable(acquisition: dict[str, Any] | None) -> bool:
     """A source-wide failure is distinct from ordinary candidate hydration HOLD."""
     if not isinstance(acquisition, dict):
@@ -569,6 +591,7 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
             and req.max_props > 0
             and not any(str(row.get("sport") or "").upper() == "NFL" for row in prop_manifest)
         )
+        nfl_fill_existing_manifest = bool(prop_manifest) and missing_nfl_fill
         if (not prop_manifest or missing_nfl_fill) and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
@@ -587,7 +610,11 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 blockers.extend(prop_acquisition.get("blockers") or [])
             try:
                 prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
-                prop_rows = prop_manifest[:req.max_props]
+                prop_rows = (
+                    _nfl_fill_response_rows(prop_manifest, req.max_props)
+                    if nfl_fill_existing_manifest
+                    else prop_manifest[:req.max_props]
+                )
             except Exception as exc:
                 prop_rows = []
                 prop_manifest = []
