@@ -15,6 +15,11 @@ on:
         description: Optional exact expected 40-char SHA; stale targets fail closed
         required: false
         type: string
+      preflight_only:
+        description: Owner-only, zero-inference Gemini credential/model capability probe
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
   pull-requests: read
@@ -43,6 +48,7 @@ jobs:
       - name: Validate reviewer code locally
         run: python -m unittest discover -s .github/scripts/tests -p test_wow_simple_security_review.py -q
       - name: Mint separate QA App checks-only token
+        if: inputs.preflight_only != true
         id: qa
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
@@ -50,7 +56,14 @@ jobs:
           private-key: ${{ secrets.WOW_QA_APP_PRIVATE_KEY }}
           repositories: WOW-Dashboard
           permission-checks: write
+      - name: Authenticate Gemini model without generating content
+        if: inputs.preflight_only == true
+        env:
+          WOW_QA_REVIEW_GEMINI_API_KEY: ${{ secrets.WOW_QA_REVIEW_GEMINI_API_KEY }}
+          WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
+        run: python .github/scripts/wow_simple_security_review.py --preflight
       - name: Review exact PR diff and publish QA App check
+        if: inputs.preflight_only != true
         env:
           GH_READ_TOKEN: ${{ github.token }}
           QA_APP_TOKEN: ${{ steps.qa.outputs.token }}
@@ -60,7 +73,7 @@ jobs:
           WOW_QA_GEMINI_MODEL: ${{ vars.WOW_QA_GEMINI_MODEL }}
         run: python .github/scripts/wow_simple_security_review.py
       - name: Retain attributable reviewer decision
-        if: always()
+        if: always() && inputs.preflight_only != true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wow-independent-security-${{ github.run_id }}-${{ github.run_attempt }}

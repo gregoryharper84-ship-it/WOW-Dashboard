@@ -511,6 +511,57 @@ These are typed research-input rejections from `v17/refit_scheduler.py`, never m
 | `REFIT_MATURED_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Enough fully settled pre-cutoff training events or diagnostic events are unavailable. | No |
 
 
+## Reviewer provider compatibility — owner-only read-only preflight
+
+These failure codes preserve the pre-existing protected semantic-review gate. A
+preflight GET validates only provider compatibility; it produces no QA receipt,
+independent security PASS, merger authorization, probability or market order.
+Recover only through authenticated protected-main workflow execution.
+
+| Code | Owner / stage | Recovery class | Bounded safe context | Next action |
+| --- | --- | --- | --- | --- |
+| `REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED` | Owner / QA preflight admission | EXTERNAL_AUTHORIZATION | GitHub event type and trusted main identity only | Dispatch owner-only diagnostic from protected main |
+| `GEMINI_MODEL_INVALID` | QA reviewer / model selection | CONFIGURATION | Expected allowlisted model ID, never secret | Remove explicit stale model variable or bind reviewed stable model |
+| `REVIEWER_PREFLIGHT_CREDENTIAL_MISSING` | QA environment / preflight | PROVIDER_CREDENTIAL | Credential present/missing boolean only | Restore existing scoped QA provider credential |
+| `REVIEWER_PREFLIGHT_MODEL_CAPABILITY_UNVERIFIED` | QA provider / metadata GET | PROVIDER_CONFIGURATION | Model identity and `generateContent` supported boolean only | Verify project entitlement and exact supported method |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider / review | PROVIDER_CONFIGURATION | Structured Google NOT_FOUND for API version/method; no response text or keys | Use owner-approved model selection and a fresh independent exact-head review |
+| `HTTP_404` | QA provider / review or preflight | DIAGNOSE | Fixed allowlisted endpoint label and HTTP status only | Attribute endpoint/model/credential; do not infer model retirement or semantic REJECT |
+| `REVIEWER_CLI_ARGUMENT_INVALID` | QA workflow / preflight entrypoint | CONFIGURATION | Argument shape only | Invoke `--preflight` or normal review through trusted workflow |
+
+A structured model failure may allow the existing reviewer fallback mechanism,
+but only a genuine independent semantic PASS on the exact source SHA qualifies as
+security evidence. A prior signed REJECT remains binding at that SHA.
+
+
+## Reviewer model discovery — bounded credential-scoped candidates
+
+No new QA App check, merge gate, approval, spending limit, or probability output
+is created by model discovery. The credential-scoped GET lists provider models;
+only stable, exact, approved family IDs are eligible. The model-ID allowlist is
+anchored (including end of string), and the reviewer logs selected/unavailable
+model IDs only, never prompts, API keys, raw response data, or URLs. At most
+three approved candidates are attempted, only after typed
+`PROVIDER_MODEL_UNAVAILABLE`; a substantive REJECT/malformed answer is terminal.
+
+| Typed code | Owner / stage | Recovery class | Bounded safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `REVIEW_MODEL_CATALOG_INVALID` | QA provider selection / GET models | FAIL_CLOSED | Provider label and invalid shape only | Repair provider response contract; do not guess from static models |
+| `REVIEW_MODEL_CATALOG_PAGINATION_REQUIRED` | QA provider selection / GET models | FAIL_CLOSED | Provider label and nonempty next-page boolean only | Add governed bounded pagination before using incomplete catalog |
+| `REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL` | QA owner-only preflight | PROVIDER_CONFIGURATION | Provider/model readiness labels only | Verify existing credential entitlement or approved model availability |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider model availability | PROVIDER_CONFIGURATION | Reviewed exact model ID only | Try next approved credential-listed model within same provider; after bounded exhaustion retain existing authenticated owner fallback |
+| `GEMINI_MODEL_INVALID` / `CLAUDE_MODEL_UNAPPROVED` | QA reviewer / configured model | FAIL_CLOSED | Sanitized model pattern failure only | Correct explicitly unapproved variable via governed trust-root change |
+
+The optional `WOW_QA_GEMINI_MODEL`/`WOW_QA_CLAUDE_MODEL` preference
+is honored only when listed under the credential and approved family.
+A failed transient model catalog GET may use a short *static approved*
+candidate list for normal review; owner preflight has `strict=True` and
+may report `PROVIDER_READY` only with real live catalog proof.
+A valid empty catalog, malformed listing, authentication failure, or
+partial paginated listing cannot be treated as approved availability.
+Changing source invalidates prior owner review; no code may forge the
+current-head approval or a signed independent semantic PASS.
+
+
 ## Simple V1 deterministic delivery re-entry
 
 These are read-only delivery **decisions**, not fitted-model failure substitutes,
