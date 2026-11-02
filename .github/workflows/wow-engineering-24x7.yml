@@ -1,0 +1,173 @@
+name: wow-engineering-24x7
+
+# Replacement candidate: one GitHub-native intake, not a second live controller.
+# Continuous event intake + inexpensive five-minute safety-net scan.
+# Production dispatch stays off until the protected cutover is independently accepted.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  issues:
+    types: [opened, reopened, labeled, unlabeled, closed]
+  pull_request_target:
+    branches: [main]
+    types: [closed]
+  workflow_run:
+    workflows:
+      - wow-verify
+      - wow-engine-verify
+      - wow-v17-release-production-verification-agent
+      - wow-v17-chatgpt-engineering-worker
+      - wow-v17-claude-engineering-worker
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      target_incident:
+        description: "Optional exact existing priority issue number"
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/wow-engineering-24x7.yml"
+      - "artifacts/wow-engine/v17/engineering_24x7_selector.py"
+      - "artifacts/wow-engine/test_engineering_24x7_selector.py"
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: wow-engineering-24x7-controller
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify deterministic 24x7 admission tests
+        run: python -m unittest discover -s artifacts/wow-engine -p test_engineering_24x7_selector.py -v
+
+  select:
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    outputs:
+      action: \${{ steps.plan.outputs.action }}
+      incident: \${{ steps.plan.outputs.incident }}
+      pr: \${{ steps.plan.outputs.pr }}
+      sha: \${{ steps.plan.outputs.sha }}
+    steps:
+      - name: Checkout protected main only
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Gather complete bounded canonical GitHub intake
+        env:
+          GH_TOKEN: \${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Never trust event payload as a coding instruction or perform PR-head checkout.
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request == null)' | jq -s '.' \
+            > "$RUNNER_TEMP/engineering-issues.json"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
+            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
+      - name: Restoration-first deterministic single-target decision
+        id: plan
+        shell: bash
+        env:
+          REQUESTED_INCIDENT: \${{ inputs.target_incident }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "\${REQUESTED_INCIDENT:-}" ]; then
+            [[ "$REQUESTED_INCIDENT" =~ ^[1-9][0-9]*$ ]] || exit 2
+            args+=(--target "$REQUESTED_INCIDENT")
+          fi
+          python artifacts/wow-engine/v17/engineering_24x7_selector.py \
+            --issues "$RUNNER_TEMP/engineering-issues.json" \
+            --prs "$RUNNER_TEMP/engineering-prs.json" \
+            --output "$RUNNER_TEMP/engineering-plan.json" "\${args[@]}"
+          action=$(jq -r '.action' "$RUNNER_TEMP/engineering-plan.json")
+          incident=$(jq -r '.incident // ""' "$RUNNER_TEMP/engineering-plan.json")
+          pr=$(jq -r '.pr // ""' "$RUNNER_TEMP/engineering-plan.json")
+          sha=$(jq -r '.head_sha // ""' "$RUNNER_TEMP/engineering-plan.json")
+          [[ "$action" == "IDLE" || "$action" == "BUILD" || "$action" == "RESUME_PR" ]] || exit 2
+          {
+            printf 'action=%s\nincident=%s\npr=%s\nsha=%s\n' "$action" "$incident" "$pr" "$sha"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## WOW Engineering — 24x7 execution intake"
+            echo "- Action: $action"
+            echo "- Canonical issue: \${incident:-none}"
+            echo "- Existing PR: \${pr:-none}"
+            echo "- Protected main: $GITHUB_SHA"
+            echo "- Cutover enabled: \${{ vars.WOW_24X7_ACTIVE == 'true' }}"
+            echo "- Old writers retired: \${{ vars.WOW_24X7_LEGACY_ROUTES_OFF == 'true' }}"
+            echo "- Policy: RESTORE first, then APPROVED production improvement"
+            echo "- Cursor: permanently excluded"
+            echo "- Betting: can_execute=false; V17_TERMINAL_REDUCER"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dispatch:
+    # A controlled, auditable cutover: no overlapping legacy writer or provider retry.
+    # Old workers still enforce the legacy remote fence; this never bypasses it.
+    if: >-
+      needs.select.result == 'success' &&
+      needs.select.outputs.action == 'BUILD' &&
+      vars.WOW_24X7_ACTIVE == 'true' &&
+      vars.WOW_24X7_LEGACY_ROUTES_OFF == 'true'
+    needs: [select]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+      issues: read
+    concurrency:
+      group: wow-v17-engineering-implementation-single-writer
+      cancel-in-progress: false
+    steps:
+      - name: Recheck exact target and prevent duplicate active writers
+        env:
+          GH_TOKEN: \${{ github.token }}
+          INCIDENT: \${{ needs.select.outputs.incident }}
+          PROVIDER: \${{ vars.WOW_24X7_CODING_PROVIDER }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$INCIDENT" =~ ^[1-9][0-9]*$ ]] || exit 2
+          case "$PROVIDER" in
+            openai) worker=wow-v17-chatgpt-engineering-worker.yml ;;
+            claude) worker=wow-v17-claude-engineering-worker.yml ;;
+            *) echo "::warning::CODING_PROVIDER_UNAVAILABLE: no authorized provider"; exit 0 ;;
+          esac
+          issue=$(gh api "/repos/$GITHUB_REPOSITORY/issues/$INCIDENT")
+          jq -e '.state == "open"' <<< "$issue" >/dev/null
+          for active_worker in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            active=$(gh run list -R "$GITHUB_REPOSITORY" --workflow "$active_worker" \
+              --limit 50 --json status \
+              --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting")] | length')
+            if [ "$active" -gt 0 ]; then
+              echo "::notice::EXISTING_WRITER_ACTIVE: $active_worker"
+              exit 0
+            fi
+          done
+          # The current provider worker owns the only real implementation and
+          # must independently pass credentials, quotas, and remote-writer guards.
+          gh workflow run "$worker" -R "$GITHUB_REPOSITORY" \
+            --ref main -f target_incident="$INCIDENT" -f lease_group=GLOBAL
+          echo "Dispatched $worker for issue #$INCIDENT; production repair remains unverified." >> "$GITHUB_STEP_SUMMARY"
