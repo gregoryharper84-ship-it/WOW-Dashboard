@@ -67,8 +67,18 @@ def acquire_daily_prop_snapshots(
         # A producer cannot overclaim attempts or publication authority.
         attempted = int(outcome.get("attempted") or 0)
         if attempted < 0 or attempted > limit:
-            raise RuntimeError("PROP_DAILY_DISCOVERY_BUDGET_CONTRACT_INVALID")
+            # Never trust a producer that violates the attempt budget; preserve
+            # a typed per-sport error rather than crashing the Daily route.
+            outcome = {
+                "status": "DATA_UNOBTAINABLE", "sport": sport, "attempted": 0,
+                "persisted": 0, "receipts": [], "next_offset": None,
+                "blockers": ["PROP_DAILY_DISCOVERY_BUDGET_CONTRACT_INVALID"],
+                "can_execute": False,
+            }
+            attempted = 0
         total_attempted += attempted
+        outcome["probability_publishable"] = False
+        outcome["rank_eligible"] = False
         outcome["can_execute"] = False
         outcomes.append(outcome)
         return outcome
