@@ -1,11 +1,13 @@
 import { defineConfig } from "vitest/config";
 import TestDriver from "testdriverai/vitest";
 
-// Note: dotenv is loaded automatically by the TestDriver SDK
+// Keep TestDriver isolated from this monorepo's node:test and pytest suites.
+// Do not add an automatic schedule or PR trigger: hosted tests are metered.
 export default defineConfig({
   test: {
-    testTimeout: 900000,
-    hookTimeout: 900000,
+    include: ["tests/production.test.js"],
+    testTimeout: 240000,
+    hookTimeout: 240000,
     reporters: ["default", TestDriver()],
     setupFiles: ["testdriverai/vitest/setup"],
   },
