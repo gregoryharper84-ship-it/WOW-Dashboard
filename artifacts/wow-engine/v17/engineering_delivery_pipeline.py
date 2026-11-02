@@ -15,6 +15,8 @@ SHA = re.compile(r"[0-9a-f]{40}\Z")
 QA_APP_ID = 5245832
 RELEASE_APP_ID = 5245853
 QA_CHECK = "WOW Independent Security Review"
+INDEPENDENT_QA_CHECK = "WOW Independent QA exact-head"
+RELEASE_CHECK = "WOW Release Authority exact-head"
 
 
 def _result(code: str, next_action: str, trigger: str, *, pr: int | None = None,
@@ -56,7 +58,7 @@ def _latest(checks: list[dict]) -> dict[str, dict]:
         if type(before) is int and type(after) is int and before != after:
             if after > before:
                 by_name[name] = check
-        elif (prev.get("app", {}).get("id") != check.get("app", {}).get("id")
+        elif ((prev.get("app") or {}).get("id") != (check.get("app") or {}).get("id")
               or prev.get("status") != check.get("status")
               or prev.get("conclusion") != check.get("conclusion")):
             raise ValueError("CONFLICTING_CHECK_EVIDENCE")
@@ -65,7 +67,7 @@ def _latest(checks: list[dict]) -> dict[str, dict]:
 
 def _signed_reject(check: dict) -> bool:
     output = check.get("output") or {}
-    return (check.get("app", {}).get("id") == QA_APP_ID
+    return ((check.get("app") or {}).get("id") == QA_APP_ID
             and check.get("conclusion") == "failure"
             and isinstance(output, dict)
             and isinstance(output.get("title"), str)
@@ -110,7 +112,7 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
     # All historical QA checks are considered before taking the newest
     # check-run; a signed REJECT at this SHA is permanent until source changes.
     qa_checks = [c for c in checks if c.get("name") == QA_CHECK]
-    if any(c.get("app", {}).get("id") != QA_APP_ID for c in qa_checks):
+    if any((c.get("app") or {}).get("id") != QA_APP_ID for c in qa_checks):
         return _result("QA_IDENTITY_INVALID", "REPAIR_QA_APP_IDENTITY",
                        "QA_APP_IDENTITY_RESTORED", pr=number, sha=expected_sha)
     if any(_signed_reject(c) for c in qa_checks):
@@ -121,7 +123,7 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
     if not qa:
         return _result("EVIDENCE_PENDING", "VERIFY_INDEPENDENT_REVIEW_DISPATCH",
                        "QA_APP_CHECK_PRESENT_AT_EXACT_SHA", pr=number, sha=expected_sha)
-    if qa.get("app", {}).get("id") != QA_APP_ID:
+    if (qa.get("app") or {}).get("id") != QA_APP_ID:
         return _result("QA_IDENTITY_INVALID", "REPAIR_QA_APP_IDENTITY",
                        "QA_APP_IDENTITY_RESTORED", pr=number, sha=expected_sha)
     if qa.get("status") != "completed":
@@ -129,13 +131,32 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
                        "QA_APP_CHECK_TERMINAL_AT_EXACT_SHA", pr=number, sha=expected_sha)
     if qa.get("conclusion") != "success":
         return _failed_qa(qa, number, expected_sha)
-    # The Release App is an independent gate, not a consequence of QA PASS.
-    release = [c for c in checks if (c.get("app") or {}).get("id") == RELEASE_APP_ID]
-    if not release:
+    # The QA App must actually publish a PASS, not merely a success conclusion
+    # paired with an incompatible HOLD/REJECT title.
+    qa_title = (qa.get("output") or {}).get("title")
+    if qa_title is not None and (not isinstance(qa_title, str)
+                                 or not qa_title.startswith("PASS")):
+        return _result("INDEPENDENT_QA_NOT_ACCEPTED", "DIAGNOSE_SIGNED_REVIEW_RECEIPT",
+                       "NEW_VALID_QA_APP_EVIDENCE", pr=number, sha=expected_sha)
+
+    # Semantic security, exact-head independent QA, and Release Authority
+    # are THREE distinct protected checks. One cannot substitute for another.
+    native_qa = by_name.get(INDEPENDENT_QA_CHECK)
+    if native_qa is None:
+        return _result("QA_GATE_PENDING", "FOLLOW_EXISTING_QA_CHECK",
+                       "QA_EXACT_HEAD_PASS", pr=number, sha=expected_sha)
+    if ((native_qa.get("app") or {}).get("id") != QA_APP_ID
+            or native_qa.get("status") != "completed"
+            or native_qa.get("conclusion") != "success"):
+        return _result("QA_GATE_NOT_ACCEPTED", "REPAIR_INDEPENDENT_QA_GATE",
+                       "QA_EXACT_HEAD_PASS", pr=number, sha=expected_sha)
+    release = by_name.get(RELEASE_CHECK)
+    if release is None:
         return _result("RELEASE_EVIDENCE_PENDING", "FOLLOW_EXISTING_RELEASE_CHECK",
                        "RELEASE_APP_CHECK_AT_EXACT_SHA", pr=number, sha=expected_sha)
-    if any(c.get("status") != "completed" or c.get("conclusion") != "success"
-           for c in release):
+    if ((release.get("app") or {}).get("id") != RELEASE_APP_ID
+            or release.get("status") != "completed"
+            or release.get("conclusion") != "success"):
         return _result("RELEASE_NOT_ACCEPTED", "REPAIR_RELEASE_FAILURE",
                        "VALID_RELEASE_APP_PASS", pr=number, sha=expected_sha)
     # Still no merge approval: protected native checks and CODEOWNER are separate.
