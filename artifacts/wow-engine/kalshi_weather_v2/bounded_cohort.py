@@ -277,7 +277,11 @@ def run_bounded_capture_only_cohort_once(
             samples_captured=captured,
             samples_skipped_existing=skipped,
             contracts_discovered=contracts_discovered,
-            failures=tuple(capture_failures),
+            failures=(
+                *capture_failures,
+                *supplemental_failures,
+                *microstructure_failures,
+            ),
             eligible_targets=sum(1 for target in targets if target.enabled),
         ),
         targets_checked=sum(1 for target in targets if target.enabled),
