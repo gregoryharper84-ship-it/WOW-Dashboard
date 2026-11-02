@@ -180,3 +180,66 @@ def test_daily_snapshot_write_failure_is_distinct_from_hydration(monkeypatch: py
     assert result["status"] == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
     assert result["receipts"][0]["write_status"] == "SNAPSHOT_WRITE_FAILED"
     assert result["can_execute"] is False
+
+
+def test_nfl_pregame_uses_requested_timezone_across_provider_dates(monkeypatch: pytest.MonkeyPatch):
+    from datetime import timedelta
+    seen_dates = []
+    event = {
+        "id": "401-tokyo", "date": "2026-10-31T23:30:00Z",
+        "status": {"type": {"state": "pre", "completed": False}},
+        "competitions": [{"competitors": [
+            {"team": {"id": "1", "abbreviation": "CHI"}},
+            {"team": {"id": "2", "abbreviation": "SEA"}},
+        ]}],
+    }
+    monkeypatch.setattr(subject.nfl, "_canonical_event_metadata", lambda _event: {
+        "verified_canonical_event_id": "2026_08_CHI_SEA",
+    })
+    class Response:
+        status_code = 200
+        def __init__(self, items): self.items = items
+        def json(self): return {"events": self.items}
+    def fetch(_url, *, params=None, **_kwargs):
+        day = params["dates"]
+        seen_dates.append(day)
+        return Response([event] if day in {"20261031", "20261101"} else [])
+    now = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    rows = subject._pregame_events(
+        "2026-11-01", now=now, http_get=fetch,
+        requested_timezone="Asia/Tokyo",
+    )
+    assert seen_dates == ["20261031", "20261101", "20261102"]
+    assert len(rows) == 1
+    assert rows[0]["canonical_event_id"] == "2026_08_CHI_SEA"
+    chicago = subject._pregame_events(
+        "2026-11-01", now=now, http_get=fetch,
+        requested_timezone="America/Chicago",
+    )
+    assert chicago == []
+
+
+def test_scheduled_nfl_rotation_reaches_later_candidates(monkeypatch: pytest.MonkeyPatch):
+    candidates = [
+        _candidate("Alpha QB", "PASSING_YARDS"),
+        _candidate("Alpha QB", "RUSHING_YARDS"),
+        _candidate("Beta WR", "RECEIVING_YARDS", "WR"),
+        _candidate("Gamma WR", "ANYTIME_TD", "WR"),
+    ]
+    _install(monkeypatch, candidates)
+    req = lambda slot: subject.NFLForwardEvidenceRequest(
+        requested_date="2026-09-28", max_candidates=2,
+        rotating_window_slot=slot,
+    )
+    first = subject.acquire_nfl_forward_evidence_batch(
+        req(0), db=_DB(), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    second = subject.acquire_nfl_forward_evidence_batch(
+        req(1), db=_DB(), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert first["candidate_offset"] == 0
+    assert second["candidate_offset"] == 2
+    assert first["attempted"] == second["attempted"] == 2
+    assert {r["player"] for r in first["receipts"]} == {"Alpha QB"}
+    assert {r["player"] for r in second["receipts"]} == {"Beta WR", "Gamma WR"}
+    assert all(r["can_execute"] is False for r in second["receipts"])
