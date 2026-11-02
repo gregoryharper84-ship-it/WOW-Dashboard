@@ -105,6 +105,54 @@ def match(lessons: list[dict], category: str) -> dict:
     }
 
 
+
+def intake_advice(records: list[dict], *, title: str, evidence: str,
+                  failure_category: str | None = None) -> dict:
+    """Offer exact-match historical guidance during canonical Reporter intake.
+
+    A category can be supplied explicitly or detected *verbatim* in title/evidence.
+    Never infer from symptoms, rank approximate matches, or approve a new repair.
+    """
+    found = verified_lessons(records)
+    if failure_category is not None:
+        # This validates even if there are no lessons in the ledger.
+        return match(found, failure_category)
+    text = title + "\n" + evidence
+    categories = sorted({item["failure_category"] for item in found})
+    present = [category for category in categories
+               if re.search(r"(?<![A-Z0-9_])" + re.escape(category) +
+                            r"(?![A-Z0-9_])", text)]
+    if len(present) != 1:
+        return {
+            "status": "AMBIGUOUS_CATEGORY" if present else "NO_VERIFIED_MATCH",
+            "category": None, "matches": [], "advisory_only": True,
+            "production_verified_for_current_incident": False,
+        }
+    return match(found, present[0])
+
+
+def intake_markdown(result: dict) -> str:
+    """Small, unprivileged historical context for the Reporter packet."""
+    lines = [
+        "## Historical Verified Lessons (advisory only)",
+        "",
+        "Read-only prior-incident context; do not infer current root cause, "
+        "authorize a repair, or waive independent verification.",
+        "",
+        f"- lookup_status: {result['status']}",
+        f"- exact_failure_category: {result['category'] or 'NONE'}",
+    ]
+    for lesson in result["matches"]:
+        lines += [
+            f"- prior_incident: {lesson['incident_id']}",
+            f"- reference_pr: {lesson['reference_pr']}",
+            f"- prior_root_cause: {lesson['root_cause']}",
+            f"- prior_test_gap: {lesson['why_test_missed']}",
+            f"- prior_regression: {lesson['regression_test']}",
+            f"- prior_prevention: {lesson['preventive_control']}",
+        ]
+    return "\n".join(lines) + "\n"
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("list", "match"))
