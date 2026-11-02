@@ -53,12 +53,14 @@ def _acquire_once(
     requested_date: str,
     timezone_name: str,
     max_candidates: int,
+    rotating_window_slot: int | None = None,
 ) -> dict[str, Any]:
     return acquire_daily_prop_snapshots(
         db=db_client_fn(),
         requested_date=requested_date,
         requested_timezone=timezone_name,
         max_candidates=max_candidates,
+        rotating_window_slot=rotating_window_slot,
     )
 
 
@@ -96,6 +98,7 @@ async def run_prop_evidence_acquisition_loop(
                     requested_date=requested_date,
                     timezone_name=timezone_name,
                     max_candidates=max_candidates,
+                    rotating_window_slot=int(now_fn().timestamp() // 3600),
                 )
                 logger.warning(
                     "WOW_PROP_EVIDENCE_ACQUISITION status=%s slate_date=%s attempted=%s hydrated=%s persisted=%s held=%s write_failed=%s blockers=%s can_execute=false",
