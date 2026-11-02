@@ -263,6 +263,8 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             and proof.get("run_id") is None
             and proof.get("latest_run_id") is None
             and isinstance(proof.get("negative_launch_proof"), dict)
+            and type(proof["negative_launch_proof"].get("pr_agents_checked")) is int
+            and proof["negative_launch_proof"]["pr_agents_checked"] == 0
         )
     )
     if (proof.get("status") != "CURSOR_TERMINAL_STATUS_VERIFIED"
@@ -317,6 +319,8 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
                 or not isinstance(fresh_pr.get("head"), dict)
                 or not isinstance(fresh_pr.get("base"), dict)
                 or fresh_pr["head"].get("sha") != expected_head
+                or (is_failed_launch
+                    and fresh_pr["head"].get("ref") != proof["reservation"].get("reservation_branch"))
                 or not isinstance(fresh_pr["head"].get("repo"), dict)
                 or fresh_pr["head"]["repo"].get("full_name") != REPOSITORY
                 or fresh_pr["base"].get("ref") != "main"
@@ -341,15 +345,20 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
             else:
                 raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_REACTIVATED")
             try:
-                _cursor_receipt_mod.verify_negative_inventories(
+                fresh_inventory = _cursor_receipt_mod.verify_negative_inventories(
                     cursor_token, agent_id=agent_id, pr_number=pr_number,
                     api=_cursor_receipt_mod.api_json,
                 )
+                if (not isinstance(fresh_inventory, dict)
+                        or type(fresh_inventory.get("pr_agents_checked")) is not int
+                        or fresh_inventory["pr_agents_checked"] != 0):
+                    raise ReceiptBlocked("CURSOR_PR_ASSOCIATED_AGENT_EXISTS")
             except ReceiptBlocked as exc:
                 if exc.code in {
                     "CURSOR_AGENT_INVENTORY_CONTRADICTION",
                     "CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS",
                     "CURSOR_ACTIVE_PR_AGENT_EXISTS",
+                    "CURSOR_PR_ASSOCIATED_AGENT_EXISTS",
                 }:
                     raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_REACTIVATED") from None
                 raise ReleaseBlocked("REMOTE_RELEASE_PROVIDER_RECHECK_UNVERIFIED") from None
@@ -398,6 +407,8 @@ def append_terminal_release(api, *, cursor_token: str, run_id: int,
         "terminal_authority": "V17_TERMINAL_REDUCER",
     }
     if is_failed_launch:
+        doc["negative_inventory_contract"] = 2
+        doc["pr_agents_checked"] = 0
         doc["pr_sha"] = old["pr_sha"]
         doc["main_sha"] = old["main_sha"]
     body = f"{RELEASE_MARKER}{old['incident_id']} -->\n" + json.dumps(doc, sort_keys=True)

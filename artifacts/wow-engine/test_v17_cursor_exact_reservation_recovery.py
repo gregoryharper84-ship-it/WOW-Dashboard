@@ -459,9 +459,9 @@ def test_failed_launch_negative_proof_verifies_404_and_complete_archived_invento
     (lambda f: setattr(f, "agent_response", {"id": FAILED_AGENT, "status": "IDLE"}), "CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION"),
     (lambda f: setattr(f, "agent_response", probe.ReceiptBlocked("STATUS_API_HTTP_503")), "STATUS_API_HTTP_503"),
     (lambda f: setattr(f, "global_pages", [{"items": [{"id": FAILED_AGENT, "status": "IDLE"}]}]), "CURSOR_AGENT_INVENTORY_CONTRADICTION"),
-    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": FAILED_AGENT, "status": "IDLE"}]}]), "CURSOR_AGENT_INVENTORY_CONTRADICTION"),
+    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": FAILED_AGENT, "status": "IDLE"}]}]), "CURSOR_PR_ASSOCIATED_AGENT_EXISTS"),
     (lambda f: setattr(f, "global_pages", [{"items": [{"id": "bc-other", "status": "ACTIVE"}]}]), "CURSOR_GLOBAL_ACTIVE_AGENT_EXISTS"),
-    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": "bc-other", "status": "ACTIVE"}]}]), "CURSOR_ACTIVE_PR_AGENT_EXISTS"),
+    (lambda f: setattr(f, "pr_pages", [{"items": [{"id": "bc-other", "status": "ACTIVE"}]}]), "CURSOR_PR_ASSOCIATED_AGENT_EXISTS"),
     (lambda f: setattr(f, "global_pages", [{"items": [], "nextCursor": "page2"}]), "CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED"),
     (lambda f: f.origin.update(conclusion="success"), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
 ])
@@ -532,6 +532,16 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     ), patch(
         "v17.cursor_terminal_status_receipt.api_json", side_effect=fixture.api,
     ):
+        # After the first negative proof, a branch rename with unchanged SHA
+        # must not pass the finalizer's fresh PR readback.
+        fixture.pr["head"]["ref"] = "fix/unrelated-ref"
+        with pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_PR_MOVED_AFTER_PROBE"):
+            release.append_terminal_release(
+                api, cursor_token="fixture", run_id=99010, run_attempt=1,
+                source_sha="a" * 40, reservation_comment_id=FAILED_CID,
+            )
+        fixture.pr["head"]["ref"] = "fix/synthetic-101"
+        assert api.puts == 0
         with pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_ORIGINAL_RESERVATION_UNVERIFIED"):
             release.append_terminal_release(
                 api, cursor_token="fixture", run_id=99010, run_attempt=1,
@@ -548,6 +558,8 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     assert appended_doc["cursor_run_id"] is None
     assert appended_doc["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
     assert appended_doc["agent_status"] == "NEVER_CREATED"
+    assert appended_doc["negative_inventory_contract"] == 2
+    assert appended_doc["pr_agents_checked"] == 0
     released = release.verified_released_ids(
         api.comments, ledger.reservations(api.comments), get_run=lambda _: run(),
     )
@@ -562,114 +574,222 @@ def test_failed_launch_finalizer_appends_verified_release_without_inventing_run_
     with pytest.raises(ledger.ProviderUnavailable, match="REMOTE_RELEASE_RECEIPT_UNVERIFIED"):
         ledger.assert_no_remote_writer(bad_comments, get_run=lambda _: run())
 
-LEGACY_CREATED = "2026-10-31T19:15:12Z"
-LEGACY_RUN_CREATED = "2026-10-31T19:14:58Z"
+def exact_post_cutover_fixture():
+    """One immutable, bot-authored orphaned reservation; no live provider calls."""
+    witness = probe.EXACT_POST_CUTOVER_BRANCH_WITNESS
+    original = ledger.receipt(
+        "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id="1988",
+        assignment_attempts=1, hold=True, lease_group="PR_2211",
+        main_sha="8857e4882f85f01dc47c78ee94a5318398289179",
+        next_action=("Reconcile this reservation; keep the shared writer hold until "
+                     "Cursor termination and independent review are verified."),
+        pr_number="2211", pr_sha="27e1a86262d80e032ca2e8c8fb64430c137b6a9a",
+        source_pr=2211, cursor_run_id=None,
+        cursor_agent_id="bc-df9cd4ca-0f45-5d5d-ac25-d500977be83e",
+        worker_id="github-actions:41276607293:1",
+    )
+    body = ledger._body(original)
+    assert hashlib.sha256(body.encode()).hexdigest() == witness["digest"]
+    fixture = {
+        "comment": {
+            "id": witness["comment_id"],
+            "body": body,
+            "user": {"login": "github-actions[bot]", "id": 41898282},
+            "issue_url": f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/issues/1138",
+        },
+        "origin": {
+            "id": 41276607293, "run_attempt": 1, "event": "workflow_dispatch",
+            "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+            "head_sha": witness["main_sha"], "head_branch": "main",
+            "status": "completed", "conclusion": "failure",
+            "created_at": witness["origin_created_at"],
+            "repository": {"full_name": probe.REPOSITORY},
+            "head_repository": {"full_name": probe.REPOSITORY},
+        },
+        "owner_request": {
+            "id": witness["owner_comment_id"],
+            "body": "/wow-cursor\nP0 NBA #1988 on existing PR #2211 at its current exact head. Do not create another PR, fit a replacement model, merge or deploy. Diagnose actual wow-engine-verify shard-2 failure: shared existing-PR governance fixture TEMPORARY_FALLBACK_PROVIDER_SUNSET (1710 other tests passed). Reuse existing narrowly-scoped tested fix PR #2345 via authorized independent governance adoption, rather than modifying NBA settlement logic to hide the fixture error. Also reconcile substantive exact-head independent security REJECT with minimal legitimate edits, and rerun all affected regression/tests. Do not modify any file leased by PR #2108; honor shared writer lease and fail closed on unavailable provider/authorization. Return exact branch SHA, CI run URLs, independent review decision, and the first typed remaining blocker. Keep source-time/official ID/immutable prediction protections, V17_TERMINAL_REDUCER and can_execute=false. No wager or certification changes.",
+            "user": {"login": "gregoryharper84-ship-it", "id": 285088163},
+            "issue_url": f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}/issues/2211",
+            "created_at": witness["owner_comment_created_at"],
+            "updated_at": witness["owner_comment_created_at"],
+        },
+        "pr": {
+            "number": 2211, "state": "open", "changed_files": 1,
+            "head": {
+                "sha": witness["source_sha"], "ref": witness["branch"],
+                "repo": {"full_name": probe.REPOSITORY},
+            },
+            "base": {"ref": "main", "repo": {"full_name": probe.REPOSITORY}},
+        },
+    }
+    return fixture
 
 
-def _legacy(fixture, *, created=LEGACY_CREATED, updated=None, run_created=LEGACY_RUN_CREATED,
-            keep_branch=False):
-    """Make the reservation look like one written before `branch` existed."""
-    doc = json.loads(fixture.comment["body"].split("\n", 1)[1])
-    if not keep_branch:
-        doc.pop("branch")
-    fixture.comment["body"] = ledger._body(doc)
-    fixture.comment["created_at"] = created
-    fixture.comment["updated_at"] = updated or created
-    if run_created is not None:
-        fixture.origin["created_at"] = run_created
-    return doc
+def prove_exact_post_cutover(fixture):
+    witness = probe.EXACT_POST_CUTOVER_BRANCH_WITNESS
+    prefix = f"{probe.GITHUB_API}/repos/{probe.REPOSITORY}"
+    def api(url, *, token, basic=False):
+        if url == prefix + f"/issues/comments/{witness['comment_id']}":
+            return copy.deepcopy(fixture["comment"])
+        if url == prefix + f"/issues/comments/{witness['owner_comment_id']}":
+            return copy.deepcopy(fixture["owner_request"])
+        if url == prefix + "/actions/runs/41276607293":
+            return copy.deepcopy(fixture["origin"])
+        if url == prefix + "/pulls/2211":
+            return copy.deepcopy(fixture["pr"])
+        if url == prefix + "/pulls/2211/files?per_page=100&page=1":
+            return [{"filename": "artifacts/wow-engine/v17/nba_official_settlement.py"}]
+        if url == f"{probe.CURSOR_API}/agents/{witness['agent_id']}":
+            assert basic
+            raise probe.ReceiptBlocked("STATUS_API_HTTP_404")
+        if url.startswith(f"{probe.CURSOR_API}/agents?"):
+            assert basic
+            return {"items": []}
+        raise AssertionError("unexpected proof endpoint: " + url)
+    return probe.collect_receipt(
+        "fixture-cursor", "fixture-github", api=api,
+        reservation_comment_id=witness["comment_id"],
+    )
 
 
-def _after_legacy(mutate, **legacy_kwargs):
-    def run(fixture):
-        _legacy(fixture, **legacy_kwargs)
-        mutate(fixture)
-    return run
-
-
-def test_legacy_branchless_reservation_resolves_branch_from_live_pr_and_keeps_ancestry():
-    fixture = FailedLaunchFixture()
-    _legacy(fixture)
-    result = fixture.prove()
+def test_exact_post_cutover_branch_witness_does_not_release_without_provider_proof():
+    fixture = exact_post_cutover_fixture()
+    result = prove_exact_post_cutover(fixture)
     assert result["terminal_status"] == "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN"
-    assert result["agent_status"] == "NEVER_CREATED"
-    assert result["reservation"]["legacy_branchless"] is True
-    assert result["reservation"]["reservation_branch"] is None
-    assert result["head_sha"] == FAILED_NEW_HEAD
-    # The reservation digest is of the immutable original body.
-    assert result["reservation"]["reservation_sha256"] == hashlib.sha256(
-        fixture.comment["body"].encode()).hexdigest()
+    assert result["reservation"]["exact_branchless_witness"] is True
+    assert result["reservation"]["reservation_branch"] == (
+        probe.EXACT_POST_CUTOVER_BRANCH_WITNESS["branch"])
+    assert result["lease_released"] is False
+    assert result["can_execute"] is False
+    assert result["negative_launch_proof"]["pr_agents_checked"] == 0
 
 
-@pytest.mark.parametrize("mutate,expected", [
-    # Not eligible as legacy: created after the branch requirement, or edited.
-    (lambda f: _legacy(f, created="2026-11-01T01:44:02Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
-    (lambda f: _legacy(f, created="2026-11-02T00:00:00Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
-    (lambda f: _legacy(f, updated="2026-10-31T19:20:00Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
-    # Missing, malformed or calendar-invalid timestamps are unverifiable.
-    (_after_legacy(lambda f: f.comment.pop("created_at")), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
-    (_after_legacy(lambda f: f.comment.pop("updated_at")), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
-    (lambda f: _legacy(f, created="2026-00-01T00:00:00Z"), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
-    (lambda f: _legacy(f, created="2026-13-45T25:61:61Z"), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
-    (lambda f: _legacy(f, created="2026-10-31T19:15:12+00:00"), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
-    # The independently authenticated dispatcher run must also predate the window.
-    (lambda f: _legacy(f, run_created="2026-11-01T01:44:02Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
-    (lambda f: _legacy(f, run_created="2026-11-03T00:00:00Z"), "CURSOR_RESERVATION_IDENTITY_INVALID"),
-    (lambda f: _legacy(f, run_created=None), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
-    (lambda f: _legacy(f, run_created="not-a-date"), "CURSOR_RESERVATION_TIMESTAMPS_UNVERIFIED"),
-    # Live PR evidence rejected.
-    (_after_legacy(lambda f: f.pr["head"].update(ref="main")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
-    (_after_legacy(lambda f: f.pr["head"].update(ref="master")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
-    (_after_legacy(lambda f: f.pr["head"].pop("ref")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
-    (_after_legacy(lambda f: f.pr["head"].update(ref="")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
-    (_after_legacy(lambda f: f.pr["base"].update(ref="fix/synthetic-101")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
-    (_after_legacy(lambda f: f.pr.update(state="closed")), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
-    (_after_legacy(lambda f: f.comparison.update(status="diverged")), "CURSOR_PR_HEAD_NOT_DESCENDANT"),
-    (_after_legacy(lambda f: f.comparison.update(behind_by=1)), "CURSOR_PR_HEAD_NOT_DESCENDANT"),
-    (_after_legacy(lambda f: f.comparison["merge_base_commit"].update(sha="9" * 40)),
-     "CURSOR_PR_HEAD_NOT_DESCENDANT"),
-    # Compatibility never relaxes the nonexistence proof.
-    (_after_legacy(lambda f: setattr(f, "agent_response", {"id": FAILED_AGENT, "status": "IDLE"})),
-     "CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION"),
-    (_after_legacy(lambda f: setattr(f, "global_pages", [{"items": [], "nextCursor": "p2"}])),
-     "CURSOR_GLOBAL_AGENT_INVENTORY_UNVERIFIED"),
+@pytest.mark.parametrize("tamper,code", [
+    (lambda f: f["comment"].update(id=9), "CURSOR_RESERVATION_UNTRUSTED"),
+    (lambda f: f["comment"].update(body=f["comment"]["body"] + " "),
+     "CURSOR_RESERVATION_IDENTITY_INVALID"),
+    (lambda f: f["comment"]["user"].update(id=1), "CURSOR_RESERVATION_UNTRUSTED"),
+    (lambda f: f["origin"].update(conclusion="success"), "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
+    (lambda f: f["origin"].update(created_at="2026-11-01T04:20:01Z"),
+     "CURSOR_RESERVATION_WORKFLOW_UNVERIFIED"),
+    (lambda f: f["owner_request"].update(body="/wow-cursor\nforged task"),
+     "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED"),
+    (lambda f: f["owner_request"]["user"].update(id=1),
+     "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED"),
+    (lambda f: f["owner_request"].update(updated_at="2026-11-01T05:20:50Z"),
+     "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED"),
+    (lambda f: f["owner_request"].update(issue_url="https://github.com/other"),
+     "CURSOR_EXACT_WITNESS_OWNER_COMMAND_UNVERIFIED"),
+    (lambda f: f["pr"]["head"].update(ref="fix/renamed"),
+     "CURSOR_RESERVATION_BRANCH_MISMATCH"),
+    (lambda f: f["pr"]["head"].update(sha="a" * 40), "CURSOR_EXACT_WITNESS_PR_MOVED"),
 ])
-def test_legacy_branchless_fallback_fails_closed(mutate, expected):
+def test_exact_post_cutover_witness_rejects_tampering_and_moved_pr(tamper, code):
+    fixture = exact_post_cutover_fixture()
+    tamper(fixture)
+    with pytest.raises(probe.ReceiptBlocked, match=code):
+        prove_exact_post_cutover(fixture)
+
+
+def test_missing_branch_never_uses_historical_time_exception():
     fixture = FailedLaunchFixture()
-    mutate(fixture)
-    with pytest.raises(probe.ReceiptBlocked, match=expected):
-        fixture.prove()
-
-
-@pytest.mark.parametrize("mutate,expected", [
-    (lambda f: f.pr["head"].update(ref="fix/other"), "CURSOR_RESERVATION_BRANCH_MISMATCH"),
-    (lambda f: f.pr["head"].update(ref="main"), "CURSOR_SOURCE_PR_IDENTITY_INVALID"),
-])
-def test_recorded_branch_must_match_live_pr_head_ref(mutate, expected):
-    fixture = FailedLaunchFixture()
-    mutate(fixture)
-    with pytest.raises(probe.ReceiptBlocked, match=expected):
-        fixture.prove()
-
-
-@pytest.mark.parametrize("branch", ["", "  ", "main", "master", None, 7])
-def test_present_but_invalid_recorded_branch_is_not_legacy(branch):
-    fixture = FailedLaunchFixture()
-    doc = _legacy(fixture, keep_branch=True)
-    doc["branch"] = branch
-    fixture.comment["body"] = ledger._body(doc)
+    header, payload = fixture.comment["body"].split("\n", 1)
+    entry = json.loads(payload)
+    entry.pop("branch", None)
+    fixture.comment["body"] = header + "\n" + json.dumps(entry, sort_keys=True)
     with pytest.raises(probe.ReceiptBlocked, match="CURSOR_RESERVATION_IDENTITY_INVALID"):
         fixture.prove()
 
 
-@pytest.mark.parametrize("key,value", [
-    ("pr_sha", "a" * 40), ("cursor_agent_id", UNRELATED_HISTORICAL_AGENT),
-    ("lease_group", "PR_999"),
-])
-def test_legacy_reservation_altered_identity_is_rejected(key, value):
+def test_negative_inventory_rejects_second_page_unexpected_agent():
+    seen = []
+    def cursor_api(path, *, token, basic=False):
+        assert basic and token == "test-cursor"
+        seen.append(path)
+        if "prUrl=" in path:
+            if "cursor=next2" in path:
+                return {"items": [{"id": "bc-foreign-agent", "status": "ARCHIVED"}]}
+            return {"items": [], "nextCursor": "next2"}
+        return {"items": []}
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_PR_ASSOCIATED_AGENT_EXISTS"):
+        probe.verify_negative_inventories("test-cursor", agent_id=FAILED_AGENT,
+            pr_number=FAILED_PR, api=cursor_api)
+    assert len([u for u in seen if "prUrl=" in u]) == 2
+
+
+@pytest.mark.parametrize("identity_field", ["prUrl", "target", "source"])
+def test_global_inventory_pr_identity_contradiction_fails_closed(identity_field):
+    # A provider can report a PR-linked archived/idle agent globally while
+    # returning a misleading empty PR-filtered list. Never release that writer.
     fixture = FailedLaunchFixture()
-    doc = _legacy(fixture)
-    doc[key] = value
-    fixture.comment["body"] = ledger._body(doc)
-    with pytest.raises(probe.ReceiptBlocked):
+    target_url = f"https://github.com/{probe.REPOSITORY}/pull/{FAILED_PR}"
+    associated = {"id": "bc-other-archived", "status": "ARCHIVED"}
+    if identity_field == "prUrl":
+        associated["prUrl"] = target_url
+    else:
+        associated[identity_field] = {"prUrl": target_url}
+    fixture.global_pages = [{"items": [associated]}]
+    fixture.pr_pages = [{"items": []}]
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_PR_ASSOCIATED_AGENT_EXISTS"):
         fixture.prove()
+
+
+def test_negative_inventory_two_empty_pr_pages_are_exhaustively_verified():
+    seen = []
+    def cursor_api(path, *, token, basic=False):
+        assert basic and token == "test-cursor"
+        seen.append(path)
+        if "prUrl=" not in path:
+            return {"items": []}
+        if "cursor=next2" in path:
+            return {"items": []}
+        return {"items": [], "nextCursor": "next2"}
+    proof = probe.verify_negative_inventories(
+        "test-cursor", agent_id=FAILED_AGENT, pr_number=FAILED_PR, api=cursor_api,
+    )
+    assert proof == {
+        "global_pages": 1, "global_agents_checked": 0,
+        "pr_pages": 2, "pr_agents_checked": 0,
+    }
+    assert len([url for url in seen if "prUrl=" in url]) == 2
+
+
+@pytest.mark.parametrize("next_cursor", ["bad cursor!", "again"])
+def test_negative_inventory_malformed_or_repeating_pr_cursor_fails_closed(next_cursor):
+    def cursor_api(path, *, token, basic=False):
+        assert basic and token == "test-cursor"
+        if "prUrl=" not in path:
+            return {"items": []}
+        return {"items": [], "nextCursor": next_cursor}
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_AGENT_INVENTORY_UNVERIFIED"):
+        probe.verify_negative_inventories(
+            "test-cursor", agent_id=FAILED_AGENT, pr_number=FAILED_PR, api=cursor_api,
+        )
+
+
+@pytest.mark.parametrize("agent_status", ["IDLE", "ARCHIVED", "FINISHED", "UNKNOWN"])
+def test_failed_launch_rejects_any_other_agent_on_same_pr(agent_status):
+    fixture = FailedLaunchFixture()
+    fixture.pr_pages = [{"items": [{"id": "bc-unexpected-pr-agent", "status": agent_status}]}]
+    with pytest.raises(probe.ReceiptBlocked, match="CURSOR_PR_ASSOCIATED_AGENT_EXISTS"):
+        fixture.prove()
+
+
+def test_failed_launch_refuses_malformed_or_nonzero_inventory_count_before_append():
+    from test_v17_engineering_remote_writer_release import _FakeAPI, released_comments
+    fixture = FailedLaunchFixture()
+    original = fixture.prove()
+    api = _FakeAPI(released_comments() + [fixture.comment])
+    env = {"GITHUB_REPOSITORY": probe.REPOSITORY, "GITHUB_REF": "refs/heads/main"}
+    for invalid in (None, True, 1, "0"):
+        corrupted = copy.deepcopy(original)
+        corrupted["negative_launch_proof"]["pr_agents_checked"] = invalid
+        with patch.dict("os.environ", env), patch(
+            "v17.cursor_terminal_status_receipt.collect_receipt", return_value=corrupted,
+        ), pytest.raises(release.ReleaseBlocked, match="REMOTE_RELEASE_TERMINAL_PROOF_MISMATCH"):
+            release.append_terminal_release(
+                api, cursor_token="fixture", run_id=99010, run_attempt=1,
+                source_sha="a" * 40, reservation_comment_id=FAILED_CID,
+            )
+    assert api.puts == 0
