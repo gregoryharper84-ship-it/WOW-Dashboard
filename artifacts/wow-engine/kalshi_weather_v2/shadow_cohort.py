@@ -546,18 +546,28 @@ def _pending_settlement_targets(
     now: str,
     *,
     scan_limit: int,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], bool]:
     """Eligible unsettled hourly predictions, oldest scan order preserved."""
+    def strict_rows(table: str):
+        # Fail closed: an unavailable ledger is never an empty backlog.
+        response = (
+            client.table(table).select("*")
+            .order("prediction_id", desc=False)
+            .limit(scan_limit + 1).execute()
+        )
+        data = getattr(response, "data", None)
+        if not isinstance(data, list) or any(not isinstance(x, Mapping) for x in data):
+            raise RuntimeError("SETTLEMENT_DATABASE_READ_INVALID")
+        return data[:scan_limit], len(data) > scan_limit
+
+    outcome_rows, outcomes_truncated = strict_rows("wow_kalshi_weather_outcomes")
+    prediction_rows, predictions_truncated = strict_rows("wow_kalshi_weather_predictions")
     settled_ids = {
-        str(row.get("prediction_id"))
-        for row in _select_rows(client, "wow_kalshi_weather_outcomes", limit=5000)
-        if row.get("prediction_id")
+        str(row.get("prediction_id")) for row in outcome_rows if row.get("prediction_id")
     }
     cutoff = _parse_utc(now) - timedelta(minutes=SETTLEMENT_GRACE_MINUTES)
     pending: list[tuple[str, str]] = []
-    for prediction in _select_rows(
-        client, "wow_kalshi_weather_predictions", limit=scan_limit
-    ):
+    for prediction in prediction_rows:
         prediction_id = str(prediction.get("prediction_id") or "")
         if not prediction_id or prediction_id in settled_ids:
             continue
@@ -591,7 +601,7 @@ def _pending_settlement_targets(
         if target_time > cutoff:
             continue
         pending.append((prediction_id, index_city))
-    return pending
+    return pending, not (outcomes_truncated or predictions_truncated)
 
 
 def run_bounded_settlement_backlog_once(
