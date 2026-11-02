@@ -133,9 +133,12 @@ evidence: read `collection_diagnostics.predictions_written`,
 WOW_KALSHI_WEATHER_COLLECTION status=EMPIRICAL_SHADOW_COHORT_COLLECTED predictions_written=1 ...
 ```
 
-`NO_ELIGIBLE_CONTRACTS` and `DUPLICATE_SUPPRESSED` are healthy non-collection
-outcomes, not failures. A stale `latest_successful_capture_at` with repeating
-`COLLECTED` failures is the signal to investigate providers.
+`NO_ELIGIBLE_CONTRACTS`, `DUPLICATE_SUPPRESSED`, and
+`DEFERRED_LOW_MEMORY_MODE` are non-collection outcomes, not evidence that a
+new prediction was saved. A stale `latest_successful_capture_at` together with
+repeated `FAILED` or `PARTIAL` statuses warrants investigation. A persistent
+`NO_ELIGIBLE_CONTRACTS` or `DEFERRED_LOW_MEMORY_MODE` status warrants checking
+market eligibility and the H0 time window.
 
 **Rollback:** `SELECT cron.unschedule('kalshi-weather-v2-empirical-capture');`
 then re-schedule the health wake only. Restore the previous migration if a full
