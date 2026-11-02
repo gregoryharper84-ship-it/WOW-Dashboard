@@ -909,7 +909,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             publish.assert_not_called()
 
     def test_workflow_preflight_never_mints_qa_token_or_reviews_diff(self):
-        workflow = (PATH.parents[2] / "workflows" / "wow-v17-simple-security-review.yml").read_text()
+        workflow = (PATH.parents[1] / "workflows" / "wow-v17-simple-security-review.yml").read_text()
         self.assertIn("preflight_only:", workflow)
         self.assertIn("run: python .github/scripts/wow_simple_security_review.py --preflight", workflow)
         self.assertIn("if: inputs.preflight_only == true", workflow)
