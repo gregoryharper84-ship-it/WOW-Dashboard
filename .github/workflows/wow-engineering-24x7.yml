@@ -92,6 +92,27 @@ jobs:
             echo '~~~'
             echo "- This candidate cannot create code, claim merge authority or deploy."
           } >> "$GITHUB_STEP_SUMMARY"
+          # Exercise the exact live PR and check-run JSON contract in shadow.
+          # A missing/failed QA review yields a typed HOLD, not release authority.
+          if [ "$(jq -r '.action' "$RUNNER_TEMP/engineering-plan.json")" = "RESUME_PR" ]; then
+            shadow_pr=$(jq -r '.pr' "$RUNNER_TEMP/engineering-plan.json")
+            shadow_sha=$(jq -r '.head_sha' "$RUNNER_TEMP/engineering-plan.json")
+            [[ "$shadow_pr" =~ ^[1-9][0-9]*$ ]] || exit 2
+            [[ "$shadow_sha" =~ ^[a-f0-9]{40}$ ]] || exit 2
+            gh api "/repos/$GITHUB_REPOSITORY/pulls/$shadow_pr" > "$RUNNER_TEMP/shadow-pr.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$shadow_sha/check-runs?per_page=100&filter=latest" \
+              --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/shadow-checks.json"
+            python artifacts/wow-engine/v17/engineering_delivery_pipeline.py \
+              --pr "$RUNNER_TEMP/shadow-pr.json" \
+              --checks "$RUNNER_TEMP/shadow-checks.json" \
+              --head-sha "$shadow_sha" --output "$RUNNER_TEMP/shadow-decision.json"
+            {
+              echo "### Real PR resume evidence (SHADOW ONLY)"
+              echo '~~~json'
+              cat "$RUNNER_TEMP/shadow-decision.json"
+              echo '~~~'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   select:
     if: >-
