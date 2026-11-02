@@ -140,6 +140,7 @@ jobs:
     concurrency:
       group: wow-v17-engineering-implementation-single-writer
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Recheck exact target and prevent duplicate active writers
         env:
