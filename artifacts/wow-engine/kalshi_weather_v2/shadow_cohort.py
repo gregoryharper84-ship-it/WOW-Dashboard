@@ -69,6 +69,10 @@ class CohortRunResult:
     market_microstructure_snapshots_captured: int = 0
     market_microstructure_failures: tuple[str, ...] = ()
     low_memory_suppressed: int = 0
+    # Core capture writes are separate from supplemental evidence and the
+    # market microstructure recorder; diagnostics must never conflate them.
+    core_source_snapshots_captured: int = 0
+    core_market_snapshots_captured: int = 0
 
 
 def run_hourly_shadow_cohort_once(

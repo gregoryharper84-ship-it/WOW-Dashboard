@@ -4,6 +4,7 @@ Disabled by default; no paid infrastructure, probability publication, or trading
 """
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import kalshi_weather_v2.bounded_cohort as bounded
@@ -163,3 +164,18 @@ def test_default_mode_remains_unchanged_when_low_memory_flag_absent(monkeypatch)
     assert result.market_microstructure_snapshots_captured == 1
     assert result.supplemental_snapshots_captured == 1
     assert result.can_execute is False
+
+
+def test_release_documentation_requires_verified_capture_ownership():
+    """Release steps must install the trigger only via verified ownership."""
+    doc = (
+        Path(__file__).resolve().parents[2]
+        / "docs"
+        / "kalshi-weather"
+        / "MIAMI_CAPTURE_ONLY_RELEASE.md"
+    ).read_text(encoding="utf-8")
+    assert "WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER=1" in doc
+    assert "verified singleton ownership" in doc
+    # Low-memory mode returns before settlement; a backlog flag here would be
+    # an unimplemented setting that silently does nothing.
+    assert "WOW_KALSHI_WEATHER_SETTLEMENT_BACKLOG_ENABLED" not in doc

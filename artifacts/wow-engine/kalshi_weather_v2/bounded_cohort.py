@@ -98,6 +98,8 @@ def run_bounded_capture_only_cohort_once(
     supplemental_captured = 0
     microstructure_captured = 0
     microstructure_failures: list[str] = []
+    core_source_snapshots = 0
+    core_market_snapshots = 0
 
     http = ReadOnlyJsonClient()
     try:
@@ -207,11 +209,10 @@ def run_bounded_capture_only_cohort_once(
                         preparsed_rule=chosen.parsed,
                     )
                 except KalshiWeatherPartialCaptureError as exc:
-                    # Forecast persistence has succeeded. Preserve the write
-                    # count and immutable sample key, but never report a clean
-                    # capture if the following market snapshot write failed.
-                    captured += 1
-                    existing_keys.add(sample_key)
+                    # Forecast persistence has succeeded; the immutable
+                    # prediction is a real write. Record the failed market
+                    # write, then fall through to the shared accounting path so
+                    # normal mode can still capture supplemental evidence.
                     failure = (
                         f"{target.index_city}:{target_time}:{bucket}:"
                         f"{chosen.ticker}:{exc.code}"
@@ -225,7 +226,12 @@ def run_bounded_capture_only_cohort_once(
                         chosen.ticker,
                         exc.prediction_id,
                     )
-                    continue
+                    capture = {
+                        "prediction_id": exc.prediction_id,
+                        "rule_snapshot_id": exc.rule_snapshot_id,
+                        "source_snapshot_ids": list(exc.source_snapshot_ids),
+                        "market_snapshot_id": None,
+                    }
                 except Exception as exc:
                     context = _failure_context(exc)
                     failure = (
@@ -247,6 +253,9 @@ def run_bounded_capture_only_cohort_once(
 
                 captured += 1
                 existing_keys.add(sample_key)
+                core_source_snapshots += len(capture.get("source_snapshot_ids") or [])
+                if capture.get("market_snapshot_id"):
+                    core_market_snapshots += 1
                 _logger.warning(
                     "WOW_KALSHI_WEATHER_CAPTURE_PROGRESS status=CORE_CAPTURED target=%s target_time=%s bucket=%s ticker=%s prediction_id=%s probability_publishable=false can_execute=false",
                     target.index_city,
@@ -326,6 +335,8 @@ def run_bounded_capture_only_cohort_once(
         market_microstructure_snapshots_captured=microstructure_captured,
         market_microstructure_failures=tuple(microstructure_failures),
         low_memory_suppressed=low_memory_suppressed,
+        core_source_snapshots_captured=core_source_snapshots,
+        core_market_snapshots_captured=core_market_snapshots,
     )
 
 

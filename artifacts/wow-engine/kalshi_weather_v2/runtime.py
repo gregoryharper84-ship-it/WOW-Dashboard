@@ -45,9 +45,18 @@ class KalshiWeatherPartialCaptureError(RuntimeError):
 
     code = "PREDICTION_PERSISTED_MARKET_SNAPSHOT_FAILED"
 
-    def __init__(self, *, prediction_id: str, rule_snapshot_id: str):
+    def __init__(
+        self,
+        *,
+        prediction_id: str,
+        rule_snapshot_id: str,
+        source_snapshot_ids: Sequence[str] = (),
+    ):
         self.prediction_id = prediction_id
         self.rule_snapshot_id = rule_snapshot_id
+        # Core evidence rows are durable before the market write fails; carry
+        # their ids so write accounting stays truthful, never inflated.
+        self.source_snapshot_ids = tuple(str(value) for value in source_snapshot_ids)
         super().__init__(self.code)
 
 
@@ -322,6 +331,7 @@ def capture_hourly_shadow(
                 raise KalshiWeatherPartialCaptureError(
                     prediction_id=prediction_id,
                     rule_snapshot_id=contract.rule_snapshot_id,
+                    source_snapshot_ids=evidence.source_snapshot_ids,
                 ) from exc
 
         return {

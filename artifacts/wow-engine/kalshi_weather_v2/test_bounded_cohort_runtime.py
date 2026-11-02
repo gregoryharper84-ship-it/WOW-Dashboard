@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -545,3 +546,218 @@ def test_persisted_prediction_late_market_snapshot_failure_is_partial_and_dedupe
     assert second.samples_captured == 0
     assert second.samples_skipped_existing == 1
     assert calls == [ticker]
+
+
+class _FakeQuery:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def select(self, *args, **kwargs):
+        return self
+
+    def order(self, *args, **kwargs):
+        return self
+
+    def limit(self, *args, **kwargs):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self._rows)
+
+
+class _FakeDb:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def table(self, name):
+        assert name == "wow_kalshi_weather_predictions"
+        return _FakeQuery(self._rows)
+
+
+def _prediction_row(station_id, created_at, *, model_version=None, lane="HOURLY_TEMPERATURE"):
+    return {
+        "created_at": created_at,
+        "model_version": runtime.MODEL_VERSION if model_version is None else model_version,
+        "model_payload": {
+            "contract": {"lane": lane, "settlement_location_code": station_id}
+        },
+    }
+
+
+def _empty_result(**overrides):
+    values = dict(
+        status=bounded.STATUS_NO_ELIGIBLE_CONTRACTS,
+        targets_checked=1,
+        contracts_discovered=0,
+        samples_captured=0,
+        samples_skipped_existing=0,
+        supplemental_snapshots_captured=0,
+        predictions_settled=0,
+        capture_failures=(),
+        supplemental_failures=(),
+        settlement_failures=(),
+        market_microstructure_snapshots_captured=0,
+        market_microstructure_failures=(),
+        core_source_snapshots_captured=0,
+        core_market_snapshots_captured=0,
+    )
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_recent_other_city_capture_never_makes_miami_look_fresh():
+    """A fresh Chicago write must not mark a stale Miami target as fresh."""
+    now = datetime.now(timezone.utc)
+    stale = (now - timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+    fresh = (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z")
+    db = _FakeDb(
+        [
+            _prediction_row("KALSHI_WEATHER_INDEX:chicago", fresh),
+            _prediction_row("KALSHI_WEATHER_INDEX:miami", stale),
+        ]
+    )
+    latest, capture_target = runtime._latest_capture_at(db, targets=(_target("miami"),))
+    assert capture_target == "miami"
+    assert latest == runtime._normalize_utc(stale)
+
+    diagnostics = runtime.build_collection_diagnostics(
+        result=_empty_result(),
+        targets=(_target("miami"),),
+        trigger="EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
+        elapsed_seconds=0.5,
+        latest_capture_at=latest,
+        latest_capture_target=capture_target,
+    )
+    assert diagnostics["collection_fresh"] is False
+    assert diagnostics["latest_successful_capture_target"] == "miami"
+    assert diagnostics["latest_successful_capture_scope"] == "SELECTED_TARGETS_AND_MODEL"
+
+
+def test_freshness_lookup_ignores_other_models_and_unselected_targets():
+    fresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    other_model = _FakeDb(
+        [_prediction_row("KALSHI_WEATHER_INDEX:miami", fresh, model_version="OTHER_MODEL")]
+    )
+    assert runtime._latest_capture_at(other_model, targets=(_target("miami"),)) == (None, None)
+
+    miami = _FakeDb([_prediction_row("KALSHI_WEATHER_INDEX:miami", fresh)])
+    assert runtime._latest_capture_at(miami, targets=()) == (None, None)
+
+
+def test_diagnostics_totals_include_verified_core_writes():
+    diagnostics = runtime.build_collection_diagnostics(
+        result=_empty_result(
+            core_source_snapshots_captured=3,
+            supplemental_snapshots_captured=2,
+            core_market_snapshots_captured=1,
+            market_microstructure_snapshots_captured=4,
+        ),
+        targets=(_target("miami"),),
+        trigger="EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
+        elapsed_seconds=0.5,
+        latest_capture_at=None,
+    )
+    assert diagnostics["source_snapshots_written"] == 5
+    assert diagnostics["market_snapshots_written"] == 5
+    assert diagnostics["core_source_snapshots_written"] == 3
+    assert diagnostics["supplemental_source_snapshots_written"] == 2
+    assert diagnostics["core_market_snapshots_written"] == 1
+    assert diagnostics["market_microstructure_snapshots_written"] == 4
+
+
+def _partial_capture_setup(monkeypatch, *, low_memory: bool):
+    if low_memory:
+        monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "1")
+    else:
+        monkeypatch.delenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", raising=False)
+    item = SimpleNamespace(
+        ticker="KXTEMPMIAH-A",
+        parsed=SimpleNamespace(observation_time_utc="2026-11-02T14:15:00Z"),
+        rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={})),
+        series_ticker="KXTEMPMIAH",
+    )
+
+    class FakeHttp:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(bounded, "ReadOnlyJsonClient", FakeHttp)
+    monkeypatch.setattr(bounded, "_existing_sample_keys", lambda db: set())
+    monkeypatch.setattr(bounded, "_discover_target_contracts", lambda *args: (item,))
+    monkeypatch.setattr(bounded, "lead_time_bucket", lambda *args: "H0")
+    monkeypatch.setattr(
+        bounded,
+        "capture_market_microstructure_batch",
+        lambda **kw: SimpleNamespace(written=0, failures=(), attempted=1),
+    )
+
+    def partial_capture(**kwargs):
+        raise bounded.KalshiWeatherPartialCaptureError(
+            prediction_id="immutable-prediction-id",
+            rule_snapshot_id="rule-id",
+            source_snapshot_ids=("s1", "s2", "s3"),
+        )
+
+    monkeypatch.setattr(bounded, "capture_hourly_shadow", partial_capture)
+    supplemental_calls = []
+
+    def supplemental(**kwargs):
+        supplemental_calls.append(kwargs)
+        return {"source_snapshot_ids": ["supp1"], "failures": []}
+
+    monkeypatch.setattr(bounded, "capture_hourly_supplemental_sources", supplemental)
+    return supplemental_calls
+
+
+def test_partial_market_write_still_captures_supplemental_in_normal_mode(monkeypatch):
+    supplemental_calls = _partial_capture_setup(monkeypatch, low_memory=False)
+    result = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(),
+        targets=(_target(),),
+        now="2026-11-02T14:00:00Z",
+    )
+    assert supplemental_calls
+    assert supplemental_calls[0]["rule_snapshot_id"] == "rule-id"
+    assert result.samples_captured == 1
+    assert result.core_source_snapshots_captured == 3
+    assert result.core_market_snapshots_captured == 0
+    assert result.supplemental_snapshots_captured == 1
+    assert result.status == bounded.STATUS_PARTIAL
+    assert "PREDICTION_PERSISTED_MARKET_SNAPSHOT_FAILED" in result.capture_failures[0]
+    assert result.probability_publishable is False
+
+
+def test_partial_market_write_skips_supplemental_in_low_memory_mode(monkeypatch):
+    supplemental_calls = _partial_capture_setup(monkeypatch, low_memory=True)
+    result = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(),
+        targets=(_target(),),
+        now="2026-11-02T14:00:00Z",
+    )
+    assert supplemental_calls == []
+    assert result.samples_captured == 1
+    assert result.core_source_snapshots_captured == 3
+    assert result.supplemental_snapshots_captured == 0
+    assert result.status == bounded.STATUS_PARTIAL
+
+
+def test_non_ascii_cohort_header_is_rejected_with_401_not_500(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_COHORT_KEY", "correct-key")
+    for supplied in ("\u00ff", "\u0080", "cl\u00e9", "correct-key "):
+        with pytest.raises(HTTPException) as caught:
+            runtime._require_cohort_key(supplied)
+        assert caught.value.status_code == 401
+        assert caught.value.detail["code"] == "KALSHI_WEATHER_COHORT_TRIGGER_UNAUTHORIZED"
+    runtime._require_cohort_key("correct-key")
+
+
+def test_non_ascii_configured_key_is_compared_by_bytes(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_COHORT_KEY", "cl\u00e9-secret")
+    runtime._require_cohort_key("cl\u00e9-secret")
+    with pytest.raises(HTTPException) as caught:
+        runtime._require_cohort_key("cle-secret")
+    assert caught.value.status_code == 401
