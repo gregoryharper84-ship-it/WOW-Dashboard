@@ -31,7 +31,20 @@ concurrency:
 jobs:
   independent-security:
     name: Execute independent semantic security review
-    if: github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' && github.ref == 'refs/heads/main'
+    # Fail closed for paid inference by default. Draft edits and synchronization
+    # must never trigger credits. Security HOLD remains binding without a
+    # separately signed exact-head review. Manual paid review requires opt-in.
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.preflight_only == true) ||
+       (vars.WOW_QA_PAID_REVIEW_ENABLED == 'true' &&
+        (github.event_name == 'workflow_dispatch' ||
+         (github.event_name == 'pull_request_target' &&
+          github.event.pull_request.draft == false &&
+          (github.event.action == 'opened' ||
+           github.event.action == 'reopened' ||
+           github.event.action == 'ready_for_review')))))
     runs-on: ubuntu-latest
     timeout-minutes: 12
     environment: wow-qa

@@ -1207,6 +1207,16 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn("if: inputs.preflight_only != true", workflow)
         self.assertIn("environment: wow-qa", workflow)
         self.assertIn("ref: main", workflow)
+        # Credit-backed inference is an explicit opt-in, never a byproduct of
+        # an untrusted draft PR update; preflight is generation-free.
+        self.assertIn("vars.WOW_QA_PAID_REVIEW_ENABLED == 'true'", workflow)
+        self.assertIn("github.event.pull_request.draft == false", workflow)
+        self.assertIn("github.event.action == 'ready_for_review'", workflow)
+        self.assertIn("github.event.action == 'opened'", workflow)
+        self.assertIn("github.event.action == 'reopened'", workflow)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.preflight_only == true", workflow)
+        self.assertNotIn("github.event.action == 'synchronize'", workflow)
+        self.assertIn("if: inputs.preflight_only != true", workflow)
 
 
 def load_tests(loader, tests, pattern):
