@@ -1,5 +1,4 @@
 """Regression: a full page does not prove the settlement ledger is exhausted."""
-from test_kalshi_weather_low_memory_capture import target
 import kalshi_weather_v2.shadow_cohort as shadow
 from types import SimpleNamespace
 
@@ -35,4 +34,5 @@ def test_extra_row_causes_incomplete_backlog(monkeypatch):
     )
     assert result.status == shadow.SETTLEMENT_BACKLOG_PARTIAL
     assert result.truncated is True
+    assert result.attempted == 0
     assert "SETTLEMENT_BACKLOG_SCAN_TRUNCATED" in result.failures
