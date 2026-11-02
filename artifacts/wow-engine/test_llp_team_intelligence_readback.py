@@ -201,3 +201,28 @@ def test_llp_action_gateway_readback_is_additive_and_authenticated():
     handler=(root/"v17"/"vercel"/"llp-action-gateway"/"api"/"gateway.js").read_text()
     assert '"/v17/llp-team-intelligence/__EVENTS__", { method: "GET", auth: true }' in handler
     assert '"/v17/daily-snapshot-run/__ROWS__", { method: "GET", auth: true }' in handler
+
+
+def test_new_readback_requires_actual_bearer_authorization(monkeypatch):
+    from fastapi import Header, HTTPException
+    from fastapi.testclient import TestClient
+
+    def require_bearer(authorization: str | None = Header(default=None)):
+        if authorization != "Bearer test-only":
+            raise HTTPException(status_code=401, detail="AUTH_REQUIRED")
+
+    app=FastAPI()
+    llp.install_llp_team_intelligence_readback(
+        app, auth_dependency=Depends(require_bearer), db_client_fn=lambda:object()
+    )
+    monkeypatch.setattr(
+        llp, "read_llp_team_intelligence_page",
+        lambda *args, **kwargs: llp.project_llp_intelligence_page(_page([_row()])),
+    )
+    client=TestClient(app)
+    path="/v17/llp-team-intelligence/run-test/events"
+    assert client.get(path).status_code==401
+    assert client.get(path,headers={"Authorization":"Bearer wrong"}).status_code==401
+    success=client.get(path,headers={"Authorization":"Bearer test-only"})
+    assert success.status_code==200
+    assert success.json()["can_execute"] is False
