@@ -324,7 +324,7 @@ A planned patch is not code; this is code, with tests, at the audited SHA.
 - The stage receipt now carries `forward_certification_blockers` and `forward_certification_evidence` (graded events, minimum, health `graded_n`, health status, model version, artifact id), and the typed blockers join the row `blockers`.
 - `NFL_FORWARD_CERTIFICATION_UNPROVEN` is still emitted, for backward compatibility with existing acceptance assertions.
 
-Typed blockers now possible: `NFL_FORWARD_CERTIFICATION_QUERY_FAILED`, `NFL_FORWARD_CERTIFICATION_REGISTRY_SHAPE_INVALID`, `NFL_FORWARD_MINIMUM_COHORT_INVALID`, `NFL_FORWARD_GRADE_COHORT_QUERY_FAILED`, `NFL_FORWARD_GRADED_EVENTS_BELOW_MINIMUM`, `NFL_ARTIFACT_NOT_ACTIVE`, `NFL_ARTIFACT_NOT_PROMOTED`, `NFL_ARTIFACT_PUBLICATION_FLAG_NOT_GRANTED`, `NFL_FORWARD_HEALTH_COHORT_MALFORMED`, `NFL_FORWARD_HEALTH_GRADED_N_BELOW_MINIMUM`, `NFL_FORWARD_HEALTH_STATUS_NOT_PASS`, `NFL_FORWARD_RECOMMENDATION_NOT_PASS`, `NFL_FORWARD_HEALTH_BLOCKERS_PRESENT`.
+Typed blockers now possible: `NFL_FORWARD_CERTIFICATION_QUERY_FAILED`, `NFL_FORWARD_CERTIFICATION_REGISTRY_SHAPE_INVALID`, `NFL_FORWARD_MINIMUM_COHORT_INVALID`, `NFL_FORWARD_GRADE_COHORT_QUERY_FAILED`, `NFL_FORWARD_GRADED_EVENTS_BELOW_MINIMUM`, `NFL_FORWARD_COHORT_MODEL_VERSION_MISMATCH`, `NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE`, `NFL_ARTIFACT_NOT_ACTIVE`, `NFL_ARTIFACT_NOT_PROMOTED`, `NFL_ARTIFACT_PUBLICATION_FLAG_NOT_GRANTED`, `NFL_REGISTRY_PUBLICATION_AUTHORITY_CONFLICT`, `NFL_FORWARD_HEALTH_COHORT_MALFORMED`, `NFL_FORWARD_HEALTH_GRADED_N_BELOW_MINIMUM`, `NFL_FORWARD_HEALTH_STATUS_NOT_PASS`, `NFL_FORWARD_RECOMMENDATION_NOT_PASS`, `NFL_FORWARD_HEALTH_BLOCKERS_PRESENT`.
 
 **Change 2 — `artifacts/wow-engine/tests/test_v17_nfl_forward_certification_diagnosis.py`** (new, 7 tests) pins:
 
@@ -335,6 +335,19 @@ Typed blockers now possible: `NFL_FORWARD_CERTIFICATION_QUERY_FAILED`, `NFL_FORW
 - a `minimum_forward_required < 100` policy fails closed;
 - a missing health row is a registry-shape blocker, not `MODEL_UNAVAILABLE`;
 - the receipt surfaces the new fields and contains no `can_execute=True` path.
+
+**Change 1b — forward cohort pagination (P0 correction `63c88924db53ed34d8dfd264878b4aca7a70df8b`)**
+
+- `_observed_version_cohort` replaced unordered `.range()` offset paging with keyset paging: `.eq("model_version", …)` + `.gt("official_event_id", cursor)` + `.order("official_event_id")` + `.limit(_GRADE_PAGE_SIZE)`, bounded by `_GRADE_MAX_PAGES`.
+- `official_event_id` is `UNIQUE` in `wow_nfl_forward_shadow_grades` (`migrations/20260915_nfl_forward_shadow_calibration.sql`), so ordering by it is a total order over the version-filtered rows; the table also carries the immutability trigger, so rows are inserted only. A grade inserted mid-read sorts after the cursor and is either counted on a later page or excluded from a read that already ended, so the reported count can only be a lower bound, never inflated. `max(page_ids)` keeps progress monotonic even if a response ignored the requested order.
+- An enumeration that reaches the page cap, or any page containing a row with no usable event key, now returns `graded_events_exact=false` and emits `NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE`. An inexact enumeration cannot prove the gate, so a truncated or uncountable read cannot certify.
+- The 100-game minimum, the boolean decision, `forward_certification_status`, the terminal label and `can_execute=false` are unchanged. No unbounded scan, no new publication service.
+
+**Change 3 — NCAAF handoff fixture clock (test-only, P0 correction `63c88924db53ed34d8dfd264878b4aca7a70df8b`)**
+
+- `artifacts/wow-engine/test_ncaaf_event_feature_handoff.py` passed an explicit pregame `now` but no `clock`; `score_current_event_snapshot`'s post-snapshot recheck reads `clock()` or the runner wall clock, never `now`. Against the fixture's fixed `2026-11-01T20:00:00Z` kickoff, three tests therefore failed as soon as CI ran after kickoff (`wow-engine-verify` shard 1: 3 failed / 2615 passed).
+- The fixture now supplies one deterministic pregame instant as both `now` and `clock`, and a new parametrized regression pins that a second clock at or after kickoff still holds as `NCAAF_EVENT_NOT_PREGAME` without invoking the scorer.
+- No production NCAAF behaviour, freshness enforcement or event classification changed. Ownership: this file belongs to NCAAF Engineering (#1951); the test-only fix was included in the NFL diagnostic branch because the exact-head acceptance gate cannot pass without it. **NCAAF owner acceptance in #1951 is still outstanding and was not obtainable from the correcting environment.**
 
 **What this change deliberately does NOT do:** it does not set any publication flag, does not remove a gate, does not touch coefficients, margins, calibration or bounds, does not register NBA or NHL, and does not change any route's terminal outcome. `can_execute=false` and `V17_TERMINAL_REDUCER` are untouched.
 
@@ -353,6 +366,30 @@ pytest tests/test_v17_nfl_forward_certification_diagnosis.py \
 pytest tests test_nfl_dfs_calibration_evidence.py -k "nfl or forward or team_event"
 → 619 passed, 4 skipped, 2098 deselected
 ```
+
+The block above is the original audit snapshot and is retained unchanged as historical record.
+
+**Re-measured at P0 correction commit `63c88924db53ed34d8dfd264878b4aca7a70df8b`** (clean venv built from `artifacts/wow-engine/requirements.txt`; the earlier counts were taken before the NCAAF fixture clock repair and the forward-cohort keyset change):
+
+```
+# exact-head targeted suites (5 NFL/NL modules + NCAAF handoff)
+pytest test_ncaaf_event_feature_handoff.py \
+       tests/test_v17_nfl_forward_certification_diagnosis.py \
+       tests/test_v17_nfl_calibration_producer_receipt.py \
+       tests/test_v17_nfl_stage_receipt_forward_integration.py \
+       tests/test_v17_nfl_daily_stage_receipts.py \
+       test_v17_nfl_forward_shadow.py
+→ 72 passed
+
+# the exact shard that failed in wow-engine-verify (scripts/wow_rapid.py --index 1 --total 4)
+pytest -q --tb=short -rs <231 files>
+→ 2618 passed, 7 skipped, 1 failed
+
+pytest tests test_nfl_dfs_calibration_evidence.py -k "nfl or ncaaf or forward or team_event"
+→ 877 passed, 4 skipped, 1866 deselected
+```
+
+The single shard failure is `test_v17_factory_status_js.py::test_read_only_factory_status_javascript_contract`, classified `CI_ENVIRONMENT_GAP`: the local runner has Node v26, whose TAP reporter prints `ℹ pass 7`, while the assertion and CI's Node expect `# pass 7`. The Node suite it shells out to reported `pass 7 / fail 0`. That file and its Node fixture are unmodified by this correction, so the failure is not attributable to it.
 
 **Regression risk:** low. The change is additive to the returned payload and preserves the exact boolean decision; the only shared surface is `attach_nfl_daily_stage_receipt`'s output dict, consumed by `v17/nfl_team_event_publication.py` (which reads named keys) and by the two NFL test modules, both green.
 
