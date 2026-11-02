@@ -58,6 +58,7 @@ def _distribution_valid(values: Iterable[Any]) -> bool:
 
 def build_llp_team_intelligence_bundle(
     *, event: Mapping[str, Any], receipts: Iterable[Mapping[str, Any]],
+    upset_alert: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble a non-authoritative, read-only event view from already-scored receipts.
 
@@ -169,12 +170,36 @@ def build_llp_team_intelligence_bundle(
             projected["calibrated_probability_lower_bound"] = raw["calibrated_probability_lower_bound"]
             projected["calibrated_probability_upper_bound"] = raw["calibrated_probability_upper_bound"]
         result.append(projected)
+    upset: dict[str, Any] | None = None
+    if upset_alert is not None:
+        upset_blockers: list[str] = []
+        if not winner_source:
+            upset_blockers.append("GOVERNED_WINNER_RECEIPT_UNAVAILABLE")
+        if (_str(upset_alert.get("source_receipt_id")) != winner_source
+                or _str(upset_alert.get("sport")).upper() != sport
+                or _str(upset_alert.get("official_event_id")) != event_id):
+            upset_blockers.append("UPSET_ALERT_WINNER_RECEIPT_MISMATCH")
+        status = _str(upset_alert.get("status"))
+        if status not in {"UPSET_ALERT_MODEL_FLIP", "UPSET_ALERT_UNCERTAINTY_OVERLAP", "FAVORITE_MODEL_CLEAR"}:
+            upset_blockers.append("UPSET_ALERT_SOURCE_STATUS_UNSUPPORTED")
+        if upset_alert.get("can_execute") is not False:
+            upset_blockers.append("EXECUTION_INVARIANT_UNPROVEN")
+        upset = {
+            "status": "SOURCE_ALERT_VISIBLE" if not upset_blockers else "HELD_EVIDENCE_ONLY",
+            "reason_codes": upset_blockers,
+            "source_receipt_id": _str(upset_alert.get("source_receipt_id")) or None,
+            "can_execute": False,
+        }
+        if not upset_blockers:
+            upset["source_upset_status"] = status
+            upset["source_alert"] = bool(upset_alert.get("alert") is True)
     return {
         "contract": CONTRACT, "controlling_engine_identity": CONTROLLING_ENGINE,
         "sport": sport, "official_event_id": event_id,
         "home_team": home, "away_team": away,
         "event_start_time_utc": start.isoformat(),
         "markets": result, "governed_winner_receipt_id": winner_source,
+        "upset_intelligence": upset,
         "probabilities_blended": False, "terminal_decision_generated": False,
         "can_execute": False,
     }
