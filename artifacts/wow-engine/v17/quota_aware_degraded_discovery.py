@@ -350,6 +350,16 @@ def _quota_aware_rundown_factory(*args: Any, **kwargs: Any):
         try:
             result = base_fetch(family, target)
         except discovery.DiscoveryFeedError as exc:
+            # The native adapter rejects FREE_CORE before invoking the guard.
+            # Count the policy block even though no paid request was reserved.
+            if not attempt["called"] and exc.code == source_policy.BLOCK_FREE_CORE:
+                context = _SCAN_CONTEXT.get()
+                if context is not None:
+                    state = _provider_state(context, "RUNDOWN")
+                    context["paid_provider_calls_blocked_by_source_policy"] += 1
+                    state["calls_blocked"] += 1
+                    state["status"] = DISABLED_BY_POLICY
+                    state["reason_code"] = source_policy.BLOCK_FREE_CORE
             if attempt["allowed"]:
                 _paid_failure(attempt.get("context"), attempt.get("state"), exc.code)
             if str(exc.code).startswith("RUNDOWN_CIRCUIT_OPEN:"):
