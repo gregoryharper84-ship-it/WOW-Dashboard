@@ -126,6 +126,9 @@ def safe_label(url, has_body):
     if (parsed.scheme == "https" and host == "generativelanguage.googleapis.com"
             and path.startswith("/v1beta/models/") and path.endswith(":generateContent")):
         return "GEMINI_API:" + verb + ":GENERATE_CONTENT"
+    if (parsed.scheme == "https" and host == "generativelanguage.googleapis.com"
+            and path == "/v1beta/models/gemini-3.8-flash" and not has_body):
+        return "GEMINI_API:GET:MODEL_METADATA"
     return "UNKNOWN_API:" + verb + ":UNCLASSIFIED"
 
 
@@ -157,6 +160,7 @@ def request_json(url, *, token=None, data=None, headers=None):
         # 400 / 404 are ambiguous. Promote to availability ONLY with an explicit
         # provider-native, structured error indicating exhausted credit or retired model.
         if is_provider and exc.code in (400, 404):
+            obj = {}
             try:
                 obj = json.loads(exc.read(4096))
                 message = obj.get("error", {}).get("message", "")
