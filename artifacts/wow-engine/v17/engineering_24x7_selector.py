@@ -216,10 +216,6 @@ def plan(issues: list, prs: list, *, target: int | None = None,
             ranked.append((tier, -_updated_timestamp(issue), number, issue))
     ranked.sort(key=lambda row: row[:3])
     for tier, _negative_updated, number, _issue in ranked:
-        if prior_attempt_since_issue_update(_issue, runs):
-            if not (retry_after_run_id is not None and
-                    _explicit_retry_authorized(number, runs, retry_after_run_id)):
-                continue
         related_all = [
             pr for pr in prs
             if isinstance(pr, dict) and pr.get("state") == "open"
@@ -242,6 +238,12 @@ def plan(issues: list, prs: list, *, target: int | None = None,
                 "priority": tier, "reason": "EXISTING_PR_REQUIRES_EXACT_HEAD_GATES",
                 "can_execute": False,
             }
+        # Paid attempt history governs new BUILD only. It must never prevent
+        # resuming an existing, identity-valid source PR through CI/review.
+        if prior_attempt_since_issue_update(_issue, runs):
+            if not (retry_after_run_id is not None and
+                    _explicit_retry_authorized(number, runs, retry_after_run_id)):
+                continue
         return {
             "action": "BUILD", "incident": number, "pr": None,
             "head_sha": None, "priority": tier,
