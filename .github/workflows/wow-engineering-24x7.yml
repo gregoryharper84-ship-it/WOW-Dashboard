@@ -53,7 +53,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify deterministic 24x7 admission tests
-        run: python -m unittest discover -s artifacts/wow-engine -p test_engineering_24x7_selector.py -v
+        run: python artifacts/wow-engine/test_engineering_24x7_selector.py -v
 
   select:
     if: >-
