@@ -163,8 +163,12 @@ def request_json(url, *, token=None, data=None, headers=None):
         h["Content-Type"] = "application/json"
     # Bounded attribution only: the label is fixed and carries no request data.
     endpoint = safe_label(url, data is not None)
+    # A full untrusted source-diff review can exceed the former 60s Gemini
+    # generation timeout (observed on PR #2374). Keep one bounded inference
+    # request, no retry, and retain the existing fail-closed transport code.
+    timeout_seconds = 180 if endpoint == "GEMINI_API:POST:GENERATE_CONTENT" else 60
     try:
-        with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=60) as response:
+        with HTTP_CLIENT.open(Request(url, data=body, headers=h), timeout=timeout_seconds) as response:
             raw = response.read(250000)
         return json.loads(raw)
     except HTTPError as exc:
