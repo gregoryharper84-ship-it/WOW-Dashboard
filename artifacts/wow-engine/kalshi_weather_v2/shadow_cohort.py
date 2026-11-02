@@ -734,13 +734,23 @@ def _strict_calibration_rows(
     never fit from an invisible tail or a transiently unreadable table.
     """
     try:
-        response = client.table(table).select("*").limit(limit + 1).execute()
+        response = (
+            client.table(table)
+            .select("*", count="exact")
+            .limit(limit + 1)
+            .execute()
+        )
     except Exception as exc:
         raise RuntimeError("CALIBRATION_LEDGER_READ_FAILED") from exc
     rows = getattr(response, "data", None)
     if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
         raise RuntimeError("CALIBRATION_LEDGER_RESPONSE_INVALID")
-    if len(rows) > limit:
+    exact_count = getattr(response, "count", None)
+    # PostgREST can impose max_rows below the requested limit. A short
+    # data page alone does not establish full-ledger coverage.
+    if not isinstance(exact_count, int) or exact_count < len(rows):
+        raise RuntimeError("CALIBRATION_LEDGER_COUNT_UNAVAILABLE")
+    if exact_count > len(rows) or exact_count > limit:
         raise RuntimeError("CALIBRATION_LEDGER_TRUNCATED")
     return [dict(row) for row in rows]
 
