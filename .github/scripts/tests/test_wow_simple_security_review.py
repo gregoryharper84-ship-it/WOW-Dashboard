@@ -667,6 +667,30 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(api.call_args.kwargs["data"]["conclusion"], "failure")
 
 
+    def test_bounded_timeout_only_for_gemini_generatecontent(self):
+        # PR #2374 run 41453642828/2: Gemini model catalog succeeded,
+        # but full-source generation hit the former 60s transport timeout.
+        # Longer one-shot inference must never relax other endpoint budgets
+        # or turn a timeout into a positive security verdict.
+        cases = (
+            ("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+             {"data": {"contents": []}}, 180, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+             {}, 60, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://api.anthropic.com/v1/messages",
+             {"data": {"messages": []}}, 60, m.ProviderUnavailable, "PROVIDER_TRANSPORT"),
+            ("https://api.github.com/repos/" + m.REPO + "/pulls/2374",
+             {}, 60, m.Hold, "GITHUB_TRANSPORT"),
+        )
+        for url, request_kwargs, timeout, failure_type, typed_reason in cases:
+            with self.subTest(url=url), \\
+                 patch.object(m.HTTP_CLIENT, "open", side_effect=TimeoutError()) as opener:
+                with self.assertRaises(failure_type) as err:
+                    m.request_json(url, **request_kwargs)
+                self.assertEqual(str(err.exception), typed_reason)
+                self.assertEqual(opener.call_args.kwargs["timeout"], timeout)
+                self.assertEqual(opener.call_count, 1, "No hidden HTTP retry permitted")
+
     def test_typed_provider_error_retry_mapping(self):
         import io
         import json
