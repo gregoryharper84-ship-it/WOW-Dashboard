@@ -1060,6 +1060,66 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "PASS")
             self.assertEqual(req.call_count, 3)
 
+
+    def test_gemini_429_switches_only_to_next_catalog_approved_model(self):
+        self._models_patch.stop()
+        import json
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        good = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(self._passing())}]}}]}
+        seen = []
+        def request(url, **kwargs):
+            seen.append(url)
+            if "pageSize" in url:
+                return catalog
+            if "3.8-flash:generateContent" in url:
+                raise m.ProviderUnavailable("PROVIDER_HTTP_429")
+            return good
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request):
+            self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "PASS")
+        self.assertEqual(len(seen), 3)
+        self.assertIn("3.8-flash:generateContent", seen[1])
+        self.assertIn("3.6-flash:generateContent", seen[2])
+
+    def test_gemini_429_all_models_hold_with_original_typed_reason(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.7-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        urls = []
+        def request(url, **kwargs):
+            urls.append(url)
+            if "pageSize" in url:
+                return catalog
+            raise m.ProviderUnavailable("PROVIDER_HTTP_429")
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request):
+            with self.assertRaisesRegex(m.ProviderUnavailable, "PROVIDER_HTTP_429"):
+                m.call_provider("gemini-generative-api", "key", "diff")
+        self.assertEqual(len(urls), 1 + m.MAX_REVIEW_MODELS)
+        self.assertEqual(len(set(urls)), len(urls))
+
+    def test_gemini_transport_failure_does_not_rotate_to_another_model(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        seen = []
+        def request(url, **kwargs):
+            seen.append(url)
+            if "pageSize" in url:
+                return catalog
+            raise m.ProviderUnavailable("PROVIDER_TRANSPORT")
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", side_effect=request):
+            with self.assertRaisesRegex(m.ProviderUnavailable, "PROVIDER_TRANSPORT"):
+                m.call_provider("gemini-generative-api", "key", "diff")
+        self.assertEqual(len(seen), 2)
+
     def test_review_model_semantic_rejection_never_switches_model(self):
         self._models_patch.stop()
         import json
