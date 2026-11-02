@@ -82,8 +82,10 @@ def valid_pr(pr: dict) -> bool:
         and isinstance(head.get("sha"), str)
         and SHA.fullmatch(head["sha"]) is not None
         and base.get("ref") == "main"
-        and head.get("repo", {}).get("full_name") ==
-        base.get("repo", {}).get("full_name")
+        and isinstance(head.get("repo"), dict)
+        and isinstance(base.get("repo"), dict)
+        and head["repo"].get("full_name") ==
+        base["repo"].get("full_name")
     )
 
 
