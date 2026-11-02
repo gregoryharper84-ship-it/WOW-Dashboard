@@ -358,23 +358,28 @@ def _grade_rows(count, start=1):
     ]
 
 
-def test_a_multi_page_cohort_is_enumerated_completely():
-    # 2500 settled games span three pages of the production page size.
-    _proven, _blockers, evidence = _forward_certification_diagnosis(
+def test_a_multi_page_cohort_returns_a_lower_bound_not_a_snapshot_exact_total():
+    # Three separate SELECTs are not one transaction snapshot, even if 2,500
+    # rows were all observed by this deterministic static fixture.
+    proven, blockers, evidence = _forward_certification_diagnosis(
         _Db(grades=_grade_rows(2500), graded=2500), ROW
     )
 
     assert evidence["graded_events"] == 2500
-    assert evidence["graded_events_exact"] is True
+    assert evidence["graded_events_exact"] is False
+    assert "NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE" in blockers
+    assert proven is False
 
 
-def test_a_cohort_of_exactly_one_full_page_is_terminated_by_the_next_read():
-    _proven, _blockers, evidence = _forward_certification_diagnosis(
+def test_one_full_page_needs_another_read_and_cannot_claim_snapshot_exact():
+    proven, blockers, evidence = _forward_certification_diagnosis(
         _Db(grades=_grade_rows(1000), graded=1000), ROW
     )
 
     assert evidence["graded_events"] == 1000
-    assert evidence["graded_events_exact"] is True
+    assert evidence["graded_events_exact"] is False
+    assert "NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE" in blockers
+    assert proven is False
 
 
 def test_duplicates_around_a_page_boundary_neither_inflate_nor_stall(monkeypatch):
@@ -393,7 +398,7 @@ def test_duplicates_around_a_page_boundary_neither_inflate_nor_stall(monkeypatch
     )
 
     assert evidence["graded_events"] == 4
-    assert evidence["graded_events_exact"] is True
+    assert evidence["graded_events_exact"] is False
 
 
 def test_a_short_final_page_ends_the_read_without_a_false_total(monkeypatch):
@@ -404,7 +409,7 @@ def test_a_short_final_page_ends_the_read_without_a_false_total(monkeypatch):
     )
 
     assert evidence["graded_events"] == 5
-    assert evidence["graded_events_exact"] is True
+    assert evidence["graded_events_exact"] is False
 
 
 def test_the_page_cap_cannot_certify_on_an_inexact_enumeration(monkeypatch):
@@ -470,7 +475,48 @@ def test_a_grade_inserted_between_pages_is_counted_once_and_skips_nothing(monkey
         _ConcurrentDb(grades=_grade_rows(4)), ROW
     )
 
-    # Four pre-existing games plus the one inserted after the first page: no
-    # duplicate re-count and no skipped row.
+    # The later-sorting insert happens to be included, but cross-query
+    # snapshot exactness still cannot be claimed.
     assert evidence["graded_events"] == 5
+    assert evidence["graded_events_exact"] is False
+
+def test_concurrent_insert_before_cursor_cannot_pass_exactness(monkeypatch):
+    _multi_page_paging(monkeypatch, page_size=3, max_pages=10)
+    version = ROW["model_version"]
+
+    class _ConcurrentDb(_Db):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.reads = 0
+
+        def table(self, name):
+            if name == "wow_nfl_forward_shadow_grades":
+                self.reads += 1
+                if self.reads == 2:
+                    # This insertion sorts BEFORE the first-page cursor and
+                    # is invisible to every later keyset page.
+                    self.grades.append({
+                        "official_event_id": "2026_WK00_AAA_BBB",
+                        "model_version": version,
+                    })
+            return super().table(name)
+
+    proven, blockers, evidence = _forward_certification_diagnosis(
+        _ConcurrentDb(approved=True, grades=_grade_rows(4), graded=5), ROW
+    )
+
+    assert evidence["graded_events"] == 4  # five exist, only four observed
+    assert evidence["graded_events_exact"] is False
+    assert "NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE" in blockers
+    assert proven is False
+
+
+def test_one_short_page_remains_exact_without_concurrent_reads():
+    proven, blockers, evidence = _forward_certification_diagnosis(
+        _Db(grades=_grade_rows(67), graded=67), ROW
+    )
+    assert evidence["graded_events"] == 67
     assert evidence["graded_events_exact"] is True
+    assert "NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE" not in blockers
+    assert "NFL_FORWARD_GRADED_EVENTS_BELOW_MINIMUM" in blockers
+    assert proven is False
