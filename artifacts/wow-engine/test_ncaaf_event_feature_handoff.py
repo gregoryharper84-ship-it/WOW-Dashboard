@@ -23,6 +23,11 @@ from ncaaf_fitted_provider import (
 
 KICKOFF = datetime(2026, 11, 1, 20, tzinfo=timezone.utc)
 EVENT_ID = "401900001"
+# One deterministic pregame instant for the whole fixture. The scorer re-checks
+# kickoff through `clock` after the snapshot read and ignores `now` when `clock`
+# is omitted, so a fixture with a fixed historical kickoff would otherwise pass
+# only while the CI runner's wall clock happened to precede it.
+_SCORING_NOW = KICKOFF - timedelta(minutes=30)
 
 
 def _sha(payload):
@@ -163,9 +168,12 @@ def _score_context(snapshot=None, context=None, *, refreshed_at=None):
         ).isoformat(),
         "payload_sha256": _sha(refresh_payload),
     }
+    # `now` gates the entry check and `clock` gates the post-read recheck; both
+    # must carry the same deterministic pregame instant.
     return {
         "current_context": context,
-        "now": KICKOFF - timedelta(minutes=30),
+        "now": _SCORING_NOW,
+        "clock": lambda: _SCORING_NOW,
     }
 
 
@@ -567,3 +575,31 @@ def test_typed_invalid_model_output_keeps_output_failure_semantics():
             **_score_context(snapshot),
         )
     assert exc.value.code == "MODEL_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize(
+    "second_clock",
+    [KICKOFF, KICKOFF + timedelta(seconds=1)],
+)
+def test_second_clock_at_or_after_kickoff_still_holds_as_not_pregame(second_clock):
+    """The post-read recheck keeps its own authority over a pregame entry time."""
+    snapshot = _stored_snapshot()
+    client = _Client(snapshot)
+    invoked = []
+    with pytest.raises(NCAAFEventFeatureHandoffUnavailable) as exc:
+        score_current_event_snapshot(
+            client,
+            official_event_id=EVENT_ID,
+            event_start_time=KICKOFF.isoformat(),
+            home_team="Louisville",
+            away_team="Florida State",
+            expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
+            current_context=_score_context(snapshot)["current_context"],
+            now=_SCORING_NOW,
+            clock=lambda: second_clock,
+            scorer=lambda *args, **kwargs: invoked.append(True),
+        )
+    assert exc.value.code == "NCAAF_EVENT_NOT_PREGAME"
+    # The snapshot was read, so this is the second check holding, not the first.
+    assert len(client.calls) == 1
+    assert invoked == []
