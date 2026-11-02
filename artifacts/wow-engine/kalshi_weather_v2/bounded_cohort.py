@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from .http_client import HttpAcquisitionError, ReadOnlyJsonClient
 from .market_microstructure_recorder import capture_market_microstructure_batch
-from .runtime import capture_hourly_shadow, lead_time_bucket
+from .runtime import KalshiWeatherPartialCaptureError, capture_hourly_shadow, lead_time_bucket
 from .shadow_cohort import (
     CAPTURE_BUCKETS,
     CohortRunResult,
@@ -206,6 +206,26 @@ def run_bounded_capture_only_cohort_once(
                         preacquired_rules=chosen.rules,
                         preparsed_rule=chosen.parsed,
                     )
+                except KalshiWeatherPartialCaptureError as exc:
+                    # Forecast persistence has succeeded. Preserve the write
+                    # count and immutable sample key, but never report a clean
+                    # capture if the following market snapshot write failed.
+                    captured += 1
+                    existing_keys.add(sample_key)
+                    failure = (
+                        f"{target.index_city}:{target_time}:{bucket}:"
+                        f"{chosen.ticker}:{exc.code}"
+                    )
+                    capture_failures.append(failure)
+                    _logger.warning(
+                        "WOW_KALSHI_WEATHER_CAPTURE_FAILURE stage=MARKET_SNAPSHOT_AFTER_PREDICTION target=%s target_time=%s bucket=%s ticker=%s prediction_id=%s probability_publishable=false can_execute=false",
+                        target.index_city,
+                        target_time,
+                        bucket,
+                        chosen.ticker,
+                        exc.prediction_id,
+                    )
+                    continue
                 except Exception as exc:
                     context = _failure_context(exc)
                     failure = (
