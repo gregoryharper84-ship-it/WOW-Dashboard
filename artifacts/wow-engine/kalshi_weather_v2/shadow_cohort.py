@@ -645,7 +645,6 @@ def run_bounded_settlement_backlog_once(
             remaining_after_run=len(pending),
             truncated=True,
             failures=("SETTLEMENT_BACKLOG_SCAN_TRUNCATED",),
-            scan_complete=False,
         )
     failures: list[str] = []
     attempted = 0
