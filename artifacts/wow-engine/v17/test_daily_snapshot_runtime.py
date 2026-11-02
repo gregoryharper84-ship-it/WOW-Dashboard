@@ -421,3 +421,40 @@ def test_moneyline_lane_degrades_cleanly_when_cross_sport_discovery_is_disabled(
     assert [row for row in payload["rows"] if row["lane"] == "MONEYLINE"]
     assert payload["reconciliation"]["balanced"] is True
     assert payload["can_execute"] is False
+
+
+def test_partial_nfl_discovery_outage_is_not_mislabeled_as_empty_slate(monkeypatch):
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+
+    class EmptyDB(DB):
+        def table(self, name):
+            return Query([])
+
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime.acquire_daily_prop_snapshots",
+        lambda **_: {
+            "status": "COMPLETED_WITH_ROW_BLOCKERS",
+            "attempted": 0, "persisted": 0, "hydrated": 0, "held": 0,
+            "snapshot_write_succeeded": 0, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0, "receipts": [],
+            "blockers": ["NFL_DAILY_DISCOVERY_FAILED:TimeoutError"],
+            "per_sport": [
+                {"sport": "NFL", "status": "DATA_UNOBTAINABLE", "can_execute": False},
+                {"sport": "MLB", "status": "COMPLETED", "can_execute": False},
+            ],
+            "can_execute": False,
+        },
+    )
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE, requested_timezone="America/Chicago",
+            lanes=["PROPS"], response_mode="FULL",
+        ),
+        db=EmptyDB(), market_api=Market(), event_api=Event(),
+    )
+    assert result["run_status"] == "COMPLETED_WITH_ACQUISITION_BLOCKERS"
+    assert "NFL_DAILY_DISCOVERY_FAILED:TimeoutError" in result["blockers"]
+    assert "NO_CANONICAL_PREGAME_SNAPSHOTS" not in result["blockers"]
+    assert result["lane_reconciliation"]["PROPS"]["zero_row_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    assert result["prop_discovery_accounting"]["new_candidates_acquired"] == 0
+    assert result["can_execute"] is False
