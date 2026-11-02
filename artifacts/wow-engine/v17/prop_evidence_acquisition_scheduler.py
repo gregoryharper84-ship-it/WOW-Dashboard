@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.daily_prop_discovery import acquire_daily_prop_snapshots
 
 CAN_EXECUTE = False
 
