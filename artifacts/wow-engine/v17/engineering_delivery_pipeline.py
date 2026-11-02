@@ -84,9 +84,14 @@ def _failed_qa(check: dict, number: int, head: str) -> dict:
                              summary if isinstance(summary, str) else "")
     reason = reason_match.group(1) if reason_match else ""
     if isinstance(title, str) and title.startswith("HOLD"):
-        if reason in ("PROVIDER_MODEL_UNAVAILABLE", "PROVIDER_HTTP_404", "HTTP_404"):
+        if reason == "PROVIDER_MODEL_UNAVAILABLE":
             return _result("REVIEWER_MODEL_REPAIR", "VERIFY_REVIEWER_MODEL_AND_CREDENTIAL",
                            "VALID_PROVIDER_PREFLIGHT_AND_NEW_QA_RECEIPT", pr=number, sha=head)
+        # Bare HTTP 404 is *ambiguous*: endpoint contract, model and credential
+        # scopes cannot be distinguished without authenticated evidence.
+        if reason in ("PROVIDER_HTTP_404", "HTTP_404"):
+            return _result("REVIEWER_PROVIDER_DIAGNOSIS", "VERIFY_ENDPOINT_MODEL_AND_SCOPE",
+                           "AUTHORIZED_PROVIDER_COMPATIBILITY_PROVEN", pr=number, sha=head)
         if reason in ("PROVIDER_CREDIT_EXHAUSTED", "PROVIDER_HTTP_401", "HTTP_401"):
             return _result("REVIEWER_AUTH_OR_QUOTA_REPAIR", "VERIFY_EXISTING_REVIEWER_ENTITLEMENT",
                            "AUTHORIZED_PROVIDER_AVAILABLE", pr=number, sha=head)
