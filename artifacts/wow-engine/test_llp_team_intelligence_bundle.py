@@ -120,3 +120,29 @@ def test_opposing_winner_receipts_fail_closed_as_event_mutex_conflict():
     assert all(row["status"] == "HELD_EVIDENCE_ONLY" for row in result["markets"])
     assert all("EVENT_WINNER_MUTEX_CONFLICT" in row["reason_codes"] for row in result["markets"])
     assert all("calibrated_probability" not in row for row in result["markets"])
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0])
+def test_exact_zero_or_one_calibrated_winner_is_not_governed(value):
+    raw = receipt()
+    raw.update(
+        calibrated_probability=value,
+        calibrated_probability_lower_bound=value,
+        calibrated_probability_upper_bound=value,
+    )
+    projected = build_llp_team_intelligence_bundle(
+        event=EVENT, receipts=[raw]
+    )["markets"][0]
+    assert projected["status"] == "HELD_EVIDENCE_ONLY"
+    assert "WINNER_CALIBRATED_BOUNDS_MISSING" in projected["reason_codes"]
+    assert "calibrated_probability" not in projected
+
+
+def test_zero_push_probability_remains_valid_distribution_component():
+    row = receipt("POINT_SPREAD")
+    assert row["p_push"] == 0
+    projected = build_llp_team_intelligence_bundle(
+        event=EVENT, receipts=[row]
+    )["markets"][0]
+    assert projected["status"] == "GOVERNED_RECEIPT_VISIBLE"
+    assert projected["p_push"] == 0
