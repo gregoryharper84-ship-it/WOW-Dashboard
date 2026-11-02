@@ -49,7 +49,7 @@ def _run_one_pass(monkeypatch, acquire: Any) -> list[str]:
     calls: list[str] = []
 
     def _acquire(*, db, requested_date, requested_timezone, max_candidates, rotating_window_slot=None):
-        assert rotating_window_slot == int(NOW.timestamp() // 3600)
+        assert rotating_window_slot == int(NOW.timestamp() // 86400)
         calls.append(requested_date)
         return acquire(requested_date)
 
