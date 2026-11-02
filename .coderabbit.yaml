@@ -96,3 +96,17 @@ reviews:
         Focus on real regression and negative-path coverage. In safety-critical
         changes, require tests to distinguish PASS, HOLD, and REJECT and reject
         stale or incorrect evidence. Avoid cosmetic test suggestions.
+
+    # Engine test files also live at the package root and in non-tests subdirectories.
+    # Mirror the negative-path safety guidance for these otherwise missed cases.
+    - path: "artifacts/wow-engine/test_*.py"
+      instructions: |
+        Focus on real regression and negative-path coverage. In safety-critical
+        changes, require tests to distinguish PASS, HOLD, and REJECT and reject
+        stale or incorrect evidence. Avoid cosmetic test suggestions.
+
+    - path: "artifacts/wow-engine/**/test_*.py"
+      instructions: |
+        Focus on real regression and negative-path coverage. In safety-critical
+        changes, require tests to distinguish PASS, HOLD, and REJECT and reject
+        stale or incorrect evidence. Avoid cosmetic test suggestions.
