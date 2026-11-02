@@ -344,3 +344,28 @@ def test_scan_budget_owns_and_resets_standalone_scope():
         quota.source_policy.end_paid_budget_scope(owned_token)
 
     assert quota.source_policy.current_paid_budget() is None
+
+
+def test_live_acquisition_boundary_preserves_final_refresh_reserve(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    monkeypatch.setenv("WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED", "true")
+    context = quota._new_context()
+    context["_paid_call_budget"] = quota.source_policy.PaidCallBudget(
+        total=2, final_refresh_reserve=1
+    )
+    token = quota._SCAN_CONTEXT.set(context)
+    try:
+        _, _, first = quota._before_paid_call("RUNDOWN")
+        _, _, blocked = quota._before_paid_call("RUNDOWN")
+        _, _, final = quota._before_paid_call(
+            "RUNDOWN", stage=quota.source_policy.STAGE_FINAL_REFRESH
+        )
+    finally:
+        quota._SCAN_CONTEXT.reset(token)
+
+    assert first is None
+    assert "PAID_PROVIDER_BUDGET_RESERVED_FOR_FINAL_REFRESH" in blocked
+    assert final is None
+    assert context["paid_provider_calls_attempted"] == 2
+    assert context["paid_provider_calls_blocked_by_source_policy"] == 1
+    assert context["_paid_call_budget"].remaining == 0
