@@ -250,6 +250,7 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
     settled_predictions = 0
     eligible_predictions = 0
     missing_settlement = 0
+    valid_residual_predictions = 0
 
     def exclude(reason: str) -> None:
         exclusions[reason] = exclusions.get(reason, 0) + 1
@@ -305,6 +306,10 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
             forecast_as_of=decision_time,
             settlement_time=settlement_time,
         )
+        # Only usable residuals can count toward deduplicated samples.
+        # Settled rows lacking a forecast/settlement timestamp are exclusions,
+        # not duplicates of another weather target.
+        valid_residual_predictions += 1
         key = (station_id, lane, bucket)
         current = groups.setdefault(key, {}).get(sample_key)
         if current is None or decision_time < current[0]:
@@ -400,7 +405,7 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
             "eligible_hourly_predictions": eligible_predictions,
             "settled_eligible_predictions": settled_eligible,
             "unique_calibration_samples": unique_total,
-            "duplicate_predictions_collapsed": max(0, settled_eligible - unique_total),
+            "duplicate_predictions_collapsed": max(0, valid_residual_predictions - unique_total),
             "missing_official_settlements": missing_settlement,
             "unique_samples_by_lead_bucket": dict(sorted(unique_samples_by_bucket.items())),
             "unique_samples_by_station": dict(sorted(unique_samples_by_station.items())),
