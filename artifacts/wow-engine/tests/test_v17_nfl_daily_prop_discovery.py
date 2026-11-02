@@ -131,3 +131,56 @@ def test_accounting_distinguishes_not_attempted_vs_all_existing():
     assert none["zero_new_candidates_reason"] == "AUTONOMOUS_DISCOVERY_NOT_ATTEMPTED"
     assert reused["zero_new_candidates_reason"] == "ALL_DISCOVERED_CANDIDATES_ALREADY_CAPTURED"
     assert reused["reused_snapshot_rows"] == 1
+
+
+def test_hydration_only_hold_is_not_a_source_wide_discovery_outage():
+    hydration_hold = {
+        "status": "COMPLETED_WITH_ROW_BLOCKERS",
+        "attempted": 1,
+        "persisted": 0,
+        "receipts": [{"write_status": "PREWRITE_EXCLUDED"}],
+        "blockers": ["PLAYER:RECEIVING_YARDS:PROP_PLAYER_IDENTITY_UNRESOLVED"],
+        "per_sport": [
+            {"sport": "NFL", "status": "COMPLETED_WITH_ROW_BLOCKERS"},
+            {"sport": "MLB", "status": "COMPLETED"},
+        ],
+        "can_execute": False,
+    }
+    accounting = _prop_discovery_accounting(
+        acquisition=hydration_hold, canonical_manifest=[]
+    )
+    lane = _lane_reconciliation(
+        [], "PROPS", blockers=hydration_hold["blockers"],
+        acquisition=hydration_hold, canonical_manifest=[], requested_limit=6,
+    )
+    assert accounting["zero_new_candidates_reason"] == "NO_CANDIDATE_COULD_BE_HYDRATED"
+    assert lane["zero_row_reason"] == "NO_CANONICAL_CANDIDATES"
+    assert accounting["can_execute"] is False
+
+
+def test_provider_outage_stays_distinct_from_successful_empty_slate():
+    source_failure = {
+        "status": "COMPLETED_WITH_ROW_BLOCKERS",
+        "attempted": 0,
+        "persisted": 0,
+        "receipts": [],
+        "blockers": ["NFL_DAILY_DISCOVERY_FAILED:TimeoutError"],
+        "per_sport": [
+            {"sport": "NFL", "status": "DATA_UNOBTAINABLE"},
+            {"sport": "MLB", "status": "COMPLETED"},
+        ],
+    }
+    source = _prop_discovery_accounting(
+        acquisition=source_failure, canonical_manifest=[]
+    )
+    lane = _lane_reconciliation(
+        [], "PROPS", blockers=source_failure["blockers"],
+        acquisition=source_failure, canonical_manifest=[], requested_limit=6,
+    )
+    assert source["zero_new_candidates_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    assert lane["zero_row_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
+    empty = _prop_discovery_accounting(
+        acquisition={"status": "COMPLETED", "attempted": 0, "blockers": []},
+        canonical_manifest=[],
+    )
+    assert empty["zero_new_candidates_reason"] == "NO_CANDIDATES_DISCOVERED"
