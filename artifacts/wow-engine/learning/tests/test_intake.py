@@ -60,7 +60,8 @@ class ReporterLearningIntakeTests(unittest.TestCase):
         self.assertEqual(new["state"], "OPEN")
         self.assertEqual(new["workflow_stage"], "REPORTER_INTAKE")
         self.assertNotIn("root_cause", new)
-        self.assertNotIn("learning", new)
+        self.assertIsNone(new["learning"]["failure_category"])
+        self.assertEqual(new["root_cause_status"], "PENDING")
         self.assertIs(doc["can_execute"], False)
 
     def test_optional_explicit_category_is_exact(self):
