@@ -519,6 +519,7 @@ def call_provider(provider, key, prompt):
         if not models:
             raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
         result = None
+        last_unavailable = "PROVIDER_MODEL_UNAVAILABLE"
         for model in models:
             print("REVIEW_GEMINI_MODEL_SELECTED:" + model, file=sys.stderr)
             try:
@@ -534,11 +535,19 @@ def call_provider(provider, key, prompt):
                     raise Hold("GEMINI_RESPONSE_INVALID")
                 break
             except ProviderUnavailable as err:
-                if str(err) != "PROVIDER_MODEL_UNAVAILABLE":
+                reason = str(err)
+                # Rotate only across credential-listed, preapproved Gemini models.
+                # A real semantic verdict, malformed evidence, auth denial or
+                # transport failure is never a license to shop for a PASS.
+                if reason not in ("PROVIDER_MODEL_UNAVAILABLE", "PROVIDER_HTTP_429"):
                     raise
-                print("REVIEW_GEMINI_MODEL_UNAVAILABLE:" + model, file=sys.stderr)
+                if reason == "PROVIDER_HTTP_429":
+                    last_unavailable = "PROVIDER_HTTP_429"
+                    print("REVIEW_GEMINI_MODEL_RATE_LIMITED:" + model, file=sys.stderr)
+                else:
+                    print("REVIEW_GEMINI_MODEL_UNAVAILABLE:" + model, file=sys.stderr)
         if result is None:
-            raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
+            raise ProviderUnavailable(last_unavailable)
         if not result.get("candidates") or result["candidates"][0].get("finishReason") != "STOP":
             raise Hold("GEMINI_REVIEW_INCOMPLETE")
         try:
