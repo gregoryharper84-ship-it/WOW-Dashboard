@@ -43,7 +43,7 @@ def _line(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     val = float(value)
-    return val if isfinite(val) and val >= 0 else None
+    return val if isfinite(val) else None
 
 
 def _triplet_valid(lower: Any, point: Any, upper: Any) -> bool:
@@ -132,7 +132,7 @@ def build_llp_team_intelligence_bundle(
             ):
                 reasons.append("SPREAD_BOUNDS_MISSING")
         else:
-            if side not in {"OVER", "UNDER"} or line is None or not _str(raw.get("settlement_basis")):
+            if side not in {"OVER", "UNDER"} or line is None or line < 0 or not _str(raw.get("settlement_basis")):
                 reasons.append("TOTAL_EXACT_LINE_OR_SETTLEMENT_MISSING")
             if not _distribution_valid((raw.get("p_over"),raw.get("p_under"),raw.get("p_push"))):
                 reasons.append("TOTAL_DISTRIBUTION_INVALID")
@@ -153,7 +153,9 @@ def build_llp_team_intelligence_bundle(
             "model_version": _str(raw.get("model_version")) or None,
             "calibration_version": _str(raw.get("calibration_version")) or None,
             "settlement_basis": _str(raw.get("settlement_basis")) or None,
-            "probability_publishable": eligible, "rank_eligible": eligible,
+            "upstream_probability_publishable": raw.get("probability_publishable") is True,
+            "upstream_rank_eligible": raw.get("rank_eligible") is True,
+            "evidence_visible": eligible,
             "can_execute": False,
         }
         if eligible:
