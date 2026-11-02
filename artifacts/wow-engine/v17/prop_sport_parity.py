@@ -34,7 +34,7 @@ _AUTOMATIC_ROW_HYDRATION = {
     "WNBA": "WNBA_OFFICIAL_STATS_CDN_INJURY_V1",
 }
 
-# Daily currently owns one truly autonomous candidate producer. Keeping this
+# Daily now owns a bounded NFL + MLB autonomous candidate dispatcher. Keeping this
 # explicit prevents a missing producer from silently looking like an empty slate.
 _DAILY_AUTONOMOUS_DISCOVERY = {
     "MLB": "MLB_OFFICIAL_PROBABLE_PITCHERS",
