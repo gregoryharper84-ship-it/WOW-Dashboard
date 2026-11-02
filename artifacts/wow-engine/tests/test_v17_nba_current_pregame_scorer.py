@@ -764,3 +764,105 @@ def test_research_only_source_clock_cannot_reach_certified_model_even_when_manif
     assert receipt["probability_publishable"] is False
     assert receipt["rank_eligible"] is False
     assert receipt["can_execute"] is False
+
+
+def _valid_nba_calibration_artifact():
+    return {
+        "artifact_type": "BINARY_PLATT_CALIBRATOR",
+        "sport": "NBA",
+        "calibration_method": "BINARY_PLATT_CALIBRATOR",
+        "calibration_version": "v1.0",
+        "health_status": "PASS",
+        "certification_status": "PASS",
+        "bounds_policy": "APPROVED",
+        "training_n": 100,
+        "platt_a": 1.0,
+        "platt_b": 0.0,
+        "residual_quantile_90": 0.05,
+        "source_data_hash": "a" * 64,
+        "split_hash": "b" * 64,
+        "fit_end": "2026-10-22T00:00:00Z",
+        "brier_score": 0.21,
+        "calibration_error": 0.03,
+    }
+
+
+def test_approved_bounds_policy_computes_dynamic_calibrated_bounds(monkeypatch):
+    _enable_certified_nba_test_lane(monkeypatch)
+    certification = _certification()
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=_feature_package(),
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_args, **_kwargs: certification,
+        champion_artifact_resolver=lambda _client, cert: _champion_artifact(cert),
+        calibration_artifact_resolver=lambda _client, _cert: _valid_nba_calibration_artifact(),
+    )
+
+    assert result["status"] == "SCORED"
+    assert result["code"] == "NBA_PREGAME_SCORED"
+    assert result["raw_probability"] is not None
+    assert result["calibrated_probability"] is not None
+    assert 0.001 <= result["calibrated_lower_bound"] <= result["calibrated_probability"] <= result["calibrated_upper_bound"] <= 0.999
+    assert result["dynamic_uncertainty"] == 0.05
+    assert result["probability_publishable"] is False
+    assert result["rank_eligible"] is False
+    assert result["can_execute"] is False
+
+
+def test_nba_bridge_registration_and_model_invocation():
+    from v17.team_event_bridge_runtime import (
+        TEAM_EVENT_BRIDGES,
+        _register_nba_bridge_if_available,
+        score_registered_team_event_request,
+    )
+    from v17.team_event_request_runtime import TeamEventRequest
+
+    registered = _register_nba_bridge_if_available()
+    assert registered is True
+    assert "NBA" in TEAM_EVENT_BRIDGES
+    reg = TEAM_EVENT_BRIDGES["NBA"]
+    assert reg.adapter_name == "V17_NBA_TEAM_EVENT_BRIDGE"
+    assert reg.controlling_specialist == "NBA_GAME_WIN_PROBABILITY_EXPERT_V1"
+
+    from datetime import datetime, timedelta, timezone
+    future_start = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+
+    req = TeamEventRequest(
+        requester_host_identity="WOW_BETTING_ENGINE",
+        research_run_id="test-nba",
+        requested_slate_date=future_start[:10],
+        requested_timezone="UTC",
+        candidate_family="OUTRIGHT_WINNER",
+        decision_intent="BEST_SIDE",
+        event_key="NBA:401999001",
+        sport="NBA",
+        league="NBA",
+        official_event_id="espn-401999001",
+        home_team="espn-1",
+        away_team="espn-2",
+        event_start_time_utc=future_start,
+        settlement_basis="FULL_GAME_INCLUDING_OVERTIME",
+        source_snapshot_id="snapshot-1",
+    )
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc_info:
+        score_registered_team_event_request(req, event_api=object())
+
+    detail = exc_info.value.detail
+    assert exc_info.value.status_code == 422
+    assert detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
+    assert detail["model_invoked"] is True
+    assert any(
+        b in detail["blockers"]
+        for b in (
+            "SPORTSDATAVERSE_ESPN_REQUEST_FAILED",
+            "NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE",
+        )
+    )
+    assert detail["backend_route_status"] == "SPORT_SPECIFIC_TEAM_EVENT_BRIDGE_BLOCKED"
