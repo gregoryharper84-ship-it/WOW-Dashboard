@@ -48,7 +48,7 @@ FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDIN
 # families. No previews, image/audio, experimental, alias, arbitrary endpoint,
 # or unbounded token-spending candidate is admitted by a provider listing.
 GEMINI_REVIEW_FAMILY = re.compile(r"gemini-([2-4])\.([0-9]+)-(flash|pro)\Z")
-CLAUDE_REVIEW_FAMILY = re.compile(r"claude-sonnet-([3-5])-([0-9]+)\Z")
+CLAUDE_REVIEW_FAMILY = re.compile(r"claude-sonnet-([3-5])(?:-([0-9]+))?\Z")
 GEMINI_STATIC_MODELS = ("gemini-3.8-flash", "gemini-3.6-flash")
 CLAUDE_STATIC_MODELS = ("claude-sonnet-4-6",)
 MAX_REVIEW_MODELS = 3
@@ -439,7 +439,7 @@ def review_models(provider, key, *, strict=False):
         discovered = list(defaults)
     def rank(model):
         m = pattern.fullmatch(model)
-        major, minor = int(m.group(1)), int(m.group(2))
+        major, minor = int(m.group(1)), int(m.group(2) or 0)
         # Gemini: prefer fast (flash), then pro; Claude: latest sonnet.
         tier = 0 if label == "CLAUDE" or m.group(3) == "flash" else 1
         return (tier, -major, -minor)
