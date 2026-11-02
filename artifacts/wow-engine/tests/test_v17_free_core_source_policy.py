@@ -103,3 +103,38 @@ def test_paid_budget_scope_is_shared_then_reset(monkeypatch):
         policy.end_paid_budget_scope(token)
 
     assert policy.current_paid_budget() is None
+
+
+def test_discovery_cannot_spend_reserved_final_refresh_calls(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    monkeypatch.setenv("WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED", "true")
+    budget = policy.PaidCallBudget(total=3, final_refresh_reserve=1)
+
+    assert budget.try_consume(policy.STAGE_DISCOVERY) == (True, None)
+    assert budget.try_consume(policy.STAGE_DISCOVERY) == (True, None)
+    assert budget.try_consume(policy.STAGE_DISCOVERY) == (False, policy.BLOCK_RESERVED)
+    assert budget.remaining == 1
+    assert budget.try_consume(policy.STAGE_FINAL_REFRESH) == (True, None)
+    assert budget.remaining == 0
+
+
+def test_atomic_reservation_never_overspends_under_parallel_acquisition(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    budget = policy.PaidCallBudget(total=7, final_refresh_reserve=2)
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        outcomes = list(executor.map(
+            lambda _: budget.try_consume(policy.STAGE_DISCOVERY), range(100)
+        ))
+    assert outcomes.count((True, None)) == 5
+    assert outcomes.count((False, policy.BLOCK_RESERVED)) == 95
+    assert budget.used == 5
+    assert budget.remaining == 2
+
+
+def test_invalid_explicit_source_mode_never_enables_spending(monkeypatch):
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE-CORE-TYPO")
+    assert policy.source_mode() == policy.MODE_FREE_CORE
+    assert policy.PaidCallBudget.from_env().total == 0
+    assert policy.provider_hierarchy() == ("OFFICIAL_FREE", "DATA_UNOBTAINABLE")
