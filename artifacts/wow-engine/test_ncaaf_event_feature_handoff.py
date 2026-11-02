@@ -516,7 +516,7 @@ def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
         scorer=lambda *args, **kwargs: raw,
         calibrator=lambda *args, **kwargs: calibrated,
         clock=lambda: KICKOFF - timedelta(minutes=29),
-            **_score_context(snapshot),
+        **_score_context(snapshot),
     )
     assert result["static_calibration_lower_diagnostic"] == 0.41
     assert result["calibrated_lower_bound"] is None
