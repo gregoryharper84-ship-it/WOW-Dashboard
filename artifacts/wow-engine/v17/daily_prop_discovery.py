@@ -59,7 +59,10 @@ def acquire_daily_prop_snapshots(
                     if offset == 0 and rotating_window_slot is not None else {}
                 ))
                 if sport == "NFL"
-                else acquire_mlb(**shared)
+                else acquire_mlb(**shared, **(
+                    {"rotating_window_slot": rotating_window_slot}
+                    if rotating_window_slot is not None else {}
+                ))
             )
         except Exception as exc:
             outcome = {
