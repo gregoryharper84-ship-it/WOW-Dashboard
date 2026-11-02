@@ -31,8 +31,10 @@ function stagingDocsUrl() {
   return url.toString();
 }
 
+const stagingTest = process.env.WOW_TESTDRIVER_STAGING_URL ? it : it.skip;
+
 describe("WOW Governed Probability Engine - Staging Only", () => {
-  it("loads staging Swagger UI and executes its read-only health check", async (context) => {
+  stagingTest("loads staging Swagger UI and executes its read-only health check", async (context) => {
     // Validate before provisioning any metered cloud browser.
     const url = stagingDocsUrl();
     const testdriver = TestDriver(context);
