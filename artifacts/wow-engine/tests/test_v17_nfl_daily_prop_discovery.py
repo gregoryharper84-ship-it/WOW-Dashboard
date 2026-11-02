@@ -83,12 +83,14 @@ def test_zero_budget_does_not_call_provider(monkeypatch):
 def test_invalid_sport_claim_cannot_exceed_budget(monkeypatch):
     monkeypatch.setattr(dispatch, "acquire_nfl", lambda **kwargs: _outcome("NFL", 99))
     monkeypatch.setattr(dispatch, "acquire_mlb", lambda **kwargs: _outcome("MLB", 0))
-    import pytest
-    with pytest.raises(RuntimeError, match="BUDGET_CONTRACT_INVALID"):
-        dispatch.acquire_daily_prop_snapshots(
-            db=object(), requested_date="2026-11-05",
-            requested_timezone="America/Chicago", max_candidates=2,
-        )
+    result = dispatch.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=2,
+    )
+    assert result["attempted"] == 0
+    assert result["persisted"] == 0
+    assert "PROP_DAILY_DISCOVERY_BUDGET_CONTRACT_INVALID" in result["blockers"]
+    assert result["can_execute"] is False
 
 
 def test_nfl_adapter_zero_budget_preserves_research_only():
