@@ -44,19 +44,40 @@ class DeliveryTests(unittest.TestCase):
 
     def test_qa_success_is_not_release_success(self):
         r = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID)], SHA)
-        self.assertEqual(r["decision"], "RELEASE_EVIDENCE_PENDING")
+        self.assertEqual(r["decision"], "QA_GATE_PENDING")
 
     def test_release_hold_is_not_pass(self):
         r = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
-                          check("WOW Release Authority", mod.RELEASE_APP_ID, conclusion="failure")], SHA)
+                          check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                          check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID, conclusion="failure")], SHA)
         self.assertEqual(r["decision"], "RELEASE_NOT_ACCEPTED")
 
     def test_both_apps_success_still_need_owner_review(self):
         r = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
-                          check("WOW Release Authority", mod.RELEASE_APP_ID)], SHA)
+                          check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                          check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)], SHA)
         self.assertEqual(r["decision"], "REVIEW_STAGE_ACCEPTED")
         self.assertEqual(r["next_action"], "VERIFY_NATIVE_CHECKS_AND_OWNER_APPROVAL")
         self.assertFalse(r["review_approved"])
+
+    def test_distinct_qa_gate_cannot_be_replaced_by_release_app(self):
+        x = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
+                                 check(mod.INDEPENDENT_QA_CHECK, mod.RELEASE_APP_ID),
+                                 check(mod.RELEASE_CHECK, mod.RELEASE_APP_ID)], SHA)
+        self.assertEqual(x["decision"], "QA_GATE_NOT_ACCEPTED")
+        self.assertFalse(x["merge_authorized"])
+
+    def test_release_app_name_must_match_exact_required_check(self):
+        x = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
+                                 check(mod.INDEPENDENT_QA_CHECK, mod.QA_APP_ID),
+                                 check("Another Release App Task", mod.RELEASE_APP_ID)], SHA)
+        self.assertEqual(x["decision"], "RELEASE_EVIDENCE_PENDING")
+
+    def test_security_success_with_hold_title_is_not_accepted(self):
+        x = check(mod.QA_CHECK, mod.QA_APP_ID)
+        x["output"] = {"title": "HOLD — independent semantic source review"}
+        result = mod.reduce_pr(pr(), [x], SHA)
+        self.assertEqual(result["decision"], "INDEPENDENT_QA_NOT_ACCEPTED")
 
     def test_stale_sha_rejected(self):
         self.assertEqual(mod.reduce_pr(pr(), [], "b" * 40)["decision"], "SOURCE_HEAD_UNSTABLE")
