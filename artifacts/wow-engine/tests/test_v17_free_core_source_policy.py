@@ -122,6 +122,7 @@ def test_atomic_reservation_never_overspends_under_parallel_acquisition(monkeypa
     from concurrent.futures import ThreadPoolExecutor
 
     monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    monkeypatch.setenv("WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED", "true")
     budget = policy.PaidCallBudget(total=7, final_refresh_reserve=2)
     with ThreadPoolExecutor(max_workers=12) as executor:
         outcomes = list(executor.map(
