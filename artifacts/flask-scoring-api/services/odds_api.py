@@ -188,6 +188,7 @@ def _get(path, params=None):
 
     params = dict(params or {})   # copy — never mutate the caller's dict
     _last_msg = "FAILED: invalid ODDS_API_KEY"
+    _saw_rate_limit = False
     for _tier, _key in _key_ladder:
         # Proactive skip: if cross-worker quota store already shows this tier
         # is exhausted (remaining == 0), skip the HTTP call and try the next.
@@ -212,6 +213,7 @@ def _get(path, params=None):
             continue
         elif r.status_code == 429:
             # EXCEEDED_FREQ_LIMIT is temporary throttling, not monthly exhaustion.
+            _saw_rate_limit = True
             _last_msg = "FAILED: rate limited"
             continue
         elif r.status_code == 422:
@@ -223,7 +225,10 @@ def _get(path, params=None):
             return None, "FAILED: HTTP 422"
         else:
             return None, f"FAILED: HTTP {r.status_code}"
-    return None, _last_msg
+    # A temporary 429 on any usable key is not proof that all tiers are
+    # monthly exhausted. Do not trigger paid fallback merely because a later
+    # tier was already at zero remaining credits.
+    return None, "FAILED: rate limited" if _saw_rate_limit else _last_msg
 
 
 def _normalize_rundown_to_h2h_events(rundown_events):
