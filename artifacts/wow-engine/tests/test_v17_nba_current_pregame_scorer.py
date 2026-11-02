@@ -11,6 +11,7 @@ from v17.fitted_team_event_certification import TeamEventCertificationError
 from v17.multisport_team_event_calibration import CalibrationArtifactInvalid
 from v17.nba_current_pregame_scorer import (
     prepare_nba_current_pregame_scorer_receipt,
+    resolve_nba_calibrator_artifact,
     resolve_nba_champion_artifact,
 )
 from v17.nba_event_identity import resolve_nba_current_event_identity
@@ -774,7 +775,14 @@ def _valid_nba_calibration_artifact():
         "calibration_version": "v1.0",
         "health_status": "PASS",
         "certification_status": "PASS",
+        # Synthetic TEST-ONLY approval tied to the synthetic certification
+        # fixture; production acceptance needs genuine independent evidence.
         "bounds_policy": "APPROVED",
+        "bounds_preapproval_status": "APPROVED",
+        "bounds_certification_id": "nba-cert-1",
+        "bounds_calibrator_sha256": "b" * 64,
+        "calibration_artifact_id": "nba-calibrator-1",
+        "calibration_sha256": "b" * 64,
         "training_n": 100,
         "platt_a": 1.0,
         "platt_b": 0.0,
@@ -815,7 +823,106 @@ def test_approved_bounds_policy_computes_dynamic_calibrated_bounds(monkeypatch):
     assert result["can_execute"] is False
 
 
-def test_nba_bridge_registration_and_model_invocation():
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"bounds_policy": None},
+        {"bounds_preapproval_status": None},
+        {"bounds_preapproval_status": "REVIEW_REQUIRED"},
+        {"bounds_policy": "REVIEW_REQUIRED"},
+        {"bounds_certification_id": "different-certification"},
+        {"bounds_calibrator_sha256": "c" * 64},
+        {"calibration_artifact_id": "other-artifact"},
+        {"calibration_sha256": "c" * 64},
+        {"artifact_type": "OTHER"},
+        {"certification_status": "REVIEW_REQUIRED"},
+    ],
+)
+def test_nba_bounds_type_or_unapproved_proof_never_scored(monkeypatch, mutation):
+    _enable_certified_nba_test_lane(monkeypatch)
+    artifact = _valid_nba_calibration_artifact()
+    artifact.update(mutation)
+    result = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=EVENT_START,
+        home_team_alias="espn-1",
+        away_team_alias="espn-2",
+        current_feature_package=_feature_package(),
+        lineup_evidence=_lineup(),
+        source_snapshot_id="snapshot-1",
+        client=object(),
+        identity_resolver=_identity_resolver([_schedule_row()]),
+        certification_resolver=lambda *_a, **_kw: _certification(),
+        champion_artifact_resolver=lambda _client, cert: _champion_artifact(cert),
+        calibration_artifact_resolver=lambda _client, _cert: artifact,
+    )
+    assert result["status"] == "HOLD"
+    assert result["blockers"] == ["NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED"]
+    assert result["calibrated_probability"] is None
+    assert result["calibrated_lower_bound"] is None
+    assert result["probability_publishable"] is False
+    assert result["can_execute"] is False
+
+
+def test_nba_calibrator_resolver_requires_bound_artifact_and_no_table_fallback():
+    certification = _certification()
+    artifact = _valid_nba_calibration_artifact()
+
+    class RPCClient:
+        def __init__(self, record=None, failure=None):
+            self.record = record
+            self.failure = failure
+            self.table_called = False
+
+        def rpc(self, name, params):
+            assert name == "wow_basketball_certified_calibrator_artifact"
+            assert params == {
+                "p_sport": "NBA",
+                "p_calibrator_id": certification.calibration_artifact_id,
+            }
+            if self.failure is not None:
+                raise self.failure
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data=self.record))
+
+        def table(self, _name):
+            self.table_called = True
+            raise AssertionError("direct-table fallback is forbidden")
+
+    good = RPCClient(artifact)
+    assert resolve_nba_calibrator_artifact(good, certification) == artifact
+    assert good.table_called is False
+
+    mismatch = RPCClient({**artifact, "calibration_sha256": "c" * 64})
+    with pytest.raises(ValueError, match="NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH"):
+        resolve_nba_calibrator_artifact(mismatch, certification)
+    assert mismatch.table_called is False
+
+    empty = RPCClient(None)
+    with pytest.raises(LookupError, match="NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE"):
+        resolve_nba_calibrator_artifact(empty, certification)
+    assert empty.table_called is False
+
+    failed = RPCClient(failure=RuntimeError("transport"))
+    with pytest.raises(RuntimeError, match="NBA_CALIBRATOR_RESOLUTION_FAILED"):
+        resolve_nba_calibrator_artifact(failed, certification)
+    assert failed.table_called is False
+
+def test_nba_bridge_registration_and_model_invocation(monkeypatch):
+    import v17.nba_current_pregame_scorer as nba_scorer
+
+    # Real pregame identity is a server-owned boundary; test its downstream
+    # missing-feature HOLD without reaching an external schedule provider.
+    monkeypatch.setattr(
+        nba_scorer,
+        "resolve_nba_current_event_identity",
+        lambda **_kwargs: {
+            "event_id": "espn-401999001",
+            "home_team_id": "espn-1",
+            "away_team_id": "espn-2",
+            "identity_provider": "TEST_ONLY",
+            "identity_resolution": "TEST_FIXTURE",
+        },
+    )
     from v17.team_event_bridge_runtime import (
         TEAM_EVENT_BRIDGES,
         _register_nba_bridge_if_available,
@@ -857,12 +964,6 @@ def test_nba_bridge_registration_and_model_invocation():
     detail = exc_info.value.detail
     assert exc_info.value.status_code == 422
     assert detail["code"] == "MODEL_INPUTS_INSUFFICIENT"
-    assert detail["model_invoked"] is True
-    assert any(
-        b in detail["blockers"]
-        for b in (
-            "SPORTSDATAVERSE_ESPN_REQUEST_FAILED",
-            "NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE",
-        )
-    )
+    assert detail["model_invoked"] is False
+    assert "NBA_CURRENT_PREGAME_FEATURE_HYDRATION_UNAVAILABLE" in detail["blockers"]
     assert detail["backend_route_status"] == "SPORT_SPECIFIC_TEAM_EVENT_BRIDGE_BLOCKED"
