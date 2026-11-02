@@ -28,11 +28,18 @@ class _Table:
     def select(self, *_args, **_kwargs):
         return self
 
-    def limit(self, _n):
+    def order(self, column, desc=False):
+        self._rows = sorted(
+            self._rows, key=lambda row: str(row.get(column) or ""), reverse=desc
+        )
+        return self
+
+    def limit(self, n):
+        self._limit = n
         return self
 
     def execute(self):
-        return _Response(self._rows)
+        return _Response(self._rows[:getattr(self, "_limit", len(self._rows))])
 
 
 class _Client:
