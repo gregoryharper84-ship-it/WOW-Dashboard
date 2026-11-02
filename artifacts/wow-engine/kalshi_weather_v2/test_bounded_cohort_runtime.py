@@ -435,3 +435,50 @@ def test_collection_diagnostics_never_claim_capture_without_a_write():
     assert diagnostics["collection_fresh"] is False
     assert diagnostics["probability_publishable"] is False
     assert diagnostics["can_execute"] is False
+
+
+def test_supplemental_failure_produces_partial_capture_status(monkeypatch):
+    """A prediction write with a failed side feed is PARTIAL, never COLLECTED."""
+    monkeypatch.delenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", raising=False)
+
+    class FakeHttp:
+        def close(self):
+            pass
+
+    target = _target()
+    target_time = "2026-11-02T16:00:00Z"
+    item = SimpleNamespace(
+        ticker="KXTEMPMIAH-T",
+        parsed=SimpleNamespace(observation_time_utc=target_time),
+        rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={})),
+        series_ticker="KXTEMPMIAH",
+    )
+    monkeypatch.setattr(bounded, "ReadOnlyJsonClient", FakeHttp)
+    monkeypatch.setattr(bounded, "_existing_sample_keys", lambda db: set())
+    monkeypatch.setattr(
+        bounded, "_discover_target_contracts", lambda http, loc, when: (item,)
+    )
+    monkeypatch.setattr(
+        bounded, "lead_time_bucket", lambda decision, target: "H0"
+    )
+    monkeypatch.setattr(
+        bounded, "capture_market_microstructure_batch",
+        lambda **kw: SimpleNamespace(written=0, failures=(), attempted=1),
+    )
+    monkeypatch.setattr(
+        bounded, "capture_hourly_shadow",
+        lambda **kw: {"prediction_id": "p1", "rule_snapshot_id": "r1"},
+    )
+    monkeypatch.setattr(
+        bounded, "capture_hourly_supplemental_sources",
+        lambda **kw: {"source_snapshot_ids": [], "failures": ["FEED_UNAVAILABLE"]},
+    )
+    result = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(), targets=(target,),
+        now="2026-11-02T15:30:00Z",
+    )
+    assert result.samples_captured == 1
+    assert result.supplemental_failures
+    assert result.status == bounded.STATUS_PARTIAL
+    assert result.probability_publishable is False
+    assert result.can_execute is False
