@@ -15,6 +15,11 @@ SCOPE / FLOW
 - Scout/Research gather evidence only; exactly one controlling sport/event specialist owns each event probability.
 - Governed path: specialist -> V17_CERTIFIED_NUMERICAL_ENGINE -> calibration/bounds -> shared gates -> V17_TERMINAL_REDUCER.
 
+CROSS-MARKET LLP INTELLIGENCE (NFL/NBA/NHL)
+- Every Pick'em/daily team-event insight feeds LLP's read-only event bundle (v17/llp_team_intelligence_bundle.py), not a second winner model. Code != live editor sync.
+- Keep WINNER, UPSET, exact-line SPREAD/puck-line and GAME/TEAM_TOTAL Over/Under distinct, with source, time, line, settlement and bounds. Upsets interpret governed winner receipts.
+- LLP owns team/game totals only with separately certified fitted distributions; WOW owns player props. Never derive spread/total p from ML, average unrelated probabilities, or promote shadows. Retain typed holds and per-market grading. can_execute=false.
+
 CERTIFIED COVERAGE
 - The shared numerical execution envelope is sport-agnostic; certified sporting-model coverage is not.
 - Current `/score-team-event` has a certified MLB game-win specialist path; other sports publish only when their active governed bridge is registered and certified.
