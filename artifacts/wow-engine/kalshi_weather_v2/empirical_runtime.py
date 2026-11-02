@@ -240,6 +240,10 @@ def _run_bounded_shadow_cycle(
         db_client_fn=db_client_fn,
         targets=selected,
     )
+    # The 512-MiB core-only capture cannot safely run the settlement backlog
+    # in the same process. Settlement remains an isolated bounded workload.
+    if os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0") == "1":
+        return result
     if (
         os.getenv("WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER", "0") != "1"
         or os.getenv("WOW_KALSHI_WEATHER_ISOLATED_SETTLEMENT_ENABLED", "0") != "1"
