@@ -8,6 +8,7 @@ for the WOW V17 multi-agent engineering recovery team.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 from dataclasses import dataclass
@@ -147,6 +148,33 @@ def _architect_is_required(row: dict[str, Any]) -> bool:
     )
 
 
+
+def _verified_prior_context(
+    records: list[dict[str, Any]], *, title: str, evidence: str,
+    failure_category: str | None,
+) -> str:
+    """Read historical lessons only; intake must not depend on learning availability."""
+    if failure_category is not None and not re.fullmatch(r"[A-Z][A-Z0-9_]{2,79}", failure_category):
+        raise ValueError("invalid failure category")
+    try:
+        path = ROOT.parent / "learning" / "lessons.py"
+        spec = importlib.util.spec_from_file_location("wow_verified_lessons_intake", path)
+        if spec is None or spec.loader is None:
+            raise OSError("learning module unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = module.intake_advice(
+            records, title=title, evidence=evidence,
+            failure_category=failure_category,
+        )
+        return module.intake_markdown(result)
+    except (OSError, ValueError, TypeError, AttributeError, ImportError, json.JSONDecodeError):
+        # A missing/malformed advisory helper must not prevent canonical intake
+        # and must never fabricate a verified repair.
+        return ("## Historical Verified Lessons (advisory only)\n\n"
+                "- lookup_status: UNAVAILABLE\n"
+                "- verified_matches: 0\n")
+
 def create_postmortem(
     *,
     title: str,
@@ -156,6 +184,7 @@ def create_postmortem(
     state: str = "OPEN",
     reported_by: str = "operator",
     subsystem: str | None = None,
+    failure_category: str | None = None,
 ) -> RecordPaths:
     ledger = _load_ledger()
     if state not in ALLOWED_STATES:
@@ -164,8 +193,12 @@ def create_postmortem(
     pm_id = _next_id("PM", date, ledger["records"])
     path = POSTMORTEMS / f"{pm_id}__{_slug(title)}.md"
     created = _utc_now()
+    historical_context = _verified_prior_context(
+        ledger["records"], title=title, evidence=evidence,
+        failure_category=failure_category,
+    )
     team = initial_team_fields(domain=domain, reported_by=reported_by, explicit_subsystem=subsystem)
-    body = f"""# {pm_id} — {title}\n\n- status: {state}\n- severity: {severity}\n- domain: {domain}\n- primary_subsystem: {team['primary_subsystem']}\n- workflow_stage: REPORTER_INTAKE\n- current_owner: REPORTER_AGENT\n- reported_by: {reported_by}\n- created_utc: {created}\n- runtime_generation: V17_ACTIVE\n- terminal_authority: V17_TERMINAL_REDUCER\n- can_execute: false\n\n## Expected Behavior\n\nPending Reporter intake.\n\n## Actual Behavior\n\nPending Reporter intake.\n\n## Impact\n\nPending structured assessment.\n\n## Evidence\n\n{evidence}\n\n## Reproduction\n\nPending Research/Triage deterministic reproduction or explicit evidence-only classification.\n\n## Root Cause\n\nPending Research/Triage.\n\n## Acceptance Criteria\n\nPending Research/Triage. Engineering may not start a speculative repair without acceptance criteria.\n\n## Governance Classification\n\nPreserve exact V17 typed failure semantics. Research/Engineering/QA do not substitute for the controlling sporting specialist or V17_TERMINAL_REDUCER.\n\n## Linked Engineering Fixes\n\nNone yet.\n\n## Closure Criteria\n\nA new team-governed incident cannot be VERIFIED_CLOSED until root cause, acceptance criteria, independent review, required System Architect review, QA, release/production verification when applicable, and Reporter FIXED_VERIFIED closure all pass.\n"""
+    body = f"""# {pm_id} — {title}\n\n- status: {state}\n- severity: {severity}\n- domain: {domain}\n- primary_subsystem: {team['primary_subsystem']}\n- workflow_stage: REPORTER_INTAKE\n- current_owner: REPORTER_AGENT\n- reported_by: {reported_by}\n- created_utc: {created}\n- runtime_generation: V17_ACTIVE\n- terminal_authority: V17_TERMINAL_REDUCER\n- can_execute: false\n\n## Expected Behavior\n\nPending Reporter intake.\n\n## Actual Behavior\n\nPending Reporter intake.\n\n## Impact\n\nPending structured assessment.\n\n## Evidence\n\n{evidence}\n\n{historical_context}\n## Reproduction\n\nPending Research/Triage deterministic reproduction or explicit evidence-only classification.\n\n## Root Cause\n\nPending Research/Triage.\n\n## Acceptance Criteria\n\nPending Research/Triage. Engineering may not start a speculative repair without acceptance criteria.\n\n## Governance Classification\n\nPreserve exact V17 typed failure semantics. Research/Engineering/QA do not substitute for the controlling sporting specialist or V17_TERMINAL_REDUCER.\n\n## Linked Engineering Fixes\n\nNone yet.\n\n## Closure Criteria\n\nA new team-governed incident cannot be VERIFIED_CLOSED until root cause, acceptance criteria, independent review, required System Architect review, QA, release/production verification when applicable, and Reporter FIXED_VERIFIED closure all pass.\n"""
     path.write_text(body)
     row = {
         "postmortem_id": pm_id,
@@ -521,6 +554,7 @@ def main() -> None:
     pm.add_argument("--state", default="OPEN", choices=sorted(ALLOWED_STATES))
     pm.add_argument("--reported-by", default="operator")
     pm.add_argument("--subsystem", choices=sorted(SUBSYSTEMS))
+    pm.add_argument("--failure-category", help="Optional exact verified failure category; advisory only")
 
     triage = sub.add_parser("triage")
     triage.add_argument("--postmortem-id", required=True)
@@ -581,6 +615,7 @@ def main() -> None:
             state=args.state,
             reported_by=args.reported_by,
             subsystem=args.subsystem,
+            failure_category=args.failure_category,
         )
         print(paths.postmortem)
     elif args.command == "triage":
