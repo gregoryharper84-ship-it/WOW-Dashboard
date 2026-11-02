@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from v17 import daily_prop_discovery as dispatch
 from v17 import nfl_daily_prop_acquisition as nfl_adapter
-from v17.daily_snapshot_runtime import _prop_discovery_accounting, _lane_reconciliation
+from v17.daily_snapshot_runtime import _prop_discovery_accounting, _lane_reconciliation, _nfl_fill_response_rows
 
 
 def _outcome(sport, attempted, *, persisted=0, next_offset=None, blockers=None):
@@ -285,3 +285,34 @@ def test_nfl_only_fill_continues_in_bounded_windows(monkeypatch):
     assert result["persisted"] == 75
     assert result["attempted"] <= 120
     assert result["can_execute"] is False
+
+
+
+def test_missing_nfl_fill_reserves_rows_without_exceeding_daily_page():
+    manifest = [
+        {"source_snapshot_id": f"mlb-{i}", "sport": "MLB", "event_start_time": f"early-{i}"}
+        for i in range(8)
+    ] + [
+        {"source_snapshot_id": f"nfl-{i}", "sport": "NFL", "event_start_time": f"later-{i}"}
+        for i in range(4)
+    ]
+    picked = _nfl_fill_response_rows(manifest, 6)
+    assert len(picked) == 6
+    assert [r["source_snapshot_id"] for r in picked[:3]] == [
+        "nfl-0", "nfl-1", "nfl-2",
+    ]
+    assert [r["source_snapshot_id"] for r in picked[3:]] == [
+        "mlb-0", "mlb-1", "mlb-2",
+    ]
+    assert len({r["source_snapshot_id"] for r in picked}) == len(picked)
+
+
+def test_nfl_fill_small_page_and_mlb_only_compatibility():
+    manifest = [
+        {"source_snapshot_id": "mlb-first", "sport": "MLB"},
+        {"source_snapshot_id": "nfl-later", "sport": "NFL"},
+    ]
+    assert [r["sport"] for r in _nfl_fill_response_rows(manifest, 1)] == ["NFL"]
+    assert _nfl_fill_response_rows(manifest, 0) == []
+    mlb_only = [r for r in manifest if r["sport"] == "MLB"]
+    assert _nfl_fill_response_rows(mlb_only, 6) == mlb_only
