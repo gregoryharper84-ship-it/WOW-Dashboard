@@ -7,8 +7,6 @@ replay/review approves the exact payload hash.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
@@ -16,7 +14,10 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from calibration import CalibrationStatus, PlattFitOutcome
-from v17.multisport_team_event_calibration import BINARY_ARTIFACT_TYPE
+from v17.multisport_team_event_calibration import (
+    BINARY_ARTIFACT_TYPE,
+    calibration_payload_sha256,
+)
 
 CAN_EXECUTE = False
 REVIEW_REQUIRED = "REVIEW_REQUIRED"
@@ -27,9 +28,9 @@ class BasketballCalibrationArtifactError(ValueError):
 
 
 def _sha(payload: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    ).hexdigest()
+    # The canonical serializer is shared with the database-side recomputation so
+    # a stored digest can be independently verified instead of merely trusted.
+    return calibration_payload_sha256(payload)
 
 
 def build_shadow_binary_calibration_artifact(

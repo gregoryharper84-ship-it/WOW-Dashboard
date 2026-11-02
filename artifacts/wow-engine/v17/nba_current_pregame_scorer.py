@@ -23,6 +23,7 @@ from v17.fitted_team_event_certification import (
 from v17.multisport_team_event_calibration import (
     CalibrationArtifactInvalid,
     apply_binary_artifact,
+    verify_calibration_payload_digest,
 )
 from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
 from v17.nba_event_identity import (
@@ -32,6 +33,11 @@ from v17.nba_event_identity import (
 
 CAN_EXECUTE = False
 CONFIRMED_ROTATION_STATES = frozenset({"CONFIRMED", "OFFICIAL", "COMPLETE", "PASS"})
+
+
+def _is_sha256(value: Any) -> bool:
+    token = str(value or "").strip().lower()
+    return len(token) == 64 and all(ch in "0123456789abcdef" for ch in token)
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -362,20 +368,45 @@ def resolve_nba_calibrator_artifact(client: Any, certification: Any) -> Mapping[
     # rename its calibrator. A row that is already flat (legacy table read or
     # test double) is passed through unchanged.
     payload = row.get("artifact_payload")
-    if isinstance(payload, Mapping) and "artifact_type" not in row:
-        merged = dict(payload)
-        merged["calibration_artifact_id"] = (
-            row.get("calibration_artifact_id") or row.get("calibrator_id")
-        )
-        merged["sport"] = row.get("sport")
-        merged["calibration_sha256"] = str(row.get("calibration_sha256") or "").lower()
-        row = merged
+    bound_calibrator_id = str(
+        row.get("calibration_artifact_id") or row.get("calibrator_id") or ""
+    ).strip()
+    declared_sha = str(row.get("calibration_sha256") or "").strip().lower()
+    certified_sha = str(getattr(certification, "calibration_sha256", "") or "").strip().lower()
+    # Identity must match the exact immutable calibrator the certification names.
+    # A missing or malformed digest is never acceptable: shape alone is not proof.
     if (
-        str(row.get("calibration_artifact_id") or row.get("calibrator_id") or "") != str(cal_id)
-        or str(row.get("sport") or "").upper() != "NBA"
-        or str(row.get("calibration_sha256") or "").lower()
-        != str(getattr(certification, "calibration_sha256", "")).lower()
+        not _is_sha256(certified_sha)
+        or bound_calibrator_id != str(cal_id).strip()
+        or declared_sha != certified_sha
     ):
+        raise ValueError("NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH")
+    if isinstance(payload, Mapping) and "artifact_type" not in row:
+        # The certified lookup row and the payload must be the same artifact: a
+        # matching identity is not proof of content. Recompute SHA-256 over the
+        # canonical payload and require it to equal BOTH the stored digest and
+        # the independently certified digest. A changed platt coefficient or
+        # residual with an unchanged declared digest fails here.
+        certification_id = str(getattr(certification, "certification_id", "") or "").strip()
+        if certification_id and str(row.get("certification_id") or "").strip() != certification_id:
+            raise ValueError("NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH")
+        certified_method = str(getattr(certification, "calibration_method", "") or "").strip()
+        if certified_method and str(row.get("calibration_method") or "") != certified_method:
+            raise ValueError("NBA_CERTIFIED_CALIBRATOR_METHOD_MISMATCH")
+        computed = verify_calibration_payload_digest(
+            payload,
+            declared_sha256=declared_sha,
+            certified_sha256=certified_sha,
+        )
+        merged = dict(payload)
+        merged["calibration_artifact_id"] = bound_calibrator_id
+        merged["sport"] = row.get("sport")
+        merged["calibration_sha256"] = computed
+        merged["calibration_method"] = str(row.get("calibration_method") or "")
+        merged["independent_verification_status"] = row.get("independent_verification_status")
+        merged["certification_id"] = row.get("certification_id") or certification_id
+        row = merged
+    if str(row.get("sport") or "").upper() != "NBA":
         raise ValueError("NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH")
     return row
 
