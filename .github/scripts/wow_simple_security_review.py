@@ -47,8 +47,8 @@ FINDING_TEXT_SCHEMA = {"type": "string", "minLength": 1, "maxLength": MAX_FINDIN
 # Provider-discovered models remain inside these reviewed, stable text-review
 # families. No previews, image/audio, experimental, alias, arbitrary endpoint,
 # or unbounded token-spending candidate is admitted by a provider listing.
-GEMINI_REVIEW_FAMILY = re.compile(r"gemini-([2-4])\\.([0-9]+)-(flash|pro)\\Z")
-CLAUDE_REVIEW_FAMILY = re.compile(r"claude-sonnet-([3-5])-([0-9]+)\\Z")
+GEMINI_REVIEW_FAMILY = re.compile(r"gemini-([2-4])\.([0-9]+)-(flash|pro)\Z")
+CLAUDE_REVIEW_FAMILY = re.compile(r"claude-sonnet-([3-5])-([0-9]+)\Z")
 GEMINI_STATIC_MODELS = ("gemini-3.8-flash", "gemini-3.6-flash")
 CLAUDE_STATIC_MODELS = ("claude-sonnet-4-6",)
 MAX_REVIEW_MODELS = 3
@@ -421,8 +421,8 @@ def review_models(provider, key, *, strict=False):
         # the credential grants access to one of our static defaults.
         if not discovered:
             raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
-    except Hold:
-        if strict:
+    except Hold as exc:
+        if strict or str(exc) in ("REVIEW_MODEL_CATALOG_INVALID", "REVIEW_MODEL_CATALOG_PAGINATION_REQUIRED"):
             raise
         print("REVIEW_MODEL_CATALOG_UNAVAILABLE:" + label, file=sys.stderr)
         discovered = list(defaults)
@@ -710,25 +710,31 @@ def reviewer_preflight():
             or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
             or os.environ.get("GITHUB_ACTOR") != OWNER_LOGIN):
         raise Hold("REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED")
-    model = os.environ.get("WOW_QA_GEMINI_MODEL") or "gemini-3.8-flash"
-    if model != "gemini-3.8-flash":
-        raise Hold("GEMINI_MODEL_INVALID")
-    key = os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY") or ""
-    if not key:
-        raise Hold("REVIEWER_PREFLIGHT_CREDENTIAL_MISSING")
-    # Google models.get is a GET with no generation request. The API key goes
-    # only in an HTTPS header, never in a URL, log line or persisted receipt.
-    metadata = request_json(
-        "https://generativelanguage.googleapis.com/v1beta/models/" + model,
-        headers={"x-goog-api-key": key},
-    )
-    if (not isinstance(metadata, dict)
-            or metadata.get("name") != "models/" + model
-            or not isinstance(metadata.get("supportedGenerationMethods"), list)
-            or "generateContent" not in metadata["supportedGenerationMethods"]):
-        raise Hold("REVIEWER_PREFLIGHT_MODEL_CAPABILITY_UNVERIFIED")
-    # This is compatibility evidence, NEVER independent review or merge PASS.
-    print("REVIEWER_PREFLIGHT_COMPATIBLE:gemini-3.8-flash:generateContent:READ_ONLY")
+    credentials = {
+        "gemini-generative-api": os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY") or "",
+        "anthropic-claude-api": os.environ.get("WOW_QA_REVIEW_ANTHROPIC_API_KEY") or "",
+    }
+    any_ready = False
+    for provider, key in credentials.items():
+        if not key:
+            print("REVIEW_PROVIDER_CREDENTIAL_MISSING:" + provider, file=sys.stderr)
+            continue
+        try:
+            # No static fallback or text generation in diagnostic mode.
+            models = review_models(provider, key, strict=True)
+        except ProviderUnavailable:
+            print("REVIEW_PROVIDER_MODELS_UNAVAILABLE:" + provider, file=sys.stderr)
+            continue
+        except Hold as exc:
+            print("REVIEW_PROVIDER_PREFLIGHT_HOLD:" + provider + ":" + str(exc),
+                  file=sys.stderr)
+            continue
+        if models:
+            for model in models:
+                print("PROVIDER_READY:" + provider + ":" + model + ":READ_ONLY")
+            any_ready = True
+    if not any_ready:
+        raise Hold("REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL")
 
 def main():
     if os.environ.get("GITHUB_REPOSITORY") != REPO or os.environ.get("GITHUB_REF") != "refs/heads/main":
