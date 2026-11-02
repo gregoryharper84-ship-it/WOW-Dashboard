@@ -25,6 +25,10 @@ on:
         description: "Optional exact existing priority issue number"
         required: false
         type: string
+      retry_after_run_id:
+        description: "Manual only: exact latest failed worker run ID for targeted retry"
+        required: false
+        type: string
   pull_request:
     paths:
       - ".github/workflows/wow-engineering-24x7.yml"
@@ -70,7 +74,7 @@ jobs:
           # Fail closed on inaccessible or incomplete API responses.
           for workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
             gh run list -R "$GITHUB_REPOSITORY" --workflow "$workflow" \
-              --limit 100 --json displayTitle,createdAt,status
+              --limit 100 --json displayTitle,createdAt,status,conclusion,databaseId
           done | jq -s 'add // []' > "$RUNNER_TEMP/engineering-runs.json"
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/engineering-issues.json" \
@@ -119,19 +123,26 @@ jobs:
           # Fail closed on inaccessible or incomplete API responses.
           for workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
             gh run list -R "$GITHUB_REPOSITORY" --workflow "$workflow" \
-              --limit 100 --json displayTitle,createdAt,status
+              --limit 100 --json displayTitle,createdAt,status,conclusion,databaseId
           done | jq -s 'add // []' > "$RUNNER_TEMP/engineering-runs.json"
       - name: Restoration-first deterministic single-target decision
         id: plan
         shell: bash
         env:
           REQUESTED_INCIDENT: ${{ inputs.target_incident }}
+          RETRY_AFTER_RUN_ID: ${{ inputs.retry_after_run_id }}
         run: |
           set -euo pipefail
           args=()
           if [ -n "${REQUESTED_INCIDENT:-}" ]; then
             [[ "$REQUESTED_INCIDENT" =~ ^[1-9][0-9]*$ ]] || exit 2
             args+=(--target "$REQUESTED_INCIDENT")
+          fi
+          if [ -n "${RETRY_AFTER_RUN_ID:-}" ]; then
+            [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 2
+            [ -n "${REQUESTED_INCIDENT:-}" ] || exit 2
+            [[ "$RETRY_AFTER_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 2
+            args+=(--retry-after-run-id "$RETRY_AFTER_RUN_ID")
           fi
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/engineering-issues.json" \
@@ -189,6 +200,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INCIDENT: ${{ needs.select.outputs.incident }}
           PROVIDER: ${{ vars.WOW_24X7_CODING_PROVIDER }}
+          RETRY_AFTER_RUN_ID: ${{ inputs.retry_after_run_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -213,12 +225,18 @@ jobs:
             --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/prs.json"
           for worker in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
             gh run list -R "$GITHUB_REPOSITORY" --workflow "$worker" \
-              --limit 100 --json displayTitle,createdAt,status
+              --limit 100 --json displayTitle,createdAt,status,conclusion,databaseId
           done | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
+          retry_args=()
+          if [ -n "${RETRY_AFTER_RUN_ID:-}" ]; then
+            [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 2
+            [[ "$RETRY_AFTER_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 2
+            retry_args+=(--retry-after-run-id "$RETRY_AFTER_RUN_ID")
+          fi
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/issues.json" --prs "$RUNNER_TEMP/prs.json" \
             --runs "$RUNNER_TEMP/runs.json" --target "$INCIDENT" \
-            --output "$RUNNER_TEMP/current-plan.json"
+            --output "$RUNNER_TEMP/current-plan.json" "${retry_args[@]}"
           if [ "$(jq -r '.action' "$RUNNER_TEMP/current-plan.json")" != "BUILD" ]; then
             echo "::notice::ISSUE_ALREADY_OWNED_OR_ATTEMPTED: issue $INCIDENT"
             exit 0
