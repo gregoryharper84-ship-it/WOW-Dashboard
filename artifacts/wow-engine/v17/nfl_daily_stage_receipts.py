@@ -153,30 +153,26 @@ def _final_refresh_proven(row: Mapping[str, Any], governed: Mapping[str, Any]) -
     return all((checked, modeled, kickoff)) and modeled <= checked < kickoff
 
 
-# Bounded pagination for the exact-version forward cohort. A single bounded
-# read is not sufficient: a 250-game cohort behind a 100-game minimum used to
-# read back as 200 and be presented as an exact total.
-#
-# Offset pagination (`.range()`) was the remaining defect: with no stable order,
-# a page boundary against a changing ledger can repeat or skip rows, so an
-# "exact" distinct count was not trustworthy. `official_event_id` is UNIQUE on
-# wow_nfl_forward_shadow_grades, so ordering by it is a total order over the
-# version-filtered rows and a keyset cursor (`> last key seen`) cannot duplicate
-# or skip a row that exists for the whole read. The table also carries an
-# immutability trigger, so rows are inserted only, never updated or deleted;
-# a grade inserted mid-read sorts after the cursor and is either counted on a
-# later page or excluded from a read that already ended, which can only make the
-# reported count a lower bound, never an inflated one.
+# Bounded exact-model forward-grade enumeration for diagnostics ONLY.
+# One SELECT with a short page supplies an internally consistent count at the
+# read's instant. Any second query is a separate database snapshot: a grade
+# inserted before the keyset cursor can be missed even if the later page is
+# short. We therefore report all multi-page reads as LOWER BOUNDS, regardless
+# of whether keyset paging appears to reach the end. That is a conservative
+# HOLD, not an instruction to lower the minimum or promote the model.
+# A future exact >page-size count requires an independently verified atomic
+# database query or immutable cutoff-bound snapshot contract.
 _GRADE_PAGE_SIZE = 1000
 _GRADE_MAX_PAGES = 20
 
 
 def _observed_version_cohort(db: Any, version: str) -> tuple[set[str], bool]:
-    """Distinct officially graded events for one exact model version.
+    """Enumerate one version, with point-in-time exactness ONLY for one SELECT.
 
-    Pages until a short page proves the end of the version-filtered set. If the
-    page cap is reached the caller is told the result is a lower bound, so a
-    truncated read is never presented as an exact cohort size.
+    Subsequent SELECTs are not a shared database snapshot. Even a short final
+    page may have missed a concurrently inserted grade sorting before cursor.
+    Return inexact=True for every multi-page read and preserve the counted
+    distinct events as a lower bound; no publication gate may pass that result.
     """
     seen: set[str] = set()
     cursor: str | None = None
@@ -207,7 +203,10 @@ def _observed_version_cohort(db: Any, version: str) -> tuple[set[str], bool]:
             # what we have is a lower bound rather than a total.
             return seen, True
         if len(grades) < _GRADE_PAGE_SIZE:
-            return seen, False
+            # A second query lacks a transaction snapshot. Conservatively HOLD
+            # even if it appears to be the final page: an intervening insert
+            # sorting before the cursor can be invisible to this keyset walk.
+            return seen, _page > 0
         # `max` keeps progress monotonic even if a server ignored the order.
         cursor = max(page_ids)
     return seen, True
