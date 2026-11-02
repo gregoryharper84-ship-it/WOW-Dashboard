@@ -1,6 +1,6 @@
 """Scheduled V17 prop evidence acquisition for the forward calibration cohort.
 
-``acquire_daily_prop_snapshots`` only ran inside the authenticated
+``acquire_daily_prop_snapshots`` originally ran only inside the authenticated
 ``/v17/daily-snapshot-run`` route, so ``wow_prop_evidence_snapshots`` was
 produced only when someone called that route by hand. The forward cohort loop
 consumes those snapshots every 15 minutes but had no autonomous producer, so a
@@ -8,7 +8,7 @@ live future cohort could not build on its own: evidence capture last ran at
 2026-09-11T17:36Z and the future slate was empty the following day.
 
 This loop gives acquisition its own pass, mirroring the existing forward cohort
-scheduler. It seeds the same immutable snapshots the route already produces --
+scheduler. It seeds the same immutable NFL/MLB snapshots the route already produces --
 no new candidate source, no invented line, no scoring, no publication, and no
 calibrator fit. Off unless explicitly enabled.
 
