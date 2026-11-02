@@ -243,3 +243,24 @@ def test_scheduled_nfl_rotation_reaches_later_candidates(monkeypatch: pytest.Mon
     assert {r["player"] for r in first["receipts"]} == {"Alpha QB"}
     assert {r["player"] for r in second["receipts"]} == {"Beta WR", "Gamma WR"}
     assert all(r["can_execute"] is False for r in second["receipts"])
+
+
+def test_explicit_oidc_offset_wins_over_rotating_slot(monkeypatch: pytest.MonkeyPatch):
+    candidates = [
+        _candidate("First QB", "PASSING_YARDS"),
+        _candidate("First QB", "RUSHING_YARDS"),
+        _candidate("Second WR", "RECEIVING_YARDS", "WR"),
+        _candidate("Third WR", "ANYTIME_TD", "WR"),
+    ]
+    _install(monkeypatch, candidates)
+    req = subject.NFLForwardEvidenceRequest(
+        requested_date="2026-09-28", candidate_offset=2,
+        rotating_window_slot=0, max_candidates=2,
+    )
+    result = subject.acquire_nfl_forward_evidence_batch(
+        req, db=_DB(), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["candidate_offset"] == 2
+    assert {r["player"] for r in result["receipts"]} == {"Second WR", "Third WR"}
+    assert result["attempted"] == 2
+    assert result["can_execute"] is False
