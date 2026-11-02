@@ -10,7 +10,8 @@ ranking, pricing, or execution authority is created. can_execute=false.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from statistics import median
 from typing import Any, Callable, Mapping
 
@@ -49,6 +50,8 @@ install_nfl_event_aware_player_identity()
 class NFLForwardEvidenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requested_date: str
+    requested_timezone: str = "America/Chicago"
+    rotating_window_slot: int | None = Field(default=None, ge=0)
     candidate_offset: int = Field(default=0, ge=0, le=4000)
     max_candidates: int = Field(default=32, ge=1, le=64)
 
@@ -94,41 +97,53 @@ def _json(url: str, *, http_get: Callable[..., Any], params: dict[str, Any] | No
     return dict(payload)
 
 
-def _pregame_events(requested_date: str, *, now: datetime, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
-    date_key = requested_date.replace("-", "")
-    payload = _json(SCOREBOARD_URL, http_get=http_get, params={"dates": date_key, "limit": 100})
+def _pregame_events(requested_date: str, *, now: datetime, http_get: Callable[..., Any],
+                    requested_timezone: str = "America/Chicago") -> list[dict[str, Any]]:
+    local_date = date.fromisoformat(requested_date)
+    zone = ZoneInfo(requested_timezone)
     events: list[dict[str, Any]] = []
-    for raw in payload.get("events") or []:
-        if not isinstance(raw, Mapping):
-            continue
-        event = dict(raw)
-        start = _aware(event.get("date"))
-        if start is None or start <= now:
-            continue
-        status_type = ((event.get("status") or {}).get("type") or {}) if isinstance(event.get("status"), Mapping) else {}
-        if bool(status_type.get("completed")) or str(status_type.get("state") or "pre").lower() != "pre":
-            continue
-        canonical = nfl._canonical_event_metadata(event)
-        competitions = event.get("competitions") or []
-        competition = competitions[0] if competitions and isinstance(competitions[0], Mapping) else {}
-        competitors = competition.get("competitors") if isinstance(competition, Mapping) else []
-        teams: list[dict[str, Any]] = []
-        for competitor in competitors or []:
-            if not isinstance(competitor, Mapping):
+    # A requested local day can cross UTC provider dates. Query adjacent dates,
+    # then admit only events starting within the requested local calendar day.
+    for offset in (-1, 0, 1):
+        provider_date = (local_date + timedelta(days=offset)).strftime("%Y%m%d")
+        payload = _json(SCOREBOARD_URL, http_get=http_get, params={"dates": provider_date, "limit": 100})
+        for raw in payload.get("events") or []:
+            if not isinstance(raw, Mapping):
                 continue
-            team = competitor.get("team") if isinstance(competitor.get("team"), Mapping) else {}
-            team_id = str(team.get("id") or "").strip()
-            abbr = str(team.get("abbreviation") or "").upper().strip()
-            if team_id and abbr:
-                teams.append({"team_id": team_id, "abbr": abbr})
-        if len(teams) != 2:
-            continue
-        events.append({
-            "provider_event_id": str(event.get("id") or ""),
-            "canonical_event_id": canonical["verified_canonical_event_id"],
-            "event_start_time": start.isoformat(),
-            "teams": teams,
-        })
+            event = dict(raw)
+            start = _aware(event.get("date"))
+            if start is None or start <= now:
+                continue
+            if start.astimezone(zone).date() != local_date:
+                continue
+            status_type = ((event.get("status") or {}).get("type") or {}) if isinstance(event.get("status"), Mapping) else {}
+            if bool(status_type.get("completed")) or str(status_type.get("state") or "pre").lower() != "pre":
+                continue
+            canonical = nfl._canonical_event_metadata(event)
+            competitions = event.get("competitions") or []
+            competition = competitions[0] if competitions and isinstance(competitions[0], Mapping) else {}
+            competitors = competition.get("competitors") if isinstance(competition, Mapping) else []
+            teams: list[dict[str, Any]] = []
+            for competitor in competitors or []:
+                if not isinstance(competitor, Mapping):
+                    continue
+                team = competitor.get("team") if isinstance(competitor.get("team"), Mapping) else {}
+                team_id = str(team.get("id") or "").strip()
+                abbr = str(team.get("abbreviation") or "").upper().strip()
+                if team_id and abbr:
+                    teams.append({"team_id": team_id, "abbr": abbr})
+            if len(teams) != 2:
+                continue
+            events.append({
+                "provider_event_id": str(event.get("id") or ""),
+                "canonical_event_id": canonical["verified_canonical_event_id"],
+                "event_start_time": start.isoformat(),
+                "teams": teams,
+            })
+    events = list({
+        (row["provider_event_id"], row["canonical_event_id"]): row
+        for row in events
+    }.values())
     events.sort(key=lambda row: (row["event_start_time"], row["canonical_event_id"]))
     return events
 
@@ -159,10 +174,10 @@ def _roster(team_id: str, *, http_get: Callable[..., Any]) -> list[dict[str, Any
     return rows
 
 
-def _discover_candidates(requested_date: str, *, now: datetime, http_get: Callable[..., Any]) -> list[dict[str, Any]]:
+def _discover_candidates(requested_date: str, *, now: datetime, http_get: Callable[..., Any], requested_timezone: str = "America/Chicago") -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
-    for event in _pregame_events(requested_date, now=now, http_get=http_get):
+    for event in _pregame_events(requested_date, now=now, http_get=http_get, requested_timezone=requested_timezone):
         teams = event["teams"]
         for team in teams:
             opponent = next(item["abbr"] for item in teams if item["abbr"] != team["abbr"])
@@ -243,7 +258,7 @@ def acquire_nfl_forward_evidence_batch(
         "can_execute": False,
     }
     try:
-        candidates = _discover_candidates(req.requested_date, now=now, http_get=cached_get)
+        candidates = _discover_candidates(req.requested_date, now=now, http_get=cached_get, requested_timezone=req.requested_timezone)
     except Exception as exc:
         result["status"] = "DATA_UNOBTAINABLE"
         result["blockers"] = [getattr(exc, "code", f"NFL_PROP_DISCOVERY_FAILED:{type(exc).__name__}")]
@@ -251,6 +266,12 @@ def acquire_nfl_forward_evidence_batch(
 
     result["total_candidates"] = len(candidates)
     start = min(req.candidate_offset, len(candidates))
+    if req.rotating_window_slot is not None and candidates:
+        # Stateless rotating window: process restarts cannot reset scheduled
+        # coverage to the already-captured prefix. Explicit offsets are unchanged.
+        window_count = (len(candidates) + req.max_candidates - 1) // req.max_candidates
+        start = (req.rotating_window_slot % window_count) * req.max_candidates
+    result["candidate_offset"] = start
     end = min(start + req.max_candidates, len(candidates))
     window = candidates[start:end]
     result["window_candidate_n"] = len(window)
