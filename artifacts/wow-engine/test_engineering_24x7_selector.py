@@ -71,6 +71,31 @@ class Test24x7(unittest.TestCase):
         self.assertEqual(result["action"], "BUILD")
         self.assertFalse(result["can_execute"])
 
+    def test_new_active_p0_preempts_stale_p0_without_relying_on_issue_number(self):
+        result = mod.plan([
+            issue(50, "P0", updated_at="2026-08-29T19:29:47Z"),
+            issue(1021, "P0", updated_at="2026-11-02T01:10:00Z"),
+        ], [])
+        self.assertEqual((result["action"], result["incident"]), ("BUILD", 1021))
+
+    def test_existing_draft_does_not_spawn_duplicate_or_starve_other_recovery(self):
+        result = mod.plan([
+            issue(1021, "P0", updated_at="2026-11-02T01:10:00Z"),
+            issue(1988, "P0", updated_at="2026-11-01T20:10:00Z"),
+        ], [pr(2374, 1021, draft=True)])
+        self.assertEqual((result["action"], result["incident"]), ("BUILD", 1988))
+
+    def test_draft_only_is_idle_not_duplicate_build(self):
+        result = mod.plan([issue(1021, "P0")], [pr(2374, 1021, draft=True)])
+        self.assertEqual(result["action"], "IDLE")
+
+    def test_bad_timestamp_falls_back_without_crashing(self):
+        result = mod.plan([
+            issue(2, "P0", updated_at="not-an-ISO-timestamp"),
+            issue(3, "P0", updated_at="2026-11-01T20:10:00Z"),
+        ], [])
+        self.assertEqual(result["incident"], 3)
+
     def test_declared_untrusted_pr_fails_closed(self):
         adversarial = pr(40, 9)
         adversarial["head"]["sha"] = "HEAD~1"
