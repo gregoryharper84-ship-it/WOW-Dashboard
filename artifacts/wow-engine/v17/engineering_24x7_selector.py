@@ -33,6 +33,8 @@ PRIORITY = {
 }
 MAX_ISSUES = 5000
 MAX_PRS = 2000
+MAX_RUNS = 500
+ATTEMPT_INCIDENT = re.compile(r"(?:^|\\s)incident=([1-9][0-9]*)(?=\\s|$)")
 
 
 def labels(item: dict) -> set[str]:
@@ -104,10 +106,34 @@ def _updated_timestamp(issue: dict) -> float:
         return 0.0
 
 
-def plan(issues: list, prs: list, *, target: int | None = None) -> dict:
+def prior_attempt_since_issue_update(issue: dict, runs: list) -> bool:
+    """Treat an authenticated GitHub worker run as a one-attempt receipt.
+
+    The same incident is not dispatched again until the issue gains new
+    evidence. Run titles are only DENIAL evidence, never launch permission.
+    """
+    number = issue["number"]
+    issue_updated = _updated_timestamp(issue)
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ValueError("worker inventory row invalid")
+        title = run.get("displayTitle")
+        match = ATTEMPT_INCIDENT.search(title) if isinstance(title, str) else None
+        if match is None or int(match.group(1)) != number:
+            continue
+        attempt = _updated_timestamp({"updated_at": run.get("createdAt")})
+        if issue_updated <= 0 or attempt <= 0 or attempt >= issue_updated:
+            return True
+    return False
+
+
+def plan(issues: list, prs: list, *, target: int | None = None, runs: list | None = None) -> dict:
     """Prefer P0/P1 restoration; resume existing PR, never duplicate its writer."""
     if not isinstance(issues, list) or not isinstance(prs, list):
         raise ValueError("inventory is not a pair of arrays")
+    runs = [] if runs is None else runs
+    if not isinstance(runs, list) or len(runs) > MAX_RUNS:
+        raise ValueError("invalid or incomplete worker run inventory")
     if len(issues) > MAX_ISSUES or len(prs) > MAX_PRS:
         raise ValueError("inventory exceeded bounded scan; refuse truncated data")
     if target is not None and (type(target) is not int or target <= 0):
@@ -121,6 +147,8 @@ def plan(issues: list, prs: list, *, target: int | None = None) -> dict:
             ranked.append((tier, -_updated_timestamp(issue), number, issue))
     ranked.sort(key=lambda row: row[:3])
     for tier, _negative_updated, number, _issue in ranked:
+        if prior_attempt_since_issue_update(_issue, runs):
+            continue
         related = [pr for pr in prs if valid_pr(pr) and number in related_incidents(pr)]
         if related:
             # A draft PR is a real non-duplicate claim, but not a runnable
@@ -150,6 +178,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--issues", type=Path, required=True)
     parser.add_argument("--prs", type=Path, required=True)
+    parser.add_argument("--runs", type=Path)
     parser.add_argument("--target", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -157,6 +186,7 @@ def main() -> None:
         json.loads(args.issues.read_text(encoding="utf-8")),
         json.loads(args.prs.read_text(encoding="utf-8")),
         target=args.target,
+        runs=json.loads(args.runs.read_text(encoding="utf-8")) if args.runs else [],
     )
     args.output.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
