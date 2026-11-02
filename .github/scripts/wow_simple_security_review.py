@@ -394,6 +394,9 @@ def review_models(provider, key, *, strict=False):
         raise Hold("PROVIDER_IDENTITY_INVALID")
     if configured and not pattern.fullmatch(configured):
         raise Hold("GEMINI_MODEL_INVALID" if label == "GEMINI" else "CLAUDE_MODEL_UNAPPROVED")
+    # Catalog-unverified static fallback has no credential-listed alternates.
+    # Permit at most one such generation request, never 429 model-shopping.
+    catalog_verified = True
     try:
         data = request_json(endpoint, headers=headers)
         if not isinstance(data, dict):
@@ -440,6 +443,7 @@ def review_models(provider, key, *, strict=False):
                                       "HTTP_529", "PROVIDER_TRANSPORT"):
             raise
         print("REVIEW_MODEL_CATALOG_UNAVAILABLE:" + label, file=sys.stderr)
+        catalog_verified = False
         discovered = list(defaults)
     def rank(model):
         m = pattern.fullmatch(model)
@@ -455,7 +459,8 @@ def review_models(provider, key, *, strict=False):
         ordered.insert(0, configured)
     # A configured ID omitted from a valid provider catalog is not a
     # source-policy rejection; try other discovered approved models.
-    return ordered[:MAX_REVIEW_MODELS]
+    # Only a complete credential-scoped catalog can authorize rotation.
+    return ordered[:MAX_REVIEW_MODELS if catalog_verified else 1]
 
 
 def call_provider(provider, key, prompt):

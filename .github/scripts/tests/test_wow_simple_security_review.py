@@ -1034,12 +1034,33 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     m.call_provider("gemini-generative-api", "key", "untrusted diff")
                 self.assertEqual(request.call_count, 1)
 
-    def test_review_model_listing_http_error_uses_short_static_fallback(self):
+    def test_review_model_listing_http_error_allows_one_static_fallback(self):
         self._models_patch.stop()
         with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
              patch.object(m, "request_json", side_effect=m.Hold("HTTP_503")):
             self.assertEqual(m.review_models("gemini-generative-api", "key"),
-                             ["gemini-3.8-flash", "gemini-3.6-flash"])
+                             ["gemini-3.8-flash"])
+
+    def test_gemini_unavailable_catalog_never_rotates_unlisted_models(self):
+        self._models_patch.stop()
+        # A transient catalog failure does not prove the next static model
+        # is credential-listed; a 429 on the single fallback is terminal.
+        for status in ("HTTP_503", "HTTP_429"):
+            seen = []
+            def request(url, **kwargs):
+                seen.append(url)
+                if "pageSize=1000" in url:
+                    raise m.Hold(status)
+                self.assertIn("gemini-3.8-flash:generateContent", url)
+                raise m.ProviderUnavailable("PROVIDER_HTTP_429")
+            with self.subTest(catalog=status), \
+                 patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+                 patch.object(m, "request_json", side_effect=request):
+                with self.assertRaisesRegex(m.ProviderUnavailable, "PROVIDER_HTTP_429"):
+                    m.call_provider("gemini-generative-api", "key", "diff")
+            self.assertEqual(len(seen), 2)
+            self.assertEqual(sum(":generateContent" in url for url in seen), 1)
+            self.assertNotIn("gemini-3.6-flash:generateContent", " ".join(seen))
 
     def test_review_model_only_typed_unavailable_moves_to_next_model(self):
         self._models_patch.stop()
