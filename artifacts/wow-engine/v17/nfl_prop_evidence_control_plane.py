@@ -231,6 +231,9 @@ def acquire_nfl_forward_evidence_batch(
         "persisted": 0,
         "held": 0,
         "snapshot_write_failed": 0,
+        "snapshot_write_succeeded": 0,
+        "explicit_prewrite_exclusions": 0,
+        "receipts": [],
         "next_offset": None,
         "blockers": [],
         "stat_types": list(STAT_TYPES),
@@ -255,14 +258,31 @@ def acquire_nfl_forward_evidence_batch(
 
     for candidate in window:
         result["attempted"] += 1
+        receipt = {
+            "event_id": candidate["canonical_event_id"],
+            "event_start_time": candidate["event_start_time"],
+            "sport": SPORT, "player": candidate["player"],
+            "stat_type": candidate["stat_type"], "line": None,
+            "source_type": SOURCE_TYPE, "platform": PLATFORM,
+            "source_snapshot_id": None,
+            "write_status": "PREWRITE_PENDING",
+            "terminal_reason": None, "can_execute": False,
+        }
+        result["receipts"].append(receipt)
         try:
             if _existing_snapshot(db, candidate):
                 result["already_captured"] += 1
+                result["explicit_prewrite_exclusions"] += 1
+                receipt["write_status"] = "ALREADY_CAPTURED"
+                receipt["terminal_reason"] = "CANONICAL_IDENTITY_ALREADY_CAPTURED"
                 continue
         except Exception as exc:
             result["held"] += 1
+            result["explicit_prewrite_exclusions"] += 1
+            receipt["write_status"] = "PREWRITE_EXCLUDED"
+            receipt["terminal_reason"] = f"NFL_EXISTING_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}"
             result["blockers"].append(
-                f"{candidate['player']}:{candidate['stat_type']}:NFL_EXISTING_SNAPSHOT_QUERY_FAILED:{type(exc).__name__}"
+                f"{candidate['player']}:{candidate['stat_type']}:{receipt['terminal_reason']}"
             )
             continue
         try:
@@ -302,16 +322,36 @@ def acquire_nfl_forward_evidence_batch(
             snapshot_id, _fingerprint, snapshot = _snapshot_payload(row, normalized)
             snapshot["source_snapshot_id"] = snapshot_id
             result["hydrated"] += 1
-            db.table("wow_prop_evidence_snapshots").upsert(snapshot, on_conflict="source_snapshot_id").execute()
+            receipt.update({
+                "line": line, "source_snapshot_id": snapshot_id,
+                "write_status": "SNAPSHOT_WRITE_PENDING",
+            })
+            try:
+                db.table("wow_prop_evidence_snapshots").upsert(snapshot, on_conflict="source_snapshot_id").execute()
+            except Exception as exc:
+                result["snapshot_write_failed"] += 1
+                result["held"] += 1
+                receipt["write_status"] = "SNAPSHOT_WRITE_FAILED"
+                receipt["terminal_reason"] = f"PROP_SNAPSHOT_WRITE_FAILED:{type(exc).__name__}"
+                result["blockers"].append(f"{candidate['player']}:{candidate['stat_type']}:{receipt['terminal_reason']}")
+                continue
             result["persisted"] += 1
+            result["snapshot_write_succeeded"] += 1
+            receipt["write_status"] = "SNAPSHOT_WRITE_SUCCEEDED"
+            receipt["terminal_reason"] = "PERSISTED_AWAITING_CANONICAL_READBACK"
         except PropAutoHydrationError as exc:
             result["held"] += 1
+            result["explicit_prewrite_exclusions"] += 1
+            receipt["write_status"] = "PREWRITE_EXCLUDED"
+            receipt["terminal_reason"] = exc.code
             result["blockers"].append(f"{candidate['player']}:{candidate['stat_type']}:{exc.code}")
         except Exception as exc:
             result["held"] += 1
-            result["snapshot_write_failed"] += 1
+            result["explicit_prewrite_exclusions"] += 1
+            receipt["write_status"] = "PREWRITE_EXCLUDED"
+            receipt["terminal_reason"] = f"NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
             result["blockers"].append(
-                f"{candidate['player']}:{candidate['stat_type']}:NFL_FORWARD_ACQUISITION_ERROR:{type(exc).__name__}"
+                f"{candidate['player']}:{candidate['stat_type']}:{receipt['terminal_reason']}"
             )
 
     result["blockers"] = list(dict.fromkeys(result["blockers"]))
