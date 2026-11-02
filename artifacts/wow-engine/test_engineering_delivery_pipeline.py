@@ -121,6 +121,17 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(result["reentry_trigger"], "VALID_PROVIDER_PREFLIGHT_AND_NEW_QA_RECEIPT")
         self.assertFalse(result["merge_authorized"])
 
+    def test_bare_404_is_ambiguous_and_never_authorizes_retry(self):
+        for reason in ("HTTP_404", "PROVIDER_HTTP_404"):
+            x = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+            x["output"] = {"title": "HOLD — independent semantic source review",
+                           "summary": "reason " + reason}
+            with self.subTest(reason=reason):
+                result = mod.reduce_pr(pr(), [x], SHA)
+                self.assertEqual(result["decision"], "REVIEWER_PROVIDER_DIAGNOSIS")
+                self.assertEqual(result["next_action"], "VERIFY_ENDPOINT_MODEL_AND_SCOPE")
+                self.assertFalse(result["can_execute"])
+
     def test_credential_and_quota_errors_need_provider_repair_not_source(self):
         for reason in ("PROVIDER_HTTP_401", "PROVIDER_CREDIT_EXHAUSTED"):
             x = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
