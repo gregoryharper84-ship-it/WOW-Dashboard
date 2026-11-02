@@ -509,3 +509,25 @@ These are typed research-input rejections from `v17/refit_scheduler.py`, never m
 | `REFIT_PROBABILITY_INVALID` | V17 advisory refit scheduler | Frozen calibrated forecast probability is not a finite number strictly between 0 and 1. | No |
 | `REFIT_EVENT_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Chronologically distinct events fall below candidate-only train plus diagnostic floor. | No |
 | `REFIT_MATURED_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Enough fully settled pre-cutoff training events or diagnostic events are unavailable. | No |
+
+
+## Reviewer provider compatibility — owner-only read-only preflight
+
+These failure codes preserve the pre-existing protected semantic-review gate. A
+preflight GET validates only provider compatibility; it produces no QA receipt,
+independent security PASS, merger authorization, probability or market order.
+Recover only through authenticated protected-main workflow execution.
+
+| Code | Owner / stage | Recovery class | Bounded safe context | Next action |
+| --- | --- | --- | --- | --- |
+| `REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED` | Owner / QA preflight admission | EXTERNAL_AUTHORIZATION | GitHub event type and trusted main identity only | Dispatch owner-only diagnostic from protected main |
+| `GEMINI_MODEL_INVALID` | QA reviewer / model selection | CONFIGURATION | Expected allowlisted model ID, never secret | Remove explicit stale model variable or bind reviewed stable model |
+| `REVIEWER_PREFLIGHT_CREDENTIAL_MISSING` | QA environment / preflight | PROVIDER_CREDENTIAL | Credential present/missing boolean only | Restore existing scoped QA provider credential |
+| `REVIEWER_PREFLIGHT_MODEL_CAPABILITY_UNVERIFIED` | QA provider / metadata GET | PROVIDER_CONFIGURATION | Model identity and `generateContent` supported boolean only | Verify project entitlement and exact supported method |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider / review | PROVIDER_CONFIGURATION | Structured Google NOT_FOUND for API version/method; no response text or keys | Use owner-approved model selection and a fresh independent exact-head review |
+| `HTTP_404` | QA provider / review or preflight | DIAGNOSE | Fixed allowlisted endpoint label and HTTP status only | Attribute endpoint/model/credential; do not infer model retirement or semantic REJECT |
+| `REVIEWER_CLI_ARGUMENT_INVALID` | QA workflow / preflight entrypoint | CONFIGURATION | Argument shape only | Invoke `--preflight` or normal review through trusted workflow |
+
+A structured model failure may allow the existing reviewer fallback mechanism,
+but only a genuine independent semantic PASS on the exact source SHA qualifies as
+security evidence. A prior signed REJECT remains binding at that SHA.
