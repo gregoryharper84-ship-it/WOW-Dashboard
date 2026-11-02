@@ -137,3 +137,46 @@ def test_typed_identity_hydration_failure_is_row_scoped(monkeypatch: pytest.Monk
     assert result["held"]==1
     assert result["status"]=="COMPLETED_WITH_ROW_BLOCKERS"
     assert any("PROP_PLAYER_IDENTITY_UNRESOLVED" in value for value in result["blockers"])
+
+
+def test_daily_receipts_reconcile_persisted_and_already_captured(monkeypatch: pytest.MonkeyPatch):
+    candidates = [_candidate(), _candidate("Beta WR", "RECEIVING_YARDS", "WR")]
+    _install(monkeypatch, candidates)
+    existing = {(
+        candidates[0]["canonical_event_id"], "NFL",
+        candidates[0]["player"], candidates[0]["stat_type"],
+    )}
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=2),
+        db=_DB(existing=existing), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["attempted"] == 2
+    assert result["already_captured"] == 1
+    assert result["explicit_prewrite_exclusions"] == 1
+    assert result["persisted"] == result["snapshot_write_succeeded"] == 1
+    assert [row["write_status"] for row in result["receipts"]] == [
+        "ALREADY_CAPTURED", "SNAPSHOT_WRITE_SUCCEEDED",
+    ]
+    assert result["receipts"][1]["source_snapshot_id"].startswith("snapshot-Beta")
+    assert all(row["can_execute"] is False for row in result["receipts"])
+
+
+def test_daily_snapshot_write_failure_is_distinct_from_hydration(monkeypatch: pytest.MonkeyPatch):
+    _install(monkeypatch, [_candidate()])
+    class FailingDB(_DB):
+        def table(self, name):
+            query = super().table(name)
+            def raise_on_write(*_args, **_kwargs):
+                raise OSError("write unavailable")
+            query.upsert = raise_on_write
+            return query
+    result = subject.acquire_nfl_forward_evidence_batch(
+        subject.NFLForwardEvidenceRequest(requested_date="2026-09-28", max_candidates=1),
+        db=FailingDB(), now=NOW, http_get=lambda *_a, **_k: object(),
+    )
+    assert result["snapshot_write_failed"] == 1
+    assert result["explicit_prewrite_exclusions"] == 0
+    assert result["persisted"] == 0
+    assert result["status"] == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
+    assert result["receipts"][0]["write_status"] == "SNAPSHOT_WRITE_FAILED"
+    assert result["can_execute"] is False
