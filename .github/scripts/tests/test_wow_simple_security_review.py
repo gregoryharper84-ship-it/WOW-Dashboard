@@ -402,6 +402,60 @@ class SimpleSecurityReviewTests(unittest.TestCase):
 
 
 
+    def test_gemini_fallback_pins_stable_free_tier_candidate_and_keeps_fail_closed_parser(self):
+        import json
+        verdict = self._passing()
+        candidate = {"candidates": [{"finishReason": "STOP", "content": {
+            "parts": [{"text": json.dumps(verdict)}]}}]}
+        # The workflow may inherit an absent/empty variable. Both select the
+        # reviewed, pinned stable model; no dynamic model names or raw URLs.
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}):
+            with patch.object(m, "request_json", return_value=candidate) as req:
+                decision, payload = m.call_provider(
+                    "gemini-generative-api", "TEST_KEY", "untrusted diff"
+                )
+        self.assertEqual(decision, "PASS")
+        self.assertEqual(payload, verdict)
+        self.assertEqual(req.call_count, 1)
+        self.assertEqual(
+            req.call_args.args[0],
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+        )
+        self.assertEqual(req.call_args.kwargs["data"]["generationConfig"],
+                         {"responseMimeType": "application/json"})
+        # A legacy explicitly pinned variable must not invisibly change the
+        # signed model identity. The operator must update the Actions variable.
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-2.5-flash"}):
+            with patch.object(m, "request_json") as req:
+                with self.assertRaises(m.Hold) as caught:
+                    m.call_provider("gemini-generative-api", "TEST_KEY", "diff")
+                self.assertEqual(str(caught.exception), "GEMINI_MODEL_INVALID")
+                req.assert_not_called()
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
+            with patch.object(m, "request_json", return_value=candidate):
+                self.assertEqual(m.call_provider("gemini-generative-api",
+                                                 "TEST_KEY", "diff")[0], "PASS")
+
+    def test_gemini_fallback_invalid_responses_hold_without_retry(self):
+        import json
+        good = self._passing()
+        cases = (
+            ("malformed_json", "STOP", "{not valid json}", "SEMANTIC_RESPONSE_NOT_JSON"),
+            ("invalid_verdict", "STOP", json.dumps({**good, "security_review": "NOT_PASS"}),
+             "SEMANTIC_VERDICT_INVALID"),
+            ("non_stop", "MAX_TOKENS", json.dumps(good), "GEMINI_REVIEW_INCOMPLETE"),
+        )
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}):
+            for name, reason, body, expected in cases:
+                with self.subTest(name=name):
+                    result = {"candidates": [{"finishReason": reason, "content": {
+                        "parts": [{"text": body}]}}]}
+                    with patch.object(m, "request_json", return_value=result) as request:
+                        with self.assertRaises(m.Hold) as caught:
+                            m.call_provider("gemini-generative-api", "TEST_KEY", "diff")
+                        self.assertEqual(str(caught.exception), expected)
+                        self.assertEqual(request.call_count, 1)
+
     def test_base_sha_must_be_present_and_valid_in_review_capture(self):
         pr = {"head": {"sha": "a" * 40, "repo": {"full_name": m.REPO}},
               "base": {"ref": "main", "sha": "b" * 40, "additions": 1, "deletions": 1, "repo": {"full_name": m.REPO}},
