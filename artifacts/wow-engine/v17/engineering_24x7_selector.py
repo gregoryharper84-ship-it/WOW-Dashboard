@@ -197,6 +197,17 @@ def plan(issues: list, prs: list, *, target: int | None = None,
             "reason": "LEGACY_AUTO_WRITER_ACTIVE", "can_execute": False,
         }
 
+    # A manual retry is an exact-run recovery, never a generic override
+    # that becomes valid because issue metadata happened to change.
+    if retry_after_run_id is not None and not _explicit_retry_authorized(
+        target, runs, retry_after_run_id
+    ):
+        return {
+            "action": "IDLE", "incident": None, "pr": None,
+            "head_sha": None, "priority": None,
+            "reason": "MANUAL_RETRY_RECEIPT_INVALID", "can_execute": False,
+        }
+
     ranked = []
     for issue in issues:
         priority = eligible(issue)
