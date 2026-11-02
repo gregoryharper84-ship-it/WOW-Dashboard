@@ -34,6 +34,8 @@ on:
       - ".github/workflows/wow-engineering-24x7.yml"
       - "artifacts/wow-engine/v17/engineering_24x7_selector.py"
       - "artifacts/wow-engine/test_engineering_24x7_selector.py"
+      - "artifacts/wow-engine/v17/engineering_delivery_pipeline.py"
+      - "artifacts/wow-engine/test_engineering_delivery_pipeline.py"
 
 permissions:
   actions: read
@@ -58,7 +60,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify deterministic 24x7 admission tests
-        run: python artifacts/wow-engine/test_engineering_24x7_selector.py -v
+        run: |
+          python artifacts/wow-engine/test_engineering_24x7_selector.py -v
+          python artifacts/wow-engine/test_engineering_delivery_pipeline.py -v
       - name: Exercise real GitHub intake in READ-ONLY shadow mode
         env:
           GH_TOKEN: ${{ github.token }}
@@ -168,6 +172,72 @@ jobs:
             echo "- Policy: RESTORE first, then APPROVED production improvement"
             echo "- Cursor: permanently excluded"
             echo "- Betting: can_execute=false; V17_TERMINAL_REDUCER"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  resume:
+    # Complete the previously missing RESUME_PR stage without invoking a
+    # second coder or pretending that a green check is protected approval.
+    # Running this on every new evidence event is read-only and free.
+    if: >-
+      needs.select.result == 'success' &&
+      needs.select.outputs.action == 'RESUME_PR'
+    needs: [select]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
+    steps:
+      - name: Checkout trusted protected controller only
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Re-read existing PR and exact-head check evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: ${{ needs.select.outputs.pr }}
+          TARGET_SHA: ${{ needs.select.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_PR" =~ ^[1-9][0-9]*$ ]] || exit 2
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 2
+          # A stale runner or moved PR is not permitted to continue a release.
+          main_head=$(gh api "/repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$main_head" = "$GITHUB_SHA" || {
+            echo "::warning::CONTROLLER_SOURCE_ADVANCED"
+            exit 0
+          }
+          gh api "/repos/$GITHUB_REPOSITORY/pulls/$TARGET_PR" > "$RUNNER_TEMP/pr.json"
+          jq -e --arg sha "$TARGET_SHA" --arg repo "$GITHUB_REPOSITORY" --argjson n "$TARGET_PR" '
+            .number == $n and .state == "open" and .draft == false and
+            .head.sha == $sha and .base.ref == "main" and
+            .head.repo.full_name == $repo and .base.repo.full_name == $repo
+          ' "$RUNNER_TEMP/pr.json" >/dev/null || {
+            echo "::warning::PR_HEAD_CHANGED_OR_UNTRUSTED"
+            exit 0
+          }
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/check-runs?per_page=100&filter=latest" \
+            --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/checks.json"
+          python artifacts/wow-engine/v17/engineering_delivery_pipeline.py \
+            --pr "$RUNNER_TEMP/pr.json" --checks "$RUNNER_TEMP/checks.json" \
+            --head-sha "$TARGET_SHA" --output "$RUNNER_TEMP/delivery-decision.json"
+          decision=$(jq -r '.decision' "$RUNNER_TEMP/delivery-decision.json")
+          action=$(jq -r '.next_action' "$RUNNER_TEMP/delivery-decision.json")
+          trigger=$(jq -r '.reentry_trigger' "$RUNNER_TEMP/delivery-decision.json")
+          {
+            echo "## Existing PR continuation — read-only exact-head evidence"
+            echo "- PR: #$TARGET_PR"
+            echo "- SHA: $TARGET_SHA"
+            echo "- Decision: $decision"
+            echo "- Next action: $action"
+            echo "- Re-entry trigger: $trigger"
+            echo "- Independent security, release, CODEOWNER and merge rules unchanged."
+            echo "- No reviewer invocation, second writer, protected merge, deploy or wager."
           } >> "$GITHUB_STEP_SUMMARY"
 
   dispatch:
