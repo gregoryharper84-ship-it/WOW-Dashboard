@@ -1,13 +1,13 @@
 import { defineConfig } from "vitest/config";
 import TestDriver from "testdriverai/vitest";
 
-// Keep TestDriver isolated from this monorepo's node:test and pytest suites.
-// Do not add an automatic schedule or PR trigger: hosted tests are metered.
+// Scope discovery to TestDriver's explicit browser suites. Do not collect
+// unrelated node:test suites from this monorepo. Metered runs are manual only.
 export default defineConfig({
   test: {
-    include: ["tests/production.test.js"],
-    testTimeout: 240000,
-    hookTimeout: 240000,
+    include: ["tests/dashboard.test.js", "tests/production.test.js"],
+    testTimeout: 660000,
+    hookTimeout: 660000,
     reporters: ["default", TestDriver()],
     setupFiles: ["testdriverai/vitest/setup"],
   },
