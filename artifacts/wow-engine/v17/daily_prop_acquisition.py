@@ -138,6 +138,7 @@ def acquire_daily_prop_snapshots(
     requested_timezone: str,
     max_candidates: int,
     now: datetime | None = None,
+    rotating_window_slot: int | None = None,
     http_get: Any = httpx.get,
 ) -> dict[str, Any]:
     """Persist a bounded set of certified MLB pitcher-route discovery snapshots.
@@ -173,9 +174,19 @@ def acquire_daily_prop_snapshots(
         return result
 
     candidates = _schedule_pitchers(schedule, requested_date=requested_date, requested_timezone=requested_timezone, now=now)
+    total_candidate_rows = len(candidates) * len(STAT_TYPES)
+    start_row = 0
+    if rotating_window_slot is not None and total_candidate_rows:
+        window_count = (total_candidate_rows + max_candidates - 1) // max_candidates
+        start_row = (int(rotating_window_slot) % window_count) * max_candidates
+    candidate_row = 0
     stop = False
     for candidate in candidates:
         for stat_type in STAT_TYPES:
+            if candidate_row < start_row:
+                candidate_row += 1
+                continue
+            candidate_row += 1
             if result["attempted"] >= max_candidates:
                 stop = True
                 break
