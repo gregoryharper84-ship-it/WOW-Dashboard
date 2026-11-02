@@ -226,3 +226,65 @@ def test_new_readback_requires_actual_bearer_authorization(monkeypatch):
     success=client.get(path,headers={"Authorization":"Bearer test-only"})
     assert success.status_code==200
     assert success.json()["can_execute"] is False
+
+
+def test_source_model_failure_code_is_preserved_on_held_event():
+    saved = _row(certified=False)
+    saved["detail"]["result"]["model_status"] = "MODEL_SCORER_FAILED"
+    saved["detail"]["result"]["detail"] = {
+        "blockers": ["MODEL_SCORER_FAILED:provider timeout", "MODEL_INPUTS_INSUFFICIENT"],
+    }
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    event = view["events"][0]
+    assert event["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert event["source_diagnostics"]["source_model_status"] == "MODEL_SCORER_FAILED"
+    assert "MODEL_SCORER_FAILED" in event["source_diagnostics"]["source_reason_codes"]
+    assert "MODEL_INPUTS_INSUFFICIENT" in event["source_diagnostics"]["source_reason_codes"]
+    assert "calibrated_probability" not in event["markets"][0]
+
+
+def test_unsupported_daily_sport_is_not_counted_as_corrupt():
+    other = _row(sport="SOCCER", index=1)
+    view = llp.project_llp_intelligence_page(_page([_row(), other]))
+    assert len(view["events"]) == 1
+    assert view["unsupported_sport_rows_skipped"] == 1
+    assert view["invalid_event_rows"] == 0
+
+
+def test_saved_score_event_schema_translates_only_explicit_winner():
+    saved = _row(certified=True)
+    raw = saved["detail"]["result"]
+    raw["global_terminal_authority"] = raw.pop("terminal_authority")
+    raw.pop("calibrated_probability")
+    raw.pop("calibrated_probability_lower_bound")
+    raw.pop("calibrated_probability_upper_bound")
+    raw.update(
+        calibrated_home_probability=.61,
+        calibrated_home_lower_bound=.56,
+        calibrated_home_upper_bound=.67,
+        calibrated_away_probability=.39,
+        calibrated_away_lower_bound=.33,
+        calibrated_away_upper_bound=.44,
+    )
+    projected_receipt = llp._winner_receipt_from_row(saved, saved["identity"] | {
+        "event_start_time_utc": saved["identity"]["commence_time_utc"]
+    })
+    assert projected_receipt["terminal_authority"] == "V17_TERMINAL_REDUCER"
+    assert projected_receipt["calibrated_probability"] == .61
+    # Legacy persisted rows have no certified pregame receipt ID. A model
+    # probability must never manufacture one from a game or run identifier.
+    raw.pop("source_receipt_id")
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    assert view["events"][0]["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "SOURCE_RECEIPT_MISSING" in view["events"][0]["markets"][0]["reason_codes"]
+    assert "calibrated_probability" not in view["events"][0]["markets"][0]
+
+
+def test_no_selected_side_is_invented_from_larger_home_probability():
+    saved = _row(certified=True)
+    result = saved["detail"]["result"]
+    result.pop("selected_side")
+    result.update(calibrated_home_probability=.92, calibrated_away_probability=.08)
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    assert view["events"][0]["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "WINNER_SIDE_INVALID" in view["events"][0]["markets"][0]["reason_codes"]
