@@ -104,3 +104,19 @@ def test_upset_alert_requires_exact_governed_winner_receipt():
     alert["source_receipt_id"]="another"
     wrong=build_llp_team_intelligence_bundle(event=EVENT,receipts=[receipt()],upset_alert=alert)
     assert "UPSET_ALERT_WINNER_RECEIPT_MISMATCH" in wrong["upset_intelligence"]["reason_codes"]
+
+
+def test_opposing_winner_receipts_fail_closed_as_event_mutex_conflict():
+    home = receipt()
+    away = dict(home, side="NYR", source_receipt_id="competing-winner")
+    result = build_llp_team_intelligence_bundle(
+        event=EVENT, receipts=[home, away],
+        upset_alert=dict(source_receipt_id="test-frozen-id",sport="NHL",
+                         official_event_id="nhl-123",status="UPSET_ALERT_MODEL_FLIP",
+                         alert=True,can_execute=False),
+    )
+    assert result["governed_winner_receipt_id"] is None
+    assert result["upset_intelligence"]["status"] == "HELD_EVIDENCE_ONLY"
+    assert all(row["status"] == "HELD_EVIDENCE_ONLY" for row in result["markets"])
+    assert all("EVENT_WINNER_MUTEX_CONFLICT" in row["reason_codes"] for row in result["markets"])
+    assert all("calibrated_probability" not in row for row in result["markets"])
