@@ -72,3 +72,20 @@ def test_duplicate_market_thesis_rejected():
     r=receipt("GAME_TOTAL")
     with pytest.raises(ValueError,match="DUPLICATE"):
         build_llp_team_intelligence_bundle(event=EVENT,receipts=[r,deepcopy(r)])
+
+
+def test_signed_negative_puck_line_is_valid_but_does_not_grant_admission():
+    row=receipt("POINT_SPREAD")
+    row["exact_line"]=-1.5
+    out=build_llp_team_intelligence_bundle(event=EVENT,receipts=[row])["markets"][0]
+    assert out["exact_line"] == -1.5
+    assert out["evidence_visible"] is True
+    assert "probability_publishable" not in out and "rank_eligible" not in out
+
+
+def test_negative_total_is_held():
+    row=receipt("GAME_TOTAL")
+    row["exact_line"]=-2.5
+    out=build_llp_team_intelligence_bundle(event=EVENT,receipts=[row])["markets"][0]
+    assert out["status"] == "HELD_EVIDENCE_ONLY"
+    assert "TOTAL_EXACT_LINE_OR_SETTLEMENT_MISSING" in out["reason_codes"]
