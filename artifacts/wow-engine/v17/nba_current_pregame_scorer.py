@@ -345,28 +345,24 @@ def resolve_nba_calibrator_artifact(client: Any, certification: Any) -> Mapping[
             "wow_basketball_certified_calibrator_artifact",
             {"p_sport": "NBA", "p_calibrator_id": str(cal_id)},
         ).execute()
-        data = getattr(response, "data", None)
-        row = data[0] if isinstance(data, list) and data else data
-        if isinstance(row, Mapping):
-            return row
-    except Exception:
-        pass
-    if hasattr(client, "table"):
-        try:
-            response = (
-                client.table("wow_calibrators")
-                .select("*")
-                .eq("calibrator_id", str(cal_id))
-                .limit(1)
-                .execute()
-            )
-            data = getattr(response, "data", None)
-            row = data[0] if isinstance(data, list) and data else data
-            if isinstance(row, Mapping):
-                return row
-        except Exception as exc:
-            raise RuntimeError("NBA_CALIBRATOR_RESOLUTION_FAILED") from exc
-    raise LookupError("NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE")
+    except Exception as exc:
+        # Auth/transport/backend failure cannot be disguised as a missing artifact
+        # or silently retried through an unverified direct-table query.
+        raise RuntimeError("NBA_CALIBRATOR_RESOLUTION_FAILED") from exc
+    data = getattr(response, "data", None)
+    row = data[0] if isinstance(data, list) and data else data
+    if row is None:
+        raise LookupError("NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE")
+    if not isinstance(row, Mapping):
+        raise ValueError("NBA_CERTIFIED_CALIBRATOR_INVALID")
+    if (
+        str(row.get("calibration_artifact_id") or row.get("calibrator_id") or "") != str(cal_id)
+        or str(row.get("sport") or "").upper() != "NBA"
+        or str(row.get("calibration_sha256") or "").lower()
+        != str(getattr(certification, "calibration_sha256", "")).lower()
+    ):
+        raise ValueError("NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH")
+    return row
 
 
 def prepare_nba_current_pregame_scorer_receipt(
@@ -631,14 +627,26 @@ def prepare_nba_current_pregame_scorer_receipt(
             research_receipt=research_receipt,
         )
 
+    # A calibrator's existence/type is NOT authority to publish its bounds.
+    # Require explicit approval and exact binding to the separately certified
+    # specialist/calibrator registry entry. Missing fields fail closed.
     bounds_approved = (
         isinstance(calibration_artifact, Mapping)
-        and calibration_artifact.get("bounds_preapproval_status") != "REVIEW_REQUIRED"
-        and str(calibration_artifact.get("calibration_version") or "") != "NBA_PLATT_REVIEW_REQUIRED"
-        and (
-            calibration_artifact.get("bounds_policy") == "APPROVED"
-            or str(calibration_artifact.get("artifact_type") or "") == "BINARY_PLATT_CALIBRATOR"
-        )
+        and calibration_artifact.get("artifact_type") == "BINARY_PLATT_CALIBRATOR"
+        and calibration_artifact.get("bounds_policy") == "APPROVED"
+        and calibration_artifact.get("bounds_preapproval_status") == "APPROVED"
+        and calibration_artifact.get("certification_status") == "PASS"
+        and calibration_artifact.get("calibration_version") != "NBA_PLATT_REVIEW_REQUIRED"
+        and str(calibration_artifact.get("calibration_artifact_id") or "")
+        == str(getattr(certification, "calibration_artifact_id", ""))
+        and str(calibration_artifact.get("calibration_sha256") or "").lower()
+        == str(getattr(certification, "calibration_sha256", "")).lower()
+        and str(calibration_artifact.get("bounds_certification_id") or "")
+        == str(getattr(certification, "certification_id", ""))
+        and str(calibration_artifact.get("bounds_calibrator_sha256") or "").lower()
+        == str(getattr(certification, "calibration_sha256", "")).lower()
+        and getattr(certification, "independent_verification_status", None) == "PASS"
+        and getattr(certification, "certification_status", None) == "CERTIFIED"
     )
     if not bounds_approved:
         return _hold(
@@ -723,7 +731,11 @@ def prepare_nba_current_pregame_scorer_receipt(
         or getattr(certification, "model_version", None),
         "model_artifact_sha256": getattr(certification, "artifact_sha256", None),
         "calibration_artifact_id": getattr(certification, "calibration_artifact_id", None),
-        "calibration_version": calibration_artifact.get("calibration_version"),
+        "calibration_version": calibrated["calibration_version"],
+        "calibration_method": calibrated["calibration_method"],
+        "calibration_training_n": calibrated["calibration_training_n"],
+        "calibration_source_data_hash": calibrated["calibration_source_data_hash"],
+        "calibration_split_hash": calibrated["calibration_split_hash"],
         "calibration_artifact_sha256": getattr(certification, "calibration_sha256", None),
         "raw_probability": round(float(research_receipt["raw_probability"]), 6),
         "calibrated_probability": round(point, 6),
@@ -816,6 +828,8 @@ def score_nba_team_event_request(
         lineup_evidence=lineup_evidence,
         source_snapshot_id=getattr(req, "source_snapshot_id", None) or evidence_map.get("source_snapshot_id"),
         client=client,
+        identity_resolver=resolve_nba_current_event_identity,
+        calibration_artifact_resolver=resolve_nba_calibrator_artifact,
     )
 
     if receipt.get("status") == "HOLD" or receipt.get("typed_failure"):
@@ -829,7 +843,10 @@ def score_nba_team_event_request(
             status_code=status_code,
             extra={
                 "blockers": receipt.get("blockers"),
-                "model_invoked": True,
+                "model_invoked": bool(
+                    isinstance(receipt.get("research_receipt"), Mapping)
+                    and receipt["research_receipt"].get("raw_probability") is not None
+                ),
                 "nba_receipt": receipt,
             },
         )
@@ -841,12 +858,10 @@ def score_nba_team_event_request(
     away_lower = round(max(0.001, away_prob - float(receipt["dynamic_uncertainty"])), 6)
     away_upper = round(min(0.999, away_prob + float(receipt["dynamic_uncertainty"])), 6)
 
-    from datetime import datetime, timezone
-    immutable_ts = datetime.now(timezone.utc).isoformat()
-
+    # Model research may be computed, but no authenticated immutable prediction
+    # has been persisted and the global reducer has not approved publication.
     result = {
         "candidate_id": str(getattr(req, "event_key", "") or getattr(req, "official_event_id", "") or ""),
-        "prediction_id": f"{getattr(req, 'research_run_id', 'run')}:{receipt.get('official_event_id')}:NBA:{receipt.get('model_artifact_version')}",
         "sport": "NBA",
         "league": getattr(req, "league", "NBA"),
         "official_event_id": str(receipt.get("official_event_id") or getattr(req, "official_event_id", "")),
@@ -869,31 +884,30 @@ def score_nba_team_event_request(
         "calibrated_away_lower_bound": away_lower,
         "calibrated_away_upper_bound": away_upper,
         "dynamic_uncertainty": receipt.get("dynamic_uncertainty"),
-        "immutable_model_timestamp": immutable_ts,
         "source_snapshot_id": receipt.get("source_snapshot_id"),
         "source_snapshot_timestamp": receipt.get("source_snapshot_timestamp"),
-        "calibration_method": "BINARY_PLATT_CALIBRATOR",
+        "calibration_method": receipt.get("calibration_method"),
         "calibration_version": receipt.get("calibration_version"),
-        "calibration_health_status": "PASS",
-        "calibration_status": "PASS",
-        "calibration_history_present": True,
-        "calibration_artifact_certified": True,
-        "calibration_training_n": 100,
-        "effective_sample_n": 100,
-        "calibration_artifact_fingerprint": str(receipt.get("calibration_artifact_sha256") or "0" * 64),
-        "model_status": "COMPLETED",
+        "calibration_training_n": receipt.get("calibration_training_n"),
+        "calibration_source_data_hash": receipt.get("calibration_source_data_hash"),
+        "calibration_split_hash": receipt.get("calibration_split_hash"),
+        "calibration_artifact_fingerprint": receipt.get("calibration_artifact_sha256"),
+        "model_status": "RESEARCH_ONLY_NOT_FOR_PUBLICATION",
         "model_invoked": True,
         "requester_host_identity": route.requester_host_identity,
         "controlling_engine_identity": base_runtime.LLP_TEAM_BETTING_ENGINE,
         "candidate_family": route.candidate_family,
         "scout_research_barrier": scout_research_barrier,
         "global_terminal_authority": "V17_TERMINAL_REDUCER",
-        "terminal_label": "MODEL_QUALIFIED_HOLD",
-        "terminal_ceiling": "MODEL_QUALIFIED_HOLD",
+        "terminal_label": "MODEL_RESEARCH_ONLY_HOLD",
+        "terminal_ceiling": "MODEL_RESEARCH_ONLY_HOLD",
         "probability_publishable": False,
         "rank_eligible": False,
         "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
-        "blockers": ["TEAM_EVENT_SPECIALIST_ARTIFACT_NOT_CERTIFIED"],
+        "blockers": [
+            "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "NBA_IMMUTABLE_PREDICTION_RECEIPT_UNAVAILABLE",
+        ],
         "blend_publishable": False,
         "host_terminal_authority": False,
         "can_execute": False,
