@@ -509,3 +509,26 @@ These are typed research-input rejections from `v17/refit_scheduler.py`, never m
 | `REFIT_PROBABILITY_INVALID` | V17 advisory refit scheduler | Frozen calibrated forecast probability is not a finite number strictly between 0 and 1. | No |
 | `REFIT_EVENT_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Chronologically distinct events fall below candidate-only train plus diagnostic floor. | No |
 | `REFIT_MATURED_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Enough fully settled pre-cutoff training events or diagnostic events are unavailable. | No |
+
+
+## Simple V1 deterministic delivery re-entry
+
+These are read-only delivery **decisions**, not fitted-model failure substitutes,
+approval checks, or new release gates. Only the trusted QA App on the exact SHA
+can create independent review evidence. A prior signed semantic REJECT is binding
+on that SHA even when a later attempt produces a provider HOLD.
+
+| Decision / typed reason | Owner / stage | Recovery class | Safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `SEMANTIC_REJECT_SAME_SHA` | Independent QA / PR continuation | CODE_REPAIR | QA App ID, exact PR/SHA, signed check title | Repair findings on a new source SHA, then independent review |
+| `REVIEWER_MODEL_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Allowlisted 404 or explicit model-unavailable reason, no response body | Verify supported model and authorized credential, then obtain a new signed review |
+| `REVIEWER_AUTH_OR_QUOTA_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Typed provider credit / 401, no credentials or billing data | Repair existing entitlement or credential without new vendor/spend |
+| `REVIEWER_TRANSIENT_OUTAGE` | QA provider / review | TRANSIENT | Bounded 429/5xx/transport code only | One bounded retry after provider recovery, never on signed REJECT |
+| `OWNER_REVIEW_REQUIRED` | Owner / protected release | EXTERNAL_AUTHORIZATION | Exact PR/SHA and established owner-fallback reason | Authenticated independent owner review where policy allows, then fresh exact-head QA |
+| `INDEPENDENT_QA_NOT_ACCEPTED` | Independent QA / PR continuation | FAIL_CLOSED | Unknown/invalid/missing definitive review evidence | Diagnose signed QA receipt; no automatic override |
+| `EVIDENCE_PENDING` | Engineering controller / PR continuation | RETRY_ON_NEW_EVIDENCE | Missing/pending exact-head QA check | Re-enter on signed QA App check or explicit authorized owner dispatch |
+
+The existing controller performs no automatic protected merge, no semantic
+self-approval, no live betting and no unbounded provider retry. Production DONE
+requires authentic merged/live/verified SHA parity, healthy route and persisted
+business result; a green workflow is not proof of production delivery.
