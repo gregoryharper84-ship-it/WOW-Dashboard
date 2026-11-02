@@ -132,6 +132,11 @@ def safe_label(url, has_body):
         return "GITHUB_API:" + verb + ":" + operation
     if parsed.scheme == "https" and host == "api.anthropic.com" and path == "/v1/messages":
         return "ANTHROPIC_API:" + verb + ":MESSAGES"
+    if parsed.scheme == "https" and host == "api.anthropic.com" and path == "/v1/models":
+        return "ANTHROPIC_API:" + verb + ":MODEL_CATALOG"
+    if (parsed.scheme == "https" and host == "generativelanguage.googleapis.com"
+            and path == "/v1beta/models" and not has_body):
+        return "GEMINI_API:GET:MODEL_CATALOG"
     if (parsed.scheme == "https" and host == "generativelanguage.googleapis.com"
             and path.startswith("/v1beta/models/") and path.endswith(":generateContent")):
         return "GEMINI_API:" + verb + ":GENERATE_CONTENT"
@@ -144,7 +149,7 @@ def safe_label(url, has_body):
 def request_json(url, *, token=None, data=None, headers=None):
     if not (url.startswith("https://api.github.com/repos/" + REPO + "/")
             or url == "https://api.anthropic.com/v1/messages"
-            or url == "https://api.anthropic.com/v1/models"
+            or url == "https://api.anthropic.com/v1/models?limit=1000"
             or url == "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
             or url.startswith("https://generativelanguage.googleapis.com/v1beta/models/")):
         raise Hold("REVIEW_ENDPOINT_UNTRUSTED")
@@ -378,7 +383,7 @@ def review_models(provider, key, *, strict=False):
     elif provider == "anthropic-claude-api":
         configured = os.getenv("WOW_QA_CLAUDE_MODEL") or ""
         pattern, defaults = CLAUDE_REVIEW_FAMILY, CLAUDE_STATIC_MODELS
-        endpoint = "https://api.anthropic.com/v1/models"
+        endpoint = "https://api.anthropic.com/v1/models?limit=1000"
         headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
         label = "CLAUDE"
     else:
