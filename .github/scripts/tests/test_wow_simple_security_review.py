@@ -1015,6 +1015,21 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             self.assertEqual(m.call_provider("gemini-generative-api", "key", "diff")[0], "REJECT")
         self.assertEqual(len(calls), 2)
 
+    def test_model_catalog_endpoints_are_bounded_and_attributed(self):
+        self._models_patch.stop()
+        models = {"data": [{"id": "claude-sonnet-4-6"}], "has_more": False}
+        with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": ""}), \
+             patch.object(m, "request_json", return_value=models) as req:
+            self.assertEqual(m.review_models("anthropic-claude-api", "key"),
+                             ["claude-sonnet-4-6"])
+            self.assertEqual(req.call_args.args[0],
+                             "https://api.anthropic.com/v1/models?limit=1000")
+        self.assertEqual(m.safe_label(req.call_args.args[0], False),
+                         "ANTHROPIC_API:GET:MODEL_CATALOG")
+        self.assertEqual(m.safe_label(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+            False), "GEMINI_API:GET:MODEL_CATALOG")
+
     def test_review_model_claude_candidates_are_limited_to_sonnet(self):
         self._models_patch.stop()
         catalog = {"data": [{"id": "claude-sonnet-4-6"},
