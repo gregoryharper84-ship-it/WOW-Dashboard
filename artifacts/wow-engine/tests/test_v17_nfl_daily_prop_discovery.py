@@ -316,3 +316,37 @@ def test_nfl_fill_small_page_and_mlb_only_compatibility():
     assert _nfl_fill_response_rows(manifest, 0) == []
     mlb_only = [r for r in manifest if r["sport"] == "MLB"]
     assert _nfl_fill_response_rows(mlb_only, 6) == mlb_only
+
+
+
+def test_missing_nfl_fill_retains_mlb_when_nfl_events_sort_first():
+    # The supplemental NFL family must not displace existing MLB snapshots,
+    # even when all of the earliest canonical rows happen to be NFL.
+    manifest = [
+        {"source_snapshot_id": f"nfl-{i}", "sport": "NFL"}
+        for i in range(8)
+    ] + [
+        {"source_snapshot_id": f"mlb-{i}", "sport": "MLB"}
+        for i in range(4)
+    ]
+    selected = _nfl_fill_response_rows(manifest, 6)
+    assert len(selected) == 6
+    assert [row["source_snapshot_id"] for row in selected] == [
+        "nfl-0", "nfl-1", "nfl-2", "mlb-0", "mlb-1", "mlb-2",
+    ]
+    assert len({row["source_snapshot_id"] for row in selected}) == 6
+    assert _nfl_fill_response_rows(manifest, 1)[0]["sport"] == "NFL"
+    assert _nfl_fill_response_rows(manifest, 0) == []
+
+
+def test_missing_nfl_fill_uses_additional_nfl_only_after_existing_mlb():
+    manifest = [
+        {"source_snapshot_id": "nfl-0", "sport": "NFL"},
+        {"source_snapshot_id": "mlb-0", "sport": "MLB"},
+        {"source_snapshot_id": "nfl-1", "sport": "NFL"},
+        {"source_snapshot_id": "nfl-2", "sport": "NFL"},
+    ]
+    selected = _nfl_fill_response_rows(manifest, 4)
+    assert [row["source_snapshot_id"] for row in selected] == [
+        "nfl-0", "nfl-1", "mlb-0", "nfl-2",
+    ]
