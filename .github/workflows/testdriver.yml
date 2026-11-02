@@ -1,38 +1,35 @@
-name: TestDriver.ai Manual Staging Smoke
+name: TestDriver.ai Manual E2E Trial
 
-# TestDriver's cloud service is metered and limited to test/non-production use.
-# Do not add push, pull_request, or schedule triggers.
+# Cloud browser time is metered and the trial can convert to paid on exhaustion.
+# This workflow is always manual, informational, and never a merge requirement.
 on:
   workflow_dispatch:
     inputs:
       confirm_usage:
-        description: "I verified an active no-charge allowance, no trial conversion risk, and authorize this one manual test"
-        required: true
+        description: "I verified remaining free-trial minutes and no-charge status and approve this one bounded run"
         type: boolean
+        required: true
         default: false
 
 jobs:
-  smoke:
-    # This protects GitHub CI only, not the TestDriver account's trial conversion.
-    # Owner must confirm billing/cancel renewal independently in TestDriver.
-    if: ${{ inputs.confirm_usage && vars.TD_ZERO_COST_VERIFIED == 'true' && vars.WOW_TESTDRIVER_STAGING_URL != '' }}
+  testdriver-e2e:
+    # Explicit owner-controlled opt-in. Verify billing independently:
+    # this repo variable does NOT protect from subscription auto-renewal.
+    if: ${{ inputs.confirm_usage && vars.TD_ZERO_COST_VERIFIED == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     concurrency:
-      group: testdriver-manual-smoke
+      group: testdriver-trial-e2e
       cancel-in-progress: true
     permissions:
       id-token: write
       contents: read
     env:
+      WOW_TESTDRIVER_LOCAL_UI: "true"
       WOW_TESTDRIVER_STAGING_URL: ${{ vars.WOW_TESTDRIVER_STAGING_URL }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Validate staging target before hosted test
-        run: |
-          node -e 'const u = new URL(process.env.WOW_TESTDRIVER_STAGING_URL); if (u.protocol !== "https:" || !/(?:^|[.-])(staging|preview|sandbox|test)(?:[.-]|$)/i.test(u.hostname) || u.pathname !== "/docs" || u.username || u.password) process.exit(1);'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -54,14 +51,14 @@ jobs:
           channel: stable
           api-key: ${{ secrets.TD_API_KEY }}
 
-      - name: Run single staging smoke
-        run: pnpm exec vitest run tests/production.test.js
+      - name: Run sandboxed React dashboard E2E and optional staging API smoke
+        run: pnpm exec vitest run
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: testdriver-manual-smoke-results
+          name: testdriver-manual-e2e-results
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
