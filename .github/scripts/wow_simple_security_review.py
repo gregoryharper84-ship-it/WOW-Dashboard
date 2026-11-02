@@ -169,6 +169,19 @@ def request_json(url, *, token=None, data=None, headers=None):
                 raise ProviderUnavailable("PROVIDER_CREDIT_EXHAUSTED") from None
             if exc.code == 404 and any(x in words for x in MODEL_GONE_ERRORS):
                 raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
+            # Google's documented API-version/method 404 is a precise
+            # model-access failure for this credential, not a semantic verdict.
+            # It is accepted only when the provider-native error is structured,
+            # avoiding fallback on ambiguous arbitrary HTTP 404 responses.
+            detail = obj.get("error") if isinstance(obj, dict) else None
+            if (exc.code == 404
+                    and endpoint == "GEMINI_API:POST:GENERATE_CONTENT"
+                    and isinstance(detail, dict)
+                    and type(detail.get("code")) is int and detail["code"] == 404
+                    and detail.get("status") == "NOT_FOUND"
+                    and "is not found for api version v1beta" in words
+                    and "not supported for generatecontent" in words):
+                raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE") from None
         raise Hold("HTTP_" + str(exc.code)) from None
     except (URLError, TimeoutError):
         if not url.startswith("https://api.github.com/"):
