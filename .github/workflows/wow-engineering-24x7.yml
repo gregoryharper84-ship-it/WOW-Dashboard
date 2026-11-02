@@ -63,10 +63,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
     outputs:
-      action: \${{ steps.plan.outputs.action }}
-      incident: \${{ steps.plan.outputs.incident }}
-      pr: \${{ steps.plan.outputs.pr }}
-      sha: \${{ steps.plan.outputs.sha }}
+      action: ${{ steps.plan.outputs.action }}
+      incident: ${{ steps.plan.outputs.incident }}
+      pr: ${{ steps.plan.outputs.pr }}
+      sha: ${{ steps.plan.outputs.sha }}
     steps:
       - name: Checkout protected main only
         uses: actions/checkout@v4
@@ -75,7 +75,7 @@ jobs:
           persist-credentials: false
       - name: Gather complete bounded canonical GitHub intake
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -89,18 +89,18 @@ jobs:
         id: plan
         shell: bash
         env:
-          REQUESTED_INCIDENT: \${{ inputs.target_incident }}
+          REQUESTED_INCIDENT: ${{ inputs.target_incident }}
         run: |
           set -euo pipefail
           args=()
-          if [ -n "\${REQUESTED_INCIDENT:-}" ]; then
+          if [ -n "${REQUESTED_INCIDENT:-}" ]; then
             [[ "$REQUESTED_INCIDENT" =~ ^[1-9][0-9]*$ ]] || exit 2
             args+=(--target "$REQUESTED_INCIDENT")
           fi
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/engineering-issues.json" \
             --prs "$RUNNER_TEMP/engineering-prs.json" \
-            --output "$RUNNER_TEMP/engineering-plan.json" "\${args[@]}"
+            --output "$RUNNER_TEMP/engineering-plan.json" "${args[@]}"
           action=$(jq -r '.action' "$RUNNER_TEMP/engineering-plan.json")
           incident=$(jq -r '.incident // ""' "$RUNNER_TEMP/engineering-plan.json")
           pr=$(jq -r '.pr // ""' "$RUNNER_TEMP/engineering-plan.json")
@@ -112,11 +112,11 @@ jobs:
           {
             echo "## WOW Engineering — 24x7 execution intake"
             echo "- Action: $action"
-            echo "- Canonical issue: \${incident:-none}"
-            echo "- Existing PR: \${pr:-none}"
+            echo "- Canonical issue: ${incident:-none}"
+            echo "- Existing PR: ${pr:-none}"
             echo "- Protected main: $GITHUB_SHA"
-            echo "- Cutover enabled: \${{ vars.WOW_24X7_ACTIVE == 'true' }}"
-            echo "- Old writers retired: \${{ vars.WOW_24X7_LEGACY_ROUTES_OFF == 'true' }}"
+            echo "- Cutover enabled: ${{ vars.WOW_24X7_ACTIVE == 'true' }}"
+            echo "- Old writers retired: ${{ vars.WOW_24X7_LEGACY_ROUTES_OFF == 'true' }}"
             echo "- Policy: RESTORE first, then APPROVED production improvement"
             echo "- Cursor: permanently excluded"
             echo "- Betting: can_execute=false; V17_TERMINAL_REDUCER"
@@ -143,9 +143,9 @@ jobs:
     steps:
       - name: Recheck exact target and prevent duplicate active writers
         env:
-          GH_TOKEN: \${{ github.token }}
-          INCIDENT: \${{ needs.select.outputs.incident }}
-          PROVIDER: \${{ vars.WOW_24X7_CODING_PROVIDER }}
+          GH_TOKEN: ${{ github.token }}
+          INCIDENT: ${{ needs.select.outputs.incident }}
+          PROVIDER: ${{ vars.WOW_24X7_CODING_PROVIDER }}
         shell: bash
         run: |
           set -euo pipefail
