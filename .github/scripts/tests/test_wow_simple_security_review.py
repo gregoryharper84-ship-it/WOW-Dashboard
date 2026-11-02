@@ -269,6 +269,45 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 for forbidden in ("PRIVATE_RESPONSE_BODY", "TEST_SECRET_KEY", "SENSITIVE_TOKEN"):
                     self.assertNotIn(forbidden, stderr.getvalue())
 
+    def test_successful_malformed_http_200_never_triggers_model_failover(self):
+        # Regression for independent P1 security finding at PR #2373:
+        # JSON 'null' must never be read as an exhausted list of models.
+        # Malformed 200 responses are not availability errors.
+        candidates = {
+            "anthropic-claude-api": ["claude-sonnet-4-6", "claude-sonnet-4-5"],
+            "gemini-generative-api": ["gemini-3.8-flash", "gemini-3.6-flash"],
+        }
+        for provider, models in candidates.items():
+            for malformed in (None, False, [], "", 0):
+                with self.subTest(provider=provider, malformed=malformed), \
+                     patch.object(m, "review_models", return_value=models), \
+                     patch.object(m, "request_json", return_value=malformed) as req:
+                    with self.assertRaises(m.Hold) as caught:
+                        m.call_provider(provider, "scoped-key", "untrusted diff")
+                    self.assertNotIsInstance(caught.exception, m.ProviderUnavailable)
+                    self.assertEqual(str(caught.exception),
+                                     "CLAUDE_RESPONSE_INVALID" if provider == "anthropic-claude-api"
+                                     else "GEMINI_RESPONSE_INVALID")
+                    self.assertEqual(req.call_count, 1,
+                                     "No second model may see a malformed first response")
+
+    def test_malformed_success_does_not_fall_through_to_other_provider(self):
+        target = {"pr": 2373, "head_sha": "a" * 40,
+                  "diff_sha256": "b" * 64, "diff": "untrusted"}
+        creds = {p: "scoped-key" for p in m.PROVIDERS}
+        with patch.object(m, "prompt_for", return_value="untrusted diff"), \
+             patch.object(m, "review_models", return_value=["claude-sonnet-4-6"]), \
+             patch.object(m, "request_json", return_value=None) as request:
+            with self.assertRaises(m.Hold) as caught:
+                m.semantic_review(target, creds)
+            self.assertEqual(str(caught.exception), "CLAUDE_RESPONSE_INVALID")
+            self.assertNotIsInstance(caught.exception, m.ProviderUnavailable)
+            self.assertEqual(caught.exception.attempts, [
+                {"provider": "anthropic-claude-api", "result": "CLAUDE_RESPONSE_INVALID"}
+            ])
+            self.assertEqual(request.call_count, 1,
+                             "Malformed Claude response cannot be laundered into Gemini PASS")
+
     def test_failover_only_on_provider_unavailability(self):
         target = {"pr": 2247, "head_sha": "a" * 40, "diff_sha256": "b" * 64, "diff": "sample"}
         creds = {p: "scoped-key" for p in m.PROVIDERS}
