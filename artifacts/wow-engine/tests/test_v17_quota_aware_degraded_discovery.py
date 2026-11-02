@@ -304,6 +304,36 @@ def test_free_core_mode_blocks_paid_discovery_without_calling_provider(monkeypat
     assert receipt["probability_only_paid_market_calls_required"] is False
 
 
+def test_native_free_core_block_is_recorded_in_scan_receipt(monkeypatch):
+    """The native adapter denies FREE_CORE before calling the paid guard."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "FREE_CORE")
+    original = getattr(
+        feed, "_v17_quota_aware_original_rundown_board_feed", None
+    ) or feed.rundown_board_feed
+    monkeypatch.setattr(
+        feed, "_v17_quota_aware_original_rundown_board_feed",
+        original, raising=False,
+    )
+    context = quota._new_context()
+    token = quota._SCAN_CONTEXT.set(context)
+    try:
+        fetch = quota._quota_aware_rundown_factory(slate_date="2026-11-02")
+        with pytest.raises(discovery.DiscoveryFeedError) as blocked:
+            fetch("NFL", SimpleNamespace(sport_id=10, league="NFL"))
+    finally:
+        quota._SCAN_CONTEXT.reset(token)
+
+    assert blocked.value.code == quota.source_policy.BLOCK_FREE_CORE
+    assert context["paid_provider_calls_attempted"] == 0
+    assert context["paid_provider_calls_blocked_by_source_policy"] == 1
+    assert context["providers"]["RUNDOWN"]["status"] == quota.DISABLED_BY_POLICY
+    assert context["providers"]["RUNDOWN"]["calls_blocked"] == 1
+    assert context["providers"]["RUNDOWN"]["reason_code"] == quota.source_policy.BLOCK_FREE_CORE
+    assert context["_paid_call_budget"].receipt()["source_mode"] == "FREE_CORE"
+
+
 def test_hybrid_can_disable_paid_discovery_fallback_explicitly(monkeypatch):
     monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
     monkeypatch.setenv("WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED", "false")
