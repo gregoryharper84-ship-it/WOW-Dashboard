@@ -173,3 +173,31 @@ def test_daily_installer_opt_in_adds_only_new_readback(monkeypatch):
     assert llp.ROUTE_PATH in _paths(app)
     assert "/v17/daily-snapshot-run" in _paths(app)
     assert "/v17/daily-snapshot-run/{run_id}/rows" in _paths(app)
+
+
+def test_llp_action_gateway_readback_is_additive_and_authenticated():
+    from pathlib import Path
+    import json
+    import yaml
+
+    root=Path(__file__).resolve().parent
+    schema=yaml.safe_load((root/"v17"/"openapi.llp-team-engine.v17.yaml").read_text())
+    paths=schema["paths"]
+    prefix="/functions/v1/wow-llp-action-gateway"
+    old=paths[f"{prefix}/v17/daily-snapshot-run/{{run_id}}/rows"]["get"]
+    assert old["operationId"]=="readLlpV17FullSlateRows"
+    new=paths[f"{prefix}/v17/llp-team-intelligence/{{run_id}}/events"]["get"]
+    assert new["operationId"]==llp.OPERATION_ID
+    assert new["x-openai-isConsequential"] is False
+    assert new["security"]==[{"actionBearer":[]}]
+    assert new["parameters"][2]["schema"]["maximum"]==25
+
+    gateway=(root/"v17"/"supabase"/"functions"/"wow-llp-action-gateway"/"index.ts").read_text()
+    assert 'pattern: /^\\/v17\\/llp-team-intelligence\\/[^/]+\\/events$/, auth: true' in gateway
+    assert 'pattern: /^\\/v17\\/daily-snapshot-run\\/[^/]+\\/rows$/, auth: true' in gateway
+    vercel=json.loads((root/"v17"/"vercel"/"llp-action-gateway"/"vercel.json").read_text())
+    assert any(x["source"].endswith("/v17/llp-team-intelligence/:run_id/events") for x in vercel["rewrites"])
+    assert any(x["source"].endswith("/v17/daily-snapshot-run/:run_id/rows") for x in vercel["rewrites"])
+    handler=(root/"v17"/"vercel"/"llp-action-gateway"/"api"/"gateway.js").read_text()
+    assert '"/v17/llp-team-intelligence/__EVENTS__", { method: "GET", auth: true }' in handler
+    assert '"/v17/daily-snapshot-run/__ROWS__", { method: "GET", auth: true }' in handler
