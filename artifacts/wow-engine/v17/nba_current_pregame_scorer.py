@@ -355,6 +355,21 @@ def resolve_nba_calibrator_artifact(client: Any, certification: Any) -> Mapping[
         raise LookupError("NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE")
     if not isinstance(row, Mapping):
         raise ValueError("NBA_CERTIFIED_CALIBRATOR_INVALID")
+    # The certified-calibrator RPC returns bound identity columns plus the
+    # immutable artifact payload in one JSONB column. Unwrap so the bounds gate
+    # below reads a single flat artifact. Database columns stay authoritative
+    # for identity and fingerprint: a payload cannot restate its own hash or
+    # rename its calibrator. A row that is already flat (legacy table read or
+    # test double) is passed through unchanged.
+    payload = row.get("artifact_payload")
+    if isinstance(payload, Mapping) and "artifact_type" not in row:
+        merged = dict(payload)
+        merged["calibration_artifact_id"] = (
+            row.get("calibration_artifact_id") or row.get("calibrator_id")
+        )
+        merged["sport"] = row.get("sport")
+        merged["calibration_sha256"] = str(row.get("calibration_sha256") or "").lower()
+        row = merged
     if (
         str(row.get("calibration_artifact_id") or row.get("calibrator_id") or "") != str(cal_id)
         or str(row.get("sport") or "").upper() != "NBA"
