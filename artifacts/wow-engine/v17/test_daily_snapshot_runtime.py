@@ -459,3 +459,58 @@ def test_partial_nfl_discovery_outage_is_not_mislabeled_as_empty_slate(monkeypat
     assert result["prop_discovery_accounting"]["new_candidates_acquired"] == 0
     assert result["prop_discovery_accounting"]["zero_new_candidates_reason"] == "DISCOVERY_DATA_UNOBTAINABLE"
     assert result["can_execute"] is False
+
+
+
+def test_opt_in_missing_nfl_fill_surfaces_nfl_rows_without_losing_mlb(monkeypatch):
+    """The Daily route must actually score a bounded share of newly filled NFL rows."""
+    monkeypatch.setenv("WOW_V17_NFL_DAILY_FILL_MISSING", "1")
+    monkeypatch.setattr("v17.daily_snapshot_runtime.discovery_feed.enabled", lambda: False)
+    def snapshot(sport, index):
+        return {
+            "source_snapshot_id": f"{sport.lower()}-{index}",
+            "event_id": f"{sport}-event",
+            "event_start_time": FUTURE,
+            "sport": sport,
+            "player": f"{sport}-Player-{index}",
+            "stat_type": "RECEIVING_YARDS" if sport == "NFL" else "PITCHER_STRIKEOUTS",
+            "line": 4.5,
+            "hydration_status": "PASS",
+            "blockers": [],
+        }
+    existing = [snapshot("MLB", i) for i in range(8)]
+    completed = existing + [snapshot("NFL", i) for i in range(3)]
+    manifests = iter([existing, completed])
+    monkeypatch.setattr(
+        "v17.daily_snapshot_runtime._prop_manifest_rows",
+        lambda *_args, **_kwargs: next(manifests),
+    )
+    captured = []
+    def acquire(**kwargs):
+        captured.append(kwargs)
+        return {
+            "status": "COMPLETED", "attempted": 3, "hydrated": 3,
+            "persisted": 3, "held": 0, "already_captured": 0,
+            "snapshot_write_succeeded": 3, "snapshot_write_failed": 0,
+            "explicit_prewrite_exclusions": 0,
+            "receipts": [
+                {"source_snapshot_id": f"nfl-{i}",
+                 "write_status": "SNAPSHOT_WRITE_SUCCEEDED"}
+                for i in range(3)
+            ],
+            "blockers": [], "can_execute": False,
+        }
+    monkeypatch.setattr("v17.daily_snapshot_runtime.acquire_daily_prop_snapshots", acquire)
+    result = run_daily_snapshot(
+        DailySnapshotRequest(
+            requested_slate_date=SLATE_DATE,
+            requested_timezone="America/Chicago",
+            lanes=["PROPS"], max_props=6, response_mode="FULL",
+        ),
+        db=DB(), market_api=Market(), event_api=Event(),
+    )
+    assert len(captured) == 1 and captured[0]["nfl_only"] is True
+    assert len(result["rows"]) == 6
+    sports = [row["identity"]["sport"] for row in result["rows"]]
+    assert sports == ["NFL", "NFL", "NFL", "MLB", "MLB", "MLB"]
+    assert all(row["can_execute"] is False for row in result["rows"])
