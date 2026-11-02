@@ -72,6 +72,34 @@ class TestLessons(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lessons.match([], value)
 
+    def test_default_canonical_ledger_cli_lookup(self):
+        """Exercise the committed ledger and real CLI default, not a fixture."""
+        canonical = SCRIPT.parents[1] / "v17" / "incident-ledger.json"
+        self.assertEqual(lessons.LEDGER, canonical)
+        records = lessons.load_ledger(lessons.LEDGER)
+        verified = lessons.verified_lessons(records)
+        result = lessons.match(verified, "OBSERVABILITY_CORRELATION")
+        self.assertEqual(result["status"], "VERIFIED_MATCH")
+        self.assertTrue(any(
+            item["incident_id"] == "PM-2026-09-25-001"
+            for item in result["matches"]
+        ))
+        self.assertFalse(result["production_verified_for_current_incident"])
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "match",
+             "--category", "OBSERVABILITY_CORRELATION"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        output = json.loads(proc.stdout)
+        self.assertEqual(output["status"], "VERIFIED_MATCH")
+        self.assertEqual(output["category"], "OBSERVABILITY_CORRELATION")
+        self.assertTrue(any(
+            item["incident_id"] == "PM-2026-09-25-001"
+            for item in output["matches"]
+        ))
+        self.assertFalse(output["production_verified_for_current_incident"])
+
     def test_ledger_authority_fail_closed_and_cli_smoke(self):
         document = {"runtime_generation": "V17_ACTIVE", "terminal_authority": "V17_TERMINAL_REDUCER",
                     "can_execute": False, "records": [good_record()]}
