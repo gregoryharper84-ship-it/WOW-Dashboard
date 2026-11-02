@@ -38,6 +38,7 @@ _AUTOMATIC_ROW_HYDRATION = {
 # explicit prevents a missing producer from silently looking like an empty slate.
 _DAILY_AUTONOMOUS_DISCOVERY = {
     "MLB": "MLB_OFFICIAL_PROBABLE_PITCHERS",
+    "NFL": "NFL_ESPN_PREGAME_ROSTER",
 }
 
 
