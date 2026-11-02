@@ -22,10 +22,11 @@ ROW = {
 
 
 class _Query:
-    def __init__(self, rows, filter_field=None, fail_range=False):
+    def __init__(self, rows, filter_field=None, fail_range=False, payload=None):
         self.rows = list(rows)
         self.filter_field = filter_field
         self.fail_range = fail_range
+        self.payload = payload
 
     def select(self, *_a, **_kw):
         return self
@@ -40,7 +41,16 @@ class _Query:
             self.rows = [r for r in self.rows if r.get(field) != value]
         return self
 
-    def order(self, *_a, **_kw):
+    def order(self, field="official_event_id", desc=False, **_kw):
+        # The real ledger answers an ordered read; a fake that ignored the order
+        # could not expose an unstable page boundary.
+        self.rows = sorted(
+            self.rows, key=lambda row: str(row.get(field) or ""), reverse=bool(desc)
+        )
+        return self
+
+    def gt(self, field, value):
+        self.rows = [row for row in self.rows if str(row.get(field) or "") > str(value)]
         return self
 
     def limit(self, value):
@@ -54,6 +64,10 @@ class _Query:
         return self
 
     def execute(self):
+        if self.fail_range:
+            raise RuntimeError("pagination read failed")
+        if self.payload is not None:
+            return SimpleNamespace(data=self.payload)
         return SimpleNamespace(data=self.rows)
 
 
@@ -76,6 +90,8 @@ class _Db:
         duplicates=0,
         fail_range=False,
         health_rows=None,
+        grades=None,
+        grades_payload=None,
     ):
         self.model = {
             "active": active,
@@ -111,13 +127,19 @@ class _Db:
             for i in range(3)
         ]
         self.fail_range = fail_range
+        self.grades_payload = grades_payload
+        if grades is not None:
+            self.grades = list(grades)
 
     def table(self, name):
         return {
             "wow_nfl_event_fitted_model_artifacts": _Query([self.model]),
             "wow_nfl_forward_calibration_health": _Query(self.health_rows),
             "wow_nfl_forward_shadow_grades": _Query(
-                self.grades, filter_field="model_version", fail_range=self.fail_range
+                self.grades,
+                filter_field="model_version",
+                fail_range=self.fail_range,
+                payload=self.grades_payload,
             ),
         }[name]
 
@@ -308,3 +330,147 @@ def test_diagnosis_and_boolean_view_never_diverge():
         proven, blockers, _evidence = _forward_certification_diagnosis(db, ROW)
         assert _forward_certification_proven(db, ROW) is proven
         assert proven is (blockers == [])
+
+
+# --- Forward cohort pagination reliability -----------------------------------
+#
+# The cohort read used offset pagination with no order, so a page boundary
+# against a changing ledger could repeat or skip rows and an "exact" distinct
+# count was not trustworthy. These tests pin the keyset contract: total order on
+# the unique event key, a lower bound rather than a total when enumeration
+# cannot be completed, and no certification on an inexact enumeration.
+
+
+def _multi_page_paging(monkeypatch, *, page_size, max_pages):
+    from v17 import nfl_daily_stage_receipts as module
+
+    monkeypatch.setattr(module, "_GRADE_PAGE_SIZE", page_size)
+    monkeypatch.setattr(module, "_GRADE_MAX_PAGES", max_pages)
+
+
+def _grade_rows(count, start=1):
+    return [
+        {
+            "official_event_id": f"2026_WK{i:02d}_AAA_BBB",
+            "model_version": ROW["model_version"],
+        }
+        for i in range(start, start + count)
+    ]
+
+
+def test_a_multi_page_cohort_is_enumerated_completely():
+    # 2500 settled games span three pages of the production page size.
+    _proven, _blockers, evidence = _forward_certification_diagnosis(
+        _Db(grades=_grade_rows(2500), graded=2500), ROW
+    )
+
+    assert evidence["graded_events"] == 2500
+    assert evidence["graded_events_exact"] is True
+
+
+def test_a_cohort_of_exactly_one_full_page_is_terminated_by_the_next_read():
+    _proven, _blockers, evidence = _forward_certification_diagnosis(
+        _Db(grades=_grade_rows(1000), graded=1000), ROW
+    )
+
+    assert evidence["graded_events"] == 1000
+    assert evidence["graded_events_exact"] is True
+
+
+def test_duplicates_around_a_page_boundary_neither_inflate_nor_stall(monkeypatch):
+    _multi_page_paging(monkeypatch, page_size=3, max_pages=10)
+    version = ROW["model_version"]
+    rows = [
+        {"official_event_id": "2026_WK01_AAA_BBB", "model_version": version}
+        for _ in range(3)
+    ] + [
+        {"official_event_id": f"2026_WK0{i}_AAA_BBB", "model_version": version}
+        for i in range(2, 5)
+    ]
+
+    _proven, _blockers, evidence = _forward_certification_diagnosis(
+        _Db(grades=rows), ROW
+    )
+
+    assert evidence["graded_events"] == 4
+    assert evidence["graded_events_exact"] is True
+
+
+def test_a_short_final_page_ends_the_read_without_a_false_total(monkeypatch):
+    _multi_page_paging(monkeypatch, page_size=3, max_pages=10)
+
+    _proven, _blockers, evidence = _forward_certification_diagnosis(
+        _Db(grades=_grade_rows(5)), ROW
+    )
+
+    assert evidence["graded_events"] == 5
+    assert evidence["graded_events_exact"] is True
+
+
+def test_the_page_cap_cannot_certify_on_an_inexact_enumeration(monkeypatch):
+    _multi_page_paging(monkeypatch, page_size=2, max_pages=2)
+
+    proven, blockers, evidence = _forward_certification_diagnosis(
+        _Db(approved=True, grades=_grade_rows(9), graded=9), ROW
+    )
+
+    assert evidence["graded_events"] == 4
+    assert evidence["graded_events_exact"] is False
+    assert "NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE" in blockers
+    assert proven is False
+
+
+def test_a_row_without_a_usable_event_key_holds_as_a_lower_bound(monkeypatch):
+    _multi_page_paging(monkeypatch, page_size=2, max_pages=10)
+    version = ROW["model_version"]
+    rows = [
+        {"official_event_id": "2026_WK01_AAA_BBB", "model_version": version},
+        {"official_event_id": None, "model_version": version},
+        {"official_event_id": "2026_WK02_AAA_BBB", "model_version": version},
+    ]
+
+    proven, blockers, evidence = _forward_certification_diagnosis(
+        _Db(grades=rows), ROW
+    )
+
+    assert evidence["graded_events_exact"] is False
+    assert "NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE" in blockers
+    assert proven is False
+
+
+def test_a_malformed_page_is_a_typed_query_failure():
+    proven, blockers, _evidence = _forward_certification_diagnosis(
+        _Db(grades_payload={"not": "a page"}), ROW
+    )
+
+    assert proven is False
+    assert blockers == ["NFL_FORWARD_GRADE_COHORT_QUERY_FAILED"]
+
+
+def test_a_grade_inserted_between_pages_is_counted_once_and_skips_nothing(monkeypatch):
+    _multi_page_paging(monkeypatch, page_size=3, max_pages=10)
+    version = ROW["model_version"]
+    late_row = {"official_event_id": "2026_WK99_AAA_BBB", "model_version": version}
+
+    class _ConcurrentDb(_Db):
+        """A ledger that accepts a new settled grade between page reads."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.reads = 0
+
+        def table(self, name):
+            if name == "wow_nfl_forward_shadow_grades":
+                self.reads += 1
+                if self.reads == 2:
+                    self.grades.append(dict(late_row))
+            return super().table(name)
+
+    _proven, _blockers, evidence = _forward_certification_diagnosis(
+        _ConcurrentDb(grades=_grade_rows(4)), ROW
+    )
+
+    # Four pre-existing games plus the one inserted after the first page: no
+    # duplicate re-count and no skipped row.
+    assert evidence["graded_events"] == 5
+    assert evidence["graded_events_exact"] is True

@@ -156,6 +156,17 @@ def _final_refresh_proven(row: Mapping[str, Any], governed: Mapping[str, Any]) -
 # Bounded pagination for the exact-version forward cohort. A single bounded
 # read is not sufficient: a 250-game cohort behind a 100-game minimum used to
 # read back as 200 and be presented as an exact total.
+#
+# Offset pagination (`.range()`) was the remaining defect: with no stable order,
+# a page boundary against a changing ledger can repeat or skip rows, so an
+# "exact" distinct count was not trustworthy. `official_event_id` is UNIQUE on
+# wow_nfl_forward_shadow_grades, so ordering by it is a total order over the
+# version-filtered rows and a keyset cursor (`> last key seen`) cannot duplicate
+# or skip a row that exists for the whole read. The table also carries an
+# immutability trigger, so rows are inserted only, never updated or deleted;
+# a grade inserted mid-read sorts after the cursor and is either counted on a
+# later page or excluded from a read that already ended, which can only make the
+# reported count a lower bound, never an inflated one.
 _GRADE_PAGE_SIZE = 1000
 _GRADE_MAX_PAGES = 20
 
@@ -168,23 +179,37 @@ def _observed_version_cohort(db: Any, version: str) -> tuple[set[str], bool]:
     truncated read is never presented as an exact cohort size.
     """
     seen: set[str] = set()
-    for page in range(_GRADE_MAX_PAGES):
-        start = page * _GRADE_PAGE_SIZE
-        result = (
+    cursor: str | None = None
+    for _page in range(_GRADE_MAX_PAGES):
+        query = (
             db.table("wow_nfl_forward_shadow_grades")
             .select("official_event_id")
             .eq("model_version", version)
-            .range(start, start + _GRADE_PAGE_SIZE - 1)
-            .execute()
         )
+        if cursor is not None:
+            query = query.gt("official_event_id", cursor)
+        result = query.order("official_event_id").limit(_GRADE_PAGE_SIZE).execute()
         grades = result.data
         if not isinstance(grades, list):
             raise ValueError("malformed forward grade page")
+        page_ids: list[str] = []
         for grade in grades:
-            if isinstance(grade, Mapping) and grade.get("official_event_id"):
-                seen.add(str(grade["official_event_id"]))
+            identifier = (
+                str(grade.get("official_event_id") or "")
+                if isinstance(grade, Mapping)
+                else ""
+            )
+            if identifier:
+                page_ids.append(identifier)
+                seen.add(identifier)
+        if len(page_ids) != len(grades):
+            # A row we cannot key on can be neither enumerated nor counted, so
+            # what we have is a lower bound rather than a total.
+            return seen, True
         if len(grades) < _GRADE_PAGE_SIZE:
             return seen, False
+        # `max` keeps progress monotonic even if a server ignored the order.
+        cursor = max(page_ids)
     return seen, True
 
 
@@ -237,6 +262,11 @@ def _forward_certification_diagnosis(
         return False, ["NFL_FORWARD_GRADE_COHORT_QUERY_FAILED"], evidence
     evidence["graded_events"] = len(unique_games)
     evidence["graded_events_exact"] = not truncated
+    if truncated:
+        # An enumeration that stopped early or hit an uncountable row is a lower
+        # bound. A lower bound cannot be shown to cover the cohort, so it is
+        # never allowed to prove this gate passed.
+        blockers.append("NFL_FORWARD_COHORT_ENUMERATION_INCOMPLETE")
 
     # Each conjunct is reported separately so an operator can tell genuine
     # missing forward evidence from a champion-registry or policy defect.

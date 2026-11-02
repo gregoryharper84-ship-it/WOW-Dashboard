@@ -191,10 +191,18 @@ class _Query:
             self.rows = [row for row in self.rows if row.get(field) != value]
         return self
 
-    def order(self, *_a, **_kw):
+    def order(self, field="official_event_id", desc=False, **_kw):
+        self.rows = sorted(
+            self.rows, key=lambda row: str(row.get(field) or ""), reverse=bool(desc)
+        )
         return self
 
-    def limit(self, *_a):
+    def gt(self, field, value):
+        self.rows = [row for row in self.rows if str(row.get(field) or "") > str(value)]
+        return self
+
+    def limit(self, value, *_a):
+        self.rows = self.rows[:value]
         return self
 
     def range(self, start, end):

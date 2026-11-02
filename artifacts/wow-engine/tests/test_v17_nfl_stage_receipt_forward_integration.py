@@ -206,7 +206,16 @@ class _Query:
             self.rows = [r for r in self.rows if r.get(field) != value]
         return self
 
-    def order(self, *_a, **_kw):
+    def order(self, field="official_event_id", desc=False, **_kw):
+        # The real ledger answers an ordered read; the cohort keyset depends on
+        # that ordering being stable.
+        self.rows = sorted(
+            self.rows, key=lambda row: str(row.get(field) or ""), reverse=bool(desc)
+        )
+        return self
+
+    def gt(self, field, value):
+        self.rows = [row for row in self.rows if str(row.get(field) or "") > str(value)]
         return self
 
     def limit(self, value):
@@ -220,6 +229,8 @@ class _Query:
         return self
 
     def execute(self):
+        if self.fail_range:
+            raise RuntimeError("grade pagination failed")
         return SimpleNamespace(data=self.rows)
 
 
