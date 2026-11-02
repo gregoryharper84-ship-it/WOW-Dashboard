@@ -266,7 +266,7 @@ def acquire_nfl_forward_evidence_batch(
 
     result["total_candidates"] = len(candidates)
     start = min(req.candidate_offset, len(candidates))
-    if req.rotating_window_slot is not None and req.candidate_offset == 0 and candidates:
+    if req.rotating_window_slot is not None and "candidate_offset" not in req.model_fields_set and candidates:
         # Stateless rotating window: process restarts cannot reset scheduled
         # coverage to the already-captured prefix. Explicit offsets are unchanged.
         window_count = (len(candidates) + req.max_candidates - 1) // req.max_candidates
