@@ -560,3 +560,9 @@ A valid empty catalog, malformed listing, authentication failure, or
 partial paginated listing cannot be treated as approved availability.
 Changing source invalidates prior owner review; no code may forge the
 current-head approval or a signed independent semantic PASS.
+
+## D1 certification replay split-metadata integrity (NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CANDIDATE_PARTITION_METRICS_MISMATCH` | team/event certification replay (read-only) | Persisted fitted D1 train/calibration/test partitions disagree with candidate `validation_metrics.train_n/calibration_n/test_n`, or partial/malformed fitted split metrics are supplied. A historical source-review or replay receipt cannot override the discrepancy; retain the candidate as immutable, fail the replay and require a new verified candidate. | No |
