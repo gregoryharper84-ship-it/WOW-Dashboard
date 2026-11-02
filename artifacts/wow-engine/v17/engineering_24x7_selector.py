@@ -1,0 +1,280 @@
+"""Deterministic, no-model engineering work selection for 24x7 GitHub intake.
+
+Inputs are read-only GitHub API snapshots from a trusted main-branch workflow.
+This module NEVER executes code, approves changes, merges or authorizes wagers.
+"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import json
+import re
+from pathlib import Path
+
+# Accept the canonical "#123" form AND the literal existing worker PR
+# template: echo "Incident: \`$INCIDENT\`" (which produces "Incident: \`123\`").
+# Keep grouped delimiters strict so malformed / partial IDs cannot claim a PR.
+INCIDENT_LINE = re.compile(
+    r"(?im)^\s*(?:Incident|Fixes|Closes|Resolves)\s*:\s*"
+    r"(?:#(?P<hashed>[1-9][0-9]*)\b|"
+    r"`(?P<backticked>[1-9][0-9]*)`|"
+    r"(?P<plain>[1-9][0-9]*)\b)"
+)
+EXPLICIT_LINK = re.compile(r"(?im)^\s*(?:Fixes|Closes|Resolves)\s+#([1-9][0-9]*)\b")
+SHA = re.compile(r"^[0-9a-f]{40}$")
+STOP_LABELS = {
+    "needs-owner", "blocked", "security-hold", "do-not-automate",
+    "no-autobuild", "no-auto-build", "duplicate", "wontfix",
+}
+PRIORITY = {
+    "production-down": 0,
+    "incident-p0": 0,
+    "p0": 0,
+    "production-restore": 1,
+    "p1": 1,
+    "incident-p1": 1,
+    "p2": 2,
+    "approved-improvement": 3,
+    "engineering-improvement": 3,
+}
+MAX_ISSUES = 5000
+MAX_PRS = 2000
+MAX_RUNS = 500
+ATTEMPT_INCIDENT = re.compile(r"(?:^|\s)incident=([1-9][0-9]*)(?=\s|$)")
+
+
+def labels(item: dict) -> set[str]:
+    result = set()
+    for value in item.get("labels", []):
+        name = value.get("name") if isinstance(value, dict) else value
+        if isinstance(name, str):
+            result.add(name.strip().lower())
+    return result
+
+
+def eligible(issue: dict) -> tuple[int, int] | None:
+    if not isinstance(issue, dict) or "pull_request" in issue:
+        return None
+    if issue.get("state") != "open":
+        return None
+    number = issue.get("number")
+    if type(number) is not int or number <= 0:
+        return None
+    tags = labels(issue)
+    if tags & STOP_LABELS:
+        return None
+    priorities = [PRIORITY[tag] for tag in tags if tag in PRIORITY]
+    if not priorities:
+        return None
+    # Sensitively scoped changes get an existing independent review before merge;
+    # selection itself never grants that approval.
+    return min(priorities), number
+
+
+def related_incidents(pr: dict) -> set[int]:
+    body = pr.get("body") or ""
+    if not isinstance(body, str):
+        return set()
+    tagged = {
+        int(next(value for value in match.groups() if value is not None))
+        for match in INCIDENT_LINE.finditer(body)
+    }
+    return tagged | {int(n) for n in EXPLICIT_LINK.findall(body)}
+
+
+def valid_pr(pr: dict) -> bool:
+    if not isinstance(pr, dict) or pr.get("state") != "open":
+        return False
+    number = pr.get("number")
+    if type(number) is not int or number <= 0:
+        return False
+    head = pr.get("head") or {}
+    base = pr.get("base") or {}
+    return (
+        isinstance(head, dict) and isinstance(base, dict)
+        and isinstance(head.get("sha"), str)
+        and SHA.fullmatch(head["sha"]) is not None
+        and base.get("ref") == "main"
+        and isinstance(head.get("repo"), dict)
+        and isinstance(base.get("repo"), dict)
+        and head["repo"].get("full_name") ==
+        base["repo"].get("full_name")
+    )
+
+
+def _updated_timestamp(issue: dict) -> float:
+    """Prefer recent incident activity among equal severities, not oldest IDs."""
+    value = issue.get("updated_at")
+    if not isinstance(value, str):
+        return 0.0
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return 0.0
+        return stamp.astimezone(timezone.utc).timestamp()
+    except (ValueError, OverflowError):
+        return 0.0
+
+
+def prior_attempt_since_issue_update(issue: dict, runs: list) -> bool:
+    """Treat an authenticated GitHub worker run as a one-attempt receipt.
+
+    The same incident is not dispatched again until the issue gains new
+    evidence. Run titles are only DENIAL evidence, never launch permission.
+    """
+    number = issue["number"]
+    issue_updated = _updated_timestamp(issue)
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ValueError("worker inventory row invalid")
+        title = run.get("displayTitle")
+        match = ATTEMPT_INCIDENT.search(title) if isinstance(title, str) else None
+        if match is None or int(match.group(1)) != number:
+            continue
+        attempt = _updated_timestamp({"updated_at": run.get("createdAt")})
+        if issue_updated <= 0 or attempt <= 0 or attempt >= issue_updated:
+            return True
+    return False
+
+
+def _active_legacy_auto_run(runs: list) -> bool:
+    """Unattributable legacy AUTO jobs block overlap but not historic work."""
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ValueError("worker inventory row invalid")
+        title = run.get("displayTitle")
+        if (isinstance(title, str) and "incident=AUTO" in title.split()
+                and run.get("status") in ("queued", "in_progress", "waiting", "pending", "requested")):
+            return True
+    return False
+
+
+def _explicit_retry_authorized(incident: int, runs: list, retry_after_run_id: int) -> bool:
+    """A manual retry is allowed only after the latest exact-target failed run."""
+    matching = []
+    for run in runs:
+        title = run.get("displayTitle")
+        match = ATTEMPT_INCIDENT.search(title) if isinstance(title, str) else None
+        if match and int(match.group(1)) == incident:
+            matching.append(run)
+    if not matching:
+        return False
+    latest = max(
+        matching,
+        key=lambda run: (_updated_timestamp({"updated_at": run.get("createdAt")}),
+                         run.get("databaseId") if type(run.get("databaseId")) is int else 0),
+    )
+    return (
+        type(latest.get("databaseId")) is int
+        and latest["databaseId"] == retry_after_run_id
+        and latest.get("status") == "completed"
+        and latest.get("conclusion") in ("failure", "timed_out")
+    )
+
+
+def plan(issues: list, prs: list, *, target: int | None = None,
+         runs: list | None = None, retry_after_run_id: int | None = None) -> dict:
+    """Prefer P0/P1 restoration; resume existing PR, never duplicate its writer."""
+    if not isinstance(issues, list) or not isinstance(prs, list):
+        raise ValueError("inventory is not a pair of arrays")
+    runs = [] if runs is None else runs
+    if not isinstance(runs, list) or len(runs) > MAX_RUNS:
+        raise ValueError("invalid or incomplete worker run inventory")
+    if len(issues) > MAX_ISSUES or len(prs) > MAX_PRS:
+        raise ValueError("inventory exceeded bounded scan; refuse truncated data")
+    if target is not None and (type(target) is not int or target <= 0):
+        raise ValueError("target must be a positive numeric incident ID")
+    if retry_after_run_id is not None and (
+        target is None or type(retry_after_run_id) is not int or retry_after_run_id <= 0
+    ):
+        raise ValueError("manual retry requires exact incident and failed run ID")
+    # Existing legacy auto workers cannot be safely mapped to any issue.
+    # Deny all new writes while such a writer remains live.
+    if _active_legacy_auto_run(runs):
+        return {
+            "action": "IDLE", "incident": None, "pr": None,
+            "head_sha": None, "priority": None,
+            "reason": "LEGACY_AUTO_WRITER_ACTIVE", "can_execute": False,
+        }
+
+    # A manual retry is an exact-run recovery, never a generic override
+    # that becomes valid because issue metadata happened to change.
+    if retry_after_run_id is not None and not _explicit_retry_authorized(
+        target, runs, retry_after_run_id
+    ):
+        return {
+            "action": "IDLE", "incident": None, "pr": None,
+            "head_sha": None, "priority": None,
+            "reason": "MANUAL_RETRY_RECEIPT_INVALID", "can_execute": False,
+        }
+
+    ranked = []
+    for issue in issues:
+        priority = eligible(issue)
+        if priority and (target is None or priority[1] == target):
+            tier, number = priority
+            ranked.append((tier, -_updated_timestamp(issue), number, issue))
+    ranked.sort(key=lambda row: row[:3])
+    for tier, _negative_updated, number, _issue in ranked:
+        related_all = [
+            pr for pr in prs
+            if isinstance(pr, dict) and pr.get("state") == "open"
+            and number in related_incidents(pr)
+        ]
+        # Untrusted or orphaned source PRs still own an incident claim.
+        # Never generate a second branch to "fix" their missing provenance.
+        if any(not valid_pr(pr) for pr in related_all):
+            continue
+        related = related_all
+        if related:
+            # A draft PR is a real non-duplicate claim, but not a runnable
+            # review/merge step. Keep it untouched and move to another issue.
+            if any(pr.get("draft") is True for pr in related):
+                continue
+            pr = min(related, key=lambda row: row["number"])
+            return {
+                "action": "RESUME_PR", "incident": number,
+                "pr": pr["number"], "head_sha": pr["head"]["sha"],
+                "priority": tier, "reason": "EXISTING_PR_REQUIRES_EXACT_HEAD_GATES",
+                "can_execute": False,
+            }
+        # Paid attempt history governs new BUILD only. It must never prevent
+        # resuming an existing, identity-valid source PR through CI/review.
+        if prior_attempt_since_issue_update(_issue, runs):
+            if not (retry_after_run_id is not None and
+                    _explicit_retry_authorized(number, runs, retry_after_run_id)):
+                continue
+        return {
+            "action": "BUILD", "incident": number, "pr": None,
+            "head_sha": None, "priority": tier,
+            "reason": "NEXT_ELIGIBLE_PRIORITY_ISSUE", "can_execute": False,
+        }
+    return {
+        "action": "IDLE", "incident": None, "pr": None,
+        "head_sha": None, "priority": None,
+        "reason": "NO_ELIGIBLE_ISSUE_OR_EXPLICIT_TARGET", "can_execute": False,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--issues", type=Path, required=True)
+    parser.add_argument("--prs", type=Path, required=True)
+    parser.add_argument("--runs", type=Path)
+    parser.add_argument("--target", type=int)
+    parser.add_argument("--retry-after-run-id", type=int)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    result = plan(
+        json.loads(args.issues.read_text(encoding="utf-8")),
+        json.loads(args.prs.read_text(encoding="utf-8")),
+        target=args.target,
+        runs=json.loads(args.runs.read_text(encoding="utf-8")) if args.runs else [],
+        retry_after_run_id=args.retry_after_run_id,
+    )
+    args.output.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(result, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
