@@ -27,6 +27,7 @@ def acquire_daily_prop_snapshots(
     max_candidates: int,
     now: datetime | None = None,
     rotating_window_slot: int | None = None,
+    nfl_only: bool = False,
 ) -> dict[str, Any]:
     """Preserve the old Daily acquisition contract while adding NFL.
 
@@ -90,12 +91,26 @@ def acquire_daily_prop_snapshots(
         outcomes.append(outcome)
         return outcome
 
-    first_nfl_limit = min(64, (ceiling + 1) // 2)
-    first_nfl = run("NFL", first_nfl_limit)
-    run("MLB", ceiling - total_attempted)
-    # Continue where NFL left off if MLB did not consume its share.
-    if total_attempted < ceiling and first_nfl.get("next_offset") is not None:
-        run("NFL", ceiling - total_attempted, offset=int(first_nfl["next_offset"]))
+    if nfl_only:
+        # An already-populated MLB canonical slate does not require rehydrating
+        # its rows. Reserve the entire bounded fill attempt budget for the
+        # absent NFL family, advancing source offsets in the same invocation.
+        offset = 0
+        for _ in range(4):  # ceiling <= 200, NFL window <= 64
+            if total_attempted >= ceiling:
+                break
+            packet = run("NFL", ceiling - total_attempted, offset=offset)
+            next_offset = packet.get("next_offset")
+            if next_offset is None or int(next_offset) <= offset:
+                break
+            offset = int(next_offset)
+    else:
+        first_nfl_limit = min(64, (ceiling + 1) // 2)
+        first_nfl = run("NFL", first_nfl_limit)
+        run("MLB", ceiling - total_attempted)
+        # Continue where NFL left off if MLB did not consume its share.
+        if total_attempted < ceiling and first_nfl.get("next_offset") is not None:
+            run("NFL", ceiling - total_attempted, offset=int(first_nfl["next_offset"]))
 
     result: dict[str, Any] = {
         "status": "COMPLETED",
@@ -103,7 +118,10 @@ def acquire_daily_prop_snapshots(
         "receipts": [dict(r) for item in outcomes for r in item.get("receipts", []) if isinstance(r, dict)],
         "blockers": list(dict.fromkeys(str(b) for item in outcomes for b in item.get("blockers", []))),
         "per_sport": outcomes,
-        "candidate_source": "NFL_ESPN_PREGAME_AND_MLB_OFFICIAL_PROBABLE_PITCHERS",
+        "candidate_source": (
+            "NFL_ESPN_PREGAME_ROSTER"
+            if nfl_only else "NFL_ESPN_PREGAME_AND_MLB_OFFICIAL_PROBABLE_PITCHERS"
+        ),
         "line_source": "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY",
         "can_execute": False,
     }
