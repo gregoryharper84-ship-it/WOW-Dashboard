@@ -2,8 +2,8 @@
 The Odds API service — pulls events, markets, and player props.
 Docs: https://the-odds-api.com/lts-odds-api/
 
-Failover: get_h2h_odds() transparently falls back to TheRundown on quota
-exhaustion (429) or invalid-key (401), normalizing TheRundown's moneyline
+Failover: get_h2h_odds() transparently falls back to TheRundown on verified
+quota exhaustion (including OUT_OF_USAGE_CREDITS) or invalid-key (401), normalizing TheRundown's moneyline
 shape into the Odds API bookmakers/markets/outcomes shape so no downstream
 consumer needs changing.
 """
@@ -32,8 +32,8 @@ SPORT_KEYS = {
 # Reverse map: "basketball_nba" → "NBA" — used when routing to TheRundown
 _SPORT_KEY_TO_NAME = {v: k for k, v in SPORT_KEYS.items()}
 
-# Status strings that warrant a TheRundown failover attempt.  Transient
-# network errors (timeout, 5xx) are NOT in this set — they signal infra
+# Status strings that warrant a TheRundown failover attempt.  Temporary
+# rate limiting (429), network errors (timeout, 5xx) are NOT in this set — they signal infra
 # problems that TheRundown will likely share, so we pass the original
 # failure straight through instead of burning a second quota hit.
 _RUNDOWN_FAILOVER_STATUSES = frozenset({
@@ -129,6 +129,17 @@ def resolve_odds_api_key_with_source() -> "tuple[str, str]":
     return "", "NONE"
 
 
+def _odds_api_error_code(response):
+    """Return only the documented provider error code, never error-body secrets."""
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("error_code") or "").strip().upper()
+
+
 def _get(path, params=None):
     """
     Try all configured keys in priority order: PAID → 100K → FREE → LEGACY.
@@ -183,7 +194,7 @@ def _get(path, params=None):
         _tier_state = _quota_snapshot.get(_tier, {})
         _remaining  = _tier_state.get("requests_remaining")
         if _remaining is not None and _remaining == 0:
-            _last_msg = f"proactive_skip:{_tier}:quota_exhausted"
+            _last_msg = "FAILED: quota exhausted"
             continue
 
         _p = {**params, "apiKey": _key}
@@ -196,13 +207,20 @@ def _get(path, params=None):
         remaining = r.headers.get("x-requests-remaining", "?")
         if r.status_code == 200:
             return r.json(), f"AVAILABLE (remaining={remaining})"
-        elif r.status_code in (401, 429):
-            _last_msg = "FAILED: quota exhausted" if r.status_code == 429 else "FAILED: invalid ODDS_API_KEY"
-            continue   # try next key in ladder
-        elif r.status_code == 422:
-            # Out-of-credits returns 422; treat as quota exhausted and try next key
-            _last_msg = f"FAILED: unprocessable ({r.text[:120]})"
+        elif r.status_code == 401:
+            _last_msg = "FAILED: invalid ODDS_API_KEY"
             continue
+        elif r.status_code == 429:
+            # EXCEEDED_FREQ_LIMIT is temporary throttling, not monthly exhaustion.
+            _last_msg = "FAILED: rate limited"
+            continue
+        elif r.status_code == 422:
+            # Only the documented code proves monthly quota exhaustion. Other
+            # 422s (e.g. INVALID_MARKET) must not burn additional API keys.
+            if _odds_api_error_code(r) == "OUT_OF_USAGE_CREDITS":
+                _last_msg = "FAILED: quota exhausted"
+                continue
+            return None, "FAILED: HTTP 422"
         else:
             return None, f"FAILED: HTTP {r.status_code}"
     return None, _last_msg
@@ -335,7 +353,7 @@ def get_h2h_odds(sport_key):
     Failover chain (h2h only)
     --------------------------
     1. The Odds API (primary) — native bookmakers/markets/outcomes shape.
-    2. TheRundown (on 429 or 401 only) — response normalized via
+    2. TheRundown (verified quota exhaustion or 401) — response normalized via
        _normalize_rundown_to_h2h_events() into the same shape, so every
        downstream consumer works without modification.
 
