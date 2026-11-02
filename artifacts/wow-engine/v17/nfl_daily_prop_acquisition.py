@@ -66,6 +66,8 @@ def acquire_daily_nfl_prop_snapshots(
         "line_source": "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY",
         "platform": PLATFORM,
         "source_type": "AUTONOMOUS_DISCOVERY",
+        "probability_publishable": False,
+        "rank_eligible": False,
         "snapshot_write_succeeded": int(result.get("persisted") or 0),
         "explicit_prewrite_exclusions": int(result.get("explicit_prewrite_exclusions") or 0),
         "receipts": list(result.get("receipts") or []),
