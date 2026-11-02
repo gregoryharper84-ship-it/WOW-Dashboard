@@ -325,44 +325,66 @@ def _quota_aware_rundown_factory(*args: Any, **kwargs: Any):
     original_factory = getattr(feed, "_v17_quota_aware_original_rundown_board_feed", None)
     if not callable(original_factory):
         raise RuntimeError("QUOTA_AWARE_RUNDOWN_ORIGINAL_UNAVAILABLE")
-    base_fetch = original_factory(*args, **kwargs)
 
     def fetch(family: str, target: Any = None):
-        context, state, blocked = _before_paid_call(
-            "RUNDOWN",
-            stage=source_policy.STAGE_DISCOVERY,
-        )
-        if blocked:
-            origin = str(state.get("reason_code") or "")
-            acquisition = discovery.AcquisitionFeedResult(
-                rows=(),
-                provider_status=discovery.PROVIDER_FAILED,
-                fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
-                exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
-                blocker_code=blocked,
-                primary_blocker_code=str(state.get("reason_code") or blocked),
-                primary_path_id=discovery.PATH_RUNDOWN,
-                primary_path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
-                fallback_path_state=discovery.PATH_NOT_APPLICABLE,
-                attempts=(
-                    discovery.acquisition_attempt(
-                        path_id=discovery.PATH_RUNDOWN,
-                        path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
-                        blocker_code=blocked,
-                        originating_blocker_code=origin,
-                    ),
-                ),
+        # A guard at this outer layer would block fresh in-memory or durable
+        # cache hits after a quota circuit opens. The native adapter invokes
+        # this hook ONLY after both caches miss, immediately before the network.
+        attempt: dict[str, Any] = {"called": False, "allowed": False}
+
+        def paid_call_guard() -> tuple[bool, str | None]:
+            context, state, blocked = _before_paid_call(
+                "RUNDOWN",
+                stage=source_policy.STAGE_DISCOVERY,
             )
-            raise discovery.DiscoveryFeedError(blocked, acquisition=acquisition)
+            attempt.update(
+                called=True,
+                allowed=blocked is None,
+                context=context,
+                state=state,
+                blocked=blocked,
+            )
+            return blocked is None, blocked
+
+        base_fetch = original_factory(*args, paid_call_guard=paid_call_guard, **kwargs)
         try:
             result = base_fetch(family, target)
         except discovery.DiscoveryFeedError as exc:
-            _paid_failure(context, state, exc.code)
+            if attempt["allowed"]:
+                _paid_failure(attempt.get("context"), attempt.get("state"), exc.code)
+            if str(exc.code).startswith("RUNDOWN_CIRCUIT_OPEN:"):
+                origin = str(
+                    (attempt.get("state") or {}).get("reason_code") or ""
+                )
+                acquisition = discovery.AcquisitionFeedResult(
+                    rows=(),
+                    provider_status=discovery.PROVIDER_FAILED,
+                    fallback_status=discovery.FALLBACK_NOT_APPLICABLE,
+                    exhaustion_status=discovery.PROVIDER_PATHS_EXHAUSTED,
+                    blocker_code=exc.code,
+                    primary_blocker_code=origin or exc.code,
+                    primary_path_id=discovery.PATH_RUNDOWN,
+                    primary_path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+                    fallback_path_state=discovery.PATH_NOT_APPLICABLE,
+                    attempts=(
+                        discovery.acquisition_attempt(
+                            path_id=discovery.PATH_RUNDOWN,
+                            path_state=discovery.PATH_CIRCUIT_OPEN_PRIOR_FAILURE,
+                            blocker_code=exc.code,
+                            originating_blocker_code=origin,
+                        ),
+                    ),
+                )
+                raise discovery.DiscoveryFeedError(
+                    exc.code, acquisition=acquisition
+                ) from exc
             raise
         except Exception as exc:
-            _paid_failure(context, state, type(exc).__name__)
+            if attempt["allowed"]:
+                _paid_failure(attempt.get("context"), attempt.get("state"), type(exc).__name__)
             raise
-        _paid_success(context, state)
+        if attempt["allowed"]:
+            _paid_success(attempt.get("context"), attempt.get("state"))
         return result
 
     setattr(fetch, "_wow_quota_aware_provider", "RUNDOWN")
