@@ -62,16 +62,75 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _source_failure_context(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep persisted typed upstream holds visible, without promoting the row.
+
+    A downstream LLP view must never replace source failure codes with only
+    its own missing-certificate reasons. Do not echo arbitrary raw provider text.
+    """
+    detail = _data(row.get("detail"))
+    result = _data(detail.get("result"))
+    nested = _data(result.get("detail"))
+    codes: list[str] = []
+    for source in (result, nested):
+        for key in ("blockers", "failure_codes", "reason_codes"):
+            raw = source.get(key)
+            values = raw if isinstance(raw, list) else []
+            for value in values:
+                if isinstance(value, str) and 1 <= len(value) <= 128:
+                    token = value.split(":", 1)[0].strip().upper()
+                    if token and all(ch.isalnum() or ch in "_-." for ch in token):
+                        if token not in codes:
+                            codes.append(token)
+    for source in (result, nested):
+        for key in ("code", "failure_code", "failure_class"):
+            value = source.get(key)
+            if isinstance(value, str):
+                token = value.strip().upper()
+                if token and len(token) <= 128 and all(
+                    ch.isalnum() or ch in "_-." for ch in token
+                ) and token not in codes:
+                    codes.append(token)
+    return {
+        "source_row_status": row.get("row_status"),
+        "source_model_status": result.get("model_status"),
+        "source_governance_status": result.get("governance_status"),
+        "source_reason_codes": codes[:32],
+        "source_reason_codes_truncated": max(0, len(codes) - 32),
+    }
+
+
 def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -> dict[str, Any]:
     detail = _data(row.get("detail"))
     result = _data(detail.get("result"))
-    # This projection does NOT invent certification or promote a held row.
-    # All contract fields must be *persisted evidence*, not inferred from
-    # the route, sport, an odds line, or the enclosing Daily terminal state.
+    home = _token(event.get("home_team")).upper()
+    away = _token(event.get("away_team")).upper()
+    side = _token(result.get("selected_side") or result.get("winner_side")).upper()
+    # Score-event uses calibrated_home/away_* and global_terminal_authority,
+    # rather than a generic selected-side receipt. Translate only an explicitly
+    # identified selection, never infer a side from a price or larger p.
+    if side == home:
+        point = result.get("calibrated_home_probability")
+        lower = result.get("calibrated_home_lower_bound")
+        upper = result.get("calibrated_home_upper_bound")
+    elif side == away:
+        point = result.get("calibrated_away_probability")
+        lower = result.get("calibrated_away_lower_bound")
+        upper = result.get("calibrated_away_upper_bound")
+    else:
+        point = lower = upper = None
+    # The generic validated receipt form remains accepted if it is already
+    # persisted; do not substitute a guessed selected side for missing fields.
+    if point is None:
+        point = result.get("calibrated_probability")
+        lower = result.get("calibrated_probability_lower_bound")
+        upper = result.get("calibrated_probability_upper_bound")
     return {
         **event,
         "market_family": "OUTRIGHT_WINNER",
-        "side": result.get("selected_side") or result.get("winner_side"),
+        "side": side,
+        # No canonical producer-side receipt_id is present on legacy Daily
+        # discovery rows. Never synthesize it from event/snapshot/run IDs.
         "source_receipt_id": result.get("source_receipt_id"),
         "probability_publishable": (
             row.get("row_status") == "COMPLETED"
@@ -79,19 +138,20 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
             and result.get("probability_publishable") is True
         ),
         "rank_eligible": result.get("rank_eligible") is True,
-        "terminal_authority": result.get("terminal_authority"),
+        "terminal_authority": (
+            result.get("terminal_authority") or result.get("global_terminal_authority")
+        ),
         "controlling_engine_identity": result.get("controlling_engine_identity"),
         "model_class": result.get("model_class"),
         "model_version": result.get("model_version"),
         "calibration_version": result.get("calibration_version"),
         "model_timestamp": result.get("model_timestamp"),
         "source_snapshot_timestamp": result.get("source_snapshot_timestamp"),
-        "calibrated_probability": result.get("calibrated_probability"),
-        "calibrated_probability_lower_bound": result.get("calibrated_probability_lower_bound"),
-        "calibrated_probability_upper_bound": result.get("calibrated_probability_upper_bound"),
+        "calibrated_probability": point,
+        "calibrated_probability_lower_bound": lower,
+        "calibrated_probability_upper_bound": upper,
         "can_execute": result.get("can_execute"),
     }
-
 
 def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
     """Page-preserving, read-only projection. Missing proof stays HELD.
@@ -105,12 +165,25 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
     duplicate_ids: set[str] = set()
     seen_ids: set[str] = set()
     skipped_prop_rows = 0
+    unsupported_sport_rows = 0
     malformed_rows = 0
 
     for raw in raw_rows:
         row = _data(raw)
         if row.get("lane") != "MONEYLINE":
             skipped_prop_rows += 1
+            continue
+        # Unsupported broad-discovery sports are valid Daily rows, not data
+        # defects in the three-sport LLP-specific view.
+        identity = _data(row.get("identity"))
+        original = _data(_data(row.get("detail")).get("identity"))
+        result = _data(_data(row.get("detail")).get("result"))
+        source_sport = _token(
+            identity.get("sport") or original.get("sport") or result.get("sport")
+            or result.get("league")
+        ).upper()
+        if source_sport and source_sport not in _SUPPORTED:
+            unsupported_sport_rows += 1
             continue
         event = _event_from_row(row)
         if event is None:
@@ -125,6 +198,7 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
                 event=event, receipts=[_winner_receipt_from_row(row, event)]
             )
             bundle["daily_row_index"] = row.get("row_index")
+            bundle["source_diagnostics"] = _source_failure_context(row)
             # Daily's underlying data has winner rows, not certified
             # independent spread/game-total scorer packages.
             bundle["market_coverage"] = {
@@ -144,6 +218,7 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
         "events": projected,
         "source_rows_returned": page.get("returned", len(raw_rows)),
         "non_team_event_rows_skipped": skipped_prop_rows,
+        "unsupported_sport_rows_skipped": unsupported_sport_rows,
         "invalid_event_rows": malformed_rows,
         "duplicate_event_ids_in_page": sorted(duplicate_ids),
         "source_offset": page.get("offset"),
