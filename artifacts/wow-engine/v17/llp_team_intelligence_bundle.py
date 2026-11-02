@@ -170,6 +170,21 @@ def build_llp_team_intelligence_bundle(
             projected["calibrated_probability_lower_bound"] = raw["calibrated_probability_lower_bound"]
             projected["calibrated_probability_upper_bound"] = raw["calibrated_probability_upper_bound"]
         result.append(projected)
+    # A game can have only one governed winning side. Do not let opposite
+    # certified-looking receipts silently select the last one as authority.
+    visible_winners = [
+        item for item in result
+        if item["market_family"] == "OUTRIGHT_WINNER" and item["evidence_visible"]
+    ]
+    if len(visible_winners) > 1:
+        winner_source = None
+        for item in visible_winners:
+            item["status"] = "HELD_EVIDENCE_ONLY"
+            item["reason_codes"].append("EVENT_WINNER_MUTEX_CONFLICT")
+            item["evidence_visible"] = False
+            item.pop("calibrated_probability", None)
+            item.pop("calibrated_probability_lower_bound", None)
+            item.pop("calibrated_probability_upper_bound", None)
     upset: dict[str, Any] | None = None
     if upset_alert is not None:
         upset_blockers: list[str] = []
