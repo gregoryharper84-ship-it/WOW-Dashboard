@@ -6,6 +6,7 @@ This module NEVER executes code, approves changes, merges or authorizes wagers.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
@@ -89,6 +90,20 @@ def valid_pr(pr: dict) -> bool:
     )
 
 
+def _updated_timestamp(issue: dict) -> float:
+    """Prefer recent incident activity among equal severities, not oldest IDs."""
+    value = issue.get("updated_at")
+    if not isinstance(value, str):
+        return 0.0
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return 0.0
+        return stamp.astimezone(timezone.utc).timestamp()
+    except (ValueError, OverflowError):
+        return 0.0
+
+
 def plan(issues: list, prs: list, *, target: int | None = None) -> dict:
     """Prefer P0/P1 restoration; resume existing PR, never duplicate its writer."""
     if not isinstance(issues, list) or not isinstance(prs, list):
@@ -102,11 +117,16 @@ def plan(issues: list, prs: list, *, target: int | None = None) -> dict:
     for issue in issues:
         priority = eligible(issue)
         if priority and (target is None or priority[1] == target):
-            ranked.append((priority, issue))
-    ranked.sort(key=lambda row: row[0])
-    for (tier, number), _issue in ranked:
+            tier, number = priority
+            ranked.append((tier, -_updated_timestamp(issue), number, issue))
+    ranked.sort(key=lambda row: row[:3])
+    for tier, _negative_updated, number, _issue in ranked:
         related = [pr for pr in prs if valid_pr(pr) and number in related_incidents(pr)]
         if related:
+            # A draft PR is a real non-duplicate claim, but not a runnable
+            # review/merge step. Keep it untouched and move to another issue.
+            if any(pr.get("draft") is True for pr in related):
+                continue
             pr = min(related, key=lambda row: row["number"])
             return {
                 "action": "RESUME_PR", "incident": number,
