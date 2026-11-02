@@ -156,6 +156,68 @@ class Test24x7(unittest.TestCase):
                  "createdAt": "2026-11-02T01:11:00Z"}]
         self.assertEqual(mod.plan([issue(9, "P0")], [], runs=runs)["action"], "IDLE")
 
+    def test_manual_retry_requires_latest_failed_exact_target(self):
+        runs = [
+            {"displayTitle": "worker lease=GLOBAL incident=9", "createdAt": "2026-11-02T01:11:00Z",
+             "databaseId": 400, "status": "completed", "conclusion": "failure"},
+        ]
+        item = issue(9, "P0", updated_at="2026-11-02T01:10:00Z")
+        self.assertEqual(mod.plan([item], [], runs=runs)["action"], "IDLE")
+        self.assertEqual(mod.plan([item], [], runs=runs, target=9,
+                                  retry_after_run_id=400)["action"], "BUILD")
+        self.assertEqual(mod.plan([item], [], runs=runs, target=9,
+                                  retry_after_run_id=401)["action"], "IDLE")
+        with self.assertRaisesRegex(ValueError, "requires exact"):
+            mod.plan([item], [], runs=runs, retry_after_run_id=400)
+
+    def test_manual_retry_never_overrides_success_or_active_run(self):
+        item = issue(9, "P0", updated_at="2026-11-02T01:10:00Z")
+        for state, conclusion in (("completed", "success"), ("in_progress", None),
+                                  ("queued", None), ("completed", "cancelled")):
+            run = {"displayTitle": "worker incident=9", "databaseId": 400,
+                   "createdAt": "2026-11-02T01:11:00Z",
+                   "status": state, "conclusion": conclusion}
+            with self.subTest(state=state, conclusion=conclusion):
+                self.assertEqual(mod.plan([item], [], runs=[run], target=9,
+                    retry_after_run_id=400)["action"], "IDLE")
+
+    def test_manual_retry_cannot_reuse_old_failure_after_new_attempt(self):
+        item = issue(9, "P0", updated_at="2026-11-02T01:10:00Z")
+        runs = [
+            {"displayTitle": "worker incident=9", "databaseId": 400,
+             "createdAt": "2026-11-02T01:11:00Z", "status": "completed", "conclusion": "failure"},
+            {"displayTitle": "worker incident=9", "databaseId": 402,
+             "createdAt": "2026-11-02T01:13:00Z", "status": "completed", "conclusion": "failure"},
+        ]
+        self.assertEqual(mod.plan([item], [], runs=runs, target=9,
+                                  retry_after_run_id=400)["action"], "IDLE")
+        self.assertEqual(mod.plan([item], [], runs=runs, target=9,
+                                  retry_after_run_id=402)["action"], "BUILD")
+
+    def test_active_legacy_auto_job_fences_other_incidents(self):
+        item = issue(9, "P0", updated_at="2026-11-02T01:10:00Z")
+        for status in ("queued", "in_progress", "waiting", "pending"):
+            run = {"displayTitle": "wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=AUTO",
+                   "status": status, "createdAt": "2026-11-02T01:11:00Z"}
+            result = mod.plan([item], [], runs=[run])
+            self.assertEqual(result["reason"], "LEGACY_AUTO_WRITER_ACTIVE")
+        completed = {"displayTitle": "worker incident=AUTO", "status": "completed",
+                     "conclusion": "failure", "createdAt": "2026-11-02T01:11:00Z"}
+        # A legacy AUTO title provides no incident identity: don't attribute
+        # completed attempts to this issue and invent a permanent hold.
+        self.assertEqual(mod.plan([item], [], runs=[completed])["action"], "BUILD")
+
+    def test_explicit_retry_preserves_existing_pr_and_security_hold(self):
+        run = {"displayTitle": "worker incident=9", "databaseId": 400,
+               "createdAt": "2026-11-02T01:11:00Z",
+               "status": "completed", "conclusion": "failure"}
+        item = issue(9, "P0", updated_at="2026-11-02T01:10:00Z")
+        existing = pr(71, 9, draft=True)
+        self.assertEqual(mod.plan([item], [existing], runs=[run], target=9,
+                                  retry_after_run_id=400)["action"], "IDLE")
+        self.assertEqual(mod.plan([issue(9, "P0", "security-hold")], [], runs=[run],
+                                  target=9, retry_after_run_id=400)["action"], "IDLE")
+
     def test_declared_untrusted_pr_fails_closed(self):
         adversarial = pr(40, 9)
         adversarial["head"]["sha"] = "HEAD~1"
