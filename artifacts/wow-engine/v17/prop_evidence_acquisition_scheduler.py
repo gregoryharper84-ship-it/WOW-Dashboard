@@ -98,7 +98,7 @@ async def run_prop_evidence_acquisition_loop(
                     requested_date=requested_date,
                     timezone_name=timezone_name,
                     max_candidates=max_candidates,
-                    rotating_window_slot=int(now_fn().timestamp() // 3600),
+                    rotating_window_slot=int(now_fn().timestamp() // interval_seconds),
                 )
                 logger.warning(
                     "WOW_PROP_EVIDENCE_ACQUISITION status=%s slate_date=%s attempted=%s hydrated=%s persisted=%s held=%s write_failed=%s blockers=%s can_execute=false",
