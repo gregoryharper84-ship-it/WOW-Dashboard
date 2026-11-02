@@ -1074,6 +1074,13 @@ class SimpleSecurityReviewTests(unittest.TestCase):
             seen.append(url)
             if "pageSize" in url:
                 return catalog
+            self.assertEqual(kwargs["headers"], {"x-goog-api-key": "key"})
+            self.assertEqual(kwargs["data"]["contents"],
+                             [{"parts": [{"text": "diff"}]}])
+            self.assertEqual(kwargs["data"]["systemInstruction"],
+                             {"parts": [{"text": m.SYSTEM_ROLE}]})
+            self.assertEqual(kwargs["data"]["generationConfig"],
+                             {"responseMimeType": "application/json"})
             if "3.8-flash:generateContent" in url:
                 raise m.ProviderUnavailable("PROVIDER_HTTP_429")
             return good
@@ -1102,6 +1109,32 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 m.call_provider("gemini-generative-api", "key", "diff")
         self.assertEqual(len(urls), 1 + m.MAX_REVIEW_MODELS)
         self.assertEqual(len(set(urls)), len(urls))
+
+    def test_gemini_exhaustion_reports_last_actual_typed_reason(self):
+        self._models_patch.stop()
+        catalog = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]}]}
+        cases = (
+            ("PROVIDER_HTTP_429", "PROVIDER_MODEL_UNAVAILABLE"),
+            ("PROVIDER_MODEL_UNAVAILABLE", "PROVIDER_HTTP_429"),
+        )
+        for first, final in cases:
+            with self.subTest(first=first, final=final):
+                calls = []
+                def request(url, **kwargs):
+                    calls.append(url)
+                    if "pageSize" in url:
+                        return catalog
+                    if "3.8-flash:generateContent" in url:
+                        raise m.ProviderUnavailable(first)
+                    raise m.ProviderUnavailable(final)
+                with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \\
+                     patch.object(m, "request_json", side_effect=request):
+                    with self.assertRaises(m.ProviderUnavailable) as err:
+                        m.call_provider("gemini-generative-api", "key", "diff")
+                self.assertEqual(str(err.exception), final)
+                self.assertEqual(len(calls), 3)
 
     def test_gemini_transport_failure_does_not_rotate_to_another_model(self):
         self._models_patch.stop()
