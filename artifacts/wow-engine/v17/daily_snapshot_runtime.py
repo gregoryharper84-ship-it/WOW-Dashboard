@@ -308,7 +308,7 @@ def _lane_reconciliation(
         expected = "PROP_SNAPSHOT_QUERY_FAILED" if lane == "PROPS" else "TEAM_EVENT_SNAPSHOT_QUERY_FAILED"
         if expected in " ".join(blockers):
             zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
-        elif lane == "PROPS" and acquisition and acquisition.get("status") == "DATA_UNOBTAINABLE":
+        elif lane == "PROPS" and acquisition and (acquisition.get("status") == "DATA_UNOBTAINABLE" or acquisition.get("blockers")):
             zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
         elif lane == "PROPS" and "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" in blockers:
             zero_row_reason = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
@@ -564,6 +564,9 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
                 blockers.extend(prop_acquisition.get("blockers") or [])
             elif prop_acquisition.get("status") == "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE":
                 blockers.append("RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE")
+                blockers.extend(prop_acquisition.get("blockers") or [])
+            elif prop_acquisition.get("blockers"):
+                # A partial NFL/MLB outage is not an authenticated empty slate.
                 blockers.extend(prop_acquisition.get("blockers") or [])
             try:
                 prop_manifest = _prop_manifest_rows(db, req.requested_slate_date, req.requested_timezone)
