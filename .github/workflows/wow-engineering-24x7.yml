@@ -48,6 +48,7 @@ jobs:
     timeout-minutes: 3
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,9 +66,16 @@ jobs:
             > "$RUNNER_TEMP/engineering-issues.json"
           gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
             --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
+          # Authenticated workflow-run history is denial evidence only.
+          # Fail closed on inaccessible or incomplete API responses.
+          for workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            gh run list -R "$GITHUB_REPOSITORY" --workflow "$workflow" \
+              --limit 100 --json displayTitle,createdAt,status
+          done | jq -s 'add // []' > "$RUNNER_TEMP/engineering-runs.json"
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/engineering-issues.json" \
             --prs "$RUNNER_TEMP/engineering-prs.json" \
+            --runs "$RUNNER_TEMP/engineering-runs.json" \
             --output "$RUNNER_TEMP/engineering-plan.json"
           {
             echo "### Read-only live intake proof (NO DISPATCH)"
@@ -107,6 +115,12 @@ jobs:
             > "$RUNNER_TEMP/engineering-issues.json"
           gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
             --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
+          # Authenticated workflow-run history is denial evidence only.
+          # Fail closed on inaccessible or incomplete API responses.
+          for workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            gh run list -R "$GITHUB_REPOSITORY" --workflow "$workflow" \
+              --limit 100 --json displayTitle,createdAt,status
+          done | jq -s 'add // []' > "$RUNNER_TEMP/engineering-runs.json"
       - name: Restoration-first deterministic single-target decision
         id: plan
         shell: bash
@@ -122,6 +136,7 @@ jobs:
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/engineering-issues.json" \
             --prs "$RUNNER_TEMP/engineering-prs.json" \
+            --runs "$RUNNER_TEMP/engineering-runs.json" \
             --output "$RUNNER_TEMP/engineering-plan.json" "${args[@]}"
           action=$(jq -r '.action' "$RUNNER_TEMP/engineering-plan.json")
           incident=$(jq -r '.incident // ""' "$RUNNER_TEMP/engineering-plan.json")
@@ -164,6 +179,11 @@ jobs:
       cancel-in-progress: false
       queue: max
     steps:
+      - name: Checkout protected controller for fresh, exact-target readback
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
       - name: Recheck exact target and prevent duplicate active writers
         env:
           GH_TOKEN: ${{ github.token }}
@@ -178,8 +198,31 @@ jobs:
             claude) worker=wow-v17-claude-engineering-worker.yml ;;
             *) echo "::warning::CODING_PROVIDER_UNAVAILABLE: no authorized provider"; exit 0 ;;
           esac
+          # Reuse protected main only, and never dispatch after source drift.
+          main_head=$(gh api "/repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$main_head" = "$GITHUB_SHA" || {
+            echo "::warning::CONTROLLER_SOURCE_ADVANCED"; exit 0;
+          }
           issue=$(gh api "/repos/$GITHUB_REPOSITORY/issues/$INCIDENT")
           jq -e '.state == "open"' <<< "$issue" >/dev/null
+          # Recheck current issues, PRs and both provider receipts after
+          # acquiring the single-writer mutex. Deny if stale or already tried.
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request == null)' | jq -s '.' > "$RUNNER_TEMP/issues.json"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
+            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/prs.json"
+          for worker in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            gh run list -R "$GITHUB_REPOSITORY" --workflow "$worker" \
+              --limit 100 --json displayTitle,createdAt,status
+          done | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
+          python artifacts/wow-engine/v17/engineering_24x7_selector.py \
+            --issues "$RUNNER_TEMP/issues.json" --prs "$RUNNER_TEMP/prs.json" \
+            --runs "$RUNNER_TEMP/runs.json" --target "$INCIDENT" \
+            --output "$RUNNER_TEMP/current-plan.json"
+          if [ "$(jq -r '.action' "$RUNNER_TEMP/current-plan.json")" != "BUILD" ]; then
+            echo "::notice::ISSUE_ALREADY_OWNED_OR_ATTEMPTED: issue $INCIDENT"
+            exit 0
+          fi
           for active_worker in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
             active=$(gh run list -R "$GITHUB_REPOSITORY" --workflow "$active_worker" \
               --limit 50 --json status \
