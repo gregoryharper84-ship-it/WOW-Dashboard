@@ -493,3 +493,55 @@ def test_supplemental_failure_produces_partial_capture_status(monkeypatch):
     assert result.status == bounded.STATUS_PARTIAL
     assert result.probability_publishable is False
     assert result.can_execute is False
+
+
+def test_persisted_prediction_late_market_snapshot_failure_is_partial_and_deduped(monkeypatch):
+    """A saved forecast must count even if its later market quote write fails."""
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "1")
+    target_time = "2026-11-02T14:15:00Z"
+    ticker = "KXTEMPMIAH-A"
+    item = SimpleNamespace(
+        ticker=ticker,
+        parsed=SimpleNamespace(observation_time_utc=target_time),
+        rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={})),
+        series_ticker="KXTEMPMIAH",
+    )
+    class FakeHttp:
+        def close(self):
+            pass
+    monkeypatch.setattr(bounded, "ReadOnlyJsonClient", FakeHttp)
+    known = set()
+    monkeypatch.setattr(bounded, "_existing_sample_keys", lambda db: known)
+    monkeypatch.setattr(bounded, "_discover_target_contracts", lambda *args: (item,))
+    monkeypatch.setattr(bounded, "lead_time_bucket", lambda *args: "H0")
+    calls = []
+    def fail_after_prediction(**kwargs):
+        calls.append(kwargs["ticker"])
+        raise runtime.KalshiWeatherPartialCaptureError(
+            prediction_id="immutable-prediction-id",
+            rule_snapshot_id="rule-id",
+        )
+    monkeypatch.setattr(bounded, "capture_hourly_shadow", fail_after_prediction)
+    first = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(),
+        targets=(_target(),),
+        now="2026-11-02T14:00:00Z",
+    )
+    assert first.status == bounded.STATUS_PARTIAL
+    assert first.samples_captured == 1
+    assert len(first.capture_failures) == 1
+    assert "PREDICTION_PERSISTED_MARKET_SNAPSHOT_FAILED" in first.capture_failures[0]
+    assert first.probability_publishable is False
+    assert first.can_execute is False
+    assert calls == [ticker]
+
+    # A subsequent pass sees the immutable forecast sample and does not write
+    # a second prediction to compensate for the missing market quote.
+    second = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(),
+        targets=(_target(),),
+        now="2026-11-02T14:00:00Z",
+    )
+    assert second.samples_captured == 0
+    assert second.samples_skipped_existing == 1
+    assert calls == [ticker]
