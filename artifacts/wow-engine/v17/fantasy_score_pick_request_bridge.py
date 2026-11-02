@@ -16,7 +16,6 @@ from typing import Any
 
 import pick_request_runtime_core as _runtime_core
 from v17.mlb_prop_evidence_control_plane import install_mlb_prop_forward_evidence_route
-from v17.nfl_prop_evidence_control_plane import install_nfl_prop_forward_evidence_route
 from v17.nba_scalar_candidate_bridge import candidate_preflight as _nba_scalar_candidate_preflight
 from v17.wnba_composite_candidate_bridge import candidate_preflight as _wnba_composite_candidate_preflight
 from v17.prop_capability_manifest import prop_capability as _prop_capability, runtime_prop_stat_aliases
@@ -213,6 +212,9 @@ def _install_wnba_composite_registration_overlay() -> None:
             auth_dependency=auth_dependency,
             db_client_fn=db_client_fn,
         )
+        # Late bind to avoid the NFL evidence -> identity -> runtime -> Fantasy bridge cycle.
+        from v17.nfl_prop_evidence_control_plane import install_nfl_prop_forward_evidence_route
+
         install_nfl_prop_forward_evidence_route(
             app,
             auth_dependency=auth_dependency,
