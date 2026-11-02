@@ -73,9 +73,63 @@ class DeliveryTests(unittest.TestCase):
             mod.reduce_pr(pr(), [{}] * 1001, SHA)
 
     def test_conflicting_security_checks_rejected(self):
-        with self.assertRaisesRegex(ValueError, "CONFLICTING_CHECK_EVIDENCE"):
-            mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
+        x = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),
                                 check(mod.QA_CHECK, 123)], SHA)
+        self.assertEqual(x["decision"], "QA_IDENTITY_INVALID")
+
+    def test_signed_old_reject_survives_newer_hold(self):
+        old = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        old.update({"id": 41, "output": {"title": "REJECT — independent semantic source review",
+                                           "summary": "REJECT: semantic finding"}})
+        newer = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        newer.update({"id": 42, "output": {"title": "HOLD — independent semantic source review",
+                                             "summary": "HOLD: reason PROVIDER_MODEL_UNAVAILABLE"}})
+        result = mod.reduce_pr(pr(), [old, newer], SHA)
+        self.assertEqual(result["decision"], "SEMANTIC_REJECT_SAME_SHA")
+        self.assertEqual(result["reentry_trigger"], "NEW_SOURCE_SHA")
+
+    def test_newer_model_hold_is_diagnostic_not_semantic_reject(self):
+        old = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        old.update({"id": 41, "output": {"title": "HOLD — independent semantic source review",
+                                           "summary": "reason PROVIDER_TRANSPORT"}})
+        newer = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        newer.update({"id": 42, "output": {"title": "HOLD — independent semantic source review",
+                                             "summary": "reason PROVIDER_MODEL_UNAVAILABLE"}})
+        result = mod.reduce_pr(pr(), [newer, old], SHA)
+        self.assertEqual(result["decision"], "REVIEWER_MODEL_REPAIR")
+        self.assertEqual(result["reentry_trigger"], "VALID_PROVIDER_PREFLIGHT_AND_NEW_QA_RECEIPT")
+        self.assertFalse(result["merge_authorized"])
+
+    def test_credential_and_quota_errors_need_provider_repair_not_source(self):
+        for reason in ("PROVIDER_HTTP_401", "PROVIDER_CREDIT_EXHAUSTED"):
+            x = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+            x["output"] = {"title": "HOLD — independent semantic source review",
+                           "summary": "reason " + reason}
+            with self.subTest(reason=reason):
+                result = mod.reduce_pr(pr(), [x], SHA)
+                self.assertEqual(result["decision"], "REVIEWER_AUTH_OR_QUOTA_REPAIR")
+                self.assertNotEqual(result["next_action"], "REPAIR_REJECTED_SOURCE_NEW_SHA")
+
+    def test_transient_does_not_auto_retry(self):
+        x = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        x["output"] = {"title": "HOLD — independent semantic source review",
+                       "summary": "reason PROVIDER_HTTP_503"}
+        result = mod.reduce_pr(pr(), [x], SHA)
+        self.assertEqual(result["decision"], "REVIEWER_TRANSIENT_OUTAGE")
+        self.assertFalse(result["can_execute"])
+
+    def test_unknown_error_no_fallback(self):
+        x = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        x["output"] = {"title": "HOLD — independent semantic source review",
+                       "summary": "reason UNKNOWN_PROVIDER_FAILURE"}
+        self.assertEqual(mod.reduce_pr(pr(), [x], SHA)["decision"], "INDEPENDENT_QA_NOT_ACCEPTED")
+
+    def test_prior_reject_remains_binding_even_if_later_success(self):
+        reject = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        reject.update({"id": 10, "output": {"title": "REJECT — independent semantic source review"}})
+        success = check(mod.QA_CHECK, mod.QA_APP_ID)
+        success["id"] = 11
+        self.assertEqual(mod.reduce_pr(pr(), [success, reject], SHA)["decision"], "SEMANTIC_REJECT_SAME_SHA")
 
     def test_merge_alone_never_completes(self):
         x = mod.reduce_completion(merge_sha=SHA, live_sha=None,
