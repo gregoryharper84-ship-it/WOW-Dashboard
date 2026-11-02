@@ -21,7 +21,7 @@ def _target(name: str = "miami") -> HourlyCohortTarget:
     )
 
 
-def test_capture_only_pass_does_not_settle_backlog(monkeypatch):
+def test_capture_only_zero_contracts_is_not_reported_as_collected(monkeypatch):
     closed = {"value": False}
 
     class FakeHttp:
@@ -42,7 +42,9 @@ def test_capture_only_pass_does_not_settle_backlog(monkeypatch):
         now="2026-09-14T14:00:00Z",
     )
 
-    assert result.status == "EMPIRICAL_SHADOW_COHORT_PASS"
+    # Previously this returned a PASS status, which made a scheduler echo
+    # indistinguishable from a completed data acquisition.
+    assert result.status == bounded.STATUS_NO_ELIGIBLE_CONTRACTS
     assert result.targets_checked == 1
     assert result.contracts_discovered == 0
     assert result.predictions_settled == 0
@@ -236,7 +238,7 @@ def test_weather_shadow_loop_skips_cycle_under_memory_pressure(monkeypatch):
 
 def _empty_cohort_result():
     return shadow.CohortRunResult(
-        status="EMPIRICAL_SHADOW_COHORT_PASS",
+        status=bounded.STATUS_COLLECTED,
         targets_checked=1,
         contracts_discovered=1,
         samples_captured=1,
@@ -337,3 +339,99 @@ def test_settlement_attempt_limit_does_not_sweep_backlog(monkeypatch):
     assert count == 2
     assert settled == ["pred-0", "pred-1"]
     assert failures == []
+
+
+def test_capture_status_never_reports_zero_work_as_success():
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=0,
+            contracts_discovered=0,
+            failures=(),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_NO_ELIGIBLE_CONTRACTS
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=2,
+            contracts_discovered=2,
+            failures=(),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_DUPLICATE_SUPPRESSED
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=0,
+            contracts_discovered=0,
+            failures=(),
+            eligible_targets=0,
+        )
+        == bounded.STATUS_NO_ELIGIBLE_TARGETS
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=1,
+            samples_skipped_existing=0,
+            contracts_discovered=1,
+            failures=(),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_COLLECTED
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=0,
+            contracts_discovered=1,
+            failures=("miami:DISCOVERY:TimeoutError:",),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_FAILED
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=1,
+            samples_skipped_existing=0,
+            contracts_discovered=2,
+            failures=("miami:SUPPLEMENTAL:TimeoutError:",),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_PARTIAL
+    )
+
+
+def test_collection_diagnostics_never_claim_capture_without_a_write():
+    result = SimpleNamespace(
+        status=bounded.STATUS_NO_ELIGIBLE_CONTRACTS,
+        targets_checked=1,
+        contracts_discovered=0,
+        samples_captured=0,
+        samples_skipped_existing=0,
+        supplemental_snapshots_captured=0,
+        predictions_settled=0,
+        capture_failures=(),
+        supplemental_failures=(),
+        settlement_failures=(),
+        market_microstructure_snapshots_captured=0,
+        market_microstructure_failures=(),
+    )
+    diagnostics = runtime.build_collection_diagnostics(
+        result=result,
+        targets=(_target(),),
+        trigger="EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
+        elapsed_seconds=1.25,
+        latest_capture_at="2026-11-01T14:02:26.246888Z",
+    )
+
+    assert diagnostics["status"] == bounded.STATUS_NO_ELIGIBLE_CONTRACTS
+    assert diagnostics["predictions_written"] == 0
+    assert diagnostics["usable_capture"] is False
+    assert diagnostics["targets"] == ["miami"]
+    assert diagnostics["latest_successful_capture_at"] == "2026-11-01T14:02:26.246888Z"
+    assert diagnostics["collection_fresh"] is False
+    assert diagnostics["probability_publishable"] is False
+    assert diagnostics["can_execute"] is False

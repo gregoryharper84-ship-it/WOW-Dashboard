@@ -22,6 +22,45 @@ from .supplemental_capture import capture_hourly_supplemental_sources
 
 _logger = logging.getLogger("wow.kalshi_weather_v2.bounded_cohort")
 
+# A clean HTTP response is not proof of collection. These statuses keep a
+# scheduler echo, a completed collector pass, and a usable capture separately
+# identifiable so an operator can never mistake one for another.
+STATUS_COLLECTED = "EMPIRICAL_SHADOW_COHORT_COLLECTED"
+STATUS_NO_ELIGIBLE_TARGETS = "EMPIRICAL_SHADOW_COHORT_NO_ELIGIBLE_TARGETS"
+STATUS_NO_ELIGIBLE_CONTRACTS = "EMPIRICAL_SHADOW_COHORT_NO_ELIGIBLE_CONTRACTS"
+STATUS_DUPLICATE_SUPPRESSED = "EMPIRICAL_SHADOW_COHORT_DUPLICATE_SUPPRESSED"
+STATUS_PARTIAL = "EMPIRICAL_SHADOW_COHORT_PARTIAL"
+STATUS_FAILED = "EMPIRICAL_SHADOW_COHORT_FAILED"
+
+
+def derive_capture_status(
+    *,
+    samples_captured: int,
+    samples_skipped_existing: int,
+    contracts_discovered: int,
+    failures: Sequence[str],
+    eligible_targets: int,
+) -> str:
+    """Report what actually happened, never merely that a pass was attempted.
+
+    ``samples_captured == 0`` is never reported as successful data acquisition.
+    Zero new rows is a legitimate outcome when every eligible target/time
+    bucket already has an immutable sample, or when no eligible future
+    contract exists, but both stay explicit rather than collapsing into PASS.
+    """
+    has_failures = bool(failures)
+    if samples_captured > 0:
+        return STATUS_PARTIAL if has_failures else STATUS_COLLECTED
+    if has_failures:
+        return STATUS_FAILED
+    if eligible_targets == 0:
+        return STATUS_NO_ELIGIBLE_TARGETS
+    if contracts_discovered == 0:
+        return STATUS_NO_ELIGIBLE_CONTRACTS
+    if samples_skipped_existing > 0:
+        return STATUS_DUPLICATE_SUPPRESSED
+    return STATUS_NO_ELIGIBLE_CONTRACTS
+
 
 def run_bounded_capture_only_cohort_once(
     *,
@@ -215,10 +254,12 @@ def run_bounded_capture_only_cohort_once(
         http.close()
 
     return CohortRunResult(
-        status=(
-            "EMPIRICAL_SHADOW_COHORT_PASS"
-            if not capture_failures
-            else "EMPIRICAL_SHADOW_COHORT_PARTIAL"
+        status=derive_capture_status(
+            samples_captured=captured,
+            samples_skipped_existing=skipped,
+            contracts_discovered=contracts_discovered,
+            failures=tuple(capture_failures),
+            eligible_targets=sum(1 for target in targets if target.enabled),
         ),
         targets_checked=sum(1 for target in targets if target.enabled),
         contracts_discovered=contracts_discovered,

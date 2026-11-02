@@ -223,27 +223,59 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
     outcome_by_prediction = {str(row.get("prediction_id")): row for row in outcomes if row.get("prediction_id")}
 
     groups: dict[tuple[str, str, str], dict[str, tuple[str, ForecastResidual]]] = {}
+    exclusions: dict[str, int] = {}
+    last_decision_by_station: dict[str, str] = {}
+    settled_predictions = 0
+    eligible_predictions = 0
+    missing_settlement = 0
+
+    def exclude(reason: str) -> None:
+        exclusions[reason] = exclusions.get(reason, 0) + 1
+
     for prediction in predictions:
         prediction_id = str(prediction.get("prediction_id") or "")
         outcome = outcome_by_prediction.get(prediction_id)
-        if not outcome or prediction.get("central_estimate_f") is None or outcome.get("settled_value") is None:
-            continue
+        if outcome and outcome.get("settled_value") is not None:
+            settled_predictions += 1
         model_payload = prediction.get("model_payload") if isinstance(prediction.get("model_payload"), Mapping) else {}
         contract = model_payload.get("contract") if isinstance(model_payload.get("contract"), Mapping) else {}
         lane = str(contract.get("lane") or "").upper()
         if lane != "HOURLY_TEMPERATURE":
+            exclude("LANE_NOT_HOURLY_TEMPERATURE")
             continue
         station_id = str(contract.get("settlement_location_code") or "")
+        if not station_id:
+            exclude("SETTLEMENT_LOCATION_MISSING")
+            continue
         observation_window = str(contract.get("observation_window") or "")
         prefix = "POINT_IN_TIME:"
-        if not station_id or not observation_window.startswith(prefix):
+        if not observation_window.startswith(prefix):
+            exclude("OBSERVATION_WINDOW_NOT_POINT_IN_TIME")
+            continue
+        bucket = str(model_payload.get("lead_time_bucket") or "").upper()
+        if not bucket:
+            exclude("LEAD_TIME_BUCKET_MISSING")
+            continue
+        decision_time = _normalized_z(str(prediction.get("decision_time") or ""))
+        if not decision_time:
+            exclude("DECISION_TIME_MISSING")
+            continue
+        previous_decision = last_decision_by_station.get(station_id)
+        if previous_decision is None or decision_time > previous_decision:
+            last_decision_by_station[station_id] = decision_time
+        eligible_predictions += 1
+        if not outcome or outcome.get("settled_value") is None:
+            missing_settlement += 1
+            exclude("OFFICIAL_SETTLEMENT_MISSING")
+            continue
+        if prediction.get("central_estimate_f") is None:
+            exclude("FORECAST_CENTRAL_ESTIMATE_MISSING")
+            continue
+        settlement_time = _normalized_z(str(outcome.get("settled_at") or ""))
+        if not settlement_time:
+            exclude("SETTLEMENT_TIME_MISSING")
             continue
         target_time = observation_window[len(prefix):]
-        bucket = str(model_payload.get("lead_time_bucket") or "").upper()
-        decision_time = _normalized_z(str(prediction.get("decision_time") or ""))
-        settlement_time = _normalized_z(str(outcome.get("settled_at") or ""))
-        if not bucket or not decision_time or not settlement_time:
-            continue
         sample_key = cohort_sample_key(station_id.removeprefix("KALSHI_WEATHER_INDEX:"), target_time, bucket)
         residual = ForecastResidual(
             forecast_value_f=float(prediction["central_estimate_f"]),
@@ -314,10 +346,40 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
             }
         )
 
+    unique_samples_by_bucket: dict[str, int] = {}
+    unique_samples_by_station: dict[str, int] = {}
+    for (station_id, _lane, bucket), keyed_rows in groups.items():
+        unique_samples_by_bucket[bucket] = unique_samples_by_bucket.get(bucket, 0) + len(keyed_rows)
+        unique_samples_by_station[station_id] = unique_samples_by_station.get(station_id, 0) + len(keyed_rows)
+    unique_total = sum(unique_samples_by_bucket.values())
+    settled_eligible = max(0, eligible_predictions - missing_settlement)
+
     return {
         "status": "EMPIRICAL_CALIBRATION_REPORT",
         "minimum_candidate_n": minimum_n,
         "groups": reports,
+        "dataset_integrity": {
+            "total_predictions": len(predictions),
+            "settled_predictions": settled_predictions,
+            "eligible_hourly_predictions": eligible_predictions,
+            "settled_eligible_predictions": settled_eligible,
+            "unique_calibration_samples": unique_total,
+            "duplicate_predictions_collapsed": max(0, settled_eligible - unique_total),
+            "missing_official_settlements": missing_settlement,
+            "unique_samples_by_lead_bucket": dict(sorted(unique_samples_by_bucket.items())),
+            "unique_samples_by_station": dict(sorted(unique_samples_by_station.items())),
+            "last_decision_time_by_station": dict(sorted(last_decision_by_station.items())),
+            "exclusion_reasons": dict(sorted(exclusions.items())),
+            "usable_fraction": (
+                round(unique_total / eligible_predictions, 6) if eligible_predictions else 0.0
+            ),
+            "point_in_time_note": (
+                "Forecast availability timestamps remain unverified upstream; strict "
+                "point-in-time eligibility is not claimed for samples whose provenance is missing."
+            ),
+            "probability_publishable": False,
+            "can_execute": False,
+        },
         "probability_publishable": False,
         "capability_promotion_allowed": False,
         "can_execute": False,
