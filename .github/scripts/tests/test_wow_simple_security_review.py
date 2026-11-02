@@ -952,6 +952,25 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                 with self.assertRaises(m.Hold):
                     m.review_models("gemini-generative-api", "key")
 
+    def test_complete_empty_model_catalog_never_uses_static_models(self):
+        self._models_patch.stop()
+        with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+             patch.object(m, "request_json", return_value={"models": []}) as request:
+            with self.assertRaisesRegex(m.ProviderUnavailable,
+                                        "PROVIDER_MODEL_UNAVAILABLE"):
+                m.review_models("gemini-generative-api", "key")
+        self.assertEqual(request.call_count, 1)
+
+    def test_nontransient_catalog_401_does_not_spend_generation_tokens(self):
+        self._models_patch.stop()
+        for status in ("HTTP_401", "HTTP_403", "HTTP_404"):
+            with self.subTest(status=status), \
+                 patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
+                 patch.object(m, "request_json", side_effect=m.Hold(status)) as request:
+                with self.assertRaisesRegex(m.Hold, status):
+                    m.call_provider("gemini-generative-api", "key", "untrusted diff")
+                self.assertEqual(request.call_count, 1)
+
     def test_review_model_listing_http_error_uses_short_static_fallback(self):
         self._models_patch.stop()
         with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
