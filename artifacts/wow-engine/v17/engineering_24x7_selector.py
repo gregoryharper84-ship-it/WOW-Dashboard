@@ -149,7 +149,16 @@ def plan(issues: list, prs: list, *, target: int | None = None, runs: list | Non
     for tier, _negative_updated, number, _issue in ranked:
         if prior_attempt_since_issue_update(_issue, runs):
             continue
-        related = [pr for pr in prs if valid_pr(pr) and number in related_incidents(pr)]
+        related_all = [
+            pr for pr in prs
+            if isinstance(pr, dict) and pr.get("state") == "open"
+            and number in related_incidents(pr)
+        ]
+        # Untrusted or orphaned source PRs still own an incident claim.
+        # Never generate a second branch to "fix" their missing provenance.
+        if any(not valid_pr(pr) for pr in related_all):
+            continue
+        related = related_all
         if related:
             # A draft PR is a real non-duplicate claim, but not a runnable
             # review/merge step. Keep it untouched and move to another issue.
