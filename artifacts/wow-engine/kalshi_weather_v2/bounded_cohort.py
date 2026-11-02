@@ -84,9 +84,8 @@ def run_bounded_capture_only_cohort_once(
     workload boundary so an old cohort cannot monopolize or recycle the API.
     """
     decision_time = _iso(_parse_or_now(now))
-    # Opt-in for the 512MiB isolated Render service only. No market quotes,
-    # supplemental feeds, or more than one H0 core capture per process cycle.
-    # The normal complete research collector remains unchanged by default.
+    # Opt-in for isolated 512-MiB collector: one H0 forecast, no side feeds.
+    # Preserve original full research path when disabled.
     low_memory = os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0") == "1"
     db = db_client_fn()
     existing_keys = _existing_sample_keys(db)
@@ -287,7 +286,11 @@ def run_bounded_capture_only_cohort_once(
             samples_captured=captured,
             samples_skipped_existing=skipped,
             contracts_discovered=contracts_discovered,
-            failures=tuple(capture_failures),
+            failures=(
+                *capture_failures,
+                *supplemental_failures,
+                *microstructure_failures,
+            ),
             eligible_targets=sum(1 for target in targets if target.enabled),
             low_memory_suppressed=low_memory_suppressed,
         ),

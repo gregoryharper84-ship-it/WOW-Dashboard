@@ -251,8 +251,8 @@ def _run_bounded_shadow_cycle(
         db_client_fn=db_client_fn,
         targets=selected,
     )
-    # A 512MiB core-only capture must never immediately load the settlement
-    # backlog into the same process. Settlement remains a separate work item.
+    # The 512-MiB core-only capture cannot safely run the settlement backlog
+    # in the same process. Settlement remains an isolated bounded workload.
     if os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0") == "1":
         return result
     if (
