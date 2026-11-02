@@ -288,3 +288,62 @@ def test_no_selected_side_is_invented_from_larger_home_probability():
     view = llp.project_llp_intelligence_page(_page([saved]))
     assert view["events"][0]["markets"][0]["status"] == "HELD_EVIDENCE_ONLY"
     assert "WINNER_SIDE_INVALID" in view["events"][0]["markets"][0]["reason_codes"]
+
+
+def _persisted_selection_row(sport, *, participant="DAL", include_participant=True):
+    """Saved NBA/NHL schema: explicit participant plus selection triplet."""
+    saved = _row(sport=sport, certified=True)
+    result = saved["detail"]["result"]
+    result.pop("selected_side")
+    result.pop("calibrated_probability")
+    result.pop("calibrated_probability_lower_bound")
+    result.pop("calibrated_probability_upper_bound")
+    result.update(
+        calibrated_selection_probability=.61,
+        calibrated_selection_lower_bound=.56,
+        calibrated_selection_upper_bound=.67,
+    )
+    if include_participant:
+        result["selected_participant"] = participant
+    saved["identity"]["official_event_id"] = f"{sport.lower()}-123"
+    return saved
+
+
+@pytest.mark.parametrize("sport", ["NBA", "NHL"])
+def test_persisted_selection_schema_projects_governed_nba_nhl_winner(sport):
+    view = llp.project_llp_intelligence_page(_page([_persisted_selection_row(sport)]))
+    market = view["events"][0]["markets"][0]
+    assert market["status"] == "GOVERNED_RECEIPT_VISIBLE"
+    assert market["side"] == "DAL"
+    assert market["calibrated_probability"] == .61
+    assert market["calibrated_probability_lower_bound"] == .56
+    assert view["invalid_event_rows"] == 0
+
+
+def test_selection_probability_without_selected_participant_is_not_a_side():
+    saved = _persisted_selection_row("NBA", include_participant=False)
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    market = view["events"][0]["markets"][0]
+    assert market["status"] == "HELD_EVIDENCE_ONLY"
+    assert "WINNER_SIDE_INVALID" in market["reason_codes"]
+    assert "calibrated_probability" not in market
+
+
+def test_selected_participant_outside_the_event_fails_closed():
+    view = llp.project_llp_intelligence_page(
+        _page([_persisted_selection_row("NHL", participant="BOS")])
+    )
+    market = view["events"][0]["markets"][0]
+    assert market["status"] == "HELD_EVIDENCE_ONLY"
+    assert "WINNER_SIDE_INVALID" in market["reason_codes"]
+    assert "calibrated_probability" not in market
+
+
+def test_conflicting_stored_selection_identities_fail_closed():
+    saved = _persisted_selection_row("NBA")
+    saved["detail"]["result"]["selected_side"] = "NYG"
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    market = view["events"][0]["markets"][0]
+    assert market["status"] == "HELD_EVIDENCE_ONLY"
+    assert "WINNER_SIDE_INVALID" in market["reason_codes"]
+    assert "calibrated_probability" not in market

@@ -105,7 +105,14 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
     result = _data(detail.get("result"))
     home = _token(event.get("home_team")).upper()
     away = _token(event.get("away_team")).upper()
-    side = _token(result.get("selected_side") or result.get("winner_side")).upper()
+    explicit_side = _token(result.get("selected_side") or result.get("winner_side")).upper()
+    # Persisted governed prediction rows name the exact selected participant
+    # instead of a generic side. Accept it only as an explicit selection; two
+    # disagreeing stored selection identities fail closed rather than picking one.
+    participant = _token(result.get("selected_participant")).upper()
+    side = "" if explicit_side and participant and explicit_side != participant else (
+        explicit_side or participant
+    )
     # Score-event uses calibrated_home/away_* and global_terminal_authority,
     # rather than a generic selected-side receipt. Translate only an explicitly
     # identified selection, never infer a side from a price or larger p.
@@ -125,6 +132,13 @@ def _winner_receipt_from_row(row: Mapping[str, Any], event: Mapping[str, Any]) -
         point = result.get("calibrated_probability")
         lower = result.get("calibrated_probability_lower_bound")
         upper = result.get("calibrated_probability_upper_bound")
+    # Persisted NBA/NHL discovery rows carry the selected-side calibrated
+    # triplet rather than home/away fields. Only use it for an explicitly
+    # identified side that is actually one of this event's two competitors.
+    if point is None and side and side in {home, away}:
+        point = result.get("calibrated_selection_probability")
+        lower = result.get("calibrated_selection_lower_bound")
+        upper = result.get("calibrated_selection_upper_bound")
     return {
         **event,
         "market_family": "OUTRIGHT_WINNER",
