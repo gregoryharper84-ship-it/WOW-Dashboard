@@ -20,7 +20,10 @@ from v17.fitted_team_event_certification import (
     TeamEventCertificationError,
     resolve_certification,
 )
-from v17.multisport_team_event_calibration import CalibrationArtifactInvalid
+from v17.multisport_team_event_calibration import (
+    CalibrationArtifactInvalid,
+    apply_binary_artifact,
+)
 from v17.team_event_capability_manifest import CERTIFIED_TEAM_EVENT_SPORTS
 from v17.nba_event_identity import (
     NBAEventIdentityError,
@@ -332,6 +335,36 @@ def resolve_nba_champion_artifact(client: Any, certification: Any) -> Mapping[st
     return row
 
 
+def resolve_nba_calibrator_artifact(client: Any, certification: Any) -> Mapping[str, Any]:
+    """Load the exact certified basketball calibrator using the database client."""
+    cal_id = getattr(certification, "calibration_artifact_id", None)
+    if not cal_id:
+        raise LookupError("NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE")
+    try:
+        response = client.rpc(
+            "wow_basketball_certified_calibrator_artifact",
+            {"p_sport": "NBA", "p_calibrator_id": str(cal_id)},
+        ).execute()
+    except Exception as exc:
+        # Auth/transport/backend failure cannot be disguised as a missing artifact
+        # or silently retried through an unverified direct-table query.
+        raise RuntimeError("NBA_CALIBRATOR_RESOLUTION_FAILED") from exc
+    data = getattr(response, "data", None)
+    row = data[0] if isinstance(data, list) and data else data
+    if row is None:
+        raise LookupError("NBA_CERTIFIED_CALIBRATOR_UNAVAILABLE")
+    if not isinstance(row, Mapping):
+        raise ValueError("NBA_CERTIFIED_CALIBRATOR_INVALID")
+    if (
+        str(row.get("calibration_artifact_id") or row.get("calibrator_id") or "") != str(cal_id)
+        or str(row.get("sport") or "").upper() != "NBA"
+        or str(row.get("calibration_sha256") or "").lower()
+        != str(getattr(certification, "calibration_sha256", "")).lower()
+    ):
+        raise ValueError("NBA_CERTIFIED_CALIBRATOR_CERTIFICATION_MISMATCH")
+    return row
+
+
 def prepare_nba_current_pregame_scorer_receipt(
     *,
     event_start_time: str,
@@ -594,22 +627,299 @@ def prepare_nba_current_pregame_scorer_receipt(
             research_receipt=research_receipt,
         )
 
-    return _hold(
-        "MODEL_INPUTS_INSUFFICIENT",
-        "NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED",
-        identity=identity,
-        feature_package=current_feature_package,
-        source_snapshot_id=source_snapshot_id,
-        typed_failure="MODEL_INPUTS_INSUFFICIENT",
-        certification=certification,
-        champion_artifact=champion_artifact,
-        calibration_artifact=calibration_artifact,
-        research_receipt=research_receipt,
+    # A calibrator's existence/type is NOT authority to publish its bounds.
+    # Require explicit approval and exact binding to the separately certified
+    # specialist/calibrator registry entry. Missing fields fail closed.
+    bounds_approved = (
+        isinstance(calibration_artifact, Mapping)
+        and calibration_artifact.get("artifact_type") == "BINARY_PLATT_CALIBRATOR"
+        and calibration_artifact.get("bounds_policy") == "APPROVED"
+        and calibration_artifact.get("bounds_preapproval_status") == "APPROVED"
+        and calibration_artifact.get("certification_status") == "PASS"
+        and calibration_artifact.get("calibration_version") != "NBA_PLATT_REVIEW_REQUIRED"
+        and str(calibration_artifact.get("calibration_artifact_id") or "")
+        == str(getattr(certification, "calibration_artifact_id", ""))
+        and str(calibration_artifact.get("calibration_sha256") or "").lower()
+        == str(getattr(certification, "calibration_sha256", "")).lower()
+        and str(calibration_artifact.get("bounds_certification_id") or "")
+        == str(getattr(certification, "certification_id", ""))
+        and str(calibration_artifact.get("bounds_calibrator_sha256") or "").lower()
+        == str(getattr(certification, "calibration_sha256", "")).lower()
+        and getattr(certification, "independent_verification_status", None) == "PASS"
+        and getattr(certification, "certification_status", None) == "CERTIFIED"
     )
+    if not bounds_approved:
+        return _hold(
+            "MODEL_INPUTS_INSUFFICIENT",
+            "NBA_DYNAMIC_BOUNDS_POLICY_NOT_APPROVED",
+            identity=identity,
+            feature_package=current_feature_package,
+            source_snapshot_id=source_snapshot_id,
+            typed_failure="MODEL_INPUTS_INSUFFICIENT",
+            certification=certification,
+            champion_artifact=champion_artifact,
+            calibration_artifact=calibration_artifact,
+            research_receipt=research_receipt,
+        )
+
+    try:
+        calibrated = apply_binary_artifact(
+            float(research_receipt["raw_probability"]),
+            calibration_artifact,
+            "NBA",
+        )
+        point = float(calibrated["calibrated_probability"])
+        residual = float(calibrated["historical_residual_quantile_90"])
+        lower_bound = max(0.001, round(point - residual, 6))
+        upper_bound = min(0.999, round(point + residual, 6))
+    except CalibrationArtifactInvalid as exc:
+        return _hold(
+            "MODEL_INPUTS_INSUFFICIENT",
+            exc.blockers,
+            identity=identity,
+            feature_package=current_feature_package,
+            source_snapshot_id=source_snapshot_id,
+            typed_failure="MODEL_INPUTS_INSUFFICIENT",
+            certification=certification,
+            champion_artifact=champion_artifact,
+            calibration_artifact=calibration_artifact,
+            research_receipt=research_receipt,
+        )
+    except Exception:
+        return _hold(
+            "MODEL_OUTPUT_INVALID",
+            "NBA_DYNAMIC_BOUNDS_CALCULATION_FAILED",
+            identity=identity,
+            feature_package=current_feature_package,
+            source_snapshot_id=source_snapshot_id,
+            typed_failure="MODEL_OUTPUT_INVALID",
+            certification=certification,
+            champion_artifact=champion_artifact,
+            calibration_artifact=calibration_artifact,
+            research_receipt=research_receipt,
+        )
+
+    return {
+        "status": "SCORED",
+        "code": "NBA_PREGAME_SCORED",
+        "sport": "NBA",
+        "official_event_id": identity.get("event_id") or current_feature_package.get("official_event_id"),
+        "home_team_id": identity.get("home_team_id") or current_feature_package.get("home_team_id"),
+        "away_team_id": identity.get("away_team_id") or current_feature_package.get("away_team_id"),
+        "identity_provider": identity.get("identity_provider"),
+        "identity_resolution": identity.get("identity_resolution"),
+        "source_snapshot_id": source_snapshot_id,
+        "source_snapshot_timestamp": current_feature_package.get("source_snapshot_timestamp"),
+        "feature_timestamp": (
+            current_feature_package.get("feature_audit", {}).get("feature_timestamp")
+            if isinstance(current_feature_package.get("feature_audit"), Mapping)
+            else None
+        ),
+        "feature_as_of": (
+            current_feature_package.get("feature_audit", {}).get("feature_as_of")
+            if isinstance(current_feature_package.get("feature_audit"), Mapping)
+            else None
+        ),
+        "dataset_id": (
+            current_feature_package.get("feature_audit", {}).get("dataset_id")
+            if isinstance(current_feature_package.get("feature_audit"), Mapping)
+            else None
+        ),
+        "certification_id": getattr(certification, "certification_id", None),
+        "model_artifact_id": getattr(certification, "artifact_id", None),
+        "model_artifact_version": champion_artifact.get("model_artifact_version")
+        or getattr(certification, "model_version", None),
+        "model_artifact_sha256": getattr(certification, "artifact_sha256", None),
+        "calibration_artifact_id": getattr(certification, "calibration_artifact_id", None),
+        "calibration_version": calibrated["calibration_version"],
+        "calibration_method": calibrated["calibration_method"],
+        "calibration_training_n": calibrated["calibration_training_n"],
+        "calibration_source_data_hash": calibrated["calibration_source_data_hash"],
+        "calibration_split_hash": calibrated["calibration_split_hash"],
+        "calibration_artifact_sha256": getattr(certification, "calibration_sha256", None),
+        "raw_probability": round(float(research_receipt["raw_probability"]), 6),
+        "calibrated_probability": round(point, 6),
+        "calibrated_lower_bound": lower_bound,
+        "calibrated_upper_bound": upper_bound,
+        "dynamic_uncertainty": round(residual, 6),
+        "research_receipt": dict(research_receipt) if isinstance(research_receipt, Mapping) else None,
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "can_execute": False,
+    }
+
+
+def score_nba_team_event_request(
+    req: Any,
+    *,
+    event_api: Any = None,
+    canonical_hydration_required: bool = False,
+) -> dict[str, Any]:
+    """Score one NBA team/event request through the registered V17 bridge."""
+    import v17.team_event_bridge_runtime as bridges
+    import v17.team_event_request_runtime as base_runtime
+    from fastapi import HTTPException
+
+    try:
+        route = base_runtime.resolve_host_route(
+            req.requester_host_identity,
+            req.candidate_family,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": str(exc),
+                "probability_publishable": False,
+                "rank_eligible": False,
+                "can_execute": False,
+            },
+        ) from exc
+    if route.controlling_engine_identity != base_runtime.LLP_TEAM_BETTING_ENGINE:
+        raise HTTPException(
+            status_code=422,
+            detail=base_runtime._augment_detail(
+                {
+                    "code": "TEAM_EVENT_CONTROLLING_ENGINE_MISMATCH",
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                },
+                req,
+            ),
+        )
+    errors = base_runtime._base_errors(req)
+    if errors:
+        raise HTTPException(
+            status_code=422,
+            detail=base_runtime._augment_detail(
+                {
+                    "code": "TEAM_EVENT_CONTRACT_INVALID",
+                    "errors": errors,
+                    "probability_publishable": False,
+                    "rank_eligible": False,
+                },
+                req,
+            ),
+        )
+
+    scout_research_barrier = base_runtime._run_mandatory_scout_research(req)
+    evidence = getattr(req, "sport_specific_evidence", None)
+    evidence_map = dict(evidence) if isinstance(evidence, Mapping) else {}
+
+    feature_package = evidence_map.get("feature_package") or evidence_map.get("current_feature_package")
+    lineup_evidence = evidence_map.get("lineup_evidence")
+    if not isinstance(feature_package, Mapping) and all(
+        k in evidence_map for k in ("features", "feature_audit")
+    ):
+        feature_package = evidence_map
+
+    get_client = getattr(event_api, "get_client", None)
+    client = get_client() if callable(get_client) else event_api
+
+    receipt = prepare_nba_current_pregame_scorer_receipt(
+        event_start_time=str(
+            getattr(req, "event_start_time_utc", "")
+            or getattr(req, "event_start_time", "")
+            or evidence_map.get("event_start_time_utc", "")
+        ),
+        home_team_alias=str(getattr(req, "home_team", "") or evidence_map.get("home_team_alias", "")),
+        away_team_alias=str(getattr(req, "away_team", "") or evidence_map.get("away_team_alias", "")),
+        current_feature_package=feature_package,
+        lineup_evidence=lineup_evidence,
+        source_snapshot_id=getattr(req, "source_snapshot_id", None) or evidence_map.get("source_snapshot_id"),
+        client=client,
+        identity_resolver=resolve_nba_current_event_identity,
+        calibration_artifact_resolver=resolve_nba_calibrator_artifact,
+    )
+
+    if receipt.get("status") == "HOLD" or receipt.get("typed_failure"):
+        code = receipt.get("typed_failure") or receipt.get("code") or "MODEL_INPUTS_INSUFFICIENT"
+        blocker = receipt["blockers"][0] if receipt.get("blockers") else "NBA_PREGAME_HOLD"
+        status_code = 422 if code == "MODEL_INPUTS_INSUFFICIENT" else 409 if code == "MODEL_UNAVAILABLE" else 500
+        raise bridges._model_failure_detail(
+            req,
+            code=code,
+            blocker=blocker,
+            status_code=status_code,
+            extra={
+                "blockers": receipt.get("blockers"),
+                "model_invoked": bool(
+                    isinstance(receipt.get("research_receipt"), Mapping)
+                    and receipt["research_receipt"].get("raw_probability") is not None
+                ),
+                "nba_receipt": receipt,
+            },
+        )
+
+    point = float(receipt["calibrated_probability"])
+    lower = float(receipt["calibrated_lower_bound"])
+    upper = float(receipt["calibrated_upper_bound"])
+    away_prob = round(1.0 - point, 6)
+    away_lower = round(max(0.001, away_prob - float(receipt["dynamic_uncertainty"])), 6)
+    away_upper = round(min(0.999, away_prob + float(receipt["dynamic_uncertainty"])), 6)
+
+    # Model research may be computed, but no authenticated immutable prediction
+    # has been persisted and the global reducer has not approved publication.
+    result = {
+        "candidate_id": str(getattr(req, "event_key", "") or getattr(req, "official_event_id", "") or ""),
+        "sport": "NBA",
+        "league": getattr(req, "league", "NBA"),
+        "official_event_id": str(receipt.get("official_event_id") or getattr(req, "official_event_id", "")),
+        "event_key": str(getattr(req, "event_key", "") or getattr(req, "official_event_id", "") or ""),
+        "event_start_time_utc": str(getattr(req, "event_start_time_utc", "")),
+        "home_team": str(getattr(req, "home_team", "")),
+        "away_team": str(getattr(req, "away_team", "")),
+        "controlling_specialist": "NBA_GAME_WIN_PROBABILITY_EXPERT_V1",
+        "model_family": MODEL_FAMILY,
+        "model_version": receipt.get("model_artifact_version"),
+        "outcome_space": "HOME_AWAY_WINNER",
+        "raw_model_probability": receipt.get("raw_probability"),
+        "calibrated_probability": point,
+        "calibrated_lower_bound": lower,
+        "calibrated_upper_bound": upper,
+        "calibrated_home_probability": point,
+        "calibrated_home_lower_bound": lower,
+        "calibrated_home_upper_bound": upper,
+        "calibrated_away_probability": away_prob,
+        "calibrated_away_lower_bound": away_lower,
+        "calibrated_away_upper_bound": away_upper,
+        "dynamic_uncertainty": receipt.get("dynamic_uncertainty"),
+        "source_snapshot_id": receipt.get("source_snapshot_id"),
+        "source_snapshot_timestamp": receipt.get("source_snapshot_timestamp"),
+        "calibration_method": receipt.get("calibration_method"),
+        "calibration_version": receipt.get("calibration_version"),
+        "calibration_training_n": receipt.get("calibration_training_n"),
+        "calibration_source_data_hash": receipt.get("calibration_source_data_hash"),
+        "calibration_split_hash": receipt.get("calibration_split_hash"),
+        "calibration_artifact_fingerprint": receipt.get("calibration_artifact_sha256"),
+        "model_status": "RESEARCH_ONLY_NOT_FOR_PUBLICATION",
+        "model_invoked": True,
+        "requester_host_identity": route.requester_host_identity,
+        "controlling_engine_identity": base_runtime.LLP_TEAM_BETTING_ENGINE,
+        "candidate_family": route.candidate_family,
+        "scout_research_barrier": scout_research_barrier,
+        "global_terminal_authority": "V17_TERMINAL_REDUCER",
+        "terminal_label": "MODEL_RESEARCH_ONLY_HOLD",
+        "terminal_ceiling": "MODEL_RESEARCH_ONLY_HOLD",
+        "probability_publishable": False,
+        "rank_eligible": False,
+        "code": "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+        "blockers": [
+            "LLP_EVENT_GOVERNANCE_NOT_PROVEN",
+            "NBA_IMMUTABLE_PREDICTION_RECEIPT_UNAVAILABLE",
+        ],
+        "blend_publishable": False,
+        "host_terminal_authority": False,
+        "can_execute": False,
+        "nba_receipt": receipt,
+    }
+    return result
 
 
 __all__ = [
     "CAN_EXECUTE",
     "prepare_nba_current_pregame_scorer_receipt",
     "resolve_nba_champion_artifact",
+    "resolve_nba_calibrator_artifact",
+    "score_nba_team_event_request",
 ]
