@@ -10,20 +10,29 @@ const SANDBOX_ROOT = "/tmp/wow-testdriver-e2e";
 const START_URL = "http://127.0.0.1:4173/final-lock/";
 
 async function launchIsolatedUi(testdriver) {
+  // Require an explicit, immutable GitHub commit SHA so recordings and results
+  // cannot accidentally validate main when the workflow was run on another ref.
+  const sourceSha = process.env.WOW_TESTDRIVER_SOURCE_SHA;
+  if (!sourceSha || !/^[a-f0-9]{40}$/i.test(sourceSha)) {
+    throw new Error("WOW_TESTDRIVER_SOURCE_SHA must be the exact 40-character dispatched commit SHA");
+  }
   await testdriver.ready();
 
-  // The upstream app is public. Pin to main to test the actual frontend;
-  // do not clone private repos, install secrets, or contact production APIs.
+  // This clones only the public repository into a disposable sandbox.
+  // It does not provide production credentials or contact production APIs.
   await testdriver.exec(
     "sh",
     [
       "set -eu",
-      `git clone --depth 1 --branch main https://github.com/gregoryharper84-ship-it/WOW-Dashboard.git ${SANDBOX_ROOT}`,
+      `git clone --depth 1 --no-checkout https://github.com/gregoryharper84-ship-it/WOW-Dashboard.git ${SANDBOX_ROOT}`,
       `cd ${SANDBOX_ROOT}`,
+      `git fetch --depth 1 origin ${sourceSha}`,
+      `git checkout --detach ${sourceSha}`,
+      `test "$(git rev-parse HEAD)" = "${sourceSha}"`,
       "corepack enable",
       "corepack prepare pnpm@10.17.1 --activate",
       "pnpm install --filter @workspace/final-lock... --frozen-lockfile",
-      "git rev-parse --short HEAD",
+      "git rev-parse HEAD",
     ].join("\n"),
     240000,
     true,
