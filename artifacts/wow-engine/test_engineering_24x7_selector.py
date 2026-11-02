@@ -136,10 +136,46 @@ class Test24x7(unittest.TestCase):
 
     def test_evidence_updated_after_attempt_allows_one_new_dispatch(self):
         runs = [{"displayTitle": "wow-v17-claude-engineering-worker lease=GLOBAL incident=9",
-                 "createdAt": "2026-11-02T01:11:00Z", "status": "completed"}]
+                 "createdAt": "2026-11-02T01:11:00Z",
+                 "updatedAt": "2026-11-02T01:12:00Z", "status": "completed"}]
         result = mod.plan([issue(9, "P0", updated_at="2026-11-02T01:20:00Z")],
                           [], runs=runs)
         self.assertEqual((result["action"], result["incident"]), ("BUILD", 9))
+
+    def test_worker_receipt_issue_update_before_completion_cannot_retry(self):
+        run = {"displayTitle": "worker incident=9", "status": "completed",
+               "createdAt": "2026-11-02T01:11:00Z",
+               "updatedAt": "2026-11-02T01:22:00Z"}
+        self.assertEqual(mod.plan(
+            [issue(9, "P0", updated_at="2026-11-02T01:20:00Z")], [],
+            runs=[run])["action"], "IDLE")
+        self.assertEqual(mod.plan(
+            [issue(9, "P0", updated_at="2026-11-02T01:23:00Z")], [],
+            runs=[run])["action"], "BUILD")
+
+    def test_missing_worker_completion_boundary_fails_closed(self):
+        run = {"displayTitle": "worker incident=9", "status": "completed",
+               "createdAt": "2026-11-02T01:11:00Z"}
+        self.assertEqual(mod.plan(
+            [issue(9, "P0", updated_at="2026-11-02T01:40:00Z")], [],
+            runs=[run])["action"], "IDLE")
+
+    def test_active_worker_is_not_retried_after_issue_update(self):
+        run = {"displayTitle": "worker incident=9", "status": "requested",
+               "createdAt": "2026-11-02T01:11:00Z",
+               "updatedAt": "2026-11-02T01:12:00Z"}
+        self.assertEqual(mod.plan(
+            [issue(9, "P0", updated_at="2026-11-02T01:20:00Z")], [],
+            runs=[run])["action"], "IDLE")
+
+    def test_workflow_history_caps_and_dispatch_observation_are_fail_closed(self):
+        wf = (Path(__file__).resolve().parents[2] / ".github" / "workflows" /
+              "wow-engineering-24x7.yml").read_text(encoding="utf-8")
+        self.assertEqual(wf.count("WORKER_RUN_HISTORY_TRUNCATED"), 5)
+        self.assertGreaterEqual(wf.count("updatedAt,status,conclusion,databaseId"), 3)
+        self.assertIn('"pending" or .status == "requested"', wf)
+        self.assertIn("DISPATCH_NOT_OBSERVED", wf)
+        self.assertIn("DUPLICATE_DISPATCH_OBSERVED", wf)
 
     def test_run_for_different_issue_does_not_block(self):
         runs = [{"displayTitle": "wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=10",

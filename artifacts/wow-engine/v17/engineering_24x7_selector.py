@@ -131,8 +131,18 @@ def prior_attempt_since_issue_update(issue: dict, runs: list) -> bool:
         match = ATTEMPT_INCIDENT.search(title) if isinstance(title, str) else None
         if match is None or int(match.group(1)) != number:
             continue
-        attempt = _updated_timestamp({"updated_at": run.get("createdAt")})
-        if issue_updated <= 0 or attempt <= 0 or attempt >= issue_updated:
+        created = _updated_timestamp({"updated_at": run.get("createdAt")})
+        status = run.get("status")
+        # A worker receipt can update the issue *after* run creation.
+        # Only a verified completed-run boundary can prove new issue evidence.
+        if status == "completed":
+            attempt = _updated_timestamp({"updated_at": run.get("updatedAt")})
+            if attempt <= 0 or created <= 0 or attempt < created:
+                return True
+        else:
+            # Unknown or active status cannot authorize a second writer.
+            return True
+        if issue_updated <= 0 or attempt >= issue_updated:
             return True
     return False
 

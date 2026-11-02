@@ -20,8 +20,11 @@ def pr(**overrides):
 
 
 def check(name, app, status="completed", conclusion="success"):
-    return {"name": name, "app": {"id": app},
-            "status": status, "conclusion": conclusion}
+    row = {"name": name, "app": {"id": app},
+           "status": status, "conclusion": conclusion}
+    if name == mod.QA_CHECK and conclusion == "success":
+        row["output"] = {"title": "PASS — independent semantic source review"}
+    return row
 
 
 class DeliveryTests(unittest.TestCase):
@@ -92,6 +95,46 @@ class DeliveryTests(unittest.TestCase):
     def test_bad_inventory_rejected(self):
         with self.assertRaises(ValueError):
             mod.reduce_pr(pr(), [{}] * 1001, SHA)
+
+    def test_semantic_success_without_real_pass_title_fails_closed(self):
+        for output in (None, {}, {"title": None}, {"title": "HOLD"}, {"title": 123}):
+            with self.subTest(output=output):
+                row = check(mod.QA_CHECK, mod.QA_APP_ID)
+                if output is None:
+                    row.pop("output", None)
+                else:
+                    row["output"] = output
+                decision = mod.reduce_pr(pr(), [row], SHA)
+                self.assertEqual(decision["decision"], "INDEPENDENT_QA_NOT_ACCEPTED")
+                self.assertFalse(decision["merge_authorized"])
+
+    def test_malformed_check_inventory_raises_before_filtering(self):
+        for data in ([None], ["invalid"], [{"name": "x", "app": []}],
+                     [{"name": "x", "output": "bad"}], [{"app": {"id": 5}}]):
+            with self.subTest(data=data):
+                with self.assertRaisesRegex(ValueError, "CHECK_INVENTORY_INVALID"):
+                    mod.reduce_pr(pr(), data, SHA)
+
+    def test_cli_invalid_evidence_writes_typed_no_authority_decision(self):
+        import json
+        import sys
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "pr.json").write_text(json.dumps(pr()))
+            (root / "checks.json").write_text('[null]')
+            output = root / "decision.json"
+            with patch.object(sys, "argv", ["engineering_delivery_pipeline.py",
+                                           "--pr", str(root / "pr.json"),
+                                           "--checks", str(root / "checks.json"),
+                                           "--head-sha", SHA,
+                                           "--output", str(output)]):
+                mod.main()
+            result = json.loads(output.read_text())
+            self.assertEqual(result["decision"], "REVIEW_EVIDENCE_INVALID")
+            self.assertFalse(result["merge_authorized"])
+            self.assertFalse(result["can_execute"])
 
     def test_conflicting_security_checks_rejected(self):
         x = mod.reduce_pr(pr(), [check(mod.QA_CHECK, mod.QA_APP_ID),

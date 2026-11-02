@@ -110,6 +110,13 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
     """Classify a pre-merge PR without turning a classification into authority."""
     if not isinstance(pr, dict) or not isinstance(checks, list) or len(checks) > 1000:
         raise ValueError("REVIEW_EVIDENCE_INVALID")
+    # Validate before .get/filter/_latest; malformed evidence yields a typed
+    # fail-closed decision rather than crashing without an output receipt.
+    for row in checks:
+        if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
+                or (row.get("app") is not None and not isinstance(row["app"], dict))
+                or (row.get("output") is not None and not isinstance(row["output"], dict))):
+            raise ValueError("CHECK_INVENTORY_INVALID")
     number = pr.get("number") if type(pr.get("number")) is int else None
     if not _valid_pr(pr, expected_sha):
         return _result("SOURCE_HEAD_UNSTABLE", "RECHECK_EXACT_HEAD", "PR_HEAD_CHANGED",
@@ -139,8 +146,7 @@ def reduce_pr(pr: dict, checks: list, expected_sha: str) -> dict:
     # The QA App must actually publish a PASS, not merely a success conclusion
     # paired with an incompatible HOLD/REJECT title.
     qa_title = (qa.get("output") or {}).get("title")
-    if qa_title is not None and (not isinstance(qa_title, str)
-                                 or not qa_title.startswith("PASS")):
+    if not isinstance(qa_title, str) or not qa_title.startswith("PASS"):
         return _result("INDEPENDENT_QA_NOT_ACCEPTED", "DIAGNOSE_SIGNED_REVIEW_RECEIPT",
                        "NEW_VALID_QA_APP_EVIDENCE", pr=number, sha=expected_sha)
 
@@ -189,8 +195,12 @@ def main() -> None:
     parser.add_argument("--head-sha", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    decision = reduce_pr(json.loads(args.pr.read_text()),
-                         json.loads(args.checks.read_text()), args.head_sha)
+    try:
+        decision = reduce_pr(json.loads(args.pr.read_text()),
+                             json.loads(args.checks.read_text()), args.head_sha)
+    except (ValueError, TypeError):
+        decision = _result("REVIEW_EVIDENCE_INVALID",
+                           "RECHECK_REVIEW_EVIDENCE", "VALID_REVIEW_EVIDENCE")
     args.output.write_text(json.dumps(decision, sort_keys=True) + "\n")
     print(json.dumps(decision, sort_keys=True))
 
