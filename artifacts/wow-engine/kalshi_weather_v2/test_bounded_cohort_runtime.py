@@ -517,7 +517,7 @@ def test_persisted_prediction_late_market_snapshot_failure_is_partial_and_dedupe
     calls = []
     def fail_after_prediction(**kwargs):
         calls.append(kwargs["ticker"])
-        raise runtime.KalshiWeatherPartialCaptureError(
+        raise bounded.KalshiWeatherPartialCaptureError(
             prediction_id="immutable-prediction-id",
             rule_snapshot_id="rule-id",
         )
