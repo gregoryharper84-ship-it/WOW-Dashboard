@@ -834,6 +834,90 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self.assertIn('receipt["decision"] = "HOLD"', source)
 
 
+
+    def _pref_env(self, **changes):
+        base = {"GITHUB_REPOSITORY": m.REPO, "GITHUB_REF": "refs/heads/main",
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_ACTOR": m.OWNER_LOGIN,
+                "WOW_QA_REVIEW_GEMINI_API_KEY": "secret-do-not-log",
+                "WOW_QA_GEMINI_MODEL": "gemini-3.8-flash"}
+        base.update(changes)
+        return base
+
+    def test_preflight_get_is_credential_safe_and_no_inference(self):
+        info = {"name": "models/gemini-3.8-flash",
+                "supportedGenerationMethods": ["generateContent", "countTokens"]}
+        with patch.dict(m.os.environ, self._pref_env(), clear=True), \
+             patch.object(m, "request_json", return_value=info) as request, \
+             patch.object(m, "publish_check") as publish, \
+             patch("builtins.print") as print_output:
+            m.reviewer_preflight()
+        request.assert_called_once_with(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash",
+            headers={"x-goog-api-key": "secret-do-not-log"})
+        publish.assert_not_called()
+        self.assertEqual(print_output.call_args.args,
+                         ("REVIEWER_PREFLIGHT_COMPATIBLE:gemini-3.8-flash:generateContent:READ_ONLY",))
+        self.assertNotIn("secret-do-not-log", str(print_output.call_args))
+
+    def test_preflight_rejects_any_non_owner_or_unprotected_context(self):
+        for changes in ({"GITHUB_ACTOR": "foreign-bot"},
+                        {"GITHUB_REF": "refs/heads/test"},
+                        {"GITHUB_REPOSITORY": "attacker/fork"},
+                        {"GITHUB_EVENT_NAME": "pull_request_target"}):
+            with self.subTest(changes=changes), \
+                 patch.dict(m.os.environ, self._pref_env(**changes), clear=True), \
+                 patch.object(m, "request_json") as request:
+                with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED"):
+                    m.reviewer_preflight()
+                request.assert_not_called()
+
+    def test_preflight_rejects_old_or_unallowlisted_model_without_http(self):
+        for model in ("gemini-2.5-flash", "gemini-4-argon", " 3.8", "other"):
+            with self.subTest(model=model), \
+                 patch.dict(m.os.environ, self._pref_env(WOW_QA_GEMINI_MODEL=model), clear=True), \
+                 patch.object(m, "request_json") as request:
+                with self.assertRaisesRegex(m.Hold, "GEMINI_MODEL_INVALID"):
+                    m.reviewer_preflight()
+                request.assert_not_called()
+
+    def test_preflight_missing_credential_fails_closed(self):
+        with patch.dict(m.os.environ, self._pref_env(WOW_QA_REVIEW_GEMINI_API_KEY=""), clear=True), \
+             patch.object(m, "request_json") as request:
+            with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_CREDENTIAL_MISSING"):
+                m.reviewer_preflight()
+            request.assert_not_called()
+
+    def test_preflight_model_metadata_requires_exact_generation_method(self):
+        cases = (None, [], {}, {"name": "models/gemini-3.8-flash"},
+                 {"name": "models/another-model", "supportedGenerationMethods": ["generateContent"]},
+                 {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["embedContent"]},
+                 {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": "generateContent"})
+        for info in cases:
+            with self.subTest(info=info), \
+                 patch.dict(m.os.environ, self._pref_env(), clear=True), \
+                 patch.object(m, "request_json", return_value=info):
+                with self.assertRaisesRegex(m.Hold, "REVIEWER_PREFLIGHT_MODEL_CAPABILITY_UNVERIFIED"):
+                    m.reviewer_preflight()
+
+    def test_preflight_http_404_is_not_security_pass_or_fallback(self):
+        with patch.dict(m.os.environ, self._pref_env(), clear=True), \
+             patch.object(m, "request_json", side_effect=m.Hold("HTTP_404")), \
+             patch.object(m, "publish_check") as publish:
+            with self.assertRaisesRegex(m.Hold, "HTTP_404"):
+                m.reviewer_preflight()
+            publish.assert_not_called()
+
+    def test_workflow_preflight_never_mints_qa_token_or_reviews_diff(self):
+        workflow = (PATH.parents[2] / "workflows" / "wow-v17-simple-security-review.yml").read_text()
+        self.assertIn("preflight_only:", workflow)
+        self.assertIn("run: python .github/scripts/wow_simple_security_review.py --preflight", workflow)
+        self.assertIn("if: inputs.preflight_only == true", workflow)
+        self.assertIn("if: inputs.preflight_only != true", workflow)
+        self.assertIn("environment: wow-qa", workflow)
+        self.assertIn("ref: main", workflow)
+
+
 def load_tests(loader, tests, pattern):
     """Include HTTP-attribution regressions in the existing trusted test entry point.
 
