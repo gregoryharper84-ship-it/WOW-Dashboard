@@ -18,6 +18,7 @@ on:
       - wow-v17-release-production-verification-agent
       - wow-v17-chatgpt-engineering-worker
       - wow-v17-claude-engineering-worker
+      - wow-v17-simple-security-review
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -101,7 +102,10 @@ jobs:
             [[ "$shadow_sha" =~ ^[a-f0-9]{40}$ ]] || exit 2
             gh api "/repos/$GITHUB_REPOSITORY/pulls/$shadow_pr" > "$RUNNER_TEMP/shadow-pr.json"
             gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$shadow_sha/check-runs?per_page=100&filter=latest" \
-              --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/shadow-checks.json"
+              --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/shadow-latest.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$shadow_sha/check-runs?per_page=100&filter=all&check_name=WOW%20Independent%20Security%20Review" \
+              --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/shadow-qa-history.json"
+            jq -s '.[0] + .[1]' "$RUNNER_TEMP/shadow-latest.json" "$RUNNER_TEMP/shadow-qa-history.json" > "$RUNNER_TEMP/shadow-checks.json"
             python artifacts/wow-engine/v17/engineering_delivery_pipeline.py \
               --pr "$RUNNER_TEMP/shadow-pr.json" \
               --checks "$RUNNER_TEMP/shadow-checks.json" \
@@ -243,7 +247,12 @@ jobs:
             exit 0
           }
           gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/check-runs?per_page=100&filter=latest" \
-            --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/checks.json"
+            --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/latest-checks.json"
+          # Read the full same-SHA QA history: GitHub filter=latest can hide
+          # an older binding signed REJECT. Never re-review a rejected SHA.
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/commits/$TARGET_SHA/check-runs?per_page=100&filter=all&check_name=WOW%20Independent%20Security%20Review" \
+            --jq '.check_runs[]' | jq -s '.' > "$RUNNER_TEMP/qa-history.json"
+          jq -s '.[0] + .[1]' "$RUNNER_TEMP/latest-checks.json" "$RUNNER_TEMP/qa-history.json" > "$RUNNER_TEMP/checks.json"
           python artifacts/wow-engine/v17/engineering_delivery_pipeline.py \
             --pr "$RUNNER_TEMP/pr.json" --checks "$RUNNER_TEMP/checks.json" \
             --head-sha "$TARGET_SHA" --output "$RUNNER_TEMP/delivery-decision.json"
@@ -259,6 +268,15 @@ jobs:
             echo "- Re-entry trigger: $trigger"
             echo "- Independent security, release, CODEOWNER and merge rules unchanged."
             echo "- No reviewer invocation, second writer, protected merge, deploy or wager."
+            if [ "$decision" = "EVIDENCE_PENDING" ]; then
+              echo "- Exact owner re-entry (one authorized dispatch only if no active review):"
+              echo '~~~sh'
+              printf 'gh workflow run wow-v17-simple-security-review.yml -R %s --ref main -f pr_number=%s -f head_sha=%s\n' "$GITHUB_REPOSITORY" "$TARGET_PR" "$TARGET_SHA"
+              echo '~~~'
+            fi
+            if [ "$decision" = "SEMANTIC_REJECT_SAME_SHA" ]; then
+              echo "- Binding signed REJECT: repair the source on a NEW SHA; no review retry."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
   dispatch:
