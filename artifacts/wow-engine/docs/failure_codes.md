@@ -531,3 +531,32 @@ Recover only through authenticated protected-main workflow execution.
 A structured model failure may allow the existing reviewer fallback mechanism,
 but only a genuine independent semantic PASS on the exact source SHA qualifies as
 security evidence. A prior signed REJECT remains binding at that SHA.
+
+
+## Reviewer model discovery — bounded credential-scoped candidates
+
+No new QA App check, merge gate, approval, spending limit, or probability output
+is created by model discovery. The credential-scoped GET lists provider models;
+only stable, exact, approved family IDs are eligible. The model-ID allowlist is
+anchored (including end of string), and the reviewer logs selected/unavailable
+model IDs only, never prompts, API keys, raw response data, or URLs. At most
+three approved candidates are attempted, only after typed
+`PROVIDER_MODEL_UNAVAILABLE`; a substantive REJECT/malformed answer is terminal.
+
+| Typed code | Owner / stage | Recovery class | Bounded safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `REVIEW_MODEL_CATALOG_INVALID` | QA provider selection / GET models | FAIL_CLOSED | Provider label and invalid shape only | Repair provider response contract; do not guess from static models |
+| `REVIEW_MODEL_CATALOG_PAGINATION_REQUIRED` | QA provider selection / GET models | FAIL_CLOSED | Provider label and nonempty next-page boolean only | Add governed bounded pagination before using incomplete catalog |
+| `REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL` | QA owner-only preflight | PROVIDER_CONFIGURATION | Provider/model readiness labels only | Verify existing credential entitlement or approved model availability |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider model availability | PROVIDER_CONFIGURATION | Reviewed exact model ID only | Try next approved credential-listed model within same provider; after bounded exhaustion retain existing authenticated owner fallback |
+| `GEMINI_MODEL_INVALID` / `CLAUDE_MODEL_UNAPPROVED` | QA reviewer / configured model | FAIL_CLOSED | Sanitized model pattern failure only | Correct explicitly unapproved variable via governed trust-root change |
+
+The optional `WOW_QA_GEMINI_MODEL`/`WOW_QA_CLAUDE_MODEL` preference
+is honored only when listed under the credential and approved family.
+A failed transient model catalog GET may use a short *static approved*
+candidate list for normal review; owner preflight has `strict=True` and
+may report `PROVIDER_READY` only with real live catalog proof.
+A valid empty catalog, malformed listing, authentication failure, or
+partial paginated listing cannot be treated as approved availability.
+Changing source invalidates prior owner review; no code may forge the
+current-head approval or a signed independent semantic PASS.
