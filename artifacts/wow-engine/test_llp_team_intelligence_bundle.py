@@ -89,3 +89,18 @@ def test_negative_total_is_held():
     out=build_llp_team_intelligence_bundle(event=EVENT,receipts=[row])["markets"][0]
     assert out["status"] == "HELD_EVIDENCE_ONLY"
     assert "TOTAL_EXACT_LINE_OR_SETTLEMENT_MISSING" in out["reason_codes"]
+
+
+def test_upset_alert_requires_exact_governed_winner_receipt():
+    alert=dict(source_receipt_id="test-frozen-id",sport="NHL",official_event_id="nhl-123",
+               status="UPSET_ALERT_MODEL_FLIP",alert=True,can_execute=False)
+    out=build_llp_team_intelligence_bundle(event=EVENT,receipts=[receipt()],upset_alert=alert)
+    assert out["upset_intelligence"]["source_upset_status"] == "UPSET_ALERT_MODEL_FLIP"
+    raw=receipt()
+    raw["model_class"]="RESEARCH_ONLY"
+    blocked=build_llp_team_intelligence_bundle(event=EVENT,receipts=[raw],upset_alert=alert)
+    assert blocked["upset_intelligence"]["status"] == "HELD_EVIDENCE_ONLY"
+    assert "source_alert" not in blocked["upset_intelligence"]
+    alert["source_receipt_id"]="another"
+    wrong=build_llp_team_intelligence_bundle(event=EVENT,receipts=[receipt()],upset_alert=alert)
+    assert "UPSET_ALERT_WINNER_RECEIPT_MISMATCH" in wrong["upset_intelligence"]["reason_codes"]
