@@ -184,3 +184,54 @@ def test_provider_outage_stays_distinct_from_successful_empty_slate():
         canonical_manifest=[],
     )
     assert empty["zero_new_candidates_reason"] == "NO_CANDIDATES_DISCOVERED"
+
+
+
+def test_mlb_scheduled_rotation_reaches_later_pitcher_stat_rows(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from v17 import daily_prop_acquisition as mlb
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    players = [
+        {"event_id": "MLB:1", "event_start_time": future, "player": "First", "opponent": "B"},
+        {"event_id": "MLB:1", "event_start_time": future, "player": "Second", "opponent": "A"},
+    ]
+    monkeypatch.setattr(mlb, "_request_schedule", lambda *_a, **_kw: {})
+    monkeypatch.setattr(mlb, "_schedule_pitchers", lambda *_a, **_kw: players)
+
+    def held(**_kwargs):
+        raise mlb.PropAutoHydrationError("PROP_PLAYER_IDENTITY_UNRESOLVED", "test hold")
+    monkeypatch.setattr(mlb, "auto_hydrate_prop_evidence", held)
+    def run(slot):
+        return mlb.acquire_daily_prop_snapshots(
+            db=object(), requested_date="2026-11-05",
+            requested_timezone="America/Chicago", max_candidates=2,
+            rotating_window_slot=slot,
+        )
+    first = run(0)
+    second = run(1)
+    third = run(2)
+    assert first["attempted"] == second["attempted"] == third["attempted"] == 2
+    assert [r["stat_type"] for r in first["receipts"]] == list(mlb.STAT_TYPES[:2])
+    assert [r["stat_type"] for r in second["receipts"]] == list(mlb.STAT_TYPES[2:])
+    assert {r["player"] for r in third["receipts"]} == {"Second"}
+    assert all(r["can_execute"] is False for r in third["receipts"])
+
+
+def test_dispatcher_passes_same_rotation_slot_to_both_producers(monkeypatch):
+    observed = []
+    def nfl(**kwargs):
+        observed.append(("NFL", kwargs.get("rotating_window_slot")))
+        return _outcome("NFL", 1)
+    def mlb(**kwargs):
+        observed.append(("MLB", kwargs.get("rotating_window_slot")))
+        return _outcome("MLB", 1)
+    monkeypatch.setattr(dispatch, "acquire_nfl", nfl)
+    monkeypatch.setattr(dispatch, "acquire_mlb", mlb)
+    result = dispatch.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=2,
+        rotating_window_slot=7,
+    )
+    assert observed == [("NFL", 7), ("MLB", 7)]
+    assert result["attempted"] == 2
+    assert result["can_execute"] is False
