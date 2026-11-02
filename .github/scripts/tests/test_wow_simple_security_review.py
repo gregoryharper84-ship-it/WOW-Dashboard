@@ -1034,13 +1034,14 @@ class SimpleSecurityReviewTests(unittest.TestCase):
         self._models_patch.stop()
         catalog = {"data": [{"id": "claude-sonnet-4-6"},
                             {"id": "claude-sonnet-4-5"},
+                            {"id": "claude-sonnet-5"},
                             {"id": "claude-sonnet-5-2"},
                             {"id": "claude-opus-4-6"},
                             {"id": "claude-sonnet-5-3-preview"}], "has_more": False}
         with patch.dict(m.os.environ, {"WOW_QA_CLAUDE_MODEL": ""}), \
              patch.object(m, "request_json", return_value=catalog):
             self.assertEqual(m.review_models("anthropic-claude-api", "key"),
-                             ["claude-sonnet-5-2", "claude-sonnet-4-6", "claude-sonnet-4-5"])
+                             ["claude-sonnet-5-2", "claude-sonnet-5", "claude-sonnet-4-6"])
 
     def test_workflow_preflight_never_mints_qa_token_or_reviews_diff(self):
         workflow = (PATH.parents[1] / "workflows" / "wow-v17-simple-security-review.yml").read_text()
