@@ -122,7 +122,9 @@ def _before_paid_call(
     if not isinstance(budget, source_policy.PaidCallBudget):
         budget = source_policy.PaidCallBudget.from_env()
         context["_paid_call_budget"] = budget
-    allowed, policy_blocker = budget.check(
+    # Atomic scan-level reservation prevents concurrent discovery calls from
+    # overspending the configured budget or consuming final-refresh credits.
+    allowed, policy_blocker = budget.try_consume(
         stage,
         model_preflight_passed=model_preflight_passed,
     )
@@ -135,7 +137,6 @@ def _before_paid_call(
             f"{str(provider).upper()}_SOURCE_POLICY_BLOCK:{policy_blocker}"
         )
 
-    budget.record_attempt(stage)
     context["paid_provider_calls_attempted"] += 1
     state["calls_attempted"] += 1
     return context, state, None
