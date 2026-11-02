@@ -342,3 +342,67 @@ class TestRundownFailoverStatuses:
 
     def test_not_called_not_in_set(self):
         assert "NOT_CALLED: ODDS_API_KEY not set" not in _RUNDOWN_FAILOVER_STATUSES
+
+
+# ---------------------------------------------------------------------------
+# P0: provider-native quota errors must reach the existing backup, while
+# unrelated 422 and burst 429 must not be misclassified as quota exhaustion.
+# ---------------------------------------------------------------------------
+
+class TestNativeQuotaFailover:
+    @staticmethod
+    def _response(status, code):
+        response = mock.Mock()
+        response.status_code = status
+        response.headers = {}
+        response.json.return_value = {"error_code": code}
+        return response
+
+    def test_documented_422_credit_exhaustion_enables_rundown(self):
+        with mock.patch.dict(os.environ, {"ODDS_API_FREE_KEY": "test-key"}, clear=True), \
+             mock.patch("gate_engine.pg_odds_quota.fetch_quota_snapshot", return_value={}), \
+             mock.patch.object(odds_api.requests, "get",
+                               return_value=self._response(422, "OUT_OF_USAGE_CREDITS")) as http, \
+             mock.patch("services.rundown.get_events_for_sport",
+                        return_value=([_rundown_event()], "AVAILABLE")):
+            events, status = odds_api.get_h2h_odds("basketball_wnba")
+        http.assert_called_once()
+        assert len(events) == 1
+        assert status.startswith("FALLBACK_RUNDOWN:AVAILABLE")
+
+    def test_all_keys_proactively_skipped_still_use_rundown(self):
+        with mock.patch.dict(os.environ, {"ODDS_API_FREE_KEY": "test-key"}, clear=True), \
+             mock.patch("gate_engine.pg_odds_quota.fetch_quota_snapshot",
+                        return_value={"free": {"requests_remaining": 0}}), \
+             mock.patch.object(odds_api.requests, "get") as http, \
+             mock.patch("services.rundown.get_events_for_sport",
+                        return_value=([_rundown_event()], "AVAILABLE")):
+            events, status = odds_api.get_h2h_odds("basketball_wnba")
+        http.assert_not_called()
+        assert len(events) == 1
+        assert status.startswith("FALLBACK_RUNDOWN:AVAILABLE")
+
+    def test_invalid_market_422_does_not_rotate_keys_or_request_backup(self):
+        with mock.patch.dict(os.environ, {
+            "ODDS_API_PAID_KEY": "test-paid", "ODDS_API_FREE_KEY": "test-free",
+        }, clear=True), \
+             mock.patch("gate_engine.pg_odds_quota.fetch_quota_snapshot", return_value={}), \
+             mock.patch.object(odds_api.requests, "get",
+                               return_value=self._response(422, "INVALID_MARKET")) as http, \
+             mock.patch("services.rundown.get_events_for_sport") as rundown:
+            events, status = odds_api.get_h2h_odds("basketball_wnba")
+        http.assert_called_once()
+        rundown.assert_not_called()
+        assert events == []
+        assert status == "FAILED: HTTP 422"
+
+    def test_burst_429_not_called_monthly_exhaustion(self):
+        with mock.patch.dict(os.environ, {"ODDS_API_FREE_KEY": "test-key"}, clear=True), \
+             mock.patch("gate_engine.pg_odds_quota.fetch_quota_snapshot", return_value={}), \
+             mock.patch.object(odds_api.requests, "get",
+                               return_value=self._response(429, "EXCEEDED_FREQ_LIMIT")), \
+             mock.patch("services.rundown.get_events_for_sport") as rundown:
+            events, status = odds_api.get_h2h_odds("basketball_wnba")
+        rundown.assert_not_called()
+        assert events == []
+        assert status == "FAILED: rate limited"
