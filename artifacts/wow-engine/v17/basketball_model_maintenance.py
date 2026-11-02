@@ -29,8 +29,19 @@ CAN_EXECUTE = False
 SUPPORTED_SPORTS = ("NBA", "WNBA")
 
 
-def default_seasons(now: datetime | None = None) -> tuple[int, ...]:
-    current = (now or datetime.now(timezone.utc)).year
+def default_seasons(
+    now: datetime | None = None, *, sport: str = "WNBA",
+) -> tuple[int, ...]:
+    clock = now or datetime.now(timezone.utc)
+    if not isinstance(clock, datetime) or clock.utcoffset() is None:
+        raise ValueError("BASKETBALL_SEASON_CLOCK_UNVERIFIED")
+    current = clock.year
+    # ESPN/NBA labels the 2026-27 season as 2027. The SportsDataverse
+    # open-licensed asset is nba_schedule_2027.csv, whereas WNBA 2026 is
+    # wnba_schedule_2026.csv. Previous maintenance omitted the current NBA
+    # year for the entire Oct-Dec opening ramp.
+    if sport.upper() == "NBA" and clock.month >= 10:
+        current += 1
     return tuple(range(current - 3, current + 1))
 
 
@@ -70,13 +81,48 @@ def _hydration_blocker(exc: Exception) -> dict[str, Any]:
     }
 
 
+def _fresh_acquisition_status(
+    hydration: dict[str, Any] | None,
+    hydration_blocker: dict[str, Any] | None,
+) -> str:
+    """Report actual new source evidence separately from successful shadow replay."""
+    if hydration_blocker is not None:
+        return "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS"
+    if not isinstance(hydration, dict):
+        return "FRESH_ACQUISITION_NOT_VERIFIED"
+    supplement = hydration.get("recent_supplement_status")
+    if isinstance(supplement, dict) and any(
+        str(code).startswith("SOURCE_BLOCKED:") for code in supplement.values()
+    ):
+        return "FRESH_ACQUISITION_PARTIAL_SOURCE_BLOCKED_USING_PERSISTED_CORPUS"
+    if (
+        isinstance(supplement, dict) and supplement
+        and all(code == "NO_NEW_SETTLEMENT" for code in supplement.values())
+    ):
+        return "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS"
+    # Historic tests/callers may not yet expose this count; use the
+    # established settled_rows field in that case, but never invent a count.
+    new_rows = hydration.get("fresh_acquisition_new_settled_games", hydration.get("settled_rows"))
+    if type(new_rows) is int and new_rows == 0:
+        return "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS"
+    if type(new_rows) is int and new_rows > 0:
+        return "FRESH_ACQUISITION_UPDATED"
+    return "FRESH_ACQUISITION_NOT_VERIFIED"
+
+
 def run_basketball_model_maintenance(
     db: Any,
     *,
     sports: Iterable[str] = SUPPORTED_SPORTS,
     seasons: Iterable[int] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    season_values = tuple(int(v) for v in (seasons or default_seasons()))
+    clock = now or datetime.now(timezone.utc)
+    if not isinstance(clock, datetime) or clock.utcoffset() is None:
+        raise ValueError("BASKETBALL_SEASON_CLOCK_UNVERIFIED")
+    explicit_seasons = tuple(int(v) for v in seasons) if seasons is not None else None
+    reported_base_seasons = explicit_seasons or default_seasons(now=clock)
+    seasons_by_sport: dict[str, list[int]] = {}
     results: list[dict[str, Any]] = []
 
     for raw_sport in sports:
@@ -85,6 +131,8 @@ def run_basketball_model_maintenance(
             results.append(_blocked(sport or "UNKNOWN", "BASKETBALL_SPORT_UNSUPPORTED"))
             continue
 
+        season_values = explicit_seasons if explicit_seasons is not None else default_seasons(now=clock, sport=sport)
+        seasons_by_sport[sport] = list(season_values)
         hydration: dict[str, Any] | None = None
         hydration_blocker: dict[str, Any] | None = None
         try:
@@ -105,11 +153,7 @@ def run_basketball_model_maintenance(
                 "sport": sport,
                 "status": "SHADOW_EVIDENCE_UPDATED",
                 "hydration": hydration,
-                "hydration_status": (
-                    "FRESH_ACQUISITION_UPDATED"
-                    if hydration_blocker is None
-                    else "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS"
-                ),
+                "hydration_status": _fresh_acquisition_status(hydration, hydration_blocker),
                 "hydration_blocker": hydration_blocker,
                 "training_replay": replay,
                 "model_development": lane.as_dict() if lane is not None else None,
@@ -139,17 +183,31 @@ def run_basketball_model_maintenance(
 
     updated = sum(row["status"] == "SHADOW_EVIDENCE_UPDATED" for row in results)
     degraded = sum(
-        row.get("hydration_status") == "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS"
+        row.get("hydration_status") in {
+            "FRESH_ACQUISITION_BLOCKED_USING_PERSISTED_CORPUS",
+            "FRESH_ACQUISITION_PARTIAL_SOURCE_BLOCKED_USING_PERSISTED_CORPUS",
+        }
+        for row in results
+    )
+    no_new = sum(
+        row.get("hydration_status") == "FRESH_ACQUISITION_NO_NEW_SETTLEMENTS_USING_PERSISTED_CORPUS"
+        for row in results
+    )
+    unverified = sum(
+        row.get("hydration_status") == "FRESH_ACQUISITION_NOT_VERIFIED"
         for row in results
     )
     return {
         "status": "COMPLETE" if updated == len(results) else ("PARTIAL" if updated else "BLOCKED"),
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "seasons": list(season_values),
+        "seasons": list(reported_base_seasons),
+        "seasons_by_sport": seasons_by_sport,
         "rows": results,
         "rows_updated": updated,
         "rows_blocked": len(results) - updated,
         "rows_fresh_acquisition_degraded": degraded,
+        "rows_no_new_settlements": no_new,
+        "rows_fresh_acquisition_unverified": unverified,
         "automatic_certification": False,
         "automatic_promotion": False,
         "probability_publishable": False,

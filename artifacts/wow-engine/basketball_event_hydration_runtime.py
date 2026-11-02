@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import hashlib
 import io
 import json
@@ -182,6 +183,77 @@ def fetch_espn_games(sport: str, season: int) -> list[dict[str, Any]]:
     return [event for event in events if isinstance(event, dict)]
 
 
+
+def fetch_recent_espn_settlements(
+    sport: str, *, now: datetime | None = None, lookback_days: int = 14,
+    session: Any = requests, timeout: int = 30,
+) -> list[dict[str, Any]]:
+    """Bounded supplemental settled-game query when a schedule CSV lags.
+
+    ESPN is existing authorized fallback research data, never model probability.
+    Query only completed calendar days; source rows must still survive
+    normalize_espn_game and the monotonic persisted-game date fence.
+    """
+    normalized = str(sport or "").strip().upper()
+    if normalized not in ESPN_BASE_URLS:
+        raise BasketballHydrationError("ESPN_RECENT_SPORT_UNSUPPORTED")
+    if isinstance(lookback_days, bool) or not 1 <= lookback_days <= 14:
+        raise BasketballHydrationError("ESPN_RECENT_LOOKBACK_INVALID")
+    clock = now if now is not None else datetime.now(timezone.utc)
+    if not isinstance(clock, datetime) or clock.utcoffset() is None:
+        raise BasketballHydrationError("ESPN_RECENT_CLOCK_INVALID")
+    last_completed_day = clock.astimezone(ZoneInfo("America/New_York")).date() - timedelta(days=1)
+    first = last_completed_day - timedelta(days=lookback_days - 1)
+    # The ESPN Site v2 scoreboard no longer reliably supports YYYYMMDD-YYYYMMDD
+    # ranges (observed HTTP 400 in 2026). Fetch at most 14 single-day scoreboards,
+    # one attempt each, and fail closed if any day cannot be reconciled.
+    # This is bounded SOURCE acquisition, never sporting probability inference.
+    events: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for offset in range(lookback_days):
+        requested_day = first + timedelta(days=offset)
+        params = {"dates": requested_day.strftime("%Y%m%d"), "limit": 100}
+        try:
+            response = session.get(
+                ESPN_BASE_URLS[normalized], params=params,
+                headers={"Accept": "application/json", "User-Agent": "WOW-V17-Basketball-Research/1.0"},
+                timeout=timeout,
+            )
+        except Exception as exc:
+            raise BasketballHydrationError("ESPN_RECENT_SOURCE_FETCH_FAILED") from exc
+        if response.status_code != 200:
+            raise BasketballHydrationError(f"ESPN_RECENT_SOURCE_HTTP_{response.status_code}")
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise BasketballHydrationError("ESPN_RECENT_SOURCE_INVALID_JSON") from exc
+        daily = payload.get("events") if isinstance(payload, dict) else None
+        if (
+            not isinstance(daily, list)
+            or len(daily) >= 100
+            or any(not isinstance(row, dict) for row in daily)
+        ):
+            raise BasketballHydrationError("ESPN_RECENT_SOURCE_INVALID_RESPONSE")
+        for row in daily:
+            event_id = str(row.get("id") or "").strip()
+            if not event_id:
+                raise BasketballHydrationError("ESPN_RECENT_EVENT_IDENTITY_MISSING")
+            if event_id in seen:
+                raise BasketballHydrationError("ESPN_RECENT_DUPLICATE_GAME_ID")
+            try:
+                event_at = datetime.fromisoformat(str(row["date"]).replace("Z", "+00:00"))
+                if event_at.utcoffset() is None:
+                    raise ValueError("naive")
+                local_day = event_at.astimezone(ZoneInfo("America/New_York")).date()
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise BasketballHydrationError("ESPN_RECENT_EVENT_TIME_INVALID") from exc
+            if local_day != requested_day:
+                raise BasketballHydrationError("ESPN_RECENT_SOURCE_EVENT_WRONG_DATE")
+            seen.add(event_id)
+            events.append(row)
+    return events
+
+
 def normalize_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> dict[str, Any] | None:
     status = str(raw.get("status") or "").lower()
     if not any(token in status for token in ("final", "post", "complete")):
@@ -220,13 +292,11 @@ def normalize_sportsdataverse_game(
     raw: dict[str, Any],
     sport: str,
     retrieved_at: str,
+    *, source_release_year: int | None = None,
 ) -> dict[str, Any] | None:
     completed = str(raw.get("status_type_completed") or "").strip().lower() in {"1", "true", "yes"}
-    status_text = " ".join(
-        str(raw.get(key) or "")
-        for key in ("status_type_name", "status_type_state", "status_type_description")
-    ).lower()
-    if not completed and not any(token in status_text for token in ("final", "complete", "post")):
+    # A textual "postponed" or "postponement" is not a completed result.
+    if not completed:
         return None
     event_id = str(raw.get("game_id") or raw.get("id") or "").strip()
     date_text = str(raw.get("game_date") or raw.get("date") or "")[:10]
@@ -244,7 +314,11 @@ def normalize_sportsdataverse_game(
         year = int(date_text[:4])
     except ValueError:
         return None
-    source_url = SPORTSDATAVERSE_RELEASE_URLS[normalized].format(year=year)
+    # The 2026-27 NBA season lives in nba_schedule_2027.csv even though
+    # individual game_date values start in October 2026. Provenance must name
+    # the actual downloaded release, not infer its filename from game_date.
+    release_year = source_release_year if source_release_year is not None else int(float(str(raw.get("season") or year)))
+    source_url = SPORTSDATAVERSE_RELEASE_URLS[normalized].format(year=release_year)
     payload_sha = hashlib.sha256(
         json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
@@ -285,13 +359,17 @@ def normalize_espn_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> d
     status = raw.get("status") if isinstance(raw.get("status"), dict) else {}
     status_type = status.get("type") if isinstance(status.get("type"), dict) else {}
     completed = status_type.get("completed") is True
-    status_text = str(
-        status_type.get("name")
-        or status_type.get("description")
-        or status_type.get("detail")
-        or ""
-    ).lower()
-    if not completed and not any(token in status_text for token in ("final", "complete", "post")):
+    # Exact completed flag is mandatory. Substring "post" also matches
+    # POSTPONED and is not settled sporting evidence.
+    if not completed:
+        return None
+
+    # ESPN October scoreboards contain both preseason and the newly started
+    # regular season. Mixing exhibitions into the fitted regular-season
+    # historical cohort is a model-regime/data-leakage error. ESPN's frozen
+    # scoreboard explicitly carries season.type=2, slug=regular-season.
+    season = raw.get("season") if isinstance(raw.get("season"), dict) else {}
+    if str(season.get("type") or "") != "2" or season.get("slug") != "regular-season":
         return None
 
     home, away = _espn_competitors(raw)
@@ -300,7 +378,17 @@ def normalize_espn_game(raw: dict[str, Any], sport: str, retrieved_at: str) -> d
     home_team = home.get("team") if isinstance(home.get("team"), dict) else {}
     away_team = away.get("team") if isinstance(away.get("team"), dict) else {}
     event_id = str(raw.get("id") or "").strip()
-    date_text = str(raw.get("date") or "")[:10]
+    # ESPN event timestamps are UTC, but NBA/WNBA historical game_date is
+    # the North American basketball calendar day (ET), matching fitted replay
+    # and the SportsDataverse official game_date field.
+    try:
+        event_at = datetime.fromisoformat(str(raw.get("date") or "").replace("Z", "+00:00"))
+        retrieved = datetime.fromisoformat(str(retrieved_at or "").replace("Z", "+00:00"))
+        if event_at.utcoffset() is None or retrieved.utcoffset() is None or event_at > retrieved:
+            return None
+        date_text = event_at.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
     home_id = str(home_team.get("id") or "").strip()
     away_id = str(away_team.get("id") or "").strip()
     try:
@@ -353,17 +441,24 @@ def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> None:
         client.table(TABLES[sport]).upsert(rows[offset:offset + 250], on_conflict="game_id").execute()
 
 
-def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
+def hydrate(
+    sport: str, seasons: Iterable[int], client=None, *, now: datetime | None = None
+) -> dict[str, Any]:
     sport = sport.upper().strip()
     if sport not in TABLES:
         raise BasketballHydrationError(f"unsupported sport {sport}")
+    clock = now if now is not None else datetime.now(timezone.utc)
+    if not isinstance(clock, datetime) or clock.utcoffset() is None:
+        raise BasketballHydrationError("BASKETBALL_HYDRATION_CLOCK_INVALID")
+    clock = clock.astimezone(timezone.utc)
     client = client or _client()
-    retrieved_at = datetime.now(timezone.utc).isoformat()
+    retrieved_at = clock.isoformat()
     total_raw = total_settled = 0
     per_season: dict[int, int] = {}
     source_by_season: dict[int, str] = {}
     fallback_reasons: dict[int, str] = {}
     latest_before = _latest_persisted_game_date(client, sport)
+    recent_supplement: dict[int, str] = {}
 
     for season in seasons:
         year = int(season)
@@ -380,10 +475,24 @@ def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
             primary_error = exc
             try:
                 raw = fetch_sportsdataverse_games(sport, year)
-                normalizer = normalize_sportsdataverse_game
+                normalizer = lambda row, league, at, release_year=year: normalize_sportsdataverse_game(
+                    row, league, at, source_release_year=release_year
+                )
                 provider = "SPORTSDATAVERSE_ESPN"
             except BasketballHydrationError as source_exc:
                 sportsdataverse_error = source_exc
+                # Raw ESPN scoreboard data is PUBLIC RESEARCH, not in the
+                # approved fitted-training source registry. Do not populate
+                # a model corpus by silently adopting an unentitled source.
+                entitlement = source_readiness("ESPN_SCOREBOARD")
+                if not entitlement.ready_for_candidate_training:
+                    raise BasketballHydrationError(
+                        "BASKETBALL_FRESH_SOURCE_UNAVAILABLE "
+                        f"primary={str(primary_error)} "
+                        f"sportsdataverse={str(sportsdataverse_error)} "
+                        "espn=ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:"
+                        + ",".join(entitlement.blockers)
+                    ) from source_exc
                 try:
                     raw = fetch_espn_games(sport, year)
                 except BasketballHydrationError as fallback_exc:
@@ -399,6 +508,47 @@ def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
 
         total_raw += len(raw)
         normalized_rows = [r for g in raw if (r := normalizer(g, sport, retrieved_at)) is not None]
+
+        # Keep ESPN scoreboard evidence separately typed from open-licensed
+        # SportsDataverse training. Never auto-promote an unregistered public
+        # source to fitted historical training, even if it returns scores.
+        has_new = latest_before is None or any(
+            date.fromisoformat(str(row["game_date"])[:10]) > latest_before for row in normalized_rows
+        )
+        if (
+            provider == "SPORTSDATAVERSE_ESPN"
+            and year >= clock.year and latest_before is not None
+            and 2 <= (clock.date() - latest_before).days <= 200
+            and not has_new
+        ):
+            entitlement = source_readiness("ESPN_SCOREBOARD")
+            if not entitlement.ready_for_candidate_training:
+                recent_supplement[year] = (
+                    "SOURCE_BLOCKED:ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED:"
+                    + ",".join(entitlement.blockers)
+                )
+            else:
+                try:
+                    recent = fetch_recent_espn_settlements(sport, now=clock)
+                    supplemental_rows = [
+                        row for raw_event in recent
+                        if (row := normalize_espn_game(raw_event, sport, retrieved_at)) is not None
+                        and date.fromisoformat(row["game_date"]) > latest_before
+                    ]
+                    seen_recent: set[str] = set()
+                    for row in supplemental_rows:
+                        if row["game_id"] in seen_recent:
+                            raise BasketballHydrationError("ESPN_RECENT_DUPLICATE_GAME_ID")
+                        seen_recent.add(row["game_id"])
+                    if supplemental_rows:
+                        normalized_rows = supplemental_rows
+                        provider = "ESPN_SCOREBOARD"
+                        recent_supplement[year] = "SETTLED_SOURCE_UPDATED"
+                    else:
+                        recent_supplement[year] = "NO_NEW_SETTLEMENT"
+                except BasketballHydrationError as exc:
+                    recent_supplement[year] = "SOURCE_BLOCKED:" + str(exc)
+
         if provider != "BALLDONTLIE" and latest_before is not None:
             # Provider IDs are not globally comparable. Restrict fallback writes
             # to rows newer than the existing corpus so old BDL rows cannot be
@@ -421,6 +571,8 @@ def hydrate(sport: str, seasons: Iterable[int], client=None) -> dict[str, Any]:
         "per_season": per_season,
         "source_by_season": source_by_season,
         "fallback_reasons": fallback_reasons,
+        "recent_supplement_status": recent_supplement,
+        "fresh_acquisition_new_settled_games": total_settled,
         "latest_game_date_before": latest_before.isoformat() if latest_before else None,
         "latest_game_date_after": latest_after.isoformat() if latest_after else None,
         "can_execute": False,
