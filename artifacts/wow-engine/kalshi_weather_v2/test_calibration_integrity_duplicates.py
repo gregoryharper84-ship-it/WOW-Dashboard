@@ -29,7 +29,7 @@ def check(monkeypatch, predictions):
     ]
     monkeypatch.setattr(
         cohort,
-        "_select_rows",
+        "_strict_calibration_rows",
         lambda client, table, *, limit: predictions
         if table.endswith("predictions") else outcomes,
     )
