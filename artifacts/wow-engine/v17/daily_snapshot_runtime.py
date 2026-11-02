@@ -25,7 +25,7 @@ from v17 import free_core_source_policy as source_policy
 from v17 import memory_admission
 from v17 import cross_sport_winner_discovery as discovery
 from v17 import team_event_bridge_runtime as bridge_runtime
-from v17.daily_prop_acquisition import acquire_daily_prop_snapshots
+from v17.daily_prop_discovery import acquire_daily_prop_snapshots
 from v17.daily_response_contract import (
     ACQUISITION_DETAIL_PAGE_DEFAULT_LIMIT,
     ACQUISITION_DETAIL_PAGE_MAX_LIMIT,
@@ -209,6 +209,39 @@ def _receipt_snapshot_ids(acquisition: dict[str, Any] | None) -> set[str]:
         str(receipt.get("source_snapshot_id"))
         for receipt in ((acquisition or {}).get("receipts") or [])
         if receipt.get("write_status") == "SNAPSHOT_WRITE_SUCCEEDED" and receipt.get("source_snapshot_id")
+    }
+
+
+def _prop_discovery_accounting(
+    *, acquisition: dict[str, Any] | None, canonical_manifest: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Distinguish genuinely acquired rows from reused canonical snapshots."""
+    canonical_ids = canonical_source_snapshot_ids(canonical_manifest)
+    newly_persisted = _receipt_snapshot_ids(acquisition)
+    acquired_ids = canonical_ids & newly_persisted
+    attempted = int((acquisition or {}).get("attempted") or 0)
+    already_captured = sum(
+        1 for row in ((acquisition or {}).get("receipts") or [])
+        if isinstance(row, dict) and row.get("write_status") == "ALREADY_CAPTURED"
+    )
+    reason = None
+    if not acquired_ids:
+        if acquisition is None:
+            reason = "AUTONOMOUS_DISCOVERY_NOT_ATTEMPTED"
+        elif attempted == 0:
+            reason = "NO_CANDIDATES_DISCOVERED"
+        elif already_captured == attempted:
+            reason = "ALL_DISCOVERED_CANDIDATES_ALREADY_CAPTURED"
+        elif newly_persisted:
+            reason = "CANONICAL_READBACK_INCOMPLETE"
+        else:
+            reason = "NO_CANDIDATE_COULD_BE_HYDRATED"
+    return {
+        "new_candidates_acquired": len(acquired_ids),
+        "reused_snapshot_rows": max(len(canonical_manifest) - len(acquired_ids), 0),
+        "zero_new_candidates_reason": reason,
+        "acquisition_attempted": acquisition is not None,
+        "can_execute": False,
     }
 
 
@@ -513,7 +546,14 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         # Acquisition exists to fill an empty canonical lane. A zero-length page
         # caused by max_props is not an empty lane, so it must not trigger a
         # producer run (and must not later be typed NO_CANONICAL_CANDIDATES).
-        if not prop_manifest and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
+        # Optional bounded fill of an absent NFL family when MLB snapshots
+        # already exist; existing installations retain the historical path.
+        missing_nfl_fill = (
+            os.getenv("WOW_V17_NFL_DAILY_FILL_MISSING", "0") == "1"
+            and req.max_props > 0
+            and not any(str(row.get("sport") or "").upper() == "NFL" for row in prop_manifest)
+        )
+        if (not prop_manifest or missing_nfl_fill) and not any(str(x).startswith("PROP_SNAPSHOT_QUERY_FAILED") for x in blockers):
             prop_acquisition = acquire_daily_prop_snapshots(
                 db=db,
                 requested_date=req.requested_slate_date,
@@ -697,6 +737,9 @@ def _run_daily_snapshot_impl(req: DailySnapshotRequest, *, db: Any, market_api: 
         "lane_reconciliation": lane_reconciliation,
         "cross_sport_discovery_audit": cross_sport_audit,
         "prop_acquisition": prop_acquisition,
+        "prop_discovery_accounting": _prop_discovery_accounting(
+            acquisition=prop_acquisition, canonical_manifest=prop_manifest,
+        ) if "PROPS" in requested_lanes else None,
         "row_detail_persistence": detail_persistence,
         "blockers": list(dict.fromkeys(blockers)),
         "can_execute": False,
