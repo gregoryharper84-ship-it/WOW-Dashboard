@@ -54,6 +54,28 @@ jobs:
           persist-credentials: false
       - name: Verify deterministic 24x7 admission tests
         run: python artifacts/wow-engine/test_engineering_24x7_selector.py -v
+      - name: Exercise real GitHub intake in READ-ONLY shadow mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+            --jq '.[] | select(.pull_request == null)' | jq -s '.' \
+            > "$RUNNER_TEMP/engineering-issues.json"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&per_page=100" \
+            --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/engineering-prs.json"
+          python artifacts/wow-engine/v17/engineering_24x7_selector.py \
+            --issues "$RUNNER_TEMP/engineering-issues.json" \
+            --prs "$RUNNER_TEMP/engineering-prs.json" \
+            --output "$RUNNER_TEMP/engineering-plan.json"
+          {
+            echo "### Read-only live intake proof (NO DISPATCH)"
+            echo '~~~json'
+            cat "$RUNNER_TEMP/engineering-plan.json"
+            echo '~~~'
+            echo "- This candidate cannot create code, claim merge authority or deploy."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   select:
     if: >-
