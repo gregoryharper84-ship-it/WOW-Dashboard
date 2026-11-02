@@ -156,6 +156,15 @@ class Test24x7(unittest.TestCase):
                  "createdAt": "2026-11-02T01:11:00Z"}]
         self.assertEqual(mod.plan([issue(9, "P0")], [], runs=runs)["action"], "IDLE")
 
+    def test_existing_approved_pr_resumes_despite_prior_failed_writer(self):
+        item = issue(9, "P0", updated_at="2026-11-02T01:10:00Z")
+        run = {"displayTitle": "wow-v17-chatgpt-engineering-worker incident=9",
+               "databaseId": 400, "createdAt": "2026-11-02T01:11:00Z",
+               "status": "completed", "conclusion": "failure"}
+        result = mod.plan([item], [pr(49, 9)], runs=[run])
+        self.assertEqual((result["action"], result["pr"]), ("RESUME_PR", 49))
+        self.assertFalse(result["can_execute"])
+
     def test_manual_retry_requires_latest_failed_exact_target(self):
         runs = [
             {"displayTitle": "worker lease=GLOBAL incident=9", "createdAt": "2026-11-02T01:11:00Z",
