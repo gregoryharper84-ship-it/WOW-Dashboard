@@ -45,8 +45,10 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: wow-engineering-24x7-controller
+  # PR test jobs must not displace queued protected-main controller events.
+  group: wow-engineering-24x7-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'controller' }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   test:
@@ -79,11 +81,24 @@ jobs:
           # Fail closed on inaccessible or incomplete API responses.
           # Fully paginate provider run records; a possible API 1000-result
           # search cap is incomplete evidence and must deny dispatch.
+          # Each read must succeed independently before any inventory is joined.
+          # A failed provider query must never disappear in a successful pipeline.
+          run_parts=()
           for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            part="$RUNNER_TEMP/${inventory_workflow}.json"
             gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
-              --jq '.workflow_runs[] | {displayTitle: .display_title, createdAt: .created_at, updatedAt: .updated_at, status: .status, conclusion: .conclusion, databaseId: .id}' \
-              | jq -s -e 'if length < 1000 then . else error("WORKER_RUN_HISTORY_TRUNCATED") end'
-          done | jq -s 'add // []' > "$RUNNER_TEMP/engineering-runs.json"
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {
+                              displayTitle: .display_title, createdAt: .created_at,
+                              updatedAt: .updated_at, status: .status,
+                              conclusion: .conclusion, databaseId: .id
+                            }]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
+            run_parts+=("$part")
+          done
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json" > "$RUNNER_TEMP/engineering-runs.json"
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/engineering-issues.json" \
             --prs "$RUNNER_TEMP/engineering-prs.json" \
@@ -155,11 +170,24 @@ jobs:
           # Fail closed on inaccessible or incomplete API responses.
           # Fully paginate provider run records; a possible API 1000-result
           # search cap is incomplete evidence and must deny dispatch.
+          # Each read must succeed independently before any inventory is joined.
+          # A failed provider query must never disappear in a successful pipeline.
+          run_parts=()
           for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            part="$RUNNER_TEMP/${inventory_workflow}.json"
             gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
-              --jq '.workflow_runs[] | {displayTitle: .display_title, createdAt: .created_at, updatedAt: .updated_at, status: .status, conclusion: .conclusion, databaseId: .id}' \
-              | jq -s -e 'if length < 1000 then . else error("WORKER_RUN_HISTORY_TRUNCATED") end'
-          done | jq -s 'add // []' > "$RUNNER_TEMP/engineering-runs.json"
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {
+                              displayTitle: .display_title, createdAt: .created_at,
+                              updatedAt: .updated_at, status: .status,
+                              conclusion: .conclusion, databaseId: .id
+                            }]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
+            run_parts+=("$part")
+          done
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json" > "$RUNNER_TEMP/engineering-runs.json"
       - name: Restoration-first deterministic single-target decision
         id: plan
         shell: bash
@@ -340,11 +368,24 @@ jobs:
             --jq '.[]' | jq -s '.' > "$RUNNER_TEMP/prs.json"
           # Fully paginate provider run records; a possible API 1000-result
           # search cap is incomplete evidence and must deny dispatch.
+          # Each read must succeed independently before any inventory is joined.
+          # A failed provider query must never disappear in a successful pipeline.
+          run_parts=()
           for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            part="$RUNNER_TEMP/${inventory_workflow}.json"
             gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
-              --jq '.workflow_runs[] | {displayTitle: .display_title, createdAt: .created_at, updatedAt: .updated_at, status: .status, conclusion: .conclusion, databaseId: .id}' \
-              | jq -s -e 'if length < 1000 then . else error("WORKER_RUN_HISTORY_TRUNCATED") end'
-          done | jq -s 'add // []' > "$RUNNER_TEMP/runs.json"
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {
+                              displayTitle: .display_title, createdAt: .created_at,
+                              updatedAt: .updated_at, status: .status,
+                              conclusion: .conclusion, databaseId: .id
+                            }]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
+            run_parts+=("$part")
+          done
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/runs.json" > "$RUNNER_TEMP/runs.json"
           retry_args=()
           if [ -n "${RETRY_AFTER_RUN_ID:-}" ]; then
             [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 2
@@ -362,13 +403,25 @@ jobs:
           # Refresh both providers under the existing global writer mutex.
           # Compare IDs to selector's snapshot; legitimate explicit retries
           # must not be mistaken for an unrelated newly admitted worker.
-          fresh_rows=$(
-            for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
-              gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
-                --jq '.workflow_runs[] | {displayTitle: .display_title, createdAt: .created_at, updatedAt: .updated_at, status: .status, conclusion: .conclusion, databaseId: .id}' \
-                | jq -s -e 'if length < 1000 then . else error("WORKER_RUN_HISTORY_TRUNCATED") end'
-            done | jq -s 'add // []'
-          )
+          # No command substitution around a multi-provider pipeline: failed
+          # provider history must fail this exact-head dispatch recheck.
+          fresh_parts=()
+          for inventory_workflow in wow-v17-chatgpt-engineering-worker.yml wow-v17-claude-engineering-worker.yml; do
+            part="$RUNNER_TEMP/fresh-${inventory_workflow}.json"
+            gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$inventory_workflow/runs?per_page=100" \
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {
+                              displayTitle: .display_title, createdAt: .created_at,
+                              updatedAt: .updated_at, status: .status,
+                              conclusion: .conclusion, databaseId: .id
+                            }]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
+            fresh_parts+=("$part")
+          done
+          jq -s -e 'add // []' "${fresh_parts[@]}" > "$RUNNER_TEMP/fresh-runs.json"
+          fresh_rows=$(cat "$RUNNER_TEMP/fresh-runs.json")
           active=$(jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting" or .status == "pending" or .status == "requested")] | length' <<< "$fresh_rows")
           if [ "$active" -gt 0 ]; then
             echo "::notice::EXISTING_WRITER_ACTIVE"; exit 0
@@ -389,8 +442,12 @@ jobs:
           for observation in 1 2 3 4 5 6; do
             sleep 2
             observed=$(gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/workflows/$worker/runs?per_page=100" \
-              --jq '.workflow_runs[] | {databaseId: .id, displayTitle: .display_title, status: .status}' \
-              | jq -s -e 'if length < 1000 then . else error("WORKER_RUN_HISTORY_TRUNCATED") end')
+              --jq '.workflow_runs' \
+              | jq -s -e 'if length > 0 and all(.[]; type == "array") and
+                               ([.[][]] | length < 1000) then
+                            [.[][] | {databaseId: .id, displayTitle: .display_title,
+                                     status: .status}]
+                          else error("WORKER_RUN_HISTORY_TRUNCATED") end')
             observed_new=$(jq --argjson prior "$prior_ids" --arg n "$INCIDENT" \
               '[.[] | . as $run | select(($prior | index($run.databaseId)) == null) | select(($run.displayTitle // "") | test("(^|\\s)incident=" + $n + "(\\s|$)"))] | length' <<< "$observed")
             if [ "$observed_new" -eq 1 ]; then

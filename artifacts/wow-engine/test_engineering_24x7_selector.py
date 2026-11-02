@@ -174,6 +174,13 @@ class Test24x7(unittest.TestCase):
         self.assertEqual(wf.count("WORKER_RUN_HISTORY_TRUNCATED"), 5)
         self.assertEqual(wf.count("gh api --paginate"), 15)
         self.assertEqual(wf.count("/actions/workflows/$inventory_workflow/runs?per_page=100"), 4)
+        self.assertEqual(wf.count('run_parts+=("$part")'), 3)
+        self.assertEqual(wf.count('fresh_parts+=("$part")'), 1)
+        self.assertNotIn('done | jq -s', wf)
+        self.assertIn('all(.[]; type == "array")', wf)
+        self.assertIn('run_parts[@]', wf)
+        self.assertIn("group: wow-engineering-24x7-", wf)
+        self.assertIn("format('pr-{0}', github.event.pull_request.number)", wf)
         self.assertNotIn("--limit 250", wf)
         self.assertIn("MAX_RUNS = 1998", (Path(__file__).resolve().parent /
                          "v17" / "engineering_24x7_selector.py").read_text())
