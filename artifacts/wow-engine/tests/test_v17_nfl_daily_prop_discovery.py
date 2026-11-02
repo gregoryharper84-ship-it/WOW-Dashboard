@@ -235,3 +235,53 @@ def test_dispatcher_passes_same_rotation_slot_to_both_producers(monkeypatch):
     assert observed == [("NFL", 7), ("MLB", 7)]
     assert result["attempted"] == 2
     assert result["can_execute"] is False
+
+
+
+def test_missing_nfl_only_fill_reserves_budget_for_nfl_not_existing_mlb(monkeypatch):
+    calls = []
+    def nfl(**kwargs):
+        calls.append(("NFL", kwargs["max_candidates"], kwargs["candidate_offset"]))
+        start = kwargs["candidate_offset"]
+        attempted = min(kwargs["max_candidates"], 6 - start)
+        next_offset = start + attempted if start + attempted < 6 else None
+        return _outcome("NFL", attempted, persisted=attempted, next_offset=next_offset)
+    def forbidden_mlb(**kwargs):
+        raise AssertionError("already captured MLB must not be reacquired")
+    monkeypatch.setattr(dispatch, "acquire_nfl", nfl)
+    monkeypatch.setattr(dispatch, "acquire_mlb", forbidden_mlb)
+    result = dispatch.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=4,
+        nfl_only=True,
+    )
+    assert calls == [("NFL", 4, 0)]
+    assert result["attempted"] == result["persisted"] == 4
+    assert result["candidate_source"] == "NFL_ESPN_PREGAME_ROSTER"
+    assert result["can_execute"] is False
+
+
+def test_nfl_only_fill_continues_in_bounded_windows(monkeypatch):
+    called = []
+    def nfl(**kwargs):
+        start = kwargs["candidate_offset"]
+        capacity = kwargs["max_candidates"]
+        called.append((start, capacity))
+        size = min(capacity, 75 - start)
+        return _outcome(
+            "NFL", size, persisted=size,
+            next_offset=start + size if start + size < 75 else None,
+        )
+    monkeypatch.setattr(dispatch, "acquire_nfl", nfl)
+    monkeypatch.setattr(dispatch, "acquire_mlb",
+                        lambda **_: (_ for _ in ()).throw(AssertionError("MLB")))
+    result = dispatch.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=120,
+        nfl_only=True,
+    )
+    assert called == [(0, 64), (64, 56)]
+    assert result["attempted"] == 75
+    assert result["persisted"] == 75
+    assert result["attempted"] <= 120
+    assert result["can_execute"] is False
