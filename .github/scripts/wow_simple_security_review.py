@@ -475,6 +475,10 @@ def call_provider(provider, key, prompt):
                                      "description": "Return a strict security review verdict.",
                                      "input_schema": REVIEW_SCHEMA}],
                           "tool_choice": {"type": "tool", "name": "submit_review"}})
+                # A successful HTTP 200 with JSON null is malformed evidence,
+                # never a model-unavailable result eligible for fallback.
+                if type(result) is not dict:
+                    raise Hold("CLAUDE_RESPONSE_INVALID")
                 break
             except ProviderUnavailable as err:
                 if str(err) != "PROVIDER_MODEL_UNAVAILABLE":
@@ -520,6 +524,10 @@ def call_provider(provider, key, prompt):
                     data={"contents": [{"parts": [{"text": prompt}]}],
                           "systemInstruction": {"parts": [{"text": SYSTEM_ROLE}]},
                           "generationConfig": {"responseMimeType": "application/json"}})
+                # Keep malformed successful responses distinct from exhausted
+                # models: only a typed provider availability error can fail over.
+                if type(result) is not dict:
+                    raise Hold("GEMINI_RESPONSE_INVALID")
                 break
             except ProviderUnavailable as err:
                 if str(err) != "PROVIDER_MODEL_UNAVAILABLE":
