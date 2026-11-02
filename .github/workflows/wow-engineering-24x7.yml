@@ -98,7 +98,7 @@ jobs:
                           else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
             run_parts+=("$part")
           done
-          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json" > "$RUNNER_TEMP/engineering-runs.json"
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json"
           python artifacts/wow-engine/v17/engineering_24x7_selector.py \
             --issues "$RUNNER_TEMP/engineering-issues.json" \
             --prs "$RUNNER_TEMP/engineering-prs.json" \
@@ -187,7 +187,7 @@ jobs:
                           else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
             run_parts+=("$part")
           done
-          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json" > "$RUNNER_TEMP/engineering-runs.json"
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/engineering-runs.json"
       - name: Restoration-first deterministic single-target decision
         id: plan
         shell: bash
@@ -385,7 +385,7 @@ jobs:
                           else error("WORKER_RUN_HISTORY_TRUNCATED") end' > "$part"
             run_parts+=("$part")
           done
-          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/runs.json" > "$RUNNER_TEMP/runs.json"
+          jq -s -e 'add // []' "${run_parts[@]}" > "$RUNNER_TEMP/runs.json"
           retry_args=()
           if [ -n "${RETRY_AFTER_RUN_ID:-}" ]; then
             [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || exit 2
