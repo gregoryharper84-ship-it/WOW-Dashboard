@@ -130,7 +130,7 @@ def _stored_snapshot():
     }
 
 
-def _score_context(snapshot=None, context=None, *, refreshed_at=None):
+def _score_context(snapshot=None, context=None, *, refreshed_at=None, with_clock=True):
     context = context or _context()
     normalized_receipts = [
         {
@@ -168,13 +168,16 @@ def _score_context(snapshot=None, context=None, *, refreshed_at=None):
         ).isoformat(),
         "payload_sha256": _sha(refresh_payload),
     }
-    # `now` gates the entry check and `clock` gates the post-read recheck; both
-    # must carry the same deterministic pregame instant.
-    return {
+    # Keep a deterministic post-read clock unless the caller supplies its own.
+    # Current main already passes an explicit clock in three scorer tests; the
+    # helper must not provide a second keyword in those merged cases.
+    result = {
         "current_context": context,
         "now": _SCORING_NOW,
-        "clock": lambda: _SCORING_NOW,
     }
+    if with_clock:
+        result["clock"] = lambda: _SCORING_NOW
+    return result
 
 
 class _RPC:
@@ -523,7 +526,8 @@ def test_static_wilson_diagnostic_never_becomes_a_publication_or_rank_bound():
         expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
         scorer=lambda *args, **kwargs: raw,
         calibrator=lambda *args, **kwargs: calibrated,
-        **_score_context(snapshot),
+        clock=lambda: KICKOFF - timedelta(minutes=29),
+        **_score_context(snapshot, with_clock=False),
     )
     assert result["static_calibration_lower_diagnostic"] == 0.41
     assert result["calibrated_lower_bound"] is None
@@ -549,7 +553,8 @@ def test_invoked_scorer_failure_is_not_collapsed_to_model_unavailable():
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=fail,
-            **_score_context(snapshot),
+            clock=lambda: KICKOFF - timedelta(minutes=29),
+            **_score_context(snapshot, with_clock=False),
         )
     assert exc.value.code == "MODEL_SCORER_FAILED"
 
@@ -572,7 +577,8 @@ def test_typed_invalid_model_output_keeps_output_failure_semantics():
             away_team="Florida State",
             expected_source_manifest_sha256=snapshot["source_manifest"]["snapshot_sha256"],
             scorer=invalid_output,
-            **_score_context(snapshot),
+            clock=lambda: KICKOFF - timedelta(minutes=29),
+            **_score_context(snapshot, with_clock=False),
         )
     assert exc.value.code == "MODEL_OUTPUT_INVALID"
 
