@@ -1,0 +1,131 @@
+"""NFL + MLB Daily acquisition budget, isolation and source-truth regressions."""
+from __future__ import annotations
+
+from v17 import daily_prop_discovery as dispatch
+from v17 import nfl_daily_prop_acquisition as nfl_adapter
+from v17.daily_snapshot_runtime import _prop_discovery_accounting
+
+
+def _outcome(sport, attempted, *, persisted=0, next_offset=None, blockers=None):
+    receipts = [
+        {"sport": sport, "source_snapshot_id": f"{sport}-{i}",
+         "write_status": "SNAPSHOT_WRITE_SUCCEEDED", "can_execute": False}
+        for i in range(persisted)
+    ]
+    receipts.extend(
+        {"sport": sport, "write_status": "PREWRITE_EXCLUDED", "can_execute": False}
+        for _ in range(attempted - persisted)
+    )
+    return {
+        "sport": sport, "status": "COMPLETED",
+        "attempted": attempted, "hydrated": persisted, "persisted": persisted,
+        "snapshot_write_succeeded": persisted, "snapshot_write_failed": 0,
+        "explicit_prewrite_exclusions": attempted - persisted,
+        "held": attempted - persisted, "receipts": receipts,
+        "blockers": blockers or [], "next_offset": next_offset,
+        "can_execute": False,
+    }
+
+
+def test_shared_attempt_ceiling_with_mlb_unused_rollover(monkeypatch):
+    calls = []
+    def nfl(**kwargs):
+        calls.append(("NFL", kwargs["max_candidates"], kwargs["candidate_offset"]))
+        if kwargs["candidate_offset"] == 0:
+            return _outcome("NFL", 3, persisted=2, next_offset=3)
+        return _outcome("NFL", kwargs["max_candidates"], persisted=0)
+    def mlb(**kwargs):
+        calls.append(("MLB", kwargs["max_candidates"], 0))
+        return _outcome("MLB", 1, persisted=1)
+    monkeypatch.setattr(dispatch, "acquire_nfl", nfl)
+    monkeypatch.setattr(dispatch, "acquire_mlb", mlb)
+    result = dispatch.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=10,
+    )
+    assert calls == [("NFL", 5, 0), ("MLB", 7, 0), ("NFL", 6, 3)]
+    assert result["attempted"] == 10
+    assert result["persisted"] == 3
+    assert result["snapshot_write_succeeded"] == 3
+    assert result["explicit_prewrite_exclusions"] == 7
+    assert result["can_execute"] is False
+    assert all(r["can_execute"] is False for r in result["receipts"])
+
+
+def test_unavailable_nfl_does_not_void_mlb(monkeypatch):
+    def broken(**kwargs):
+        raise RuntimeError("provider down")
+    monkeypatch.setattr(dispatch, "acquire_nfl", broken)
+    monkeypatch.setattr(dispatch, "acquire_mlb", lambda **kwargs: _outcome("MLB", 2, persisted=2))
+    result = dispatch.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=4,
+    )
+    assert result["attempted"] == 2
+    assert result["persisted"] == 2
+    assert result["status"] == "COMPLETED_WITH_ROW_BLOCKERS"
+    assert "NFL_DAILY_DISCOVERY_FAILED:RuntimeError" in result["blockers"]
+
+
+def test_zero_budget_does_not_call_provider(monkeypatch):
+    def must_not_run(**kwargs):
+        raise AssertionError("provider should not be called")
+    monkeypatch.setattr(dispatch, "acquire_nfl", must_not_run)
+    monkeypatch.setattr(dispatch, "acquire_mlb", must_not_run)
+    result = dispatch.acquire_daily_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=0,
+    )
+    assert result["attempted"] == 0 and result["persisted"] == 0
+    assert result["can_execute"] is False
+
+
+def test_invalid_sport_claim_cannot_exceed_budget(monkeypatch):
+    monkeypatch.setattr(dispatch, "acquire_nfl", lambda **kwargs: _outcome("NFL", 99))
+    monkeypatch.setattr(dispatch, "acquire_mlb", lambda **kwargs: _outcome("MLB", 0))
+    import pytest
+    with pytest.raises(RuntimeError, match="BUDGET_CONTRACT_INVALID"):
+        dispatch.acquire_daily_prop_snapshots(
+            db=object(), requested_date="2026-11-05",
+            requested_timezone="America/Chicago", max_candidates=2,
+        )
+
+
+def test_nfl_adapter_zero_budget_preserves_research_only():
+    result = nfl_adapter.acquire_daily_nfl_prop_snapshots(
+        db=object(), requested_date="2026-11-05",
+        requested_timezone="America/Chicago", max_candidates=0,
+    )
+    assert result["attempted"] == 0
+    assert result["can_execute"] is False
+    assert result["line_source"] == "PRIOR10_MEDIAN_HALF_POINT_DISCOVERY_ONLY"
+
+
+def test_accounting_new_vs_reused_is_identity_bound():
+    acq = {
+        "attempted": 3, "receipts": [
+            {"source_snapshot_id": "new", "write_status": "SNAPSHOT_WRITE_SUCCEEDED"},
+            {"source_snapshot_id": "not-readback", "write_status": "SNAPSHOT_WRITE_SUCCEEDED"},
+            {"write_status": "PREWRITE_EXCLUDED"},
+        ],
+    }
+    summary = _prop_discovery_accounting(
+        acquisition=acq,
+        canonical_manifest=[{"source_snapshot_id": "new"}, {"source_snapshot_id": "old"}],
+    )
+    assert summary["new_candidates_acquired"] == 1
+    assert summary["reused_snapshot_rows"] == 1
+    assert summary["zero_new_candidates_reason"] is None
+    assert summary["can_execute"] is False
+
+
+def test_accounting_distinguishes_not_attempted_vs_all_existing():
+    canonical = [{"source_snapshot_id": "existing"}]
+    none = _prop_discovery_accounting(acquisition=None, canonical_manifest=canonical)
+    reused = _prop_discovery_accounting(
+        acquisition={"attempted": 1, "receipts": [{"write_status": "ALREADY_CAPTURED"}]},
+        canonical_manifest=canonical,
+    )
+    assert none["zero_new_candidates_reason"] == "AUTONOMOUS_DISCOVERY_NOT_ATTEMPTED"
+    assert reused["zero_new_candidates_reason"] == "ALL_DISCOVERED_CANDIDATES_ALREADY_CAPTURED"
+    assert reused["reused_snapshot_rows"] == 1
