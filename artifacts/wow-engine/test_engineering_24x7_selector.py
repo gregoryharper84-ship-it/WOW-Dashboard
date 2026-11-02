@@ -96,6 +96,37 @@ class Test24x7(unittest.TestCase):
         ], [])
         self.assertEqual(result["incident"], 3)
 
+    def test_no_repeat_paid_attempt_without_new_issue_evidence(self):
+        runs = [{"displayTitle": "wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=9",
+                 "createdAt": "2026-11-02T01:11:00Z", "status": "completed"}]
+        items = [
+            issue(9, "P0", updated_at="2026-11-02T01:10:00Z"),
+            issue(10, "P1", updated_at="2026-11-02T01:10:00Z"),
+        ]
+        self.assertEqual(mod.plan(items, [], runs=runs)["incident"], 10)
+
+    def test_evidence_updated_after_attempt_allows_one_new_dispatch(self):
+        runs = [{"displayTitle": "wow-v17-claude-engineering-worker lease=GLOBAL incident=9",
+                 "createdAt": "2026-11-02T01:11:00Z", "status": "completed"}]
+        result = mod.plan([issue(9, "P0", updated_at="2026-11-02T01:20:00Z")],
+                          [], runs=runs)
+        self.assertEqual((result["action"], result["incident"]), ("BUILD", 9))
+
+    def test_run_for_different_issue_does_not_block(self):
+        runs = [{"displayTitle": "wow-v17-chatgpt-engineering-worker lease=GLOBAL incident=10",
+                 "createdAt": "2026-11-02T01:11:00Z"}]
+        self.assertEqual(mod.plan([issue(9, "P0", updated_at="2026-11-02T01:10:00Z")],
+                                  [], runs=runs)["incident"], 9)
+
+    def test_incomplete_worker_run_inventory_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "worker run inventory"):
+            mod.plan([issue(9, "P0")], [], runs=[{}] * (mod.MAX_RUNS + 1))
+
+    def test_unparseable_issue_timestamp_with_matching_run_stays_held(self):
+        runs = [{"displayTitle": "wow-v17-chatgpt-engineering-worker incident=9",
+                 "createdAt": "2026-11-02T01:11:00Z"}]
+        self.assertEqual(mod.plan([issue(9, "P0")], [], runs=runs)["action"], "IDLE")
+
     def test_declared_untrusted_pr_fails_closed(self):
         adversarial = pr(40, 9)
         adversarial["head"]["sha"] = "HEAD~1"
