@@ -44,6 +44,27 @@ reviewed, fail-closed provider adapter is needed for the final Cursor-free
 cutover. Do not pretend that a GitHub concurrency group proves a preexisting
 remote worker is absent.
 
+## Bounded retries and legacy AUTO handling
+
+The five-minute scheduled loop never replays a known failed coding attempt on
+unchanged issue evidence. A user-authorized manual `workflow_dispatch` may specify
+`target_incident` and `retry_after_run_id` together, but it will only retry if
+the specified run is the latest completed **failed or timed-out** worker attempt
+for exactly that incident. Stale run IDs, successful/cancelled/active runs,
+draft or untrusted incident PRs, and security holds remain ineligible.
+A one-time manual retry is not proof of provider capacity.
+
+An active legacy worker whose run title says `incident=AUTO` blocks new
+writer admission globally. A completed AUTO run cannot be attributed to a
+specific incident; its title provides **no** exact-incident deduplication.
+The legacy automatic producer must be retired at cutover, after authentication
+that no legacy writer is still active. The existing global writer mutex is
+additional protection, not proof of remote writer release.
+
+The NCAAF scorer's **second pre-inference clock check remains enabled**.
+Historical test fixtures now explicitly freeze both their source-as-of time
+and the scorer clock; live predictions must still fail after kickoff.
+
 ## Backlog and limitations
 
 - Current source module performs deterministic, side-effect-free selection and
