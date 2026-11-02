@@ -243,6 +243,26 @@ def test_source_model_failure_code_is_preserved_on_held_event():
     assert "calibrated_probability" not in event["markets"][0]
 
 
+def test_real_saved_nba_hold_preserves_typed_failure_reason():
+    from pathlib import Path
+    import json
+
+    fixture = Path(__file__).resolve().parent / "tests" / "fixtures" / "llp_daily_nba_held_row.json"
+    saved = json.loads(fixture.read_text())
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    event = view["events"][0]
+    market = event["markets"][0]
+    diagnostics = event["source_diagnostics"]
+    assert event["sport"] == "NBA"
+    assert market["status"] == "HELD_EVIDENCE_ONLY"
+    assert "calibrated_probability" not in market
+    assert diagnostics["source_model_status"] == "MODEL_UNAVAILABLE"
+    # The real row stores its typed cause under result.detail.reason, not in a
+    # blockers list. Losing it would make the NBA hold look like a generic gap.
+    assert "NBA_TEAM_EVENT_FITTED_MODEL_OR_ADAPTER_UNAVAILABLE" in diagnostics["source_reason_codes"]
+    assert view["can_execute"] is False
+
+
 def test_unsupported_daily_sport_is_not_counted_as_corrupt():
     other = _row(sport="SOCCER", index=1)
     view = llp.project_llp_intelligence_page(_page([_row(), other]))

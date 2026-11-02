@@ -1,0 +1,75 @@
+{
+  "run_id": "v17-daily-fb9b3943-052e-48fe-beee-0bbb9bdda2c7",
+  "row_index": 1,
+  "lane": "MONEYLINE",
+  "row_status": "HELD",
+  "identity": {
+    "sport": "NBA",
+    "away_team": "Oklahoma City Thunder",
+    "home_team": "Cleveland Cavaliers",
+    "commence_time_utc": "2026-11-03T00:00Z",
+    "official_event_id": "espn-401909907"
+  },
+  "detail": {
+    "lane": "MONEYLINE",
+    "result": {
+      "sport": "NBA",
+      "bucket": "MODEL_UNAVAILABLE",
+      "detail": {
+        "reason": "NBA_TEAM_EVENT_FITTED_MODEL_OR_ADAPTER_UNAVAILABLE",
+        "model_invoked": false,
+        "backend_route_status": "SPORT_SPECIFIC_TEAM_EVENT_ADAPTER_NOT_REGISTERED"
+      },
+      "league": "NBA",
+      "regime": "REGULAR_SEASON",
+      "provider": "ESPN_SCOREBOARD",
+      "away_team": "Oklahoma City Thunder",
+      "event_key": "NBA:espn-401909907",
+      "home_team": "Cleveland Cavaliers",
+      "objective": "OUTRIGHT_WINNER",
+      "sport_key": "4",
+      "can_execute": false,
+      "event_status": "PREGAME",
+      "model_status": "MODEL_UNAVAILABLE",
+      "rank_eligible": false,
+      "discovery_source": "DISCOVERY_FEED",
+      "commence_time_utc": "2026-11-03T00:00Z",
+      "governance_status": null,
+      "official_event_id": "espn-401909907",
+      "provider_sport_id": null,
+      "probability_publishable": false,
+      "publication_chain_audit": null,
+      "market_acquisition_status": null,
+      "generic_reasoning_substitution_allowed": false,
+      "market_probability_substitution_allowed": false
+    },
+    "identity": {
+      "sport": "NBA",
+      "away_team": "Oklahoma City Thunder",
+      "home_team": "Cleveland Cavaliers",
+      "commence_time_utc": "2026-11-03T00:00Z",
+      "official_event_id": "espn-401909907"
+    },
+    "terminal": true,
+    "row_status": "HELD",
+    "can_execute": false,
+    "terminal_reduction": {
+      "can_execute": false,
+      "final_terminal": "HELD",
+      "reduction_rule": "FINAL_TERMINAL_EQUALS_LOWEST_STAGE_TERMINAL_EXCEPT_APPROVED_STAGE",
+      "stage_terminals": ["HELD"],
+      "lowest_stage_terminal": "HELD",
+      "approved_stage_exception_applied": false,
+      "terminal_upgraded_from_rejection": false
+    },
+    "daily_request_context": {
+      "can_execute": false,
+      "caller_class": "INTERNAL_AUTOMATION",
+      "accepted_at_utc": "2026-11-02T23:31:21.227780+00:00",
+      "request_trace_id": "redacted-trace-id",
+      "requested_timezone": "America/Chicago",
+      "requested_slate_date": "2026-11-02"
+    },
+    "probability_publishable": false
+  }
+}
