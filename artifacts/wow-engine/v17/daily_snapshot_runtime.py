@@ -212,6 +212,18 @@ def _receipt_snapshot_ids(acquisition: dict[str, Any] | None) -> set[str]:
     }
 
 
+def _prop_source_unobtainable(acquisition: dict[str, Any] | None) -> bool:
+    """A source-wide failure is distinct from ordinary candidate hydration HOLD."""
+    if not isinstance(acquisition, dict):
+        return False
+    if acquisition.get("status") == "DATA_UNOBTAINABLE":
+        return True
+    return any(
+        isinstance(sport, dict) and sport.get("status") == "DATA_UNOBTAINABLE"
+        for sport in (acquisition.get("per_sport") or [])
+    )
+
+
 def _prop_discovery_accounting(
     *, acquisition: dict[str, Any] | None, canonical_manifest: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -228,6 +240,8 @@ def _prop_discovery_accounting(
     if not acquired_ids:
         if acquisition is None:
             reason = "AUTONOMOUS_DISCOVERY_NOT_ATTEMPTED"
+        elif _prop_source_unobtainable(acquisition):
+            reason = "DISCOVERY_DATA_UNOBTAINABLE"
         elif attempted == 0:
             reason = "NO_CANDIDATES_DISCOVERED"
         elif already_captured == attempted:
@@ -312,8 +326,9 @@ def _lane_reconciliation(
             zero_row_reason = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
         elif lane == "PROPS" and "PROP_SNAPSHOT_INGESTION_EMPTY" in blockers:
             zero_row_reason = "PROP_SNAPSHOT_INGESTION_EMPTY"
-        elif lane == "PROPS" and acquisition and (acquisition.get("status") == "DATA_UNOBTAINABLE" or acquisition.get("blockers")):
-            # Only after stronger write/readback failures have been classified.
+        elif lane == "PROPS" and _prop_source_unobtainable(acquisition):
+            # Only source-wide outages count as discovery unavailable. A
+            # hydrated candidate HOLD retains its typed row reason instead.
             zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
         elif requested_limit == 0:
             # Zero rows caused by the request itself are never evidence that the
