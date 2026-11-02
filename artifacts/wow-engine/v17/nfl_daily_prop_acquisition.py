@@ -29,6 +29,7 @@ def acquire_daily_nfl_prop_snapshots(
     requested_timezone: str,
     max_candidates: int,
     candidate_offset: int = 0,
+    rotating_window_slot: int | None = None,
     now: datetime | None = None,
     http_get: Callable[..., Any] = httpx.get,
 ) -> dict[str, Any]:
@@ -53,6 +54,8 @@ def acquire_daily_nfl_prop_snapshots(
     result = acquire_nfl_forward_evidence_batch(
         NFLForwardEvidenceRequest(
             requested_date=requested_date,
+            requested_timezone=requested_timezone,
+            rotating_window_slot=rotating_window_slot,
             candidate_offset=int(candidate_offset),
             max_candidates=int(max_candidates),
         ),
