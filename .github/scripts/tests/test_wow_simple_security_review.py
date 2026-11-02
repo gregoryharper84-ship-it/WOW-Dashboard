@@ -1129,7 +1129,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
                     if "3.8-flash:generateContent" in url:
                         raise m.ProviderUnavailable(first)
                     raise m.ProviderUnavailable(final)
-                with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \\
+                with patch.dict(m.os.environ, {"WOW_QA_GEMINI_MODEL": ""}), \
                      patch.object(m, "request_json", side_effect=request):
                     with self.assertRaises(m.ProviderUnavailable) as err:
                         m.call_provider("gemini-generative-api", "key", "diff")
