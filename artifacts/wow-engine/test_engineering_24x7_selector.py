@@ -50,9 +50,9 @@ class Test24x7(unittest.TestCase):
     def test_cannot_adopt_foreign_or_missing_repo_identity(self):
         bad = pr(40, 9)
         bad["head"]["repo"] = {"full_name": "attacker/fork"}
-        self.assertEqual(mod.plan([issue(9, "P0")], [bad])["action"], "BUILD")
+        self.assertEqual(mod.plan([issue(9, "P0")], [bad])["action"], "IDLE")
         bad["head"]["repo"] = None
-        self.assertEqual(mod.plan([issue(9, "P0")], [bad])["action"], "BUILD")
+        self.assertEqual(mod.plan([issue(9, "P0")], [bad])["action"], "IDLE")
 
     def test_incomplete_inventory_must_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "bounded scan"):
@@ -130,7 +130,7 @@ class Test24x7(unittest.TestCase):
     def test_declared_untrusted_pr_fails_closed(self):
         adversarial = pr(40, 9)
         adversarial["head"]["sha"] = "HEAD~1"
-        self.assertEqual(mod.plan([issue(9, "P0")], [adversarial])["action"], "BUILD")
+        self.assertEqual(mod.plan([issue(9, "P0")], [adversarial])["action"], "IDLE")
 
 
 if __name__ == "__main__":
