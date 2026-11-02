@@ -358,6 +358,28 @@ class TestNativeQuotaFailover:
         response.json.return_value = {"error_code": code}
         return response
 
+    def test_429_then_exhausted_free_key_remains_rate_limited(self):
+        """A transient throttle must never consume backup quota on a later 0-credit tier."""
+        with mock.patch.dict(
+            os.environ,
+            {"ODDS_API_PAID_KEY": "paid-test", "ODDS_API_FREE_KEY": "free-test"},
+            clear=True,
+        ), \
+             mock.patch(
+                 "gate_engine.pg_odds_quota.fetch_quota_snapshot",
+                 return_value={"free": {"requests_remaining": 0}},
+             ), \
+             mock.patch.object(
+                 odds_api.requests, "get",
+                 return_value=self._response(429, "EXCEEDED_FREQ_LIMIT"),
+             ) as http, \
+             mock.patch("services.rundown.get_events_for_sport") as rundown:
+            events, status = odds_api.get_h2h_odds("basketball_wnba")
+        http.assert_called_once()
+        rundown.assert_not_called()
+        assert events == []
+        assert status == "FAILED: rate limited"
+
     def test_documented_422_credit_exhaustion_enables_rundown(self):
         with mock.patch.dict(os.environ, {"ODDS_API_FREE_KEY": "test-key"}, clear=True), \
              mock.patch("gate_engine.pg_odds_quota.fetch_quota_snapshot", return_value={}), \
