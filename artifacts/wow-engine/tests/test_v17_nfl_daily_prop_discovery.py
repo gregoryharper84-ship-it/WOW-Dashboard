@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from v17 import daily_prop_discovery as dispatch
 from v17 import nfl_daily_prop_acquisition as nfl_adapter
-from v17.daily_snapshot_runtime import _prop_discovery_accounting
+from v17.daily_snapshot_runtime import _prop_discovery_accounting, _lane_reconciliation
 
 
 def _outcome(sport, attempted, *, persisted=0, next_offset=None, blockers=None):
