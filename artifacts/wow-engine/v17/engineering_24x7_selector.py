@@ -137,7 +137,43 @@ def prior_attempt_since_issue_update(issue: dict, runs: list) -> bool:
     return False
 
 
-def plan(issues: list, prs: list, *, target: int | None = None, runs: list | None = None) -> dict:
+def _active_legacy_auto_run(runs: list) -> bool:
+    """Unattributable legacy AUTO jobs block overlap but not historic work."""
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ValueError("worker inventory row invalid")
+        title = run.get("displayTitle")
+        if (isinstance(title, str) and "incident=AUTO" in title.split()
+                and run.get("status") in ("queued", "in_progress", "waiting", "pending", "requested")):
+            return True
+    return False
+
+
+def _explicit_retry_authorized(incident: int, runs: list, retry_after_run_id: int) -> bool:
+    """A manual retry is allowed only after the latest exact-target failed run."""
+    matching = []
+    for run in runs:
+        title = run.get("displayTitle")
+        match = ATTEMPT_INCIDENT.search(title) if isinstance(title, str) else None
+        if match and int(match.group(1)) == incident:
+            matching.append(run)
+    if not matching:
+        return False
+    latest = max(
+        matching,
+        key=lambda run: (_updated_timestamp({"updated_at": run.get("createdAt")}),
+                         run.get("databaseId") if type(run.get("databaseId")) is int else 0),
+    )
+    return (
+        type(latest.get("databaseId")) is int
+        and latest["databaseId"] == retry_after_run_id
+        and latest.get("status") == "completed"
+        and latest.get("conclusion") in ("failure", "timed_out")
+    )
+
+
+def plan(issues: list, prs: list, *, target: int | None = None,
+         runs: list | None = None, retry_after_run_id: int | None = None) -> dict:
     """Prefer P0/P1 restoration; resume existing PR, never duplicate its writer."""
     if not isinstance(issues, list) or not isinstance(prs, list):
         raise ValueError("inventory is not a pair of arrays")
@@ -148,6 +184,18 @@ def plan(issues: list, prs: list, *, target: int | None = None, runs: list | Non
         raise ValueError("inventory exceeded bounded scan; refuse truncated data")
     if target is not None and (type(target) is not int or target <= 0):
         raise ValueError("target must be a positive numeric incident ID")
+    if retry_after_run_id is not None and (
+        target is None or type(retry_after_run_id) is not int or retry_after_run_id <= 0
+    ):
+        raise ValueError("manual retry requires exact incident and failed run ID")
+    # Existing legacy auto workers cannot be safely mapped to any issue.
+    # Deny all new writes while such a writer remains live.
+    if _active_legacy_auto_run(runs):
+        return {
+            "action": "IDLE", "incident": None, "pr": None,
+            "head_sha": None, "priority": None,
+            "reason": "LEGACY_AUTO_WRITER_ACTIVE", "can_execute": False,
+        }
 
     ranked = []
     for issue in issues:
@@ -158,7 +206,9 @@ def plan(issues: list, prs: list, *, target: int | None = None, runs: list | Non
     ranked.sort(key=lambda row: row[:3])
     for tier, _negative_updated, number, _issue in ranked:
         if prior_attempt_since_issue_update(_issue, runs):
-            continue
+            if not (retry_after_run_id is not None and
+                    _explicit_retry_authorized(number, runs, retry_after_run_id)):
+                continue
         related_all = [
             pr for pr in prs
             if isinstance(pr, dict) and pr.get("state") == "open"
@@ -199,6 +249,7 @@ def main() -> None:
     parser.add_argument("--prs", type=Path, required=True)
     parser.add_argument("--runs", type=Path)
     parser.add_argument("--target", type=int)
+    parser.add_argument("--retry-after-run-id", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     result = plan(
@@ -206,6 +257,7 @@ def main() -> None:
         json.loads(args.prs.read_text(encoding="utf-8")),
         target=args.target,
         runs=json.loads(args.runs.read_text(encoding="utf-8")) if args.runs else [],
+        retry_after_run_id=args.retry_after_run_id,
     )
     args.output.write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(result, sort_keys=True))
