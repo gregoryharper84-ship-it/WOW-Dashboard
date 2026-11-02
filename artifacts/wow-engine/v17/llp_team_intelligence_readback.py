@@ -82,8 +82,11 @@ def _source_failure_context(row: Mapping[str, Any]) -> dict[str, Any]:
                     if token and all(ch.isalnum() or ch in "_-." for ch in token):
                         if token not in codes:
                             codes.append(token)
+    # Some producers persist a single typed code under `reason` (NBA team-event
+    # discovery does this) instead of a blockers list or `code`. Read it too,
+    # and keep the same bounded-token filter so prose never becomes a code.
     for source in (result, nested):
-        for key in ("code", "failure_code", "failure_class"):
+        for key in ("code", "failure_code", "failure_class", "reason"):
             value = source.get(key)
             if isinstance(value, str):
                 token = value.strip().upper()
