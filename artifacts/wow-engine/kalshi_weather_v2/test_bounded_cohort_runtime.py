@@ -21,7 +21,7 @@ def _target(name: str = "miami") -> HourlyCohortTarget:
     )
 
 
-def test_capture_only_pass_does_not_settle_backlog(monkeypatch):
+def test_capture_only_zero_contracts_is_not_reported_as_collected(monkeypatch):
     closed = {"value": False}
 
     class FakeHttp:
@@ -42,7 +42,9 @@ def test_capture_only_pass_does_not_settle_backlog(monkeypatch):
         now="2026-09-14T14:00:00Z",
     )
 
-    assert result.status == "EMPIRICAL_SHADOW_COHORT_PASS"
+    # Previously this returned a PASS status, which made a scheduler echo
+    # indistinguishable from a completed data acquisition.
+    assert result.status == bounded.STATUS_NO_ELIGIBLE_CONTRACTS
     assert result.targets_checked == 1
     assert result.contracts_discovered == 0
     assert result.predictions_settled == 0
@@ -236,7 +238,7 @@ def test_weather_shadow_loop_skips_cycle_under_memory_pressure(monkeypatch):
 
 def _empty_cohort_result():
     return shadow.CohortRunResult(
-        status="EMPIRICAL_SHADOW_COHORT_PASS",
+        status=bounded.STATUS_COLLECTED,
         targets_checked=1,
         contracts_discovered=1,
         samples_captured=1,
@@ -337,3 +339,209 @@ def test_settlement_attempt_limit_does_not_sweep_backlog(monkeypatch):
     assert count == 2
     assert settled == ["pred-0", "pred-1"]
     assert failures == []
+
+
+def test_capture_status_never_reports_zero_work_as_success():
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=0,
+            contracts_discovered=0,
+            failures=(),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_NO_ELIGIBLE_CONTRACTS
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=2,
+            contracts_discovered=2,
+            failures=(),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_DUPLICATE_SUPPRESSED
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=0,
+            contracts_discovered=0,
+            failures=(),
+            eligible_targets=0,
+        )
+        == bounded.STATUS_NO_ELIGIBLE_TARGETS
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=0,
+            contracts_discovered=2,
+            failures=(),
+            eligible_targets=1,
+            low_memory_suppressed=2,
+        )
+        == bounded.STATUS_DEFERRED_LOW_MEMORY_MODE
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=1,
+            samples_skipped_existing=0,
+            contracts_discovered=1,
+            failures=(),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_COLLECTED
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=0,
+            contracts_discovered=1,
+            failures=("miami:DISCOVERY:TimeoutError:",),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_FAILED
+    )
+    assert (
+        bounded.derive_capture_status(
+            samples_captured=1,
+            samples_skipped_existing=0,
+            contracts_discovered=2,
+            failures=("miami:SUPPLEMENTAL:TimeoutError:",),
+            eligible_targets=1,
+        )
+        == bounded.STATUS_PARTIAL
+    )
+
+
+def test_collection_diagnostics_never_claim_capture_without_a_write():
+    result = SimpleNamespace(
+        status=bounded.STATUS_NO_ELIGIBLE_CONTRACTS,
+        targets_checked=1,
+        contracts_discovered=0,
+        samples_captured=0,
+        samples_skipped_existing=0,
+        supplemental_snapshots_captured=0,
+        predictions_settled=0,
+        capture_failures=(),
+        supplemental_failures=(),
+        settlement_failures=(),
+        market_microstructure_snapshots_captured=0,
+        market_microstructure_failures=(),
+    )
+    diagnostics = runtime.build_collection_diagnostics(
+        result=result,
+        targets=(_target(),),
+        trigger="EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
+        elapsed_seconds=1.25,
+        latest_capture_at="2026-11-01T14:02:26.246888Z",
+    )
+
+    assert diagnostics["status"] == bounded.STATUS_NO_ELIGIBLE_CONTRACTS
+    assert diagnostics["predictions_written"] == 0
+    assert diagnostics["usable_capture"] is False
+    assert diagnostics["targets"] == ["miami"]
+    assert diagnostics["latest_successful_capture_at"] == "2026-11-01T14:02:26.246888Z"
+    assert diagnostics["collection_fresh"] is False
+    assert diagnostics["probability_publishable"] is False
+    assert diagnostics["can_execute"] is False
+
+
+def test_supplemental_failure_produces_partial_capture_status(monkeypatch):
+    """A prediction write with a failed side feed is PARTIAL, never COLLECTED."""
+    monkeypatch.delenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", raising=False)
+
+    class FakeHttp:
+        def close(self):
+            pass
+
+    target = _target()
+    target_time = "2026-11-02T16:00:00Z"
+    item = SimpleNamespace(
+        ticker="KXTEMPMIAH-T",
+        parsed=SimpleNamespace(observation_time_utc=target_time),
+        rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={})),
+        series_ticker="KXTEMPMIAH",
+    )
+    monkeypatch.setattr(bounded, "ReadOnlyJsonClient", FakeHttp)
+    monkeypatch.setattr(bounded, "_existing_sample_keys", lambda db: set())
+    monkeypatch.setattr(
+        bounded, "_discover_target_contracts", lambda http, loc, when: (item,)
+    )
+    monkeypatch.setattr(
+        bounded, "lead_time_bucket", lambda decision, target: "H0"
+    )
+    monkeypatch.setattr(
+        bounded, "capture_market_microstructure_batch",
+        lambda **kw: SimpleNamespace(written=0, failures=(), attempted=1),
+    )
+    monkeypatch.setattr(
+        bounded, "capture_hourly_shadow",
+        lambda **kw: {"prediction_id": "p1", "rule_snapshot_id": "r1"},
+    )
+    monkeypatch.setattr(
+        bounded, "capture_hourly_supplemental_sources",
+        lambda **kw: {"source_snapshot_ids": [], "failures": ["FEED_UNAVAILABLE"]},
+    )
+    result = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(), targets=(target,),
+        now="2026-11-02T15:30:00Z",
+    )
+    assert result.samples_captured == 1
+    assert result.supplemental_failures
+    assert result.status == bounded.STATUS_PARTIAL
+    assert result.probability_publishable is False
+    assert result.can_execute is False
+
+
+def test_persisted_prediction_late_market_snapshot_failure_is_partial_and_deduped(monkeypatch):
+    """A saved forecast must count even if its later market quote write fails."""
+    monkeypatch.setenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "1")
+    target_time = "2026-11-02T14:15:00Z"
+    ticker = "KXTEMPMIAH-A"
+    item = SimpleNamespace(
+        ticker=ticker,
+        parsed=SimpleNamespace(observation_time_utc=target_time),
+        rules=SimpleNamespace(market_rules=SimpleNamespace(raw_market={})),
+        series_ticker="KXTEMPMIAH",
+    )
+    class FakeHttp:
+        def close(self):
+            pass
+    monkeypatch.setattr(bounded, "ReadOnlyJsonClient", FakeHttp)
+    known = set()
+    monkeypatch.setattr(bounded, "_existing_sample_keys", lambda db: known)
+    monkeypatch.setattr(bounded, "_discover_target_contracts", lambda *args: (item,))
+    monkeypatch.setattr(bounded, "lead_time_bucket", lambda *args: "H0")
+    calls = []
+    def fail_after_prediction(**kwargs):
+        calls.append(kwargs["ticker"])
+        raise bounded.KalshiWeatherPartialCaptureError(
+            prediction_id="immutable-prediction-id",
+            rule_snapshot_id="rule-id",
+        )
+    monkeypatch.setattr(bounded, "capture_hourly_shadow", fail_after_prediction)
+    first = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(),
+        targets=(_target(),),
+        now="2026-11-02T14:00:00Z",
+    )
+    assert first.status == bounded.STATUS_PARTIAL
+    assert first.samples_captured == 1
+    assert len(first.capture_failures) == 1
+    assert "PREDICTION_PERSISTED_MARKET_SNAPSHOT_FAILED" in first.capture_failures[0]
+    assert first.probability_publishable is False
+    assert first.can_execute is False
+    assert calls == [ticker]
+
+    # A subsequent pass sees the immutable forecast sample and does not write
+    # a second prediction to compensate for the missing market quote.
+    second = bounded.run_bounded_capture_only_cohort_once(
+        db_client_fn=lambda: object(),
+        targets=(_target(),),
+        now="2026-11-02T14:00:00Z",
+    )
+    assert second.samples_captured == 0
+    assert second.samples_skipped_existing == 1
+    assert calls == [ticker]

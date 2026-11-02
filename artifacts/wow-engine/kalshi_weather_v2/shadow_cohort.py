@@ -68,6 +68,7 @@ class CohortRunResult:
     can_execute: bool = False
     market_microstructure_snapshots_captured: int = 0
     market_microstructure_failures: tuple[str, ...] = ()
+    low_memory_suppressed: int = 0
 
 
 def run_hourly_shadow_cohort_once(

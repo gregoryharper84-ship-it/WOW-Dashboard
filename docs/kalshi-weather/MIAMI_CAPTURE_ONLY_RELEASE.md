@@ -1,0 +1,7 @@
+# Kalshi Miami capture-only release
+
+This branch intentionally excludes settlement-backlog and calibration changes from PR #2377 so independent security review can inspect every changed line within its bounded diff limit. The shadow collector writes immutable forecasts only and cannot publish P(YES), trade, or authorize execution.
+
+Deploy only on isolated `wow-kalshi-weather-v2` after exact-head independent PASS and protected merge. Set `WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE=1`, `WOW_KALSHI_WEATHER_EMPIRICAL_TARGET_CITY=miami`, `WOW_KALSHI_WEATHER_EMPIRICAL_COHORT_ENABLED=0`, and `WOW_KALSHI_WEATHER_SETTLEMENT_BACKLOG_ENABLED=0`. Configure the existing cohort key securely in Render and Supabase Vault under `kalshi_weather_cohort_key` without exposing it in source/logs/chat. Apply the reviewed scheduled capture migration only after authentication has been verified. Health GET does not collect data. Prove capture by a new immutable prediction row (decision_time greater than the pre-release baseline), not HTTP 200, and verify memory stability across cycles.
+
+Settlement pagination remains in #2387; research/calibration hardening from #2377 is outside this capture-only release and cannot be certified by its review.

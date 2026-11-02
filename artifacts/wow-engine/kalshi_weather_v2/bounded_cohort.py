@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Callable, Sequence
 from urllib.parse import urlsplit
 
 from .http_client import HttpAcquisitionError, ReadOnlyJsonClient
 from .market_microstructure_recorder import capture_market_microstructure_batch
-from .runtime import capture_hourly_shadow, lead_time_bucket
+from .runtime import KalshiWeatherPartialCaptureError, capture_hourly_shadow, lead_time_bucket
 from .shadow_cohort import (
     CAPTURE_BUCKETS,
     CohortRunResult,
@@ -21,6 +22,50 @@ from .supplemental_capture import capture_hourly_supplemental_sources
 
 
 _logger = logging.getLogger("wow.kalshi_weather_v2.bounded_cohort")
+
+# A clean HTTP response is not proof of collection. These statuses keep a
+# scheduler echo, a completed collector pass, and a usable capture separately
+# identifiable so an operator can never mistake one for another.
+STATUS_COLLECTED = "EMPIRICAL_SHADOW_COHORT_COLLECTED"
+STATUS_NO_ELIGIBLE_TARGETS = "EMPIRICAL_SHADOW_COHORT_NO_ELIGIBLE_TARGETS"
+STATUS_NO_ELIGIBLE_CONTRACTS = "EMPIRICAL_SHADOW_COHORT_NO_ELIGIBLE_CONTRACTS"
+STATUS_DUPLICATE_SUPPRESSED = "EMPIRICAL_SHADOW_COHORT_DUPLICATE_SUPPRESSED"
+STATUS_PARTIAL = "EMPIRICAL_SHADOW_COHORT_PARTIAL"
+STATUS_FAILED = "EMPIRICAL_SHADOW_COHORT_FAILED"
+STATUS_DEFERRED_LOW_MEMORY_MODE = "EMPIRICAL_SHADOW_COHORT_DEFERRED_LOW_MEMORY_MODE"
+
+
+def derive_capture_status(
+    *,
+    samples_captured: int,
+    samples_skipped_existing: int,
+    contracts_discovered: int,
+    failures: Sequence[str],
+    eligible_targets: int,
+    low_memory_suppressed: int = 0,
+) -> str:
+    """Report what actually happened, never merely that a pass was attempted.
+
+    ``samples_captured == 0`` is never reported as successful data acquisition.
+    Zero new rows is a legitimate outcome when every eligible target/time
+    bucket already has an immutable sample, or when no eligible future
+    contract exists, but both stay explicit rather than collapsing into PASS.
+    """
+    has_failures = bool(failures)
+    if samples_captured > 0:
+        return STATUS_PARTIAL if has_failures else STATUS_COLLECTED
+    if has_failures:
+        return STATUS_FAILED
+    if eligible_targets == 0:
+        return STATUS_NO_ELIGIBLE_TARGETS
+    if contracts_discovered == 0:
+        return STATUS_NO_ELIGIBLE_CONTRACTS
+    if low_memory_suppressed > 0:
+        # Contracts existed but this survival mode deliberately deferred them.
+        return STATUS_DEFERRED_LOW_MEMORY_MODE
+    if samples_skipped_existing > 0:
+        return STATUS_DUPLICATE_SUPPRESSED
+    return STATUS_NO_ELIGIBLE_CONTRACTS
 
 
 def run_bounded_capture_only_cohort_once(
@@ -39,6 +84,9 @@ def run_bounded_capture_only_cohort_once(
     workload boundary so an old cohort cannot monopolize or recycle the API.
     """
     decision_time = _iso(_parse_or_now(now))
+    # Opt-in for isolated 512-MiB collector: one H0 forecast, no side feeds.
+    # Preserve original full research path when disabled.
+    low_memory = os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0") == "1"
     db = db_client_fn()
     existing_keys = _existing_sample_keys(db)
     capture_failures: list[str] = []
@@ -46,6 +94,7 @@ def run_bounded_capture_only_cohort_once(
     contracts_discovered = 0
     captured = 0
     skipped = 0
+    low_memory_suppressed = 0
     supplemental_captured = 0
     microstructure_captured = 0
     microstructure_failures: list[str] = []
@@ -72,40 +121,46 @@ def run_bounded_capture_only_cohort_once(
 
             contracts_discovered += len(contracts)
 
-            recorder = capture_market_microstructure_batch(
-                client=db,
-                tickers=tuple(item.ticker for item in contracts),
-                retrieved_at=decision_time,
-                series_by_ticker={
-                    item.ticker: item.series_ticker
-                    for item in contracts
-                    if item.series_ticker
-                },
-                market_by_ticker={
-                    item.ticker: item.rules.market_rules.raw_market
-                    for item in contracts
-                },
-                http=http,
-            )
-            microstructure_captured += recorder.written
-            microstructure_failures.extend(
-                f"{target.index_city}:{failure}" for failure in recorder.failures
-            )
-            if recorder.failures:
+            if low_memory:
                 _logger.warning(
-                    "WOW_KALSHI_WEATHER_MARKET_RECORDER status=PARTIAL target=%s attempted=%s written=%s failures=%s probability_input=false can_execute=false",
+                    "WOW_KALSHI_WEATHER_MARKET_RECORDER status=SKIPPED_LOW_MEMORY_MODE target=%s probability_input=false can_execute=false",
                     target.index_city,
-                    recorder.attempted,
-                    recorder.written,
-                    len(recorder.failures),
                 )
             else:
-                _logger.warning(
-                    "WOW_KALSHI_WEATHER_MARKET_RECORDER status=PASS target=%s attempted=%s written=%s probability_input=false can_execute=false",
-                    target.index_city,
-                    recorder.attempted,
-                    recorder.written,
+                recorder = capture_market_microstructure_batch(
+                    client=db,
+                    tickers=tuple(item.ticker for item in contracts),
+                    retrieved_at=decision_time,
+                    series_by_ticker={
+                        item.ticker: item.series_ticker
+                        for item in contracts
+                        if item.series_ticker
+                    },
+                    market_by_ticker={
+                        item.ticker: item.rules.market_rules.raw_market
+                        for item in contracts
+                    },
+                    http=http,
                 )
+                microstructure_captured += recorder.written
+                microstructure_failures.extend(
+                    f"{target.index_city}:{failure}" for failure in recorder.failures
+                )
+                if recorder.failures:
+                    _logger.warning(
+                        "WOW_KALSHI_WEATHER_MARKET_RECORDER status=PARTIAL target=%s attempted=%s written=%s failures=%s probability_input=false can_execute=false",
+                        target.index_city,
+                        recorder.attempted,
+                        recorder.written,
+                        len(recorder.failures),
+                    )
+                else:
+                    _logger.warning(
+                        "WOW_KALSHI_WEATHER_MARKET_RECORDER status=PASS target=%s attempted=%s written=%s probability_input=false can_execute=false",
+                        target.index_city,
+                        recorder.attempted,
+                        recorder.written,
+                    )
 
             by_target: dict[str, list] = {}
             for item in contracts:
@@ -127,6 +182,11 @@ def run_bounded_capture_only_cohort_once(
 
                 if bucket not in CAPTURE_BUCKETS:
                     continue
+                if low_memory and (bucket != "H0" or captured >= 1):
+                    # Deferred, not unavailable: this mode trades horizon coverage
+                    # for survival inside 512 MiB. It must stay visible.
+                    low_memory_suppressed += 1
+                    continue
                 sample_key = cohort_sample_key(target.index_city, target_time, bucket)
                 if sample_key in existing_keys:
                     skipped += 1
@@ -146,6 +206,26 @@ def run_bounded_capture_only_cohort_once(
                         preacquired_rules=chosen.rules,
                         preparsed_rule=chosen.parsed,
                     )
+                except KalshiWeatherPartialCaptureError as exc:
+                    # Forecast persistence has succeeded. Preserve the write
+                    # count and immutable sample key, but never report a clean
+                    # capture if the following market snapshot write failed.
+                    captured += 1
+                    existing_keys.add(sample_key)
+                    failure = (
+                        f"{target.index_city}:{target_time}:{bucket}:"
+                        f"{chosen.ticker}:{exc.code}"
+                    )
+                    capture_failures.append(failure)
+                    _logger.warning(
+                        "WOW_KALSHI_WEATHER_CAPTURE_FAILURE stage=MARKET_SNAPSHOT_AFTER_PREDICTION target=%s target_time=%s bucket=%s ticker=%s prediction_id=%s probability_publishable=false can_execute=false",
+                        target.index_city,
+                        target_time,
+                        bucket,
+                        chosen.ticker,
+                        exc.prediction_id,
+                    )
+                    continue
                 except Exception as exc:
                     context = _failure_context(exc)
                     failure = (
@@ -175,6 +255,13 @@ def run_bounded_capture_only_cohort_once(
                     chosen.ticker,
                     capture.get("prediction_id"),
                 )
+
+                if low_memory:
+                    _logger.warning(
+                        "WOW_KALSHI_WEATHER_SUPPLEMENTAL status=SKIPPED_LOW_MEMORY_MODE target=%s probability_publishable=false can_execute=false",
+                        target.index_city,
+                    )
+                    continue
 
                 try:
                     supplemental = capture_hourly_supplemental_sources(
@@ -215,10 +302,17 @@ def run_bounded_capture_only_cohort_once(
         http.close()
 
     return CohortRunResult(
-        status=(
-            "EMPIRICAL_SHADOW_COHORT_PASS"
-            if not capture_failures
-            else "EMPIRICAL_SHADOW_COHORT_PARTIAL"
+        status=derive_capture_status(
+            samples_captured=captured,
+            samples_skipped_existing=skipped,
+            contracts_discovered=contracts_discovered,
+            failures=(
+                *capture_failures,
+                *supplemental_failures,
+                *microstructure_failures,
+            ),
+            eligible_targets=sum(1 for target in targets if target.enabled),
+            low_memory_suppressed=low_memory_suppressed,
         ),
         targets_checked=sum(1 for target in targets if target.enabled),
         contracts_discovered=contracts_discovered,
@@ -231,6 +325,7 @@ def run_bounded_capture_only_cohort_once(
         settlement_failures=(),
         market_microstructure_snapshots_captured=microstructure_captured,
         market_microstructure_failures=tuple(microstructure_failures),
+        low_memory_suppressed=low_memory_suppressed,
     )
 
 

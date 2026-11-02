@@ -1,8 +1,14 @@
 """External, read-only health wakeup for the isolated Kalshi Weather shadow API.
 
-A successful probe proves the API, Supabase read and collector wiring were
-reachable at the probe time. It does NOT prove a scheduled collector pass ran,
-settlements are complete, model calibration, or trade eligibility.
+A successful probe proves the API, the Supabase ledger read and the presence of
+the authenticated capture trigger at probe time. It does NOT prove a scheduled
+collector pass ran, that a prediction was written, that settlements are
+complete, model calibration, or trade eligibility.
+
+The in-process startup loop is intentionally optional: the shared low-memory
+WOW web process must never capture, so the isolated runtime is driven by an
+external authorized POST scheduler. Requiring ``startup_enabled`` here would
+fail closed against a correctly configured trigger-only deployment.
 
 This script deliberately sends GET requests only. It carries no bearer key,
 changes no state, and does not trigger a second weather collector.
@@ -64,8 +70,13 @@ def verify(health: Mapping[str, Any], readiness: Mapping[str, Any]) -> None:
         raise ProbeError("WEATHER_API_IDENTITY_UNVERIFIED")
     if health.get("database_status") != "AVAILABLE" or health.get("database_diagnostic") != "DATABASE_READ_VERIFIED":
         raise ProbeError("WEATHER_DATABASE_READ_NOT_VERIFIED")
-    if readiness.get("mode") != "SHADOW" or readiness.get("trigger_installed") is not True or readiness.get("startup_enabled") is not True:
-        raise ProbeError("WEATHER_COLLECTOR_NOT_CONFIGURED")
+    if readiness.get("mode") != "SHADOW" or readiness.get("trigger_installed") is not True:
+        raise ProbeError("WEATHER_COLLECTOR_TRIGGER_NOT_INSTALLED")
+    if readiness.get("capture_trigger_installed") is False:
+        raise ProbeError("WEATHER_CAPTURE_TRIGGER_NOT_INSTALLED")
+    collection_path = readiness.get("collection_path")
+    if collection_path is not None and collection_path != "AUTHENTICATED_POST_TRIGGER":
+        raise ProbeError("WEATHER_COLLECTION_PATH_UNVERIFIED")
     if any(v.get("can_execute") is not False or v.get("probability_publishable") is not False for v in (health, readiness)):
         raise ProbeError("WEATHER_PROBABILITY_SAFETY_INVALID")
 
@@ -83,7 +94,7 @@ def run(
             health = reader("/health")
             readiness = reader("/collector/readiness")
             verify(health, readiness)
-            print("WARM_HEALTH_VERIFIED: isolated API, Supabase ledger read and collector attachment; independent probability and trade execution remain disabled")
+            print("WARM_HEALTH_VERIFIED: isolated API, Supabase ledger read and authenticated capture trigger installed; no collection pass is proven by this probe, and independent probability and trade execution remain disabled")
             return True
         except Exception as exc:
             # Never log response bodies, URL query strings or credential values.

@@ -4,10 +4,11 @@ import asyncio
 import hmac
 import logging
 import os
+import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 from fastapi import FastAPI, Header, HTTPException
 
@@ -57,6 +58,139 @@ def _weather_memory_pressure() -> tuple[bool, float | None]:
     return ratio >= max_ratio, ratio
 
 
+def _collector_owner_label() -> str:
+    """Non-secret deployment identity for diagnostics, never a credential."""
+    for name in (
+        "WOW_KALSHI_WEATHER_COLLECTOR_OWNER_ID",
+        "RENDER_SERVICE_NAME",
+        "RENDER_INSTANCE_ID",
+    ):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value[:96]
+    return "UNSPECIFIED"
+
+
+def _normalize_utc(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text.replace(" ", "T", 1)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _latest_capture_at(db: object) -> str | None:
+    """Newest immutable prediction write, the only proof of usable capture."""
+    try:
+        response = (
+            db.table("wow_kalshi_weather_predictions")
+            .select("created_at")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+    except Exception:
+        return None
+    for row in rows:
+        if isinstance(row, Mapping):
+            normalized = _normalize_utc(row.get("created_at"))
+            if normalized:
+                return normalized
+    return None
+
+
+def _collection_staleness_threshold_seconds() -> int:
+    try:
+        value = int(os.getenv("WOW_KALSHI_WEATHER_COLLECTION_STALENESS_SECONDS", "7200"))
+    except ValueError:
+        value = 7200
+    return max(900, value)
+
+
+def build_collection_diagnostics(
+    *,
+    result: Any,
+    targets: tuple[HourlyCohortTarget, ...],
+    trigger: str,
+    elapsed_seconds: float,
+    latest_capture_at: str | None,
+    memory_ratio: float | None = None,
+) -> dict[str, object]:
+    """Machine-readable proof of what a trigger actually produced.
+
+    A scheduler receipt, an HTTP 200 or a clean pass is never by itself
+    evidence of data acquisition; ``predictions_written`` and the durable
+    ``latest_successful_capture_at`` are what an operator must read.
+    """
+    now = datetime.now(timezone.utc)
+    threshold = _collection_staleness_threshold_seconds()
+    age_seconds: float | None = None
+    if latest_capture_at:
+        parsed = _normalize_utc(latest_capture_at)
+        if parsed:
+            age_seconds = max(
+                0.0,
+                (now - datetime.fromisoformat(parsed.replace("Z", "+00:00"))).total_seconds(),
+            )
+
+    failure_samples = (
+        list(result.capture_failures)
+        + list(result.supplemental_failures)
+        + list(result.settlement_failures)
+        + list(result.market_microstructure_failures)
+    )
+    return {
+        "status": result.status,
+        "trigger": trigger,
+        "captured_at": now.isoformat().replace("+00:00", "Z"),
+        "collector_owner": _collector_owner_label(),
+        "targets": [target.index_city for target in targets if target.enabled],
+        "targets_checked": result.targets_checked,
+        "eligible_contracts_discovered": result.contracts_discovered,
+        "predictions_written": result.samples_captured,
+        "duplicate_samples_skipped": result.samples_skipped_existing,
+        "source_snapshots_written": result.supplemental_snapshots_captured,
+        "market_snapshots_written": result.market_microstructure_snapshots_captured,
+        "low_memory_mode": os.getenv(
+            "WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0"
+        )
+        == "1",
+        "low_memory_deferred_buckets": int(
+            getattr(result, "low_memory_suppressed", 0) or 0
+        ),
+        "predictions_settled": result.predictions_settled,
+        "failure_counts": {
+            "discovery_or_capture": len(result.capture_failures),
+            "supplemental_source": len(result.supplemental_failures),
+            "settlement": len(result.settlement_failures),
+            "market_microstructure": len(result.market_microstructure_failures),
+        },
+        "failure_samples": failure_samples[:10],
+        "usable_capture": result.samples_captured > 0,
+        "elapsed_seconds": round(float(elapsed_seconds), 3),
+        "memory_ratio": None if memory_ratio is None else round(float(memory_ratio), 4),
+        "latest_successful_capture_at": latest_capture_at,
+        "latest_successful_capture_age_seconds": (
+            None if age_seconds is None else round(age_seconds, 1)
+        ),
+        "collection_staleness_threshold_seconds": threshold,
+        "collection_fresh": (
+            None if age_seconds is None else age_seconds <= threshold
+        ),
+        "probability_publishable": False,
+        "can_execute": False,
+    }
+
+
 def _automated_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
     """Mirror governed operational targets into the bounded empirical collector.
 
@@ -101,13 +235,22 @@ def _scheduled_shadow_targets() -> tuple[HourlyCohortTarget, ...]:
     return tuple(enabled[(start + offset) % len(enabled)] for offset in range(max_targets))
 
 
-def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
+def _run_bounded_shadow_cycle(
+    *,
+    db_client_fn: Callable[[], object],
+    targets: tuple[HourlyCohortTarget, ...] | None = None,
+):
     # Capture and grading remain separate operations. Settlement can run only
     # on the explicitly owned singleton and is capped to avoid replay storms.
+    selected = _scheduled_shadow_targets() if targets is None else tuple(targets)
     result = run_bounded_capture_only_cohort_once(
         db_client_fn=db_client_fn,
-        targets=_scheduled_shadow_targets(),
+        targets=selected,
     )
+    # The 512-MiB core-only capture cannot safely run the settlement backlog
+    # in the same process. Settlement remains an isolated bounded workload.
+    if os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0") == "1":
+        return result
     if (
         os.getenv("WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER", "0") != "1"
         or os.getenv("WOW_KALSHI_WEATHER_ISOLATED_SETTLEMENT_ENABLED", "0") != "1"
@@ -134,6 +277,30 @@ def _run_bounded_shadow_cycle(*, db_client_fn: Callable[[], object]):
         predictions_settled=settled,
         settlement_failures=tuple(failures),
     )
+
+
+def _require_cohort_key(supplied_header: str | None) -> None:
+    """Fail closed. An unconfigured or mismatched trigger never proceeds."""
+    expected = os.getenv("WOW_KALSHI_WEATHER_COHORT_KEY", "")
+    supplied = str(supplied_header or "")
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNCONFIGURED",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNAUTHORIZED",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
 
 
 def install_empirical_cohort_scheduler(
@@ -167,26 +334,9 @@ def install_empirical_cohort_scheduler(
             alias="X-WOW-Weather-Cohort-Key",
         ),
     ):
-        expected = os.getenv("WOW_KALSHI_WEATHER_COHORT_KEY", "")
-        supplied = str(x_wow_weather_cohort_key or "")
-        if not expected:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNCONFIGURED",
-                    "probability_publishable": False,
-                    "can_execute": False,
-                },
-            )
-        if not supplied or not hmac.compare_digest(supplied, expected):
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNAUTHORIZED",
-                    "probability_publishable": False,
-                    "can_execute": False,
-                },
-            )
+        _require_cohort_key(x_wow_weather_cohort_key)
+        trigger = "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER"
+        selected = _scheduled_shadow_targets()
         under_pressure, memory_ratio = _weather_memory_pressure()
         if under_pressure:
             _logger.warning(
@@ -195,18 +345,53 @@ def install_empirical_cohort_scheduler(
             )
             return {
                 "status": "SKIPPED_MEMORY_PRESSURE",
-                "trigger": "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
+                "trigger": trigger,
                 "collection_mode": "BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW",
                 "memory_ratio": memory_ratio,
+                "collection_diagnostics": {
+                    "status": "SKIPPED_MEMORY_PRESSURE",
+                    "trigger": trigger,
+                    "collector_owner": _collector_owner_label(),
+                    "targets": [target.index_city for target in selected if target.enabled],
+                    "predictions_written": 0,
+                    "usable_capture": False,
+                    "memory_ratio": memory_ratio,
+                    "probability_publishable": False,
+                    "can_execute": False,
+                },
                 "probability_publishable": False,
                 "can_execute": False,
             }
 
-        result = _run_bounded_shadow_cycle(db_client_fn=db_client_fn)
+        started = time.monotonic()
+        result = _run_bounded_shadow_cycle(db_client_fn=db_client_fn, targets=selected)
+        elapsed_seconds = time.monotonic() - started
+        try:
+            latest_capture_at = _latest_capture_at(db_client_fn())
+        except Exception:
+            latest_capture_at = None
+        diagnostics = build_collection_diagnostics(
+            result=result,
+            targets=selected,
+            trigger=trigger,
+            elapsed_seconds=elapsed_seconds,
+            latest_capture_at=latest_capture_at,
+            memory_ratio=memory_ratio,
+        )
+        _logger.warning(
+            "WOW_KALSHI_WEATHER_COLLECTION status=%s trigger=%s predictions_written=%s duplicates_skipped=%s latest_successful_capture_at=%s collection_fresh=%s probability_publishable=false can_execute=false",
+            diagnostics["status"],
+            trigger,
+            diagnostics["predictions_written"],
+            diagnostics["duplicate_samples_skipped"],
+            diagnostics["latest_successful_capture_at"],
+            diagnostics["collection_fresh"],
+        )
         return {
             **asdict(result),
-            "trigger": "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
+            "trigger": trigger,
             "collection_mode": "BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW",
+            "collection_diagnostics": diagnostics,
             "probability_publishable": False,
             "can_execute": False,
         }
