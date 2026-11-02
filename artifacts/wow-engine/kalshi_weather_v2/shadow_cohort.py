@@ -635,6 +635,19 @@ def run_bounded_settlement_backlog_once(
             truncated=True,
             failures=("SETTLEMENT_BACKLOG_DATABASE_READ_FAILED",),
         )
+    if not scan_complete:
+        # An incomplete outcomes ledger could hide already settled IDs.
+        # Never attempt writes until both source ledgers are exhaustive.
+        return SettlementBacklogResult(
+            status=SETTLEMENT_BACKLOG_PARTIAL,
+            pending_eligible=len(pending),
+            attempted=0,
+            settled=0,
+            remaining_after_run=len(pending),
+            truncated=True,
+            failures=("SETTLEMENT_BACKLOG_SCAN_TRUNCATED",),
+            scan_complete=False,
+        )
     failures: list[str] = []
     attempted = 0
     settled = 0
