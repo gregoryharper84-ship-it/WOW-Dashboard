@@ -38,6 +38,35 @@ class Test24x7(unittest.TestCase):
         self.assertEqual((result["action"], result["pr"], result["head_sha"]),
                          ("RESUME_PR", 40, SHA))
 
+    def test_worker_emitted_backtick_marker_prevents_duplicate_build(self):
+        # This is the literal shell template used by BOTH live coding workers.
+        emitter = 'echo "Incident: \`$INCIDENT\`"'
+        for worker in (
+            "wow-v17-chatgpt-engineering-worker.yml",
+            "wow-v17-claude-engineering-worker.yml",
+        ):
+            workflow = (
+                Path(__file__).resolve().parents[2] / ".github" / "workflows" / worker
+            ).read_text(encoding="utf-8")
+            self.assertIn(emitter, workflow, worker)
+
+        existing = pr(451, 2285, body="Incident: `2285`\\n\\nSource: worker\\n")
+        self.assertEqual(mod.related_incidents(existing), {2285})
+        result = mod.plan([issue(2285, "P0")], [existing])
+        self.assertEqual((result["action"], result["pr"]), ("RESUME_PR", 451))
+
+    def test_canonical_and_plain_incident_markers_still_match(self):
+        for body in ("Incident: #2285", "Incident: 2285", "Fixes #2285",
+                     "Incident: #2285 - additional context"):
+            with self.subTest(body=body):
+                self.assertEqual(mod.related_incidents({"body": body}), {2285})
+
+    def test_malformed_worker_marker_must_not_claim_other_incident(self):
+        for body in ("Incident: `2285", "Incident: `2285x`", "Incident: #2285x",
+                     "Incident: 0", "Incident: `-2285`"):
+            with self.subTest(body=body):
+                self.assertNotIn(2285, mod.related_incidents({"body": body}))
+
     def test_blocked_owner_issue_does_not_stop_independent_work(self):
         result = mod.plan([issue(9, "P0", "needs-owner"), issue(10, "P1")], [])
         self.assertEqual(result["incident"], 10)
