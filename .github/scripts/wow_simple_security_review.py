@@ -421,8 +421,14 @@ def review_models(provider, key, *, strict=False):
         # the credential grants access to one of our static defaults.
         if not discovered:
             raise ProviderUnavailable("PROVIDER_MODEL_UNAVAILABLE")
+    except ProviderUnavailable:
+        # A successful, complete catalog with zero approved generation
+        # models proves unavailability. Static defaults must not bypass it.
+        raise
     except Hold as exc:
-        if strict or str(exc) in ("REVIEW_MODEL_CATALOG_INVALID", "REVIEW_MODEL_CATALOG_PAGINATION_REQUIRED"):
+        if strict or str(exc) not in ("HTTP_408", "HTTP_429", "HTTP_500",
+                                      "HTTP_502", "HTTP_503", "HTTP_504",
+                                      "HTTP_529", "PROVIDER_TRANSPORT"):
             raise
         print("REVIEW_MODEL_CATALOG_UNAVAILABLE:" + label, file=sys.stderr)
         discovered = list(defaults)
