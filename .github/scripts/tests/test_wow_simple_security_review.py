@@ -683,7 +683,7 @@ class SimpleSecurityReviewTests(unittest.TestCase):
              {}, 60, m.Hold, "GITHUB_TRANSPORT"),
         )
         for url, request_kwargs, timeout, failure_type, typed_reason in cases:
-            with self.subTest(url=url), \\
+            with self.subTest(url=url), \
                  patch.object(m.HTTP_CLIENT, "open", side_effect=TimeoutError()) as opener:
                 with self.assertRaises(failure_type) as err:
                     m.request_json(url, **request_kwargs)
