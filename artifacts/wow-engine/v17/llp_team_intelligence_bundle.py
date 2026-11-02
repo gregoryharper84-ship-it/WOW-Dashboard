@@ -48,7 +48,9 @@ def _line(value: Any) -> float | None:
 
 def _triplet_valid(lower: Any, point: Any, upper: Any) -> bool:
     p = [_prob(x) for x in (lower, point, upper)]
-    # Calibrated sporting probabilities, including their claimed bounds, must\n    # be strictly interior. Distribution components (e.g. push=0) may reach 0.\n    return all(x is not None and 0 < x < 1 for x in p) and p[0] <= p[1] <= p[2]
+    # Calibrated sporting probabilities, including their claimed bounds, must
+    # be strictly interior. Distribution components (e.g. push=0) may reach 0.
+    return all(x is not None and 0 < x < 1 for x in p) and p[0] <= p[1] <= p[2]
 
 
 def _distribution_valid(values: Iterable[Any]) -> bool:
