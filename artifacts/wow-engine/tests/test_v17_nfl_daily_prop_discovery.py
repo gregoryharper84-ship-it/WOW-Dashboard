@@ -350,3 +350,40 @@ def test_missing_nfl_fill_uses_additional_nfl_only_after_existing_mlb():
     assert [row["source_snapshot_id"] for row in selected] == [
         "nfl-0", "nfl-1", "mlb-0", "nfl-2",
     ]
+
+
+
+def test_repeated_nfl_windows_share_bounded_request_scoped_http_cache(monkeypatch):
+    fetched = []
+    def transport(url, *, params=None, headers=None, **kwargs):
+        fetched.append((url, dict(params or {})))
+        return {"ok": True}
+    monkeypatch.setattr(dispatch.httpx, "get", transport)
+
+    seen_offsets = []
+    def nfl(**kwargs):
+        seen_offsets.append(kwargs["candidate_offset"])
+        response = kwargs["http_get"](
+            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
+            params={"dates": "20261105", "limit": 100},
+            headers={"Accept": "application/json"}, timeout=12.0,
+            follow_redirects=True,
+        )
+        assert response["ok"] is True
+        return _outcome(
+            "NFL", 1, persisted=0,
+            next_offset=1 if kwargs["candidate_offset"] == 0 else None,
+        )
+    monkeypatch.setattr(dispatch, "acquire_nfl", nfl)
+    monkeypatch.setattr(dispatch, "acquire_mlb",
+                        lambda **kwargs: _outcome("MLB", 0))
+    for repeat in (1, 2):
+        result = dispatch.acquire_daily_prop_snapshots(
+            db=object(), requested_date="2026-11-05",
+            requested_timezone="America/Chicago", max_candidates=8,
+        )
+        assert result["attempted"] == 2
+        assert result["can_execute"] is False
+        assert seen_offsets[-2:] == [0, 1]
+        # Once per Daily invocation, not once per NFL candidate window.
+        assert len(fetched) == repeat
