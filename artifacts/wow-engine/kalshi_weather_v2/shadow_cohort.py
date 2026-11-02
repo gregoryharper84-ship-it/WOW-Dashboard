@@ -68,6 +68,28 @@ class CohortRunResult:
     can_execute: bool = False
     market_microstructure_snapshots_captured: int = 0
     market_microstructure_failures: tuple[str, ...] = ()
+    low_memory_suppressed: int = 0
+
+
+@dataclass(frozen=True)
+class SettlementBacklogResult:
+    """Bounded settlement receipt. Never evidence of capability or execution."""
+
+    status: str
+    pending_eligible: int
+    attempted: int
+    settled: int
+    remaining_after_run: int
+    truncated: bool
+    failures: tuple[str, ...]
+    probability_publishable: bool = False
+    can_execute: bool = False
+
+
+SETTLEMENT_BACKLOG_CLEARED = "SETTLEMENT_BACKLOG_CLEARED"
+SETTLEMENT_BACKLOG_COMPLETE = "SETTLEMENT_BACKLOG_COMPLETE"
+SETTLEMENT_BACKLOG_PARTIAL = "SETTLEMENT_BACKLOG_PARTIAL"
+SETTLEMENT_BACKLOG_FAILED = "SETTLEMENT_BACKLOG_FAILED"
 
 
 def run_hourly_shadow_cohort_once(
@@ -304,8 +326,11 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
             "train_n": 0,
             "validation_n": 0,
             "validation_mae_f": None,
+            "baseline_mae_f": None,
+            "mae_improvement_f": None,
             "validation_bias_f": None,
             "within_1sigma_rate": None,
+            "certified": False,
         }
         if len(rows) >= minimum_n + 10:
             validation_n = max(10, int(round(len(rows) * 0.20)))
@@ -322,13 +347,24 @@ def build_calibration_report(*, client, minimum_n: int = 30) -> Mapping[str, Any
                 bias = float(train_fit.profile.bias_f)
                 sigma = float(train_fit.profile.sigma_f)
                 corrected_errors = [row.residual_f - bias for row in validation_rows]
+                corrected_mae = mean(abs(value) for value in corrected_errors)
+                # Baseline is the uncorrected forecast on the same chronological
+                # holdout. Without it an improvement claim is unfalsifiable.
+                baseline_mae = mean(abs(row.residual_f) for row in validation_rows)
                 validation = {
                     "status": "FORWARD_VALIDATION_REPORTED",
                     "train_n": len(train_rows),
                     "validation_n": len(validation_rows),
-                    "validation_mae_f": mean(abs(value) for value in corrected_errors),
+                    "validation_mae_f": corrected_mae,
+                    "baseline_mae_f": baseline_mae,
+                    "mae_improvement_f": baseline_mae - corrected_mae,
                     "validation_bias_f": mean(corrected_errors),
                     "within_1sigma_rate": mean(1.0 if abs(value) <= sigma else 0.0 for value in corrected_errors),
+                    "certified": False,
+                    "certification_note": (
+                        "Chronological holdout comparison on research samples only. "
+                        "A positive improvement is not a certification or a publication gate."
+                    ),
                 }
 
         reports.append(
@@ -503,6 +539,122 @@ def _settle_ready_predictions(
         settled += 1
         outcome_prediction_ids.add(prediction_id)
     return settled
+
+
+def _pending_settlement_targets(
+    client,
+    now: str,
+    *,
+    scan_limit: int,
+) -> list[tuple[str, str]]:
+    """Eligible unsettled hourly predictions, oldest scan order preserved."""
+    settled_ids = {
+        str(row.get("prediction_id"))
+        for row in _select_rows(client, "wow_kalshi_weather_outcomes", limit=5000)
+        if row.get("prediction_id")
+    }
+    cutoff = _parse_utc(now) - timedelta(minutes=SETTLEMENT_GRACE_MINUTES)
+    pending: list[tuple[str, str]] = []
+    for prediction in _select_rows(
+        client, "wow_kalshi_weather_predictions", limit=scan_limit
+    ):
+        prediction_id = str(prediction.get("prediction_id") or "")
+        if not prediction_id or prediction_id in settled_ids:
+            continue
+        model_payload = (
+            prediction.get("model_payload")
+            if isinstance(prediction.get("model_payload"), Mapping)
+            else {}
+        )
+        contract = (
+            model_payload.get("contract")
+            if isinstance(model_payload.get("contract"), Mapping)
+            else {}
+        )
+        if str(contract.get("lane") or "").upper() != "HOURLY_TEMPERATURE":
+            continue
+        window = str(contract.get("observation_window") or "")
+        station_id = str(contract.get("settlement_location_code") or "")
+        prefix = "POINT_IN_TIME:"
+        station_prefix = "KALSHI_WEATHER_INDEX:"
+        if not window.startswith(prefix) or not station_id.startswith(station_prefix):
+            continue
+        # A malformed identity must fail closed here rather than reach a provider
+        # query with an empty city and burn a bounded settlement attempt.
+        index_city = station_id[len(station_prefix):].strip()
+        if not index_city:
+            continue
+        try:
+            target_time = _parse_utc(window[len(prefix):])
+        except Exception:
+            continue
+        if target_time > cutoff:
+            continue
+        pending.append((prediction_id, index_city))
+    return pending
+
+
+def run_bounded_settlement_backlog_once(
+    *,
+    client,
+    now: str | None = None,
+    max_attempts: int = 10,
+    scan_limit: int = 500,
+) -> SettlementBacklogResult:
+    """Drain a hard-capped slice of the settlement backlog.
+
+    Settlement is a separate memory and latency workload from capture. It is
+    idempotent (a surviving outcome is never re-settled), bounded per call, and
+    reports how much work remains instead of implying the backlog is clear.
+    """
+    limit = max(0, min(int(max_attempts), 25))
+    now_iso = _iso(_parse_or_now(now))
+    pending = _pending_settlement_targets(client, now_iso, scan_limit=scan_limit)
+    failures: list[str] = []
+    attempted = 0
+    settled = 0
+    http = ReadOnlyJsonClient()
+    try:
+        for prediction_id, index_city in pending:
+            if attempted >= limit:
+                break
+            attempted += 1
+            try:
+                settle_hourly_prediction(
+                    client=client,
+                    prediction_id=prediction_id,
+                    index_city=index_city,
+                    settled_at=now_iso,
+                    http=http,
+                )
+            except Exception as exc:
+                failures.append(
+                    f"{prediction_id}:{type(exc).__name__}:{getattr(exc, 'code', '')}"
+                )
+                continue
+            settled += 1
+    finally:
+        http.close()
+
+    remaining = max(0, len(pending) - settled)
+    if not pending:
+        status = SETTLEMENT_BACKLOG_CLEARED
+    elif settled == 0 and failures:
+        status = SETTLEMENT_BACKLOG_FAILED
+    elif remaining == 0 and not failures:
+        status = SETTLEMENT_BACKLOG_COMPLETE
+    else:
+        status = SETTLEMENT_BACKLOG_PARTIAL
+
+    return SettlementBacklogResult(
+        status=status,
+        pending_eligible=len(pending),
+        attempted=attempted,
+        settled=settled,
+        remaining_after_run=remaining,
+        truncated=len(pending) > attempted,
+        failures=tuple(failures),
+    )
 
 
 def _select_rows(client, table: str, *, limit: int) -> list[Mapping[str, Any]]:

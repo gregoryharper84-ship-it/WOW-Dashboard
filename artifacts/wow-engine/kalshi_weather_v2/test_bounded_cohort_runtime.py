@@ -374,6 +374,17 @@ def test_capture_status_never_reports_zero_work_as_success():
     )
     assert (
         bounded.derive_capture_status(
+            samples_captured=0,
+            samples_skipped_existing=0,
+            contracts_discovered=2,
+            failures=(),
+            eligible_targets=1,
+            low_memory_suppressed=2,
+        )
+        == bounded.STATUS_DEFERRED_LOW_MEMORY_MODE
+    )
+    assert (
+        bounded.derive_capture_status(
             samples_captured=1,
             samples_skipped_existing=0,
             contracts_discovered=1,

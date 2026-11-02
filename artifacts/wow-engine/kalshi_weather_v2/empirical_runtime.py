@@ -15,7 +15,11 @@ from fastapi import FastAPI, Header, HTTPException
 from .bounded_cohort import run_bounded_capture_only_cohort_once
 from .http_client import ReadOnlyJsonClient
 from .operational_cycle import VERIFIED_HOURLY_TARGETS
-from .shadow_cohort import HourlyCohortTarget, _settle_ready_predictions
+from .shadow_cohort import (
+    HourlyCohortTarget,
+    _settle_ready_predictions,
+    run_bounded_settlement_backlog_once,
+)
 
 
 _logger = logging.getLogger("wow.kalshi_weather_v2.empirical_cohort")
@@ -160,6 +164,13 @@ def build_collection_diagnostics(
         "duplicate_samples_skipped": result.samples_skipped_existing,
         "source_snapshots_written": result.supplemental_snapshots_captured,
         "market_snapshots_written": result.market_microstructure_snapshots_captured,
+        "low_memory_mode": os.getenv(
+            "WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0"
+        )
+        == "1",
+        "low_memory_deferred_buckets": int(
+            getattr(result, "low_memory_suppressed", 0) or 0
+        ),
         "predictions_settled": result.predictions_settled,
         "failure_counts": {
             "discovery_or_capture": len(result.capture_failures),
@@ -240,6 +251,10 @@ def _run_bounded_shadow_cycle(
         db_client_fn=db_client_fn,
         targets=selected,
     )
+    # A 512MiB core-only capture must never immediately load the settlement
+    # backlog into the same process. Settlement remains a separate work item.
+    if os.getenv("WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE", "0") == "1":
+        return result
     if (
         os.getenv("WOW_KALSHI_WEATHER_ISOLATED_CAPTURE_OWNER", "0") != "1"
         or os.getenv("WOW_KALSHI_WEATHER_ISOLATED_SETTLEMENT_ENABLED", "0") != "1"
@@ -266,6 +281,30 @@ def _run_bounded_shadow_cycle(
         predictions_settled=settled,
         settlement_failures=tuple(failures),
     )
+
+
+def _require_cohort_key(supplied_header: str | None) -> None:
+    """Fail closed. An unconfigured or mismatched trigger never proceeds."""
+    expected = os.getenv("WOW_KALSHI_WEATHER_COHORT_KEY", "")
+    supplied = str(supplied_header or "")
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNCONFIGURED",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNAUTHORIZED",
+                "probability_publishable": False,
+                "can_execute": False,
+            },
+        )
 
 
 def install_empirical_cohort_scheduler(
@@ -299,26 +338,7 @@ def install_empirical_cohort_scheduler(
             alias="X-WOW-Weather-Cohort-Key",
         ),
     ):
-        expected = os.getenv("WOW_KALSHI_WEATHER_COHORT_KEY", "")
-        supplied = str(x_wow_weather_cohort_key or "")
-        if not expected:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNCONFIGURED",
-                    "probability_publishable": False,
-                    "can_execute": False,
-                },
-            )
-        if not supplied or not hmac.compare_digest(supplied, expected):
-            raise HTTPException(
-                status_code=401,
-                detail={
-                    "code": "KALSHI_WEATHER_COHORT_TRIGGER_UNAUTHORIZED",
-                    "probability_publishable": False,
-                    "can_execute": False,
-                },
-            )
+        _require_cohort_key(x_wow_weather_cohort_key)
         trigger = "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER"
         selected = _scheduled_shadow_targets()
         under_pressure, memory_ratio = _weather_memory_pressure()
@@ -376,6 +396,60 @@ def install_empirical_cohort_scheduler(
             "trigger": trigger,
             "collection_mode": "BOUNDED_ROTATING_CAPTURE_ONLY_SHADOW",
             "collection_diagnostics": diagnostics,
+            "probability_publishable": False,
+            "can_execute": False,
+        }
+
+    @app.post(
+        "/internal/kalshi-weather/v17/settlement-backlog/run",
+        operation_id="runKalshiWeatherV17SettlementBacklog",
+        include_in_schema=False,
+    )
+    def _settlement_backlog_run(
+        x_wow_weather_cohort_key: str | None = Header(
+            default=None,
+            alias="X-WOW-Weather-Cohort-Key",
+        ),
+    ):
+        """Drain a hard-capped settlement slice, separately from capture.
+
+        Settlement re-reads official observations, so it is a distinct memory
+        and latency workload. It stays opt-in and disabled by default, and it
+        can never advance capability, publish a probability, or execute.
+        """
+        _require_cohort_key(x_wow_weather_cohort_key)
+        if os.getenv("WOW_KALSHI_WEATHER_SETTLEMENT_BACKLOG_ENABLED", "0") != "1":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "KALSHI_WEATHER_SETTLEMENT_BACKLOG_DISABLED",
+                    "probability_publishable": False,
+                    "can_execute": False,
+                },
+            )
+        try:
+            max_attempts = int(
+                os.getenv("WOW_KALSHI_WEATHER_SETTLEMENT_BACKLOG_MAX_ATTEMPTS", "10")
+            )
+        except ValueError:
+            max_attempts = 10
+        max_attempts = max(1, min(max_attempts, 25))
+        result = run_bounded_settlement_backlog_once(
+            client=db_client_fn(),
+            max_attempts=max_attempts,
+        )
+        _logger.warning(
+            "WOW_KALSHI_WEATHER_SETTLEMENT_BACKLOG status=%s pending=%s attempted=%s settled=%s remaining=%s failures=%s probability_publishable=false can_execute=false",
+            result.status,
+            result.pending_eligible,
+            result.attempted,
+            result.settled,
+            result.remaining_after_run,
+            len(result.failures),
+        )
+        return {
+            **asdict(result),
+            "trigger": "EXTERNAL_LEAST_PRIVILEGE_SCHEDULER",
             "probability_publishable": False,
             "can_execute": False,
         }

@@ -53,6 +53,43 @@ Runtime changes make the trigger result truthful:
 - The external wake probe now requires the authenticated trigger rather than the
   optional in-process loop, and states that it does not prove a collection pass.
 
+## Memory-safe operation on the 512 MiB service
+
+Capture and settlement are separate workloads, and the capture path is what
+runs on the shared small Render instance.
+
+- `WOW_KALSHI_WEATHER_EMPIRICAL_LOW_MEMORY_MODE=1` keeps the cycle to one H0
+  core capture, skipping market-microstructure recording, supplemental source
+  snapshots, and the in-cycle settlement sweep.
+- Deferred horizons are reported, never hidden: the run returns
+  `EMPIRICAL_SHADOW_COHORT_DEFERRED_LOW_MEMORY_MODE` plus
+  `low_memory_suppressed`, and the cron receipt exposes `low_memory_mode` and
+  `low_memory_deferred_buckets`.
+- No target, contract, or HTTP call is added by this mode; it only removes work.
+- Do not enable low-memory mode on a process that is expected to produce full
+  horizon coverage, and do not disable it on the 512 MiB service while the
+  full side-feed path is unproven there.
+
+## Bounded settlement backlog
+
+Because capture suppresses settlement under memory pressure, settlement has its
+own opt-in path: `POST /internal/kalshi-weather/v17/settlement-backlog/run`
+(same `X-WOW-Weather-Cohort-Key` authentication).
+
+- `WOW_KALSHI_WEATHER_SETTLEMENT_BACKLOG_ENABLED` defaults to `0`; while unset
+  the route returns `409 KALSHI_WEATHER_SETTLEMENT_BACKLOG_DISABLED`. Enable it
+  only on a deployment with headroom.
+- `WOW_KALSHI_WEATHER_SETTLEMENT_BACKLOG_MAX_ATTEMPTS` defaults to `10` and is
+  hard-clamped to `25` per call, regardless of configuration.
+- Each run reports `pending_eligible`, `attempted`, `settled`,
+  `remaining_after_run`, `truncated`, and per-prediction `failures` with status
+  `SETTLEMENT_BACKLOG_CLEARED | COMPLETE | PARTIAL | FAILED`.
+- Idempotent: a prediction that already has an official outcome is never
+  settled again. Malformed settlement identity (empty index city) is excluded
+  rather than attempted.
+- The receipt is never evidence of capability; `probability_publishable=false`
+  and `can_execute=false` are unconditional.
+
 ## Required owner action before the trigger can succeed
 
 Supabase Vault currently holds **no secrets**. The migration fails closed with
@@ -116,6 +153,10 @@ revert is required. Do not drop shared extensions.
   `dataset_integrity` (counts, per-bucket and per-station sample counts,
   duplicates collapsed, missing settlements, exclusion reasons, usable
   fraction, last decision time per station) alongside the candidate groups.
+- Forward validation reports both the candidate-corrected MAE and the
+  uncorrected `baseline_mae_f` on the same chronological holdout, plus
+  `mae_improvement_f`, so an improvement claim stays falsifiable. Every
+  validation block carries `certified=false`.
 - Forecast availability timestamps remain unverified upstream. Strict
   point-in-time eligibility is not claimed where provenance is missing.
 - `KALSHI_WEATHER_PROBABILITY` stays `UNAVAILABLE`, `probability_publishable=false`,
