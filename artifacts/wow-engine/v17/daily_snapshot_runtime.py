@@ -308,12 +308,13 @@ def _lane_reconciliation(
         expected = "PROP_SNAPSHOT_QUERY_FAILED" if lane == "PROPS" else "TEAM_EVENT_SNAPSHOT_QUERY_FAILED"
         if expected in " ".join(blockers):
             zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
-        elif lane == "PROPS" and acquisition and (acquisition.get("status") == "DATA_UNOBTAINABLE" or acquisition.get("blockers")):
-            zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
         elif lane == "PROPS" and "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE" in blockers:
             zero_row_reason = "RUN_INVALID_PROP_SNAPSHOT_WRITE_FAILURE"
         elif lane == "PROPS" and "PROP_SNAPSHOT_INGESTION_EMPTY" in blockers:
             zero_row_reason = "PROP_SNAPSHOT_INGESTION_EMPTY"
+        elif lane == "PROPS" and acquisition and (acquisition.get("status") == "DATA_UNOBTAINABLE" or acquisition.get("blockers")):
+            # Only after stronger write/readback failures have been classified.
+            zero_row_reason = "DISCOVERY_DATA_UNOBTAINABLE"
         elif requested_limit == 0:
             # Zero rows caused by the request itself are never evidence that the
             # canonical lane is empty. Reporting NO_CANONICAL_CANDIDATES here
