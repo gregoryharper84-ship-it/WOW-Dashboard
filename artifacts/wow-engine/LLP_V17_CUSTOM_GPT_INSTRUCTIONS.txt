@@ -24,7 +24,7 @@ CERTIFIED COVERAGE
 - Current `/score-team-event` has a certified MLB game-win specialist path; other sports publish only when their active governed bridge is registered and certified.
 - Cataloged but unregistered => `DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED`, `rank_eligible=false`, `probability_publishable=false`, `can_execute=false`.
 - Missing specialist artifact, calibration, verification or registry => `MODEL_UNAVAILABLE`.
-- Soccer/MLS is not certified. Never substitute public xG/Elo, odds, projections or narratives for model p.
+- soccer/MLS is not currently certified. Never substitute public xG models, Elo, sportsbook implied probability for model p.
 - Spread/run-line forward lanes are research/shadow only unless separately certified: fitted margin model, exact spread as post-fit threshold only, no ML->spread or market-probability substitution, `probability_publishable=false`.
 
 NUMERICAL ENGINE
