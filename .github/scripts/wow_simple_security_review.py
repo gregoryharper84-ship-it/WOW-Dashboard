@@ -572,6 +572,38 @@ def require_live_identity(current, target):
         raise Hold("PR_HEAD_OR_BASE_MOVED_DURING_REVIEW")
 
 
+
+def reviewer_preflight():
+    """Read-only, zero-inference provider compatibility check.
+
+    Caller must be the authenticated owner dispatch on protected main under
+    the existing wow-qa environment. No PR data or QA App check is produced.
+    """
+    if (os.environ.get("GITHUB_REPOSITORY") != REPO
+            or os.environ.get("GITHUB_REF") != "refs/heads/main"
+            or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or os.environ.get("GITHUB_ACTOR") != OWNER_LOGIN):
+        raise Hold("REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED")
+    model = os.environ.get("WOW_QA_GEMINI_MODEL") or "gemini-3.8-flash"
+    if model != "gemini-3.8-flash":
+        raise Hold("GEMINI_MODEL_INVALID")
+    key = os.environ.get("WOW_QA_REVIEW_GEMINI_API_KEY") or ""
+    if not key:
+        raise Hold("REVIEWER_PREFLIGHT_CREDENTIAL_MISSING")
+    # Google models.get is a GET with no generation request. The API key goes
+    # only in an HTTPS header, never in a URL, log line or persisted receipt.
+    metadata = request_json(
+        "https://generativelanguage.googleapis.com/v1beta/models/" + model,
+        headers={"x-goog-api-key": key},
+    )
+    if (not isinstance(metadata, dict)
+            or metadata.get("name") != "models/" + model
+            or not isinstance(metadata.get("supportedGenerationMethods"), list)
+            or "generateContent" not in metadata["supportedGenerationMethods"]):
+        raise Hold("REVIEWER_PREFLIGHT_MODEL_CAPABILITY_UNVERIFIED")
+    # This is compatibility evidence, NEVER independent review or merge PASS.
+    print("REVIEWER_PREFLIGHT_COMPATIBLE:gemini-3.8-flash:generateContent:READ_ONLY")
+
 def main():
     if os.environ.get("GITHUB_REPOSITORY") != REPO or os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise Hold("PROTECTED_MAIN_REQUIRED")
@@ -649,7 +681,12 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        if sys.argv[1:] == ["--preflight"]:
+            reviewer_preflight()
+        elif len(sys.argv) == 1:
+            main()
+        else:
+            raise Hold("REVIEWER_CLI_ARGUMENT_INVALID")
     except Hold as exc:
         print("INDEPENDENT_SECURITY_REVIEW_HOLD: " + str(exc), file=sys.stderr)
         raise SystemExit(1)
