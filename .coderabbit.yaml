@@ -1,0 +1,98 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# WOW V17: high-signal, advisory reviews. GitHub/owner release controls remain authoritative.
+language: "en-US"
+early_access: false
+tone_instructions: "Be concise, evidence-first, and specific. Prioritize bugs, security, data integrity, and model correctness over style. Cite exact code paths and propose minimal fixes."
+
+reviews:
+  profile: "chill"
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  collapse_walkthrough: true
+  in_progress_fortune: false
+  poem: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+
+  # Reviews inform maintainers; they are not a new merge or release authorization.
+  auto_approvals:
+    enabled: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    # Avoid repeated reviews on PRs with many bot-generated pushes.
+    auto_pause_after_reviewed_commits: 5
+
+  # Do not let CodeRabbit create code or follow-up PRs automatically.
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+
+  path_instructions:
+    - path: "artifacts/wow-engine/v17/**"
+      instructions: |
+        Focus on deterministic fitted-model selection, immutable pregame inputs,
+        chronological train/calibration/holdout separation, genuine outcome
+        settlement, Brier/log-loss calibration evidence, and publication status.
+        Flag look-ahead leakage, inferred/fabricated inputs, unsupported model
+        promotion, missing provenance, or a HOLD silently becoming PASS.
+        Preserve permanently disabled live wager/market-order execution.
+
+    - path: "artifacts/wow-engine/**"
+      instructions: |
+        Review model and probability changes for mathematically valid bounds,
+        explicit failure states, source freshness, sport/market identity,
+        provenance, and no invented probabilities, outcomes, odds, or payouts.
+        Distinguish research-only evidence from production-certified outputs.
+        Do not suggest converting a safety HOLD into a guessed result.
+
+    - path: "artifacts/flask-scoring-api/**"
+      instructions: |
+        Check payout tables, intended slip-format EV, exact market/line/side,
+        missing-source handling, decimal arithmetic, and negative paths.
+        Flag an unverified payout being treated as verified, or negative EV
+        being labeled a positive recommendation.
+
+    - path: "artifacts/wow-engine/kalshi_weather_v2/**"
+      instructions: |
+        Verify timezone, target location and settlement condition, source
+        timestamps, forecast freshness, and outcome provenance. Missing or
+        uncertified weather probabilities must not become actionable signals.
+        No live orders or autonomous trading.
+
+    - path: ".github/**"
+      instructions: |
+        Prioritize workflow injection, untrusted PR input, credential exposure,
+        forged check/receipt identities, SHA/base drift, and bypasses of
+        CODEOWNER, independent QA, or release authorization requirements.
+        Do not recommend weakening existing protected-branch gates to save time.
+
+    - path: "artifacts/wow-engine/migrations/**"
+      instructions: |
+        Inspect transaction safety, privileged functions, explicit search_path,
+        row-level permissions, accidental broad grants, idempotency, and
+        migrations that could affect live data. Do not assume review-only SQL
+        has been deployed.
+
+    - path: "render.yaml"
+      instructions: |
+        Flag production configuration drift, altered deployment safeguards,
+        exposed credentials, and unexpected changes to web/worker boundaries.
+
+    - path: "**/tests/**"
+      instructions: |
+        Focus on real regression and negative-path coverage. In safety-critical
+        changes, require tests to distinguish PASS, HOLD, and REJECT and reject
+        stale or incorrect evidence. Avoid cosmetic test suggestions.
