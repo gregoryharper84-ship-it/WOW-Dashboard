@@ -170,6 +170,14 @@ class Test24x7(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires exact"):
             mod.plan([item], [], runs=runs, retry_after_run_id=400)
 
+    def test_stale_retry_run_id_remains_invalid_after_issue_update(self):
+        item = issue(9, "P0", updated_at="2026-11-02T01:30:00Z")
+        run = {"displayTitle": "worker incident=9", "databaseId": 401,
+               "createdAt": "2026-11-02T01:11:00Z",
+               "status": "completed", "conclusion": "failure"}
+        result = mod.plan([item], [], runs=[run], target=9, retry_after_run_id=400)
+        self.assertEqual(result["reason"], "MANUAL_RETRY_RECEIPT_INVALID")
+
     def test_manual_retry_never_overrides_success_or_active_run(self):
         item = issue(9, "P0", updated_at="2026-11-02T01:10:00Z")
         for state, conclusion in (("completed", "success"), ("in_progress", None),
