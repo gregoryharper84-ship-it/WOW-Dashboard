@@ -51,14 +51,18 @@ def acquire_daily_nfl_prop_snapshots(
             "stat_types": list(STAT_TYPES), "can_execute": False,
         }
 
+    request_fields = {
+        "requested_date": requested_date,
+        "requested_timezone": requested_timezone,
+        "rotating_window_slot": rotating_window_slot,
+        "max_candidates": int(max_candidates),
+    }
+    # Explicit OIDC offsets take priority. Scheduled rotation leaves offset
+    # unset so the certified producer knows a rotating window was requested.
+    if rotating_window_slot is None or candidate_offset:
+        request_fields["candidate_offset"] = int(candidate_offset)
     result = acquire_nfl_forward_evidence_batch(
-        NFLForwardEvidenceRequest(
-            requested_date=requested_date,
-            requested_timezone=requested_timezone,
-            rotating_window_slot=rotating_window_slot,
-            candidate_offset=int(candidate_offset),
-            max_candidates=int(max_candidates),
-        ),
+        NFLForwardEvidenceRequest(**request_fields),
         db=db,
         now=now,
         http_get=http_get,
