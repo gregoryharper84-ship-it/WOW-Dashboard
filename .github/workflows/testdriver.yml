@@ -13,9 +13,10 @@ on:
 
 jobs:
   testdriver-e2e:
-    # Explicit owner-controlled opt-in. Verify billing independently:
-    # this repo variable does NOT protect from subscription auto-renewal.
-    if: ${{ inputs.confirm_usage && vars.TD_ZERO_COST_VERIFIED == 'true' }}
+    # A manual owner-confirmed dispatch is the only entrypoint. The account
+    # has a 360-minute trial but auto-converts at exhaustion/expiry.
+    # Never convert this workflow to a PR/push/scheduled trigger.
+    if: ${{ inputs.confirm_usage }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -26,6 +27,7 @@ jobs:
       contents: read
     env:
       WOW_TESTDRIVER_LOCAL_UI: "true"
+      WOW_TESTDRIVER_SOURCE_SHA: ${{ github.sha }}
       WOW_TESTDRIVER_STAGING_URL: ${{ vars.WOW_TESTDRIVER_STAGING_URL }}
 
     steps:
