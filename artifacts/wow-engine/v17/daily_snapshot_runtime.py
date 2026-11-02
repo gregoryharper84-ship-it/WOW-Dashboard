@@ -229,9 +229,13 @@ def _nfl_fill_response_rows(
     if not nfl_rows:
         return manifest[:max_props]
     reserved = nfl_rows[:min(len(nfl_rows), max(1, max_props // 2))]
-    reserved_ids = {id(row) for row in reserved}
-    remainder = [row for row in manifest if id(row) not in reserved_ids]
-    return reserved + remainder[:max_props - len(reserved)]
+    # Preserve the already-populated non-NFL family in its canonical order.
+    # Extra NFL rows may use only capacity left after those existing rows.
+    non_nfl = [
+        row for row in manifest if str(row.get("sport") or "").upper() != "NFL"
+    ]
+    additional_nfl = nfl_rows[len(reserved):]
+    return reserved + (non_nfl + additional_nfl)[:max_props - len(reserved)]
 
 
 def _prop_source_unobtainable(acquisition: dict[str, Any] | None) -> bool:
