@@ -171,9 +171,16 @@ class Test24x7(unittest.TestCase):
     def test_workflow_history_caps_and_dispatch_observation_are_fail_closed(self):
         wf = (Path(__file__).resolve().parents[2] / ".github" / "workflows" /
               "wow-engineering-24x7.yml").read_text(encoding="utf-8")
-        self.assertEqual(wf.count("WORKER_RUN_HISTORY_TRUNCATED"), 6)
-        self.assertGreaterEqual(wf.count("updatedAt,status,conclusion,databaseId"), 3)
+        self.assertEqual(wf.count("WORKER_RUN_HISTORY_TRUNCATED"), 5)
+        self.assertEqual(wf.count("gh api --paginate"), 15)
+        self.assertEqual(wf.count("/actions/workflows/$inventory_workflow/runs?per_page=100"), 4)
+        self.assertNotIn("--limit 250", wf)
+        self.assertIn("MAX_RUNS = 1998", (Path(__file__).resolve().parent /
+                         "v17" / "engineering_24x7_selector.py").read_text())
         self.assertIn('"pending" or .status == "requested"', wf)
+        self.assertIn("snapshot_ids=$(jq -c '[.[].databaseId]'", wf)
+        self.assertEqual(wf.count(' | test('), 2)
+        self.assertNotIn("contains($tag)", wf)
         self.assertIn("DISPATCH_NOT_OBSERVED", wf)
         self.assertIn("DUPLICATE_DISPATCH_OBSERVED", wf)
 

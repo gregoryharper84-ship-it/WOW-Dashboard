@@ -39,7 +39,7 @@ PRIORITY = {
 }
 MAX_ISSUES = 5000
 MAX_PRS = 2000
-MAX_RUNS = 500
+MAX_RUNS = 1998
 ATTEMPT_INCIDENT = re.compile(r"(?:^|\s)incident=([1-9][0-9]*)(?=\s|$)")
 
 
