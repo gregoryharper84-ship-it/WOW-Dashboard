@@ -22,6 +22,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,7 @@ from psycopg.rows import dict_row  # noqa: E402
 from psycopg.types.json import Jsonb  # noqa: E402
 
 from v17.multisport_team_event_calibration import calibration_payload_sha256  # noqa: E402
+from v17.nba_current_pregame_scorer import resolve_nba_calibrator_artifact  # noqa: E402
 
 ENGINE_DIR = Path(__file__).resolve().parents[1]
 MIGRATIONS = ENGINE_DIR / "migrations"
@@ -167,6 +169,7 @@ def _seed(
     probability_publishable=True,
     revoked_after=False,
     league_scope=None,
+    approved_bounds=False,
 ):
     league_scope = league_scope or sport
     payload = _payload() if payload is None else payload
@@ -226,6 +229,18 @@ def _seed(
     certification_uuid = None
     if certify:
         certification_uuid = uuid.uuid4()
+        bounds_receipt = {
+            "status": "APPROVED",
+            "policy_version": "NBA_DYNAMIC_BOUNDS_V1",
+            "independent_verification_status": "PASS",
+            "can_execute": False,
+            "certification_id": str(certification_uuid),
+            "calibration_artifact_id": str(calibrator_uuid),
+            "calibration_sha256": payload_sha,
+        } if approved_bounds else None
+        verification_receipt = (
+            {"nba_bounds_approval": bounds_receipt} if bounds_receipt else {}
+        )
         conn.execute(
             """
             insert into public.wow_team_event_specialist_certifications (
@@ -233,9 +248,10 @@ def _seed(
               model_family, model_version, artifact_id, artifact_sha256,
               feature_schema_version, input_contract_version,
               calibration_artifact_id, calibration_sha256, calibration_method,
-              independent_verification_status, certification_status, certified_at,
+              independent_verification_status, verification_receipt,
+              certification_status, certified_at,
               probability_publishable, can_execute
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                       clock_timestamp(), %s, false)
             """,
             (
@@ -253,6 +269,7 @@ def _seed(
                 certification_sha if certification_sha is not None else payload_sha,
                 method,
                 independent_verification_status,
+                Jsonb(verification_receipt),
                 certification_status,
                 probability_publishable,
             ),
@@ -295,6 +312,7 @@ def _seed(
         "payload": payload,
         "payload_sha": payload_sha,
         "certification_id": certification_uuid,
+        "bounds_receipt": bounds_receipt if certify else None,
     }
 
 
@@ -346,6 +364,57 @@ def test_service_role_reads_the_exact_bound_certified_artifact(conn):
     assert row["calibration_sha256"] == seeded["payload_sha"]
     assert row["artifact_payload"] == seeded["payload"]
     assert row["independent_verification_status"] == "PASS"
+
+
+def test_real_rpc_approved_bounds_receipt_is_separate_and_digest_bound(conn):
+    """Real SQL RPC: approved bounds are independent of the immutable payload.
+
+    Only a TEST seeded registry row grants approval; this proves contract
+    mechanics, not independent production certification or publication.
+    """
+    seeded = _seed(conn, approved_bounds=True, league_scope="NBA_BOUNDS_APPROVAL_CASE")
+    rows = _lookup(conn, seeded["calibrator_id"])
+    assert len(rows) == 1
+    db_row = rows[0]
+    assert db_row["bounds_approval_receipt"] == seeded["bounds_receipt"]
+    assert "bounds_approval_receipt" not in db_row["artifact_payload"]
+    assert "nba_bounds_approval" not in db_row["artifact_payload"]
+    assert calibration_payload_sha256(db_row["artifact_payload"]) == seeded["payload_sha"]
+
+    class RpcResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class SqlClient:
+        def rpc(self, name, params):
+            assert name == "wow_basketball_certified_calibrator_artifact"
+            assert params == {
+                "p_sport": "NBA",
+                "p_calibrator_id": str(seeded["calibrator_id"]),
+            }
+            return self
+
+        def execute(self):
+            return RpcResponse(_lookup(conn, seeded["calibrator_id"]))
+
+    cert = SimpleNamespace(
+        certification_id=str(seeded["certification_id"]),
+        calibration_artifact_id=str(seeded["calibrator_id"]),
+        calibration_sha256=seeded["payload_sha"],
+        calibration_method=METHOD,
+    )
+    artifact = resolve_nba_calibrator_artifact(SqlClient(), cert)
+    assert artifact["calibration_sha256"] == seeded["payload_sha"]
+    assert artifact["bounds_approval_receipt"] == seeded["bounds_receipt"]
+    assert artifact["calibration_artifact_id"] == str(seeded["calibrator_id"])
+    assert artifact["can_execute"] is False
+
+
+def test_real_rpc_without_bounds_approval_never_invents_approval(conn):
+    seeded = _seed(conn, league_scope="NBA_NO_BOUNDS_APPROVAL_CASE")
+    rows = _lookup(conn, seeded["calibrator_id"])
+    assert len(rows) == 1
+    assert rows[0]["bounds_approval_receipt"] is None
 
 
 def test_legacy_certified_flag_alone_is_not_certification_authority(conn):
