@@ -159,8 +159,8 @@ def test_repeat_hydration_upserts_are_not_miscounted_as_new_games(monkeypatch):
         lambda _client, _sport: date(2026, 10, 20),
     )
     db = FakeClient()
-    first = hydration.hydrate("NBA", [2026], client=db)
-    second = hydration.hydrate("NBA", [2026], client=db)
+    first = hydration.hydrate("WNBA", [2026], client=db)
+    second = hydration.hydrate("WNBA", [2026], client=db)
     assert first["settled_rows"] == second["settled_rows"] == 2
     assert first["fresh_acquisition_new_settled_games"] == 1
     assert second["fresh_acquisition_new_settled_games"] == 0
@@ -267,7 +267,7 @@ def test_hydrate_prefers_sportsdataverse_after_primary_failure_and_only_appends_
     result = hydration.hydrate("WNBA", [2026], client=object())
 
     assert result["source_by_season"][2026] == "SPORTSDATAVERSE_ESPN"
-    assert 2026 not in result["fallback_reasons"]
+    assert result["fallback_reasons"][2026] == "BALLDONTLIE_API_KEY unavailable"
     assert result["settled_rows"] == 1
     assert result["latest_game_date_before"] == "2022-09-18"
     assert result["latest_game_date_after"] == "2026-09-20"
