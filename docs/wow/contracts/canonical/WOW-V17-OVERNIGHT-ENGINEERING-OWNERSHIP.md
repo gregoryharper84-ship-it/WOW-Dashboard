@@ -156,6 +156,30 @@ because one human-run probe attests neither standing auto-routing configuration
 nor an approved spend cap. This parity grants no provider quota, budget,
 probability authority or execution authority.
 
+### Malformed worker inventory is scoped per provider
+
+Admission previously failed closed globally whenever *any* registered worker's
+run inventory was malformed or unclassifiable. That is stricter than the
+evidence requires, and it obscured real provider state: one unreadable Gemini
+run could revoke a fresh, fully verified OpenAI or Anthropic route. The rule is
+now scoped to the route's own provider.
+
+- For an `openai`, `anthropic` or `gemini` route, another provider's malformed
+  or unclassifiable run inventory is skipped instead of revoking the route.
+- The route's own provider still fails closed on malformed, missing or
+  unclassifiable evidence, returning `PROVIDER_STATUS_UNVERIFIED`.
+- Every other route shape (`NO_ACTION`, `cursor`, provider `none`, or an
+  unrecognized provider) keeps the previous global fail-closed behaviour.
+
+This is a deliberate, reviewed narrowing of a condition that was global
+fail-closed, and it is recorded here rather than only in a code comment for that
+reason. It grants no admission by itself: a fresh route receipt, the 15-minute
+freshness bound, the `can_execute` and terminal-authority checks, the current
+`main` SHA match, the same-provider failure veto and the one-writer fence all
+still apply. Provider run histories are independent evidence, so an unreadable
+unrelated history is missing evidence about that provider, not about this route.
+Covered by `test_unrelated_unclassified_worker_does_not_revoke_valid_gemini_route`.
+
 The three-attempt ceiling and its existing retention remain unchanged. Previously
 exhausted counters are not reset, increased or automatically forgiven by this
 repair. After genuinely admitted provider recovery, those incidents still require
