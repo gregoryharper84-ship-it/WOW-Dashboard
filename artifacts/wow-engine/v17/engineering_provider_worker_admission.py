@@ -93,6 +93,9 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
     expected_total: int | None = None
     count = 0
     current_seen = False
+    # Claude admissions must inspect the full bounded history, not return on
+    # the first different-incident result and skip an older same-target refusal.
+    candidate_code: str | None = None
     # Bounded pagination, never infer first-use from a truncated run inventory.
     for page in range(1, 51):
         try:
@@ -168,6 +171,10 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
                 if job.get("conclusion") == "success" and outcome == "success":
                     if not current_seen:
                         return held("PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED")
+                    if provider == "anthropic" and target_incident:
+                        if candidate_code is None:
+                            candidate_code = "PREVIOUS_WORKER_HEALTHY"
+                        continue
                     return {"status": "ADMITTED", "code": "PREVIOUS_WORKER_HEALTHY",
                             "can_execute": False}
                 stamp = lead[0].get("completed_at") or job.get("completed_at")
@@ -194,6 +201,10 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
                 if finding.code.startswith(("OPENAI_API_", "ANTHROPIC_API_")):
                     if not current_seen:
                         return held("PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED")
+                    if provider == "anthropic" and target_incident:
+                        if candidate_code is None:
+                            candidate_code = "PROVIDER_COOLDOWN_EXPIRED_PROBE"
+                        continue
                     return {"status": "ADMITTED", "code": "PROVIDER_COOLDOWN_EXPIRED_PROBE",
                             "can_execute": False}
                 # A task-only refusal for a *different* incident is not
@@ -205,16 +216,19 @@ def admission(provider: str, run_id: int, read: Callable[[list[str]], str],
                         and run.get("path") == f".github/workflows/{workflow}"
                         and _verified_different_incident_delivery(
                             job, logs, target_incident)):
-                    return {"status": "ADMITTED",
-                            "code": "PROVIDER_TASK_ONLY_DIFFERENT_INCIDENT",
-                            "can_execute": False}
+                    if candidate_code is None:
+                        candidate_code = "PROVIDER_TASK_ONLY_DIFFERENT_INCIDENT"
+                    # Continue searching older attempts for a refusal of the
+                    # requested incident. A -> B -> A must never call Claude again.
+                    continue
                 # All other policy, code and unclassified failures remain held.
                 return held("PROVIDER_WORKER_FAILED_REVIEW_REQUIRED:"+finding.code)
         count += len(entries)
         if count == total:
             if not current_seen:
                 return held("PROVIDER_WORKER_CURRENT_RUN_UNVERIFIED")
-            return {"status": "ADMITTED", "code": "NO_PREVIOUS_PROVIDER_INVOCATION",
+            return {"status": "ADMITTED",
+                    "code": candidate_code or "NO_PREVIOUS_PROVIDER_INVOCATION",
                     "can_execute": False}
     return held("PROVIDER_WORKER_INVENTORY_PAGE_CAP")
 
