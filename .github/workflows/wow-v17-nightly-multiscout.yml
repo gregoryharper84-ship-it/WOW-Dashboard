@@ -157,7 +157,9 @@ jobs:
 
   market-evidence-acceptance:
     name: Credentialed provider acceptance (captured_rows > 0)
+    # Explicit opt-in only. Scheduled free-core restoration must never incur paid feed probes.
     if: >-
+      vars.WOW_PAID_MARKET_ACCEPTANCE_ENABLED == 'true' &&
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
@@ -170,12 +172,19 @@ jobs:
       run:
         working-directory: artifacts/wow-engine
     env:
-      WOW_MARKET_EVIDENCE_ENABLED: "true"
+      WOW_V17_SOURCE_MODE: "FREE_CORE"
+      WOW_MARKET_EVIDENCE_KILL_SWITCH: "true"
+      WOW_MARKET_EVIDENCE_ENABLED: "false"
+      WOW_RUNDOWN_ML_BOARD_ENABLED: "false"
+      WOW_LLP_RUNDOWN_MARKET_ENABLED: "false"
+      WOW_RUNDOWN_MARKET_HISTORY_ENABLED: "false"
+      WOW_RUNDOWN_MARKET_STARTUP_MODE: "OFF"
+      WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED: "false"
+      WOW_V17_PAID_CALL_BUDGET_PER_SCAN: "0"
+      WOW_V17_PAID_FINAL_REFRESH_RESERVE: "0"
       WOW_USER_TIMEZONE: America/Chicago
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
-      SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -257,9 +266,16 @@ jobs:
       WOW_SCOUT_ASYNC_HANDOFF_ENABLED: "true"
       WOW_CAN_EXECUTE: "false"
       WOW_DRY_RUN_ONLY: "true"
-      WOW_MARKET_EVIDENCE_ENABLED: "true"
-      RUNDOWN_API_KEY: ${{ secrets.RUNDOWN_API_KEY }}
-      SHARPAPI_API_KEY: ${{ secrets.SHARPAPI_API_KEY }}
+      WOW_V17_SOURCE_MODE: "FREE_CORE"
+      WOW_MARKET_EVIDENCE_KILL_SWITCH: "true"
+      WOW_MARKET_EVIDENCE_ENABLED: "false"
+      WOW_RUNDOWN_ML_BOARD_ENABLED: "false"
+      WOW_LLP_RUNDOWN_MARKET_ENABLED: "false"
+      WOW_RUNDOWN_MARKET_HISTORY_ENABLED: "false"
+      WOW_RUNDOWN_MARKET_STARTUP_MODE: "OFF"
+      WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED: "false"
+      WOW_V17_PAID_CALL_BUDGET_PER_SCAN: "0"
+      WOW_V17_PAID_FINAL_REFRESH_RESERVE: "0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -276,7 +292,9 @@ jobs:
         run: |
           test "$WOW_CAN_EXECUTE" = "false"
           test "$WOW_DRY_RUN_ONLY" = "true"
-          test "$WOW_MARKET_EVIDENCE_ENABLED" = "true"
+          test "$WOW_MARKET_EVIDENCE_ENABLED" = "false"
+          test "$WOW_V17_SOURCE_MODE" = "FREE_CORE"
+          test "$WOW_MARKET_EVIDENCE_KILL_SWITCH" = "true"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_URL"
           test -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
       - name: Capture research-only cross-book market evidence snapshot
