@@ -141,8 +141,9 @@ def _augment_detail(detail: Any, req: TeamEventRequest) -> dict[str, Any]:
     payload = dict(detail) if isinstance(detail, dict) else {"detail": detail}
     route = resolve_host_route(req.requester_host_identity, req.candidate_family)
     payload.update({
-        "sport": req.sport,
-        "league": req.league,
+        # Preserve a controlling route's normalized identity on typed errors.
+        "sport": payload.get("sport", req.sport),
+        "league": payload.get("league", req.league),
         "requester_host_identity": route.requester_host_identity,
         "controlling_engine_identity": route.controlling_engine_identity,
         "candidate_family": route.candidate_family,
