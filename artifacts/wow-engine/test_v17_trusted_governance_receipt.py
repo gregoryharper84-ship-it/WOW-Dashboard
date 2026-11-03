@@ -220,15 +220,13 @@ def test_workflows_use_trusted_exact_head_artifact_not_pr_body_as_authority():
     assert "WORKFLOW_NAME:" not in identity_step
     assert "WORKFLOW_NAME: ${{ steps.workflow.outputs.name }}" in receipt_step
 
-    assert "Verify trusted exact-head governance receipt" in morning_green
-    assert 'protected_main_source=false' in morning_green
-    assert '[ "$head_repo" != "$GITHUB_REPOSITORY" ]' in morning_green
-    assert "wow-v17-chatgpt-engineering-worker.yml" in morning_green
-    assert "wow-v17-claude-engineering-worker.yml" in morning_green
-    assert "wow-v17-existing-pr-governance-review.yml" in morning_green
-    assert "pull_request_target" in morning_green
-    assert "verify_existing_pr_governance_receipt.py" in morning_green
-    assert '--workflow-name "$name"' in morning_green
+    assert "Verify V4 exact-head QA and Release checks" in morning_green
+    assert "Verify Morning-Green diff scope" in morning_green
+    assert "V4_CHECK_NOT_VALID" in morning_green
+    assert "V4_FINAL_HEAD_CHANGED" in morning_green
+    assert "WOW Independent QA exact-head|5245832" in morning_green
+    assert "WOW Release Authority exact-head|5245853" in morning_green
+    assert "verify_existing_pr_governance_receipt.py" not in morning_green
     assert "steps.governance.outputs.approved == 'true'" in morning_green
     assert "GOVERNANCE_REWORK" in morning_green
 
