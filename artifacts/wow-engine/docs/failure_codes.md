@@ -606,12 +606,11 @@ business result; a green workflow is not proof of production delivery.
 | `DELIVERY_RENDER_SERVICE_ID_INVALID` | Delivery collector / read-only provenance | Render service identifier malformed; do not query an arbitrary target. | No |
 | `DELIVERY_RENDER_DEPLOY_UNVERIFIED` | Delivery collector / read-only provenance | Latest Render deploy is missing or not live; SHA parity cannot be accepted. | No |
 | `DELIVERY_RENDER_SHA_UNVERIFIED` | Delivery collector / read-only provenance | Render API lacks a full exact git commit SHA; no deploy proof. | No |
-| `DELIVERY_RENDER_ENV_UNVERIFIED` | Delivery collector / read-only provenance | Render SUPABASE_URL environment binding missing/redacted/unreadable; attribution remains blocked. | No |
+| `DELIVERY_RENDER_ENV_UNVERIFIED` | Delivery collector / read-only provenance | Render SUPABASE_URL saved environment binding missing, redacted, unreadable, or not verifiable in a bounded paginated list; variables inherited from linked environment groups may not be returned by this service endpoint. Attribution remains blocked. | No |
 | `DELIVERY_EXPECTED_SHA_INVALID` | Delivery collector / read-only provenance | Expected protected-engine source SHA is missing full 40-char git form. | No |
 | `DELIVERY_SUPABASE_PROJECT_MISMATCH` | Delivery collector / read-only provenance | Collector Supabase URL identifies a different project than the pinned governed database. | No |
 | `DELIVERY_RENDER_RUNTIME_BINDING_UNVERIFIED` | Delivery collector / read-only provenance | Render saved settings and deploy SHA do not establish which Supabase URL a running process uses. Preserve ledger observations, exit 2 and require an authenticated live runtime-to-DB proof; never treat saved setting as production attribution. | No |
 | `DELIVERY_RENDER_SUPABASE_TARGET_MISMATCH` | Delivery collector / read-only provenance | Render service environment and collector target disagree; production attribution not proven. | No |
 | `DELIVERY_RENDER_SHA_MISMATCH` | Delivery collector / read-only provenance | Latest live Render commit differs from supplied expected applicable source SHA. | No |
-| `DELIVERY_READBACK_COMPLETED` | Delivery collector / read-only provenance | Positive read-only evidence collection after validated Render SHA and project binding; not terminal model publication or full product acceptance. | No |
 
 All these codes are diagnostic only, and never change sporting probabilities, `V17_TERMINAL_REDUCER`, or `can_execute=false`.
