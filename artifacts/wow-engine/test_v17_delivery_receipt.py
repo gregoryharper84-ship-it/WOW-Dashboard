@@ -105,9 +105,9 @@ def test_activity_and_calibrator_windows_independently_configurable():
 def test_future_only_calibrators_and_actions_do_not_look_current():
     class FutureOnlyDB(StubDB):
         def count(self, table, **filters):
-            if table == "wow_calibrators" and filters.get("fitted_at"):
+            if table == "wow_calibrators":
                 self.calls.append((table, filters))
-                return 11  # Same 11 events are after both gte and future cutoffs.
+                return 11  # All 11 records are future dated, including the total.
             if table == "wow_action_invocation_receipts" and "caller_class" in filters:
                 self.calls.append((table, filters))
                 return 23 if filters["caller_class"] == "neq.SELF_ACCEPTANCE" else 5
@@ -152,6 +152,57 @@ def test_non_subset_future_count_does_not_produce_negative_recent_counts():
             render_deploy=lambda *_: SHA,
             render_env=lambda *_: "iczfhsmjrrafhvcpmqhr",
         )
+
+
+def test_calibrator_subset_cannot_exceed_reported_total():
+    class ContradictoryDB(StubDB):
+        def count(self, table, **filters):
+            if table == "wow_calibrators":
+                return 1 if not filters else 11
+            return super().count(table, **filters)
+
+    with pytest.raises(d.DeliveryError, match="DELIVERY_COUNT_NOT_PROVEN"):
+        d.build_receipt(
+            CFG, at=NOW, db=ContradictoryDB(),
+            render_deploy=lambda *_: SHA,
+            render_env=lambda *_: "iczfhsmjrrafhvcpmqhr",
+        )
+
+
+def test_render_env_pagination_finds_second_page_without_network(monkeypatch):
+    visited = []
+    first = [
+        {"envVar": {"key": f"DUMMY_{i}", "value": "safe"}, "cursor": f"cursor_{i}"}
+        for i in range(100)
+    ]
+    second = [
+        {"envVar": {"key": "SUPABASE_URL", "value": CFG["SUPABASE_URL"]}}
+    ]
+
+    def fake_get(url, _headers):
+        visited.append(url)
+        return (first if len(visited) == 1 else second), {}
+
+    monkeypatch.setattr(d, "_request_json", fake_get)
+    assert d._render_supabase_ref(CFG["RENDER_SERVICE_ID"], "test-key") == (
+        "iczfhsmjrrafhvcpmqhr"
+    )
+    assert len(visited) == 2
+    assert "limit=100" in visited[0]
+    assert "cursor=cursor_99" in visited[1]
+
+
+def test_render_env_pagination_rejects_missing_cursor_and_malformed_pages(monkeypatch):
+    first = [
+        {"envVar": {"key": f"DUMMY_{i}", "value": "safe"}}
+        for i in range(100)
+    ]
+    monkeypatch.setattr(d, "_request_json", lambda *_: (first, {}))
+    with pytest.raises(d.DeliveryError, match="DELIVERY_RENDER_ENV_UNVERIFIED"):
+        d._render_supabase_ref(CFG["RENDER_SERVICE_ID"], "test-key")
+    monkeypatch.setattr(d, "_request_json", lambda *_: ([None], {}))
+    with pytest.raises(d.DeliveryError, match="DELIVERY_RENDER_ENV_UNVERIFIED"):
+        d._render_supabase_ref(CFG["RENDER_SERVICE_ID"], "test-key")
 
 
 def test_bogus_window_and_wrong_database_hold():
