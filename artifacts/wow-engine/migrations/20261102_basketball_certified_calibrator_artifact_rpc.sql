@@ -32,9 +32,11 @@
 --
 -- This is service-internal model infrastructure. It does not certify, promote,
 -- approve bounds, create a prediction, publish a probability, or enable
--- execution. Bounds approval is still decided in the scorer
--- (artifact_type, bounds_policy, bounds_preapproval_status, certification
--- binding, independent verification), never here.
+-- execution. Bounds approval is independently recorded in the protected
+-- certification's verification_receipt.nba_bounds_approval object, never
+-- inside the hashed calibrator payload (which would be self-referential).
+-- The scorer verifies that separate receipt's exact calibration digest,
+-- calibrator ID, certification ID and independent PASS before using bounds.
 
 drop function if exists public.wow_basketball_certified_calibrator_artifact(text, uuid);
 
@@ -51,7 +53,8 @@ returns table (
   calibration_method text,
   calibration_sha256 text,
   independent_verification_status text,
-  artifact_payload jsonb
+  artifact_payload jsonb,
+  bounds_approval_receipt jsonb
 )
 language sql
 stable
@@ -67,7 +70,8 @@ as $$
     c.calibration_method,
     c.calibration_artifact_sha256,
     cert.independent_verification_status,
-    c.calibration_artifact_payload
+    c.calibration_artifact_payload,
+    cert.verification_receipt->'nba_bounds_approval'
   from public.wow_basketball_team_event_calibrators c
   join public.wow_team_event_specialist_certifications cert
     on cert.sport = c.sport
