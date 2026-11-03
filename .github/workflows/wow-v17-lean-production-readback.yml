@@ -1,0 +1,73 @@
+name: wow-v17-lean-production-readback
+
+# Zero semantic-review credits. GET-only postdeploy observation; SIRT acceptance is separate.
+on:
+  workflow_run:
+    workflows: [wow-v17-render-production-deploy]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact current protected-main SHA to observe (never deploy)
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: wow-v17-lean-readback-${{ github.event.workflow_run.head_sha || inputs.expected_sha || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  production-readback:
+    name: Read-only Render exact-SHA observation (SIRT acceptance pending)
+    if: >-
+      github.repository == 'gregoryharper84-ship-it/WOW-Dashboard' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: wow-release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      EXPECTED_SHA: ${{ inputs.expected_sha || github.event.workflow_run.head_sha }}
+      SOURCE_EVENT: ${{ github.event_name }}
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+      READBACK_RECEIPT: ${{ runner.temp }}/wow-v17-lean-production-readback.json
+      WOW_CAN_EXECUTE: "false"
+      WOW_DRY_RUN_ONLY: "true"
+    steps:
+      - name: Checkout protected main (read-only)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify execution invariants
+        run: |
+          test "$WOW_CAN_EXECUTE" = "false"
+          test "$WOW_DRY_RUN_ONLY" = "true"
+          test "$GITHUB_REF" = "refs/heads/main"
+
+      - name: Observe verified deploy workflow, current main, Render LIVE and health
+        run: python artifacts/wow-engine/v17/lean_production_readback.py
+
+      - name: Preserve immutable observation receipt for independent SIRT
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wow-v17-lean-production-readback-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wow-v17-lean-production-readback.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Disclosure
+        if: always()
+        run: |
+          echo "This is read-only observation, not production/model certification." >> "$GITHUB_STEP_SUMMARY"
+          echo "Independent SIRT acceptance is mandatory; can_execute=false." >> "$GITHUB_STEP_SUMMARY"
