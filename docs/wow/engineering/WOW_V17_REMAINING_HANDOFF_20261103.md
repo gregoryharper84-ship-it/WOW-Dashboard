@@ -61,11 +61,28 @@ the embedded heredoc intact — instead of isolating its first condition with a 
 | `python -c "import yaml; yaml.safe_load(...)"` on the gate | parses, job `trusted-governance` |
 | `git merge-tree --write-tree` vs `main`, for #2406/#2414/#2415 | all three clean, no conflicts |
 | `pytest test_v17_governance_dispatcher_rate_limit.py` at #2414 head `a701d884…` | 27 passed |
-| #2406 test files at head `2f1f9042…` | **not run** — collection needs the full `artifacts/wow-engine/requirements.txt` stack (fastapi → pypdf → …) and a PostgreSQL instance for the lease proof; CI already exercises it (9/9 workflows, 216 PostgreSQL proofs) |
+| #2406 pick-request suites at head `2f1f9042…` | 40 passed on a real PostgreSQL 16.2 backend: the 9 lease-race tests passed 5 consecutive times (0 failures, 0 skips) alongside `v17/test_pick_request_state_runtime.py`, `v17/test_interactive_pick_parallel.py`, `test_pick_request_run_status_classification.py` |
 
 Local prerequisites used: `python3 -m venv`, `pip install pytest pyyaml celery redis
 fastapi httpx pydantic`, and a `python`→`python3` shim on `PATH` (the workflows invoke
 `python`).
+
+The PostgreSQL proof needs neither root nor Docker: `uv venv --python 3.11` then
+`uv pip install -r artifacts/wow-engine/requirements.txt pgserver 'pytest==8.4.2'`, and
+run `initdb`/`pg_ctl` from the bundled `pgserver/pginstall/bin` on `127.0.0.1:5432` with
+trust auth and database `wow_release_fence_test` — the test's own guard rejects any other
+dbname, any non-loopback host and any extra libpq option. Then run pytest with
+`WOW_PICK_ISOLATED_TEST_DSN=postgresql://postgres:local-ci-test-only@127.0.0.1:5432/wow_release_fence_test`,
+`WOW_PICK_ISOLATED_TEST_ATTESTATION=NONPRODUCTION_EPHEMERAL_ONLY`,
+`PYTHONPATH=artifacts/wow-engine` and `--confcutdir=artifacts/wow-engine/tests` (the
+engine-wide conftest imports Celery). An unconfigured environment makes that module skip
+itself at collection, which is never concurrency evidence — assert `9 passed` rather
+than trusting a green exit. The fixture applies
+`20260920_pick_request_durable_run_state.sql`, `20260921_pick_request_run_control.sql`,
+`20260921_pick_request_durable_job_queue.sql` and #2406's
+`20261103_pick_request_governed_rejection_status.sql`, so a passing run also demonstrates
+that forward migration applies cleanly on a real backend. This is a local reproduction
+of CI's isolated proof and is **not** production migration or deployment evidence.
 
 ---
 
