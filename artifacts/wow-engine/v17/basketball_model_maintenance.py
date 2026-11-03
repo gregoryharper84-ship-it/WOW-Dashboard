@@ -20,7 +20,11 @@ from typing import Any, Iterable
 
 from fastapi import FastAPI
 
-from basketball_event_hydration_runtime import BasketballHydrationError, hydrate
+from basketball_event_hydration_runtime import (
+    BasketballHydrationError,
+    BasketballHydrationPartialWriteError,
+    hydrate,
+)
 from basketball_training_replay import run_training_replay
 from github_actions_oidc import scout_route_auth_dependency
 from v17.team_event_model_development_manifest import development_lane
@@ -137,6 +141,17 @@ def run_basketball_model_maintenance(
         hydration_blocker: dict[str, Any] | None = None
         try:
             hydration = hydrate(sport, season_values, client=db)
+        except BasketballHydrationPartialWriteError as exc:
+            # A prior upsert may have committed; do not replay or fit this
+            # incompletely refreshed corpus until it is reconciled.
+            blocker = {**_hydration_blocker(exc), "recoverable": False,
+                       "requires_corpus_reconciliation": True}
+            results.append(_blocked(
+                sport, "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN",
+                error_type=type(exc).__name__,
+                hydration_blocker=blocker,
+            ))
+            continue
         except BasketballHydrationError as exc:
             hydration_blocker = _hydration_blocker(exc)
         except Exception as exc:  # noqa: BLE001 - preserve typed acquisition degradation
