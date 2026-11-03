@@ -230,6 +230,9 @@ def run_bounded_capture_only_cohort_once(
                         "prediction_id": exc.prediction_id,
                         "rule_snapshot_id": exc.rule_snapshot_id,
                         "source_snapshot_ids": list(exc.source_snapshot_ids),
+                        "persisted_source_snapshot_ids": list(
+                            exc.persisted_source_snapshot_ids
+                        ),
                         "market_snapshot_id": None,
                     }
                 except Exception as exc:
@@ -253,7 +256,11 @@ def run_bounded_capture_only_cohort_once(
 
                 captured += 1
                 existing_keys.add(sample_key)
-                core_source_snapshots += len(capture.get("source_snapshot_ids") or [])
+                core_source_snapshots += len(
+                    capture.get("persisted_source_snapshot_ids")
+                    or capture.get("source_snapshot_ids")
+                    or []
+                )
                 if capture.get("market_snapshot_id"):
                     core_market_snapshots += 1
                 _logger.warning(
