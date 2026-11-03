@@ -193,6 +193,41 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(result["decision"], "REVIEWER_TRANSIENT_OUTAGE")
         self.assertFalse(result["can_execute"])
 
+    def test_real_signed_owner_fallback_requires_provenance_not_guessed_credit(self):
+        # Published QA check shape from protected GitHub App 5245832,
+        # PR #2374, head d577d092. Provider attempts reside in a separate
+        # artifact and MUST NOT be fabricated from the generic top-level reason.
+        row = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        row["output"] = {
+            "title": "HOLD — independent semantic source review",
+            "summary": (
+                "HOLD: independent semantic review. PR #2374, SHA " + SHA
+                + ", provider none, run 41511474861/2. reason "
+                "OWNER_FALLBACK_REQUIRES_ENGINEERING_APP_SOURCE. "
+                "No merge/deploy/trading authority; see run artifact for findings."
+            ),
+        }
+        result = mod.reduce_pr(pr(), [row], SHA)
+        self.assertEqual(result["decision"], "INDEPENDENT_QA_NOT_ACCEPTED")
+        self.assertEqual(result["next_action"],
+                         "VERIFY_INDEPENDENT_SOURCE_AND_RETAINED_REVIEW_ATTEMPTS")
+        self.assertEqual(result["reentry_trigger"],
+                         "NONOWNER_SOURCE_AND_VALID_QA_RECEIPT")
+        self.assertFalse(result["merge_authorized"])
+
+    def test_unsigned_provider_attempt_text_cannot_reclassify_owner_fallback(self):
+        row = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+        row["output"] = {
+            "title": "HOLD — independent semantic source review",
+            "summary": (
+                "attempts: PROVIDER_CREDIT_EXHAUSTED; "
+                "reason OWNER_FALLBACK_REQUIRES_ENGINEERING_APP_SOURCE"
+            ),
+        }
+        result = mod.reduce_pr(pr(), [row], SHA)
+        self.assertEqual(result["decision"], "INDEPENDENT_QA_NOT_ACCEPTED")
+        self.assertFalse(result["can_execute"])
+
     def test_unknown_error_no_fallback(self):
         x = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
         x["output"] = {"title": "HOLD — independent semantic source review",
