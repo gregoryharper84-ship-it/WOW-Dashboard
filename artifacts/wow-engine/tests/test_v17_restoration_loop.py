@@ -251,6 +251,14 @@ def test_collection_errors_hold_rather_than_infer_health():
     decision = rl.plan_cycle(_obs(collection_errors=["RENDER_API_UNREACHABLE"]))
     assert decision["action"] == rl.HOLD
     assert "OBSERVATION_INCOMPLETE" in decision["reason_codes"]
+    # Read failures must appear in the summary, not only in the JSON artifact.
+    assert decision["evidence"]["action"] == rl.HOLD
+    assert decision["evidence"]["reason_codes"] == ["OBSERVATION_INCOMPLETE"]
+    assert decision["evidence"]["next_action"] == "RESTORE_READ_ONLY_OBSERVATION"
+    summary = rl.render_evidence_comment(decision)
+    assert "INSPECT/HOLD" in summary
+    assert "OBSERVATION_INCOMPLETE" in summary
+    assert "RESTORE_READ_ONLY_OBSERVATION" in summary
 
 
 def test_broken_queue_governance_holds():
@@ -389,6 +397,26 @@ def test_deployed_commit_must_equal_the_merged_commit():
     )
     assert decision["action"] == rl.HOLD
     assert decision["reason_codes"] == ["DEPLOYED_COMMIT_MISMATCH"]
+    # A newer live main can already contain the repair. Do not advise a
+    # potentially destructive rollback or treat unverified ancestry as PASS.
+    assert decision["next_action"] == "VERIFY_LIVE_ANCESTRY_AND_USER_FUNCTION"
+    assert decision["verified"] is False
+    assert decision["dispatch"] is None
+    assert decision["can_execute"] is False
+
+def test_non_equal_live_sha_does_not_gain_proof_from_untrusted_release_metadata():
+    release = _release(deployed_commit=OTHER)
+    release["deployed_contains_merge"] = True
+    release["probe"] = {"passed": True, "evidence_ref": "stale-probe",
+                        "verified_commit": HEAD}
+    result = rl.plan_cycle(_obs(
+        releases_in_flight=[release],
+        production={"reachable": True, "deployed_commit": OTHER},
+    ))
+    assert result["action"] == rl.HOLD
+    assert result["reason_codes"] == ["DEPLOYED_COMMIT_MISMATCH"]
+    assert result["next_action"] == "VERIFY_LIVE_ANCESTRY_AND_USER_FUNCTION"
+    assert result["dispatch"] is None
 
 
 def test_probe_must_exist_and_bind_to_the_deployed_commit():
