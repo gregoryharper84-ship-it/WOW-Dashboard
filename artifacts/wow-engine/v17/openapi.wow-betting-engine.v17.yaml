@@ -397,11 +397,11 @@ paths:
       operationId: lookupWowV17PredictionReceipts
       x-openai-isConsequential: false
       description: >-
-        Read-only immutable pregame receipt lookup. Props use the existing
-        exact player/stat/line/direction ledger. For NFL OUTRIGHT_WINNER,
-        supply prediction_id, sport=NFL and market_family=OUTRIGHT_WINNER;
-        the distinct NFL event ledger is read without granting publication.
-        Identity conflicts fail closed; V17_TERMINAL_REDUCER remains authoritative.
+        Read-only immutable pregame receipt lookup. Props require exact
+        player/stat/line/direction or prediction_id. NFL OUTRIGHT_WINNER
+        requires prediction_id, sport=NFL and market_family=OUTRIGHT_WINNER.
+        Identity mismatches block; lookup never grants publication or
+        terminal authority.
       security: [{actionBearer: []}]
       requestBody:
         required: true
