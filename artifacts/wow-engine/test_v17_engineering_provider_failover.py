@@ -30,6 +30,53 @@ def test_resident_admission_retains_persistent_breaker_but_does_not_infer_transi
     assert module.resident_provider_admission(route, updated_at="invalid", now=now) == "PROVIDER_STATUS_UNVERIFIED"
 
 
+def test_resident_admits_fresh_owner_attested_gemini_canary_only():
+    module = _load_module()
+    now = datetime.now(timezone.utc)
+    route = {
+        "action": "DISPATCH", "provider": "gemini",
+        "reason": "GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY",
+        "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    assert module.resident_provider_admission(route, updated_at=now.isoformat(), now=now) == "PROVIDER_ADMITTED"
+    route["reason"] = "GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX"
+    assert module.resident_provider_admission(route, updated_at=now.isoformat(), now=now) == "PROVIDER_ADMITTED"
+    # A single human-run probe, a disabled canary, a provider failure reason and
+    # any unrecognized reason attest no standing automation and never admit.
+    for reason in ("GEMINI_OPERATOR_CANARY", "GEMINI_DISABLED_OR_SPEND_UNCONFIRMED",
+                   "GEMINI_API_QUOTA_EXHAUSTED", "OPENAI_PRIMARY_AVAILABLE", ""):
+        route["reason"] = reason
+        assert module.resident_provider_admission(
+            route, updated_at=now.isoformat(), now=now
+        ) == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_resident_gemini_admission_keeps_freshness_and_receipt_integrity():
+    module = _load_module()
+    now = datetime.now(timezone.utc)
+    route = {
+        "action": "DISPATCH", "provider": "gemini",
+        "reason": "GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY",
+        "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    stale = (now - timedelta(minutes=20)).isoformat()
+    assert module.resident_provider_admission(route, updated_at=stale, now=now) == "PROVIDER_RECOVERY_UNVERIFIED"
+    assert module.resident_provider_admission(route, updated_at=now.isoformat(), now=now) == "PROVIDER_ADMITTED"
+    for changed in ({**route, "can_execute": True}, {**route, "terminal_authority": "OTHER"},
+                    {**route, "action": "invalid"}, {**route, "reason": None}):
+        assert module.resident_provider_admission(
+            changed, updated_at=now.isoformat(), now=now
+        ) == "PROVIDER_STATUS_UNVERIFIED"
+    survival = {
+        "action": "SURVIVAL", "provider": "deterministic",
+        "reason": "GEMINI_API_QUOTA_EXHAUSTED",
+        "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    assert module.resident_provider_admission(
+        survival, updated_at=now.isoformat(), now=now
+    ) == "PROVIDER_STATUS_UNVERIFIED"
+
+
 def _load_module():
     sys.path.insert(0, str(MODULE_PATH.parent))
     spec = importlib.util.spec_from_file_location("engineering_provider_failover", MODULE_PATH)

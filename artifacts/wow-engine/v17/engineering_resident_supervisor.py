@@ -147,9 +147,12 @@ class GitHubTransport:
         # A later successful protected worker proves recovery; a later failed
         # or unclassified worker invalidates an older positive route receipt.
         latest_success = False
-        for workflow in (
-            "wow-v17-chatgpt-engineering-worker.yml",
-            "wow-v17-claude-engineering-worker.yml",
+        for workflow, workflow_provider in (
+            ("wow-v17-chatgpt-engineering-worker.yml", "openai"),
+            ("wow-v17-claude-engineering-worker.yml", "anthropic"),
+            # An admitted canary route stays subject to the same rule: a later
+            # failed or unclassified run of its own worker invalidates it.
+            ("wow-v17-gemini-engineering-worker.yml", "gemini"),
         ):
             workers = self.get(f"actions/workflows/{workflow}/runs?branch=main&status=completed&per_page=1")
             items = workers.get("workflow_runs")
@@ -179,7 +182,7 @@ class GitHubTransport:
                 if worker["conclusion"] == "success" and age <= 900:
                     latest_success |= worker["head_sha"] == self.get("commits/main").get("sha")
                 elif (decision == "PROVIDER_ADMITTED"
-                      and route.get("provider") == ("openai" if "chatgpt" in workflow else "anthropic")):
+                      and route.get("provider") == workflow_provider):
                     decision = "PROVIDER_RECOVERY_UNVERIFIED"
         if (not latest_success
                 and (route.get("provider") == "cursor"

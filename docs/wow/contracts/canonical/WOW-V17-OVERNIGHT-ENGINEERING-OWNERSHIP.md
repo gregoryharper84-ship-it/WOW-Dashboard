@@ -143,6 +143,19 @@ for reconciliation, never a resend. A completed correlated run clears only the
 handoff, not the counter. Provider holds are persisted as `DEGRADED` outcomes by
 the existing resident heartbeat path.
 
+### Provider-canary parity for resident admission
+
+A fresh `DISPATCH` receipt carrying one of the dispatcher's owner-attested
+Gemini canary reasons (`GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY`,
+`GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX`) is admitted exactly like the
+`openai`/`anthropic` routes: the same 15-minute freshness bound, the same
+`can_execute=false` and terminal-authority checks, and the same rule that a
+later failed or unclassified run of that provider's own worker invalidates it.
+A manual `GEMINI_OPERATOR_CANARY` receipt never grants unattended admission,
+because one human-run probe attests neither standing auto-routing configuration
+nor an approved spend cap. This parity grants no provider quota, budget,
+probability authority or execution authority.
+
 The three-attempt ceiling and its existing retention remain unchanged. Previously
 exhausted counters are not reset, increased or automatically forgiven by this
 repair. After genuinely admitted provider recovery, those incidents still require

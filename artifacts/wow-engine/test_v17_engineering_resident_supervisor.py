@@ -308,7 +308,8 @@ def test_unreadable_remote_reservation_never_dispatches():
 
 
 def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
-                       secondary="failure", recovery=False):
+                       secondary="failure", recovery=False, gemini="failure",
+                       fresh=()):
     client = GitHubTransport("fixture-token")
     now = datetime.now(timezone.utc)
     stamp = (now - timedelta(minutes=5)).isoformat()
@@ -334,14 +335,17 @@ def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
             }]}
         if suffix == "commits/main":
             return {"sha": sha}
-        for workflow, state in (("chatgpt", primary), ("claude", secondary)):
+        for workflow, state, run_id in (
+            ("chatgpt", primary, 901), ("claude", secondary, 902), ("gemini", gemini, 903),
+        ):
             if f"wow-v17-{workflow}-engineering-worker.yml/runs?" in suffix:
                 return {"workflow_runs": [{
-                    "id": 901 if workflow == "chatgpt" else 902,
+                    "id": run_id,
                     "path": f".github/workflows/wow-v17-{workflow}-engineering-worker.yml",
                     "head_sha": sha,
                     "head_branch": "main", "status": "completed", "conclusion": state,
-                    "updated_at": (now if recovery and state == "success"
+                    "updated_at": (now - timedelta(minutes=1) if workflow in fresh
+                                   else now if recovery and state == "success"
                                    else now - timedelta(minutes=10)).isoformat(),
                 }]}
         raise AssertionError(suffix)
@@ -371,6 +375,29 @@ def test_recent_protected_worker_success_proves_recovery(monkeypatch):
     assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
     route["can_execute"] = True
     assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+
+
+def test_real_transport_admits_fresh_owner_attested_gemini_canary(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
+    # A human-run canary probe is not standing authorization for automation.
+    route["reason"] = "GEMINI_OPERATOR_CANARY"
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_later_gemini_worker_run_invalidates_only_its_own_admitted_route(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", gemini="failure", fresh=("gemini",),
+    )
+    route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", primary="failure", gemini="success",
+        fresh=("chatgpt", "gemini"),
+    )
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
 
 
 def test_success_acknowledgment_receipt_matches_exact_parent_worker(monkeypatch):
