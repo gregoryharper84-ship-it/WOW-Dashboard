@@ -508,7 +508,10 @@ jobs:
                  [ "${GEMINI_SPEND_CAP_CONFIRMED:-}" = "true" ]; then
                 action=DISPATCH
                 provider=gemini
-                reason="${MANUAL_REASON:-GEMINI_OPERATOR_CANARY}"
+                # A manual force may probe provider health but may never
+                # claim the automatic-routing/canary-history attestation.
+                # The automatic path assigns its own separate reason below.
+                reason=GEMINI_OPERATOR_CANARY
               else
                 action=SURVIVAL
                 provider=deterministic

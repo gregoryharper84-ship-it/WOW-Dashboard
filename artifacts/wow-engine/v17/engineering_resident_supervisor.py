@@ -34,11 +34,12 @@ REPO = "gregoryharper84-ship-it/WOW-Dashboard"
 REPO_ID = 1240256887
 PROVIDER_WORKFLOW = "wow-v17-engineering-provider-dispatcher.yml"
 FINALIZE_WORKFLOW = "wow-v17-remote-writer-finalize.yml"
-# Only the three registered engineering workflows can own the implementation
-# writer. Unrelated CI run churn must never corrupt this busy check.
+# All registered implementation workers and the provider dispatcher own
+# the shared writer. Unrelated CI run churn must never corrupt this busy check.
 ACTIVE_WORKFLOW_FILES = (
     "wow-v17-chatgpt-engineering-worker.yml",
     "wow-v17-claude-engineering-worker.yml",
+    "wow-v17-gemini-engineering-worker.yml",
     "wow-v17-engineering-provider-dispatcher.yml",
 )
 MANIFEST = Path(__file__).with_name("engineering_dispatch_manifest.json")
@@ -126,6 +127,7 @@ class GitHubTransport:
             return "PROVIDER_STATUS_UNVERIFIED"
         run = runs[0]
         if (run.get("head_branch") != "main" or run.get("status") != "completed"
+                or run.get("conclusion") != "success"
                 or run.get("path") != f".github/workflows/{PROVIDER_WORKFLOW}"
                 or type(run.get("id")) is not int or run["id"] <= 0
                 or not re.fullmatch(r"[0-9a-f]{40}", str(run.get("head_sha", "")))):
@@ -144,18 +146,53 @@ class GitHubTransport:
         decision = resident_provider_admission(route, updated_at=run.get("updated_at"), now=now)
         if decision == "PROVIDER_STATUS_UNVERIFIED":
             return decision
+        route_provider = route.get("provider")
+        gemini_route_created_at = None
+        if route_provider == "gemini":
+            # Only the authenticated automatic dispatcher event can attest
+            # Gemini's enabled flags and durable history. A manually forced
+            # reason string (or a successful operator probe) is not authority.
+            if (run.get("event") not in {"schedule", "workflow_run"}
+                    or decision != "PROVIDER_ADMITTED"
+                    or self.get("commits/main").get("sha") != run["head_sha"]):
+                return "PROVIDER_RECOVERY_UNVERIFIED"
+            # The child may fail while its parent is still uploading artifacts.
+            # For Gemini, compare worker outcomes to the authenticated route's
+            # creation time, never the later dispatcher completion timestamp.
+            try:
+                gemini_route_created_at = datetime.fromisoformat(
+                    run["created_at"].replace("Z", "+00:00")
+                )
+                finished = datetime.fromisoformat(
+                    run["updated_at"].replace("Z", "+00:00")
+                )
+            except (ValueError, AttributeError, KeyError, TypeError):
+                return "PROVIDER_STATUS_UNVERIFIED"
+            if (gemini_route_created_at.tzinfo is None or finished.tzinfo is None
+                    or not gemini_route_created_at <= finished <= now):
+                return "PROVIDER_STATUS_UNVERIFIED"
         # A later successful protected worker proves recovery; a later failed
         # or unclassified worker invalidates an older positive route receipt.
         latest_success = False
-        for workflow in (
-            "wow-v17-chatgpt-engineering-worker.yml",
-            "wow-v17-claude-engineering-worker.yml",
+        route_revoked = False
+        for workflow, workflow_provider in (
+            ("wow-v17-chatgpt-engineering-worker.yml", "openai"),
+            ("wow-v17-claude-engineering-worker.yml", "anthropic"),
+            # An admitted canary route stays subject to the same rule: a later
+            # failed or unclassified run of its own worker invalidates it.
+            ("wow-v17-gemini-engineering-worker.yml", "gemini"),
         ):
             workers = self.get(f"actions/workflows/{workflow}/runs?branch=main&status=completed&per_page=1")
             items = workers.get("workflow_runs")
             if not isinstance(items, list):
+                if route_provider in {"openai", "anthropic", "gemini"} and workflow_provider != route_provider:
+                    continue
                 return "PROVIDER_STATUS_UNVERIFIED"
             if not items:
+                # No completed history of the controlling worker is not
+                # affirmative recovery; do not borrow another provider's pass.
+                if route_provider == workflow_provider:
+                    return "PROVIDER_STATUS_UNVERIFIED"
                 continue
             worker = items[0]
             if (worker.get("path") != f".github/workflows/{workflow}"
@@ -163,14 +200,38 @@ class GitHubTransport:
                     or type(worker.get("id")) is not int or worker["id"] <= 0
                     or not re.fullmatch(r"[0-9a-f]{40}", str(worker.get("head_sha", "")))
                     or worker.get("conclusion") not in {"success", "failure", "cancelled", "timed_out"}):
+                # Another provider's malformed history may not revoke this
+                # otherwise verified provider. The matching worker must fail
+                # closed, as must an unattributed NO_ACTION/SURVIVAL recovery.
+                if route_provider in {"openai", "anthropic", "gemini"} and workflow_provider != route_provider:
+                    continue
                 return "PROVIDER_STATUS_UNVERIFIED"
-            updated = datetime.fromisoformat(worker["updated_at"].replace("Z", "+00:00"))
-            route_time = datetime.fromisoformat(run["updated_at"].replace("Z", "+00:00"))
-            age = (now - updated).total_seconds()
-            if age < 0:
+            try:
+                updated = datetime.fromisoformat(
+                    worker["updated_at"].replace("Z", "+00:00")
+                )
+                route_time = (gemini_route_created_at if route_provider == "gemini"
+                              else datetime.fromisoformat(
+                                  run["updated_at"].replace("Z", "+00:00")
+                              ))
+                age = (now - updated).total_seconds()
+                if (updated.tzinfo is None or route_time.tzinfo is None or age < 0):
+                    raise ValueError("INVALID_WORKER_TIMESTAMP")
+            except (KeyError, ValueError, AttributeError, TypeError):
+                if route_provider in {"openai", "anthropic", "gemini"} and workflow_provider != route_provider:
+                    continue
                 return "PROVIDER_STATUS_UNVERIFIED"
+            # A manual Gemini worker can never clear OpenAI/Anthropic SURVIVAL
+            # or NO_ACTION evidence by this generic recent-success shortcut.
+            if workflow_provider == "gemini" and route_provider != "gemini":
+                continue
+            # A parent-linked acknowledgment proves a protected worker ran, not
+            # that an automatic provider route was attested. Gemini recovery is
+            # authorized only by the automatic route itself, so this shape must
+            # never admit it even if the dispatcher ever emitted it.
             acknowledged = (
-                route.get("action") == "NO_ACTION"
+                workflow_provider != "gemini"
+                and route.get("action") == "NO_ACTION"
                 and str(route.get("parent_run_id")) == str(worker["id"])
                 and route.get("reason") == workflow.removesuffix(".yml") + "_SUCCESS"
                 and worker["conclusion"] == "success"
@@ -179,8 +240,9 @@ class GitHubTransport:
                 if worker["conclusion"] == "success" and age <= 900:
                     latest_success |= worker["head_sha"] == self.get("commits/main").get("sha")
                 elif (decision == "PROVIDER_ADMITTED"
-                      and route.get("provider") == ("openai" if "chatgpt" in workflow else "anthropic")):
+                      and route_provider == workflow_provider):
                     decision = "PROVIDER_RECOVERY_UNVERIFIED"
+                    route_revoked = True
         if (not latest_success
                 and (route.get("provider") == "cursor"
                      or route.get("reason") == "REMOTE_WRITER_RECONCILIATION_REQUIRED")):
@@ -225,7 +287,18 @@ class GitHubTransport:
                             and fin["head_sha"] == pre_main_sha
                             and post_main_sha == pre_main_sha
                         )
-        if latest_success:
+        if route_provider == "gemini":
+            if route_revoked:
+                return "PROVIDER_RECOVERY_UNVERIFIED"
+            # The successful automatic provider dispatcher already submitted
+            # its Gemini child. It is NOT authorization for a second
+            # force_provider=auto POST: that would re-run the 24h cooldown and
+            # potentially dispatch another provider or charge an attempt.
+            # Record the existing submission without a new resident launch.
+            if decision == "PROVIDER_ADMITTED":
+                return "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+            return decision
+        if latest_success and not route_revoked:
             return "PROVIDER_ADMITTED"
         if decision == "PROVIDER_ADMITTED" and self.get("commits/main").get("sha") != run["head_sha"]:
             return "PROVIDER_RECOVERY_UNVERIFIED"
@@ -327,7 +400,7 @@ def active_engineering_workflow(client: GitHubTransport) -> bool:
     """Fail closed on each exact GitHub engineering-workflow active inventory.
 
     Repository-wide counts can race unrelated CI execution; query only the
-    three already-registered writers. Positive evidence is always BUSY,
+    registered workers and dispatcher. Positive evidence is always BUSY,
     including transient total_count/row skew. Malformed or overfull inventory
     still blocks instead of granting another source writer.
     """
@@ -508,9 +581,12 @@ def dispatch_once(client: GitHubTransport, redis_client: Any, manifest: dict[str
     if not isinstance(provider_state, str) or provider_state not in {
         "PROVIDER_ADMITTED", "PROVIDER_QUOTA_BLOCKED", "PROVIDER_THROTTLED",
         "PROVIDER_RECOVERY_UNVERIFIED",
+        "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED",
     }:
         return "PROVIDER_STATUS_UNVERIFIED"
     if provider_state != "PROVIDER_ADMITTED":
+        # Automatic Gemini routes already launched their own protected child;
+        # never submit a second auto dispatcher or increment an attempt here.
         return provider_state
     # An incident already at PR/review or retry cap must not starve every
     # other approved incident. Keep one shared writer and do not duplicate PRs.

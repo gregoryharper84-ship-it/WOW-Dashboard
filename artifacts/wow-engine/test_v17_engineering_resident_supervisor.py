@@ -308,7 +308,8 @@ def test_unreadable_remote_reservation_never_dispatches():
 
 
 def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
-                       secondary="failure", recovery=False):
+                       secondary="failure", recovery=False, gemini="failure",
+                       fresh=()):
     client = GitHubTransport("fixture-token")
     now = datetime.now(timezone.utc)
     stamp = (now - timedelta(minutes=5)).isoformat()
@@ -316,6 +317,7 @@ def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
     run = {
         "id": 900, "run_attempt": 1, "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
         "head_branch": "main", "head_sha": sha, "status": "completed",
+        "conclusion": "success", "event": "schedule", "created_at": stamp,
         "updated_at": stamp,
     }
     route = {
@@ -334,14 +336,17 @@ def _provider_evidence(monkeypatch, *, action="SURVIVAL", primary="failure",
             }]}
         if suffix == "commits/main":
             return {"sha": sha}
-        for workflow, state in (("chatgpt", primary), ("claude", secondary)):
+        for workflow, state, run_id in (
+            ("chatgpt", primary, 901), ("claude", secondary, 902), ("gemini", gemini, 903),
+        ):
             if f"wow-v17-{workflow}-engineering-worker.yml/runs?" in suffix:
                 return {"workflow_runs": [{
-                    "id": 901 if workflow == "chatgpt" else 902,
+                    "id": run_id,
                     "path": f".github/workflows/wow-v17-{workflow}-engineering-worker.yml",
                     "head_sha": sha,
                     "head_branch": "main", "status": "completed", "conclusion": state,
-                    "updated_at": (now if recovery and state == "success"
+                    "updated_at": (now - timedelta(minutes=1) if workflow in fresh
+                                   else now if recovery and state == "success"
                                    else now - timedelta(minutes=10)).isoformat(),
                 }]}
         raise AssertionError(suffix)
@@ -373,6 +378,75 @@ def test_recent_protected_worker_success_proves_recovery(monkeypatch):
     assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
 
 
+def test_real_transport_admits_fresh_owner_attested_gemini_canary(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+    # A human-run canary probe is not standing authorization for automation.
+    route["reason"] = "GEMINI_OPERATOR_CANARY"
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_later_gemini_worker_run_invalidates_only_its_own_admitted_route(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", gemini="failure", fresh=("gemini",),
+    )
+    route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", primary="failure", gemini="success",
+        fresh=("chatgpt", "gemini"),
+    )
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+
+
+def test_gemini_manual_attestation_text_never_admits(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", gemini="success", fresh=("gemini",),
+    )
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    # Even a forged otherwise allowlisted reason from a workflow_dispatch
+    # may not inherit the trusted automatic schedule's checks.
+    run["event"] = "workflow_dispatch"
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+    run["event"] = "schedule"
+    route["reason"] = "GEMINI_OPERATOR_CANARY"
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_gemini_own_failure_vetoes_other_provider_success(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", primary="success", gemini="failure",
+        fresh=("chatgpt", "gemini"),
+    )
+    route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_openai_own_failure_vetoes_other_provider_success(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", primary="failure", secondary="success",
+        fresh=("chatgpt", "claude"),
+    )
+    route.update(provider="openai", reason="OPENAI_PRIMARY_AVAILABLE")
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_unrelated_unclassified_worker_does_not_revoke_valid_gemini_route(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    original_get = client.get
+    def with_unrelated_unclassified(suffix):
+        if suffix.startswith("actions/workflows/wow-v17-claude-engineering-worker.yml/runs?"):
+            result = original_get(suffix)
+            result["workflow_runs"][0]["conclusion"] = "action_required"
+            return result
+        return original_get(suffix)
+    monkeypatch.setattr(client, "get", with_unrelated_unclassified)
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+
+
 def test_success_acknowledgment_receipt_matches_exact_parent_worker(monkeypatch):
     client, run, route, _ = _provider_evidence(monkeypatch, primary="success")
     route.update(action="NO_ACTION", provider="none", parent_run_id="901",
@@ -380,6 +454,130 @@ def test_success_acknowledgment_receipt_matches_exact_parent_worker(monkeypatch)
     assert client.provider_admission() == "PROVIDER_ADMITTED"
     route["parent_run_id"] = "999"
     assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+@pytest.mark.parametrize("conclusion", [
+    "failure", "cancelled", "timed_out", "action_required", None,
+])
+def test_dispatcher_route_receipt_from_unsuccessful_run_never_admits(
+    monkeypatch, conclusion,
+):
+    client, run, route, calls = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    run["conclusion"] = conclusion
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+    # A route artifact does not prove the remote-fence/worker-dispatch steps.
+    assert not any("engineering-worker.yml/runs?" in path for path in calls)
+
+
+def test_gemini_successful_dispatch_receipt_is_not_a_second_resident_launch(monkeypatch):
+    client, run, route, calls = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+    # Exercise the real transport's admission inside the actual resident cycle,
+    # not a fake manually returning the desired status. The protected
+    # dispatcher already submitted the Gemini worker; a second auto POST would
+    # re-evaluate cooldown and potentially count an ineffective attempt.
+    monkeypatch.setattr(client, "remote_writer_clear", lambda: True)
+    monkeypatch.setattr(
+        "v17.engineering_resident_supervisor.active_engineering_workflow",
+        lambda _: False,
+    )
+    store = FakeRedis()
+    assert dispatch_once(client, store, MANIFEST) == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+    assert not any(path.endswith("/dispatches") for path in calls)
+    assert store.attempts == 0
+    assert store.get(PENDING_DISPATCH_KEY) is None
+
+
+def test_gemini_route_does_not_become_second_launch_even_with_fresh_child_success(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", gemini="success", fresh=("gemini",),
+    )
+    route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+
+
+def test_manual_gemini_success_never_clears_an_openai_quota_survival_hold(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="SURVIVAL", gemini="success", fresh=("gemini",),
+    )
+    assert route["provider"] == "deterministic"
+    assert client.provider_admission() == "PROVIDER_QUOTA_BLOCKED"
+
+
+def test_matching_gemini_worker_history_missing_cannot_borrow_other_provider_success(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", primary="success", fresh=("chatgpt",),
+    )
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    original_get = client.get
+    def missing_gemini_history(suffix):
+        if suffix.startswith("actions/workflows/wow-v17-gemini-engineering-worker.yml/runs?"):
+            return {"workflow_runs": []}
+        return original_get(suffix)
+    monkeypatch.setattr(client, "get", missing_gemini_history)
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+
+
+def test_gemini_child_failed_between_dispatcher_creation_and_completion_is_not_admitted(monkeypatch):
+    client, run, route, _ = _provider_evidence(
+        monkeypatch, action="DISPATCH", gemini="failure",
+    )
+    now = datetime.now(timezone.utc)
+    run["created_at"] = (now - timedelta(minutes=12)).isoformat()
+    run["updated_at"] = (now - timedelta(minutes=3)).isoformat()
+    route.update(provider="gemini", reason="GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX")
+    original_get = client.get
+    def failed_during_dispatch(suffix):
+        result = original_get(suffix)
+        if suffix.startswith("actions/workflows/wow-v17-gemini-engineering-worker.yml/runs?"):
+            result["workflow_runs"][0]["updated_at"] = (
+                now - timedelta(minutes=6)
+            ).isoformat()
+        return result
+    monkeypatch.setattr(client, "get", failed_during_dispatch)
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+
+def test_gemini_route_requires_authenticated_created_at(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    del run["created_at"]
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+    run["created_at"] = "not-a-timestamp"
+    assert client.provider_admission() == "PROVIDER_STATUS_UNVERIFIED"
+
+
+def test_unrelated_worker_unparseable_timestamp_is_scoped(monkeypatch):
+    client, run, route, _ = _provider_evidence(monkeypatch, action="DISPATCH")
+    route.update(provider="gemini", reason="GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY")
+    original_get = client.get
+    def corrupt_anthropic_timestamp(suffix):
+        result = original_get(suffix)
+        if suffix.startswith("actions/workflows/wow-v17-claude-engineering-worker.yml/runs?"):
+            result["workflow_runs"][0]["updated_at"] = "unavailable"
+        return result
+    monkeypatch.setattr(client, "get", corrupt_anthropic_timestamp)
+    assert client.provider_admission() == "EXISTING_PROVIDER_DISPATCH_ALREADY_SUBMITTED"
+
+
+def test_gemini_acknowledgment_cannot_substitute_for_an_attested_route(monkeypatch):
+    # A parent-linked NO_ACTION "<worker>_SUCCESS" acknowledgment proves a
+    # protected worker ran; it does not attest an automatic Gemini route. A
+    # manual canary is health evidence, so this shape must never admit Gemini
+    # even if the dispatcher ever emitted it.
+    client, run, route, _ = _provider_evidence(monkeypatch, gemini="success")
+    route.update(action="NO_ACTION", provider="none", parent_run_id="903",
+                 reason="wow-v17-gemini-engineering-worker_SUCCESS")
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+    # The same shape from the primary worker still proves recovery, so this
+    # test cannot pass by disabling the acknowledgment path wholesale.
+    client, run, route, _ = _provider_evidence(monkeypatch, primary="success")
+    route.update(action="NO_ACTION", provider="none", parent_run_id="901",
+                 reason="wow-v17-chatgpt-engineering-worker_SUCCESS")
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
 
 
 @pytest.mark.parametrize("bad_run", [
@@ -496,6 +694,21 @@ def test_concurrently_active_engineering_workflows_block_dispatch():
             return super().get(suffix)
 
     client = Concurrent()
+    assert dispatch_once(client, FakeRedis(), MANIFEST) == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
+    assert client.sent == []
+
+
+def test_active_gemini_worker_holds_resident_dispatch_to_preserve_single_writer():
+    class GeminiBusy(FakeClient):
+        def get(self, suffix):
+            if suffix == "actions/workflows/wow-v17-gemini-engineering-worker.yml/runs?status=in_progress&per_page=100":
+                return {"total_count": 1, "workflow_runs": [
+                    {"name": "wow-v17-gemini-engineering-worker"},
+                ]}
+            return super().get(suffix)
+
+    client = GeminiBusy()
+    assert active_engineering_workflow(client)
     assert dispatch_once(client, FakeRedis(), MANIFEST) == "EXISTING_ENGINEERING_WORKFLOW_ACTIVE"
     assert client.sent == []
 
@@ -1172,7 +1385,7 @@ def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_re
                 "id": 900, "run_attempt": 1,
                 "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
                 "head_branch": "main", "head_sha": sha, "status": "completed",
-                "updated_at": stamp,
+                "conclusion": "success", "updated_at": stamp,
             }]}
         if suffix == "actions/runs/900/artifacts?per_page=100":
             return {"total_count": 1, "artifacts": [{

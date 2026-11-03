@@ -511,6 +511,16 @@ OPENAI_PERSISTENT_BREAKER_CODES = frozenset({
 })
 
 GEMINI_WORKER_WORKFLOW_PATH = ".github/workflows/wow-v17-gemini-engineering-worker.yml"
+# The protected dispatcher emits these reasons only after it has verified the
+# owner-attested GEMINI_ENGINEERING_ENABLED, GEMINI_SPEND_CAP_CONFIRMED and
+# GEMINI_AUTO_ROUTING_ENABLED variables plus durable canary provider history.
+# GEMINI_OPERATOR_CANARY is deliberately absent: a single human-run probe proves
+# neither standing auto-routing configuration nor an approved spend cap, so it
+# may not authorize unattended dispatch.
+GEMINI_CANARY_ADMISSION_REASONS = frozenset({
+    "GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY",
+    "GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX",
+})
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -553,9 +563,15 @@ def resident_provider_admission(route: dict[str, Any], *, updated_at: str, now: 
         if reason == "REMOTE_WRITER_RECONCILIATION_REQUIRED":
             return "PROVIDER_RECOVERY_UNVERIFIED"
         return "PROVIDER_STATUS_UNVERIFIED"
-    if (route["action"] == "DISPATCH" and route.get("provider") in {"openai", "anthropic"}
-            and age <= 15):
-        return "PROVIDER_ADMITTED"
+    if route["action"] == "DISPATCH" and age <= 15:
+        provider = route.get("provider")
+        if provider in {"openai", "anthropic"}:
+            return "PROVIDER_ADMITTED"
+        # A Gemini canary route is admitted exactly like the primary/secondary
+        # routes: only while fresh and only for an owner-attested reason the
+        # dispatcher itself produced after checking configuration and history.
+        if provider == "gemini" and reason in GEMINI_CANARY_ADMISSION_REASONS:
+            return "PROVIDER_ADMITTED"
     return "PROVIDER_RECOVERY_UNVERIFIED"
 
 
