@@ -54,6 +54,20 @@ class WakeProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(probe.ProbeError, "WEATHER_CAPTURE_TRIGGER_NOT_INSTALLED"):
             probe.verify(HEALTH, {**READY, "capture_trigger_installed": False})
 
+    def test_missing_authenticated_capture_trigger_metadata_is_not_readiness(self):
+        absent_installation = dict(READY)
+        del absent_installation["capture_trigger_installed"]
+        with self.assertRaisesRegex(probe.ProbeError, "WEATHER_CAPTURE_TRIGGER_NOT_INSTALLED"):
+            probe.verify(HEALTH, absent_installation)
+
+        absent_path = dict(READY)
+        del absent_path["collection_path"]
+        with self.assertRaisesRegex(probe.ProbeError, "WEATHER_COLLECTION_PATH_UNVERIFIED"):
+            probe.verify(HEALTH, absent_path)
+
+        with self.assertRaisesRegex(probe.ProbeError, "WEATHER_CAPTURE_TRIGGER_NOT_INSTALLED"):
+            probe.verify(HEALTH, {**READY, "capture_trigger_installed": "true"})
+
     def test_trigger_only_deployment_passes_with_in_process_loop_disabled(self):
         """A correct trigger-only runtime must not fail closed on startup_enabled."""
         probe.verify(HEALTH, {**READY, "startup_enabled": False})
