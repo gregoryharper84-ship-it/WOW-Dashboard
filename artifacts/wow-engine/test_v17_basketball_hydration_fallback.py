@@ -167,6 +167,79 @@ def test_repeat_hydration_upserts_are_not_miscounted_as_new_games(monkeypatch):
     assert saved_ids == {"bdl-old", "bdl-new"}
 
 
+def test_duplicate_game_ids_across_write_batches_fail_before_any_io():
+    rows = [{"game_id": f"bdl-{i}"} for i in range(100)]
+    rows.append({"game_id": "bdl-0"})
+
+    class DenyDb:
+        def table(self, *_args):
+            raise AssertionError("No read or upsert is allowed before validation")
+
+    try:
+        hydration._persist_rows(DenyDb(), "NBA", rows)
+        raise AssertionError("expected duplicate game ID rejection")
+    except hydration.BasketballHydrationError as exc:
+        assert str(exc) == "BASKETBALL_SETTLED_GAME_ID_INVALID"
+
+
+def test_partial_upsert_failure_is_not_replay_safe():
+    class Query:
+        def __init__(self, db):
+            self.db = db
+            self.writing = False
+
+        def select(self, *_args):
+            return self
+
+        def in_(self, *_args):
+            return self
+
+        def upsert(self, *_args, **_kwargs):
+            self.writing = True
+            return self
+
+        def execute(self):
+            if self.writing:
+                self.db.writes += 1
+                if self.db.writes == 2:
+                    raise RuntimeError("provider response lost after write")
+            return SimpleNamespace(data=[])
+
+    class Db:
+        writes = 0
+
+        def table(self, *_args):
+            return Query(self)
+
+    db = Db()
+    rows = [{"game_id": f"bdl-{i}"} for i in range(101)]
+    try:
+        hydration._persist_rows(db, "NBA", rows)
+        raise AssertionError("expected partial write HOLD")
+    except hydration.BasketballHydrationPartialWriteError as exc:
+        assert str(exc) == "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
+    assert db.writes == 2
+
+
+def test_second_season_failure_after_persisted_first_season_blocks_replay(monkeypatch):
+    def source(_sport, year):
+        if year == 2025:
+            return [{"game_id": "bdl-2025-1"}]
+        raise RuntimeError("unavailable second season")
+
+    monkeypatch.setattr(hydration, "fetch_games", source)
+    monkeypatch.setattr(hydration, "normalize_game", lambda game, *_: {
+        "game_id": game["game_id"], "game_date": "2025-10-25", "settled": True
+    })
+    monkeypatch.setattr(hydration, "_persist_rows", lambda *_args: 1)
+    monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: date(2025, 10, 25))
+    try:
+        hydration.hydrate("NBA", [2025, 2026], client=object())
+        raise AssertionError("expected partial-season HOLD")
+    except hydration.BasketballHydrationPartialWriteError as exc:
+        assert str(exc) == "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
+
+
 def test_hydrate_prefers_sportsdataverse_after_primary_failure_and_only_appends_newer_rows(monkeypatch):
     def primary_fail(*_args, **_kwargs):
         raise hydration.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable")
