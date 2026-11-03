@@ -37,48 +37,6 @@ def _provenance_guard(workflow: Path, step_name: str, start: str, end: str) -> s
     return start + script.split(start, 1)[1].split(end, 1)[0]
 
 
-@pytest.mark.parametrize(
-    ("workflow", "step_name", "start", "end"),
-    [
-    ],
-)
-def test_downstream_consumers_accept_only_successful_protected_workflow_run_receipts(
-    workflow, step_name, start, end, tmp_path
-):
-    guard = "set -euo pipefail\n" + _provenance_guard(workflow, step_name, start, end)
-    env = {
-        "GITHUB_REPOSITORY": "gregoryharper84-ship-it/WOW-Dashboard",
-        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
-        "GITHUB_OUTPUT": str(tmp_path / "output"),
-        "name": "wow-v17-existing-pr-governance-review",
-        "path": ".github/workflows/wow-v17-existing-pr-governance-review.yml",
-        "event": "workflow_run",
-        "head_branch": "main",
-        "head_repo": "gregoryharper84-ship-it/WOW-Dashboard",
-        "status": "completed",
-        "conclusion": "success",
-    }
-
-    accepted = subprocess.run(
-        ["bash", "-c", guard], env=os.environ | env,
-        capture_output=True, text=True, check=False,
-    )
-    assert accepted.returncode == 0, accepted.stderr
-
-    for field, value in (
-        ("head_branch", "feature"),
-        ("head_repo", "attacker/fork"),
-        ("status", "in_progress"),
-        ("conclusion", "failure"),
-        ("event", "push"),
-    ):
-        rejected = subprocess.run(
-            ["bash", "-c", guard], env=os.environ | (env | {field: value}),
-            capture_output=True, text=True, check=False,
-        )
-        assert rejected.returncode != 0, (workflow, field, value)
-
-
 def test_schema_one_worker_receipt_is_not_rejected_by_existing_pr_schema_guard(tmp_path):
     workflow = GATE.read_text(encoding="utf-8")
     step = workflow.split("      - name: Download and verify exact-head receipt\n", 1)[1]
