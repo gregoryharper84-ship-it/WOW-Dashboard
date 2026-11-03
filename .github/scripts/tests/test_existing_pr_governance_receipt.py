@@ -1956,13 +1956,11 @@ def test_trust_root_bootstrap_holds_for_missing_or_stale_owner_approval():
         build_bootstrap(data)
 
 
-def test_owner_authored_trust_root_change_cannot_bootstrap():
+def test_legacy_owner_authored_receipt_cannot_be_reinterpreted_as_v3():
+    receipt = build_bootstrap()
+    receipt['target']['author'] = {'id':verifier.OWNER_ID,'login':verifier.OWNER_LOGIN}
     with pytest.raises(verifier.ExistingPrGovernanceReceiptError, match="TRUST_ROOT_OWNER_AUTHORED"):
-        build_bootstrap(bootstrap_evidence(author={
-            "id": verifier.OWNER_ID,
-            "login": verifier.OWNER_LOGIN,
-            "type": "User",
-        }))
+        verify_bootstrap(receipt)
 
 
 def test_ordinary_diff_cannot_use_the_bootstrap_receipt():
@@ -2436,3 +2434,73 @@ def test_class_a_workflow_does_not_force_deterministic_route_on_nonclass_a():
     assert "--trusted-reviewers-json" in workflow
     assert "--source-review-json" in workflow  # reviewed non-Class-A PRs retain their path
     assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
+
+
+def owner_v3_evidence(**kwargs):
+    data=bootstrap_evidence(author={'id':verifier.OWNER_ID,'login':verifier.OWNER_LOGIN,'type':'User'},**kwargs)
+    data['reviews']=[]
+    return data
+
+
+def test_v3_owner_receipt_is_versioned_evidence_not_self_approval():
+    data=owner_v3_evidence()
+    receipt=build_bootstrap(data)
+    assert receipt['receipt_schema_version'] == 3
+    assert receipt['owner_review'] is None
+    assert receipt['owner_authorization'] == {
+        'basis':'AUTHENTICATED_OWNER_AUTHORSHIP', 'head_sha':HEAD,
+        'owner_merge_required':True, 'release_authorized':False,
+    }
+    assert 'independent_review' not in receipt
+    verify_bootstrap(receipt,data=data)
+
+
+@pytest.mark.parametrize('field,value', [('release_authorized',True),('head_sha','b'*40),('owner_merge_required',False)])
+def test_v3_owner_receipt_cannot_claim_release_or_change_its_head(field,value):
+    data=owner_v3_evidence()
+    receipt=build_bootstrap(data)
+    receipt['owner_authorization'][field]=value
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError):
+        verify_bootstrap(receipt,data=data)
+
+
+def test_v3_owner_still_requires_exact_green_qa_and_release():
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError,match='REQUIRED_CHECK_NOT_GREEN'):
+        build_bootstrap(owner_v3_evidence(qa_conclusion='failure'))
+
+
+@pytest.mark.parametrize('author', [
+    {'id':verifier.OWNER_ID,'login':'someone-else','type':'User'},
+    {'id':100,'login':verifier.OWNER_LOGIN,'type':'User'},
+    {'id':verifier.OWNER_ID,'login':verifier.OWNER_LOGIN,'type':'Bot'},
+])
+def test_v3_owner_identity_requires_matching_id_login_and_human_type(author):
+    data=bootstrap_evidence(author=author)
+    with pytest.raises(verifier.ExistingPrGovernanceReceiptError):
+        build_bootstrap(data)
+
+
+def test_v3_owner_cli_build_and_live_recheck(tmp_path, monkeypatch):
+    monkeypatch.chdir(REPO_ROOT)
+    data = owner_v3_evidence()
+    evidence_path = tmp_path / 'evidence.json'
+    reviews_path = tmp_path / 'reviews.json'
+    checks_path = tmp_path / 'checks.json'
+    output = tmp_path / 'receipt.json'
+    evidence_path.write_text(json.dumps(data))
+    reviews_path.write_text(json.dumps(data['reviews']))
+    checks_path.write_text(json.dumps(data['check_runs']))
+    common = ['--repository', REPOSITORY, '--head-sha', HEAD,
+              '--head-ref', 'fix/issue-1806', '--workflow-run-id', '12345',
+              '--workflow-run-attempt', '1', '--workflow-name', verifier.WORKFLOW_NAME,
+              '--pr-number', '1822', '--incident-id', '1806']
+    monkeypatch.setattr(sys, 'argv', ['verify', *common, '--evidence', str(evidence_path),
+                                     '--output', str(output), '--bootstrap'])
+    assert verifier.main() == 0
+    assert json.loads(output.read_text())['owner_authorization']['release_authorized'] is False
+    monkeypatch.setattr(sys, 'argv', ['verify', *common, '--receipt', str(output),
+                                     '--live-reviews-json', str(reviews_path),
+                                     '--live-checks-json', str(checks_path)])
+    assert verifier.main() == 0
+    checks_path.write_text('[]')
+    assert verifier.main() == 1
