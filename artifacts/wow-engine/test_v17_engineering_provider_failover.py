@@ -77,6 +77,23 @@ def test_resident_gemini_admission_keeps_freshness_and_receipt_integrity():
     ) == "PROVIDER_STATUS_UNVERIFIED"
 
 
+def test_forced_manual_gemini_dispatch_cannot_claim_automatic_canary_reason():
+    workflow = (
+        ROOT / ".github/workflows/wow-v17-engineering-provider-dispatcher.yml"
+    ).read_text(encoding="utf-8")
+    # The operator-facing reason is not an attestation source. Only the
+    # guarded automatic canary path may set either trusted auto reason.
+    manual = workflow.split('elif [ "$force" = "gemini" ]; then', 1)[1]
+    manual = manual.split('elif [ "$force" = "anthropic" ]; then', 1)[0]
+    assert "reason=GEMINI_OPERATOR_CANARY" in manual
+    assert "MANUAL_REASON" not in manual
+    for accepted in (
+        "GEMINI_EXPLICIT_AUTO_ROUTING_WITH_HEALTHY_CANARY",
+        "GEMINI_ONE_SHOT_AFTER_REVIEWED_FIX",
+    ):
+        assert accepted not in manual
+
+
 def _load_module():
     sys.path.insert(0, str(MODULE_PATH.parent))
     spec = importlib.util.spec_from_file_location("engineering_provider_failover", MODULE_PATH)
