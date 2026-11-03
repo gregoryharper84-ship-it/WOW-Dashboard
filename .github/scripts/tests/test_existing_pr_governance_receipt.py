@@ -1921,12 +1921,22 @@ def test_trusted_gate_accepts_only_authenticated_release_check_run_certification
     assert "Release check-run certification must run from protected main" in workflow
 
 
-def test_release_and_continuation_consumers_resolve_authenticated_source_review_metadata():
-    for path in (RELEASE_WORKFLOW, MORNING_GREEN_WORKFLOW):
-        workflow = path.read_text(encoding="utf-8")
-        assert "GH_TOKEN: ${{ github.token }}" in workflow
-        assert "verify_existing_pr_governance_receipt.py" in workflow
-        assert "--receipt" in workflow
+def test_v4_release_and_continuation_consume_actual_app_pinned_checks_not_old_receipts():
+    """Historical receipt verifier remains tested, but is no longer the release gate."""
+    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    morning = MORNING_GREEN_WORKFLOW.read_text(encoding="utf-8")
+    for source in (release, morning):
+        assert "GH_TOKEN: ${{ github.token }}" in source
+        assert "verify_existing_pr_governance_receipt.py" not in source
+        assert "WOW Independent QA exact-head|5245832" in source
+        assert "WOW Release Authority exact-head|5245853" in source
+        assert "WOW required-three regression|15368" in source
+        assert "WOW governed probability backend|15368" in source
+        assert "WOW additional required regression|15368" in source
+    assert 'select(.name == $name and .head_sha == $sha)' in release
+    assert '$check.app.id == $app' in release
+    assert "V4_CHECK_NOT_VALID" in morning
+    assert "V4_FINAL_HEAD_CHANGED" in morning
 
 
 def test_trust_root_bootstrap_receipt_uses_owner_approval_not_an_allowlist():
@@ -2392,16 +2402,23 @@ def test_class_a_schema_cannot_claim_semantic_review_or_change_assurance():
         verify_class_a(receipt, source)
 
 
-def test_class_a_workflow_and_consumers_require_no_provider_or_human_approval():
+def test_v4_class_a_historical_certifier_is_not_release_dependency():
+    """Legacy Class A evidence is not upgraded to independent semantic PASS."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    gate = TRUSTED_GATE.read_text(encoding="utf-8")
+    release = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    morning = MORNING_GREEN_WORKFLOW.read_text(encoding="utf-8")
     assert "WOW_QA_ZERO_CREDIT_MODE" in workflow
     assert "--deterministic-class-a" in workflow
-    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow  # other classes still hold
-    for path in (TRUSTED_GATE, RELEASE_WORKFLOW, MORNING_GREEN_WORKFLOW):
-        source = path.read_text(encoding="utf-8")
-        assert "CLASS_A_DETERMINISTIC" in source or path == TRUSTED_GATE
-        assert "--live-checks-json" in source
-    assert '[ "$receipt_schema" = "4" ]' in TRUSTED_GATE.read_text(encoding="utf-8")
+    assert "INDEPENDENT_REVIEW_EVIDENCE_MISSING" in workflow
+    assert 'CLASS_A_DETERMINISTIC' in gate
+    assert '[ "$receipt_schema" = "4" ]' in gate
+    for source in (release, morning):
+        assert "CLASS_A_DETERMINISTIC" not in source
+        assert "--live-checks-json" not in source
+        assert "verify_existing_pr_governance_receipt.py" not in source
+        assert "WOW Independent QA exact-head|5245832" in source
+        assert "WOW Release Authority exact-head|5245853" in source
 
 
 def test_class_a_classifier_does_not_capture_other_ordinary_or_protected_prs():
