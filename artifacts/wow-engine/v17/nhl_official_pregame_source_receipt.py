@@ -50,11 +50,11 @@ def _utc(value: Any) -> datetime:
             value if isinstance(value, datetime)
             else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         )
+        if parsed.utcoffset() is None:
+            raise ValueError("timezone required")
+        return parsed.astimezone(timezone.utc)
     except (ValueError, TypeError, OverflowError) as exc:
         raise NHLPregameSourceError("NHL_SOURCE_TIME_INVALID") from exc
-    if parsed.utcoffset() is None:
-        raise NHLPregameSourceError("NHL_SOURCE_TIME_INVALID")
-    return parsed.astimezone(timezone.utc)
 
 
 def capture_nhl_official_pregame(
