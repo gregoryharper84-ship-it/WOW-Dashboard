@@ -30,15 +30,14 @@ begin
     end if;
 
     -- A maintenance pass must not race a worker reclaim or a run heartbeat.
-    -- NOWAIT skips the pass if either ledger is being written; reads continue.
-    -- The following statement obtains a fresh READ COMMITTED snapshot after
-    -- these short-lived locks. No external I/O occurs while locks are held.
-    begin
-        lock table public.wow_pick_request_jobs, public.wow_pick_request_runs
-            in share row exclusive mode nowait;
-    exception when lock_not_available then
-        return;
-    end;
+    -- A whole-table SHARE ROW EXCLUSIVE lock cannot deliver that: it is
+    -- compatible with the ROW SHARE lock an in-flight writer already holds
+    -- after `SELECT ... FOR UPDATE`, yet it conflicts with the ROW EXCLUSIVE
+    -- lock that same writer needs next. The result is a real deadlock with any
+    -- run-state writer (heartbeat, finalize, claim), not exclusion.
+    -- Lock the candidate run rows instead. SKIP LOCKED skips work another
+    -- transaction already owns, so a pass neither waits nor deadlocks, and no
+    -- external I/O ever happens while a row lock is held.
 
     v_now := clock_timestamp();
     v_cutoff := v_now - make_interval(secs => p_stale_after_seconds);
@@ -67,6 +66,7 @@ begin
                     )
                 )
           )
+        for update of r skip locked
     ), aggregates as (
         select
             c.run_id,
@@ -225,6 +225,60 @@ $$;
 revoke all on function public.wow_reconcile_stale_pick_request_runs(integer) from public, anon, authenticated;
 grant execute on function public.wow_reconcile_stale_pick_request_runs(integer) to service_role;
 
+-- The worker claim must participate in the same run-row protocol. Otherwise a
+-- claim can still commit a fresh RUNNING lease onto a run this pass has just
+-- stopped: the claim reads run status from its own snapshot and never locks
+-- the parent run. FOR SHARE keeps concurrent claims of different jobs in one
+-- run compatible while conflicting with the reconciler's FOR UPDATE; SKIP
+-- LOCKED turns that contention into a bounded "no job" retry instead of a wait
+-- or a deadlock. Lock footprint and retry semantics are otherwise unchanged.
+create or replace function public.wow_claim_pick_request_job(
+    p_worker_id text,
+    p_lease_seconds integer default 1800
+)
+returns setof public.wow_pick_request_jobs
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+    if coalesce(trim(p_worker_id), '') = '' then
+        raise exception 'worker id required';
+    end if;
+
+    return query
+    with candidate as (
+        select j.job_id
+        from public.wow_pick_request_jobs j
+        join public.wow_pick_request_runs r on r.run_id = j.run_id
+        where j.status in ('QUEUED','RETRY_WAIT','RUNNING')
+          and left(r.run_status, 8) <> 'STOPPED_'
+          and left(r.run_status, 6) <> 'CLOSED'
+          and (j.next_attempt_at is null or j.next_attempt_at <= now())
+          and (
+              j.status <> 'RUNNING'
+              or j.lease_expires_at is null
+              or j.lease_expires_at <= now()
+          )
+        order by j.updated_at asc, j.created_at asc
+        for update of j skip locked
+        for share of r skip locked
+        limit 1
+    )
+    update public.wow_pick_request_jobs j
+       set status = 'RUNNING',
+           lease_owner = p_worker_id,
+           lease_expires_at = now() + make_interval(secs => greatest(60, least(coalesce(p_lease_seconds, 1800), 7200))),
+           updated_at = now()
+      from candidate c
+     where j.job_id = c.job_id
+    returning j.*;
+end;
+$$;
+
+revoke all on function public.wow_claim_pick_request_job(text, integer) from public, anon, authenticated;
+grant execute on function public.wow_claim_pick_request_job(text, integer) to service_role;
+
 -- Exact-once terminal fence. A direct /score-pick-request writer can finish
 -- after this reconciler stops an expired parent run. A later plain UPDATE or
 -- INSERT ... ON CONFLICT DO UPDATE must not resurrect that stopped run.
@@ -234,7 +288,7 @@ returns trigger
 language plpgsql
 security invoker
 set search_path = pg_catalog, public
-as $
+as $$
 begin
     if left(coalesce(old.run_status, ''), 8) = 'STOPPED_'
        and new.run_status is distinct from old.run_status then
@@ -243,7 +297,7 @@ begin
     end if;
     return new;
 end;
-$;
+$$;
 
 revoke all on function public.wow_reject_stopped_pick_request_run_reopen()
     from public, anon, authenticated;

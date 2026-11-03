@@ -36,13 +36,14 @@ def test_reconciler_stopped_run_trigger_guards_upsert_and_plain_update():
     assert "before update on public.wow_pick_request_runs" in sql
     assert "for each row" in sql
     assert "execute function public.wow_reject_stopped_pick_request_run_reopen()" in sql
-    # Worker claims acquire a row-update lock. This table-level NOWAIT lock
-    # prevents claims from interleaving with the reconciler transaction.
-    assert (
-        "lock table public.wow_pick_request_jobs, public.wow_pick_request_runs"
-        in sql
-    )
-    assert "in share row exclusive mode nowait" in sql
+    # The reconciler and the worker claim serialize on the parent run row.
+    # A whole-table NOWAIT lock cannot do that: it deadlocks with any in-flight
+    # run writer that already holds a row lock (executed proof:
+    # tests/test_v17_pick_request_lease_race_postgres.py). Row-level locking
+    # with SKIP LOCKED is the protocol; it must never regress to a table lock.
+    assert "for update of r skip locked" in sql
+    assert "for share of r skip locked" in sql
+    assert "lock table public.wow_pick_request" not in sql
     assert "j.lease_expires_at > v_now" in sql
     assert "r.run_status = 'running'" in sql
     assert "r.updated_at < v_cutoff" in sql
