@@ -225,6 +225,9 @@ def plan(issues: list, prs: list, *, target: int | None = None,
             tier, number = priority
             ranked.append((tier, -_updated_timestamp(issue), number, issue))
     ranked.sort(key=lambda row: row[:3])
+    # A review-stalled claimed PR stays observable but must not monopolize
+    # selection: remember the first one and keep looking for unowned BUILD work.
+    resume = None
     for tier, _negative_updated, number, _issue in ranked:
         related_all = [
             pr for pr in prs
@@ -241,24 +244,33 @@ def plan(issues: list, prs: list, *, target: int | None = None,
             # review/merge step. Keep it untouched and move to another issue.
             if any(pr.get("draft") is True for pr in related):
                 continue
-            pr = min(related, key=lambda row: row["number"])
-            return {
-                "action": "RESUME_PR", "incident": number,
-                "pr": pr["number"], "head_sha": pr["head"]["sha"],
-                "priority": tier, "reason": "EXISTING_PR_REQUIRES_EXACT_HEAD_GATES",
-                "can_execute": False,
-            }
+            if resume is None:
+                pr = min(related, key=lambda row: row["number"])
+                resume = {
+                    "action": "RESUME_PR", "incident": number,
+                    "pr": pr["number"], "head_sha": pr["head"]["sha"],
+                    "priority": tier,
+                    "reason": "EXISTING_PR_REQUIRES_EXACT_HEAD_GATES",
+                    "can_execute": False,
+                }
+            continue
         # Paid attempt history governs new BUILD only. It must never prevent
         # resuming an existing, identity-valid source PR through CI/review.
         if prior_attempt_since_issue_update(_issue, runs):
             if not (retry_after_run_id is not None and
                     _explicit_retry_authorized(number, runs, retry_after_run_id)):
                 continue
-        return {
+        result = {
             "action": "BUILD", "incident": number, "pr": None,
             "head_sha": None, "priority": tier,
             "reason": "NEXT_ELIGIBLE_PRIORITY_ISSUE", "can_execute": False,
         }
+        if resume is not None:
+            result["observed_resume"] = {
+                k: resume[k] for k in ("incident", "pr", "head_sha")}
+        return result
+    if resume is not None:
+        return resume
     return {
         "action": "IDLE", "incident": None, "pr": None,
         "head_sha": None, "priority": None,

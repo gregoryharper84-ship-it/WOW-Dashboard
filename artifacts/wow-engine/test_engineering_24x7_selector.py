@@ -38,6 +38,33 @@ class Test24x7(unittest.TestCase):
         self.assertEqual((result["action"], result["pr"], result["head_sha"]),
                          ("RESUME_PR", 40, SHA))
 
+    def test_stalled_resume_does_not_starve_next_unowned_build(self):
+        result = mod.plan([issue(9, "P0"), issue(10, "P0")], [pr(40, 9)])
+        self.assertEqual((result["action"], result["incident"]), ("BUILD", 10))
+        self.assertEqual(result["observed_resume"],
+                         {"incident": 9, "pr": 40, "head_sha": SHA})
+        self.assertFalse(result["can_execute"])
+
+    def test_stalled_resume_never_duplicates_claimed_incident(self):
+        # Claimed (resume, draft, untrusted) incidents are never rebuilt.
+        draft = pr(41, 10, draft=True)
+        bad = pr(42, 11); bad["base"]["repo"]["full_name"] = "evil/fork"
+        result = mod.plan(
+            [issue(9, "P0"), issue(10, "P0"), issue(11, "P0")],
+            [pr(40, 9), draft, bad])
+        self.assertEqual((result["action"], result["pr"]), ("RESUME_PR", 40))
+
+    def test_stalled_resume_still_respects_writer_and_prior_attempt(self):
+        live = [{"displayTitle": "worker incident=AUTO", "status": "in_progress"}]
+        result = mod.plan([issue(9, "P0"), issue(10, "P0")], [pr(40, 9)], runs=live)
+        self.assertEqual(result["action"], "IDLE")
+        item = issue(10, "P0", updated_at="2026-11-02T01:10:00Z")
+        run = {"displayTitle": "wow-v17-chatgpt-engineering-worker incident=10",
+               "databaseId": 400, "createdAt": "2026-11-02T01:11:00Z",
+               "status": "completed", "conclusion": "failure"}
+        result = mod.plan([issue(9, "P0"), item], [pr(40, 9)], runs=[run])
+        self.assertEqual((result["action"], result["pr"]), ("RESUME_PR", 40))
+
     def test_worker_emitted_backtick_marker_prevents_duplicate_build(self):
         # This is the literal shell template used by BOTH live coding workers.
         emitter = 'echo "Incident: \`$INCIDENT\`"'

@@ -80,9 +80,14 @@ def _failed_qa(check: dict, number: int, head: str) -> dict:
     title = output.get("title", "") if isinstance(output, dict) else ""
     summary = output.get("summary", "") if isinstance(output, dict) else ""
     # A REVIEWER MODEL or CREDIT error is not a source defect.
-    reason_match = re.search(r"\breason (PROVIDER_[A-Z0-9_]+|HTTP_[0-9]{3}|OWNER_REVIEW_REQUIRED)\b",
-                             summary if isinstance(summary, str) else "")
-    reason = reason_match.group(1) if reason_match else ""
+    text = summary if isinstance(summary, str) else ""
+    reasons = set(re.findall(
+        r"\breason (PROVIDER_[A-Z0-9_]+|HTTP_[0-9]{3}|OWNER_REVIEW_REQUIRED)\b", text))
+    # Mixed per-attempt reasons or an owner-fallback receipt cannot be mapped to
+    # one repair advice without authenticated artifacts: fail closed, generic HOLD.
+    if len(reasons) != 1 or "OWNER_FALLBACK_REQUIRES_ENGINEERING_APP_SOURCE" in text:
+        reasons = set()
+    reason = next(iter(reasons), "")
     if isinstance(title, str) and title.startswith("HOLD"):
         if reason == "PROVIDER_MODEL_UNAVAILABLE":
             return _result("REVIEWER_MODEL_REPAIR", "VERIFY_REVIEWER_MODEL_AND_CREDENTIAL",

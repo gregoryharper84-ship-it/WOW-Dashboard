@@ -199,6 +199,19 @@ class DeliveryTests(unittest.TestCase):
                        "summary": "reason UNKNOWN_PROVIDER_FAILURE"}
         self.assertEqual(mod.reduce_pr(pr(), [x], SHA)["decision"], "INDEPENDENT_QA_NOT_ACCEPTED")
 
+    def test_owner_fallback_or_mixed_reasons_fail_closed_generic(self):
+        for summary in (
+            "attempt1 reason PROVIDER_CREDIT_EXHAUSTED; attempt2 reason PROVIDER_HTTP_429; "
+            "OWNER_FALLBACK_REQUIRES_ENGINEERING_APP_SOURCE",
+            "attempt1 reason PROVIDER_CREDIT_EXHAUSTED; attempt2 reason PROVIDER_TRANSPORT",
+            "reason PROVIDER_CREDIT_EXHAUSTED OWNER_FALLBACK_REQUIRES_ENGINEERING_APP_SOURCE",
+        ):
+            x = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
+            x["output"] = {"title": "HOLD — independent semantic source review",
+                           "summary": summary}
+            self.assertEqual(mod.reduce_pr(pr(), [x], SHA)["decision"],
+                             "INDEPENDENT_QA_NOT_ACCEPTED", summary)
+
     def test_prior_reject_remains_binding_even_if_later_success(self):
         reject = check(mod.QA_CHECK, mod.QA_APP_ID, conclusion="failure")
         reject.update({"id": 10, "output": {"title": "REJECT — independent semantic source review"}})
