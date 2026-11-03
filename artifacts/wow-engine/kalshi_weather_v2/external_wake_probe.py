@@ -14,7 +14,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
-from urllib.request import Request, urlopen
+from urllib.request import Request, HTTPRedirectHandler, build_opener
 
 BASE_URL = "https://wow-kalshi-weather-v2.onrender.com"
 READ_LIMIT_BYTES = 16384
@@ -22,6 +22,16 @@ READ_LIMIT_BYTES = 16384
 
 class ProbeError(RuntimeError):
     """A fixed code, never a raw response body or exception text."""
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    """Never send a follow-up GET to an unapproved host or route."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+HTTP_CLIENT = build_opener(_RejectRedirects())
 
 
 def read_json(path: str) -> dict[str, Any]:
@@ -32,13 +42,13 @@ def read_json(path: str) -> dict[str, Any]:
         headers={"Accept": "application/json", "User-Agent": "wow-weather-external-wake/1"},
         method="GET",
     )
-    with urlopen(req, timeout=65) as response:
+    with HTTP_CLIENT.open(req, timeout=65) as response:
         if response.status != 200:
             raise ProbeError("PROBE_HTTP_STATUS_UNEXPECTED")
         payload = response.read(READ_LIMIT_BYTES + 1)
         if len(payload) > READ_LIMIT_BYTES:
             raise ProbeError("PROBE_RESPONSE_TOO_LARGE")
-        if not response.geturl().startswith(BASE_URL + "/"):
+        if response.geturl() != BASE_URL + path:
             raise ProbeError("PROBE_RESPONSE_ORIGIN_CHANGED")
     try:
         value = json.loads(payload)

@@ -93,3 +93,27 @@ def test_missing_merge_timestamps_keep_latency_unknown() -> None:
     assert result["pr_creation_to_merge"]["sample_count"] == 0
     assert result["pr_creation_to_merge"]["p50_minutes"] is None
     assert result["pr_creation_to_merge"]["p95_minutes"] is None
+
+
+def test_future_merge_is_excluded_from_every_process_metric() -> None:
+    """Do not count future-dated merged PRs as completed work or latency."""
+    ordinary = {
+        "number": 30, "title": "normal", "body": "",
+        "created_at": "2026-09-24T12:00:00Z",
+        "merged_at": "2026-09-24T12:10:00Z",
+    }
+    future = {
+        "number": 31, "title": "follow-up", "body": "Followup-Of: #30",
+        "created_at": "2026-09-24T12:05:00Z",
+        "merged_at": "2026-09-24T17:01:00Z",
+    }
+    baseline = summarize([ordinary], [], now=NOW)
+    assert summarize([ordinary, future], [], now=NOW) == baseline
+    assert baseline["merged_prs"] == 1
+    assert baseline["followup_or_replacement_prs"] == 0
+    assert baseline["pr_creation_to_merge"]["sample_count"] == 1
+    # If every recorded merge is in the future, the card must remain empty.
+    only_future = summarize([future], [], now=NOW)
+    assert only_future["merged_prs"] == 0
+    assert only_future["first_pass_proxy"] is None
+    assert only_future["pr_creation_to_merge"]["sample_count"] == 0

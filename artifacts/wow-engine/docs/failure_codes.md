@@ -389,6 +389,9 @@ Codes below belong solely to the engineering GitHub-to-Cursor control plane. Non
 | `CURSOR_BAD_REQUEST_OR_REPOSITORY_ACCESS` | Cursor API preflight | Provider rejects request, target repository or configuration |
 | `CURSOR_NETWORK_OR_RESPONSE_UNVERIFIED`, `CURSOR_API_RESPONSE_INVALID` | Remote evidence | Network, timeout, unparsable or non-object response |
 | `CURSOR_DISPATCH_RECEIPT_UNVERIFIED` | Cursor enqueue confirmation | Create did not return matching agent ID and run ID |
+| `CURSOR_CREATE_FAILED_NO_AGENT_PROVEN` | failed-launch reconciliation | Authenticated read-only probe (`GET /v1/agents/{id}` HTTP 404 plus complete archived global and PR inventories) proves no Cursor agent was created after a failed create attempt (catalog version `2026-10-31.2`; consumer parsers updated in lock-step in `engineering_remote_writer_release.py` and `cursor_terminal_status_receipt.py`) |
+| `CURSOR_AGENT_STILL_ACTIVE`, `CURSOR_AGENT_EXISTS_REQUIRES_RUN_RECONCILIATION`, `CURSOR_AGENT_INVENTORY_CONTRADICTION` | failed-launch negative probe | Direct agent lookup or archived inventory shows the deterministic agent ID exists or is active; negative-launch release is refused and the writer hold remains active (catalog version `2026-10-31.2`) |
+| `CURSOR_FAILED_LAUNCH_REQUIRES_NEGATIVE_PROOF_AND_RELEASE` | shared #1138 writer reconciliation | Held `CURSOR_LAUNCH_RESERVED` record without a `cursor_run_id` requires authenticated negative-launch proof and serialized release receipt before writer admission (catalog version `2026-10-31.2`; 0-second bypass tolerance; hold persists indefinitely until verified release, and resident supervisor recovery window is bounded to 900 seconds post-release) |
 
 Positive research-only state: `CURSOR_AGENT_ENQUEUED` means Cursor accepted a create request and returned a valid agent/run receipt, **not** started code execution, merged changes, or independently verified production. Receipts keep `TASK_DISPATCHED`, `CURSOR_AGENT_STARTED`, `CODE_VERIFIED`, and `PRODUCTION_VERIFIED` as separate evidence states. These statuses do not override `V17_TERMINAL_REDUCER`. `can_execute=false` remains invariant.
 
@@ -482,3 +485,108 @@ These typed errors belong to the offline `nhl_player_box_outcome_research` adapt
 | `NHL_PLAYER_BOX_NO_PLAYERS` | Final boxscore has no typed players | No |
 
 This new path is **research-only**; `NHL_PUBLIC_API` remains `LICENSE_REVIEW_REQUIRED` for governed historical training. `can_execute=false`; no sportsbook lines or model probabilities are generated.
+
+## V17 candidate-only recalibration research input failures
+
+These are typed research-input rejections from `v17/refit_scheduler.py`, never model capability or Action failures. All preserve `can_execute=false`, `probability_publishable=false`; no champion/production mutation follows. The retrospective diagnostic is **not** an independent promotion holdout.
+
+| Code | Owning lane | Condition | Rank eligible? |
+|---|---|---|---:|
+| `REFIT_PROPOSAL_TYPE_UNSUPPORTED` | V17 advisory refit scheduler | Proposal is not an exact RECALIBRATION_CHALLENGER. | No |
+| `REFIT_PROPOSAL_SAFETY_INVALID` | V17 advisory refit scheduler | Proposal lacks mandatory nonpromotion or nonexecution safety flags. | No |
+| `REFIT_PROPOSAL_IDENTITY_REQUIRED` | V17 advisory refit scheduler | Proposal ID or exact cohort key is missing. | No |
+| `REFIT_EVIDENCE_FLOOR_INVALID` | V17 advisory refit scheduler | Requested fit/diagnostic event floor is below the candidate-only evidence minimum. | No |
+| `REFIT_EVENT_OR_PREDICTION_ID_MISSING` | V17 advisory refit scheduler | Immutable prediction ID or official event ID is missing. | No |
+| `REFIT_DUPLICATE_PREDICTION` | V17 advisory refit scheduler | One prediction ID occurs multiple times in the hydrated cohort. | No |
+| `REFIT_COHORT_MISMATCH` | V17 advisory refit scheduler | Source forecast does not match the exact proposal cohort. | No |
+| `REFIT_NOT_CALIBRATED_FORECAST` | V17 advisory refit scheduler | Frozen input probability is not attributed to calibrated_probability. | No |
+| `REFIT_BINARY_SETTLEMENT_REQUIRED` | V17 advisory refit scheduler | Exact officially settled outcome is not a nonboolean binary 0/1. | No |
+| `REFIT_MODEL_TIME_REQUIRED` | V17 advisory refit scheduler | Pregame model timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_EVENT_TIME_REQUIRED` | V17 advisory refit scheduler | Official event timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_SETTLEMENT_TIME_REQUIRED` | V17 advisory refit scheduler | Official settlement timestamp is missing, invalid or timezone naive. | No |
+| `REFIT_TEMPORAL_IDENTITY_INVALID` | V17 advisory refit scheduler | Model timestamp is not strictly pregame or settlement precedes event. | No |
+| `REFIT_EVENT_TIME_CONFLICT` | V17 advisory refit scheduler | Same official event ID has inconsistent event-start timestamps. | No |
+| `REFIT_PROBABILITY_INVALID` | V17 advisory refit scheduler | Frozen calibrated forecast probability is not a finite number strictly between 0 and 1. | No |
+| `REFIT_EVENT_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Chronologically distinct events fall below candidate-only train plus diagnostic floor. | No |
+| `REFIT_MATURED_SAMPLE_INSUFFICIENT` | V17 advisory refit scheduler | Enough fully settled pre-cutoff training events or diagnostic events are unavailable. | No |
+
+
+## Reviewer provider compatibility — owner-only read-only preflight
+
+These failure codes preserve the pre-existing protected semantic-review gate. A
+preflight GET validates only provider compatibility; it produces no QA receipt,
+independent security PASS, merger authorization, probability or market order.
+Recover only through authenticated protected-main workflow execution.
+
+| Code | Owner / stage | Recovery class | Bounded safe context | Next action |
+| --- | --- | --- | --- | --- |
+| `REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED` | Owner / QA preflight admission | EXTERNAL_AUTHORIZATION | GitHub event type and trusted main identity only | Dispatch owner-only diagnostic from protected main |
+| `GEMINI_MODEL_INVALID` | QA reviewer / model selection | CONFIGURATION | Expected allowlisted model ID, never secret | Remove explicit stale model variable or bind reviewed stable model |
+| `REVIEWER_PREFLIGHT_CREDENTIAL_MISSING` | QA environment / preflight | PROVIDER_CREDENTIAL | Credential present/missing boolean only | Restore existing scoped QA provider credential |
+| `REVIEWER_PREFLIGHT_MODEL_CAPABILITY_UNVERIFIED` | QA provider / metadata GET | PROVIDER_CONFIGURATION | Model identity and `generateContent` supported boolean only | Verify project entitlement and exact supported method |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider / review | PROVIDER_CONFIGURATION | Structured Google NOT_FOUND for API version/method; no response text or keys | Use owner-approved model selection and a fresh independent exact-head review |
+| `HTTP_404` | QA provider / review or preflight | DIAGNOSE | Fixed allowlisted endpoint label and HTTP status only | Attribute endpoint/model/credential; do not infer model retirement or semantic REJECT |
+| `REVIEWER_CLI_ARGUMENT_INVALID` | QA workflow / preflight entrypoint | CONFIGURATION | Argument shape only | Invoke `--preflight` or normal review through trusted workflow |
+
+A structured model failure may allow the existing reviewer fallback mechanism,
+but only a genuine independent semantic PASS on the exact source SHA qualifies as
+security evidence. A prior signed REJECT remains binding at that SHA.
+
+
+## Reviewer model discovery — bounded credential-scoped candidates
+
+No new QA App check, merge gate, approval, spending limit, or probability output
+is created by model discovery. The credential-scoped GET lists provider models;
+only stable, exact, approved family IDs are eligible. The model-ID allowlist is
+anchored (including end of string), and the reviewer logs selected/unavailable
+model IDs only, never prompts, API keys, raw response data, or URLs. At most
+three approved candidates are attempted, only after typed
+`PROVIDER_MODEL_UNAVAILABLE`; a substantive REJECT/malformed answer is terminal.
+
+| Typed code | Owner / stage | Recovery class | Bounded safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `REVIEW_MODEL_CATALOG_INVALID` | QA provider selection / GET models | FAIL_CLOSED | Provider label and invalid shape only | Repair provider response contract; do not guess from static models |
+| `REVIEW_MODEL_CATALOG_PAGINATION_REQUIRED` | QA provider selection / GET models | FAIL_CLOSED | Provider label and nonempty next-page boolean only | Add governed bounded pagination before using incomplete catalog |
+| `REVIEWER_PREFLIGHT_NO_AVAILABLE_MODEL` | QA owner-only preflight | PROVIDER_CONFIGURATION | Provider/model readiness labels only | Verify existing credential entitlement or approved model availability |
+| `PROVIDER_MODEL_UNAVAILABLE` | QA provider model availability | PROVIDER_CONFIGURATION | Reviewed exact model ID only | Try next approved credential-listed model within same provider; after bounded exhaustion retain existing authenticated owner fallback |
+| `GEMINI_MODEL_INVALID` / `CLAUDE_MODEL_UNAPPROVED` | QA reviewer / configured model | FAIL_CLOSED | Sanitized model pattern failure only | Correct explicitly unapproved variable via governed trust-root change |
+
+The optional `WOW_QA_GEMINI_MODEL`/`WOW_QA_CLAUDE_MODEL` preference
+is honored only when listed under the credential and approved family.
+A failed transient model catalog GET may use a short *static approved*
+candidate list for normal review; owner preflight has `strict=True` and
+may report `PROVIDER_READY` only with real live catalog proof.
+A valid empty catalog, malformed listing, authentication failure, or
+partial paginated listing cannot be treated as approved availability.
+Changing source invalidates prior owner review; no code may forge the
+current-head approval or a signed independent semantic PASS.
+
+## D1 certification replay split-metadata integrity (NHL #1349)
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `CANDIDATE_PARTITION_METRICS_MISMATCH` | team/event certification replay (read-only) | Persisted fitted D1 train/calibration/test partitions disagree with candidate `validation_metrics.train_n/calibration_n/test_n`, or partial/malformed fitted split metrics are supplied. A historical source-review or replay receipt cannot override the discrepancy; retain the candidate as immutable, fail the replay and require a new verified candidate. | No |
+
+
+## Simple V1 deterministic delivery re-entry
+
+These are read-only delivery **decisions**, not fitted-model failure substitutes,
+approval checks, or new release gates. Only the trusted QA App on the exact SHA
+can create independent review evidence. A prior signed semantic REJECT is binding
+on that SHA even when a later attempt produces a provider HOLD.
+
+| Decision / typed reason | Owner / stage | Recovery class | Safe context | Required next action |
+| --- | --- | --- | --- | --- |
+| `SEMANTIC_REJECT_SAME_SHA` | Independent QA / PR continuation | CODE_REPAIR | QA App ID, exact PR/SHA, signed check title | Repair findings on a new source SHA, then independent review |
+| `REVIEWER_MODEL_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Explicit typed model-unavailable reason, no response body | Verify supported model and authorized credential, then obtain a new signed review |
+| `REVIEWER_PROVIDER_DIAGNOSIS` | QA provider / preflight | PROVIDER_CONFIGURATION | Ambiguous bare HTTP 404 only | Prove endpoint, model and credential scope with authorized preflight before any reviewer retry |
+| `REVIEWER_AUTH_OR_QUOTA_REPAIR` | QA provider / preflight | PROVIDER_CONFIGURATION | Typed provider credit / 401, no credentials or billing data | Repair existing entitlement or credential without new vendor/spend |
+| `REVIEWER_TRANSIENT_OUTAGE` | QA provider / review | TRANSIENT | Bounded 429/5xx/transport code only | One bounded retry after provider recovery, never on signed REJECT |
+| `OWNER_REVIEW_REQUIRED` | Owner / protected release | EXTERNAL_AUTHORIZATION | Exact PR/SHA and established owner-fallback reason | Authenticated independent owner review where policy allows, then fresh exact-head QA |
+| `INDEPENDENT_QA_NOT_ACCEPTED` | Independent QA / PR continuation | FAIL_CLOSED | Unknown/invalid/missing definitive review evidence | Diagnose signed QA receipt; no automatic override |
+| `EVIDENCE_PENDING` | Engineering controller / PR continuation | RETRY_ON_NEW_EVIDENCE | Missing/pending exact-head QA check | Re-enter on signed QA App check or explicit authorized owner dispatch |
+
+The existing controller performs no automatic protected merge, no semantic
+self-approval, no live betting and no unbounded provider retry. Production DONE
+requires authentic merged/live/verified SHA parity, healthy route and persisted
+business result; a green workflow is not proof of production delivery.

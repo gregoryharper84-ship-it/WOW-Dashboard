@@ -19,6 +19,7 @@ const ROUTES: Route[] = [
   { method: "GET", pattern: /^\/v17\/host-contract$/, auth: true },
   { method: "POST", pattern: /^\/v17\/daily-snapshot-run$/, auth: true },
   { method: "GET", pattern: /^\/v17\/daily-snapshot-run\/[^/]+\/rows$/, auth: true },
+  { method: "GET", pattern: /^\/v17\/llp-team-intelligence\/[^/]+\/events$/, auth: true },
   { method: "POST", pattern: /^\/score-team-event$/, auth: true },
   { method: "POST", pattern: /^\/score-team-event-request$/, auth: true },
   { method: "POST", pattern: /^\/internal\/v17\/spread-forward-shadow$/, auth: true },

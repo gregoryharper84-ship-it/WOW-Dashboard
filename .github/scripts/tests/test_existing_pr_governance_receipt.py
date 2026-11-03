@@ -799,7 +799,6 @@ SOURCE_REVIEW_RUN = {
 }
 
 
-
 def build_automated(*, now=None, data=None):
     """Build an authenticated schema-3 fixture, never an asserted live certification."""
     current = now or datetime.now(timezone.utc)
@@ -1923,6 +1922,19 @@ def test_trusted_governance_workflow_executes_legacy_and_v2_verifier_argv_shapes
         verifier.WORKFLOW_NAME, automated, live_reviews=[], source_run=SOURCE_REVIEW_RUN
     )
     assert automated_valid.returncode == 0, automated_valid.stdout + automated_valid.stderr
+    renamed_source = dict(automated)
+    renamed_source["changed_files"] = [
+        {
+            "filename": "src/relocated.py",
+            "previous_filename": ".github/scripts/verify_existing_pr_governance_receipt.py",
+            "status": "renamed",
+        }
+    ]
+    automated_renamed = run(
+        verifier.WORKFLOW_NAME, renamed_source, live_reviews=[], source_run=SOURCE_REVIEW_RUN
+    )
+    assert automated_renamed.returncode == 1
+    assert "TRUST_ROOT_CHANGE_NOT_CERTIFIABLE" in automated_renamed.stdout
     automated_missing_source = run(verifier.WORKFLOW_NAME, automated, live_reviews=[])
     assert automated_missing_source.returncode == 1
     assert "SOURCE_REVIEW_RUN_METADATA_MISSING" in automated_missing_source.stdout

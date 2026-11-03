@@ -1122,3 +1122,104 @@ def test_numeric_repository_link_alias_only_for_configured_repository(monkeypatc
     monkeypatch.setattr(client, "call_with_headers", lambda _: ([], {"Link": link}))
     with pytest.raises(RuntimeError, match="OPEN_PR_INVENTORY_INVALID"):
         client.get_open_pull_request_page(1)
+
+
+def test_resident_supervisor_triggers_cursor_reconciliation_and_resumes_after_release(monkeypatch):
+    from v17 import cursor_cloud_handoff as handoff
+    from v17 import engineering_remote_fallback as remote
+    from v17 import engineering_remote_writer_release as release
+
+    sha = "a" * 40
+    pr_sha = "d" * 40
+    agent_id = handoff.agent_id(remote.REPOSITORY, 101, pr_sha)
+    held_claim = remote.receipt(
+        "CURSOR_LAUNCH_RESERVED", provider="cursor", incident_id="101",
+        lease_group="PR_101", main_sha=sha, hold=True, branch="fix/synthetic-101",
+        pr_number="101", pr_sha=pr_sha, cursor_agent_id=agent_id,
+        cursor_run_id=None, worker_id="github-actions:800001:1",
+    )
+    comments = [{
+        "id": 900001,
+        "body": remote._body(held_claim),
+        "user": {"login": "github-actions[bot]"},
+    }]
+    client = GitHubTransport("fixture-token")
+    now = datetime.now(timezone.utc)
+    stamp = (now - timedelta(minutes=20)).isoformat()
+
+    def fake_get(suffix):
+        if suffix.startswith("issues/1138/comments?"):
+            return list(comments)
+        if suffix == "actions/runs/99010":
+            return {
+                "id": 99010, "run_attempt": 1, "status": "completed",
+                "conclusion": "success", "event": "workflow_dispatch",
+                "head_branch": "main", "head_sha": sha,
+                "path": release.WORKFLOW,
+                "repository": {"full_name": remote.REPOSITORY},
+            }
+        if suffix.startswith("actions/workflows/wow-v17-remote-writer-finalize.yml/runs?"):
+            if "status=completed" in suffix:
+                return {"workflow_runs": [{
+                    "id": 99010, "run_attempt": 1, "status": "completed",
+                    "conclusion": "success", "head_branch": "main", "head_sha": sha,
+                    "path": release.WORKFLOW,
+                    "updated_at": now.isoformat(),
+                }]}
+            return {"total_count": 0, "workflow_runs": []}
+        if "engineering-provider-dispatcher.yml/runs?" in suffix:
+            return {"workflow_runs": [{
+                "id": 900, "run_attempt": 1,
+                "path": ".github/workflows/wow-v17-engineering-provider-dispatcher.yml",
+                "head_branch": "main", "head_sha": sha, "status": "completed",
+                "updated_at": stamp,
+            }]}
+        if suffix == "actions/runs/900/artifacts?per_page=100":
+            return {"total_count": 1, "artifacts": [{
+                "id": 77, "name": "wow-v17-engineering-provider-receipt-900-1", "expired": False,
+            }]}
+        if suffix == "commits/main":
+            return {"sha": sha}
+        if "engineering-worker.yml/runs?" in suffix:
+            return {"workflow_runs": []}
+        raise AssertionError(suffix)
+
+    monkeypatch.setattr(client, "get", fake_get)
+    monkeypatch.setattr(client, "provider_receipt", lambda _: {
+        "action": "SURVIVAL", "provider": "deterministic",
+        "reason": "REMOTE_WRITER_RECONCILIATION_REQUIRED",
+        "can_execute": False, "terminal_authority": "V17_TERMINAL_REDUCER",
+    })
+
+    store = FakeRedis()
+    assert dispatch_once(client, store, MANIFEST) == "REMOTE_WRITER_RECONCILIATION_REQUIRED"
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+    # Append verified negative-launch release receipt; remote_writer_clear and provider_admission now succeed.
+    rel_doc = {
+        "status": "REMOTE_RELEASE_PENDING_WORKFLOW_SUCCESS",
+        "incident_id": "101",
+        "original_comment_id": 900001,
+        "original_digest": release._original_digest(comments[0]),
+        "provider": "cursor",
+        "agent_id": agent_id,
+        "cursor_run_id": None,
+        "worker_id": "github-actions:800001:1",
+        "pr_number": 101,
+        "pr_sha": pr_sha,
+        "main_sha": sha,
+        "terminal_status": "CURSOR_CREATE_FAILED_NO_AGENT_PROVEN",
+        "agent_status": "NEVER_CREATED",
+        "workflow_run_id": 99010,
+        "run_attempt": 1,
+        "source_sha": sha,
+        "can_execute": False,
+        "terminal_authority": "V17_TERMINAL_REDUCER",
+    }
+    comments.append({
+        "id": 900002,
+        "body": f"{release.RELEASE_MARKER}101 -->\n" + json.dumps(rel_doc, sort_keys=True),
+        "user": {"login": "github-actions[bot]"},
+    })
+    assert client.remote_writer_clear() is True
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
