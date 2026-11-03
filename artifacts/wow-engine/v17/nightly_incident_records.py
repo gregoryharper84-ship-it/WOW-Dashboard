@@ -168,7 +168,7 @@ def _verified_prior_context(
             failure_category=failure_category,
         )
         return module.intake_markdown(result)
-    except (OSError, ValueError, TypeError, AttributeError, ImportError, json.JSONDecodeError):
+    except Exception:  # optional advisory failures must never block canonical Reporter intake
         # A missing/malformed advisory helper must not prevent canonical intake
         # and must never fabricate a verified repair.
         return ("## Historical Verified Lessons (advisory only)\n\n"
