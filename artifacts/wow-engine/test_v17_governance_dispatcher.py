@@ -517,7 +517,7 @@ def test_renamed_trust_root_is_still_protected_by_its_previous_path():
     assert result["findings"] == ["TRUST_ROOT_OWNER_APPROVAL_MISSING"]
 
 
-def test_trust_root_owner_authored_change_cannot_self_approve():
+def test_owner_identity_missing_human_type_still_fails_closed():
     result = classify(
         pull=make_pull(author_id=OWNER_ID, author=OWNER),
         file_records=[make_file(".github/workflows/new.yml")],
@@ -525,7 +525,7 @@ def test_trust_root_owner_authored_change_cannot_self_approve():
     )
 
     assert result["action"] == "HOLD"
-    assert result["findings"] == ["TRUST_ROOT_OWNER_AUTHORED"]
+    assert result["findings"] == ["PR_AUTHOR_IDENTITY_UNKNOWN"]
 
 
 @pytest.mark.parametrize(
@@ -1680,3 +1680,21 @@ def test_existing_pr_certifier_prechecks_authentic_release_event_before_runner()
     assert 'live_check=$(gh api "/repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_RUN_ID}")' in source
     assert "RELEASE_CHECK_PR_TARGET_NOT_UNIQUE" in source
     assert "cancel-in-progress: false" in source
+
+
+def test_v3_owner_authorship_routes_review_without_fabricating_approval():
+    pull=make_pull(author_id=OWNER_ID,author=OWNER)
+    pull['user']['type']='User'
+    result=classify(pull=pull,file_records=[make_file('.github/workflows/new.yml')],
+                    reviews=[],source_review='MISSING',check_runs=all_ci_checks())
+    assert result['action'] == 'DISPATCH'
+    assert result['role'] == 'source_review'
+
+
+def test_v3_owner_authorship_does_not_bypass_source_review_reject():
+    pull=make_pull(author_id=OWNER_ID,author=OWNER)
+    pull['user']['type']='User'
+    result=classify(pull=pull,file_records=[make_file('.github/workflows/new.yml')],
+                    reviews=[],source_review='REJECT',check_runs=all_ci_checks())
+    assert result['action'] == 'HOLD'
+    assert 'TRUST_ROOT_OWNER_AUTHORED' not in result['findings']

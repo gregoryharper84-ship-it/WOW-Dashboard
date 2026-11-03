@@ -590,3 +590,9 @@ The existing controller performs no automatic protected merge, no semantic
 self-approval, no live betting and no unbounded provider retry. Production DONE
 requires authentic merged/live/verified SHA parity, healthy route and persisted
 business result; a green workflow is not proof of production delivery.
+
+## V3 owner-authored bootstrap scope
+
+| Code | Owning lane/stage | Exact condition | Rank eligible? |
+|---|---|---|---:|
+| `OWNER_AUTHORIZATION_SCOPE_INVALID` | Repository governance receipt verification | Owner-authored bootstrap evidence claims release authorization, omits the required later owner merge, changes its exact head, or supplies a fabricated owner review. Reject the receipt; no release or model authority is conferred. | No |

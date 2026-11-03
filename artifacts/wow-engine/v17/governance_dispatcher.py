@@ -155,9 +155,12 @@ def classify_target(
     protected = any(is_trust_root(path, trust_roots) for path in paths)
     if protected:
         author = pull.get("user") or {}
-        if author.get("id") == owner_id or str(author.get("login", "")).casefold() == owner_login.casefold():
-            return {"action": "HOLD", "findings": ["TRUST_ROOT_OWNER_AUTHORED"], "head_sha": head}
-        if not _owner_approved_at_head(reviews, owner_id, head):
+        owner_id_matches = author.get("id") == owner_id
+        owner_login_matches = str(author.get("login", "")).casefold() == owner_login.casefold()
+        if owner_id_matches or owner_login_matches:
+            if not (owner_id_matches and owner_login_matches and author.get("type") == "User"):
+                return {"action": "HOLD", "findings": ["PR_AUTHOR_IDENTITY_UNKNOWN"], "head_sha": head}
+        elif not _owner_approved_at_head(reviews, owner_id, head):
             return {"action": "HOLD", "findings": ["TRUST_ROOT_OWNER_APPROVAL_MISSING"], "head_sha": head}
 
     if not isinstance(zero_credit_mode, bool):
