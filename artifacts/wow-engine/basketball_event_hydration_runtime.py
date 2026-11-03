@@ -436,9 +436,32 @@ def _latest_persisted_game_date(client: Any, sport: str) -> date | None:
     return date.fromisoformat(str(rows[0]["game_date"])[:10])
 
 
-def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> None:
-    for offset in range(0, len(rows), 250):
-        client.table(TABLES[sport]).upsert(rows[offset:offset + 250], on_conflict="game_id").execute()
+def _persist_rows(client: Any, sport: str, rows: list[dict[str, Any]]) -> int:
+    """Persist settled rows and count previously absent game identities only.
+
+    A BDL season replay upserts old rows too. Upsert count is not new-game
+    count, so check exact game_id membership before each bounded batch. Read
+    failures fail closed rather than reporting a fabricated freshness gain.
+    """
+    new_ids: set[str] = set()
+    for offset in range(0, len(rows), 100):
+        batch = rows[offset:offset + 100]
+        ids = [str(row.get("game_id") or "") for row in batch]
+        if any(not identifier for identifier in ids) or len(ids) != len(set(ids)):
+            raise BasketballHydrationError("BASKETBALL_SETTLED_GAME_ID_INVALID")
+        result = (
+            client.table(TABLES[sport]).select("game_id")
+            .in_("game_id", ids).execute()
+        )
+        if not isinstance(getattr(result, "data", None), list):
+            raise BasketballHydrationError("BASKETBALL_EXISTING_GAME_IDS_UNVERIFIED")
+        existing = {
+            str(row.get("game_id") or "") for row in result.data
+            if isinstance(row, dict)
+        }
+        new_ids.update(set(ids) - existing)
+        client.table(TABLES[sport]).upsert(batch, on_conflict="game_id").execute()
+    return len(new_ids)
 
 
 def hydrate(
@@ -453,7 +476,7 @@ def hydrate(
     clock = clock.astimezone(timezone.utc)
     client = client or _client()
     retrieved_at = clock.isoformat()
-    total_raw = total_settled = 0
+    total_raw = total_settled = new_settled = 0
     per_season: dict[int, int] = {}
     source_by_season: dict[int, str] = {}
     fallback_reasons: dict[int, str] = {}
@@ -560,7 +583,7 @@ def hydrate(
         per_season[year] = len(normalized_rows)
         source_by_season[year] = provider
         total_settled += len(normalized_rows)
-        _persist_rows(client, sport, normalized_rows)
+        new_settled += _persist_rows(client, sport, normalized_rows)
 
     latest_after = _latest_persisted_game_date(client, sport)
     return {
@@ -572,7 +595,7 @@ def hydrate(
         "source_by_season": source_by_season,
         "fallback_reasons": fallback_reasons,
         "recent_supplement_status": recent_supplement,
-        "fresh_acquisition_new_settled_games": total_settled,
+        "fresh_acquisition_new_settled_games": new_settled,
         "latest_game_date_before": latest_before.isoformat() if latest_before else None,
         "latest_game_date_after": latest_after.isoformat() if latest_after else None,
         "can_execute": False,
