@@ -188,8 +188,13 @@ class GitHubTransport:
             age = (now - updated).total_seconds()
             if age < 0:
                 return "PROVIDER_STATUS_UNVERIFIED"
+            # A parent-linked acknowledgment proves a protected worker ran, not
+            # that an automatic provider route was attested. Gemini recovery is
+            # authorized only by the automatic route itself, so this shape must
+            # never admit it even if the dispatcher ever emitted it.
             acknowledged = (
-                route.get("action") == "NO_ACTION"
+                workflow_provider != "gemini"
+                and route.get("action") == "NO_ACTION"
                 and str(route.get("parent_run_id")) == str(worker["id"])
                 and route.get("reason") == workflow.removesuffix(".yml") + "_SUCCESS"
                 and worker["conclusion"] == "success"

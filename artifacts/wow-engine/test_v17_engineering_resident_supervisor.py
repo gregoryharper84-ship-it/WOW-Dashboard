@@ -455,6 +455,24 @@ def test_success_acknowledgment_receipt_matches_exact_parent_worker(monkeypatch)
     assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
 
 
+def test_gemini_acknowledgment_cannot_substitute_for_an_attested_route(monkeypatch):
+    # A parent-linked NO_ACTION "<worker>_SUCCESS" acknowledgment proves a
+    # protected worker ran; it does not attest an automatic Gemini route. A
+    # manual canary is health evidence, so this shape must never admit Gemini
+    # even if the dispatcher ever emitted it.
+    client, run, route, _ = _provider_evidence(monkeypatch, gemini="success")
+    route.update(action="NO_ACTION", provider="none", parent_run_id="903",
+                 reason="wow-v17-gemini-engineering-worker_SUCCESS")
+    assert client.provider_admission() == "PROVIDER_RECOVERY_UNVERIFIED"
+
+    # The same shape from the primary worker still proves recovery, so this
+    # test cannot pass by disabling the acknowledgment path wholesale.
+    client, run, route, _ = _provider_evidence(monkeypatch, primary="success")
+    route.update(action="NO_ACTION", provider="none", parent_run_id="901",
+                 reason="wow-v17-chatgpt-engineering-worker_SUCCESS")
+    assert client.provider_admission() == "PROVIDER_ADMITTED"
+
+
 @pytest.mark.parametrize("bad_run", [
     {"head_branch": "feature"}, {"path": "untrusted.yml"}, {"id": True},
     {"head_sha": "malformed"}, {"status": "queued"},
