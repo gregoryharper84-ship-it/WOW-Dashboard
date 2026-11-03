@@ -345,11 +345,7 @@ def test_hydrate_fails_closed_when_all_sources_are_unavailable(monkeypatch):
         raise AssertionError("expected BasketballHydrationError")
     except hydration.BasketballHydrationError as exc:
         text = str(exc)
-        assert "BASKETBALL_FRESH_SOURCE_UNAVAILABLE" in text
-        assert "BALLDONTLIE_AUTH_FAILED" in text
-        assert "SPORTSDATAVERSE_ESPN_HTTP_503" in text
-        assert "ESPN_SCOREBOARD_TRAINING_NOT_ENTITLED" in text
-        assert "MODEL_SOURCE_UNCLASSIFIED" in text
+        assert text == "NBA_CANONICAL_SDV_SOURCE_UNAVAILABLE:SPORTSDATAVERSE_ESPN_HTTP_503"
 
 
 def test_recent_espn_settlement_fetch_is_bounded_to_past_local_days():
@@ -749,9 +745,8 @@ def test_entitled_espn_nba_fallback_uses_calendar_year_but_blocks_write(monkeypa
         raise AssertionError("NBA scoreboard history must fail without approved crosswalk")
     except hydration.BasketballHydrationError as exc:
         assert str(exc) == "NBA_TEAM_PROVIDER_CROSSWALK_UNVERIFIED"
-    # The season calendar mapping remains correct; a provider privilege does
-    # not silently grant a fitted NBA corpus identity crosswalk.
-    assert requested == [2026]
+    # A public scoreboard entitlement is not a canonical fitted-team crosswalk.
+    assert requested == []
     assert stored == []
 
 
