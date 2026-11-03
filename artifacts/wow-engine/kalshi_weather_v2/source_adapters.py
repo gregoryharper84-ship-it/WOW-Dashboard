@@ -50,6 +50,10 @@ class NwsAdapter:
         return ProviderSnapshot(self.provider, "OFFICIAL_OBSERVATION", url, retrieved_at, None, valid, data)
 
 
+class OpenMeteoSnapshotInvalid(ValueError):
+    """Typed secondary-provider shape failure; not an NWS source failure."""
+
+
 class OpenMeteoAdapter:
     provider = "OPEN_METEO"
 
@@ -120,7 +124,11 @@ class OpenMeteoAdapter:
         data = self.get_json(url, None)
         hourly = data.get("hourly") if isinstance(data, Mapping) else None
         times = hourly.get("time", []) if isinstance(hourly, Mapping) else []
-        valid = tuple(str(value) for value in times if value not in (None, ""))
+        if not isinstance(times, list) or any(
+            not isinstance(value, str) or not value.strip() for value in times
+        ):
+            raise OpenMeteoSnapshotInvalid("OPEN_METEO_HOURLY_TIMES_INVALID")
+        valid = tuple(times)
         return ProviderSnapshot(
             self.provider,
             "SECONDARY_FORECAST",
