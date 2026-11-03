@@ -3,6 +3,8 @@ name: wow-v17-nfl-forward-shadow
 on:
   schedule:
     - cron: "30 12 * * *"
+    # Post-MNF second pass if the upstream schedule feed settles later.
+    - cron: "17 19 * * 2"
   workflow_dispatch:
   push:
     branches:
@@ -137,8 +139,14 @@ jobs:
               "canonical_events": payload.get("canonical_events"),
               "graded_events": payload.get("graded_events"),
               "new_grades_persisted": payload.get("new_grades_persisted"),
+              "overdue_unsettled_count": payload.get("overdue_unsettled_count"),
+              "overdue_unsettled_event_ids": payload.get("overdue_unsettled_event_ids"),
               "forward_health": health.get("status"),
               "certification_recommendation": health.get("certification_recommendation"),
               "can_execute": False,
           }, sort_keys=True))
+          assert payload.get("status") == "COMPLETED", (
+              "NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT:"
+              + str(payload.get("overdue_unsettled_event_ids"))
+          )
           PY
