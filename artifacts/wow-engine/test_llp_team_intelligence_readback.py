@@ -251,6 +251,16 @@ def test_unsupported_daily_sport_is_not_counted_as_corrupt():
     assert view["invalid_event_rows"] == 0
 
 
+def test_canonical_mlb_candidate_envelope_is_not_malformed_llp_event():
+    saved = _row(certified=False)
+    saved["identity"].pop("sport")
+    saved["detail"]["result"]["candidate_envelope"] = {"sport": "MLB", "league": "MLB"}
+    view = llp.project_llp_intelligence_page(_page([saved]))
+    assert view["unsupported_sport_rows_skipped"] == 1
+    assert view["invalid_event_rows"] == 0
+    assert view["events"] == []
+
+
 def test_saved_score_event_schema_translates_only_explicit_winner():
     saved = _row(certified=True)
     raw = saved["detail"]["result"]
