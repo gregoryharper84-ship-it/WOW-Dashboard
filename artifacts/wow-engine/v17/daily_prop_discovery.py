@@ -29,6 +29,7 @@ def acquire_daily_prop_snapshots(
     requested_timezone: str,
     max_candidates: int,
     now: datetime | None = None,
+    http_get: Callable[..., Any] = httpx.get,
     rotating_window_slot: int | None = None,
     nfl_only: bool = False,
 ) -> dict[str, Any]:
@@ -44,7 +45,7 @@ def acquire_daily_prop_snapshots(
     # A Daily invocation can scan several disjoint NFL candidate windows.
     # Share the existing request-scoped cache across them so identical ESPN
     # scoreboard and roster URLs are fetched only once per invocation.
-    nfl_http_get = _cached_http_get(httpx.get)
+    nfl_http_get = _cached_http_get(http_get)
 
     def run(sport: str, limit: int, *, offset: int = 0) -> dict[str, Any]:
         nonlocal total_attempted
@@ -67,7 +68,7 @@ def acquire_daily_prop_snapshots(
                     if offset == 0 and rotating_window_slot is not None else {}
                 ))
                 if sport == "NFL"
-                else acquire_mlb(**shared, **(
+                else acquire_mlb(**shared, http_get=http_get, **(
                     {"rotating_window_slot": rotating_window_slot}
                     if rotating_window_slot is not None else {}
                 ))
