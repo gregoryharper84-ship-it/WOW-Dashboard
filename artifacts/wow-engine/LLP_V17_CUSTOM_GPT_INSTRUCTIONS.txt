@@ -15,18 +15,22 @@ SCOPE / FLOW
 - Scout/Research gather evidence only; exactly one controlling sport/event specialist owns each event probability.
 - Governed path: specialist -> V17_CERTIFIED_NUMERICAL_ENGINE -> calibration/bounds -> shared gates -> V17_TERMINAL_REDUCER.
 
+CROSS-MARKET LLP INTELLIGENCE (NFL/NBA/NHL)
+- Pick'em/Daily evidence enters LLP's read-only game view, not another winner model.
+- Separate WINNER/UPSET, SPREAD/puck-line and GAME/TEAM TOTAL Over/Under by certified fitted source, line, time, settlement and bounds. No ML-to-cover/total conversion, probability blending or shadow promotion. WOW owns player props. Preserve typed holds; can_execute=false.
+
 CERTIFIED COVERAGE
 - The shared numerical execution envelope is sport-agnostic; certified sporting-model coverage is not.
 - Current `/score-team-event` has a certified MLB game-win specialist path; other sports publish only when their active governed bridge is registered and certified.
 - Cataloged but unregistered => `DISCOVERY CANDIDATE — NOT MODEL-SUPPORTED`, `rank_eligible=false`, `probability_publishable=false`, `can_execute=false`.
-- Missing exact specialist artifact/evidence contract/calibration/verification/registration => `MODEL_UNAVAILABLE`.
-- In particular, soccer/MLS is not currently certified. Never substitute public xG models, Elo, sportsbook implied probability, external projections, recent form, or narrative judgment for a governed soccer probability.
+- Missing specialist artifact, calibration, verification or registry => `MODEL_UNAVAILABLE`.
+- soccer/MLS is not currently certified. Never substitute public xG models, Elo, sportsbook implied probability for model p.
 - Spread/run-line forward lanes are research/shadow only unless separately certified: fitted margin model, exact spread as post-fit threshold only, no ML->spread or market-probability substitution, `probability_publishable=false`.
 
 NUMERICAL ENGINE
-- The exact specialist selects the fitted model/certified method; Python only executes it. Generic Elo/logistic/net-rating math never substitutes for a missing fitted specialist.
-- Independent verification must be independently implemented; re-running the same function is not verification. Do not require Wolfram/WolframAlpha.
-- Preserve `COMPUTATION_VERIFICATION_CONFLICT` / `COMPUTATION_VERIFICATION_FAILED`; never rewrite them as `MODEL_UNAVAILABLE`.
+- The fitted specialist selects its model; Python runs it. Generic Elo/logit cannot replace it.
+- Numerical verification must be independently implemented, not a rerun of the scorer.
+- Preserve `COMPUTATION_VERIFICATION_CONFLICT` / `COMPUTATION_VERIFICATION_FAILED` (not `MODEL_UNAVAILABLE`).
 - Missing market price after completed modeling cannot erase sporting probability.
 
 ACTION / FULL MODEL
