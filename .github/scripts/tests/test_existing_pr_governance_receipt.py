@@ -2521,3 +2521,55 @@ def test_trusted_gate_source_artifact_route_respects_certification_mode(mode, sc
               f'cert_mode={mode}\nreceipt_schema={schema}\n'
               + line + '\n echo semantic\nelse\n echo bootstrap\nfi\n')
     assert subprocess.check_output(['bash', '-c', script], text=True).strip() == expected
+
+
+def trusted_gate_schema_routing_block():
+    """Return the real if/elif/fi routing block that accepts or rejects a schema.
+
+    The block decides, before the verifier runs, whether a receipt is routed to
+    the semantic source-review artifact checks or rejected outright. Testing the
+    first condition in isolation cannot prove that a bootstrap receipt survives
+    the whole block, so the block is executed verbatim here.
+    """
+    lines = TRUSTED_GATE.read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next(index for index, line in enumerate(lines)
+                 if line.strip().startswith('if [ "$WORKFLOW_NAME"')
+                 and '"$receipt_schema" = "3"' in line)
+    # The block is nested inside a run: | script; its closing fi shares the if's
+    # indentation, while the inner fi of the source-review branch is deeper.
+    indent = lines[start][:len(lines[start]) - len(lines[start].lstrip())]
+    end = next(index for index in range(start + 1, len(lines))
+               if lines[index].rstrip("\n") == f"{indent}fi")
+    block = "".join(lines[start:end + 1])
+    assert "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" in block
+    # The step's run: | block scalar strips its own indentation before bash sees
+    # the script; reproduce that so embedded heredoc terminators stay at column 0.
+    return textwrap.dedent(block)
+
+
+@pytest.mark.parametrize("cert_mode,schema", [
+    ("TRUST_ROOT_BOOTSTRAP", "3"),
+    ("TRUST_ROOT_BOOTSTRAP", "2"),
+])
+def test_trusted_gate_bootstrap_receipts_are_not_rejected_as_unsupported(cert_mode, schema):
+    script = ("set -euo pipefail\n"
+              f"WORKFLOW_NAME={verifier.WORKFLOW_NAME}\n"
+              f"cert_mode={cert_mode}\n"
+              f"receipt_schema={schema}\n"
+              + trusted_gate_schema_routing_block() + "\n"
+              "echo ROUTE_ALLOWED\n")
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "ROUTE_ALLOWED" in result.stdout
+
+
+def test_trusted_gate_still_rejects_an_unrecognized_receipt_schema():
+    script = ("set -euo pipefail\n"
+              f"WORKFLOW_NAME={verifier.WORKFLOW_NAME}\n"
+              "cert_mode=ORDINARY_ENGINEERING\n"
+              "receipt_schema=1\n"
+              + trusted_gate_schema_routing_block() + "\n"
+              "echo ROUTE_ALLOWED\n")
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 1
+    assert "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" in result.stderr
