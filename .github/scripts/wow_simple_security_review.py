@@ -853,6 +853,41 @@ def require_live_identity(current, target):
 
 
 
+def github_read_preflight():
+    """Owner-only zero-inference check of the same PR metadata GET used by review.
+
+    This read has no QA App token, reviewer verdict, or check publication.
+    An ambiguous permission/transport response remains a fail-closed Hold.
+    """
+    if (os.environ.get("GITHUB_REPOSITORY") != REPO
+            or os.environ.get("GITHUB_REF") != "refs/heads/main"
+            or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or os.environ.get("GITHUB_ACTOR") != OWNER_LOGIN):
+        raise Hold("REVIEWER_PREFLIGHT_OWNER_MAIN_REQUIRED")
+    read_token = os.environ.get("GH_READ_TOKEN", "")
+    if not read_token:
+        raise Hold("READ_TOKEN_MISSING")
+    try:
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    except (KeyError, OSError, ValueError, TypeError):
+        raise Hold("REVIEWER_PREFLIGHT_EVENT_INVALID") from None
+    pr_number, expected_sha = event_target(event, "workflow_dispatch")
+    if pr_number <= 0 or pr_number > 10000000:
+        raise Hold("PR_NUMBER_INVALID")
+    pr = gh(f"/pulls/{pr_number}", read_token)
+    head = (pr.get("head") or {})
+    base = (pr.get("base") or {})
+    if (pr.get("state") != "open"
+            or base.get("ref") != "main"
+            or (base.get("repo") or {}).get("full_name") != REPO
+            or (head.get("repo") or {}).get("full_name") != REPO
+            or type(head.get("sha")) is not str
+            or not re.fullmatch(r"[0-9a-f]{40}", head["sha"])
+            or (expected_sha and head["sha"] != expected_sha)):
+        raise Hold("PR_TARGET_STALE_OR_UNTRUSTED")
+    print("GITHUB_PR_READ_READY:PR_METADATA:READ_ONLY")
+
+
 def reviewer_preflight():
     """Read-only, zero-inference provider compatibility check.
 
@@ -968,6 +1003,7 @@ def main():
 if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["--preflight"]:
+            github_read_preflight()
             reviewer_preflight()
         elif len(sys.argv) == 1:
             main()
