@@ -2504,3 +2504,20 @@ def test_v3_owner_cli_build_and_live_recheck(tmp_path, monkeypatch):
     assert verifier.main() == 0
     checks_path.write_text('[]')
     assert verifier.main() == 1
+
+
+@pytest.mark.parametrize('mode,schema,expected', [
+    ('TRUST_ROOT_BOOTSTRAP', '3', 'bootstrap'),
+    ('TRUST_ROOT_BOOTSTRAP', '2', 'bootstrap'),
+    ('ORDINARY_ENGINEERING', '3', 'semantic'),
+])
+def test_trusted_gate_source_artifact_route_respects_certification_mode(mode, schema, expected):
+    import subprocess
+    workflow = TRUSTED_GATE.read_text()
+    line = next(line.strip() for line in workflow.splitlines()
+                if line.strip().startswith('if [ "$WORKFLOW_NAME"')
+                and '"$receipt_schema" = "3"' in line)
+    script = ('WORKFLOW_NAME=wow-v17-existing-pr-governance-review\n'
+              f'cert_mode={mode}\nreceipt_schema={schema}\n'
+              + line + '\n echo semantic\nelse\n echo bootstrap\nfi\n')
+    assert subprocess.check_output(['bash', '-c', script], text=True).strip() == expected

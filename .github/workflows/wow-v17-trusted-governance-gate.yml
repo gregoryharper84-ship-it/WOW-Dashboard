@@ -320,7 +320,7 @@ jobs:
           fi
 
           source_review_run="$RUNNER_TEMP/source-review-run.json"
-          if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" = "3" ]; then
+          if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" = "3" ] && [ "$cert_mode" != "TRUST_ROOT_BOOTSTRAP" ]; then
             source_run_id=$(jq -er '.independent_review.artifact.source.run_id | select(type == "string" and test("^[1-9][0-9]*$"))' "$receipt")
             source_attempt=$(jq -er '.independent_review.artifact.source.run_attempt | select(type == "number" and . > 0)' "$receipt")
             source_artifact_id=$(jq -er '.independent_review.artifact_id | select(type == "number" and . > 0)' "$receipt")
