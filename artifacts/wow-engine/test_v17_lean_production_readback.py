@@ -95,6 +95,66 @@ def test_wrong_service_configuration_or_deploy_is_hold(kwargs, reason):
         score(**kwargs)
 
 
+def test_transport_or_unexpected_shape_failure_always_writes_hold(tmp_path, monkeypatch):
+    import http.client
+    import json
+
+    for failure in (
+        ConnectionResetError("untrusted credential leak"),
+        http.client.IncompleteRead(b"", 7),
+        AttributeError("bad API response shape"),
+    ):
+        target = tmp_path / "readback.json"
+        monkeypatch.setenv("READBACK_RECEIPT", str(target))
+        monkeypatch.setenv("EXPECTED_SHA", SHA)
+        def fail():
+            raise failure
+        monkeypatch.setattr(m, "_readback", fail)
+        assert m.main() == 1
+        receipt = json.loads(target.read_text())
+        assert receipt == {
+            "status": "READBACK_HOLD",
+            "reason": "READBACK_SOURCE_UNAVAILABLE_OR_INVALID",
+            "expected_sha": SHA,
+            "production_verified": False,
+            "model_ready": "UNVERIFIED",
+            "can_execute": False,
+        }
+        assert "credential leak" not in target.read_text()
+
+
+def test_scheduled_readback_is_not_a_source_ci_gate(monkeypatch):
+    urls = []
+    monkeypatch.setenv("EXPECTED_SHA", SHA)
+    monkeypatch.setenv("GITHUB_REPOSITORY", m.REPO)
+    monkeypatch.setenv("GH_TOKEN", "fixture-token")
+    monkeypatch.setenv("RENDER_API_KEY", "fixture-token")
+    monkeypatch.setenv("SOURCE_EVENT", "schedule")
+
+    def getter(url, _headers):
+        urls.append(url)
+        if url.endswith("/branches/main"):
+            return {"commit": {"sha": SHA}}
+        if "/services/" in url and "/deploys?" not in url:
+            role = next(role for role, sid in m.SERVICES.items() if sid in url)
+            return service(role)
+        if "/deploys?" in url:
+            role = next(role for role, sid in m.SERVICES.items() if sid in url)
+            return [deploy(ident="dep-" + role)]
+        raise AssertionError("Unexpected authenticated GET " + url)
+
+    monkeypatch.setattr(m, "_get_json", getter)
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+    monkeypatch.setattr(m.urllib.request, "urlopen", lambda *_a, **_k: Response())
+    receipt = m._readback()
+    assert receipt["status"] == "WEB_WORKER_LIVE_SHA_AND_HEALTH_OBSERVED"
+    assert receipt["production_verified"] is False
+    assert not any("/actions/runs/" in url for url in urls)
+
+
 def test_observer_is_nonblocking_and_never_a_render_writer():
     import yaml
     root = Path(__file__).resolve().parents[2]
@@ -104,7 +164,9 @@ def test_observer_is_nonblocking_and_never_a_render_writer():
     observer = next(s for s in job["steps"] if s.get("id") == "readback")
     assert observer["continue-on-error"] == "true"
     assert "lean_production_readback.py" in observer["run"]
-    assert "workflows: [wow-verify]" in source
+    assert 'cron: "11 * * * *"' in source
+    assert "workflow_run:" not in source
+    assert "workflow_dispatch:" in source
     assert "pull_request_target" not in source
     assert "gh pr merge" not in source
     assert "render.com/v1/services" not in source
