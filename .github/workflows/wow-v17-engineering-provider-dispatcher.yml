@@ -189,7 +189,7 @@ jobs:
           # failures. They follow the same credit-aware admission as cron.
           secondary_usable() {
             { [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; } || return 1
-            local recent conclusion run_id run_meta jobs
+            local recent conclusion run_id run_meta jobs attempt previous_log previous_incident classification
             if ! recent=$(gh run list --repo "$GITHUB_REPOSITORY" \
                 --workflow wow-v17-claude-engineering-worker.yml \
                 --branch main --status completed --limit 1 \
@@ -226,6 +226,7 @@ jobs:
                   and .jobs[0].name == "WOW V17 Claude fallback engineering team"
                   and .jobs[0].status == "completed" and .jobs[0].conclusion == "failure"
                   and (.jobs[0].steps | type == "array")
+                  and ([.jobs[0].steps[] | select(.conclusion == "failure")] | length) == 1
                   and ([
                     ["Verify Anthropic authentication", "success"],
                     ["Engineering Lead agent", "success"],
@@ -240,7 +241,23 @@ jobs:
                     ([$root.jobs[0].steps[] | select(.name == $expected[0]
                       and .status == "completed"
                       and .conclusion == $expected[1])] | length) == 1))
-                ' <<<"$jobs" >/dev/null 2>&1
+                ' <<<"$jobs" >/dev/null 2>&1 || return 1
+                # Only a unique GitHub-emitted error proves the previous target.
+                attempt=$(jq -er '.run_attempt | select(type == "number" and . >= 1 and . == floor)' <<<"$run_meta") || return 1
+                previous_log=$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" \
+                  --attempt "$attempt" --log-failed 2>/dev/null) || return 1
+                previous_incident=$(printf '%s\n' "$previous_log" | sed -n -E \
+                  's/^.*##\[error\]ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE: incident=([1-9][0-9]*);.*/\1/p') || return 1
+                [[ "$previous_incident" =~ ^[1-9][0-9]*$ \
+                   && "$previous_incident" != "$target_incident" ]] || return 1
+                printf '%s\n' "$previous_log" > "$RUNNER_TEMP/claude-prior-failure-$run_id.log"
+                classification=$(python artifacts/wow-engine/v17/engineering_provider_failover.py \
+                  classify --provider anthropic \
+                  --log-file "$RUNNER_TEMP/claude-prior-failure-$run_id.log") || return 1
+                jq -e '.code == "ACTIONABLE_REPAIR_TRIAGE_NOT_REPAIRABLE"
+                  and .provider_signal == null
+                  and .disposition == "UNRESOLVED_TYPED_FAILURE"' \
+                  <<<"$classification" >/dev/null 2>&1 || return 1
                 ;;
               *) return 1 ;;
             esac

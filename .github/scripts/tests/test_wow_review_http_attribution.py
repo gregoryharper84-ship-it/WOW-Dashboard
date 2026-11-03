@@ -110,6 +110,37 @@ class HttpAttributionTests(unittest.TestCase):
                               stderr.getvalue())
                 self.assertNotIn("SECRET", stderr.getvalue())
 
+    def test_structured_gemini_legacy_model_404_is_typed_unavailable(self):
+        payload = {"error": {"code": 404, "status": "NOT_FOUND",
+                   "message": "models/gemini-2.5-flash is not found for API version v1beta, "
+                              "or is not supported for generateContent"}}
+        with self.assertRaises(m.ProviderUnavailable) as unavailable:
+            fail(GEMINI, 404, payload, data={"contents": []})
+        self.assertEqual(str(unavailable.exception), "PROVIDER_MODEL_UNAVAILABLE")
+
+    def test_ambiguous_gemini_404_never_becomes_typed_fallback(self):
+        message = ("models/gemini-2.5-flash is not found for API version v1beta, "
+                   "or is not supported for generateContent")
+        for body in ({"error": {"message": message}},
+                     {"error": {"code": 404, "status": "INVALID_ARGUMENT", "message": message}},
+                     {"error": {"code": 404, "status": "NOT_FOUND", "message": "arbitrary 404"}},
+                     [], {"error": "malformed"}):
+            with self.subTest(body=body):
+                with self.assertRaises(m.Hold) as hold:
+                    fail(GEMINI, 404, body, data={"contents": []})
+                self.assertNotIsInstance(hold.exception, m.ProviderUnavailable)
+                self.assertEqual(str(hold.exception), "HTTP_404")
+
+    def test_safe_preflight_get_metadata_endpoint_label(self):
+        metadata_url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                        "gemini-3.8-flash")
+        self.assertEqual(m.safe_label(metadata_url, False), "GEMINI_API:GET:MODEL_METADATA")
+        self.assertNotIn("secret", m.safe_label(metadata_url + "?secret=hidden", False))
+        with self.assertRaises(m.Hold):
+            fail(metadata_url, 404, {"error": {"code": 404, "status": "NOT_FOUND",
+                                              "message": "model not available"}})
+        # A credential-safe metadata GET cannot become a semantic-review PASS.
+
     def test_diagnostic_line_is_printed_for_every_http_failure(self):
         import contextlib
         stderr = io.StringIO()
