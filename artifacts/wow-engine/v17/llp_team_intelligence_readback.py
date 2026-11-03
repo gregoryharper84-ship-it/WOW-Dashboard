@@ -38,11 +38,12 @@ def _event_from_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
     detail = _data(row.get("detail"))
     original = _data(detail.get("identity"))
     result = _data(detail.get("result"))
+    candidate_envelope = _data(result.get("candidate_envelope"))
     # Stored Daily records are heterogeneous: canonical MLB rows use
     # event_start_time, while broad discovery uses commence_time_utc.
     def get(*names: str) -> Any:
         for name in names:
-            for source in (identity, original, result):
+            for source in (identity, original, result, candidate_envelope):
                 value = source.get(name)
                 if value not in (None, ""):
                     return value
@@ -197,9 +198,11 @@ def project_llp_intelligence_page(page: Mapping[str, Any]) -> dict[str, Any]:
         identity = _data(row.get("identity"))
         original = _data(_data(row.get("detail")).get("identity"))
         result = _data(_data(row.get("detail")).get("result"))
+        candidate_envelope = _data(result.get("candidate_envelope"))
         source_sport = _token(
             identity.get("sport") or original.get("sport") or result.get("sport")
-            or result.get("league")
+            or result.get("league") or candidate_envelope.get("sport")
+            or candidate_envelope.get("league")
         ).upper()
         if source_sport and source_sport not in _SUPPORTED:
             unsupported_sport_rows += 1
