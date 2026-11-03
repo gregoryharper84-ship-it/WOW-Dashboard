@@ -338,3 +338,54 @@ web+worker SHA verification, and a successful real user-function canary with
 appropriate read-only Action/receipt evidence. Report each separately.
 No sporting model is certified by an engineering recovery canary.
 `can_execute=false`; terminal authority stays `V17_TERMINAL_REDUCER`.
+
+### E. Primary-provider (OpenAI) persistent-breaker recovery
+
+The primary route carries the mirror-image trap: a persistent failure never ages
+out. `OPENAI_API_BILLING_REQUIRED`, `OPENAI_API_QUOTA_EXCEEDED`,
+`OPENAI_API_KEY_MISSING` and `OPENAI_API_AUTH_FAILED` stay active in the circuit
+breaker regardless of `age_minutes`; the 120-minute cooldown applies only to the
+transient codes `OPENAI_API_RATE_LIMITED` and `OPENAI_API_UPSTREAM_UNAVAILABLE`.
+Funding, re-keying or rotating the credential therefore changes nothing by
+itself: the hourly route still reads the **latest completed** ChatGPT worker
+run, still finds that persistent code, and still emits
+`CIRCUIT_BREAKER:<code>:SECONDARY_UNAVAILABLE_OR_FAILED` with
+`independent_fallback_allowed=true`, which the resident holds as
+`PROVIDER_QUOTA_BLOCKED`. Waiting is not recovery.
+
+The only legitimate clearing step is one deliberate operator probe, made after
+the credential and its quota are confirmed healthy out of band:
+
+```bash
+# METERS PROVIDER USAGE. OWNER ACTION ONLY AFTER CREDENTIAL/QUOTA CONFIRMATION.
+gh workflow run wow-v17-engineering-provider-dispatcher.yml \
+  -R gregoryharper84-ship-it/WOW-Dashboard --ref main \
+  -f force_provider=openai \
+  -f reason=OPENAI_OPERATOR_RECOVERY_PROBE
+```
+
+The manual path is the only route that dispatches `openai` while the breaker is
+active; automatic and resident-initiated dispatches never do. One probe only:
+401/402/429/5xx, malformed output, a timeout, an ambiguous response or a failed
+child run all keep the hold, and a retry loop is precisely what the breaker
+exists to prevent. Record the typed code from the failed run, reconcile the
+run/reservation and stop; do not widen spend, attempts or authority to force a
+different result.
+
+Once one probe completes **successfully**, the persistent code is no longer the
+latest completed primary evidence: the hourly route resolves to
+`DISPATCH/openai` (`OPENAI_PRIMARY_AVAILABLE`) and the resident admits inside the
+same 15-minute window described in phase C. The separately documented
+parent-linked `NO_ACTION` acknowledgment remains an independent way for a fresh
+successful protected worker to supersede an older blocker.
+
+The secondary route mirrors this shape: `secondary_usable()` refuses Anthropic
+while the latest Claude worker run ended in failure or cancellation, even with a
+valid key or `CLAUDE_CODE_OAUTH_TOKEN`. The same single-probe rule applies via
+`force_provider=anthropic`, and it is an alternative when that capacity is
+genuinely available, never a way to skip primary recovery.
+
+Never edit a provider receipt, breaker artifact or attempt counter to clear this
+state, and never raise the three-attempt ceiling to make a hold disappear. A
+cleared breaker is evidence of one successful authenticated run and nothing
+more.
