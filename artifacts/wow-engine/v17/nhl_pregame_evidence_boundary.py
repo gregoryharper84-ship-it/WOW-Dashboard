@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Mapping, Any
 
+from v17.nhl_event_identity import team_abbreviation
+
 CAN_EXECUTE = False
 REQUIRED = (
     "official_event_id", "home_team", "away_team", "event_start_time_utc",
@@ -16,6 +18,7 @@ REQUIRED = (
 )
 FULL_GAME_SETTLEMENT = "HOME_AWAY_INCLUDING_OT_SO"
 VERIFIED_GOALIE_STATUSES = frozenset({"CONFIRMED"})
+STRUCTURED_EVIDENCE = frozenset({"injury_report", "rest_travel", "calibration_artifact"})
 
 
 def _time(value: Any) -> datetime | None:
@@ -24,7 +27,7 @@ def _time(value: Any) -> datetime | None:
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return dt.astimezone(timezone.utc) if dt.tzinfo else None
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
 
 
@@ -40,12 +43,26 @@ def validate_nhl_pregame_evidence(
                 or (isinstance(value, str) and not value.strip())
                 or (isinstance(value, (Mapping, list, tuple, set, frozenset)) and not value))
 
-    missing = [k for k in REQUIRED if _missing_required(evidence.get(k))]
+    missing = [
+        k for k in REQUIRED
+        if (_missing_required(evidence.get(k))
+            or (k in STRUCTURED_EVIDENCE
+                and (not isinstance(evidence.get(k), Mapping) or not evidence[k])))
+    ]
     reasons: list[str] = []
     if missing:
         reasons.append("MODEL_INPUTS_INSUFFICIENT")
-    if evidence.get("home_team") and evidence.get("home_team") == evidence.get("away_team"):
+    # Source aliases are not canonical identity: require recognized NHL teams.
+    home_raw, away_raw = evidence.get("home_team"), evidence.get("away_team")
+    home = team_abbreviation(home_raw) if isinstance(home_raw, str) else None
+    away = team_abbreviation(away_raw) if isinstance(away_raw, str) else None
+    if not home or not away:
+        reasons.append("NHL_TEAM_IDENTITY_UNVERIFIED")
+    elif home == away:
         reasons.append("NHL_DUPLICATE_OPPONENT_IDENTITY")
+    official_id = evidence.get("official_event_id")
+    if not (isinstance(official_id, str) and len(official_id) == 10 and official_id.isascii() and official_id.isdigit()):
+        reasons.append("NHL_EVENT_IDENTITY_UNVERIFIED")
     if evidence.get("settlement_basis") != FULL_GAME_SETTLEMENT:
         reasons.append("NHL_SETTLEMENT_BASIS_UNVERIFIED")
     if str(evidence.get("goalie_status", "")).strip().upper() not in VERIFIED_GOALIE_STATUSES:
@@ -63,14 +80,14 @@ def validate_nhl_pregame_evidence(
             from math import isfinite
             if isinstance(evidence[key], bool) or not isfinite(n) or not 0 <= n <= 1:
                 reasons.append("NHL_NUMERIC_FEATURE_INVALID")
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, OverflowError):
             reasons.append("NHL_NUMERIC_FEATURE_INVALID")
     for key in ("home_elo", "away_elo"):
         try:
             from math import isfinite
             if isinstance(evidence[key], bool) or not isfinite(float(evidence[key])):
                 reasons.append("NHL_NUMERIC_FEATURE_INVALID")
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, OverflowError):
             reasons.append("NHL_NUMERIC_FEATURE_INVALID")
     if not isinstance(evidence.get("source_snapshot_id"), str) or not evidence["source_snapshot_id"].strip():
         reasons.append("NHL_SOURCE_SNAPSHOT_MISSING")
