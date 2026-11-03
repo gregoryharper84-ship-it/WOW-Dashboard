@@ -187,6 +187,15 @@ def build_receipt(
         raise DeliveryError("DELIVERY_RENDER_SHA_MISMATCH")
     client = db or SupabaseReadOnly(config["SUPABASE_URL"], config["SUPABASE_SERVICE_ROLE_KEY"])
     lanes = {name: _table_window(client, name, now, hours) for name in _ACTIVITY_TIME}
+    action_since = stamp(now - timedelta(hours=hours))
+    non_self_actions = client.count(
+        "wow_action_invocation_receipts",
+        occurred_at="gte." + action_since, caller_class="neq.SELF_ACCEPTANCE",
+    )
+    chatgpt_actions = client.count(
+        "wow_action_invocation_receipts",
+        occurred_at="gte." + action_since, caller_class="eq.CHATGPT_ACTION",
+    )
     fitted_after = stamp(now - timedelta(days=days))
     calibration_total = client.count("wow_calibrators")
     calibration_recent = client.count("wow_calibrators", fitted_at="gte." + fitted_after)
@@ -211,6 +220,7 @@ def build_receipt(
                 "fit_window_days": days,
                 "latest_fit": latest_fit[0].get("fitted_at") if latest_fit else None,
             },
+            "action_receipt_composition": {"non_self_acceptance": non_self_actions, "chatgpt_action": chatgpt_actions},
             "nfl_forward_health": latest_health[0] if latest_health else None,
             "future_source_attempts_excluded": future_attempts,
         },
