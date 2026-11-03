@@ -166,3 +166,15 @@ def test_external_action_evidence_is_not_self_acceptance():
         "occurred_at": "gte.2026-10-30T23:59:00Z",
         "caller_class": "neq.SELF_ACCEPTANCE",
     }) in db.calls
+
+
+def test_saved_render_settings_cannot_certify_running_process_binding():
+    # An operator can edit saved SUPABASE_URL without redeploying. Matching
+    # settings plus the same live SHA cannot establish runtime attribution.
+    out, _ = collect()
+    assert out["status"] == "BLOCKED"
+    assert out["code"] == "DELIVERY_RENDER_RUNTIME_BINDING_UNVERIFIED"
+    assert out["render"]["saved_supabase_project_ref_matches"] is True
+    assert out["render"]["runtime_supabase_binding_verified"] is False
+    assert out["interpretation"]["saved_config_is_not_running_process_proof"] is True
+    assert out["can_execute"] is False
