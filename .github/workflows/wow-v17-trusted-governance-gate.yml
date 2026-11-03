@@ -320,6 +320,13 @@ jobs:
           fi
 
           source_review_run="$RUNNER_TEMP/source-review-run.json"
+          # Schema 3 is overloaded across certification modes: an ordinary signed
+          # automated-review receipt carries the semantic source-review artifact,
+          # while a TRUST_ROOT_BOOTSTRAP schema-3 receipt carries owner
+          # authorization scope and no independent review at all. Only the former
+          # is routed to the source-review artifact checks. Bootstrap receipts of
+          # every schema are validated by the verifier below, so an unrecognized
+          # schema must still be rejected here rather than silently accepted.
           if [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" = "3" ] && [ "$cert_mode" != "TRUST_ROOT_BOOTSTRAP" ]; then
             source_run_id=$(jq -er '.independent_review.artifact.source.run_id | select(type == "string" and test("^[1-9][0-9]*$"))' "$receipt")
             source_attempt=$(jq -er '.independent_review.artifact.source.run_attempt | select(type == "number" and . > 0)' "$receipt")
@@ -417,7 +424,7 @@ jobs:
               --head-sha "$source_sha" \
               --head-ref "$source_ref" \
               --attempt "$source_attempt"
-          elif [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" != "2" ] && [ "$receipt_schema" != "4" ]; then
+          elif [ "$WORKFLOW_NAME" = "wow-v17-existing-pr-governance-review" ] && [ "$receipt_schema" != "2" ] && [ "$receipt_schema" != "4" ] && [ "$cert_mode" != "TRUST_ROOT_BOOTSTRAP" ]; then
             echo "GOVERNANCE_RECEIPT_SCHEMA_UNSUPPORTED" >&2
             exit 1
           fi
