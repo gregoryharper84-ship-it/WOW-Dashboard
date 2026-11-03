@@ -8,6 +8,7 @@ Historical/retired QA finding: `QA_TRUST_ROOT_OWNER_AUTHORED` remains preserved 
 
 | Code | Owning lane/stage | Meaning | Rank eligible? |
 |---|---|---|---:|
+| `WOW_V17_DAILY_SLATE_DATE_UTC_LOCAL_DIVERGENCE` | V17 Daily entrypoint / date-alignment telemetry | Observed requested slate date equals current UTC date but not caller's current local date. This does **not** establish the caller derived the date incorrectly; an explicit next-day request looks identical. Nonblocking diagnostic only, with neutral zero-row observation when applicable. Never change run_status, terminal, reconciliation, or scoring. | Unchanged |
 | `BASKETBALL_CALIBRATION_HOLDOUT_OVERLAP` | NBA/WNBA shadow fitter | Candidate artifact training counts/date boundary fail to partition the raw feature corpus into disjoint calibration and untouched holdout sets. Reject the fit and retain nonpublishable state. | No |
 | `BASKETBALL_CALIBRATED_HOLDOUT_INVALID` | NBA/WNBA shadow fitter | The reserved postcalibration holdout cannot produce valid finite numerical probabilities or binary outcomes. Preserve the scorer/data-integrity failure and do not certify. | No |
 | `NCAAF_FEATURE_PAGINATION_INVALID` | NCAAF pregame training feature compiler | A stable primary-key-paginated training/evidence page contains a missing or duplicated source-row ID. Reject the entire partial compilation; do not fit on corrupted/incomplete evidence. This is an input-integrity failure, not `MODEL_UNAVAILABLE`. | No |
