@@ -566,6 +566,14 @@ def pending_required_regressions(ev: dict) -> list[str]:
         jobs = run.get("jobs")
         if not isinstance(jobs, list):
             continue
+        if not jobs:
+            # A fresh, identity-verified wow-verify run can be queued before
+            # GitHub publishes even its first job/check-run. Defer during that
+            # bounded startup window instead of issuing a false QA/Release
+            # failure for not-yet-created regression checks.
+            pending.extend(("WOW required-three regression",
+                            "WOW additional required regression"))
+            continue
         active_jobs = {
             str(job.get("name"))
             for job in jobs
