@@ -951,6 +951,14 @@ def test_nba_calibrator_resolver_requires_bound_artifact_and_no_table_fallback()
 
 def test_nba_bridge_registration_and_model_invocation(monkeypatch):
     import v17.nba_current_pregame_scorer as nba_scorer
+    import v17.team_event_bridge_runtime as bridge_runtime
+
+    # The bridge registry is global. Isolate its mutation from other tests.
+    monkeypatch.setattr(
+        bridge_runtime,
+        "TEAM_EVENT_BRIDGES",
+        dict(bridge_runtime.TEAM_EVENT_BRIDGES),
+    )
 
     # Real pregame identity is a server-owned boundary; test its downstream
     # missing-feature HOLD without reaching an external schedule provider.
@@ -966,7 +974,6 @@ def test_nba_bridge_registration_and_model_invocation(monkeypatch):
         },
     )
     from v17.team_event_bridge_runtime import (
-        TEAM_EVENT_BRIDGES,
         _register_nba_bridge_if_available,
         score_registered_team_event_request,
     )
@@ -974,8 +981,8 @@ def test_nba_bridge_registration_and_model_invocation(monkeypatch):
 
     registered = _register_nba_bridge_if_available()
     assert registered is True
-    assert "NBA" in TEAM_EVENT_BRIDGES
-    reg = TEAM_EVENT_BRIDGES["NBA"]
+    assert "NBA" in bridge_runtime.TEAM_EVENT_BRIDGES
+    reg = bridge_runtime.TEAM_EVENT_BRIDGES["NBA"]
     assert reg.adapter_name == "V17_NBA_TEAM_EVENT_BRIDGE"
     assert reg.controlling_specialist == "NBA_GAME_WIN_PROBABILITY_EXPERT_V1"
 
