@@ -34,12 +34,31 @@ class Query:
 
 
 class Client:
-    def __init__(self, predictions, *, broken=False):
+    def __init__(self, predictions, *, broken=False, broken_cursor=False, malformed_cursor=False):
         self.predictions = predictions
         self.outcomes = []
         self.broken = broken
+        self.broken_cursor = broken_cursor
+        self.malformed_cursor = malformed_cursor
+        self.next_offset = 0
+        self.claim_sequence = 0
     def table(self, name):
         return Query(self.predictions if name.endswith("predictions") else self.outcomes, broken=self.broken)
+    def rpc(self, name, params):
+        assert name == "wow_kalshi_weather_claim_research_window"
+        assert params["p_station_scope"] == "KALSHI_WEATHER_INDEX:MIAMI"
+        assert 1 <= params["p_attempt_limit"] <= 3
+        if self.broken_cursor:
+            raise RuntimeError("PROGRESS_DB_UNAVAILABLE")
+        size = params["p_population"]
+        assert 1 <= size <= 500
+        offset = self.next_offset % size
+        self.next_offset = (offset + params["p_attempt_limit"]) % size
+        self.claim_sequence += 1
+        rows = ([] if self.malformed_cursor else [{
+            "rotation_offset": offset, "claim_sequence": self.claim_sequence
+        }])
+        return SimpleNamespace(execute=lambda: SimpleNamespace(data=rows))
 
 
 TARGET = "2026-10-30T18:00:00Z"
@@ -202,3 +221,44 @@ def test_receipt_cannot_claim_another_settlement_hour():
         return {"status": "SETTLED", "outcome_id": "out-1", "target_time_utc": "2026-10-30T19:00:00Z"}
     with pytest.raises(BackfillDataError, match="SETTLEMENT_RECEIPT_INVALID"):
         reconcile_miami_settlements(client=db, now=CLOCK, settle=bad_settle)
+
+
+
+def test_durable_cursor_advances_at_identical_clock_when_first_three_never_settle():
+    # Hashing a fixed clock aliases forever; a persisted claim cannot.
+    db = Client([prediction(f"missing-{i}") for i in range(8)] +
+                [prediction("zz-available")])
+    visited = []
+    def settle(*, client, prediction_id, index_city, settled_at):
+        visited.append(prediction_id)
+        if prediction_id != "zz-available":
+            raise KalshiWeatherRuntimeError("SETTLEMENT_POINT_UNAVAILABLE", ("NO_DATA",))
+        client.outcomes.append({"prediction_id": prediction_id})
+        return {"status": "SETTLED", "outcome_id": "outcome-zz-available",
+                "target_time_utc": TARGET}
+
+    first, second, third = [
+        reconcile_miami_settlements(client=db, limit=3, now=CLOCK, settle=settle)
+        for _ in range(3)
+    ]
+    assert [r["rotation_offset"] for r in (first, second, third)] == [0, 3, 6]
+    assert [r["progress_claim_sequence"] for r in (first, second, third)] == [1, 2, 3]
+    assert "zz-available" in visited
+    assert len(db.outcomes) == 1
+    assert all(r["attempted"] <= 3 and r["can_execute"] is False
+               for r in (first, second, third))
+
+
+@pytest.mark.parametrize("state,code", [
+    ({"broken_cursor": True}, "BACKFILL_PROGRESS_LEDGER_UNAVAILABLE"),
+    ({"malformed_cursor": True}, "BACKFILL_PROGRESS_CLAIM_INVALID"),
+])
+def test_missing_or_invalid_durable_progress_never_writes_placeholder_outcomes(state, code):
+    db = Client([prediction("p1")], **state)
+    called = []
+    def settle(**_kwargs):
+        called.append(True)
+        raise AssertionError("settlement should not run without a durable claim")
+    with pytest.raises(BackfillDataError, match=code):
+        reconcile_miami_settlements(client=db, now=CLOCK, settle=settle)
+    assert called == [] and db.outcomes == []
