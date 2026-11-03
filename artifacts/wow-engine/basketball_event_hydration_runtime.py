@@ -506,7 +506,16 @@ def hydrate(
             primary_error: BasketballHydrationError | None = None
             sportsdataverse_error: BasketballHydrationError | None = None
             try:
-                raw = fetch_games(sport, year)
+                # This loop uses the ENDING season year for the licensed
+                # SportsDataverse NBA schedule (nba_schedule_2027.csv covers
+                # the 2026-27 season). BallDontLie instead uses the STARTING
+                # year (seasons[]=2026). WNBA uses the same year at both.
+                bdl_season_year = year - 1 if sport == "NBA" else year
+                raw = fetch_games(sport, bdl_season_year)
+                if not raw:
+                    # HTTP 200 with an empty 2027 BDL result is not evidence
+                    # that the current NBA season has no settled games.
+                    raise BasketballHydrationError("BALLDONTLIE_EMPTY_SEASON")
                 normalizer = normalize_game
                 provider = "BALLDONTLIE"
             except BasketballHydrationError as exc:
@@ -532,7 +541,15 @@ def hydrate(
                             + ",".join(entitlement.blockers)
                         ) from source_exc
                     try:
-                        raw = fetch_espn_games(sport, year)
+                        # ESPN scoreboard queries take a calendar year,
+                        # not the SDV NBA season-ending asset year. With an
+                        # NBA 2026-27 request in Nov 2026 use the 2026 board.
+                        # Access remains independently source-entitlement gated.
+                        espn_calendar_year = (
+                            max(year - 1, min(clock.year, year))
+                            if sport == "NBA" else year
+                        )
+                        raw = fetch_espn_games(sport, espn_calendar_year)
                     except BasketballHydrationError as fallback_exc:
                         raise BasketballHydrationError(
                             "BASKETBALL_FRESH_SOURCE_UNAVAILABLE "
