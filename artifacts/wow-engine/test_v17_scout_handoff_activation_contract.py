@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from v17 import scout_handoff_queue_installer as installer
 
@@ -13,7 +13,57 @@ WORKFLOW = ROOT / ".github" / "workflows" / "wow-v17-nightly-multiscout.yml"
 RENDER = ROOT / "render.yaml"
 
 
+def _allow_only_live_free_core(monkeypatch):
+    for key, value in {
+        "WOW_V17_SOURCE_MODE": "FREE_CORE",
+        "WOW_V17_PAID_DISCOVERY_FALLBACK_ENABLED": "false",
+        "WOW_MARKET_EVIDENCE_ENABLED": "false",
+        "WOW_MARKET_EVIDENCE_KILL_SWITCH": "true",
+        "WOW_V17_PAID_CALL_BUDGET_PER_SCAN": "0",
+        "WOW_V17_PAID_FINAL_REFRESH_RESERVE": "0",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_scout_handoff_enqueue_is_held_before_database_on_hybrid_backend(monkeypatch):
+    app = FastAPI()
+
+    @app.post("/score-pick-request")
+    def score_pick_request(payload: dict):
+        return payload
+
+    @app.post("/score-team-event-request")
+    def score_team_event_request(payload: dict):
+        return payload
+
+    def fail_db():
+        raise AssertionError("HYBRID backend cannot enqueue any durable Scout job")
+
+    installed, _, _ = installer.install_scout_handoff_routes(
+        app, db_client_fn=fail_db,
+    )
+    assert installed is True
+    submit = next(
+        route.endpoint for route in app.router.routes
+        if getattr(route, "path", None) == "/v17/scout-handoff-runs"
+        and "POST" in (getattr(route, "methods", set()) or set())
+    )
+
+    _allow_only_live_free_core(monkeypatch)
+    monkeypatch.setenv("WOW_V17_SOURCE_MODE", "HYBRID")
+    try:
+        submit({"run_id": "unverified-cost"})
+        raise AssertionError("expected backend cost policy HOLD")
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail == {
+            "code": "SCOUT_HANDOFF_LIVE_FREE_CORE_NOT_VERIFIED",
+            "can_execute": False,
+        }
+
+
 def test_durable_handoff_rebuilds_server_plan_from_raw_scout_evidence(monkeypatch):
+    _allow_only_live_free_core(monkeypatch)
     app = FastAPI()
 
     @app.post("/score-pick-request")
