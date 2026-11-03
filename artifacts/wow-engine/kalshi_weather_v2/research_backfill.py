@@ -8,7 +8,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
-from .persistence import KalshiWeatherPersistence, KalshiWeatherPersistenceError
 from .runtime import KalshiWeatherRuntimeError, settle_hourly_prediction
 
 STATION = "KALSHI_WEATHER_INDEX:MIAMI"
@@ -65,7 +64,6 @@ def reconcile_miami_settlements(
     clock = clock.astimezone(timezone.utc)
     cutoff = clock - SETTLEMENT_GRACE
     lookback = clock - timedelta(days=LOOKBACK_DAYS)
-    persistence = KalshiWeatherPersistence(client)
     eligible: list[tuple[datetime, str]] = []
     rejected_bad_provenance = 0
 
@@ -97,6 +95,31 @@ def reconcile_miami_settlements(
             rejected_bad_provenance += 1
             continue
         eligible.append((target, prediction_id))
+
+    # Read the bounded outcome existence set in one query, instead of one
+    # network round-trip for each of up to 500 already settled candidates.
+    # settle_hourly_prediction still rechecks before its immutable insert.
+    eligible.sort(key=lambda item: (item[0], item[1]))
+    recorded: set[str] = set()
+    if eligible:
+        wanted = {prediction_id for _target, prediction_id in eligible}
+        try:
+            outcome_rows = (
+                client.table("wow_kalshi_weather_outcomes")
+                .select("prediction_id")
+                .in_("prediction_id", list(wanted))
+                .limit(MAX_SCAN)
+                .execute()
+            )
+        except Exception as exc:
+            raise BackfillDataError("OUTCOME_LEDGER_UNAVAILABLE") from exc
+        data = getattr(outcome_rows, "data", None)
+        if (not isinstance(data, list) or len(data) > MAX_SCAN
+                or any(not isinstance(row, Mapping)
+                       or not isinstance(row.get("prediction_id"), str)
+                       or row["prediction_id"] not in wanted for row in data)):
+            raise BackfillDataError("OUTCOME_LEDGER_UNAVAILABLE")
+        recorded = {row["prediction_id"] for row in data}
 
     # A durable service-role-only Postgres claim atomically reserves the next
     # bounded slice BEFORE attempting any settlement. Never use clock-hash
@@ -133,12 +156,9 @@ def reconcile_miami_settlements(
     for _target, prediction_id in eligible:
         if attempted >= limit:
             break
-        try:
-            if persistence.outcome_exists_for_prediction(prediction_id):
-                skipped_existing += 1
-                continue
-        except KalshiWeatherPersistenceError as exc:
-            raise BackfillDataError("OUTCOME_LEDGER_UNAVAILABLE") from exc
+        if prediction_id in recorded:
+            skipped_existing += 1
+            continue
         attempted += 1
         try:
             result = settle(
