@@ -154,6 +154,34 @@ def provider_rejection_label(obj):
     return ":".join(parts) if parts else "ERROR_UNCLASSIFIED"
 
 
+def github_http_rejection_label(exc):
+    """Classify GitHub 403/429; never expose header values or API body.
+
+    A 403 alone does not prove a credential defect: GitHub also uses 403 for
+    primary and secondary rate limits. Diagnosis never changes HOLD behavior.
+    """
+    headers = exc.headers
+    remaining = headers.get("X-RateLimit-Remaining") if headers else None
+    if remaining == "0":
+        return "PRIMARY_RATE_LIMIT"
+    try:
+        obj = json.loads(exc.read(4096))
+    except (ValueError, TypeError, AttributeError, OSError, IncompleteRead):
+        obj = {}
+    message = obj.get("message", "") if isinstance(obj, dict) else ""
+    words = message.lower() if isinstance(message, str) else ""
+    if "secondary rate limit" in words or "abuse detection" in words:
+        return "SECONDARY_RATE_LIMIT"
+    if ("resource not accessible by integration" in words
+            or "resource not accessible by personal access token" in words):
+        return "CREDENTIAL_PERMISSION_DENIED"
+    if headers and headers.get("Retry-After") is not None:
+        return "RETRY_AFTER_PRESENT"
+    if "rate limit" in words:
+        return "RATE_LIMIT_UNCLASSIFIED"
+    return "UNCLASSIFIED"
+
+
 def safe_label(url, has_body):
     """Fixed, allowlisted endpoint label; never a URL, query string or response."""
     parsed = urlsplit(url)
@@ -225,6 +253,11 @@ def request_json(url, *, token=None, data=None, headers=None):
     except HTTPError as exc:
         print("REVIEW_HTTP_DIAGNOSTIC:HTTP_" + str(exc.code) + ":" + endpoint,
               file=sys.stderr)
+        if (exc.code in (403, 429)
+                and endpoint.startswith("GITHUB_API:")):
+            print("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_" + str(exc.code)
+                  + ":" + endpoint + ":" + github_http_rejection_label(exc),
+                  file=sys.stderr)
         is_provider = data is not None and not url.startswith("https://api.github.com/")
         # Provider metadata GETs (model catalog/model metadata) are reviewer
         # routes too, but they carry no request body, so they are not
