@@ -5,6 +5,7 @@ Untrusted PR content is read as data, never checked out or executed. A distinct
 QA App publishes the exact-head result; GitHub's native required checks enforce it.
 """
 import hashlib
+from http.client import IncompleteRead
 import json
 import os
 import re
@@ -102,6 +103,84 @@ class NoCredentialRedirect(HTTPRedirectHandler):
 
 HTTP_CLIENT = build_opener(NoCredentialRedirect)
 
+# Diagnostic-only vocabulary for an ambiguous provider rejection. These are
+# provider-defined, finite categories, never response text. They make a 400/404
+# attributable without changing classification, fallback or verdict behavior.
+PROVIDER_ERROR_TYPES = frozenset({
+    "invalid_request_error", "authentication_error", "permission_error",
+    "not_found_error", "request_too_large", "rate_limit_error",
+    "api_error", "overloaded_error",
+})
+PROVIDER_ERROR_PARAMS = frozenset({
+    "model", "max_tokens", "messages", "system", "tools", "tool_choice",
+    "stream", "temperature", "top_p", "stop_sequences", "metadata", "thinking",
+})
+PROVIDER_ERROR_STATUSES = frozenset({
+    "INVALID_ARGUMENT", "FAILED_PRECONDITION", "NOT_FOUND", "PERMISSION_DENIED",
+    "RESOURCE_EXHAUSTED", "UNAVAILABLE", "INTERNAL", "UNAUTHENTICATED",
+    "OUT_OF_RANGE", "UNIMPLEMENTED",
+})
+
+
+def provider_rejection_label(obj):
+    """Fixed, allowlisted labels for an ambiguous provider rejection body.
+
+    Anthropic reports a bad request as ``error.type``/``error.param``; Google
+    reports it as ``error.status``. A parameter path is reduced to its first
+    segment, so no attacker- or model-controlled text can reach the log.
+    Unknown values are reported as unclassified, never echoed.
+    """
+    detail = obj.get("error") if isinstance(obj, dict) else None
+    if not isinstance(detail, dict):
+        return "ERROR_UNCLASSIFIED"
+    parts = []
+    raw_type = detail.get("type")
+    if isinstance(raw_type, str) and raw_type.lower() in PROVIDER_ERROR_TYPES:
+        parts.append("ERROR_TYPE_" + raw_type.upper())
+    elif raw_type is not None:
+        parts.append("ERROR_TYPE_UNCLASSIFIED")
+    raw_param = detail.get("param")
+    if isinstance(raw_param, str):
+        head = raw_param.strip().split(".")[0].split("[")[0]
+        if head in PROVIDER_ERROR_PARAMS:
+            parts.append("PARAM_" + head.upper())
+        else:
+            parts.append("PARAM_UNCLASSIFIED")
+    raw_status = detail.get("status")
+    if isinstance(raw_status, str) and raw_status in PROVIDER_ERROR_STATUSES:
+        parts.append("STATUS_" + raw_status)
+    elif raw_status is not None:
+        parts.append("STATUS_UNCLASSIFIED")
+    return ":".join(parts) if parts else "ERROR_UNCLASSIFIED"
+
+
+def github_http_rejection_label(exc):
+    """Classify GitHub 403/429; never expose header values or API body.
+
+    A 403 alone does not prove a credential defect: GitHub also uses 403 for
+    primary and secondary rate limits. Diagnosis never changes HOLD behavior.
+    """
+    headers = exc.headers
+    remaining = headers.get("X-RateLimit-Remaining") if headers else None
+    if remaining == "0":
+        return "PRIMARY_RATE_LIMIT"
+    try:
+        obj = json.loads(exc.read(4096))
+    except (ValueError, TypeError, AttributeError, OSError, IncompleteRead):
+        obj = {}
+    message = obj.get("message", "") if isinstance(obj, dict) else ""
+    words = message.lower() if isinstance(message, str) else ""
+    if "secondary rate limit" in words or "abuse detection" in words:
+        return "SECONDARY_RATE_LIMIT"
+    if ("resource not accessible by integration" in words
+            or "resource not accessible by personal access token" in words):
+        return "CREDENTIAL_PERMISSION_DENIED"
+    if headers and headers.get("Retry-After") is not None:
+        return "RETRY_AFTER_PRESENT"
+    if "rate limit" in words:
+        return "RATE_LIMIT_UNCLASSIFIED"
+    return "UNCLASSIFIED"
+
 
 def safe_label(url, has_body):
     """Fixed, allowlisted endpoint label; never a URL, query string or response."""
@@ -174,19 +253,43 @@ def request_json(url, *, token=None, data=None, headers=None):
     except HTTPError as exc:
         print("REVIEW_HTTP_DIAGNOSTIC:HTTP_" + str(exc.code) + ":" + endpoint,
               file=sys.stderr)
+        if (exc.code in (403, 429)
+                and endpoint.startswith("GITHUB_API:")):
+            print("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_" + str(exc.code)
+                  + ":" + endpoint + ":" + github_http_rejection_label(exc),
+                  file=sys.stderr)
         is_provider = data is not None and not url.startswith("https://api.github.com/")
+        # Provider metadata GETs (model catalog/model metadata) are reviewer
+        # routes too, but they carry no request body, so they are not
+        # fallback-eligible. Attribute them without changing that decision.
+        provider_route = endpoint.startswith(("ANTHROPIC_API:", "GEMINI_API:"))
+        # Read one bounded provider body for every ambiguous or retryable
+        # rejection (400/404, 429, 5xx) and emit fixed allowlisted labels.
+        # Status and endpoint alone cannot distinguish a rate limit from a
+        # spent workspace or a bad request field. GitHub API errors are
+        # excluded: they use a different body shape, and their endpoint label
+        # is already definitive. This is additive diagnostics only; the
+        # Hold/ProviderUnavailable decision below is unchanged.
+        provider_body = {}
+        if provider_route and (exc.code in (400, 404) or exc.code == 429
+                               or 500 <= exc.code <= 599):
+            try:
+                parsed = json.loads(exc.read(4096))
+            except (ValueError, TypeError, AttributeError, OSError, IncompleteRead):
+                parsed = {}
+            provider_body = parsed if isinstance(parsed, dict) else {}
+            print("REVIEW_HTTP_PROVIDER_DIAGNOSTIC:HTTP_" + str(exc.code) + ":"
+                  + endpoint + ":" + provider_rejection_label(provider_body),
+                  file=sys.stderr)
         if is_provider and exc.code in RETRYABLE_HTTP:
             raise ProviderUnavailable("PROVIDER_HTTP_" + str(exc.code)) from None
         # 400 / 404 are ambiguous. Promote to availability ONLY with an explicit
         # provider-native, structured error indicating exhausted credit or retired model.
         if is_provider and exc.code in (400, 404):
-            obj = {}
-            try:
-                obj = json.loads(exc.read(4096))
-                message = obj.get("error", {}).get("message", "")
-                if type(message) is not str:
-                    message = ""
-            except (ValueError, TypeError, AttributeError, OSError):
+            obj = provider_body
+            detail = obj.get("error") if isinstance(obj, dict) else None
+            message = detail.get("message", "") if isinstance(detail, dict) else ""
+            if type(message) is not str:
                 message = ""
             words = message.lower()
             if exc.code == 400 and any(x in words for x in CREDIT_ERRORS):
@@ -197,7 +300,6 @@ def request_json(url, *, token=None, data=None, headers=None):
             # model-access failure for this credential, not a semantic verdict.
             # It is accepted only when the provider-native error is structured,
             # avoiding fallback on ambiguous arbitrary HTTP 404 responses.
-            detail = obj.get("error") if isinstance(obj, dict) else None
             if (exc.code == 404
                     and endpoint == "GEMINI_API:POST:GENERATE_CONTENT"
                     and isinstance(detail, dict)
