@@ -776,6 +776,7 @@ components:
         prediction_id: {type: [string, 'null']}
         market_family:
           type: [string, 'null']
+          enum: [OUTRIGHT_WINNER, null]
           description: Explicit OUTRIGHT_WINNER routes NFL event UUID to the separate
             immutable event ledger; omitted for all scalar player props.
         event_id: {type: [string, 'null']}
