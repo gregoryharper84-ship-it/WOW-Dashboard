@@ -303,6 +303,7 @@ def test_nfl_event_uuid_lookup_returns_immutable_model_evidence_without_release(
     assert match["model_probability_publishable"] is True
     assert match["blend_publishable"] is False
     assert match["probability_publishable"] is False
+    assert match["rank_eligible"] is False
     assert match["terminal_label"] is None
     assert out["can_execute"] is False
 
