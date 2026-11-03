@@ -17,6 +17,7 @@ class Query:
         self.rows = rows
         self.broken = broken
         self.filters = filters or []
+        self.included = []
     def select(self, *_args):
         return self
     def order(self, *_args, **_kwargs):
@@ -26,10 +27,14 @@ class Query:
     def eq(self, key, value):
         self.filters.append((key, value))
         return self
+    def in_(self, key, values):
+        self.included.append((key, set(values)))
+        return self
     def execute(self):
         if self.broken:
             raise RuntimeError("SENSITIVE_INTERNAL_DB_ERROR")
-        rows = [x for x in self.rows if all(x.get(k) == v for k, v in self.filters)]
+        rows = [x for x in self.rows if all(x.get(k) == v for k, v in self.filters)
+                and all(x.get(k) in values for k, values in self.included)]
         return SimpleNamespace(data=rows)
 
 
@@ -40,9 +45,12 @@ class Client:
         self.broken = broken
         self.broken_cursor = broken_cursor
         self.malformed_cursor = malformed_cursor
+        self.outcome_reads = 0
         self.next_offset = 0
         self.claim_sequence = 0
     def table(self, name):
+        if name.endswith("outcomes"):
+            self.outcome_reads += 1
         return Query(self.predictions if name.endswith("predictions") else self.outcomes, broken=self.broken)
     def rpc(self, name, params):
         assert name == "wow_kalshi_weather_claim_research_window"
@@ -289,3 +297,21 @@ def test_durable_progress_sql_has_atomic_service_role_boundary():
     ):
         assert required in sql
     assert "security definer" not in sql
+
+
+
+def test_batch_outcome_scan_skips_499_already_recorded_without_n_queries():
+    db = Client([prediction(f"p-{i:03d}") for i in range(500)])
+    db.outcomes = [{"prediction_id": f"p-{i:03d}"} for i in range(499)]
+    called = []
+    def settle(*, client, prediction_id, index_city, settled_at):
+        called.append(prediction_id)
+        client.outcomes.append({"prediction_id": prediction_id})
+        return {"status": "SETTLED", "outcome_id": "outcome-" + prediction_id,
+                "target_time_utc": TARGET}
+    result = reconcile_miami_settlements(client=db, limit=3, now=CLOCK, settle=settle)
+    assert result["new_outcomes"] == 1
+    assert result["already_recorded"] == 499
+    assert called == ["p-499"]
+    assert db.outcome_reads == 1
+    assert result["can_execute"] is False
