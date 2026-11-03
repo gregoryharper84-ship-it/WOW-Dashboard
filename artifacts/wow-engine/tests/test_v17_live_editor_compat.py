@@ -267,6 +267,8 @@ def test_nfl_event_receipt_action_requires_explicit_uuid_and_sport():
     assert {"prediction_id"} in [set(x["required"]) for x in schema["anyOf"]]
     assert schema["if"]["required"] == ["market_family"]
     assert schema["if"]["properties"]["market_family"]["const"] == "OUTRIGHT_WINNER"
+    assert schema["properties"]["market_family"]["type"] == ["string", "null"]
+    assert schema["properties"]["market_family"]["enum"] == ["OUTRIGHT_WINNER", None]
     assert set(schema["then"]["required"]) == {"prediction_id", "sport"}
     assert schema["then"]["properties"]["prediction_id"] == {
         "type": "string", "format": "uuid",
