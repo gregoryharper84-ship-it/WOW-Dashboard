@@ -15,6 +15,79 @@ this document. This document supplies no approval and cannot enable execution:
 
 ---
 
+## 2026-11-03 additional release-fence proof — reported local reproduction
+
+**Source/provenance:** Freebuff's latest clean-database reproduction report, supplied
+to the restoration session; repository code and the #2406 CI workflow confirm
+the test-file inventory, but no separately archived local terminal transcript,
+database snapshot or independent acceptance receipt was provided with this report.
+Treat the local run numbers below as **Freebuff-reported local test evidence**,
+not production or independent verification.
+
+The workflow at #2406 head `2f1f90424a3f782bdc94dadc5ae399a53c42cdac`
+executes **ten** Python test files. The previously unverified **nine** fence/
+release tests below were run together on a fresh PostgreSQL cluster and reported
+`207 passed, rc=0, 0 skipped` (2.21 s). The separately tested tenth file is
+`test_v17_pick_request_lease_race_postgres.py`; do not silently count its
+results again inside this nine-file total.
+
+| Relative path within `artifacts/wow-engine/tests/` | Reported standalone result |
+| --- | ---: |
+| `test_render_release_service_fence_candidate.py` | 20 passed |
+| `test_render_release_service_fence_postgres_integration.py` | 12 passed |
+| `test_render_release_rpc_postgres.py` | 11 passed |
+| `test_render_release_recovery_postgres.py` | 11 passed |
+| `test_v17_render_production_deploy_workflow.py` | 17 passed |
+| `test_v17_render_release_provenance_gate.py` | 39 passed |
+| `test_v17_engineering_fenced_writer.py` | 46 passed |
+| `test_v17_fenced_mutation_cli.py` | 28 passed |
+| `test_v17_writer_epoch_postgres.py` | 23 passed |
+| **Nine-file total, clean combined run** | **207 passed, 0 skipped** |
+
+**Reproduction setup:** fresh `127.0.0.1:5432/wow_release_fence_test`;
+workflow-equivalent seven roles, including
+`wow_release_controller` with `CI_FENCE_EPHEMERAL_ONLY` test credential;
+the `service_fence` and `release_intent` grants; the three
+`REVIEW_ONLY` migrations applied using `ON_ERROR_STOP` (each rc=0);
+`PYTHONPATH=artifacts/wow-engine`; `--confcutdir=artifacts/wow-engine/tests`;
+`psycopg[binary]==3.2.10` and `pytest==8.4.2`; isolated release/writer
+test DSNs and attestations. The combined fresh-run preflight counted two
+already-migrated objects; fixtures provisioned five further objects.
+
+**Deviation from CI:** local PostgreSQL **16.2** and trust authentication,
+versus the workflow's `postgres:17.6` and password authentication.
+The local results are not bit-identical CI and do not establish Supabase schema,
+Render deployment, migration execution in production or fitted model delivery.
+
+**Rejected apparent errors:** first independent per-file runs succeeded,
+but a subsequent combined run against the *same* used database gave
+`184 passed, 23 errors` with `DuplicateTable` for
+`wow_engineering_incident_writer_leases`. Recreating the cluster and
+executing all nine files **once** eliminated those errors (`207 passed`).
+Two vacuous attempts from incorrect relative paths were detected using
+`no tests ran` and exit-code/skip-count guards and are **excluded**.
+DDL fixtures are not repeat-idempotent on a reused test database; use a fresh
+cluster per combined run. No production mutations resulted.
+
+**Later live GitHub correction (as observed in this ChatGPT engineering
+session):** #2415 is **ready**, not draft, at
+`b70f35f0dc898c3a65503350cd6270205d5490e1`.
+All eight source CI workflows completed successfully. Authentic exact-head
+QA and Release Authority App checks reported **success**; the separate
+`Trusted exact-head engineering governance` check reported **failure**.
+Its job `126090484122` ended with `unexpected end of JSON input`
+following the artifact-lookup loop; this is a native failure, **not** a PASS,
+and its exact producing API/response still needs diagnosis. The effective
+live ruleset `24907422` was read back with **seven** required exact-head
+checks (three regression + Trusted Governance + QA + Security Review +
+Release Authority). This supersedes the older three-check statement in the
+historical snapshot below. No independent semantic security PASS or protected
+merge is established.
+
+**Status:** `WORKING_NOT_COMPLETE / SAFE_HOLD`. Preserve `can_execute=false`.
+
+---
+
 ## 0. What is already done — do not redo
 
 A real, previously undetected defect was found, reproduced, fixed and tested. It blocked
