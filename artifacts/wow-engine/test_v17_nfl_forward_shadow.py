@@ -10,6 +10,7 @@ from v17.nfl_forward_shadow import (
     calibration_health,
     grade_forward_predictions,
     overdue_unsettled_events,
+    require_complete_settlement_run,
     select_canonical_forward_predictions,
 )
 
@@ -268,3 +269,36 @@ def test_run_forward_shadow_reports_missing_final_then_recovery(monkeypatch):
     assert (settled["graded_events"], settled["new_grades_persisted"]) == (1, 1)
     assert saved == {"2026_08_CHI_SEA"}
     assert settled["can_execute"] is False
+
+
+def test_complete_settlement_contract_rejects_stale_api_and_missing_final():
+    success = {
+        "status": "COMPLETED",
+        "overdue_unsettled_count": 0,
+        "overdue_unsettled_event_ids": [],
+        "can_execute": False,
+    }
+    assert require_complete_settlement_run(success) is success
+    bad = [
+        {"status": "COMPLETED"},
+        {"status": "COMPLETED", "overdue_unsettled_count": True, "overdue_unsettled_event_ids": []},
+        {"status": "COMPLETED", "overdue_unsettled_count": -1, "overdue_unsettled_event_ids": []},
+        {"status": "COMPLETED", "overdue_unsettled_count": 0, "overdue_unsettled_event_ids": ["2026_08_CHI_SEA"]},
+        {"status": "COMPLETED", "overdue_unsettled_count": 1, "overdue_unsettled_event_ids": []},
+        {"status": "COMPLETED", "overdue_unsettled_count": 0, "overdue_unsettled_event_ids": [None]},
+    ]
+    for payload in bad:
+        with pytest.raises(ValueError, match="NFL_FORWARD_SHADOW_SETTLEMENT_CONTRACT_INVALID"):
+            require_complete_settlement_run(payload)
+    with pytest.raises(ValueError, match="NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT"):
+        require_complete_settlement_run({
+            "status": "INCOMPLETE_SETTLEMENT",
+            "overdue_unsettled_count": 1,
+            "overdue_unsettled_event_ids": ["2026_08_CHI_SEA"],
+        })
+    with pytest.raises(ValueError, match="NFL_FORWARD_SHADOW_INCOMPLETE_SETTLEMENT"):
+        require_complete_settlement_run({
+            "status": "INCOMPLETE_SETTLEMENT",
+            "overdue_unsettled_count": 0,
+            "overdue_unsettled_event_ids": [],
+        })
