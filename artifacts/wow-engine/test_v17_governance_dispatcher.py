@@ -1237,6 +1237,59 @@ def test_ambiguous_non_idempotent_write_is_not_retried(monkeypatch):
     assert len(attempts) == 1
 
 
+@pytest.mark.parametrize("signed_status,allow_dispatch", [
+    ("REJECT", False), ("INVALID", False),
+    ("STALE", False), ("PENDING", False), ("PASS", True),
+])
+def test_zero_credit_dispatch_reads_prior_authenticated_review_before_qa(
+    monkeypatch, signed_status, allow_dispatch,
+):
+    monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
+    pull = make_pull(author_id=OWNER_ID, author=OWNER)
+    pull["user"]["type"] = "User"
+    events = []
+    review_run = {"id": 911, "run_attempt": 1,
+                  "status": "completed", "conclusion": "success"}
+    workflows = {
+        role: {"id": idx + 1, **details}
+        for idx, (role, details) in enumerate(transport.WORKFLOWS.items())
+    }
+    monkeypatch.setattr(transport, "_owner", lambda _: (OWNER_ID, OWNER))
+    monkeypatch.setattr(transport, "list_workflows", lambda _: workflows)
+    monkeypatch.setattr(transport, "count_wip",
+                        lambda *_: {role: 0 for role in transport.WORKFLOWS})
+    monkeypatch.setattr(transport, "_source_review_module", lambda: object())
+    monkeypatch.setattr(transport, "_target_list", lambda *_: [pull])
+    monkeypatch.setattr(transport, "_target_pull", lambda *_: pull)
+    monkeypatch.setattr(transport, "pull_files",
+                        lambda *_: [make_file(".github/workflows/new.yml")])
+    monkeypatch.setattr(transport, "check_runs", lambda *_: all_ci_checks())
+    monkeypatch.setattr(transport, "pull_reviews", lambda *_: [])
+    monkeypatch.setattr(transport, "matching_role_runs",
+                        lambda *_: {"source_review": {
+                            "history": [review_run], "latest": review_run}})
+    monkeypatch.setattr(transport, "source_review_status",
+                        lambda *_args, **_kwargs: events.append("read_signed_review")
+                        or signed_status)
+    monkeypatch.setattr(transport, "list_reservations", lambda *_: [])
+    monkeypatch.setattr(transport, "reserve_dispatch",
+                        lambda *_args, **_kwargs: events.append("reserve"))
+    monkeypatch.setattr(transport, "dispatch",
+                        lambda *_args, **_kwargs: events.append("dispatch"))
+    result = transport.reconcile(
+        client=object(), input_pr="41", run_number=7,
+        controller_run_id="12345", source_sha=OTHER_HEAD,
+        zero_credit_mode=True,
+    )
+    assert events[0] == "read_signed_review"
+    assert ("dispatch" in events) is allow_dispatch
+    assert result["dispatch_count"] == int(allow_dispatch)
+    if not allow_dispatch:
+        assert result["decisions"][0]["action"] == "HOLD"
+        assert result["decisions"][0]["findings"] == ["SOURCE_REVIEW_" + signed_status]
+    assert result["can_execute"] is False
+
+
 def test_reconcile_reserves_before_dispatch(monkeypatch):
     monkeypatch.setenv(transport.JOURNAL_KEY_ENV, journal_test_key())
     events = []
