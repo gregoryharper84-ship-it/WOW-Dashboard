@@ -40,12 +40,6 @@ def _provenance_guard(workflow: Path, step_name: str, start: str, end: str) -> s
 @pytest.mark.parametrize(
     ("workflow", "step_name", "start", "end"),
     [
-        (
-            MORNING_GREEN,
-            "Verify trusted exact-head governance receipt",
-            "trusted_worker=false\n",
-            "zip_path=",
-        ),
     ],
 )
 def test_downstream_consumers_accept_only_successful_protected_workflow_run_receipts(
@@ -367,13 +361,15 @@ def test_v4_existing_pr_certifier_remains_historical_not_release_dependency():
     release = RELEASE.read_text(encoding="utf-8")
 
     # Legacy certifier artifacts remain historical until authorized cutover.
-    for text in (gate, morning):
-        assert "wow-v17-existing-pr-governance-review.yml" in text
-        assert "verify_existing_pr_governance_receipt.py" in text
-        assert "--live-checks-json" in text
-        assert "TRUST_ROOT_BOOTSTRAP" in text
+    assert "wow-v17-existing-pr-governance-review.yml" in gate
+    assert "verify_existing_pr_governance_receipt.py" in gate
+    assert "--live-checks-json" in gate
+    assert "TRUST_ROOT_BOOTSTRAP" in gate
+    assert "verify_existing_pr_governance_receipt.py" not in morning
+    assert "WOW Independent QA exact-head|5245832" in morning
+    assert "WOW Release Authority exact-head|5245853" in morning
     assert "pull_request_target) ;;" in gate
-    assert "protected_main_source=true" in morning
+    assert "V4_FINAL_HEAD_CHANGED" in morning
 
     # V4 production observer is no longer wired to the retired receipt.
     assert "verify_existing_pr_governance_receipt.py" not in release
