@@ -259,3 +259,20 @@ def test_detailed_evidence_openapi_matches_runtime_value_types():
     assert market["properties"]["market_state"]["enum"] == [
         "EXACT_LINE", "ADJACENT_LINE", "NO_MARKET"
     ]
+
+
+def test_nfl_event_receipt_action_requires_explicit_uuid_and_sport():
+    """Outright event requests cannot satisfy prop-identity fallback alone."""
+    schema = _schema()["components"]["schemas"]["PredictionReceiptLookupRow"]
+    assert {"prediction_id"} in [set(x["required"]) for x in schema["anyOf"]]
+    assert schema["if"]["required"] == ["market_family"]
+    assert schema["if"]["properties"]["market_family"]["const"] == "OUTRIGHT_WINNER"
+    assert set(schema["then"]["required"]) == {"prediction_id", "sport"}
+    assert schema["then"]["properties"]["prediction_id"] == {
+        "type": "string", "format": "uuid",
+    }
+    assert schema["then"]["properties"]["sport"]["const"] == "NFL"
+    # Non-outright player props retain their original exact identity options.
+    assert {"event_id", "player", "stat_type", "line", "direction"} in [
+        set(x["required"]) for x in schema["anyOf"]
+    ]
