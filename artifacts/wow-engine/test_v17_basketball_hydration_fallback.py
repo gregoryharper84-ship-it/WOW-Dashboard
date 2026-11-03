@@ -480,7 +480,9 @@ def _mock_stale_sportsdataverse(monkeypatch):
     )
     persisted = []
     monkeypatch.setattr(hydration, "_persist_rows", lambda client, sport, rows: (persisted.extend(rows), len(rows))[1])
-    latest = iter([date(2026, 6, 13), date(2026, 10, 22)])
+    # The 14-day scoreboard window can close this short gap completely:
+    # Oct 23 EDT => last completed Oct 22, coverage Oct 9-22.
+    latest = iter([date(2026, 10, 8), date(2026, 10, 22)])
     monkeypatch.setattr(hydration, "_latest_persisted_game_date", lambda *_args: next(latest))
     return persisted
 
@@ -742,3 +744,46 @@ def test_entitled_espn_nba_fallback_queries_current_calendar_not_asset_year(monk
     assert len(stored) == 1
     assert result["source_by_season"][2027] == "ESPN_SCOREBOARD"
     assert result["can_execute"] is False
+
+
+def test_recent_espn_supplement_cannot_jump_over_months_of_missing_results(monkeypatch):
+    """Never move the corpus fence to yesterday while June-Oct is unacquired."""
+    monkeypatch.setattr(
+        hydration, "fetch_games",
+        lambda *_: (_ for _ in ()).throw(
+            hydration.BasketballHydrationError("BALLDONTLIE_AUTH_FAILED")
+        ),
+    )
+    monkeypatch.setattr(
+        hydration, "fetch_sportsdataverse_games",
+        lambda *_: [
+            _sportsdataverse_row(event_id="already-persisted", game_date="2026-06-13")
+        ],
+    )
+    monkeypatch.setattr(
+        hydration, "source_readiness",
+        lambda *_: SimpleNamespace(ready_for_candidate_training=True, blockers=()),
+    )
+    monkeypatch.setattr(
+        hydration, "_latest_persisted_game_date", lambda *_: date(2026, 6, 13)
+    )
+    monkeypatch.setattr(
+        hydration, "_persist_rows",
+        lambda *_: (_ for _ in ()).throw(
+            AssertionError("No partial backfill may advance persisted date")
+        ),
+    )
+    monkeypatch.setattr(
+        hydration, "fetch_recent_espn_settlements",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Cannot use 14-day fetch to bridge June-October")
+        ),
+    )
+    try:
+        hydration.hydrate(
+            "NBA", [2027], client=object(),
+            now=datetime(2026, 11, 2, 17, tzinfo=timezone.utc),
+        )
+        raise AssertionError("expected a typed backfill failure")
+    except hydration.BasketballHydrationError as exc:
+        assert str(exc) == "ESPN_RECENT_WINDOW_GAP_NOT_COVERED"
