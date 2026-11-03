@@ -431,10 +431,17 @@ class HttpAttributionTests(unittest.TestCase):
                 error = HTTPError(url, 403, "SECRET HTTP reason", headers,
                                   io.BytesIO(json.dumps(body).encode()))
                 output = io.StringIO()
-                with patch.object(m.HTTP_CLIENT, "open", side_effect=error):
-                    with contextlib.redirect_stderr(output):
-                        with self.assertRaises(m.Hold) as raised:
-                            m.request_json(url, token="SECRET_TOKEN")
+                with patch.object(m.HTTP_CLIENT, "open", side_effect=error) as opened:
+                    with patch.object(m.time, "sleep") as sleep:
+                        with contextlib.redirect_stderr(output):
+                            with self.assertRaises(m.Hold) as raised:
+                                m.request_json(url, token="SECRET_TOKEN")
+                if label in ("PRIMARY_RATE_LIMIT", "SECONDARY_RATE_LIMIT"):
+                    sleep.assert_called_once_with(60)
+                    self.assertEqual(opened.call_count, 2)
+                else:
+                    sleep.assert_not_called()
+                    self.assertEqual(opened.call_count, 1)
                 self.assertNotIsInstance(raised.exception, m.ProviderUnavailable)
                 self.assertEqual(str(raised.exception), "HTTP_403")
                 self.assertIn("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_403:"
@@ -534,10 +541,13 @@ class HttpAttributionTests(unittest.TestCase):
                 "message": "You have exceeded a secondary rate limit. SECRET"
             }).encode()))
         output = io.StringIO()
-        with patch.object(m.HTTP_CLIENT, "open", side_effect=error):
-            with contextlib.redirect_stderr(output):
-                with self.assertRaises(m.Hold) as raised:
-                    m.request_json(url, token="SECRET_TOKEN")
+        with patch.object(m.HTTP_CLIENT, "open", side_effect=error) as opened:
+            with patch.object(m.time, "sleep") as sleep:
+                with contextlib.redirect_stderr(output):
+                    with self.assertRaises(m.Hold) as raised:
+                        m.request_json(url, token="SECRET_TOKEN")
+        sleep.assert_called_once_with(60)
+        self.assertEqual(opened.call_count, 2)
         self.assertNotIsInstance(raised.exception, m.ProviderUnavailable)
         self.assertEqual(str(raised.exception), "HTTP_429")
         self.assertIn("REVIEW_HTTP_GITHUB_DIAGNOSTIC:HTTP_429:"
