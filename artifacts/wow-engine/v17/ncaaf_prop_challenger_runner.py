@@ -6,6 +6,8 @@ and no certification, activation, promotion, publication, ranking, or execution 
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any, Mapping, Sequence
 
@@ -146,6 +148,9 @@ def load_source_snapshots(
 
     expected_count = _scoped_count()
     snapshots: list[SourceSnapshot] = []
+    # Revalidate full selected row content after paging. A stable row count
+    # cannot detect in-place edits to a previously read snapshot.
+    observed_fingerprints: list[tuple[str, str]] = []
     last_id = ""
     while True:
         try:
@@ -185,10 +190,73 @@ def load_source_snapshots(
                     "NCAAF_PROP_SOURCE_READ_INVALID", "PAGE_ORDER_INVALID"
                 )
             snapshots.append(_snapshot_from_row(row))
+            observed_fingerprints.append((
+                snapshot_id,
+                hashlib.sha256(json.dumps(row, sort_keys=True, separators=(",", ":"),
+                                         default=str).encode("utf-8")).hexdigest(),
+            ))
             last_id = snapshot_id
         if len(rows) < page_size:
             break
     if len(snapshots) != expected_count or _scoped_count() != expected_count:
+        raise NCAAFPropChallengerRunnerError(
+            "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
+        )
+
+    # Repeat the exact timestamp-fenced keyset read and compare complete row
+    # fingerprints. This detects same-count edits and swaps that count-only
+    # pagination silently accepted; it does not claim a long-lived PG snapshot.
+    verification: list[tuple[str, str]] = []
+    verification_cursor = ""
+    while True:
+        try:
+            query = (
+                db.table("wow_ncaaf_source_snapshots")
+                .select(fields)
+                .eq("provider", "CFBD")
+                .eq("endpoint", endpoint)
+                .in_("season", list(season_values))
+                .lte("created_at", source_cutoff)
+                .order("source_snapshot_id", desc=False)
+            )
+            if verification_cursor:
+                query = query.gt("source_snapshot_id", verification_cursor)
+            result = query.range(0, page_size - 1).execute()
+        except Exception as exc:  # noqa: BLE001
+            raise NCAAFPropChallengerRunnerError(
+                "NCAAF_PROP_SOURCE_READ_FAILED", endpoint
+            ) from exc
+        rows = getattr(result, "data", None)
+        if not isinstance(rows, list):
+            raise NCAAFPropChallengerRunnerError(
+                "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_RECHECK_INVALID"
+            )
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
+                )
+            snapshot_id = row.get("source_snapshot_id")
+            if (not isinstance(snapshot_id, str) or snapshot_id <= verification_cursor):
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
+                )
+            verification.append((
+                snapshot_id,
+                hashlib.sha256(json.dumps(row, sort_keys=True, separators=(",", ":"),
+                                         default=str).encode("utf-8")).hexdigest(),
+            ))
+            verification_cursor = snapshot_id
+            # Stop immediately on drift rather than reading an unbounded corpus.
+            if len(verification) > len(observed_fingerprints) or (
+                verification[-1] != observed_fingerprints[len(verification) - 1]
+            ):
+                raise NCAAFPropChallengerRunnerError(
+                    "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
+                )
+        if len(rows) < page_size:
+            break
+    if verification != observed_fingerprints or _scoped_count() != expected_count:
         raise NCAAFPropChallengerRunnerError(
             "NCAAF_PROP_SOURCE_READ_INVALID", "SOURCE_SET_CHANGED"
         )
