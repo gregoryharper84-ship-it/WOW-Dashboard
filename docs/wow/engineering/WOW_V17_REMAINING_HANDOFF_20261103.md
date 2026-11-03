@@ -76,8 +76,17 @@ All eight source CI workflows completed successfully. Authentic exact-head
 QA and Release Authority App checks reported **success**; the separate
 `Trusted exact-head engineering governance` check reported **failure**.
 Its job `126090484122` ended with `unexpected end of JSON input`
-following the artifact-lookup loop; this is a native failure, **not** a PASS,
-and its exact producing API/response still needs diagnosis. The effective
+following the artifact-lookup loop; this is a native failure, **not** a PASS.
+**Root-cause evidence:** the exact-head existing-PR certifier run
+[`41685625276`](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/41685625276)
+failed at job `126090475869` with native `TRUST_ROOT_OWNER_AUTHORED`
+(HOLD, `2026-11-03T17:42:09Z`) while executing the old verifier checked out
+from `main`. It generated no trusted receipt. The downstream gate run
+[`41685625297`](https://github.com/gregoryharper84-ship-it/WOW-Dashboard/actions/runs/41685625297)
+then failed while polling for that absent receipt. The raw `unexpected end of JSON input`
+may also warrant a separate transport diagnostic, but does **not** supersede the
+verified deterministic identity hold. No rerun can make the old verifier accept
+an owner-authored protected source without an authorized governance change. The effective
 live ruleset `24907422` was read back with **seven** required exact-head
 checks (three regression + Trusted Governance + QA + Security Review +
 Release Authority). This supersedes the older three-check statement in the
