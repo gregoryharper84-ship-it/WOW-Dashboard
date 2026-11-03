@@ -81,6 +81,31 @@ def test_missing_provider_credential_replays_persisted_corpus(monkeypatch):
     assert row["can_execute"] is False
 
 
+def test_partial_hydration_write_never_trains_a_half_persisted_corpus(monkeypatch):
+    def partial_hydrate(*_args, **_kwargs):
+        raise maintenance.BasketballHydrationPartialWriteError(
+            "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
+        )
+
+    def forbidden_replay(*_args, **_kwargs):
+        raise AssertionError("partial persisted corpus must never reach replay")
+
+    monkeypatch.setattr(maintenance, "hydrate", partial_hydrate)
+    monkeypatch.setattr(maintenance, "run_training_replay", forbidden_replay)
+    result = maintenance.run_basketball_model_maintenance(
+        object(), sports=("NBA",), seasons=(2025, 2026)
+    )
+    row = result["rows"][0]
+    assert result["status"] == "BLOCKED"
+    assert result["rows_updated"] == 0
+    assert row["status"] == "BLOCKED"
+    assert row["code"] == "BASKETBALL_HYDRATION_PARTIAL_WRITE_REPLAY_FORBIDDEN"
+    assert row["hydration_blocker"]["requires_corpus_reconciliation"] is True
+    assert row["hydration_blocker"]["recoverable"] is False
+    assert row["probability_publishable"] is False
+    assert row["can_execute"] is False
+
+
 def test_hydration_and_persisted_replay_failure_remain_blocked(monkeypatch):
     def fail_hydration(*_args, **_kwargs):
         raise maintenance.BasketballHydrationError("BALLDONTLIE_API_KEY unavailable")
